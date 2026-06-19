@@ -758,7 +758,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.call_fallible_builtin(Builtin::ExtCodeCopy, &[self.ecx, sp]);
             }
             op::RETURNDATASIZE => {
-                field!(@push self.isize_type, self.ecx, EvmContext<'_>, pf::Slice; return_data.len);
+                field!(@push self.isize_type, self.ecx, EvmContext<'_>; return_data_len);
             }
             op::RETURNDATACOPY => {
                 let sp = self.sp_after_inputs();

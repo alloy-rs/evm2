@@ -603,7 +603,7 @@ fn run_compiled_test_case_with_context(
     } = *test_case;
 
     if is_static {
-        ecx.is_static = true;
+        ecx.set_static_for_jit(true);
     }
     if gas_limit != DEF_GAS_LIMIT {
         ecx.gas = Gas::new(gas_limit);
@@ -738,7 +738,7 @@ fn run_compiled_test_case_with_context(
 
         if !skip_jit_memory {
             assert_eq!(
-                MemDisplay(unsafe { ecx.interpreter.as_ref() }.memory_ref().as_slice()),
+                MemDisplay(ecx.memory().as_slice()),
                 MemDisplay(expected_memory),
                 "memory mismatch"
             );
@@ -750,7 +750,7 @@ fn run_compiled_test_case_with_context(
     }
 
     if let Some(expected_output) = expected_output {
-        assert_eq!(ecx.output.as_ref(), expected_output, "output mismatch");
+        assert_eq!(ecx.output().as_ref(), expected_output, "output mismatch");
     }
 
     if let Some(assert_ecx) = assert_ecx {

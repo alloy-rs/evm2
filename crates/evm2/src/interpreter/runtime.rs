@@ -295,6 +295,13 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.is_static
     }
 
+    /// Sets the static-call flag for external execution adapters.
+    #[inline]
+    #[doc(hidden)]
+    pub const fn set_static_for_jit(&mut self, is_static: bool) {
+        self.is_static = is_static;
+    }
+
     /// Runs the interpreter until it stops.
     #[inline]
     pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {

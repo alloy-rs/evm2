@@ -8,10 +8,9 @@ use core::{
     ptr::{self, NonNull},
 };
 use evm2::{
-    BaseEvmTypes, SpecId,
+    BaseEvmTypes,
     bytecode::Bytecode,
     interpreter::{Gas as Evm2Gas, Host as Evm2Host, Interpreter, Memory, Word},
-    version::GasParams,
 };
 
 const _: () = {
@@ -23,36 +22,28 @@ const _: () = {
 #[repr(C)]
 pub struct EvmContext<'a> {
     /// Active interpreter frame.
-    pub interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
+    interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
     /// Input information (target address, caller, input data, call value).
     pub input: *mut Inputs,
     /// The gas.
     pub gas: Evm2Gas,
     /// Host state consumed by host-touching builtins.
-    pub host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
-    /// The return data.
-    pub return_data: &'a [u8],
-    /// Whether the context is static.
-    pub is_static: bool,
-    /// The spec ID for the current execution.
-    pub spec_id: SpecId,
-    /// The contract bytecode, for CODECOPY at runtime.
-    pub bytecode: *const [u8],
+    host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
+    /// The size of return data from the last call-like operation.
+    pub return_data_len: usize,
     /// The size of the call input data, cached for CALLDATASIZE.
     pub calldatasize: usize,
     /// The result set by a builtin before exiting via `evm2_jit_exit`.
     pub exit_result: InstrStop,
     /// Saved RSP from the entry trampoline, used by `evm2_jit_exit` to unwind.
     pub exit_sp: *mut u8,
-    /// Cached gas parameters for builtin gas accounting.
-    pub gas_params: GasParams,
     /// Cached base pointer for the current memory context.
     pub mem_base: *mut u8,
     /// Cached length of the current memory context in bytes.
     pub mem_len: usize,
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
-    pub output: Bytes,
+    output: Bytes,
     input_scratch: Box<Inputs>,
 }
 
@@ -66,11 +57,9 @@ const _: () = {
     assert!(offset_of!(EvmContext<'_>, gas) == offset_of!(crate::EvmContext<'_>, gas));
     assert!(offset_of!(EvmContext<'_>, host) == offset_of!(crate::EvmContext<'_>, host));
     assert!(
-        offset_of!(EvmContext<'_>, return_data) == offset_of!(crate::EvmContext<'_>, return_data)
+        offset_of!(EvmContext<'_>, return_data_len)
+            == offset_of!(crate::EvmContext<'_>, return_data_len)
     );
-    assert!(offset_of!(EvmContext<'_>, is_static) == offset_of!(crate::EvmContext<'_>, is_static));
-    assert!(offset_of!(EvmContext<'_>, spec_id) == offset_of!(crate::EvmContext<'_>, spec_id));
-    assert!(offset_of!(EvmContext<'_>, bytecode) == offset_of!(crate::EvmContext<'_>, bytecode));
     assert!(
         offset_of!(EvmContext<'_>, calldatasize) == offset_of!(crate::EvmContext<'_>, calldatasize)
     );
@@ -78,9 +67,6 @@ const _: () = {
         offset_of!(EvmContext<'_>, exit_result) == offset_of!(crate::EvmContext<'_>, exit_result)
     );
     assert!(offset_of!(EvmContext<'_>, exit_sp) == offset_of!(crate::EvmContext<'_>, exit_sp));
-    assert!(
-        offset_of!(EvmContext<'_>, gas_params) == offset_of!(crate::EvmContext<'_>, gas_params)
-    );
     assert!(offset_of!(EvmContext<'_>, mem_base) == offset_of!(crate::EvmContext<'_>, mem_base));
     assert!(offset_of!(EvmContext<'_>, mem_len) == offset_of!(crate::EvmContext<'_>, mem_len));
     assert!(offset_of!(EvmContext<'_>, output) == offset_of!(crate::EvmContext<'_>, output));
@@ -163,10 +149,6 @@ impl<'a> EvmContext<'a> {
         let interpreter_ptr = unsafe { NonNull::new_unchecked(interpreter_ptr) };
         let message = interpreter.message();
         let gas = interpreter.gas();
-        let bytecode = interpreter.bytecode().as_slice() as *const [u8];
-        let spec_id = interpreter.spec();
-        let is_static = interpreter.is_static();
-        let gas_params = interpreter.version().gas_params;
         let calldatasize = message.input.len();
         let mut input_scratch = Box::new(Inputs {
             target_address: message.destination,
@@ -176,7 +158,7 @@ impl<'a> EvmContext<'a> {
             call_value: message.value,
         });
         let input = input_scratch.as_mut() as *mut Inputs;
-        let return_data = unsafe { &*(interpreter.return_data().as_ref() as *const [u8]) };
+        let return_data_len = interpreter.return_data().len();
         let (stack_ptr, stack_len) = interpreter.stack_mut().into_raw_parts();
         let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
         let mut this = Self {
@@ -184,14 +166,10 @@ impl<'a> EvmContext<'a> {
             input,
             gas,
             host,
-            return_data,
-            is_static,
-            spec_id,
-            bytecode,
+            return_data_len,
             calldatasize,
             exit_result: InstrStop::Stop,
             exit_sp: ptr::null_mut(),
-            gas_params,
             mem_base: ptr::null_mut(),
             mem_len: 0,
             output: Bytes::new(),
@@ -231,6 +209,31 @@ impl<'a> EvmContext<'a> {
         &self.input_scratch
     }
 
+    /// Returns output produced by RETURN or REVERT.
+    #[inline]
+    pub fn output(&self) -> &Bytes {
+        &self.output
+    }
+
+    /// Sets output produced by RETURN or REVERT.
+    #[inline]
+    pub fn set_output(&mut self, output: Bytes) {
+        self.output = output;
+    }
+
+    /// Returns return data from the last call-like operation.
+    #[inline]
+    pub fn return_data(&self) -> &[u8] {
+        self.interpreter().return_data().as_ref()
+    }
+
+    /// Sets return data from the last call-like operation.
+    #[inline]
+    pub fn set_return_data(&mut self, data: Bytes) {
+        self.return_data_len = data.len();
+        self.interpreter_mut().set_return_data(data);
+    }
+
     #[inline]
     fn interpreter(&self) -> &Interpreter<'a, BaseEvmTypes> {
         unsafe { self.interpreter.as_ref() }
@@ -241,14 +244,22 @@ impl<'a> EvmContext<'a> {
         unsafe { self.interpreter.as_mut() }
     }
 
+    /// Returns the current linear memory.
     #[inline]
-    fn memory(&self) -> &Memory {
+    pub fn memory(&self) -> &Memory {
         self.interpreter().memory_ref()
     }
 
     #[inline]
     fn memory_mut(&mut self) -> &mut Memory {
         self.interpreter_mut().memory_mut()
+    }
+
+    /// Sets the static-call flag for JIT test setup.
+    #[inline]
+    #[doc(hidden)]
+    pub fn set_static_for_jit(&mut self, is_static: bool) {
+        self.interpreter_mut().set_static_for_jit(is_static);
     }
 
     #[inline]
@@ -276,7 +287,7 @@ mod tests {
     use alloy_primitives::{Address, Bytes as AlloyBytes};
     use core::mem::offset_of;
     use evm2::{
-        BaseEvmConfigSelector, Evm, EvmConfigSelector, Precompiles,
+        BaseEvmConfigSelector, Evm, EvmConfigSelector, Precompiles, SpecId,
         bytecode::Bytecode,
         env::{BlockEnv, TxEnv},
         ethereum::ethereum_tx_registry,
@@ -286,9 +297,20 @@ mod tests {
 
     #[test]
     fn evm2_context_matches_imported_context_offsets() {
+        assert_eq!(
+            offset_of!(EvmContext<'_>, interpreter),
+            offset_of!(crate::EvmContext<'_>, interpreter)
+        );
         assert_eq!(offset_of!(EvmContext<'_>, input), offset_of!(crate::EvmContext<'_>, input));
         assert_eq!(offset_of!(EvmContext<'_>, gas), offset_of!(crate::EvmContext<'_>, gas));
-        assert_eq!(offset_of!(EvmContext<'_>, spec_id), offset_of!(crate::EvmContext<'_>, spec_id));
+        assert_eq!(
+            offset_of!(EvmContext<'_>, return_data_len),
+            offset_of!(crate::EvmContext<'_>, return_data_len)
+        );
+        assert_eq!(
+            offset_of!(EvmContext<'_>, calldatasize),
+            offset_of!(crate::EvmContext<'_>, calldatasize)
+        );
         assert_eq!(
             offset_of!(EvmContext<'_>, mem_base),
             offset_of!(crate::EvmContext<'_>, mem_base)
@@ -388,7 +410,7 @@ mod tests {
         _stack_len: NonNull<usize>,
     ) -> InstrStop {
         let ecx = unsafe { ecx.as_mut() };
-        ecx.output = AlloyBytes::copy_from_slice(b"ok");
+        ecx.set_output(AlloyBytes::copy_from_slice(b"ok"));
         InstrStop::Return
     }
 

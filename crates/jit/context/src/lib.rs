@@ -126,29 +126,21 @@ pub mod jit_abi {
 #[repr(C)]
 pub struct EvmContext<'a> {
     /// Active interpreter frame.
-    pub interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
+    interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
     /// Input information (target address, caller, input data, call value).
     pub input: &'a mut Inputs,
     /// The gas.
     pub gas: Gas,
-    /// The host.
-    pub host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
-    /// The return data.
-    pub return_data: &'a [u8],
-    /// Whether the context is static.
-    pub is_static: bool,
-    /// The spec ID for the current execution.
-    pub spec_id: SpecId,
-    /// The contract bytecode, for CODECOPY at runtime.
-    pub bytecode: *const [u8],
+    /// Host state consumed by host-touching builtins.
+    host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
+    /// The size of return data from the last call-like operation.
+    pub return_data_len: usize,
     /// The size of the call input data, cached for CALLDATASIZE.
     pub calldatasize: usize,
     /// The result set by a builtin before exiting via [`evm2_jit_exit`].
     pub exit_result: InstrStop,
     /// Saved RSP from the entry trampoline, used by [`evm2_jit_exit`] to unwind.
     pub exit_sp: *mut u8,
-    /// Cached gas parameters from the host.
-    pub gas_params: GasParams,
     /// Cached base pointer for the current memory context.
     /// Refreshed after any memory resize.
     pub mem_base: *mut u8,
@@ -157,7 +149,7 @@ pub struct EvmContext<'a> {
     pub mem_len: usize,
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
-    pub output: Bytes,
+    output: Bytes,
 }
 
 // Static assertions to ensure the struct layout matches expectations.
@@ -165,8 +157,15 @@ pub struct EvmContext<'a> {
 const _: () = {
     use core::mem::offset_of;
 
-    // Key fields accessed by JIT code
     assert!(offset_of!(EvmContext<'_>, interpreter) == 0);
+    assert!(offset_of!(EvmContext<'_>, input) > 0);
+    assert!(offset_of!(EvmContext<'_>, gas) > 0);
+    assert!(offset_of!(EvmContext<'_>, return_data_len) > 0);
+    assert!(offset_of!(EvmContext<'_>, calldatasize) > 0);
+    assert!(offset_of!(EvmContext<'_>, exit_result) > 0);
+    assert!(offset_of!(EvmContext<'_>, exit_sp) > 0);
+    assert!(offset_of!(EvmContext<'_>, mem_base) > 0);
+    assert!(offset_of!(EvmContext<'_>, mem_len) > 0);
 };
 
 impl fmt::Debug for EvmContext<'_> {
@@ -176,15 +175,13 @@ impl fmt::Debug for EvmContext<'_> {
 }
 
 impl<'a> EvmContext<'a> {
-    /// Returns the active interpreter frame.
     #[inline]
-    pub fn interpreter(&self) -> &Interpreter<'a, BaseEvmTypes> {
+    fn interpreter(&self) -> &Interpreter<'a, BaseEvmTypes> {
         unsafe { self.interpreter.as_ref() }
     }
 
-    /// Returns the active interpreter frame.
     #[inline]
-    pub fn interpreter_mut(&mut self) -> &mut Interpreter<'a, BaseEvmTypes> {
+    fn interpreter_mut(&mut self) -> &mut Interpreter<'a, BaseEvmTypes> {
         unsafe { self.interpreter.as_mut() }
     }
 
@@ -216,6 +213,18 @@ impl<'a> EvmContext<'a> {
         self.host
     }
 
+    /// Returns the input shim visible to compiled code.
+    #[inline]
+    pub fn input(&self) -> &Inputs {
+        self.input
+    }
+
+    /// Returns the input shim visible to compiled code.
+    #[inline]
+    pub fn input_mut(&mut self) -> &mut Inputs {
+        self.input
+    }
+
     /// Returns the current block environment.
     #[inline]
     pub fn block_env(&mut self) -> &BlockEnv<BaseEvmTypes> {
@@ -232,6 +241,12 @@ impl<'a> EvmContext<'a> {
     #[inline]
     pub fn version(&self) -> &evm2::Version {
         self.interpreter().version()
+    }
+
+    /// Returns active runtime gas parameters.
+    #[inline]
+    pub fn gas_params(&self) -> &GasParams {
+        &self.version().gas_params
     }
 
     /// Returns the active base specification ID.
@@ -252,10 +267,42 @@ impl<'a> EvmContext<'a> {
         self.interpreter().is_static()
     }
 
+    /// Sets the static-call flag for JIT test setup.
+    #[inline]
+    #[doc(hidden)]
+    pub fn set_static_for_jit(&mut self, is_static: bool) {
+        self.interpreter_mut().set_static_for_jit(is_static);
+    }
+
     /// Returns active original bytecode.
     #[inline]
-    pub fn bytecode(&self) -> &[u8] {
-        self.interpreter().bytecode().as_slice()
+    pub fn bytecode(&self) -> Bytes {
+        self.interpreter().original_bytecode()
+    }
+
+    /// Returns return data from the last call-like operation.
+    #[inline]
+    pub fn return_data(&self) -> &[u8] {
+        self.interpreter().return_data().as_ref()
+    }
+
+    /// Sets return data from the last call-like operation.
+    #[inline]
+    pub fn set_return_data(&mut self, data: Bytes) {
+        self.return_data_len = data.len();
+        self.interpreter_mut().set_return_data(data);
+    }
+
+    /// Returns output produced by RETURN or REVERT.
+    #[inline]
+    pub fn output(&self) -> &Bytes {
+        &self.output
+    }
+
+    /// Sets output produced by RETURN or REVERT.
+    #[inline]
+    pub fn set_output(&mut self, output: Bytes) {
+        self.output = output;
     }
 
     /// Refreshes the cached memory base pointer and length.

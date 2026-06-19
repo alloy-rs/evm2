@@ -89,7 +89,7 @@
      let rev![base, exponent_ptr] = sp;
      let exponent = exponent_ptr.to_u256();
 -    gas!(ecx, ecx.gas_params.exp_cost(exponent));
-+    ecx.gas.spend(ecx.gas_params.exp_cost(exponent))?;
++    ecx.gas.spend(ecx.gas_params().exp_cost(exponent))?;
      *exponent_ptr = base.to_u256().pow(exponent).into();
      Ok(())
  }
@@ -98,7 +98,7 @@
      exponent: &EvmWord,
  ) -> BuiltinResult {
 -    gas!(ecx, ecx.gas_params.exp_cost(exponent.to_u256()));
-+    ecx.gas.spend(ecx.gas_params.exp_cost(exponent.to_u256()))?;
++    ecx.gas.spend(ecx.gas_params().exp_cost(exponent.to_u256()))?;
      Ok(())
  }
 
@@ -120,7 +120,7 @@
      } else {
 -        gas!(ecx, ecx.gas_params.keccak256_cost(len));
 -        let offset = try_into_usize!(offset);
-+        ecx.gas.spend(ecx.gas_params.keccak256_word_cost(len))?;
++        ecx.gas.spend(ecx.gas_params().keccak256_word_cost(len))?;
 +        let offset = word_to_usize(offset.to_u256())?;
          ensure_memory(ecx, offset, len)?;
 -        let data = ecx.memory.slice(offset..offset + len);
@@ -165,7 +165,7 @@
      if len != 0 {
 -        gas!(ecx, ecx.gas_params.copy_cost(len));
 -        let memory_offset = try_into_usize!(memory_offset);
-+        ecx.gas.spend(ecx.gas_params.copy_cost(len))?;
++        ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
 +        let memory_offset = word_to_usize(memory_offset.to_u256())?;
          ensure_memory(ecx, memory_offset, len)?;
 -        let data_offset = as_usize_saturated!(data_offset.to_u256());
@@ -185,12 +185,14 @@
      }
      Ok(())
  }
-@@ -295,12 +280,12 @@
+@@ -294,13 +279,13 @@
+     ecx: &mut EvmContext<'_>,
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
-     let bytecode = unsafe { &*ecx.bytecode };
+-    let bytecode = unsafe { &*ecx.bytecode };
 -    copy_operation(ecx, sp, bytecode)
-+    unsafe { copy_operation(ecx, sp, bytecode) }
++    let bytecode = ecx.bytecode();
++    unsafe { copy_operation(ecx, sp, bytecode.as_ref()) }
  }
 
  #[unsafe(no_mangle)]
@@ -216,7 +218,7 @@
 -    let len = try_into_usize!(len);
 -    gas!(ecx, ecx.gas_params.extcodecopy(len));
 +    let len = word_to_usize(len.to_u256())?;
-+    ecx.gas.spend(ecx.gas_params.extcodecopy_cost(len))?;
++    ecx.gas.spend(ecx.gas_params().extcodecopy_cost(len))?;
 
      let mut memory_offset_usize = 0;
      if len != 0 {
@@ -248,21 +250,22 @@
 -    // Bounds check BEFORE charging gas, matching revm.
 +    // Bounds check before charging gas.
      let data_end = data_offset.saturating_add(len);
-     if data_end > ecx.return_data.len() {
+-    if data_end > ecx.return_data.len() {
 -        return Err(InstructionResult::OutOfOffset.into());
++    if data_end > ecx.return_data().len() {
 +        return Err(InstrStop::OutOfOffset.into());
      }
 
 -    gas!(ecx, ecx.gas_params.copy_cost(len));
-+    ecx.gas.spend(ecx.gas_params.copy_cost(len))?;
++    ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
      if len != 0 {
 -        let memory_offset = try_into_usize!(memory_offset);
 +        let memory_offset = word_to_usize(memory_offset.to_u256())?;
          ensure_memory(ecx, memory_offset, len)?;
 -        ecx.memory.set(memory_offset, &ecx.return_data[data_offset..data_end]);
-+        let data = unsafe {
-+            core::slice::from_raw_parts(ecx.return_data.as_ptr().add(data_offset), len)
-+        };
++        let return_data = ecx.return_data();
++        let data =
++            unsafe { core::slice::from_raw_parts(return_data.as_ptr().add(data_offset), len) };
 +        ecx.memory_mut().set(memory_offset, data);
      }
      Ok(())
@@ -300,7 +303,7 @@
      if diff <= BLOCK_HASH_HISTORY {
 -        let hash = ecx.host.block_hash(as_u64_saturated!(requested_number)).ok_or_fatal()?;
 +        let requested_number = U256::from(word_to_u64_saturated(requested_number));
-+        let hash = ecx.host.block_hash(&requested_number).ok().flatten().ok_or_fatal()?;
++        let hash = ecx.host().block_hash(&requested_number).ok().flatten().ok_or_fatal()?;
          *number_ptr = EvmWord::from_be_bytes(hash);
      } else {
          // Too old, return 0
@@ -411,11 +414,11 @@
 -    if ecx.spec_id.is_enabled_in(SpecId::BERLIN) {
 -        let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
 +    if ecx.spec_id().enables(SpecId::BERLIN) {
-+        let additional_cold_cost = u64::from(ecx.gas_params.get(GasId::ColdStorageAdditionalCost));
++        let additional_cold_cost = u64::from(ecx.gas_params().get(GasId::ColdStorageAdditionalCost));
          let skip_cold = ecx.gas.remaining() < additional_cold_cost;
 -        let storage = ecx.host.sload_skip_cold_load(address, key, skip_cold)?;
 +        let storage =
-+            ecx.host.sload(&address, &key, skip_cold).map_err(|stop| host_error_stop(stop, skip_cold))?;
++            ecx.host().sload(&address, &key, skip_cold).map_err(|stop| host_error_stop(stop, skip_cold))?;
          if storage.is_cold {
 -            gas!(ecx, additional_cold_cost);
 +            ecx.gas.spend(additional_cold_cost)?;
@@ -426,7 +429,7 @@
 -        let storage = ecx.host.sload(address, key).ok_or_fatal()?;
 -        *index = storage.data.into();
 +        let storage =
-+            ecx.host.sload(&address, &key, false).map_err(|stop| host_error_stop(stop, false))?;
++            ecx.host().sload(&address, &key, false).map_err(|stop| host_error_stop(stop, false))?;
 +        *index = storage.value.into();
      }
 
@@ -440,7 +443,7 @@
      Ok(())
  }
 
-@@ -521,46 +515,50 @@
+@@ -521,46 +515,53 @@
      sp: &mut [EvmWord; 2],
  ) -> BuiltinResult {
      let rev![index, value] = sp;
@@ -454,36 +457,37 @@
      // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
 -    if is_istanbul && ecx.gas.remaining() <= ecx.gas_params.call_stipend() {
 -        return Err(InstructionResult::ReentrancySentryOOG.into());
-+    if is_istanbul && ecx.gas.remaining() <= u64::from(ecx.gas_params.get(GasId::CallStipend)) {
++    if is_istanbul && ecx.gas.remaining() <= u64::from(ecx.gas_params().get(GasId::CallStipend)) {
 +        return Err(InstrStop::ReentrancySentryOOG.into());
      }
 
 -    gas!(ecx, ecx.gas_params.sstore_static_gas());
-+    ecx.gas.spend(u64::from(ecx.gas_params.get(GasId::SstoreStatic)))?;
++    ecx.gas.spend(u64::from(ecx.gas_params().get(GasId::SstoreStatic)))?;
 
 -    let state_load = if ecx.spec_id.is_enabled_in(SpecId::BERLIN) {
 -        let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
 +    let state_load = if ecx.spec_id().enables(SpecId::BERLIN) {
-+        let additional_cold_cost = u64::from(ecx.gas_params.get(GasId::ColdStorageAdditionalCost));
++        let additional_cold_cost = u64::from(ecx.gas_params().get(GasId::ColdStorageAdditionalCost));
          let skip_cold = ecx.gas.remaining() < additional_cold_cost;
 -        ecx.host.sstore_skip_cold_load(target, index.to_u256(), value.to_u256(), skip_cold)?
 +        let index = index.to_u256();
 +        let value = value.to_u256();
-+        ecx.host
++        ecx.host()
 +            .sstore(&target, &index, &value, skip_cold)
 +            .map_err(|stop| host_error_stop(stop, skip_cold))?
      } else {
 -        ecx.host.sstore(target, index.to_u256(), value.to_u256()).ok_or_fatal()?
 +        let index = index.to_u256();
 +        let value = value.to_u256();
-+        ecx.host
++        ecx.host()
 +            .sstore(&target, &index, &value, false)
 +            .map_err(|stop| host_error_stop(stop, false))?
      };
 
-     let gp = &ecx.gas_params;
+-    let gp = &ecx.gas_params;
 -    gas!(ecx, gp.sstore_dynamic_gas(is_istanbul, &state_load.data, state_load.is_cold));
-+    ecx.gas.spend(gp.sstore_dynamic_gas(is_istanbul, &state_load))?;
++    let dynamic_gas = ecx.gas_params().sstore_dynamic_gas(is_istanbul, &state_load);
++    ecx.gas.spend(dynamic_gas)?;
 
      // State gas for new slot creation (EIP-8037).
 -    if ecx.host.is_amsterdam_eip8037_enabled() {
@@ -494,41 +498,45 @@
 -            ecx.gas.refill_reservoir(refill);
 -        }
 +    if ecx.spec_id().enables(SpecId::AMSTERDAM) {
-+        ecx.gas.spend_state(gp.sstore_state_gas(&state_load))?;
++        let state_gas = ecx.gas_params().sstore_state_gas(&state_load);
++        ecx.gas.spend_state(state_gas)?;
      }
 
 -    ecx.gas.record_refund(gp.sstore_refund(is_istanbul, &state_load.data));
-+    ecx.gas.record_refund(gp.sstore_refund(is_istanbul, &state_load));
++    let refund = ecx.gas_params().sstore_refund(is_istanbul, &state_load);
++    ecx.gas.record_refund(refund);
      Ok(())
  }
 
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn __revmc_builtin_tload(ecx: &mut EvmContext<'_>, key: &mut EvmWord) {
 -    *key = ecx.host.tload(ecx.input.target_address, key.to_u256()).into();
++    let target = ecx.input.target_address;
 +    let key_word = key.to_u256();
-+    *key = ecx.host.tload(&ecx.input.target_address, &key_word).into();
++    *key = ecx.host().tload(&target, &key_word).into();
  }
 
  #[unsafe(no_mangle)]
-@@ -569,8 +567,8 @@
+@@ -569,8 +570,9 @@
      sp: &mut [EvmWord; 2],
  ) -> BuiltinResult {
      let rev![key, value] = sp;
 -    ensure_non_staticcall!(ecx);
 -    ecx.host.tstore(ecx.input.target_address, key.to_u256(), value.to_u256());
 +    require_non_staticcall(ecx)?;
-+    ecx.host.tstore(&ecx.input.target_address, &key.to_u256(), &value.to_u256());
++    let target = ecx.input.target_address;
++    ecx.host().tstore(&target, &key.to_u256(), &value.to_u256());
      Ok(())
  }
 
-@@ -580,13 +578,13 @@
+@@ -580,13 +582,13 @@
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
      let rev![dst, src, len] = sp;
 -    let len = try_into_usize!(len);
 -    gas!(ecx, ecx.gas_params.mcopy_cost(len));
 +    let len = word_to_usize(len.to_u256())?;
-+    ecx.gas.spend(ecx.gas_params.mcopy_cost(len))?;
++    ecx.gas.spend(ecx.gas_params().mcopy_cost(len))?;
      if len != 0 {
 -        let dst = try_into_usize!(dst);
 -        let src = try_into_usize!(src);
@@ -540,7 +548,7 @@
      }
      Ok(())
  }
-@@ -597,35 +595,30 @@
+@@ -597,35 +599,30 @@
      sp: *mut EvmWord,
      n: u8,
  ) -> BuiltinResult {
@@ -554,7 +562,7 @@
 +    let sp = unsafe { sp.add(n as usize) };
 +    let rev![offset, len] = unsafe { read_words_rev(sp) };
 +    let len = word_to_usize(len.to_u256())?;
-+    ecx.gas.spend(ecx.gas_params.log_cost(n, len))?;
++    ecx.gas.spend(ecx.gas_params().log_cost(n, len))?;
      let data = if len != 0 {
 -        let offset = try_into_usize!(offset);
 +        let offset = word_to_usize(offset.to_u256())?;
@@ -581,11 +589,11 @@
 -    } else {
 -        ecx.host.log(log);
 -    }
-+    ecx.host.log(log);
++    ecx.host().log(log);
      Ok(())
  }
 
-@@ -635,210 +628,319 @@
+@@ -635,190 +632,295 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
@@ -719,7 +727,7 @@
 +    let remaining_gas = ecx.gas.remaining();
 +    let skip_cold_load = remaining_gas < additional_cold_cost;
 +    let account = ecx
-+        .host
++        .host()
 +        .load_account(&to, true, skip_cold_load)
 +        .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
 +
@@ -738,7 +746,7 @@
 +        }
 +        let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
 +        let delegated_account = ecx
-+            .host
++            .host()
 +            .load_account(&delegated_address, true, skip_cold_load)
 +            .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
 +        if delegated_account.is_cold {
@@ -747,11 +755,12 @@
 +        code = delegated_account.code;
 +        code_address = delegated_address;
 +    }
++    let spec_id = ecx.spec_id();
 +    if create_empty_account
 +        && should_charge_new_account_gas(
-+            ecx.spec_id().enables(SpecId::SPURIOUS_DRAGON),
++            spec_id.enables(SpecId::SPURIOUS_DRAGON),
 +            transfers_value,
-+            ecx.host.target_is_empty_for_new_account_gas(&to, ecx.spec_id())?,
++            ecx.host().target_is_empty_for_new_account_gas(&to, spec_id)?,
 +        )
 +    {
 +        cost += u64::from(version.gas_params.get(GasId::NewAccountCost));
@@ -838,7 +847,7 @@
 +    let return_len = unsafe { pop_word(&mut cursor) };
 +
 +    let has_transfer = !value.is_zero();
-+    if ecx.is_static && kind == MessageKind::Call && has_transfer {
++    if ecx.is_static() && kind == MessageKind::Call && has_transfer {
 +        return Err(InstrStop::CallNotAllowedInsideStatic.into());
 +    }
 
@@ -885,9 +894,9 @@
 
 -    if transfers_value {
 -        gas!(ecx, ecx.gas_params.transfer_value_cost());
-+    let caller_is_static = ecx.is_static;
++    let caller_is_static = ecx.is_static();
 +    let tx_env = ecx.tx_env();
-+    let mut result = ecx.host.execute_message(tx_env, loaded_code, &mut message, caller_is_static);
++    let mut result = ecx.host().execute_message(tx_env, loaded_code, &mut message, caller_is_static);
 +    ecx.gas.erase_cost(result.gas_returned_to_parent());
 +    ecx.gas.record_refund(result.refund_propagated_to_parent());
 +
@@ -899,7 +908,7 @@
 +    unsafe {
 +        sp.write(success);
 +    }
-+    set_return_data(ecx, core::mem::take(&mut result.output));
++    ecx.set_return_data(core::mem::take(&mut result.output));
 +    Ok(())
 +}
 
@@ -925,7 +934,7 @@
 +    sp: *mut EvmWord,
 +    create_kind: CreateKind,
 +) -> BuiltinResult {
-+    if ecx.is_static {
++    if ecx.is_static() {
 +        return Err(InstrStop::StateChangeDuringStaticCall.into());
 +    }
 
@@ -987,7 +996,7 @@
 +    };
 +    let bytecode = Bytecode::new_legacy(message.input.clone());
 +    let tx_env = ecx.tx_env();
-+    let result = ecx.host.execute_message(tx_env, bytecode, &mut message, false);
++    let result = ecx.host().execute_message(tx_env, bytecode, &mut message, false);
 +    ecx.gas.erase_cost(result.gas_returned_to_parent());
 +    ecx.gas.record_refund(result.refund_propagated_to_parent());
 +
@@ -1030,17 +1039,11 @@
 -        }),
 -    )));
 -
-+    set_return_data(ecx, return_data);
++    ecx.set_return_data(return_data);
      Ok(())
  }
 
-+fn set_return_data(ecx: &mut EvmContext<'_>, data: Bytes) {
-+    let interpreter = ecx.interpreter_mut();
-+    interpreter.set_return_data(data);
-+    ecx.return_data = unsafe { &*(interpreter.return_data().as_ref() as *const [u8]) };
-+}
-+
- #[unsafe(no_mangle)]
+@@ -826,19 +928,18 @@
  pub unsafe extern "C" fn __revmc_builtin_do_return(
      ecx: &mut EvmContext<'_>,
      sp: &mut [EvmWord; 2],
@@ -1061,11 +1064,11 @@
      };
 -    *ecx.next_action =
 -        Some(InterpreterAction::Return(InterpreterResult { output, gas: ecx.gas, result }));
-+    ecx.output = output;
++    ecx.set_output(output);
      Err(result.into())
  }
 
-@@ -847,18 +949,17 @@
+@@ -847,18 +948,17 @@
      ecx: &mut EvmContext<'_>,
      offset: u64,
      len: u64,
@@ -1083,25 +1086,27 @@
      };
 -    *ecx.next_action =
 -        Some(InterpreterAction::Return(InterpreterResult { output, gas: ecx.gas, result }));
-+    ecx.output = output;
++    ecx.set_output(output);
      Err(result.into())
  }
 
-@@ -867,32 +968,495 @@
+@@ -867,32 +967,496 @@
      ecx: &mut EvmContext<'_>,
      target: &mut EvmWord,
  ) -> BuiltinResult {
 -    ensure_non_staticcall!(ecx);
 +    require_non_staticcall(ecx)?;
 
-     let cold_load_gas = ecx.gas_params.selfdestruct_cold_cost();
+-    let cold_load_gas = ecx.gas_params.selfdestruct_cold_cost();
++    let cold_load_gas = ecx.gas_params().selfdestruct_cold_cost();
      let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
 -    let res =
 -        ecx.host.selfdestruct(ecx.input.target_address, target.to_address(), skip_cold_load)?;
++    let address = ecx.input.target_address;
 +    let target = target.to_address();
 +    let res = ecx
-+        .host
-+        .selfdestruct(&ecx.input.target_address, &target, skip_cold_load)
++        .host()
++        .selfdestruct(&address, &target, skip_cold_load)
 +        .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
 
      // EIP-161: State trie clearing (invariant-preserving alternative)
@@ -1115,18 +1120,18 @@
      };
 
 -    gas!(ecx, ecx.gas_params.selfdestruct_cost(should_charge_topup, res.is_cold));
-+    ecx.gas.spend(ecx.gas_params.selfdestruct_cost(should_charge_topup, res.is_cold))?;
++    ecx.gas.spend(ecx.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
 
      // State gas for new account creation (EIP-8037).
 -    if ecx.host.is_amsterdam_eip8037_enabled() && should_charge_topup {
 -        state_gas!(ecx, ecx.gas_params.new_account_state_gas());
 +    if ecx.spec_id().enables(SpecId::AMSTERDAM) && should_charge_topup {
-+        ecx.gas.spend_state(u64::from(ecx.gas_params.get(GasId::NewAccountState)))?;
++        ecx.gas.spend_state(u64::from(ecx.gas_params().get(GasId::NewAccountState)))?;
      }
 
      if !res.previously_destroyed {
 -        ecx.gas.record_refund(ecx.gas_params.selfdestruct_refund());
-+        ecx.gas.record_refund(i64::from(ecx.gas_params.get(GasId::SelfdestructRefund)));
++        ecx.gas.record_refund(i64::from(ecx.gas_params().get(GasId::SelfdestructRefund)));
      }
 
 -    Err(InstructionResult::SelfDestruct.into())
@@ -1367,10 +1372,10 @@
 +            unsafe { __revmc_builtin_call(base_context(&mut frame.ecx), sp, CallKind::Call) };
 +
 +            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
-+            assert_eq!(frame.ecx.return_data, child_output.as_ref());
++            assert_eq!(frame.ecx.return_data(), child_output.as_ref());
 +            assert_eq!(base_context(&mut frame.ecx).memory().slice(8, 2), &[0xaa, 0xbb]);
-+            frame.ecx.output = Bytes::copy_from_slice(b"frame-output");
-+            assert_eq!(frame.ecx.return_data, child_output.as_ref());
++            frame.ecx.set_output(Bytes::copy_from_slice(b"frame-output"));
++            assert_eq!(frame.ecx.return_data(), child_output.as_ref());
 +        }
 +
 +        assert_eq!(host.calls.len(), 1);
@@ -1539,7 +1544,7 @@
 +            unsafe { __revmc_builtin_create(base_context(&mut frame.ecx), sp, CreateKind::Create) };
 +
 +            assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));
-+            assert!(frame.ecx.return_data.is_empty());
++            assert!(frame.ecx.return_data().is_empty());
 +        }
 +
 +        assert_eq!(host.calls.len(), 1);
@@ -1585,7 +1590,7 @@
 +            };
 +
 +            assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));
-+            assert!(frame.ecx.return_data.is_empty());
++            assert!(frame.ecx.return_data().is_empty());
 +        }
 +
 +        assert_eq!(host.calls.len(), 1);

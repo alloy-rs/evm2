@@ -43,7 +43,7 @@ impl<T> OkOrFatal<T> for Option<T> {
 
 #[inline]
 pub(crate) fn require_non_staticcall(ecx: &EvmContext<'_>) -> BuiltinResult {
-    if ecx.is_static {
+    if ecx.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall.into());
     }
     Ok(())
@@ -62,10 +62,10 @@ pub(crate) fn load_account(
     address: Address,
     load_code: bool,
 ) -> Result<AccountLoad, BuiltinError> {
-    let cold_load_gas = ecx.gas_params.cold_account_additional_cost();
+    let cold_load_gas = ecx.gas_params().cold_account_additional_cost();
     let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
     let account = ecx
-        .host
+        .host()
         .load_account(&address, load_code, skip_cold_load)
         .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
     if account.is_cold {
@@ -110,7 +110,7 @@ pub(crate) unsafe fn copy_operation(
 ) -> BuiltinResult {
     let len = word_to_usize(len.to_u256())?;
     if len != 0 {
-        ecx.gas.spend(ecx.gas_params.copy_cost(len))?;
+        ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
         let memory_offset = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
         let data_offset = word_to_usize_saturated(data_offset.to_u256());

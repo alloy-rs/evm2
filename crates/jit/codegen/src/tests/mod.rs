@@ -1674,19 +1674,6 @@ tests! {
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
-        // Red-green test: CODECOPY must read bytecode from EvmContext at runtime.
-        // We swap bytecode ptr to fake data via modify_ecx. With the fix, CODECOPY reads the
-        // fake data; without it, it would still read the original bytecode.
-        codecopy_runtime_ptr(@raw {
-            bytecode: &[op::PUSH1, 5, op::PUSH0, op::PUSH0, op::CODECOPY],
-            modify_ecx: Some(|ecx| {
-                static FAKE_CODE: [u8; 5] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
-                ecx.bytecode = &FAKE_CODE as *const [u8];
-            }),
-            expected_return: InstrStop::Stop,
-            expected_memory: &hex!("AABBCCDDEE000000000000000000000000000000000000000000000000000000"),
-            expected_gas: 3 + 2 + 2 + (verylowcopy_cost(32).unwrap() + memory_gas_cost(1)),
-        }),
     }
 
     dedup {
