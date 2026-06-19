@@ -83,7 +83,7 @@ fn run(config: RunConfig<'_>) -> TestInterpreter {
     let RunConfig { code, host, spec_id, tx_env, mut message, gas_limit, return_data } = config;
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
     message.gas_limit = gas_limit;
-    let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
+    let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
     inner.set_return_data(return_data);
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);

@@ -397,7 +397,6 @@ mod tests {
             _tx_env: &TxEnv<TestTypes>,
             _bytecode: Bytecode,
             _message: &mut Message<TestTypes>,
-            _caller_is_static: bool,
         ) -> MessageResult<TestTypes> {
             unimplemented!()
         }

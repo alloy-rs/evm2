@@ -127,7 +127,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         };
         // System calls are not inspected.
         let inspector = self.inspector.take();
-        let result = Host::execute_message(self, &tx_env, bytecode, &mut message, false);
+        let result = Host::execute_message(self, &tx_env, bytecode, &mut message);
         self.inspector = inspector;
         let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());
         let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
