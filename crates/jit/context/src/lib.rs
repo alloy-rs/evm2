@@ -133,12 +133,12 @@ pub struct EvmContext<'a> {
     pub gas: Gas,
     /// The host.
     pub host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
-    /// Cached block environment.
-    pub block_env: BlockEnv<BaseEvmTypes>,
+    /// Block environment.
+    pub block_env: &'a BlockEnv<BaseEvmTypes>,
     /// Transaction-global environment.
     pub tx_env: &'a TxEnv<BaseEvmTypes>,
     /// Active runtime version data.
-    pub version: evm2::Version,
+    pub version: &'a evm2::Version,
     /// The return data.
     pub return_data: &'a [u8],
     /// Whether the context is static.

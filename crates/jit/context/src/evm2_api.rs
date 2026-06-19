@@ -35,12 +35,12 @@ pub struct EvmContext<'a> {
     pub gas: Evm2Gas,
     /// Host state consumed by host-touching builtins.
     pub host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
-    /// Cached block environment.
-    pub block_env: BlockEnv<BaseEvmTypes>,
+    /// Block environment.
+    pub block_env: &'a BlockEnv<BaseEvmTypes>,
     /// Transaction-global environment.
     pub tx_env: &'a TxEnv<BaseEvmTypes>,
     /// Active runtime version data.
-    pub version: Version,
+    pub version: &'a Version,
     /// The return data.
     pub return_data: &'a [u8],
     /// Whether the context is static.
@@ -177,7 +177,7 @@ impl<'a> EvmContext<'a> {
     ) -> (Self, &'a mut EvmStack, &'a mut usize) {
         let interpreter_ptr = ptr::from_mut(interpreter).cast::<Interpreter<'a, BaseEvmTypes>>();
         let interpreter_ptr = unsafe { NonNull::new_unchecked(interpreter_ptr) };
-        let version = *interpreter.version();
+        let version = interpreter.version() as *const Version;
         let tx_env = interpreter.tx_env();
         let message = interpreter.message();
         let gas = interpreter.gas();
@@ -194,7 +194,9 @@ impl<'a> EvmContext<'a> {
             call_value: message.value,
         });
         let input = input_scratch.as_mut() as *mut Inputs;
-        let block_env = *host.block_env();
+        let block_env = host.block_env() as *const BlockEnv<BaseEvmTypes>;
+        let block_env = unsafe { &*block_env };
+        let version = unsafe { &*version };
         let return_data = unsafe { &*(interpreter.return_data().as_ref() as *const [u8]) };
         let (stack_ptr, stack_len) = interpreter.stack_mut().into_raw_parts();
         let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
@@ -793,8 +795,9 @@ mod tests {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,
         );
+        let config = Box::leak(Box::new(config));
         let mut prepare_host = base_evm(SpecId::CANCUN);
-        interpreter.prepare_jit_run(&config, &mut prepare_host);
+        interpreter.prepare_jit_run(config, &mut prepare_host);
         let (ecx, stack, _stack_len) = EvmContext::from_interpreter_with_stack(interpreter, host);
         PreparedJitFrame { ecx, stack }
     }
