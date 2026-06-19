@@ -41,7 +41,7 @@ impl PreparedBench {
     }
 
     pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
-        group.bench_function(format!("{}/revm/transact", self.name), |b| {
+        group.bench_function(format!("{}/revm", self.name), |b| {
             b.iter_batched(
                 || Runner::new(self),
                 |mut runner| {
