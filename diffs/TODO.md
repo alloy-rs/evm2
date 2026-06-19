@@ -26,7 +26,7 @@ Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_di
 - [x] crates__revmc-builtins__src__ir.rs.diff
 - [ ] crates__revmc-builtins__src__lib.rs.diff
 - [x] crates__revmc-builtins__src__macros.rs.diff
-- [ ] crates__revmc-builtins__src__utils.rs.diff
+- [x] crates__revmc-builtins__src__utils.rs.diff
 - [x] crates__revmc-codegen__Cargo.toml.diff
 - [x] crates__revmc-codegen__README.md.diff
 - [x] crates__revmc-codegen__build.rs.diff
@@ -70,7 +70,7 @@ Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_di
 - [x] crates__revmc-runtime__Cargo.toml.diff
 - [x] crates__revmc-runtime__README.md.diff
 - [x] crates__revmc-runtime__src__lib.rs.diff
-- [ ] crates__revmc-runtime__src__revm_evm.rs.diff
+- [x] crates__revmc-runtime__src__revm_evm.rs.diff
 - [x] crates__revmc-runtime__src__runtime__api.rs.diff
 - [x] crates__revmc-runtime__src__runtime__backend.rs.diff
 - [x] crates__revmc-runtime__src__runtime__config.rs.diff
