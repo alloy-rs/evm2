@@ -4,14 +4,8 @@ use evm2::{
     bytecode::Bytecode as Evm2Bytecode,
     env::{BlockEnv as Evm2BlockEnv, TxEnv as Evm2TxEnv},
     ethereum::ethereum_tx_registry,
-    evm::{
-        AccountInfo, AccountLoad as Evm2AccountLoad, InMemoryDB, SLoad as Evm2SLoad,
-        SStore as Evm2SStore, SelfDestructResult as Evm2SelfDestructResult,
-    },
-    interpreter::{
-        Gas, Host as Evm2Host, InstrStop, Interpreter as Evm2Interpreter, Message as Evm2Message,
-        MessageResult as Evm2MessageResult,
-    },
+    evm::{AccountInfo, InMemoryDB},
+    interpreter::{Gas, InstrStop, Interpreter as Evm2Interpreter, Message as Evm2Message},
 };
 use evm2_jit_context::evm2_api;
 use similar_asserts::assert_eq;
@@ -104,7 +98,7 @@ pub struct TestCase<'a> {
     pub expected_memory: &'a [u8],
     pub expected_gas: u64,
     pub expected_output: Option<&'a [u8]>,
-    pub assert_host: Option<fn(&TestHost)>,
+    pub assert_host: Option<fn(&HostState)>,
     pub assert_ecx: Option<fn(&TestEvmContext<'_>)>,
 }
 
@@ -306,161 +300,41 @@ fn def_database() -> InMemoryDB {
     database
 }
 
-/// Test host for codegen and runtime tests.
-pub struct TestHost {
+/// Host state snapshot for codegen assertions.
+pub struct HostState {
     pub storage: HashMap<U256, U256>,
     pub transient_storage: HashMap<U256, U256>,
-    pub code_map: &'static HashMap<Address, Evm2Bytecode>,
-    pub selfdestructs: Vec<(Address, Address)>,
     pub logs: Vec<Log>,
-    evm2_spec_id: evm2::SpecId,
-    evm2_block_env: Evm2BlockEnv<BaseEvmTypes>,
 }
 
-impl Default for TestHost {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TestHost {
-    pub fn new() -> Self {
-        Self::with_spec(DEF_SPEC)
-    }
-
-    pub fn with_spec(spec_id: SpecId) -> Self {
-        Self {
-            storage: def_storage().clone(),
-            transient_storage: HashMap::default(),
-            code_map: def_codemap(),
-            selfdestructs: Vec::new(),
-            logs: Vec::new(),
-            evm2_spec_id: spec_id,
-            evm2_block_env: def_block_env(),
+impl HostState {
+    fn from_evm(evm: &mut Evm<BaseEvmTypes>) -> Self {
+        let keys = [
+            U256::from(0),
+            U256::from(1),
+            U256::from(69),
+            U256::from(70),
+            U256::from(200),
+            U256::from(0xff),
+        ];
+        let mut storage = HashMap::default();
+        for key in keys {
+            if let Some(value) = evm.state().get_storage(&DEF_ADDR, &key)
+                && !value.is_zero()
+            {
+                storage.insert(key, value);
+            }
         }
-    }
-}
 
-impl Evm2Host<BaseEvmTypes> for TestHost {
-    fn spec_id(&self) -> evm2::SpecId {
-        self.evm2_spec_id
-    }
-
-    fn block_env(&mut self) -> &Evm2BlockEnv<BaseEvmTypes> {
-        &self.evm2_block_env
-    }
-
-    fn load_account(
-        &mut self,
-        address: &Address,
-        load_code: bool,
-        _skip_cold_load: bool,
-    ) -> Result<Evm2AccountLoad, InstrStop> {
-        let code = self.code_map.get(address);
-        let bytecode =
-            if load_code { code.cloned().unwrap_or_default() } else { Evm2Bytecode::default() };
-        let balance = U256::from(address.0[19]);
-        let code_hash =
-            code.map(|code| keccak256(code.original_byte_slice())).unwrap_or(KECCAK_EMPTY);
-        let is_empty = code.is_none() && balance.is_zero();
-
-        Ok(Evm2AccountLoad {
-            balance,
-            code_hash,
-            code: bytecode,
-            exists: !is_empty,
-            is_empty,
-            is_cold: false,
-            _non_exhaustive: (),
-        })
-    }
-
-    fn target_is_empty_for_new_account_gas(
-        &mut self,
-        address: &Address,
-        spec_id: SpecId,
-    ) -> Result<bool, InstrStop> {
-        let exists = self.code_map.contains_key(address) || !U256::from(address.0[19]).is_zero();
-        if spec_id.enables(SpecId::SPURIOUS_DRAGON) {
-            return Ok(!exists);
+        let mut transient_storage = HashMap::default();
+        for key in keys {
+            let value = evm.state_mut().transient_storage(&DEF_ADDR, &key);
+            if !value.is_zero() {
+                transient_storage.insert(key, value);
+            }
         }
-        Ok(false)
-    }
 
-    fn block_hash(&mut self, number: &U256) -> Result<Option<B256>, InstrStop> {
-        Ok(Some((*number).into()))
-    }
-
-    fn sload(
-        &mut self,
-        _address: &Address,
-        key: &U256,
-        _skip_cold_load: bool,
-    ) -> Result<Evm2SLoad, InstrStop> {
-        Ok(Evm2SLoad {
-            value: self.storage.get(key).copied().unwrap_or_default(),
-            is_cold: false,
-            _non_exhaustive: (),
-        })
-    }
-
-    fn sstore(
-        &mut self,
-        _address: &Address,
-        key: &U256,
-        value: &U256,
-        _skip_cold_load: bool,
-    ) -> Result<Evm2SStore, InstrStop> {
-        let original = self.storage.get(key).copied().unwrap_or_default();
-        self.storage.insert(*key, *value);
-        Ok(Evm2SStore {
-            original_value: original,
-            present_value: original,
-            new_value: *value,
-            is_cold: false,
-            _non_exhaustive: (),
-        })
-    }
-
-    fn tload(&mut self, _address: &Address, key: &U256) -> U256 {
-        self.transient_storage.get(key).copied().unwrap_or_default()
-    }
-
-    fn tstore(&mut self, _address: &Address, key: &U256, value: &U256) {
-        self.transient_storage.insert(*key, *value);
-    }
-
-    fn log(&mut self, log: Log) {
-        self.logs.push(log);
-    }
-
-    fn execute_message(
-        &mut self,
-        _tx_env: &Evm2TxEnv<BaseEvmTypes>,
-        _bytecode: Evm2Bytecode,
-        message: &mut Evm2Message<BaseEvmTypes>,
-        _caller_is_static: bool,
-    ) -> Evm2MessageResult<BaseEvmTypes> {
-        Evm2MessageResult {
-            stop: InstrStop::Return,
-            gas: evm2::interpreter::GasTracker::new(message.gas_limit),
-            ..Default::default()
-        }
-    }
-
-    fn selfdestruct(
-        &mut self,
-        contract: &Address,
-        target: &Address,
-        _skip_cold_load: bool,
-    ) -> Result<Evm2SelfDestructResult, InstrStop> {
-        self.selfdestructs.push((*contract, *target));
-        Ok(Evm2SelfDestructResult {
-            had_value: false,
-            target_is_empty: false,
-            previously_destroyed: false,
-            ..Default::default()
-        })
+        Self { storage, transient_storage, logs: evm.logs().to_vec() }
     }
 }
 
@@ -498,13 +372,12 @@ pub fn with_evm_context<F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut u
 }
 
 fn with_evm_context_and_host_mut<
-    H: Evm2Host<BaseEvmTypes>,
     F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R,
     R,
 >(
     bytecode: &[u8],
     spec_id: SpecId,
-    host: &mut H,
+    host: &mut Evm<BaseEvmTypes>,
     f: F,
 ) -> R {
     let evm2_spec_id = spec_id;
@@ -519,11 +392,9 @@ fn with_evm_context_and_host_mut<
         &message,
         false,
     );
-    let mut evm = prepare_host(spec_id);
-    interpreter.prepare_jit_run(&config, &mut evm);
+    interpreter.prepare_jit_run(&config, host);
 
-    let (mut ecx, stack, stack_len) =
-        TestEvmContext::from_interpreter_with_stack(&mut interpreter, host);
+    let (mut ecx, stack, stack_len) = TestEvmContext::from_interpreter_with_stack(&mut interpreter);
     f(&mut ecx, stack, stack_len)
 }
 
@@ -534,9 +405,10 @@ pub fn with_evm_context_and_host<
     bytecode: &[u8],
     spec_id: SpecId,
     f: F,
-) -> (R, TestHost) {
-    let mut host = TestHost::with_spec(spec_id);
+) -> (R, HostState) {
+    let mut host = prepare_host(spec_id);
     let result = with_evm_context_and_host_mut(bytecode, spec_id, &mut host, f);
+    let host = HostState::from_evm(&mut host);
     (result, host)
 }
 
@@ -562,20 +434,13 @@ pub fn run_test_case<B: Backend>(test_case: &TestCase<'_>, compiler: &mut EvmCom
 fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
     let TestCase { bytecode, spec_id, assert_host, .. } = *test_case;
 
-    if assert_host.is_some() {
-        let (_, host_after_jit) =
-            with_evm_context_and_host(bytecode, spec_id, |ecx, stack, stack_len| {
-                run_compiled_test_case_with_context(test_case, f, ecx, stack, stack_len);
-            });
-
-        if let Some(assert_host) = assert_host {
-            assert_host(&host_after_jit);
-        }
-    } else {
-        let mut host = prepare_host(spec_id);
-        with_evm_context_and_host_mut(bytecode, spec_id, &mut host, |ecx, stack, stack_len| {
+    let (_, host_after_jit) =
+        with_evm_context_and_host(bytecode, spec_id, |ecx, stack, stack_len| {
             run_compiled_test_case_with_context(test_case, f, ecx, stack, stack_len);
         });
+
+    if let Some(assert_host) = assert_host {
+        assert_host(&host_after_jit);
     }
 }
 

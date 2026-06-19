@@ -2,6 +2,7 @@ use alloy_primitives::{Address, U256};
 use core::{hint::cold_path, num::NonZero};
 use evm2::{
     evm::AccountLoad,
+    interpreter::Host,
     utils::{word_to_usize, word_to_usize_saturated},
 };
 use evm2_jit_context::{EvmContext, EvmWord, InstrStop};

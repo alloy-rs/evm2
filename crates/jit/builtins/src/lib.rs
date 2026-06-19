@@ -16,7 +16,7 @@ use core::{cmp::min, ops::Range};
 use evm2::{
     SpecId,
     bytecode::Bytecode,
-    interpreter::{Message, MessageKind, Word, i256},
+    interpreter::{Host, Message, MessageKind, Word, i256},
     utils::{word_to_usize, word_to_usize_saturated},
     version::GasId,
 };
@@ -1009,130 +1009,52 @@ mod tests {
         BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles,
         env::{BlockEnv, TxEnv},
         ethereum::ethereum_tx_registry,
-        evm::{AccountLoad, EmptyDB, SLoad, SStore, SelfDestructResult},
-        interpreter::{GasTracker, Host, MessageResult, op},
+        evm::{EmptyDB, inspector::Inspector},
+        interpreter::{GasTracker, MessageResult, op},
     };
     use evm2_jit_context::{EvmStack, evm2_api};
 
     #[derive(Debug)]
-    struct TestHost {
-        block: BlockEnv<BaseEvmTypes>,
-        code: Bytes,
+    struct MessageInspector {
         execute_result: MessageResult<BaseEvmTypes>,
         calls: Vec<Message<BaseEvmTypes>>,
+        creates: Vec<Message<BaseEvmTypes>>,
         call_static_flags: Vec<bool>,
     }
 
-    impl Default for TestHost {
+    impl Default for MessageInspector {
         fn default() -> Self {
             Self {
-                block: BlockEnv::default(),
-                code: Bytes::new(),
                 execute_result: MessageResult {
                     stop: InstrStop::Return,
                     ..MessageResult::default()
                 },
                 calls: Vec::new(),
+                creates: Vec::new(),
                 call_static_flags: Vec::new(),
             }
         }
     }
 
-    impl Host<BaseEvmTypes> for TestHost {
-        fn spec_id(&self) -> SpecId {
-            SpecId::CANCUN
-        }
-
-        fn block_env(&mut self) -> &BlockEnv<BaseEvmTypes> {
-            &self.block
-        }
-
-        fn load_account(
+    impl Inspector<BaseEvmTypes> for MessageInspector {
+        fn call(
             &mut self,
-            address: &Address,
-            load_code: bool,
-            _skip_cold_load: bool,
-        ) -> Result<AccountLoad, InstrStop> {
-            Ok(AccountLoad {
-                balance: address.into_word().into(),
-                code_hash: B256::ZERO,
-                code: if load_code {
-                    Bytecode::new_legacy(self.code.clone())
-                } else {
-                    Bytecode::default()
-                },
-                exists: true,
-                is_empty: false,
-                is_cold: false,
-                _non_exhaustive: (),
-            })
-        }
-
-        fn target_is_empty_for_new_account_gas(
-            &mut self,
-            _address: &Address,
-            _spec_id: SpecId,
-        ) -> Result<bool, InstrStop> {
-            Ok(false)
-        }
-
-        fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop> {
-            Ok(Some(B256::with_last_byte(number.wrapping_to::<u8>())))
-        }
-
-        fn sload(
-            &mut self,
-            _address: &Address,
-            _key: &Word,
-            _skip_cold_load: bool,
-        ) -> Result<SLoad, InstrStop> {
-            Ok(SLoad { value: Word::ZERO, is_cold: false, _non_exhaustive: () })
-        }
-
-        fn sstore(
-            &mut self,
-            _address: &Address,
-            _key: &Word,
-            value: &Word,
-            _skip_cold_load: bool,
-        ) -> Result<SStore, InstrStop> {
-            Ok(SStore {
-                original_value: Word::ZERO,
-                present_value: Word::ZERO,
-                new_value: *value,
-                is_cold: false,
-                _non_exhaustive: (),
-            })
-        }
-
-        fn tload(&mut self, _address: &Address, _key: &Word) -> Word {
-            Word::ZERO
-        }
-
-        fn tstore(&mut self, _address: &Address, _key: &Word, _value: &Word) {}
-
-        fn log(&mut self, _log: Log) {}
-
-        fn execute_message(
-            &mut self,
-            _tx_env: &TxEnv<BaseEvmTypes>,
-            _bytecode: Bytecode,
+            interp: &mut evm2::interpreter::Interpreter<'_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
-            caller_is_static: bool,
-        ) -> MessageResult<BaseEvmTypes> {
+        ) -> Option<MessageResult<BaseEvmTypes>> {
             self.call_static_flags
-                .push(caller_is_static || message.kind == MessageKind::StaticCall);
+                .push(interp.is_static() || message.kind == MessageKind::StaticCall);
             self.calls.push(message.clone());
-            self.execute_result.clone()
+            Some(self.execute_result.clone())
         }
 
-        fn selfdestruct(
+        fn create(
             &mut self,
-            _contract: &Address,
-            _target: &Address,
-            _skip_cold_load: bool,
-        ) -> Result<SelfDestructResult, InstrStop> {
-            Ok(SelfDestructResult::default())
+            _interp: &mut evm2::interpreter::Interpreter<'_, BaseEvmTypes>,
+            message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            self.creates.push(message.clone());
+            Some(self.execute_result.clone())
         }
     }
 
@@ -1177,16 +1099,15 @@ mod tests {
 
     fn prepare_frame<'a>(
         interpreter: &'a mut evm2::interpreter::Interpreter<'_, BaseEvmTypes>,
-        host: &'a mut TestHost,
+        host: &'a mut Evm<BaseEvmTypes>,
     ) -> PreparedJitFrame<'a> {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,
         );
         let config = Box::leak(Box::new(config));
-        let mut prepare_host = base_evm(SpecId::CANCUN);
-        interpreter.prepare_jit_run(config, &mut prepare_host);
+        interpreter.prepare_jit_run(config, host);
         let (ecx, stack, _stack_len) =
-            evm2_api::EvmContext::from_interpreter_with_stack(interpreter, host);
+            evm2_api::EvmContext::from_interpreter_with_stack(interpreter);
         PreparedJitFrame { ecx, stack }
     }
 
@@ -1199,15 +1120,16 @@ mod tests {
         let target = Address::from([0x22; 20]);
         let caller = Address::from([0x11; 20]);
         let child_output = Bytes::from_static(&[0xaa, 0xbb, 0xcc]);
-        let mut host = TestHost {
+        let mut host = base_evm(SpecId::CANCUN);
+        host.set_inspector(MessageInspector {
             execute_result: MessageResult {
                 stop: InstrStop::Return,
                 gas: GasTracker::new(37),
                 output: child_output.clone(),
                 ..MessageResult::default()
             },
-            ..TestHost::default()
-        };
+            ..MessageInspector::default()
+        });
         let tx_env = TxEnv::default();
         let message = Message { gas_limit: 1_000_000, destination: caller, ..Message::default() };
         let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
@@ -1239,12 +1161,13 @@ mod tests {
             assert_eq!(frame.ecx.return_data(), child_output.as_ref());
         }
 
-        assert_eq!(host.calls.len(), 1);
-        assert_eq!(host.calls[0].kind, MessageKind::Call);
-        assert_eq!(host.calls[0].destination, target);
-        assert_eq!(host.calls[0].caller, caller);
-        assert_eq!(host.calls[0].input.as_ref(), b"in");
-        assert!(!host.call_static_flags[0]);
+        let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
+        assert_eq!(inspector.calls.len(), 1);
+        assert_eq!(inspector.calls[0].kind, MessageKind::Call);
+        assert_eq!(inspector.calls[0].destination, target);
+        assert_eq!(inspector.calls[0].caller, caller);
+        assert_eq!(inspector.calls[0].input.as_ref(), b"in");
+        assert!(!inspector.call_static_flags[0]);
     }
 
     #[test]
@@ -1253,7 +1176,8 @@ mod tests {
         let destination = Address::from([0x33; 20]);
         let caller = Address::from([0x11; 20]);
         let stack_value = Word::from(0x12);
-        let mut host = TestHost::default();
+        let mut host = base_evm(SpecId::CANCUN);
+        host.set_inspector(MessageInspector::default());
         let tx_env = TxEnv::default();
         let message = Message {
             gas_limit: 1_000_000,
@@ -1279,13 +1203,14 @@ mod tests {
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
         }
 
-        assert_eq!(host.calls.len(), 1);
-        assert_eq!(host.calls[0].kind, MessageKind::CallCode);
-        assert_eq!(host.calls[0].destination, destination);
-        assert_eq!(host.calls[0].caller, destination);
-        assert_eq!(host.calls[0].value, stack_value);
-        assert_eq!(host.calls[0].code_address, target);
-        assert!(!host.call_static_flags[0]);
+        let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
+        assert_eq!(inspector.calls.len(), 1);
+        assert_eq!(inspector.calls[0].kind, MessageKind::CallCode);
+        assert_eq!(inspector.calls[0].destination, destination);
+        assert_eq!(inspector.calls[0].caller, destination);
+        assert_eq!(inspector.calls[0].value, stack_value);
+        assert_eq!(inspector.calls[0].code_address, target);
+        assert!(!inspector.call_static_flags[0]);
     }
 
     #[test]
@@ -1294,7 +1219,8 @@ mod tests {
         let destination = Address::from([0x33; 20]);
         let caller = Address::from([0x11; 20]);
         let current_value = Word::from(0x99);
-        let mut host = TestHost::default();
+        let mut host = base_evm(SpecId::CANCUN);
+        host.set_inspector(MessageInspector::default());
         let tx_env = TxEnv::default();
         let message = Message {
             gas_limit: 1_000_000,
@@ -1322,13 +1248,14 @@ mod tests {
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
         }
 
-        assert_eq!(host.calls.len(), 1);
-        assert_eq!(host.calls[0].kind, MessageKind::DelegateCall);
-        assert_eq!(host.calls[0].destination, destination);
-        assert_eq!(host.calls[0].caller, caller);
-        assert_eq!(host.calls[0].value, current_value);
-        assert_eq!(host.calls[0].code_address, target);
-        assert!(!host.call_static_flags[0]);
+        let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
+        assert_eq!(inspector.calls.len(), 1);
+        assert_eq!(inspector.calls[0].kind, MessageKind::DelegateCall);
+        assert_eq!(inspector.calls[0].destination, destination);
+        assert_eq!(inspector.calls[0].caller, caller);
+        assert_eq!(inspector.calls[0].value, current_value);
+        assert_eq!(inspector.calls[0].code_address, target);
+        assert!(!inspector.call_static_flags[0]);
     }
 
     #[test]
@@ -1336,7 +1263,8 @@ mod tests {
         let target = Address::from([0x22; 20]);
         let destination = Address::from([0x33; 20]);
         let caller = Address::from([0x11; 20]);
-        let mut host = TestHost::default();
+        let mut host = base_evm(SpecId::CANCUN);
+        host.set_inspector(MessageInspector::default());
         let tx_env = TxEnv::default();
         let message = Message {
             gas_limit: 1_000_000,
@@ -1362,28 +1290,30 @@ mod tests {
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
         }
 
-        assert_eq!(host.calls.len(), 1);
-        assert_eq!(host.calls[0].kind, MessageKind::StaticCall);
-        assert_eq!(host.calls[0].destination, target);
-        assert_eq!(host.calls[0].caller, destination);
-        assert_eq!(host.calls[0].value, Word::ZERO);
-        assert_eq!(host.calls[0].code_address, target);
-        assert!(host.call_static_flags[0]);
+        let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
+        assert_eq!(inspector.calls.len(), 1);
+        assert_eq!(inspector.calls[0].kind, MessageKind::StaticCall);
+        assert_eq!(inspector.calls[0].destination, target);
+        assert_eq!(inspector.calls[0].caller, destination);
+        assert_eq!(inspector.calls[0].value, Word::ZERO);
+        assert_eq!(inspector.calls[0].code_address, target);
+        assert!(inspector.call_static_flags[0]);
     }
 
     #[test]
     fn create_builtin_executes_message() {
         let created = Address::from([0x77; 20]);
         let initcode = [op::STOP];
-        let mut host = TestHost {
+        let mut host = base_evm(SpecId::CANCUN);
+        host.set_inspector(MessageInspector {
             execute_result: MessageResult {
                 stop: InstrStop::Return,
                 gas: GasTracker::new(11),
                 created_address: Some(created),
                 ..MessageResult::default()
             },
-            ..TestHost::default()
-        };
+            ..MessageInspector::default()
+        });
         let tx_env = TxEnv::default();
         let message = Message { gas_limit: 1_000_000, ..Message::default() };
         let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
@@ -1408,9 +1338,10 @@ mod tests {
             assert!(frame.ecx.return_data().is_empty());
         }
 
-        assert_eq!(host.calls.len(), 1);
-        assert_eq!(host.calls[0].kind, MessageKind::Create);
-        assert_eq!(host.calls[0].input.as_ref(), initcode);
+        let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
+        assert_eq!(inspector.creates.len(), 1);
+        assert_eq!(inspector.creates[0].kind, MessageKind::Create);
+        assert_eq!(inspector.creates[0].input.as_ref(), initcode);
     }
 
     #[test]
@@ -1418,15 +1349,16 @@ mod tests {
         let created = Address::from([0x77; 20]);
         let initcode = [op::STOP];
         let salt = EvmWord::from(Word::from(0xabcdu64));
-        let mut host = TestHost {
+        let mut host = base_evm(SpecId::CANCUN);
+        host.set_inspector(MessageInspector {
             execute_result: MessageResult {
                 stop: InstrStop::Return,
                 gas: GasTracker::new(11),
                 created_address: Some(created),
                 ..MessageResult::default()
             },
-            ..TestHost::default()
-        };
+            ..MessageInspector::default()
+        });
         let tx_env = TxEnv::default();
         let message = Message { gas_limit: 1_000_000, ..Message::default() };
         let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
@@ -1454,9 +1386,10 @@ mod tests {
             assert!(frame.ecx.return_data().is_empty());
         }
 
-        assert_eq!(host.calls.len(), 1);
-        assert_eq!(host.calls[0].kind, MessageKind::Create2);
-        assert_eq!(host.calls[0].input.as_ref(), initcode);
-        assert_eq!(host.calls[0].salt, B256::from(salt.to_be_bytes()));
+        let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
+        assert_eq!(inspector.creates.len(), 1);
+        assert_eq!(inspector.creates[0].kind, MessageKind::Create2);
+        assert_eq!(inspector.creates[0].input.as_ref(), initcode);
+        assert_eq!(inspector.creates[0].salt, B256::from(salt.to_be_bytes()));
     }
 }

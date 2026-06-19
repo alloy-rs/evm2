@@ -58,7 +58,7 @@ fn main() -> eyre::Result<()> {
         Precompiles::base(SpecId::CANCUN),
     );
     interpreter.prepare_jit_run(&config, &mut host);
-    let result = unsafe { f.call_with_interpreter(&mut interpreter, &mut host) };
+    let result = unsafe { f.call_with_interpreter(&mut interpreter) };
     eprintln!("stop: {result:?}");
     eprintln!("output: 0x{}", hex::encode(interpreter.output()));
 

@@ -7,10 +7,12 @@ use core::{
     fmt,
     ptr::{self, NonNull},
 };
+#[cfg(test)]
+use evm2::interpreter::Host;
 use evm2::{
     BaseEvmTypes,
     bytecode::Bytecode,
-    interpreter::{Gas as Evm2Gas, Host as Evm2Host, Interpreter, Memory, Word},
+    interpreter::{Gas as Evm2Gas, Interpreter, Memory, Word},
 };
 
 const _: () = {
@@ -27,8 +29,6 @@ pub struct EvmContext<'a> {
     pub input: *mut Inputs,
     /// The gas.
     pub gas: Evm2Gas,
-    /// Host state consumed by host-touching builtins.
-    host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
     /// The size of return data from the last call-like operation.
     pub return_data_len: usize,
     /// The size of the call input data, cached for CALLDATASIZE.
@@ -55,7 +55,6 @@ const _: () = {
     );
     assert!(offset_of!(EvmContext<'_>, input) == offset_of!(crate::EvmContext<'_>, input));
     assert!(offset_of!(EvmContext<'_>, gas) == offset_of!(crate::EvmContext<'_>, gas));
-    assert!(offset_of!(EvmContext<'_>, host) == offset_of!(crate::EvmContext<'_>, host));
     assert!(
         offset_of!(EvmContext<'_>, return_data_len)
             == offset_of!(crate::EvmContext<'_>, return_data_len)
@@ -84,10 +83,8 @@ impl crate::EvmCompilerFn {
     pub unsafe fn call_with_interpreter<'a, 'frame: 'a>(
         self,
         interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
-        host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
     ) -> InstrStop {
-        let (mut ecx, stack, stack_len) =
-            EvmContext::from_interpreter_with_stack(interpreter, host);
+        let (mut ecx, stack, stack_len) = EvmContext::from_interpreter_with_stack(interpreter);
         let result = unsafe { self.call_with_evm2_context(stack, stack_len, &mut ecx) };
         if result == InstrStop::OutOfGas {
             ecx.gas.spend_all();
@@ -134,16 +131,14 @@ impl<'a> EvmContext<'a> {
     #[inline]
     pub fn from_interpreter<'frame: 'a>(
         interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
-        host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
     ) -> Self {
-        Self::from_interpreter_with_stack(interpreter, host).0
+        Self::from_interpreter_with_stack(interpreter).0
     }
 
     /// Creates a new context from an interpreter and returns the borrowed stack.
     #[inline]
     pub fn from_interpreter_with_stack<'frame: 'a>(
         interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
-        host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
     ) -> (Self, &'a mut EvmStack, &'a mut usize) {
         let interpreter_ptr = ptr::from_mut(interpreter).cast::<Interpreter<'a, BaseEvmTypes>>();
         let interpreter_ptr = unsafe { NonNull::new_unchecked(interpreter_ptr) };
@@ -165,7 +160,6 @@ impl<'a> EvmContext<'a> {
             interpreter: interpreter_ptr,
             input,
             gas,
-            host,
             return_data_len,
             calldatasize,
             exit_result: InstrStop::Stop,
@@ -271,7 +265,7 @@ impl<'a> EvmContext<'a> {
     #[inline]
     #[cfg(test)]
     fn block_env(&mut self) -> &evm2::env::BlockEnv<BaseEvmTypes> {
-        self.host.block_env()
+        self.interpreter_mut().host().block_env()
     }
 }
 
@@ -360,7 +354,7 @@ mod tests {
         );
 
         interpreter.prepare_jit_run(&config, &mut host);
-        let mut ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);
+        let mut ecx = EvmContext::from_interpreter(&mut interpreter);
 
         assert_eq!(ecx.tx_env().origin, tx_origin);
         assert_eq!(ecx.tx_env().gas_price, Word::from(7));
@@ -396,7 +390,7 @@ mod tests {
             memory.set(0, b"abc");
         }
 
-        let mut ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);
+        let mut ecx = EvmContext::from_interpreter(&mut interpreter);
         assert_eq!(ecx.memory().as_slice(), b"abc");
         ecx.memory_mut().set(1, b"z");
         drop(ecx);
@@ -437,8 +431,7 @@ mod tests {
 
         interpreter.prepare_jit_run(&config, &mut host);
         let stop = unsafe {
-            EvmCompilerFn::new(evm2_return_output)
-                .call_with_interpreter(&mut interpreter, &mut host)
+            EvmCompilerFn::new(evm2_return_output).call_with_interpreter(&mut interpreter)
         };
 
         assert_eq!(stop, InstrStop::Return);

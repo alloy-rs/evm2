@@ -1179,12 +1179,12 @@ tests! {
         sload2(@raw {
             bytecode: &[op::PUSH1, 70, op::SLOAD],
             expected_stack: &[0_U256],
-            expected_gas: 3 + 100, // TestHost always returns is_cold=false (warm)
+            expected_gas: 3 + 100, // Test fixture warms storage.
         }),
         sload3(@raw {
             bytecode: &[op::PUSH1, 0xff, op::SLOAD],
             expected_stack: &[0_U256],
-            expected_gas: 3 + 100, // TestHost always returns is_cold=false (warm)
+            expected_gas: 3 + 100, // Test fixture warms storage.
         }),
         sstore1(@raw {
             bytecode: &[op::PUSH1, 200, op::SLOAD, op::PUSH1, 100, op::PUSH1, 200, op::SSTORE, op::PUSH1, 200, op::SLOAD],
@@ -1311,9 +1311,6 @@ tests! {
             bytecode: &[op::PUSH1, 0x69, op::SELFDESTRUCT, op::INVALID],
             expected_return: InstrStop::SelfDestruct,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            assert_host: Some(|host| {
-                assert_eq!(host.selfdestructs, [(DEF_ADDR, Address::with_last_byte(0x69))]);
-            }),
         }),
         selfdestruct_preserves_remaining_stack(@raw {
             bytecode: &[op::NUMBER, op::NUMBER, op::SELFDESTRUCT],

@@ -428,7 +428,22 @@
              expected_stack: &[0x1_0000_0000_0000_0000_U256],
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -1290,143 +1288,28 @@
+@@ -1181,12 +1179,12 @@
+         sload2(@raw {
+             bytecode: &[op::PUSH1, 70, op::SLOAD],
+             expected_stack: &[0_U256],
+-            expected_gas: 3 + 100, // TestHost always returns is_cold=false (warm)
++            expected_gas: 3 + 100, // Test fixture warms storage.
+         }),
+         sload3(@raw {
+             bytecode: &[op::PUSH1, 0xff, op::SLOAD],
+             expected_stack: &[0_U256],
+-            expected_gas: 3 + 100, // TestHost always returns is_cold=false (warm)
++            expected_gas: 3 + 100, // Test fixture warms storage.
+         }),
+         sstore1(@raw {
+             bytecode: &[op::PUSH1, 200, op::SLOAD, op::PUSH1, 100, op::PUSH1, 200, op::SSTORE, op::PUSH1, 200, op::SLOAD],
+@@ -1290,152 +1288,34 @@
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
@@ -576,9 +591,10 @@
 -            expected_return: InstructionResult::SelfDestruct,
 +            expected_return: InstrStop::SelfDestruct,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-             assert_host: Some(|host| {
-                 assert_eq!(host.selfdestructs, [(DEF_ADDR, Address::with_last_byte(0x69))]);
-@@ -1435,7 +1318,7 @@
+-            assert_host: Some(|host| {
+-                assert_eq!(host.selfdestructs, [(DEF_ADDR, Address::with_last_byte(0x69))]);
+-            }),
+         }),
          selfdestruct_preserves_remaining_stack(@raw {
              bytecode: &[op::NUMBER, op::NUMBER, op::SELFDESTRUCT],
              spec_id: SpecId::BERLIN,
@@ -587,7 +603,7 @@
              expected_stack: STACK_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -1444,14 +1327,14 @@
+@@ -1444,14 +1324,14 @@
              bytecode: &[op::PUSH1, 0x01, op::SELFDESTRUCT],
              is_static: true,
              gas_limit: 4000,
@@ -604,7 +620,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
      }
-@@ -1465,7 +1348,7 @@
+@@ -1465,7 +1345,7 @@
                  op::PUSH1, 2,   // ret offset
                  op::PUSH1, 3,   // args length
                  op::PUSH1, 4,   // args offset
@@ -613,7 +629,7 @@
                  op::PUSH1, 6,   // address
                  op::PUSH1, 7,   // gas
                  op::CALL,
-@@ -1473,8 +1356,8 @@
+@@ -1473,8 +1353,8 @@
              spec_id: SpecId::CANCUN,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -623,7 +639,7 @@
          }),
          call_no_value_cancun(@raw {
              bytecode: &[
-@@ -1490,8 +1373,8 @@
+@@ -1490,8 +1370,8 @@
              spec_id: SpecId::CANCUN,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -633,7 +649,7 @@
          }),
          staticcall_cancun(@raw {
              bytecode: &[
-@@ -1506,8 +1389,8 @@
+@@ -1506,8 +1386,8 @@
              spec_id: SpecId::CANCUN,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -643,7 +659,7 @@
          }),
          delegatecall_cancun(@raw {
              bytecode: &[
-@@ -1522,8 +1405,8 @@
+@@ -1522,8 +1402,8 @@
              spec_id: SpecId::CANCUN,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -653,7 +669,7 @@
          }),
 
          // Pre-Berlin specs: different static gas costs for CALL (700 vs 100).
-@@ -1541,8 +1424,8 @@
+@@ -1541,8 +1421,8 @@
              spec_id: SpecId::PETERSBURG,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -663,7 +679,7 @@
          }),
          call_no_value_petersburg(@raw {
              bytecode: &[
-@@ -1558,8 +1441,8 @@
+@@ -1558,8 +1438,8 @@
              spec_id: SpecId::PETERSBURG,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -673,7 +689,7 @@
          }),
          staticcall_petersburg(@raw {
              bytecode: &[
-@@ -1574,8 +1457,8 @@
+@@ -1574,8 +1454,8 @@
              spec_id: SpecId::PETERSBURG,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -683,7 +699,7 @@
          }),
          call_value_istanbul(@raw {
              bytecode: &[
-@@ -1591,8 +1474,8 @@
+@@ -1591,8 +1471,8 @@
              spec_id: SpecId::ISTANBUL,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -693,7 +709,7 @@
          }),
          call_no_value_istanbul(@raw {
              bytecode: &[
-@@ -1608,8 +1491,8 @@
+@@ -1608,8 +1488,8 @@
              spec_id: SpecId::ISTANBUL,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -703,7 +719,7 @@
          }),
          staticcall_istanbul(@raw {
              bytecode: &[
-@@ -1624,8 +1507,8 @@
+@@ -1624,8 +1504,8 @@
              spec_id: SpecId::ISTANBUL,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -713,7 +729,7 @@
          }),
          call_value_byzantium(@raw {
              bytecode: &[
-@@ -1641,8 +1524,8 @@
+@@ -1641,8 +1521,8 @@
              spec_id: SpecId::BYZANTIUM,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -723,7 +739,7 @@
          }),
          call_high_gas_value_istanbul(@raw {
              bytecode: &[
-@@ -1658,8 +1541,8 @@
+@@ -1658,8 +1538,8 @@
              spec_id: SpecId::ISTANBUL,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -733,7 +749,7 @@
          }),
          // Muir Glacier uses ISTANBUL gas table.
          call_value_muir_glacier(@raw {
-@@ -1676,8 +1559,8 @@
+@@ -1676,8 +1556,8 @@
              spec_id: SpecId::ISTANBUL,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -743,7 +759,7 @@
          }),
          call_high_gas_value(@raw {
              bytecode: &[
-@@ -1693,8 +1576,8 @@
+@@ -1693,8 +1573,8 @@
              spec_id: SpecId::CANCUN,
              expected_return: RETURN_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
@@ -753,7 +769,7 @@
          }),
          call_known_bytecode(@raw {
              bytecode: &[
-@@ -1703,27 +1586,15 @@
+@@ -1703,27 +1583,15 @@
                  op::PUSH1, 0,    // args length
                  op::PUSH1, 0,    // args offset
                  op::PUSH1, 0,    // value
@@ -783,7 +799,7 @@
          }),
      }
 
-@@ -1803,19 +1674,6 @@
+@@ -1803,19 +1671,6 @@
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
@@ -803,7 +819,7 @@
      }
 
      dedup {
-@@ -1935,7 +1793,7 @@
+@@ -1935,7 +1790,7 @@
              fn1: JUMPDEST  JUMP
              fn2: JUMPDEST  JUMP
              "),
@@ -812,7 +828,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
      }
-@@ -1981,16 +1839,10 @@
+@@ -1981,16 +1836,10 @@
                  RETURN
              "),
              inspect_stack: Some(false),
@@ -831,7 +847,7 @@
          }),
 
          // Same class of bug but triggered by a deduped reachable JUMPDEST block rather than
-@@ -2038,16 +1890,10 @@
+@@ -2038,16 +1887,10 @@
                  RETURN
              "),
              inspect_stack: Some(false),
@@ -850,7 +866,7 @@
          }),
 
          dedup_false_jumpi_non_jumpdest_fallthrough(@raw {
-@@ -2076,7 +1922,7 @@
+@@ -2076,7 +1919,7 @@
                  JUMPDEST
                  STOP
              "),
@@ -859,7 +875,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
 
-@@ -2103,7 +1949,7 @@
+@@ -2103,7 +1946,7 @@
                  JUMPDEST
                  STOP
              "),
@@ -868,7 +884,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
 
-@@ -2171,7 +2017,7 @@
+@@ -2171,7 +2014,7 @@
                  REVERT
              "),
              inspect_stack: Some(false),
@@ -877,7 +893,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
 
-@@ -2186,7 +2032,7 @@
+@@ -2186,7 +2029,7 @@
          calldatasize_tstore_shanghai(@raw {
              bytecode: &[op::CALLDATASIZE, op::TSTORE],
              spec_id: SpecId::SHANGHAI,
@@ -886,7 +902,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
 
-@@ -2194,7 +2040,7 @@
+@@ -2194,7 +2037,7 @@
          push0_tload_shanghai(@raw {
              bytecode: &[op::PUSH0, op::TLOAD],
              spec_id: SpecId::SHANGHAI,
@@ -895,7 +911,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
 
-@@ -2204,23 +2050,19 @@
+@@ -2204,23 +2047,19 @@
              bytecode: &hex!("7c01000000000000000000000000000000000000000000000000000000006000350463380e439681146037578063c040622614604757005b603d6084565b8060005260206000f35b604d6057565b8060005260206000f35b6000605f6084565b600060006101000a81548160ff0219169083021790555060ff60016000540416905090565b6000808160011560cd575b600a82121560a157600190910190608f565b81600a1460ac5760c9565b50600a5b60008160ff16111560c85760019182900391900360b0565b5b60d5565b6000925060ed565b8160001460e05760e8565b6001925060ed565b600092505b50509056"),
              spec_id: SpecId::ISTANBUL,
              modify_ecx: Some(|ecx| {

@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-builtins/src/utils.rs
 +++ evm2/crates/jit/builtins/src/utils.rs
-@@ -1,43 +1,34 @@
+@@ -1,43 +1,35 @@
 +use alloy_primitives::{Address, U256};
  use core::{hint::cold_path, num::NonZero};
 -use revm_context_interface::journaled_state::AccountInfoLoad;
@@ -9,6 +9,7 @@
 -use revmc_context::{EvmContext, EvmWord};
 +use evm2::{
 +    evm::AccountLoad,
++    interpreter::Host,
 +    utils::{word_to_usize, word_to_usize_saturated},
 +};
 +use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
@@ -55,7 +56,7 @@
  /// Extension trait to convert `Option<T>` to `BuiltinResult`.
  pub(crate) trait OkOrFatal<T> {
      fn ok_or_fatal(self) -> Result<T, BuiltinError>;
-@@ -46,30 +37,55 @@
+@@ -46,30 +38,55 @@
  impl<T> OkOrFatal<T> for Option<T> {
      #[inline]
      fn ok_or_fatal(self) -> Result<T, BuiltinError> {
@@ -119,7 +120,7 @@
  ///
  /// The returned lifetime is valid for the entire duration of the builtin.
  ///
-@@ -83,14 +99,7 @@
+@@ -83,14 +100,7 @@
 
  #[inline]
  pub(crate) fn ensure_memory(ecx: &mut EvmContext<'_>, offset: usize, len: usize) -> BuiltinResult {
@@ -135,7 +136,7 @@
      Ok(())
  }
 
-@@ -99,14 +108,13 @@
+@@ -99,14 +109,13 @@
      rev![memory_offset, data_offset, len]: &mut [EvmWord; 3],
      data: &[u8],
  ) -> BuiltinResult {

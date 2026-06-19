@@ -131,8 +131,6 @@ pub struct EvmContext<'a> {
     pub input: &'a mut Inputs,
     /// The gas.
     pub gas: Gas,
-    /// Host state consumed by host-touching builtins.
-    host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
     /// The size of return data from the last call-like operation.
     pub return_data_len: usize,
     /// The size of the call input data, cached for CALLDATASIZE.
@@ -209,8 +207,8 @@ impl<'a> EvmContext<'a> {
 
     /// Returns host state consumed by host-touching builtins.
     #[inline]
-    pub fn host(&mut self) -> &mut (dyn Evm2Host<BaseEvmTypes> + '_) {
-        self.host
+    pub fn host(&mut self) -> &mut (impl Evm2Host<BaseEvmTypes> + '_) {
+        self.interpreter_mut().host()
     }
 
     /// Returns the input shim visible to compiled code.

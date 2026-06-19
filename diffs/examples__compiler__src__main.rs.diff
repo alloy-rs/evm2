@@ -51,6 +51,8 @@
 -    let mut interpreter =
 -        Interpreter::new(memory, ext_bytecode, input, false, SpecId::CANCUN, 1_000_000);
 -    let mut host = DummyHost::new(SpecId::CANCUN);
+-    let result = unsafe { f.call_with_interpreter(&mut interpreter, &mut host) };
+-    eprintln!("{result:#?}");
 +    let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
 +        SpecId::CANCUN,
 +    );
@@ -70,8 +72,7 @@
 +        Precompiles::base(SpecId::CANCUN),
 +    );
 +    interpreter.prepare_jit_run(&config, &mut host);
-     let result = unsafe { f.call_with_interpreter(&mut interpreter, &mut host) };
--    eprintln!("{result:#?}");
++    let result = unsafe { f.call_with_interpreter(&mut interpreter) };
 +    eprintln!("stop: {result:?}");
 +    eprintln!("output: 0x{}", hex::encode(interpreter.output()));
 
