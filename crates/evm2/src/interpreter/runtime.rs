@@ -407,6 +407,12 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         self.0.return_data = return_data;
     }
 
+    /// Clears return data from the last call-like operation.
+    #[inline]
+    pub fn clear_return_data(&mut self) {
+        self.0.return_data.clear();
+    }
+
     /// Swaps return data from the last call-like operation.
     #[inline]
     pub(crate) const fn swap_return_data(&mut self, return_data: &mut Bytes) {

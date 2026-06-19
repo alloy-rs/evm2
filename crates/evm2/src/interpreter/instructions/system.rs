@@ -4,8 +4,8 @@ use crate::{
     EvmFeatures, EvmTypes,
     bytecode::Bytecode,
     interpreter::{
-        Gas, GasTracker, Host, InstrStop, InterpreterState, Message, MessageKind, Result, StackMut,
-        Word, memory::resize_memory,
+        Gas, Host, InstrStop, InterpreterState, Message, MessageKind, Result, StackMut, Word,
+        memory::resize_memory,
     },
     utils::{word_to_address, word_to_usize},
     version::GasId,
@@ -247,7 +247,8 @@ fn call_inner<T: EvmTypes>(
     let tx_env = state.tx();
     let mut result = state.host().execute_message(tx_env, code, &mut message, caller_is_static);
     gas.erase_cost(result.gas_returned_to_parent());
-    handle_reservoir_remaining_gas(result.stop, gas, &result.gas);
+    gas.set_reservoir(result.reservoir_to_parent());
+    gas.add_state_gas_spent(result.state_gas_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());
     let copy_len = min(return_memory_range.len(), result.output.len());
     unsafe {
@@ -341,9 +342,10 @@ fn create_inner<T: EvmTypes>(
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
     let tx_env = state.tx();
-    let result = state.host().execute_message(tx_env, bytecode, &mut message, false);
+    let mut result = state.host().execute_message(tx_env, bytecode, &mut message, false);
     gas.erase_cost(result.gas_returned_to_parent());
-    handle_reservoir_remaining_gas(result.stop, gas, &result.gas);
+    gas.set_reservoir(result.reservoir_to_parent());
+    gas.add_state_gas_spent(result.state_gas_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());
 
     // EIP-8037: the CREATE/CREATE2 opcode charged `create_state_gas` upfront on
@@ -358,52 +360,11 @@ fn create_inner<T: EvmTypes>(
     }
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
     if result.stop == InstrStop::Revert {
-        state.set_return_data(result.output);
+        state.swap_return_data(&mut result.output);
     } else {
-        state.set_return_data(Bytes::new());
+        state.clear_return_data();
     }
-    let address = result
-        .created_address
-        .filter(|_| result.stop.is_success())
-        .map(|address| Word::from_be_slice(address.as_slice()))
-        .unwrap_or_default();
-    stack.push(address)
-}
-
-/// Reconciles the EIP-8037 state-gas reservoir of a returning child frame back
-/// into its parent.
-///
-/// The reservoir is a shared pool: the child frame inherited the parent's
-/// reservoir at call time (see [`Message::reservoir`]) and may have spent from
-/// it or refilled it. On a no-op (non-Amsterdam) execution both the reservoir
-/// and `state_gas_spent` are zero, so this is a no-op.
-#[inline]
-pub(crate) const fn handle_reservoir_remaining_gas(
-    stop: InstrStop,
-    parent_gas: &mut Gas,
-    child_gas: &GasTracker,
-) {
-    if stop.is_success() {
-        // On success the parent takes the child's final reservoir and accumulates
-        // the child's net state gas. The parent may have charged state gas (e.g.
-        // new_account + create) before spawning the child, whose tracker started
-        // at `state_gas_spent = 0`, so we add rather than overwrite. The child's
-        // count can be negative (more 0→x→0 restorations than 0→x creations); the
-        // negative contribution flows the parent's matching charge back out.
-        parent_gas.set_reservoir(child_gas.reservoir());
-        parent_gas.set_state_gas_spent(
-            parent_gas.state_gas_spent().saturating_add(child_gas.state_gas_spent()),
-        );
-    } else {
-        // On revert/halt the child's state changes are rolled back, so any
-        // reservoir spending (and any 0→x→0 refills) must unwind. The invariant
-        // `pre_call_reservoir == child.reservoir + child.state_gas_spent` holds
-        // because every reservoir-funded charge increments `state_gas_spent` while
-        // decrementing `reservoir`, and `refill_reservoir` does the inverse.
-        parent_gas.set_reservoir(
-            child_gas.reservoir().saturating_add_signed(child_gas.state_gas_spent()),
-        );
-    }
+    stack.push(result.created_address_for_parent())
 }
 
 #[instruction(dynamic_gas)]

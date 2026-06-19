@@ -59,7 +59,8 @@ pub struct GasTracker {
     /// Can be negative within a call frame when 0→x→0 storage restoration
     /// refills more state gas than the frame itself charged (the parent
     /// previously charged the 0→x portion). The net is reconciled on frame
-    /// return by [`handle_reservoir_remaining_gas`].
+    /// return by
+    /// [`MessageResult::state_gas_to_parent`](crate::interpreter::MessageResult::state_gas_to_parent).
     state_gas_spent: i64,
     refunded: i64,
 }
@@ -137,10 +138,10 @@ impl GasTracker {
         self.state_gas_spent
     }
 
-    /// Sets spent state gas.
+    /// Adds `delta` to spent state gas, saturating. May leave the total negative (see field docs).
     #[inline]
-    pub const fn set_state_gas_spent(&mut self, val: i64) {
-        self.state_gas_spent = val;
+    pub const fn add_state_gas_spent(&mut self, delta: i64) {
+        self.state_gas_spent = self.state_gas_spent.saturating_add(delta);
     }
 
     /// Returns gas refund.
@@ -381,10 +382,10 @@ impl Gas {
         self.tracker.state_gas_spent()
     }
 
-    /// Sets spent state gas.
+    /// Adds `delta` to spent state gas, saturating. May leave the total negative (see field docs).
     #[inline]
-    pub const fn set_state_gas_spent(&mut self, val: i64) {
-        self.tracker.set_state_gas_spent(val);
+    pub const fn add_state_gas_spent(&mut self, delta: i64) {
+        self.tracker.add_state_gas_spent(delta);
     }
 
     /// Returns gas refund.

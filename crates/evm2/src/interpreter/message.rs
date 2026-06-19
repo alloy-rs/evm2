@@ -41,8 +41,9 @@ pub struct Message<T: EvmTypes = BaseEvmTypes> {
     /// EIP-8037 state-gas reservoir inherited from the parent frame.
     ///
     /// The reservoir is a shared pool threaded down into child frames and
-    /// reconciled back on return by [`handle_reservoir_remaining_gas`]. Zero
-    /// for non-Amsterdam execution.
+    /// reconciled back on return by
+    /// [`MessageResult::reservoir_to_parent`](crate::interpreter::MessageResult::reservoir_to_parent).
+    /// Zero for non-Amsterdam execution.
     pub reservoir: u64,
     /// Account whose context is being executed.
     pub destination: Address,

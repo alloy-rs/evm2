@@ -38,6 +38,18 @@ impl<T: EvmTypes> MessageResult<T> {
         self.stop.is_success()
     }
 
+    /// Returns the created address to push onto the parent frame's stack.
+    ///
+    /// Yields the created address as a stack word on success, or zero when the
+    /// create failed (revert, halt, or an early-fail path that left no address).
+    #[inline]
+    pub fn created_address_for_parent(&self) -> Word {
+        self.created_address
+            .filter(|_| self.stop.is_success())
+            .map(|address| Word::from_be_slice(address.as_slice()))
+            .unwrap_or_default()
+    }
+
     /// Returns whether the message can return unused gas to its parent frame.
     #[inline]
     pub const fn returns_unused_gas(&self) -> bool {
@@ -54,6 +66,40 @@ impl<T: EvmTypes> MessageResult<T> {
     #[inline]
     pub const fn refund_propagated_to_parent(&self) -> i64 {
         if self.stop.is_success() { self.gas.refunded() } else { 0 }
+    }
+
+    /// Returns the EIP-8037 state gas this returning child frame accumulates into
+    /// its parent's `state_gas_spent`.
+    ///
+    /// On success the parent absorbs the child's net state gas, which can be
+    /// negative when 0→x→0 restorations outnumber 0→x creations (the negative
+    /// contribution flows the parent's matching charge back out). On revert/halt
+    /// the child's state changes roll back, so it contributes nothing. Always zero
+    /// without EIP-8037.
+    #[inline]
+    pub const fn state_gas_to_parent(&self) -> i64 {
+        if self.stop.is_success() { self.gas.state_gas_spent() } else { 0 }
+    }
+
+    /// Returns the EIP-8037 state-gas reservoir this returning child frame hands
+    /// back to its parent.
+    ///
+    /// The reservoir is a shared pool the child inherited from the parent at call
+    /// time (see [`Message::reservoir`](crate::interpreter::Message::reservoir)).
+    /// On success the parent takes the child's final reservoir. On revert/halt the
+    /// child's reservoir spending (and any 0→x→0 refills) unwinds, recovering the
+    /// rolled-back state gas via the `reservoir + state_gas_spent` invariant. This
+    /// is derived from the child's own gas rather than the parent's pre-call
+    /// reservoir, so a child that exhausted its reservoir and spilled state gas
+    /// into regular gas is still reconciled correctly. Always zero without
+    /// EIP-8037.
+    #[inline]
+    pub const fn reservoir_to_parent(&self) -> u64 {
+        if self.stop.is_success() {
+            self.gas.reservoir()
+        } else {
+            self.gas.reservoir().saturating_add_signed(self.gas.state_gas_spent())
+        }
     }
 
     /// Calculates the final refund amount for a top-level transaction.

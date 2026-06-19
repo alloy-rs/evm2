@@ -73,9 +73,7 @@ pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
         // the initial 0→x transition directly to the reservoir, rather than
         // routing it through the capped refund counter below.
         let refill = cx.state.gas_params().sstore_state_gas_refill(&state_load);
-        if refill > 0 {
-            cx.gas.refill_reservoir(refill);
-        }
+        cx.gas.refill_reservoir(refill);
     }
 
     // EIP-2200 and EIP-3529 refund rules, including negative refund adjustments for
