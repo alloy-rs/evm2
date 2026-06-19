@@ -104,6 +104,7 @@ default = [
     # "c-kzg",
     "portable",
     "bn254-mcl",
+    "gmp",
 ]
 std = [
     "alloy-consensus/std",
