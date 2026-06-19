@@ -137,8 +137,6 @@ pub trait Host<T: EvmTypes> {
     fn log(&mut self, log: Log);
 
     /// Executes a message inside this host.
-    ///
-    /// The static context is carried by [`Message::caller_is_static`].
     fn execute_message(
         &mut self,
         tx_env: &TxEnv<T>,
