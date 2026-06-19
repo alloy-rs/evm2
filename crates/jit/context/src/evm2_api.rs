@@ -11,7 +11,7 @@ use evm2::interpreter::Host;
 use evm2::{
     BaseEvmTypes,
     bytecode::Bytecode,
-    interpreter::{Gas as Evm2Gas, Interpreter, Memory, Word},
+    interpreter::{Gas as Evm2Gas, Interpreter, Memory, Message, Word},
 };
 
 const _: () = {
@@ -23,15 +23,7 @@ const _: () = {
 #[repr(C)]
 pub struct EvmContext<'a> {
     /// Active interpreter frame.
-    interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
-    /// Active account address.
-    pub target_address: alloy_primitives::Address,
-    /// Caller address.
-    pub caller_address: alloy_primitives::Address,
-    /// Calldata bytes.
-    pub input: Bytes,
-    /// Call value.
-    pub call_value: Word,
+    pub interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
     /// The gas.
     pub gas: Evm2Gas,
     /// The size of return data from the last call-like operation.
@@ -56,18 +48,6 @@ const _: () = {
 
     assert!(
         offset_of!(EvmContext<'_>, interpreter) == offset_of!(crate::EvmContext<'_>, interpreter)
-    );
-    assert!(
-        offset_of!(EvmContext<'_>, target_address)
-            == offset_of!(crate::EvmContext<'_>, target_address)
-    );
-    assert!(
-        offset_of!(EvmContext<'_>, caller_address)
-            == offset_of!(crate::EvmContext<'_>, caller_address)
-    );
-    assert!(offset_of!(EvmContext<'_>, input) == offset_of!(crate::EvmContext<'_>, input));
-    assert!(
-        offset_of!(EvmContext<'_>, call_value) == offset_of!(crate::EvmContext<'_>, call_value)
     );
     assert!(offset_of!(EvmContext<'_>, gas) == offset_of!(crate::EvmContext<'_>, gas));
     assert!(
@@ -165,10 +145,6 @@ impl<'a> EvmContext<'a> {
         let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
         let mut this = Self {
             interpreter: interpreter_ptr,
-            target_address: message.destination,
-            caller_address: message.caller,
-            input: message.input.clone(),
-            call_value: message.value,
             gas,
             return_data_len,
             calldatasize,
@@ -209,7 +185,13 @@ impl<'a> EvmContext<'a> {
     /// Returns calldata bytes.
     #[inline]
     pub fn input(&self) -> &Bytes {
-        &self.input
+        &self.message().input
+    }
+
+    /// Returns the active frame-local call/create message.
+    #[inline]
+    pub fn message(&self) -> &'a Message<BaseEvmTypes> {
+        self.interpreter().message()
     }
 
     /// Returns output produced by RETURN or REVERT.
@@ -304,7 +286,6 @@ mod tests {
             offset_of!(EvmContext<'_>, interpreter),
             offset_of!(crate::EvmContext<'_>, interpreter)
         );
-        assert_eq!(offset_of!(EvmContext<'_>, input), offset_of!(crate::EvmContext<'_>, input));
         assert_eq!(offset_of!(EvmContext<'_>, gas), offset_of!(crate::EvmContext<'_>, gas));
         assert_eq!(
             offset_of!(EvmContext<'_>, return_data_len),

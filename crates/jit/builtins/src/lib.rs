@@ -438,7 +438,8 @@ pub unsafe extern "C" fn __revmc_builtin_self_balance(
     ecx: &mut EvmContext<'_>,
     slot: &mut EvmWord,
 ) -> BuiltinResult {
-    let balance = load_account(ecx, ecx.target_address, false)?.balance;
+    let address = ecx.message().destination;
+    let balance = load_account(ecx, address, false)?.balance;
     *slot = balance.into();
     Ok(())
 }
@@ -478,7 +479,7 @@ pub unsafe extern "C" fn __revmc_builtin_sload(
     ecx: &mut EvmContext<'_>,
     index: &mut EvmWord,
 ) -> BuiltinResult {
-    let address = ecx.target_address;
+    let address = ecx.message().destination;
     let key = index.to_u256();
     if ecx.spec_id().enables(SpecId::BERLIN) {
         let additional_cold_cost = u64::from(ecx.gas_params().get(GasId::ColdStorageAdditionalCost));
@@ -517,7 +518,7 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
     let rev![index, value] = sp;
     require_non_staticcall(ecx)?;
 
-    let target = ecx.target_address;
+    let target = ecx.message().destination;
     let is_istanbul = ecx.spec_id().enables(SpecId::ISTANBUL);
 
     // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
@@ -559,7 +560,7 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_tload(ecx: &mut EvmContext<'_>, key: &mut EvmWord) {
-    let target = ecx.target_address;
+    let target = ecx.message().destination;
     let key_word = key.to_u256();
     *key = ecx.host().tload(&target, &key_word).into();
 }
@@ -571,7 +572,7 @@ pub unsafe extern "C" fn __revmc_builtin_tstore(
 ) -> BuiltinResult {
     let rev![key, value] = sp;
     require_non_staticcall(ecx)?;
-    let target = ecx.target_address;
+    let target = ecx.message().destination;
     ecx.host().tstore(&target, &key.to_u256(), &value.to_u256());
     Ok(())
 }
@@ -618,8 +619,9 @@ pub unsafe extern "C" fn __revmc_builtin_log(
         topics.push(unsafe { sp.sub(i as usize).read() }.to_be_bytes());
     }
 
+    let address = ecx.message().destination;
     let log = Log {
-        address: ecx.target_address,
+        address,
         data: LogData::new(topics, data).expect("too many topics"),
     };
     ecx.host().log(log);
@@ -971,7 +973,7 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
 
     let cold_load_gas = ecx.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
-    let address = ecx.target_address;
+    let address = ecx.message().destination;
     let target = target.to_address();
     let res = ecx
         .host()

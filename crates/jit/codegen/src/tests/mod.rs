@@ -2045,15 +2045,11 @@ tests! {
         st_solidity_keywords(@raw {
             bytecode: &hex!("7c01000000000000000000000000000000000000000000000000000000006000350463380e439681146037578063c040622614604757005b603d6084565b8060005260206000f35b604d6057565b8060005260206000f35b6000605f6084565b600060006101000a81548160ff0219169083021790555060ff60016000540416905090565b6000808160011560cd575b600a82121560a157600190910190608f565b81600a1460ac5760c9565b50600a5b60008160ff16111560c85760019182900391900360b0565b5b60d5565b6000925060ed565b8160001460e05760e8565b6001925060ed565b600092505b50509056"),
             spec_id: SpecId::ISTANBUL,
-            modify_ecx: Some(|ecx| {
-                ecx.call_value = 1_U256;
-                ecx.input = Bytes::from(&hex!("c0406226"));
-                ecx.calldatasize = ecx.input.len();
+            modify_message: Some(|message| {
+                message.value = 1_U256;
+                message.input = Bytes::from(&hex!("c0406226"));
             }),
-            // Note: Cannot use RETURN_WHAT_INTERPRETER_SAYS here because modify_ecx
-            // only modifies the JIT context, not the interpreter's input. The interpreter
-            // runs with default call data which doesn't match the function selector.
-            expected_return: InstrStop::Return,
+            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,

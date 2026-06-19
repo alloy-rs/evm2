@@ -85,7 +85,7 @@
 
  /// The EVM bytecode compiler runtime context.
  ///
-@@ -84,48 +32,35 @@
+@@ -84,48 +32,27 @@
  /// generates code that accesses fields by offset using `offset_of!`.
  #[repr(C)]
  pub struct EvmContext<'a> {
@@ -94,15 +94,7 @@
 -    /// Input information (target address, caller, input data, call value).
 -    pub input: &'a mut InputsImpl,
 +    /// Active interpreter frame.
-+    interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
-+    /// Active account address.
-+    pub target_address: Address,
-+    /// Caller address.
-+    pub caller_address: Address,
-+    /// Calldata bytes.
-+    pub input: Bytes,
-+    /// Call value.
-+    pub call_value: U256,
++    pub interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
      /// The gas.
      pub gas: Gas,
 -    /// The host.
@@ -152,7 +144,7 @@
  }
 
  // Static assertions to ensure the struct layout matches expectations.
-@@ -133,69 +68,162 @@
+@@ -133,69 +60,158 @@
  const _: () = {
      use core::mem::offset_of;
 
@@ -163,10 +155,6 @@
 -    assert!(offset_of!(EvmContext<'_>, resume_at) == 120);
 -    assert!(offset_of!(EvmContext<'_>, calldatasize) == 160);
 +    assert!(offset_of!(EvmContext<'_>, interpreter) == 0);
-+    assert!(offset_of!(EvmContext<'_>, target_address) > 0);
-+    assert!(offset_of!(EvmContext<'_>, caller_address) > 0);
-+    assert!(offset_of!(EvmContext<'_>, input) > 0);
-+    assert!(offset_of!(EvmContext<'_>, call_value) > 0);
 +    assert!(offset_of!(EvmContext<'_>, gas) > 0);
 +    assert!(offset_of!(EvmContext<'_>, return_data_len) > 0);
 +    assert!(offset_of!(EvmContext<'_>, calldatasize) > 0);
@@ -260,7 +248,7 @@
 +    /// Returns calldata bytes.
 +    #[inline]
 +    pub fn input(&self) -> &Bytes {
-+        &self.input
++        &self.message().input
 +    }
 +
 +    /// Returns the current block environment.
@@ -360,7 +348,7 @@
      }
  }
 
-@@ -204,9 +232,9 @@
+@@ -204,9 +220,9 @@
  /// # Examples
  ///
  /// ```no_run
@@ -372,7 +360,7 @@
  ///    /// A simple function.
  ///    pub fn test_fn;
  /// }
-@@ -214,7 +242,7 @@
+@@ -214,7 +230,7 @@
  /// let test_fn = EvmCompilerFn::new(test_fn);
  /// ```
  #[macro_export]
@@ -381,7 +369,7 @@
      ($( $(#[$attr:meta])* $vis:vis fn $name:ident; )+) => {
          #[allow(improper_ctypes)]
          unsafe extern "C" {
-@@ -224,7 +252,7 @@
+@@ -224,7 +240,7 @@
                      ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
                      stack: ::core::ptr::NonNull<$crate::EvmStack>,
                      stack_len: ::core::ptr::NonNull<usize>,
@@ -390,7 +378,7 @@
              )+
          }
      };
-@@ -239,7 +267,7 @@
+@@ -239,7 +255,7 @@
      ecx: NonNull<EvmContext<'_>>,
      stack: NonNull<EvmStack>,
      stack_len: NonNull<usize>,
@@ -399,7 +387,7 @@
 
  /// An EVM bytecode function.
  #[derive(Clone, Copy, Debug, Hash)]
-@@ -272,82 +300,6 @@
+@@ -272,82 +288,6 @@
          self.0
      }
 
@@ -482,7 +470,7 @@
      /// Calls the function.
      ///
      /// Arguments:
-@@ -366,8 +318,15 @@
+@@ -366,8 +306,15 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -500,7 +488,7 @@
      }
 
      /// Same as [`call`](Self::call) but with `#[inline(never)]`.
-@@ -383,8 +342,8 @@
+@@ -383,8 +330,8 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -511,7 +499,7 @@
      }
  }
 
-@@ -415,20 +374,6 @@
+@@ -415,20 +362,6 @@
          Vec::with_capacity(1024)
      }
 
@@ -532,7 +520,7 @@
      /// Creates a stack from a vector's buffer.
      ///
      /// # Panics
-@@ -544,7 +489,7 @@
+@@ -544,7 +477,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked(&self, index: usize) -> &EvmWord {
@@ -541,7 +529,7 @@
      }
 
      /// Returns the word at the given index as a mutable reference.
-@@ -554,7 +499,7 @@
+@@ -554,7 +487,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut EvmWord {
@@ -550,7 +538,7 @@
      }
 
      /// Sets the value at the top of the stack to `value`, and grows the stack by 1.
-@@ -564,7 +509,7 @@
+@@ -564,7 +497,7 @@
      /// The caller must ensure that the stack is not full.
      #[inline]
      pub unsafe fn push(&mut self, value: EvmWord, len: &mut usize) {
@@ -559,7 +547,7 @@
          *len += 1;
      }
 
-@@ -575,7 +520,7 @@
+@@ -575,7 +508,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked(&self, len: usize) -> &EvmWord {
@@ -568,7 +556,7 @@
      }
 
      /// Returns the value at the top of the stack as a mutable reference.
-@@ -585,7 +530,7 @@
+@@ -585,7 +518,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked_mut(&mut self, len: usize) -> &mut EvmWord {
@@ -577,7 +565,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack.
-@@ -595,7 +540,7 @@
+@@ -595,7 +528,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked(&self, len: usize, n: usize) -> &EvmWord {
@@ -586,7 +574,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack as a mutable reference.
-@@ -605,7 +550,7 @@
+@@ -605,7 +538,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked_mut(&mut self, len: usize, n: usize) -> &mut EvmWord {
@@ -595,7 +583,7 @@
      }
 
      /// Sets the value at the given index.
-@@ -615,7 +560,7 @@
+@@ -615,7 +548,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn set_unchecked(&mut self, index: usize, value: EvmWord) {
@@ -604,7 +592,7 @@
      }
  }
 
-@@ -821,14 +766,6 @@
+@@ -821,14 +754,6 @@
      }
  }
 
@@ -619,7 +607,7 @@
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -841,7 +778,7 @@
+@@ -841,7 +766,7 @@
          assert_eq!(usize::try_from(&mut word), Ok(0));
      }
 
@@ -628,7 +616,7 @@
          #[link_name = "__test_fn"]
          fn test_fn;
      }
-@@ -851,8 +788,8 @@
+@@ -851,8 +776,8 @@
          _ecx: NonNull<EvmContext<'_>>,
          _stack: NonNull<EvmStack>,
          _stack_len: NonNull<usize>,

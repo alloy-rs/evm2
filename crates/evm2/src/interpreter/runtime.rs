@@ -228,6 +228,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         unsafe { self.message.unwrap_unchecked() }
     }
 
+    #[inline]
+    #[doc(hidden)]
+    pub const fn message_field_offset_for_jit() -> usize {
+        core::mem::offset_of!(Self, message)
+    }
+
     /// Returns the cached transaction-global environment.
     #[inline]
     #[doc(hidden)]

@@ -6,7 +6,10 @@ use crate::{
     decode_pair, decode_single,
 };
 use alloy_primitives::U256;
-use evm2::interpreter::{InstrStop, op};
+use evm2::{
+    BaseEvmTypes,
+    interpreter::{InstrStop, Interpreter, Message, op},
+};
 use evm2_jit_backend::{Attribute, BackendTypes, FunctionAttributeLocation, Pointer, TypeMethods};
 use evm2_jit_builtins::{Builtin, Builtins, CallKind, CreateKind};
 use oxc_index::IndexVec;
@@ -704,7 +707,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
 
             op::ADDRESS => {
-                field!(@push @[endian = "big"] self.address_type, self.ecx, EvmContext<'_>; target_address);
+                self.push_message_address(
+                    mem::offset_of!(Message<BaseEvmTypes>, destination),
+                    "message.destination",
+                );
             }
             op::BALANCE => {
                 let sp = self.sp_after_inputs();
@@ -716,10 +722,16 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.narrow_to_address(slot);
             }
             op::CALLER => {
-                field!(@push @[endian = "big"] self.address_type, self.ecx, EvmContext<'_>; caller_address);
+                self.push_message_address(
+                    mem::offset_of!(Message<BaseEvmTypes>, caller),
+                    "message.caller",
+                );
             }
             op::CALLVALUE => {
-                field!(@push self.word_type, self.ecx, EvmContext<'_>; call_value);
+                self.push_message_word(
+                    mem::offset_of!(Message<BaseEvmTypes>, value),
+                    "message.value",
+                );
             }
             op::CALLDATALOAD => {
                 let sp = self.sp_after_inputs();
@@ -1270,6 +1282,45 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     /// Loads the word at the given pointer.
     fn load_word(&mut self, ptr: B::Value, name: &str) -> B::Value {
         self.bcx.load(self.word_type, ptr, name)
+    }
+
+    fn load_interpreter_ptr(&mut self) -> B::Value {
+        let ptr_type = self.bcx.type_ptr();
+        let field = self.get_field(
+            self.ecx,
+            mem::offset_of!(EvmContext<'_>, interpreter),
+            "ecx.interpreter.addr",
+        );
+        self.bcx.load(ptr_type, field, "ecx.interpreter")
+    }
+
+    fn load_message_ptr(&mut self) -> B::Value {
+        let ptr_type = self.bcx.type_ptr();
+        let interpreter = self.load_interpreter_ptr();
+        let field = self.get_field(
+            interpreter,
+            Interpreter::<BaseEvmTypes>::message_field_offset_for_jit(),
+            "interpreter.message.addr",
+        );
+        self.bcx.load(ptr_type, field, "interpreter.message")
+    }
+
+    fn push_message_address(&mut self, offset: usize, name: &str) {
+        let message = self.load_message_ptr();
+        let field = self.get_field(message, offset, name);
+        let mut value = self.bcx.load_aligned(self.address_type, field, 1, name);
+        if !cfg!(target_endian = "big") {
+            value = self.bcx.bswap(value);
+        }
+        let value = self.bcx.zext(self.word_type, value);
+        self.push(value);
+    }
+
+    fn push_message_word(&mut self, offset: usize, name: &str) {
+        let message = self.load_message_ptr();
+        let field = self.get_field(message, offset, name);
+        let value = self.bcx.load_aligned(self.word_type, field, 1, name);
+        self.push(value);
     }
 
     /// Gets a field at the given offset.

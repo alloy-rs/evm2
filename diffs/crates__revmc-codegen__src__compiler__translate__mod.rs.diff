@@ -1,11 +1,14 @@
 --- upstream/crates/revmc-codegen/src/compiler/translate/mod.rs
 +++ evm2/crates/jit/codegen/src/compiler/translate/mod.rs
-@@ -5,12 +5,11 @@
+@@ -5,12 +5,14 @@
      Backend, Builder, Bytecode, EvmContext, Inst, InstData, InstFlags, IntCC, Result, StackSection,
      decode_pair, decode_single,
  };
 +use alloy_primitives::U256;
-+use evm2::interpreter::{InstrStop, op};
++use evm2::{
++    BaseEvmTypes,
++    interpreter::{InstrStop, Interpreter, Message, op},
++};
 +use evm2_jit_backend::{Attribute, BackendTypes, FunctionAttributeLocation, Pointer, TypeMethods};
 +use evm2_jit_builtins::{Builtin, Builtins, CallKind, CreateKind};
  use oxc_index::IndexVec;
@@ -17,7 +20,7 @@
  use std::mem;
 
  mod peephole;
-@@ -29,6 +28,7 @@
+@@ -29,6 +31,7 @@
 
      pub(super) debug: bool,
      pub(super) inspect_stack: bool,
@@ -25,7 +28,7 @@
      pub(super) stack_bound_checks: bool,
      pub(super) gas_metering: bool,
      pub(super) single_error: bool,
-@@ -42,6 +42,7 @@
+@@ -42,6 +45,7 @@
              frame_pointers: cfg!(debug_assertions) || cfg!(force_frame_pointers),
              debug: false,
              inspect_stack: false,
@@ -33,7 +36,7 @@
              stack_bound_checks: true,
              gas_metering: true,
              single_error: true,
-@@ -128,13 +129,6 @@
+@@ -128,13 +132,6 @@
      /// The return block that all return instructions branch to.
      return_block: Option<B::BasicBlock>,
 
@@ -47,7 +50,7 @@
      /// Builtins.
      builtins: &'a mut Builtins<B>,
  }
-@@ -145,8 +139,6 @@
+@@ -145,8 +142,6 @@
      /// Example pseudo-code:
      ///
      /// ```ignore (pseudo-code)
@@ -56,7 +59,7 @@
      /// fn evm_bytecode(args: ...) {
      ///     setup_locals();
      ///
-@@ -155,39 +147,16 @@
+@@ -155,39 +150,16 @@
      ///
      ///     load_arguments();
      ///
@@ -98,7 +101,7 @@
      ///         #[cfg(inspect_stack)]
      ///         *args.stack_len = stack_len;
      ///         return ir;
-@@ -218,10 +187,8 @@
+@@ -218,10 +190,8 @@
          let ecx = bcx.fn_param(0);
 
          let sp_arg = bcx.fn_param(1);
@@ -111,7 +114,7 @@
          let stack = if local_stack {
              let stack_type = bcx.type_array(word_type, STACK_CAP as u32);
              bcx.new_stack_slot(stack_type, "stack.addr")
-@@ -250,7 +217,6 @@
+@@ -250,7 +220,6 @@
          assert!(!inst_entries.is_empty(), "translating empty bytecode");
 
          let dynamic_jump_table = bcx.create_block("dynamic_jump_table");
@@ -119,7 +122,7 @@
          let failure_block = bcx.create_block("failure");
          let return_block = bcx.create_block("return");
 
-@@ -289,10 +255,6 @@
+@@ -289,10 +258,6 @@
              incoming_returns: Vec::new(),
              return_block: Some(return_block),
 
@@ -130,7 +133,7 @@
              builtins,
 
              vstack: VStack::default(),
-@@ -301,14 +263,14 @@
+@@ -301,14 +266,14 @@
          // Add debug assertions for the parameters.
          if config.debug_assertions {
              // Assert that the runtime spec_id matches the compilation spec_id.
@@ -147,7 +150,7 @@
          fx.bcx.br(post_entry_block);
 
          // Translate individual instructions into their respective blocks.
-@@ -341,104 +303,26 @@
+@@ -341,104 +306,26 @@
              fx.bcx.unreachable();
          }
 
@@ -262,7 +265,7 @@
              } else {
                  fx.bcx.phi(fx.i8_type, &fx.incoming_failures)
              };
-@@ -559,18 +443,12 @@
+@@ -559,18 +446,12 @@
          // Assert that we already skipped the block.
          debug_assert!(!data.flags.contains(InstFlags::DEAD_CODE));
 
@@ -283,7 +286,7 @@
          }
 
          // Pay static gas for the current section.
-@@ -580,7 +458,7 @@
+@@ -580,7 +461,7 @@
          // At section heads: load from the alloca once and reset the section offset.
          // Within a section: derive from section_start_len + compile-time offset.
          let (inp, out) = data.stack_io();
@@ -292,7 +295,7 @@
          self.len_offset = 0;
          if data.is_stack_section_head() {
              self.section_start_len = self.stack_len.load(&mut self.bcx, "stack_len");
-@@ -634,7 +512,7 @@
+@@ -634,7 +515,7 @@
                  out == 1 || out == inp + 1,
                  "const_output assumes single synthesized push: inp={inp}, out={out}",
              );
@@ -301,7 +304,7 @@
              // We push exactly 1 value, so consume `inp + 1 - out` to match the
              // real stack diff. For DUP (out = inp+1) this is 0; for ADD (out = 1)
              // this equals inp.
-@@ -713,7 +591,7 @@
+@@ -713,7 +594,7 @@
          }
 
          match data.opcode {
@@ -310,32 +313,41 @@
 
              op::ADD => binop!(iadd),
              op::MUL => binop!(imul),
-@@ -826,8 +704,7 @@
+@@ -826,8 +707,10 @@
              }
 
              op::ADDRESS => {
 -                let input = self.load_input();
 -                field!(@push @[endian = "big"] self.address_type, input, InputsImpl; target_address);
-+                field!(@push @[endian = "big"] self.address_type, self.ecx, EvmContext<'_>; target_address);
++                self.push_message_address(
++                    mem::offset_of!(Message<BaseEvmTypes>, destination),
++                    "message.destination",
++                );
              }
              op::BALANCE => {
                  let sp = self.sp_after_inputs();
-@@ -839,12 +716,10 @@
+@@ -839,12 +722,16 @@
                  self.narrow_to_address(slot);
              }
              op::CALLER => {
 -                let input = self.load_input();
 -                field!(@push @[endian = "big"] self.address_type, input, InputsImpl; caller_address);
-+                field!(@push @[endian = "big"] self.address_type, self.ecx, EvmContext<'_>; caller_address);
++                self.push_message_address(
++                    mem::offset_of!(Message<BaseEvmTypes>, caller),
++                    "message.caller",
++                );
              }
              op::CALLVALUE => {
 -                let input = self.load_input();
 -                field!(@push self.word_type, input, InputsImpl; call_value);
-+                field!(@push self.word_type, self.ecx, EvmContext<'_>; call_value);
++                self.push_message_word(
++                    mem::offset_of!(Message<BaseEvmTypes>, value),
++                    "message.value",
++                );
              }
              op::CALLDATALOAD => {
                  let sp = self.sp_after_inputs();
-@@ -879,7 +754,7 @@
+@@ -879,7 +766,7 @@
                  self.call_fallible_builtin(Builtin::ExtCodeCopy, &[self.ecx, sp]);
              }
              op::RETURNDATASIZE => {
@@ -344,7 +356,7 @@
              }
              op::RETURNDATACOPY => {
                  let sp = self.sp_after_inputs();
-@@ -975,7 +850,7 @@
+@@ -975,7 +862,7 @@
                  if is_invalid && opcode == op::JUMP {
                      // Pop and discard the target; it's always on the stack.
                      self.pop_ignore(1);
@@ -353,7 +365,7 @@
                  } else {
                      let target = if is_invalid {
                          debug_assert_eq!(*data, op::JUMPI);
-@@ -1099,18 +974,18 @@
+@@ -1099,18 +986,18 @@
              op::DUP1..=op::DUP16 => self.dup((opcode - op::DUP1 + 1) as usize),
              op::DUPN => match decode_single(data.imm_byte()) {
                  Some(n) => self.dup(n as usize),
@@ -375,7 +387,7 @@
              },
 
              op::LOG0..=op::LOG4 => {
-@@ -1122,39 +997,33 @@
+@@ -1122,39 +1009,33 @@
 
              op::CREATE => {
                  self.create_common(CreateKind::Create);
@@ -418,7 +430,7 @@
              op::SELFDESTRUCT => {
                  let sp = self.sp_after_inputs();
                  self.sync_diverging_stack_effect();
-@@ -1173,7 +1042,7 @@
+@@ -1173,7 +1054,7 @@
 
      /// Syncs the virtual stack for a NOOP instruction. Unlike `sync_virtual_stack_diff`,
      /// this preserves known-constant outputs as `Virtual` values so that boundary
@@ -427,7 +439,7 @@
      /// them to physical memory. Without this, NOOP'd constants would be marked
      /// `Materialized` with no actual store, leaving garbage in memory.
      fn sync_noop_diff(&mut self, inst: Inst, diff: i32) {
-@@ -1364,7 +1233,7 @@
+@@ -1364,7 +1245,7 @@
      }
 
      /// `RETURN` or `REVERT` instruction.
@@ -436,7 +448,7 @@
          let sp = self.sp_after_inputs();
          let ir_const = self.bcx.iconst(self.i8_type, ir as i64);
          self.sync_diverging_stack_effect();
-@@ -1375,7 +1244,7 @@
+@@ -1375,7 +1256,7 @@
      fn sync_diverging_stack_effect(&mut self) {
          let data = self.current_inst();
          let (inp, out) = data.stack_io();
@@ -445,7 +457,7 @@
          self.sync_virtual_stack_diff(diff);
          if self.config.inspect_stack {
              self.materialize_live_stack();
-@@ -1389,7 +1258,6 @@
+@@ -1389,7 +1270,6 @@
          let sp = self.sp_after_inputs();
          let create_kind = self.bcx.iconst(self.i8_type, create_kind as i64);
          self.call_fallible_builtin(Builtin::Create, &[self.ecx, sp, create_kind]);
@@ -453,13 +465,13 @@
      }
 
      /// Builds `*CALL*` instructions.
-@@ -1397,32 +1265,6 @@
+@@ -1397,37 +1277,50 @@
          let sp = self.sp_after_inputs();
          let call_kind = self.bcx.iconst(self.i8_type, call_kind as i64);
          self.call_fallible_builtin(Builtin::Call, &[self.ecx, sp, call_kind]);
 -        self.suspend();
--    }
--
+     }
+
 -    /// Suspend execution, storing the resume point in the context.
 -    fn suspend(&mut self) {
 -        // Flush virtual stack before entering the shared suspend block.
@@ -471,22 +483,63 @@
 -            .effective_next_entry(self.current_inst.unwrap())
 -            .expect("suspending instruction must have a resume target");
 -        self.add_resume_at(resume_at);
--
++    /// Loads the word at the given pointer.
++    fn load_word(&mut self, ptr: B::Value, name: &str) -> B::Value {
++        self.bcx.load(self.word_type, ptr, name)
++    }
+
 -        // Register the current block as the suspend block.
 -        let value = self.bcx.iconst(self.isize_type, idx as i64 + 1);
 -        self.suspend_blocks.push((value, self.bcx.current_block().unwrap()));
--
++    fn load_interpreter_ptr(&mut self) -> B::Value {
++        let ptr_type = self.bcx.type_ptr();
++        let field = self.get_field(
++            self.ecx,
++            mem::offset_of!(EvmContext<'_>, interpreter),
++            "ecx.interpreter.addr",
++        );
++        self.bcx.load(ptr_type, field, "ecx.interpreter")
++    }
+
 -        // Branch to the suspend block.
 -        self.bcx.br(self.suspend_block);
--    }
--
++    fn load_message_ptr(&mut self) -> B::Value {
++        let ptr_type = self.bcx.type_ptr();
++        let interpreter = self.load_interpreter_ptr();
++        let field = self.get_field(
++            interpreter,
++            Interpreter::<BaseEvmTypes>::message_field_offset_for_jit(),
++            "interpreter.message.addr",
++        );
++        self.bcx.load(ptr_type, field, "interpreter.message")
+     }
+
 -    /// Adds a resume point.
 -    fn add_resume_at(&mut self, block: B::BasicBlock) {
 -        self.resume_blocks.push(block);
++    fn push_message_address(&mut self, offset: usize, name: &str) {
++        let message = self.load_message_ptr();
++        let field = self.get_field(message, offset, name);
++        let mut value = self.bcx.load_aligned(self.address_type, field, 1, name);
++        if !cfg!(target_endian = "big") {
++            value = self.bcx.bswap(value);
++        }
++        let value = self.bcx.zext(self.word_type, value);
++        self.push(value);
      }
 
-     /// Loads the word at the given pointer.
-@@ -1435,18 +1277,6 @@
+-    /// Loads the word at the given pointer.
+-    fn load_word(&mut self, ptr: B::Value, name: &str) -> B::Value {
+-        self.bcx.load(self.word_type, ptr, name)
++    fn push_message_word(&mut self, offset: usize, name: &str) {
++        let message = self.load_message_ptr();
++        let field = self.get_field(message, offset, name);
++        let value = self.bcx.load_aligned(self.word_type, field, 1, name);
++        self.push(value);
+     }
+
+     /// Gets a field at the given offset.
+@@ -1435,18 +1328,6 @@
          get_field(&mut self.bcx, ptr, offset, name)
      }
 
@@ -505,7 +558,7 @@
      /// Re-loads the address at `slot` as i160, zero-extends to i256, and stores it back.
      ///
      /// On little-endian the low 160 bits sit at byte offset 0, so a direct
-@@ -1461,8 +1291,7 @@
+@@ -1461,8 +1342,7 @@
      }
 
      fn gas_remaining_addr(&mut self) -> B::Value {
@@ -515,7 +568,7 @@
          let offset = self.bcx.iconst(self.isize_type, OFFSET as i64);
          self.bcx.gep(self.i8_type, self.ecx, &[offset], "gas.remaining.addr")
      }
-@@ -1678,7 +1507,7 @@
+@@ -1678,7 +1558,7 @@
          let gas_remaining = self.bcx.load(i64_type, addr, "gas.remaining");
          let (res, overflow) = self.bcx.usub_overflow(gas_remaining, cost);
          self.bcx.store(res, addr);
@@ -524,7 +577,7 @@
      }
 
      /// Ensures the memory is large enough for `offset + len` bytes, calling the `mresize`
-@@ -1756,7 +1585,7 @@
+@@ -1756,7 +1636,7 @@
      /// Builds a check, failing if the condition is false.
      ///
      /// `if success_cond { ... } else { return ret }`
@@ -533,7 +586,7 @@
          self.build_failure_imm_inner(false, success_cond, ret);
      }
      */
-@@ -1785,29 +1614,29 @@
+@@ -1785,29 +1665,29 @@
              let overflow = overflow(self);
              let cond = self.bcx.bitor(underflow, overflow);
              let ret = {
@@ -569,7 +622,7 @@
          let ret_value = self.bcx.iconst(self.i8_type, ret as i64);
          let target = self.build_check_inner(is_failure, cond, ret_value);
          if self.config.comments {
-@@ -1854,7 +1683,7 @@
+@@ -1854,7 +1734,7 @@
      }
 
      /// Builds a branch to the failure block.
@@ -578,7 +631,7 @@
          let ret_value = self.bcx.iconst(self.i8_type, ret as i64);
          self.build_fail(ret_value);
          if self.config.comments {
-@@ -1876,7 +1705,7 @@
+@@ -1876,7 +1756,7 @@
      }
 
      /// Builds a branch to the return block.
@@ -587,7 +640,7 @@
          let ret_value = self.bcx.iconst(self.i8_type, ret as i64);
          self.build_return(ret_value);
          if self.config.comments {
-@@ -1904,21 +1733,12 @@
+@@ -1904,21 +1784,12 @@
      fn add_invalid_jump(&mut self) -> B::BasicBlock {
          let block = self.failure_block.unwrap();
          self.incoming_failures.push((
@@ -610,7 +663,7 @@
      #[allow(dead_code)]
      fn call_printf(&mut self, template: &std::ffi::CStr, values: &[B::Value]) {
          let mut args = Vec::with_capacity(values.len() + 1);
-@@ -2047,7 +1867,7 @@
+@@ -2047,7 +1918,7 @@
          // self.call_printf(format_printf!("{} - calling {name}\n", self.op_block_name("")), &[]);
 
          debug_assert_eq!(args.len(), arg_types.len());
@@ -619,7 +672,7 @@
          // SAFETY: `this` aliases `self` to work around the borrow checker: we need `self.bcx`
          // borrowed by `get_or_build_function` while also swapping `self.bcx` inside the closure.
          // The closure's `bcx` is a fresh builder (not `self.bcx`), so the swap is safe.
-@@ -2099,43 +1919,6 @@
+@@ -2099,43 +1970,6 @@
          pub(super) len: usize,
      }
      const _: [(); mem::size_of::<&'static [u8]>()] = [(); mem::size_of::<Slice>()];

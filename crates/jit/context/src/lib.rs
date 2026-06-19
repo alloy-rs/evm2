@@ -33,15 +33,7 @@ pub mod evm2_api;
 #[repr(C)]
 pub struct EvmContext<'a> {
     /// Active interpreter frame.
-    interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
-    /// Active account address.
-    pub target_address: Address,
-    /// Caller address.
-    pub caller_address: Address,
-    /// Calldata bytes.
-    pub input: Bytes,
-    /// Call value.
-    pub call_value: U256,
+    pub interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
     /// The gas.
     pub gas: Gas,
     /// The size of return data from the last call-like operation.
@@ -69,10 +61,6 @@ const _: () = {
     use core::mem::offset_of;
 
     assert!(offset_of!(EvmContext<'_>, interpreter) == 0);
-    assert!(offset_of!(EvmContext<'_>, target_address) > 0);
-    assert!(offset_of!(EvmContext<'_>, caller_address) > 0);
-    assert!(offset_of!(EvmContext<'_>, input) > 0);
-    assert!(offset_of!(EvmContext<'_>, call_value) > 0);
     assert!(offset_of!(EvmContext<'_>, gas) > 0);
     assert!(offset_of!(EvmContext<'_>, return_data_len) > 0);
     assert!(offset_of!(EvmContext<'_>, calldatasize) > 0);
@@ -130,7 +118,7 @@ impl<'a> EvmContext<'a> {
     /// Returns calldata bytes.
     #[inline]
     pub fn input(&self) -> &Bytes {
-        &self.input
+        &self.message().input
     }
 
     /// Returns the current block environment.

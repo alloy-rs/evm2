@@ -91,6 +91,7 @@ pub struct TestCase<'a> {
 
     /// Override `inspect_stack` on the compiler. `None` uses the default (`true`).
     pub inspect_stack: Option<bool>,
+    pub modify_message: Option<fn(&mut Evm2Message<BaseEvmTypes>)>,
     pub modify_ecx: Option<fn(&mut TestEvmContext<'_>)>,
 
     pub expected_return: InstrStop,
@@ -122,6 +123,7 @@ impl Default for TestCase<'_> {
             is_static: false,
             gas_limit: DEF_GAS_LIMIT,
             inspect_stack: None,
+            modify_message: None,
             modify_ecx: None,
             expected_return: InstrStop::Stop,
             expected_stack: &[],
@@ -140,6 +142,7 @@ impl fmt::Debug for TestCase<'_> {
             .field("bytecode", &format_bytecode(self.bytecode, self.spec_id))
             .field("spec_id", &self.spec_id)
             .field("inspect_stack", &self.inspect_stack)
+            .field("modify_message", &self.modify_message.is_some())
             .field("modify_ecx", &self.modify_ecx.is_some())
             .field("expected_return", &self.expected_return)
             .field("expected_stack", &self.expected_stack)
@@ -160,6 +163,7 @@ impl<'a> TestCase<'a> {
             is_static: false,
             gas_limit: DEF_GAS_LIMIT,
             inspect_stack: None,
+            modify_message: None,
             modify_ecx: None,
             expected_return: RETURN_WHAT_INTERPRETER_SAYS,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
@@ -378,6 +382,7 @@ fn with_evm_context_and_host_mut<
     bytecode: &[u8],
     spec_id: SpecId,
     host: &mut Evm<BaseEvmTypes>,
+    modify_message: Option<fn(&mut Evm2Message<BaseEvmTypes>)>,
     f: F,
 ) -> R {
     let evm2_spec_id = spec_id;
@@ -385,7 +390,10 @@ fn with_evm_context_and_host_mut<
         evm2_spec_id,
     );
     let tx_env = def_tx_env();
-    let message = def_message(DEF_GAS_LIMIT);
+    let mut message = def_message(DEF_GAS_LIMIT);
+    if let Some(modify_message) = modify_message {
+        modify_message(&mut message);
+    }
     let mut interpreter = Evm2Interpreter::<BaseEvmTypes>::new(
         Evm2Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
         &tx_env,
@@ -406,8 +414,20 @@ pub fn with_evm_context_and_host<
     spec_id: SpecId,
     f: F,
 ) -> (R, HostState) {
+    with_evm_context_and_host_modified(bytecode, spec_id, None, f)
+}
+
+fn with_evm_context_and_host_modified<
+    F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R,
+    R,
+>(
+    bytecode: &[u8],
+    spec_id: SpecId,
+    modify_message: Option<fn(&mut Evm2Message<BaseEvmTypes>)>,
+    f: F,
+) -> (R, HostState) {
     let mut host = prepare_host(spec_id);
-    let result = with_evm_context_and_host_mut(bytecode, spec_id, &mut host, f);
+    let result = with_evm_context_and_host_mut(bytecode, spec_id, &mut host, modify_message, f);
     let host = HostState::from_evm(&mut host);
     (result, host)
 }
@@ -432,12 +452,16 @@ pub fn run_test_case<B: Backend>(test_case: &TestCase<'_>, compiler: &mut EvmCom
 }
 
 fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
-    let TestCase { bytecode, spec_id, assert_host, .. } = *test_case;
+    let TestCase { bytecode, spec_id, modify_message, assert_host, .. } = *test_case;
 
-    let (_, host_after_jit) =
-        with_evm_context_and_host(bytecode, spec_id, |ecx, stack, stack_len| {
+    let (_, host_after_jit) = with_evm_context_and_host_modified(
+        bytecode,
+        spec_id,
+        modify_message,
+        |ecx, stack, stack_len| {
             run_compiled_test_case_with_context(test_case, f, ecx, stack, stack_len);
-        });
+        },
+    );
 
     if let Some(assert_host) = assert_host {
         assert_host(&host_after_jit);
@@ -457,6 +481,7 @@ fn run_compiled_test_case_with_context(
         is_static,
         gas_limit,
         inspect_stack: _,
+        modify_message,
         modify_ecx,
         expected_return,
         expected_stack,
@@ -482,7 +507,10 @@ fn run_compiled_test_case_with_context(
     let config =
         <BaseEvmConfigSelector as evm2::EvmConfigSelector<BaseEvmTypes>>::execution_config(spec_id);
     let tx_env = def_tx_env();
-    let message = def_message(gas_limit);
+    let mut message = def_message(gas_limit);
+    if let Some(modify_message) = modify_message {
+        modify_message(&mut message);
+    }
     let mut interpreter = Evm2Interpreter::<BaseEvmTypes>::new(
         Evm2Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
         &tx_env,

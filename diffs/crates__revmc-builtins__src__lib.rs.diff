@@ -363,13 +363,14 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -449,26 +438,29 @@
+@@ -449,26 +438,30 @@
      ecx: &mut EvmContext<'_>,
      slot: &mut EvmWord,
  ) -> BuiltinResult {
 -    let state = ecx.host.balance(ecx.input.target_address).ok_or_fatal()?;
 -    *slot = state.data.into();
-+    let balance = load_account(ecx, ecx.target_address, false)?.balance;
++    let address = ecx.message().destination;
++    let balance = load_account(ecx, address, false)?.balance;
 +    *slot = balance.into();
      Ok(())
  }
@@ -401,7 +402,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -477,8 +469,8 @@
+@@ -477,8 +470,8 @@
  }
 
  #[unsafe(no_mangle)]
@@ -412,12 +413,12 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -486,19 +478,21 @@
+@@ -486,19 +479,21 @@
      ecx: &mut EvmContext<'_>,
      index: &mut EvmWord,
  ) -> BuiltinResult {
 -    let address = ecx.input.target_address;
-+    let address = ecx.target_address;
++    let address = ecx.message().destination;
      let key = index.to_u256();
 -    if ecx.spec_id.is_enabled_in(SpecId::BERLIN) {
 -        let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
@@ -442,7 +443,7 @@
      }
 
      Ok(())
-@@ -511,7 +505,7 @@
+@@ -511,7 +506,7 @@
      key: u64,
  ) -> BuiltinResult {
      *index = U256::from(key).into();
@@ -451,7 +452,7 @@
      Ok(())
  }
 
-@@ -521,46 +515,53 @@
+@@ -521,46 +516,53 @@
      sp: &mut [EvmWord; 2],
  ) -> BuiltinResult {
      let rev![index, value] = sp;
@@ -460,7 +461,7 @@
 
 -    let target = ecx.input.target_address;
 -    let is_istanbul = ecx.spec_id.is_enabled_in(SpecId::ISTANBUL);
-+    let target = ecx.target_address;
++    let target = ecx.message().destination;
 +    let is_istanbul = ecx.spec_id().enables(SpecId::ISTANBUL);
 
      // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
@@ -520,25 +521,25 @@
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn __revmc_builtin_tload(ecx: &mut EvmContext<'_>, key: &mut EvmWord) {
 -    *key = ecx.host.tload(ecx.input.target_address, key.to_u256()).into();
-+    let target = ecx.target_address;
++    let target = ecx.message().destination;
 +    let key_word = key.to_u256();
 +    *key = ecx.host().tload(&target, &key_word).into();
  }
 
  #[unsafe(no_mangle)]
-@@ -569,8 +570,9 @@
+@@ -569,8 +571,9 @@
      sp: &mut [EvmWord; 2],
  ) -> BuiltinResult {
      let rev![key, value] = sp;
 -    ensure_non_staticcall!(ecx);
 -    ecx.host.tstore(ecx.input.target_address, key.to_u256(), value.to_u256());
 +    require_non_staticcall(ecx)?;
-+    let target = ecx.target_address;
++    let target = ecx.message().destination;
 +    ecx.host().tstore(&target, &key.to_u256(), &value.to_u256());
      Ok(())
  }
 
-@@ -580,13 +582,13 @@
+@@ -580,13 +583,13 @@
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
      let rev![dst, src, len] = sp;
@@ -557,7 +558,7 @@
      }
      Ok(())
  }
-@@ -597,35 +599,30 @@
+@@ -597,35 +600,31 @@
      sp: *mut EvmWord,
      n: u8,
  ) -> BuiltinResult {
@@ -588,9 +589,10 @@
 +        topics.push(unsafe { sp.sub(i as usize).read() }.to_be_bytes());
      }
 
++    let address = ecx.message().destination;
      let log = Log {
 -        address: ecx.input.target_address,
-+        address: ecx.target_address,
++        address,
          data: LogData::new(topics, data).expect("too many topics"),
      };
 -    if let Some(on_log) = &mut ecx.on_log {
@@ -603,7 +605,7 @@
      Ok(())
  }
 
-@@ -635,190 +632,295 @@
+@@ -635,190 +634,295 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
@@ -1053,7 +1055,7 @@
      Ok(())
  }
 
-@@ -826,19 +928,18 @@
+@@ -826,19 +930,18 @@
  pub unsafe extern "C" fn __revmc_builtin_do_return(
      ecx: &mut EvmContext<'_>,
      sp: &mut [EvmWord; 2],
@@ -1078,7 +1080,7 @@
      Err(result.into())
  }
 
-@@ -847,18 +948,17 @@
+@@ -847,18 +950,17 @@
      ecx: &mut EvmContext<'_>,
      offset: u64,
      len: u64,
@@ -1100,7 +1102,7 @@
      Err(result.into())
  }
 
-@@ -867,32 +967,429 @@
+@@ -867,32 +969,429 @@
      ecx: &mut EvmContext<'_>,
      target: &mut EvmWord,
  ) -> BuiltinResult {
@@ -1112,7 +1114,7 @@
      let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
 -    let res =
 -        ecx.host.selfdestruct(ecx.input.target_address, target.to_address(), skip_cold_load)?;
-+    let address = ecx.target_address;
++    let address = ecx.message().destination;
 +    let target = target.to_address();
 +    let res = ecx
 +        .host()
