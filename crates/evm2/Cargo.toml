@@ -103,7 +103,6 @@ default = [
     # c-kzg doesn't play well with nextest.
     # "c-kzg",
     "portable",
-    "bn254-mcl",
 ]
 std = [
     "alloy-consensus/std",
