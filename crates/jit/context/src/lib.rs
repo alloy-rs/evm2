@@ -224,7 +224,7 @@ impl<'a> EvmContext<'a> {
 
     /// Returns the transaction-global environment.
     #[inline]
-    pub fn tx_env(&self) -> &TxEnv<BaseEvmTypes> {
+    pub fn tx_env(&self) -> &'a TxEnv<BaseEvmTypes> {
         self.interpreter().tx_env()
     }
 
@@ -242,7 +242,7 @@ impl<'a> EvmContext<'a> {
 
     /// Returns the active frame-local call/create message.
     #[inline]
-    pub fn message(&self) -> &Message<BaseEvmTypes> {
+    pub fn message(&self) -> &'a Message<BaseEvmTypes> {
         self.interpreter().message()
     }
 

@@ -11,10 +11,12 @@ extern crate alloc;
 extern crate tracing;
 
 use alloc::vec::Vec;
-use alloy_primitives::{B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
+use core::{cmp::min, ops::Range};
 use evm2::{
     SpecId,
-    interpreter::i256,
+    bytecode::Bytecode,
+    interpreter::{Message, MessageKind, Word, i256},
     utils::{word_to_usize, word_to_usize_saturated},
     version::GasId,
 };
@@ -626,8 +628,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     sp: *mut EvmWord,
     create_kind: CreateKind,
 ) -> BuiltinResult {
-    unsafe { evm2_jit_context::evm2_api::execute_create_message(ecx, sp, create_kind as u8) }?;
-    Ok(())
+    create_inner(ecx, sp, create_kind)
 }
 
 #[unsafe(no_mangle)]
@@ -636,8 +637,292 @@ pub unsafe extern "C" fn __revmc_builtin_call(
     sp: *mut EvmWord,
     call_kind: CallKind,
 ) -> BuiltinResult {
-    unsafe { evm2_jit_context::evm2_api::execute_call_message(ecx, sp, call_kind as u8) }?;
+    let kind = match call_kind {
+        CallKind::Call => MessageKind::Call,
+        CallKind::CallCode => MessageKind::CallCode,
+        CallKind::DelegateCall => MessageKind::DelegateCall,
+        CallKind::StaticCall => MessageKind::StaticCall,
+    };
+    call_inner(ecx, sp, kind)?;
     Ok(())
+}
+
+unsafe fn pop_word(sp: &mut *mut EvmWord) -> EvmWord {
+    *sp = unsafe { (*sp).sub(1) };
+    unsafe { **sp }
+}
+
+fn resize_evm_range(
+    ecx: &mut EvmContext<'_>,
+    offset: EvmWord,
+    len: EvmWord,
+) -> Result<Range<usize>, BuiltinError> {
+    let len = word_to_usize(len.to_u256())?;
+    let offset = if len != 0 {
+        let offset = word_to_usize(offset.to_u256())?;
+        ensure_memory(ecx, offset, len)?;
+        offset
+    } else {
+        usize::MAX
+    };
+    Ok(offset..offset + len)
+}
+
+fn memory_range_bytes(ecx: &mut EvmContext<'_>, range: Range<usize>) -> Bytes {
+    if range.is_empty() {
+        return Bytes::new();
+    }
+    Bytes::copy_from_slice(ecx.memory().slice(range.start, range.len()))
+}
+
+fn get_memory_input_and_out_ranges(
+    ecx: &mut EvmContext<'_>,
+    input_offset: EvmWord,
+    input_len: EvmWord,
+    return_offset: EvmWord,
+    return_len: EvmWord,
+) -> Result<(Range<usize>, Range<usize>), BuiltinError> {
+    let input = resize_evm_range(ecx, input_offset, input_len)?;
+    let output = resize_evm_range(ecx, return_offset, return_len)?;
+    Ok((input, output))
+}
+
+const fn should_charge_new_account_gas(
+    eip161: bool,
+    transfers_value: bool,
+    target_is_empty_for_new_account_gas: bool,
+) -> bool {
+    target_is_empty_for_new_account_gas && (!eip161 || transfers_value)
+}
+
+fn load_acc_and_calc_gas(
+    ecx: &mut EvmContext<'_>,
+    to: Address,
+    transfers_value: bool,
+    create_empty_account: bool,
+    stack_gas_limit: u64,
+) -> Result<(u64, Bytecode, Address, bool), BuiltinError> {
+    let version = *ecx.version();
+    if transfers_value {
+        ecx.gas.spend(version.gas_params.get(GasId::TransferValueCost).into())?;
+    }
+
+    let additional_cold_cost = version.gas_params.cold_account_additional_cost();
+    let remaining_gas = ecx.gas.remaining();
+    let skip_cold_load = remaining_gas < additional_cold_cost;
+    let account = ecx
+        .host
+        .load_account(&to, true, skip_cold_load)
+        .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
+
+    let mut cost = 0;
+    if account.is_cold {
+        cost += additional_cold_cost;
+    }
+    let mut code = account.code;
+    let mut code_address = to;
+    if ecx.spec_id().enables(SpecId::PRAGUE)
+        && let Some(delegated_address) = code.eip7702_address()
+    {
+        cost += u64::from(version.gas_params.get(GasId::WarmStorageReadCost));
+        if cost > remaining_gas {
+            return Err(InstrStop::OutOfGas.into());
+        }
+        let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
+        let delegated_account = ecx
+            .host
+            .load_account(&delegated_address, true, skip_cold_load)
+            .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
+        if delegated_account.is_cold {
+            cost += additional_cold_cost;
+        }
+        code = delegated_account.code;
+        code_address = delegated_address;
+    }
+    if create_empty_account
+        && should_charge_new_account_gas(
+            ecx.spec_id().enables(SpecId::SPURIOUS_DRAGON),
+            transfers_value,
+            ecx.host.target_is_empty_for_new_account_gas(&to, ecx.spec_id())?,
+        )
+    {
+        cost += u64::from(version.gas_params.get(GasId::NewAccountCost));
+    }
+    ecx.gas.spend(cost)?;
+
+    let mut gas_limit = if ecx.spec_id().enables(SpecId::TANGERINE) {
+        min(version.gas_params.call_stipend_reduction(ecx.gas.remaining()), stack_gas_limit)
+    } else {
+        stack_gas_limit
+    };
+    ecx.gas.spend(gas_limit)?;
+
+    if transfers_value {
+        gas_limit = gas_limit.saturating_add(version.gas_params.get(GasId::CallStipend).into());
+    }
+
+    let disable_precompiles = code_address != to;
+    Ok((gas_limit, code, code_address, disable_precompiles))
+}
+
+fn call_inner(
+    ecx: &mut EvmContext<'_>,
+    sp: *mut EvmWord,
+    kind: MessageKind,
+) -> BuiltinResult {
+    let inputs = match kind {
+        MessageKind::Call | MessageKind::CallCode => 7,
+        MessageKind::DelegateCall | MessageKind::StaticCall => 6,
+        _ => unreachable!("invalid call message kind"),
+    };
+    let mut cursor = unsafe { sp.add(inputs) };
+    let local_gas_limit = unsafe { pop_word(&mut cursor) };
+    let to = unsafe { pop_word(&mut cursor) }.to_address();
+    let value = if matches!(kind, MessageKind::Call | MessageKind::CallCode) {
+        unsafe { pop_word(&mut cursor) }.to_u256()
+    } else {
+        Word::ZERO
+    };
+    let input_offset = unsafe { pop_word(&mut cursor) };
+    let input_len = unsafe { pop_word(&mut cursor) };
+    let return_offset = unsafe { pop_word(&mut cursor) };
+    let return_len = unsafe { pop_word(&mut cursor) };
+
+    let has_transfer = !value.is_zero();
+    if ecx.is_static && kind == MessageKind::Call && has_transfer {
+        return Err(InstrStop::CallNotAllowedInsideStatic.into());
+    }
+
+    let local_gas_limit = word_to_usize_saturated(local_gas_limit.to_u256()) as u64;
+    let (input_range, return_memory_range) =
+        get_memory_input_and_out_ranges(ecx, input_offset, input_len, return_offset, return_len)?;
+    let (gas_limit, loaded_code, resolved_code_address, disable_precompiles) =
+        load_acc_and_calc_gas(ecx, to, has_transfer, kind == MessageKind::Call, local_gas_limit)?;
+    let input = memory_range_bytes(ecx, input_range);
+
+    let current = ecx.message();
+    let (destination, caller, call_value, code_address) = match kind {
+        MessageKind::Call => (to, current.destination, value, resolved_code_address),
+        MessageKind::CallCode => {
+            (current.destination, current.destination, value, resolved_code_address)
+        }
+        MessageKind::DelegateCall => {
+            (current.destination, current.caller, current.value, resolved_code_address)
+        }
+        MessageKind::StaticCall => (to, current.destination, Word::ZERO, resolved_code_address),
+        _ => unreachable!("invalid call message kind"),
+    };
+    let mut message = Message {
+        kind,
+        depth: current.depth.saturating_add(1),
+        gas_limit,
+        destination,
+        caller,
+        input,
+        value: call_value,
+        code_address,
+        disable_precompiles,
+        salt: B256::ZERO,
+        ext: (),
+        _non_exhaustive: (),
+    };
+
+    let caller_is_static = ecx.is_static;
+    let tx_env = ecx.tx_env();
+    let mut result = ecx.host.execute_message(tx_env, loaded_code, &mut message, caller_is_static);
+    ecx.gas.erase_cost(result.gas_returned_to_parent());
+    ecx.gas.record_refund(result.refund_propagated_to_parent());
+
+    let copy_len = min(return_memory_range.len(), result.output.len());
+    if copy_len != 0 {
+        ecx.memory_mut().set(return_memory_range.start, &result.output[..copy_len]);
+    }
+    let success = EvmWord::from(Word::from(u8::from(result.stop.is_success())));
+    unsafe {
+        sp.write(success);
+    }
+    set_return_data(ecx, core::mem::take(&mut result.output));
+    Ok(())
+}
+
+fn create_inner(
+    ecx: &mut EvmContext<'_>,
+    sp: *mut EvmWord,
+    create_kind: CreateKind,
+) -> BuiltinResult {
+    if ecx.is_static {
+        return Err(InstrStop::StateChangeDuringStaticCall.into());
+    }
+
+    let is_create2 = create_kind == CreateKind::Create2;
+    let inputs = if is_create2 { 4 } else { 3 };
+    let mut cursor = unsafe { sp.add(inputs) };
+    let value = unsafe { pop_word(&mut cursor) }.to_u256();
+    let offset = unsafe { pop_word(&mut cursor) };
+    let len_word = unsafe { pop_word(&mut cursor) };
+    let salt = if is_create2 { Some(unsafe { pop_word(&mut cursor) }) } else { None };
+
+    let len = word_to_usize(len_word.to_u256())?;
+    let version = *ecx.version();
+    if ecx.spec_id().enables(SpecId::SHANGHAI) {
+        if len > version.max_initcode_size {
+            return Err(InstrStop::CreateInitCodeSizeLimit.into());
+        }
+        ecx.gas.spend(version.gas_params.initcode_cost(len))?;
+    }
+    let code_range = resize_evm_range(ecx, offset, EvmWord::from(Word::from(len)))?;
+    let input = memory_range_bytes(ecx, code_range);
+    let create_cost = if is_create2 {
+        version.gas_params.create2_cost(len)
+    } else {
+        version.gas_params.get(GasId::Create).into()
+    };
+    ecx.gas.spend(create_cost)?;
+    let gas_limit = if ecx.spec_id().enables(SpecId::TANGERINE) {
+        version.gas_params.call_stipend_reduction(ecx.gas.remaining())
+    } else {
+        ecx.gas.remaining()
+    };
+    ecx.gas.spend(gas_limit)?;
+
+    let current = ecx.message();
+    let mut message = Message {
+        kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
+        depth: current.depth.saturating_add(1),
+        gas_limit,
+        destination: current.destination,
+        caller: current.destination,
+        input,
+        value,
+        code_address: current.destination,
+        disable_precompiles: false,
+        salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
+        ext: (),
+        _non_exhaustive: (),
+    };
+    let bytecode = Bytecode::new_legacy(message.input.clone());
+    let tx_env = ecx.tx_env();
+    let result = ecx.host.execute_message(tx_env, bytecode, &mut message, false);
+    ecx.gas.erase_cost(result.gas_returned_to_parent());
+    ecx.gas.record_refund(result.refund_propagated_to_parent());
+
+    let return_data = if result.stop == InstrStop::Revert { result.output } else { Bytes::new() };
+    let address = result
+        .created_address
+        .filter(|_| result.stop.is_success())
+        .map(|address| EvmWord::from_be_slice(address.as_slice()))
+        .unwrap_or_default();
+    unsafe {
+        sp.write(address);
+    }
+    set_return_data(ecx, return_data);
+    Ok(())
+}
+
+fn set_return_data(ecx: &mut EvmContext<'_>, data: Bytes) {
+    let interpreter = ecx.interpreter_mut();
+    interpreter.set_return_data(data);
+    ecx.return_data = unsafe { &*(interpreter.return_data().as_ref() as *const [u8]) };
 }
 
 #[unsafe(no_mangle)]
@@ -714,4 +999,464 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
     Err(InstrStop::SelfDestruct.into())
 }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::Address;
+    use evm2::{
+        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles,
+        env::{BlockEnv, TxEnv},
+        ethereum::ethereum_tx_registry,
+        evm::{AccountLoad, EmptyDB, SLoad, SStore, SelfDestructResult},
+        interpreter::{GasTracker, Host, MessageResult, op},
+    };
+    use evm2_jit_context::{EvmStack, evm2_api};
+
+    #[derive(Debug)]
+    struct TestHost {
+        block: BlockEnv<BaseEvmTypes>,
+        code: Bytes,
+        execute_result: MessageResult<BaseEvmTypes>,
+        calls: Vec<Message<BaseEvmTypes>>,
+        call_static_flags: Vec<bool>,
+    }
+
+    impl Default for TestHost {
+        fn default() -> Self {
+            Self {
+                block: BlockEnv::default(),
+                code: Bytes::new(),
+                execute_result: MessageResult {
+                    stop: InstrStop::Return,
+                    ..MessageResult::default()
+                },
+                calls: Vec::new(),
+                call_static_flags: Vec::new(),
+            }
+        }
+    }
+
+    impl Host<BaseEvmTypes> for TestHost {
+        fn spec_id(&self) -> SpecId {
+            SpecId::CANCUN
+        }
+
+        fn block_env(&mut self) -> &BlockEnv<BaseEvmTypes> {
+            &self.block
+        }
+
+        fn load_account(
+            &mut self,
+            address: &Address,
+            load_code: bool,
+            _skip_cold_load: bool,
+        ) -> Result<AccountLoad, InstrStop> {
+            Ok(AccountLoad {
+                balance: address.into_word().into(),
+                code_hash: B256::ZERO,
+                code: if load_code {
+                    Bytecode::new_legacy(self.code.clone())
+                } else {
+                    Bytecode::default()
+                },
+                exists: true,
+                is_empty: false,
+                is_cold: false,
+                _non_exhaustive: (),
+            })
+        }
+
+        fn target_is_empty_for_new_account_gas(
+            &mut self,
+            _address: &Address,
+            _spec_id: SpecId,
+        ) -> Result<bool, InstrStop> {
+            Ok(false)
+        }
+
+        fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop> {
+            Ok(Some(B256::with_last_byte(number.wrapping_to::<u8>())))
+        }
+
+        fn sload(
+            &mut self,
+            _address: &Address,
+            _key: &Word,
+            _skip_cold_load: bool,
+        ) -> Result<SLoad, InstrStop> {
+            Ok(SLoad { value: Word::ZERO, is_cold: false, _non_exhaustive: () })
+        }
+
+        fn sstore(
+            &mut self,
+            _address: &Address,
+            _key: &Word,
+            value: &Word,
+            _skip_cold_load: bool,
+        ) -> Result<SStore, InstrStop> {
+            Ok(SStore {
+                original_value: Word::ZERO,
+                present_value: Word::ZERO,
+                new_value: *value,
+                is_cold: false,
+                _non_exhaustive: (),
+            })
+        }
+
+        fn tload(&mut self, _address: &Address, _key: &Word) -> Word {
+            Word::ZERO
+        }
+
+        fn tstore(&mut self, _address: &Address, _key: &Word, _value: &Word) {}
+
+        fn log(&mut self, _log: Log) {}
+
+        fn execute_message(
+            &mut self,
+            _tx_env: &TxEnv<BaseEvmTypes>,
+            _bytecode: Bytecode,
+            message: &mut Message<BaseEvmTypes>,
+            caller_is_static: bool,
+        ) -> MessageResult<BaseEvmTypes> {
+            self.call_static_flags
+                .push(caller_is_static || message.kind == MessageKind::StaticCall);
+            self.calls.push(message.clone());
+            self.execute_result.clone()
+        }
+
+        fn selfdestruct(
+            &mut self,
+            _contract: &Address,
+            _target: &Address,
+            _skip_cold_load: bool,
+        ) -> Result<SelfDestructResult, InstrStop> {
+            Ok(SelfDestructResult::default())
+        }
+    }
+
+    struct PreparedJitFrame<'a> {
+        ecx: evm2_api::EvmContext<'a>,
+        stack: &'a mut EvmStack,
+    }
+
+    fn address_word(address: &Address) -> EvmWord {
+        EvmWord::from_be_slice(address.as_slice())
+    }
+
+    fn write_call_stack(
+        stack: &mut EvmStack,
+        target: Address,
+        gas_limit: u64,
+        value: Option<Word>,
+    ) {
+        stack.set(0, EvmWord::ZERO);
+        stack.set(1, EvmWord::ZERO);
+        stack.set(2, EvmWord::ZERO);
+        stack.set(3, EvmWord::ZERO);
+        if let Some(value) = value {
+            stack.set(4, EvmWord::from(value));
+            stack.set(5, address_word(&target));
+            stack.set(6, EvmWord::from(Word::from(gas_limit)));
+        } else {
+            stack.set(4, address_word(&target));
+            stack.set(5, EvmWord::from(Word::from(gas_limit)));
+        }
+    }
+
+    fn base_evm(spec_id: SpecId) -> Evm<BaseEvmTypes> {
+        Evm::<BaseEvmTypes>::new(
+            spec_id,
+            BlockEnv::default(),
+            ethereum_tx_registry(spec_id),
+            EmptyDB::default(),
+            Precompiles::base(spec_id),
+        )
+    }
+
+    fn prepare_frame<'a>(
+        interpreter: &'a mut evm2::interpreter::Interpreter<'_, BaseEvmTypes>,
+        host: &'a mut TestHost,
+    ) -> PreparedJitFrame<'a> {
+        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
+            SpecId::CANCUN,
+        );
+        let config = Box::leak(Box::new(config));
+        let mut prepare_host = base_evm(SpecId::CANCUN);
+        interpreter.prepare_jit_run(config, &mut prepare_host);
+        let (ecx, stack, _stack_len) =
+            evm2_api::EvmContext::from_interpreter_with_stack(interpreter, host);
+        PreparedJitFrame { ecx, stack }
+    }
+
+    fn base_context<'a, 'ctx>(ecx: &'a mut evm2_api::EvmContext<'ctx>) -> &'a mut EvmContext<'ctx> {
+        unsafe { &mut *(ecx as *mut evm2_api::EvmContext<'ctx>).cast::<EvmContext<'ctx>>() }
+    }
+
+    #[test]
+    fn call_builtin_executes_message() {
+        let target = Address::from([0x22; 20]);
+        let caller = Address::from([0x11; 20]);
+        let child_output = Bytes::from_static(&[0xaa, 0xbb, 0xcc]);
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::Return,
+                gas: GasTracker::new(37),
+                output: child_output.clone(),
+                ..MessageResult::default()
+            },
+            ..TestHost::default()
+        };
+        let tx_env = TxEnv::default();
+        let message = Message { gas_limit: 1_000_000, destination: caller, ..Message::default() };
+        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
+            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        {
+            let mut frame = prepare_frame(&mut interpreter, &mut host);
+            base_context(&mut frame.ecx).memory_mut().resize(0, 16).unwrap();
+            base_context(&mut frame.ecx).memory_mut().set(4, b"in");
+            frame.stack.set(0, EvmWord::from(Word::from(2)));
+            frame.stack.set(1, EvmWord::from(Word::from(8)));
+            frame.stack.set(2, EvmWord::from(Word::from(2)));
+            frame.stack.set(3, EvmWord::from(Word::from(4)));
+            frame.stack.set(4, EvmWord::ZERO);
+            frame.stack.set(5, address_word(&target));
+            frame.stack.set(6, EvmWord::from(Word::from(50_000)));
+
+            let sp = frame.stack.as_mut_ptr();
+            unsafe { __revmc_builtin_call(base_context(&mut frame.ecx), sp, CallKind::Call) };
+
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+            assert_eq!(frame.ecx.return_data, child_output.as_ref());
+            assert_eq!(base_context(&mut frame.ecx).memory().slice(8, 2), &[0xaa, 0xbb]);
+            frame.ecx.output = Bytes::copy_from_slice(b"frame-output");
+            assert_eq!(frame.ecx.return_data, child_output.as_ref());
+        }
+
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::Call);
+        assert_eq!(host.calls[0].destination, target);
+        assert_eq!(host.calls[0].caller, caller);
+        assert_eq!(host.calls[0].input.as_ref(), b"in");
+        assert!(!host.call_static_flags[0]);
+    }
+
+    #[test]
+    fn callcode_builtin_maps_message_fields() {
+        let target = Address::from([0x22; 20]);
+        let destination = Address::from([0x33; 20]);
+        let caller = Address::from([0x11; 20]);
+        let stack_value = Word::from(0x12);
+        let mut host = TestHost::default();
+        let tx_env = TxEnv::default();
+        let message = Message {
+            gas_limit: 1_000_000,
+            destination,
+            caller,
+            value: Word::from(0x99),
+            ..Message::default()
+        };
+        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
+            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        {
+            let mut frame = prepare_frame(&mut interpreter, &mut host);
+            write_call_stack(frame.stack, target, 50_000, Some(stack_value));
+
+            let sp = frame.stack.as_mut_ptr();
+            unsafe { __revmc_builtin_call(base_context(&mut frame.ecx), sp, CallKind::CallCode) };
+
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+        }
+
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::CallCode);
+        assert_eq!(host.calls[0].destination, destination);
+        assert_eq!(host.calls[0].caller, destination);
+        assert_eq!(host.calls[0].value, stack_value);
+        assert_eq!(host.calls[0].code_address, target);
+        assert!(!host.call_static_flags[0]);
+    }
+
+    #[test]
+    fn delegatecall_builtin_maps_message_fields() {
+        let target = Address::from([0x22; 20]);
+        let destination = Address::from([0x33; 20]);
+        let caller = Address::from([0x11; 20]);
+        let current_value = Word::from(0x99);
+        let mut host = TestHost::default();
+        let tx_env = TxEnv::default();
+        let message = Message {
+            gas_limit: 1_000_000,
+            destination,
+            caller,
+            value: current_value,
+            ..Message::default()
+        };
+        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
+            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        {
+            let mut frame = prepare_frame(&mut interpreter, &mut host);
+            write_call_stack(frame.stack, target, 50_000, None);
+
+            let sp = frame.stack.as_mut_ptr();
+            unsafe {
+                __revmc_builtin_call(base_context(&mut frame.ecx), sp, CallKind::DelegateCall)
+            };
+
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+        }
+
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::DelegateCall);
+        assert_eq!(host.calls[0].destination, destination);
+        assert_eq!(host.calls[0].caller, caller);
+        assert_eq!(host.calls[0].value, current_value);
+        assert_eq!(host.calls[0].code_address, target);
+        assert!(!host.call_static_flags[0]);
+    }
+
+    #[test]
+    fn staticcall_builtin_maps_message_fields() {
+        let target = Address::from([0x22; 20]);
+        let destination = Address::from([0x33; 20]);
+        let caller = Address::from([0x11; 20]);
+        let mut host = TestHost::default();
+        let tx_env = TxEnv::default();
+        let message = Message {
+            gas_limit: 1_000_000,
+            destination,
+            caller,
+            value: Word::from(0x99),
+            ..Message::default()
+        };
+        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
+            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        {
+            let mut frame = prepare_frame(&mut interpreter, &mut host);
+            write_call_stack(frame.stack, target, 50_000, None);
+
+            let sp = frame.stack.as_mut_ptr();
+            unsafe { __revmc_builtin_call(base_context(&mut frame.ecx), sp, CallKind::StaticCall) };
+
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+        }
+
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::StaticCall);
+        assert_eq!(host.calls[0].destination, target);
+        assert_eq!(host.calls[0].caller, destination);
+        assert_eq!(host.calls[0].value, Word::ZERO);
+        assert_eq!(host.calls[0].code_address, target);
+        assert!(host.call_static_flags[0]);
+    }
+
+    #[test]
+    fn create_builtin_executes_message() {
+        let created = Address::from([0x77; 20]);
+        let initcode = [op::STOP];
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::Return,
+                gas: GasTracker::new(11),
+                created_address: Some(created),
+                ..MessageResult::default()
+            },
+            ..TestHost::default()
+        };
+        let tx_env = TxEnv::default();
+        let message = Message { gas_limit: 1_000_000, ..Message::default() };
+        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
+            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        {
+            let mut frame = prepare_frame(&mut interpreter, &mut host);
+            base_context(&mut frame.ecx).memory_mut().resize(0, 1).unwrap();
+            base_context(&mut frame.ecx).memory_mut().set(0, &initcode);
+            frame.stack.set(0, EvmWord::from(Word::from(initcode.len())));
+            frame.stack.set(1, EvmWord::ZERO);
+            frame.stack.set(2, EvmWord::ZERO);
+
+            let sp = frame.stack.as_mut_ptr();
+            unsafe { __revmc_builtin_create(base_context(&mut frame.ecx), sp, CreateKind::Create) };
+
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));
+            assert!(frame.ecx.return_data.is_empty());
+        }
+
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::Create);
+        assert_eq!(host.calls[0].input.as_ref(), initcode);
+    }
+
+    #[test]
+    fn create2_builtin_maps_salt() {
+        let created = Address::from([0x77; 20]);
+        let initcode = [op::STOP];
+        let salt = EvmWord::from(Word::from(0xabcdu64));
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::Return,
+                gas: GasTracker::new(11),
+                created_address: Some(created),
+                ..MessageResult::default()
+            },
+            ..TestHost::default()
+        };
+        let tx_env = TxEnv::default();
+        let message = Message { gas_limit: 1_000_000, ..Message::default() };
+        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
+            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        {
+            let mut frame = prepare_frame(&mut interpreter, &mut host);
+            base_context(&mut frame.ecx).memory_mut().resize(0, 1).unwrap();
+            base_context(&mut frame.ecx).memory_mut().set(0, &initcode);
+            frame.stack.set(0, salt);
+            frame.stack.set(1, EvmWord::from(Word::from(initcode.len())));
+            frame.stack.set(2, EvmWord::ZERO);
+            frame.stack.set(3, EvmWord::ZERO);
+
+            let sp = frame.stack.as_mut_ptr();
+            unsafe {
+                __revmc_builtin_create(base_context(&mut frame.ecx), sp, CreateKind::Create2)
+            };
+
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));
+            assert!(frame.ecx.return_data.is_empty());
+        }
+
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::Create2);
+        assert_eq!(host.calls[0].input.as_ref(), initcode);
+        assert_eq!(host.calls[0].salt, B256::from(salt.to_be_bytes()));
+    }
 }
