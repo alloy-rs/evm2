@@ -53,8 +53,8 @@ fn main() {
 
 ```bash
 cargo test -p evm2-jit-runtime
-cargo cli-jit
-cargo eest-jit
+cargo cli
+cargo st
 ```
 
 The full EEST runner lives in `evm2-eest`. See the repository-level `AGENTS.md`

@@ -56,8 +56,8 @@
  ```bash
 -git submodule update --init --checkout --depth 1 tests/ethereum-tests
 +cargo test -p evm2-jit-runtime
-+cargo cli-jit
-+cargo eest-jit
++cargo cli
++cargo st
  ```
 
 -Then run the state tests:

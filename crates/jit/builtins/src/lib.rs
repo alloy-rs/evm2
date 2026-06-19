@@ -209,8 +209,7 @@ pub unsafe extern "C" fn __revmc_builtin_balance(
     ecx: &mut EvmContext<'_>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
-    let addr = address.to_address();
-    let account = load_account(ecx, addr, false)?;
+    let account = load_account(ecx, &address.to_address(), false)?;
     *address = account.balance.into();
     Ok(())
 }
@@ -293,8 +292,7 @@ pub unsafe extern "C" fn __revmc_builtin_extcodesize(
     ecx: &mut EvmContext<'_>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
-    let addr = address.to_address();
-    let account = load_account(ecx, addr, true)?;
+    let account = load_account(ecx, &address.to_address(), true)?;
     *address = U256::from(account.code.len()).into();
     Ok(())
 }
@@ -305,7 +303,6 @@ pub unsafe extern "C" fn __revmc_builtin_extcodecopy(
     sp: &mut [EvmWord; 4],
 ) -> BuiltinResult {
     let rev![address, memory_offset, code_offset, len] = sp;
-    let addr = address.to_address();
     let len = word_to_usize(len.to_u256())?;
     ecx.gas.spend(ecx.gas_params().extcodecopy_cost(len))?;
 
@@ -315,7 +312,7 @@ pub unsafe extern "C" fn __revmc_builtin_extcodecopy(
         ensure_memory(ecx, memory_offset_usize, len)?;
     }
 
-    let account = load_account(ecx, addr, true)?;
+    let account = load_account(ecx, &address.to_address(), true)?;
     let code = account.code.original_bytes();
 
     let code_offset_usize = core::cmp::min(word_to_usize_saturated(code_offset.to_u256()), code.len());
@@ -355,8 +352,7 @@ pub unsafe extern "C" fn __revmc_builtin_extcodehash(
     ecx: &mut EvmContext<'_>,
     address: &mut EvmWord,
 ) -> BuiltinResult {
-    let addr = address.to_address();
-    let account = load_account(ecx, addr, false)?;
+    let account = load_account(ecx, &address.to_address(), false)?;
     let code_hash = if account.is_empty { B256::ZERO } else { account.code_hash };
     *address = EvmWord::from_be_bytes(code_hash);
     Ok(())
@@ -438,8 +434,7 @@ pub unsafe extern "C" fn __revmc_builtin_self_balance(
     ecx: &mut EvmContext<'_>,
     slot: &mut EvmWord,
 ) -> BuiltinResult {
-    let address = ecx.message().destination;
-    let balance = load_account(ecx, address, false)?.balance;
+    let balance = load_account(ecx, &ecx.message().destination, false)?.balance;
     *slot = balance.into();
     Ok(())
 }
@@ -479,20 +474,20 @@ pub unsafe extern "C" fn __revmc_builtin_sload(
     ecx: &mut EvmContext<'_>,
     index: &mut EvmWord,
 ) -> BuiltinResult {
-    let address = ecx.message().destination;
+    let address = &ecx.message().destination;
     let key = index.to_u256();
     if ecx.spec_id().enables(SpecId::BERLIN) {
         let additional_cold_cost = u64::from(ecx.gas_params().get(GasId::ColdStorageAdditionalCost));
         let skip_cold = ecx.gas.remaining() < additional_cold_cost;
         let storage =
-            ecx.host().sload(&address, &key, skip_cold).map_err(|stop| host_error_stop(stop, skip_cold))?;
+            ecx.host().sload(address, &key, skip_cold).map_err(|stop| host_error_stop(stop, skip_cold))?;
         if storage.is_cold {
             ecx.gas.spend(additional_cold_cost)?;
         }
         *index = storage.value.into();
     } else {
         let storage =
-            ecx.host().sload(&address, &key, false).map_err(|stop| host_error_stop(stop, false))?;
+            ecx.host().sload(address, &key, false).map_err(|stop| host_error_stop(stop, false))?;
         *index = storage.value.into();
     }
 
@@ -518,7 +513,7 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
     let rev![index, value] = sp;
     require_non_staticcall(ecx)?;
 
-    let target = ecx.message().destination;
+    let target = &ecx.message().destination;
     let is_istanbul = ecx.spec_id().enables(SpecId::ISTANBUL);
 
     // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
@@ -534,13 +529,13 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
         let index = index.to_u256();
         let value = value.to_u256();
         ecx.host()
-            .sstore(&target, &index, &value, skip_cold)
+            .sstore(target, &index, &value, skip_cold)
             .map_err(|stop| host_error_stop(stop, skip_cold))?
     } else {
         let index = index.to_u256();
         let value = value.to_u256();
         ecx.host()
-            .sstore(&target, &index, &value, false)
+            .sstore(target, &index, &value, false)
             .map_err(|stop| host_error_stop(stop, false))?
     };
 
@@ -560,9 +555,9 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_tload(ecx: &mut EvmContext<'_>, key: &mut EvmWord) {
-    let target = ecx.message().destination;
+    let target = &ecx.message().destination;
     let key_word = key.to_u256();
-    *key = ecx.host().tload(&target, &key_word).into();
+    *key = ecx.host().tload(target, &key_word).into();
 }
 
 #[unsafe(no_mangle)]
@@ -572,8 +567,8 @@ pub unsafe extern "C" fn __revmc_builtin_tstore(
 ) -> BuiltinResult {
     let rev![key, value] = sp;
     require_non_staticcall(ecx)?;
-    let target = ecx.message().destination;
-    ecx.host().tstore(&target, &key.to_u256(), &value.to_u256());
+    let target = &ecx.message().destination;
+    ecx.host().tstore(target, &key.to_u256(), &value.to_u256());
     Ok(())
 }
 
@@ -973,11 +968,11 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
 
     let cold_load_gas = ecx.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
-    let address = ecx.message().destination;
+    let address = &ecx.message().destination;
     let target = target.to_address();
     let res = ecx
         .host()
-        .selfdestruct(&address, &target, skip_cold_load)
+        .selfdestruct(address, &target, skip_cold_load)
         .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
 
     // EIP-161: State trie clearing (invariant-preserving alternative)

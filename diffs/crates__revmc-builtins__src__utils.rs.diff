@@ -83,9 +83,10 @@
  /// Pre-Berlin, `cold_account_additional_cost` is 0, so the cold load logic is a no-op.
 -pub(crate) fn load_account<'a>(
 -    ecx: &'a mut EvmContext<'_>,
+-    address: Address,
 +pub(crate) fn load_account(
 +    ecx: &mut EvmContext<'_>,
-     address: Address,
++    address: &Address,
      load_code: bool,
 -) -> Result<AccountInfoLoad<'a>, BuiltinError> {
 -    let cold_load_gas = ecx.gas_params.cold_account_additional_cost();
@@ -95,7 +96,7 @@
 -    let account = ecx.host.load_account_info_skip_cold_load(address, load_code, skip_cold_load)?;
 +    let account = ecx
 +        .host()
-+        .load_account(&address, load_code, skip_cold_load)
++        .load_account(address, load_code, skip_cold_load)
 +        .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
      if account.is_cold {
 -        gas!(ecx, cold_load_gas);

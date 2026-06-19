@@ -60,14 +60,14 @@ pub(crate) fn word_to_u64_saturated(value: U256) -> u64 {
 /// Pre-Berlin, `cold_account_additional_cost` is 0, so the cold load logic is a no-op.
 pub(crate) fn load_account(
     ecx: &mut EvmContext<'_>,
-    address: Address,
+    address: &Address,
     load_code: bool,
 ) -> Result<AccountLoad, BuiltinError> {
     let cold_load_gas = ecx.gas_params().cold_account_additional_cost();
     let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
     let account = ecx
         .host()
-        .load_account(&address, load_code, skip_cold_load)
+        .load_account(address, load_code, skip_cold_load)
         .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
     if account.is_cold {
         ecx.gas.spend(cold_load_gas)?;

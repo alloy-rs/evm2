@@ -41,7 +41,7 @@ cargo docs # check docs
 cargo nextest run # test (default filter)
 cargo nextest run -E "not (test(glob*)) | package(/regex.*/)" # further filter tests
 cargo nextest run -p evm2-eest --test eest --ignore-default-filter # include EEST fixtures
-cargo st-jit # include EEST fixtures with interpreter, JIT, and AOT suites
+cargo st # include EEST fixtures with interpreter, JIT, and AOT suites
 ```
 
 Use `EVM2_DISPATCH_BACKEND` to force an interpreter dispatch backend for manual

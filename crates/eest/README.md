@@ -36,13 +36,13 @@ Enable the `jit` feature to add compiled-backend variants for every discovered
 state and blockchain fixture:
 
 ```sh
-cargo st-jit
+cargo st
 ```
 
 This is equivalent to:
 
 ```sh
-cargo nextest run -p evm2-eest --features jit --test eest --ignore-default-filter
+cargo nextest run -p evm2-eest --all-features --test eest --ignore-default-filter
 ```
 
 With `jit` enabled, the same fixture tree is discovered three ways:
