@@ -738,7 +738,7 @@ fn run_compiled_test_case_with_context(
 
         if !skip_jit_memory {
             assert_eq!(
-                MemDisplay(ecx.memory().as_slice()),
+                MemDisplay(unsafe { ecx.interpreter.as_ref() }.memory_ref().as_slice()),
                 MemDisplay(expected_memory),
                 "memory mismatch"
             );

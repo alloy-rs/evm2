@@ -5,13 +5,13 @@
 -use revm_interpreter::instructions::gas_table_spec;
 -use revm_primitives::hardfork::SpecId;
 +use evm2::{
-+    BaseEvmConfig, BaseEvmTypes, OpcodeConfig, SpecId,
++    BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, SpecId,
 +    interpreter::{op, opcode::OpCode},
 +};
 
  /// Opcode information.
  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-@@ -76,16 +77,23 @@
+@@ -76,16 +77,13 @@
 
  /// Returns the static info map for the given `SpecId`.
  pub const fn op_info_map(spec_id: SpecId) -> &'static [OpcodeInfo; 256] {
@@ -25,27 +25,17 @@
 -        }
 -        maps
 -    };
-+    static MAPS: [[OpcodeInfo; 256]; SpecId::COUNT] = [
-+        make_map::<{ SpecId::FRONTIER as u32 }>(),
-+        make_map::<{ SpecId::HOMESTEAD as u32 }>(),
-+        make_map::<{ SpecId::TANGERINE as u32 }>(),
-+        make_map::<{ SpecId::SPURIOUS_DRAGON as u32 }>(),
-+        make_map::<{ SpecId::BYZANTIUM as u32 }>(),
-+        make_map::<{ SpecId::PETERSBURG as u32 }>(),
-+        make_map::<{ SpecId::ISTANBUL as u32 }>(),
-+        make_map::<{ SpecId::BERLIN as u32 }>(),
-+        make_map::<{ SpecId::LONDON as u32 }>(),
-+        make_map::<{ SpecId::MERGE as u32 }>(),
-+        make_map::<{ SpecId::SHANGHAI as u32 }>(),
-+        make_map::<{ SpecId::CANCUN as u32 }>(),
-+        make_map::<{ SpecId::PRAGUE as u32 }>(),
-+        make_map::<{ SpecId::OSAKA as u32 }>(),
-+        make_map::<{ SpecId::AMSTERDAM as u32 }>(),
-+    ];
++    macro_rules! make_maps {
++        ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {
++            [$(make_map::<{ SpecId::$spec as u32 }>(),)*]
++        };
++    }
++
++    static MAPS: [[OpcodeInfo; 256]; SpecId::COUNT] = evm2::for_each_spec!([] make_maps);
      &MAPS[spec_id as usize]
  }
 
-@@ -149,7 +157,7 @@
+@@ -149,7 +147,7 @@
      (op::SLOTNUM, SpecId::AMSTERDAM),
  ];
 
@@ -54,14 +44,17 @@
  const UNSUPPORTED_OPCODES: &[u8] = &[];
 
  const fn contains(haystack: &[u8], needle: u8) -> bool {
-@@ -163,21 +171,22 @@
+@@ -163,21 +161,25 @@
      false
  }
 
 -const fn make_map(spec_id: SpecId) -> [OpcodeInfo; 256] {
 -    let table = gas_table_spec(spec_id);
 +const fn make_map<const BASE_SPEC_ID: u32>() -> [OpcodeInfo; 256] {
-+    let config = OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<BASE_SPEC_ID>>();
++    let config = <<BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::Config<
++        BASE_SPEC_ID,
++        { u32::MAX },
++    > as EvmConfig<BaseEvmTypes>>::OPCODE_CONFIG;
 +    let spec_id = SpecId::try_from_u32(BASE_SPEC_ID).expect("invalid spec id");
      let mut map = [OpcodeInfo(OpcodeInfo::UNKNOWN); 256];
 
@@ -82,7 +75,7 @@
          // unknown, so they return `NotActivated` instead of `OpcodeNotFound` at runtime.
          if contains(UNSUPPORTED_OPCODES, op) {
              map[op as usize].set_disabled();
-@@ -192,7 +201,7 @@
+@@ -192,7 +194,7 @@
          let gas = if is_fully_dynamic {
              0u16
          } else {
@@ -91,7 +84,7 @@
              assert!(
                  static_gas <= OpcodeInfo::MASK as u64,
                  "static gas exceeds OpcodeInfo capacity"
-@@ -214,7 +223,7 @@
+@@ -214,7 +216,7 @@
      let mut j = 0;
      while j < SPEC_GATED_OPCODES.len() {
          let (op, required_spec) = SPEC_GATED_OPCODES[j];

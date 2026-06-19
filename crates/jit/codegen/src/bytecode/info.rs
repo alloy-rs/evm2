@@ -1,5 +1,5 @@
 use evm2::{
-    BaseEvmConfig, BaseEvmTypes, OpcodeConfig, SpecId,
+    BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, SpecId,
     interpreter::{op, opcode::OpCode},
 };
 
@@ -77,23 +77,13 @@ impl OpcodeInfo {
 
 /// Returns the static info map for the given `SpecId`.
 pub const fn op_info_map(spec_id: SpecId) -> &'static [OpcodeInfo; 256] {
-    static MAPS: [[OpcodeInfo; 256]; SpecId::COUNT] = [
-        make_map::<{ SpecId::FRONTIER as u32 }>(),
-        make_map::<{ SpecId::HOMESTEAD as u32 }>(),
-        make_map::<{ SpecId::TANGERINE as u32 }>(),
-        make_map::<{ SpecId::SPURIOUS_DRAGON as u32 }>(),
-        make_map::<{ SpecId::BYZANTIUM as u32 }>(),
-        make_map::<{ SpecId::PETERSBURG as u32 }>(),
-        make_map::<{ SpecId::ISTANBUL as u32 }>(),
-        make_map::<{ SpecId::BERLIN as u32 }>(),
-        make_map::<{ SpecId::LONDON as u32 }>(),
-        make_map::<{ SpecId::MERGE as u32 }>(),
-        make_map::<{ SpecId::SHANGHAI as u32 }>(),
-        make_map::<{ SpecId::CANCUN as u32 }>(),
-        make_map::<{ SpecId::PRAGUE as u32 }>(),
-        make_map::<{ SpecId::OSAKA as u32 }>(),
-        make_map::<{ SpecId::AMSTERDAM as u32 }>(),
-    ];
+    macro_rules! make_maps {
+        ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {
+            [$(make_map::<{ SpecId::$spec as u32 }>(),)*]
+        };
+    }
+
+    static MAPS: [[OpcodeInfo; 256]; SpecId::COUNT] = evm2::for_each_spec!([] make_maps);
     &MAPS[spec_id as usize]
 }
 
@@ -172,7 +162,10 @@ const fn contains(haystack: &[u8], needle: u8) -> bool {
 }
 
 const fn make_map<const BASE_SPEC_ID: u32>() -> [OpcodeInfo; 256] {
-    let config = OpcodeConfig::<BaseEvmTypes>::base::<BaseEvmConfig<BASE_SPEC_ID>>();
+    let config = <<BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::Config<
+        BASE_SPEC_ID,
+        { u32::MAX },
+    > as EvmConfig<BaseEvmTypes>>::OPCODE_CONFIG;
     let spec_id = SpecId::try_from_u32(BASE_SPEC_ID).expect("invalid spec id");
     let mut map = [OpcodeInfo(OpcodeInfo::UNKNOWN); 256];
 
