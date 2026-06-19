@@ -84,8 +84,8 @@ Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_di
 - [x] crates__revmc__build.rs.diff
 - [x] crates__revmc__src__lib.rs.diff
 - [x] docs__out-of-process-jit.md.diff
-- [x] examples__compiler__Cargo.toml.diff
-- [x] examples__compiler__build.rs.diff
+- [ ] examples__compiler__Cargo.toml.diff
+- [ ] examples__compiler__build.rs.diff
 - [ ] examples__compiler__src__main.rs.diff
 - [x] scripts__bench.py.diff
 - [x] scripts__utils.py.diff

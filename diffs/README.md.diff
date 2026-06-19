@@ -26,7 +26,7 @@
 
  ## Requirements
 
-@@ -38,42 +38,30 @@
+@@ -38,42 +38,28 @@
 
  ## Usage
 
@@ -45,8 +45,7 @@
  ```
 
 -You can check out the [examples](/examples) directory for example usage.
-+You can check out the [compiler example](/crates/jit/examples/compiler) for example usage.
-
+-
  ## Testing
 
 -The [Ethereum state tests](https://github.com/ethereum/tests) are included as a git submodule.

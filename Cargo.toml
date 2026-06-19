@@ -11,7 +11,6 @@ members = [
     "crates/jit/builtins",
     "crates/jit/codegen",
     "crates/jit/context",
-    "crates/jit/examples/compiler",
     "crates/jit/llvm",
     "crates/jit/runtime",
 ]

@@ -49,8 +49,6 @@ fn main() {
 }
 ```
 
-You can check out the [compiler example](/crates/jit/examples/compiler) for example usage.
-
 ## Testing
 
 ```bash
