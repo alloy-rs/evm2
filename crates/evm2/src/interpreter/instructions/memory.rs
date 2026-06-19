@@ -108,7 +108,7 @@ mod tests {
         let tx_env = TxEnv::default();
         let message = Message { gas_limit: 10_000, ..Message::default() };
         let bytecode = Bytecode::new_legacy(Bytes::from(code));
-        let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
+        let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
         let mut host = TestHost::default();
         let err = interp.run(&config, &mut host);
 

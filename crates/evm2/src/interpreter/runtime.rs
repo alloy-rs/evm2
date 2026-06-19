@@ -77,14 +77,9 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
 impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// Creates an interpreter from analyzed bytecode, a transaction-global environment, and a
     /// frame-local message.
-    pub fn new(
-        bytecode: Bytecode,
-        tx_env: &'frame TxEnv<T>,
-        message: &'frame Message<T>,
-        caller_is_static: bool,
-    ) -> Self {
+    pub fn new(bytecode: Bytecode, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) -> Self {
         let mut interp = Self::default();
-        interp.init(bytecode, tx_env, message, caller_is_static);
+        interp.init(bytecode, tx_env, message);
         interp
     }
 
@@ -94,10 +89,9 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         bytecode: Bytecode,
         tx_env: &'frame TxEnv<T>,
         message: &'frame Message<T>,
-        caller_is_static: bool,
     ) {
         let gas_limit = message.gas_limit;
-        let is_static = caller_is_static || matches!(message.kind, MessageKind::StaticCall);
+        let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
         self.pc = bytecode.original_byte_slice().as_ptr();
         self.bytecode = bytecode;
         self.stack_len = 0;
