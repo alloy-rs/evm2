@@ -29,7 +29,7 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     /// refund, which evm2 does not model.
     pub state_gas_spent: u64,
     /// Gas refund (capped per EIP-3529), before the EIP-7623 floor adjustment. Mirrors revm
-    /// `ResultGas::inner_refunded`; use [`Self::final_refunded`] for the effective refund.
+    /// `ResultGas::inner_refunded`; use [`Self::refund_post_floor`] for the post-floor refund.
     pub refunded: u64,
     /// EIP-7623 floor gas. Zero when not applicable. Mirrors revm `ResultGas::floor_gas`.
     pub floor_gas: u64,
@@ -50,34 +50,10 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
 }
 
 impl<T: EvmTypes> TxResult<T> {
-    /// Returns the total gas spent (regular + state) before refund.
-    #[inline]
-    pub const fn total_gas_spent(&self) -> u64 {
-        self.total_gas_spent
-    }
-
-    /// Returns the state gas spent by the transaction (EIP-8037).
-    #[inline]
-    pub const fn state_gas_spent(&self) -> u64 {
-        self.state_gas_spent
-    }
-
-    /// Returns the raw refund (capped per EIP-3529), before the EIP-7623 floor adjustment.
-    #[inline]
-    pub const fn refunded(&self) -> u64 {
-        self.refunded
-    }
-
-    /// Returns the EIP-7623 floor gas (zero when not applicable).
-    #[inline]
-    pub const fn floor_gas(&self) -> u64 {
-        self.floor_gas
-    }
-
     /// Returns the receipt gas-used value: `max(total_gas_spent - refunded, floor_gas)`.
     #[inline]
     pub const fn tx_gas_used(&self) -> u64 {
-        let spent_sub_refunded = self.spent_sub_refunded();
+        let spent_sub_refunded = self.total_gas_spent.saturating_sub(self.refunded);
         if spent_sub_refunded > self.floor_gas { spent_sub_refunded } else { self.floor_gas }
     }
 
@@ -94,17 +70,15 @@ impl<T: EvmTypes> TxResult<T> {
         self.state_gas_spent
     }
 
-    /// Returns `total_gas_spent - refunded`, before the EIP-7623 floor check.
-    #[inline]
-    pub const fn spent_sub_refunded(&self) -> u64 {
-        self.total_gas_spent.saturating_sub(self.refunded)
-    }
-
     /// Returns the effective refund after the EIP-7623 floor adjustment: zero when the floor
     /// absorbs it, otherwise the raw refund.
     #[inline]
-    pub const fn final_refunded(&self) -> u64 {
-        if self.spent_sub_refunded() < self.floor_gas { 0 } else { self.refunded }
+    pub const fn refund_post_floor(&self) -> u64 {
+        if self.total_gas_spent.saturating_sub(self.refunded) < self.floor_gas {
+            0
+        } else {
+            self.refunded
+        }
     }
 }
 
@@ -323,9 +297,8 @@ mod tests {
     fn gas_breakdown_getters_match_revm_result_gas() {
         // Floor inactive: tx_gas_used = total_gas_spent - refunded, refund is effective.
         let r = result(100_000, 30_000, 8_000, 21_000);
-        assert_eq!(r.spent_sub_refunded(), 92_000);
         assert_eq!(r.tx_gas_used(), 92_000);
-        assert_eq!(r.final_refunded(), 8_000);
+        assert_eq!(r.refund_post_floor(), 8_000);
         // Block split: regular + state == total.
         assert_eq!(r.block_regular_gas_used(), 70_000);
         assert_eq!(r.block_state_gas_used(), 30_000);
@@ -336,8 +309,7 @@ mod tests {
     fn floor_gas_absorbs_refund() {
         // Floor active: spent - refunded < floor, so floor wins and the refund is zeroed.
         let r = result(50_000, 0, 40_000, 21_000);
-        assert_eq!(r.spent_sub_refunded(), 10_000);
         assert_eq!(r.tx_gas_used(), 21_000);
-        assert_eq!(r.final_refunded(), 0);
+        assert_eq!(r.refund_post_floor(), 0);
     }
 }
