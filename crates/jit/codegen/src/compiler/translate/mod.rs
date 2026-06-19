@@ -2,14 +2,13 @@
 
 use super::default_attrs;
 use crate::{
-    Backend, Builder, Bytecode, EvmContext, Inst, InstData, InstFlags, IntCC, Result, StackSection,
-    decode_pair, decode_single,
+    Backend, Builder, Bytecode, EvmContext, Inputs, Inst, InstData, InstFlags, IntCC, Result,
+    StackSection, decode_pair, decode_single,
 };
 use alloy_primitives::U256;
 use evm2::interpreter::{InstrStop, op};
 use evm2_jit_backend::{Attribute, BackendTypes, FunctionAttributeLocation, Pointer, TypeMethods};
 use evm2_jit_builtins::{Builtin, Builtins, CallKind, CreateKind};
-use evm2_jit_context::jit_abi::{Gas as AbiGas, Inputs as AbiInputs};
 use oxc_index::IndexVec;
 use std::mem;
 
@@ -706,7 +705,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
             op::ADDRESS => {
                 let input = self.load_input();
-                field!(@push @[endian = "big"] self.address_type, input, AbiInputs; target_address);
+                field!(@push @[endian = "big"] self.address_type, input, Inputs; target_address);
             }
             op::BALANCE => {
                 let sp = self.sp_after_inputs();
@@ -719,11 +718,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::CALLER => {
                 let input = self.load_input();
-                field!(@push @[endian = "big"] self.address_type, input, AbiInputs; caller_address);
+                field!(@push @[endian = "big"] self.address_type, input, Inputs; caller_address);
             }
             op::CALLVALUE => {
                 let input = self.load_input();
-                field!(@push self.word_type, input, AbiInputs; call_value);
+                field!(@push self.word_type, input, Inputs; call_value);
             }
             op::CALLDATALOAD => {
                 let sp = self.sp_after_inputs();
@@ -1307,8 +1306,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     fn gas_remaining_addr(&mut self) -> B::Value {
-        const OFFSET: usize =
-            mem::offset_of!(EvmContext<'_>, gas) + mem::offset_of!(AbiGas, tracker.remaining);
+        const OFFSET: usize = mem::offset_of!(EvmContext<'_>, gas);
         let offset = self.bcx.iconst(self.isize_type, OFFSET as i64);
         self.bcx.gep(self.i8_type, self.ecx, &[offset], "gas.remaining.addr")
     }

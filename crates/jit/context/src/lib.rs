@@ -74,47 +74,6 @@ impl Inputs {
     }
 }
 
-#[doc(hidden)]
-pub mod jit_abi {
-    pub type Inputs = super::Inputs;
-
-    use super::*;
-
-    #[derive(Clone, Copy, Debug)]
-    #[repr(C)]
-    pub struct Gas {
-        pub tracker: GasTracker,
-        pub memory: MemoryGas,
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    #[repr(C)]
-    pub struct GasTracker {
-        pub remaining: u64,
-        pub limit: u64,
-        pub reservoir: u64,
-        pub state_gas_spent: u64,
-        pub refunded: i64,
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    #[repr(C)]
-    pub struct MemoryGas {
-        pub words_num: usize,
-        pub expansion_cost: u64,
-    }
-
-    const _: () = {
-        use core::mem::{align_of, offset_of, size_of};
-
-        assert!(offset_of!(Inputs, target_address) == 0);
-        assert!(align_of::<Inputs>() >= align_of::<Address>());
-
-        assert!(size_of::<Gas>() == size_of::<super::Gas>());
-        assert!(align_of::<Gas>() == align_of::<super::Gas>());
-    };
-}
-
 /// The EVM bytecode compiler runtime context.
 ///
 /// This is a simple wrapper around the interpreter's resources, allowing the compiled function to
