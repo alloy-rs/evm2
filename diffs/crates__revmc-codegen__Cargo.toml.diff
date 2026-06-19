@@ -45,7 +45,7 @@
  bitflags = "2.5"
  derive_more = { version = "2", default-features = false, features = ["debug"] }
  bitvec = "1.0"
-@@ -54,11 +45,10 @@
+@@ -54,25 +45,38 @@
  indexmap = "2.13.0"
 
  [build-dependencies]
@@ -59,7 +59,11 @@
 
  paste.workspace = true
  similar-asserts = "2.0"
-@@ -68,11 +58,16 @@
+ snapbox = "1.1"
+ serde_json = "1.0"
++tester = "0.9"
+ tracing-subscriber = { workspace = true, features = ["fmt"] }
++walkdir.workspace = true
 
  [features]
  default = ["llvm"]
@@ -80,3 +84,10 @@
 +    "dep:similar-asserts",
 +    "dep:tracing-subscriber",
 +]
++
++[[test]]
++name = "codegen"
++path = "tests.rs"
++required-features = ["llvm"]
++harness = false
++doc = false

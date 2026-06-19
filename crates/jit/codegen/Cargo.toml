@@ -54,7 +54,9 @@ paste.workspace = true
 similar-asserts = "2.0"
 snapbox = "1.1"
 serde_json = "1.0"
+tester = "0.9"
 tracing-subscriber = { workspace = true, features = ["fmt"] }
+walkdir.workspace = true
 
 [features]
 default = ["llvm"]
@@ -71,3 +73,10 @@ __fuzzing = [
     "dep:similar-asserts",
     "dep:tracing-subscriber",
 ]
+
+[[test]]
+name = "codegen"
+path = "tests.rs"
+required-features = ["llvm"]
+harness = false
+doc = false
