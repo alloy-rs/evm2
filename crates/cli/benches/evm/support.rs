@@ -1,4 +1,4 @@
-use crate::{cases::Bench, fixture::Suites};
+use crate::{cases::BenchCase, fixture::Suites};
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
@@ -6,12 +6,13 @@ use evm2::{
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::InMemoryDB,
 };
+use std::borrow::Cow;
 
 type BenchEvm = Evm<BaseEvmTypes>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedBench {
-    name: &'static str,
+    name: Cow<'static, str>,
     spec: SpecId,
     block: BlockEnv,
     db: InMemoryDB,
@@ -19,11 +20,17 @@ pub(crate) struct PreparedBench {
 }
 
 impl PreparedBench {
-    pub(crate) fn load(bench: &Bench, suites: &Suites) -> Self {
+    pub(crate) fn load(bench: &BenchCase, suites: &Suites) -> Self {
         let spec = bench.transaction_spec().expect("transaction benchmark must have a spec");
         let suite = suites.get(bench.fixture_path);
-        let case = suite.case(bench.name, spec);
-        Self { name: bench.name, spec, block: case.block(), db: case.state(), tx: case.tx(spec) }
+        let case = suite.case(&bench.name, spec);
+        Self {
+            name: bench.name.clone(),
+            spec,
+            block: case.block(),
+            db: case.state(),
+            tx: case.tx(spec),
+        }
     }
 
     pub(crate) fn sanity_check(&self) {

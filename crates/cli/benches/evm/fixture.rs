@@ -67,6 +67,10 @@ impl Suite {
         Case { unit, post }
     }
 
+    pub(crate) fn case_names(&self) -> impl Iterator<Item = &str> {
+        self.tests.0.keys().map(String::as_str)
+    }
+
     fn unit(&self, name: &str) -> &StateTestUnit {
         if let Some(unit) = self.tests.0.get(name) {
             return unit;
