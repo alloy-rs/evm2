@@ -1,7 +1,6 @@
 //! evm2-facing runtime context.
 
-use crate::{CallInput, EvmStack, EvmWord, Inputs, InstrStop};
-use alloc::boxed::Box;
+use crate::{EvmStack, EvmWord, InstrStop};
 use alloy_primitives::Bytes;
 use core::{
     fmt,
@@ -25,8 +24,14 @@ const _: () = {
 pub struct EvmContext<'a> {
     /// Active interpreter frame.
     interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
-    /// Input information (target address, caller, input data, call value).
-    pub input: *mut Inputs,
+    /// Active account address.
+    pub target_address: alloy_primitives::Address,
+    /// Caller address.
+    pub caller_address: alloy_primitives::Address,
+    /// Calldata bytes.
+    pub input: Bytes,
+    /// Call value.
+    pub call_value: Word,
     /// The gas.
     pub gas: Evm2Gas,
     /// The size of return data from the last call-like operation.
@@ -44,7 +49,6 @@ pub struct EvmContext<'a> {
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
     output: Bytes,
-    input_scratch: Box<Inputs>,
 }
 
 const _: () = {
@@ -53,7 +57,18 @@ const _: () = {
     assert!(
         offset_of!(EvmContext<'_>, interpreter) == offset_of!(crate::EvmContext<'_>, interpreter)
     );
+    assert!(
+        offset_of!(EvmContext<'_>, target_address)
+            == offset_of!(crate::EvmContext<'_>, target_address)
+    );
+    assert!(
+        offset_of!(EvmContext<'_>, caller_address)
+            == offset_of!(crate::EvmContext<'_>, caller_address)
+    );
     assert!(offset_of!(EvmContext<'_>, input) == offset_of!(crate::EvmContext<'_>, input));
+    assert!(
+        offset_of!(EvmContext<'_>, call_value) == offset_of!(crate::EvmContext<'_>, call_value)
+    );
     assert!(offset_of!(EvmContext<'_>, gas) == offset_of!(crate::EvmContext<'_>, gas));
     assert!(
         offset_of!(EvmContext<'_>, return_data_len)
@@ -145,20 +160,15 @@ impl<'a> EvmContext<'a> {
         let message = interpreter.message();
         let gas = interpreter.gas();
         let calldatasize = message.input.len();
-        let mut input_scratch = Box::new(Inputs {
-            target_address: message.destination,
-            bytecode_address: Some(message.code_address),
-            caller_address: message.caller,
-            input: CallInput::Bytes(message.input.clone()),
-            call_value: message.value,
-        });
-        let input = input_scratch.as_mut() as *mut Inputs;
         let return_data_len = interpreter.return_data().len();
         let (stack_ptr, stack_len) = interpreter.stack_mut().into_raw_parts();
         let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
         let mut this = Self {
             interpreter: interpreter_ptr,
-            input,
+            target_address: message.destination,
+            caller_address: message.caller,
+            input: message.input.clone(),
+            call_value: message.value,
             gas,
             return_data_len,
             calldatasize,
@@ -167,7 +177,6 @@ impl<'a> EvmContext<'a> {
             mem_base: ptr::null_mut(),
             mem_len: 0,
             output: Bytes::new(),
-            input_scratch,
         };
         this.refresh_memory_cache();
         (this, stack, stack_len)
@@ -197,10 +206,10 @@ impl<'a> EvmContext<'a> {
         self.mem_len = mem_len;
     }
 
-    /// Returns the input shim visible to compiled code.
+    /// Returns calldata bytes.
     #[inline]
-    pub fn input(&self) -> &Inputs {
-        &self.input_scratch
+    pub fn input(&self) -> &Bytes {
+        &self.input
     }
 
     /// Returns output produced by RETURN or REVERT.

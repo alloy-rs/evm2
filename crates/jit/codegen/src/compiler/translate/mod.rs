@@ -2,8 +2,8 @@
 
 use super::default_attrs;
 use crate::{
-    Backend, Builder, Bytecode, EvmContext, Inputs, Inst, InstData, InstFlags, IntCC, Result,
-    StackSection, decode_pair, decode_single,
+    Backend, Builder, Bytecode, EvmContext, Inst, InstData, InstFlags, IntCC, Result, StackSection,
+    decode_pair, decode_single,
 };
 use alloy_primitives::U256;
 use evm2::interpreter::{InstrStop, op};
@@ -704,8 +704,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
 
             op::ADDRESS => {
-                let input = self.load_input();
-                field!(@push @[endian = "big"] self.address_type, input, Inputs; target_address);
+                field!(@push @[endian = "big"] self.address_type, self.ecx, EvmContext<'_>; target_address);
             }
             op::BALANCE => {
                 let sp = self.sp_after_inputs();
@@ -717,12 +716,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.narrow_to_address(slot);
             }
             op::CALLER => {
-                let input = self.load_input();
-                field!(@push @[endian = "big"] self.address_type, input, Inputs; caller_address);
+                field!(@push @[endian = "big"] self.address_type, self.ecx, EvmContext<'_>; caller_address);
             }
             op::CALLVALUE => {
-                let input = self.load_input();
-                field!(@push self.word_type, input, Inputs; call_value);
+                field!(@push self.word_type, self.ecx, EvmContext<'_>; call_value);
             }
             op::CALLDATALOAD => {
                 let sp = self.sp_after_inputs();
@@ -1278,18 +1275,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     /// Gets a field at the given offset.
     fn get_field(&mut self, ptr: B::Value, offset: usize, name: &str) -> B::Value {
         get_field(&mut self.bcx, ptr, offset, name)
-    }
-
-    /// Loads the `ecx.input` pointer on demand.
-    fn load_input(&mut self) -> B::Value {
-        let ptr_type = self.bcx.type_ptr();
-        let input_field = get_field(
-            &mut self.bcx,
-            self.ecx,
-            mem::offset_of!(EvmContext<'_>, input),
-            "ecx.input.addr",
-        );
-        self.bcx.load(ptr_type, input_field, "ecx.input")
     }
 
     /// Re-loads the address at `slot` as i160, zero-extends to i256, and stores it back.

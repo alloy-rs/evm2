@@ -22,58 +22,6 @@ pub use arch::evm2_jit_exit;
 
 pub mod evm2_api;
 
-#[doc(hidden)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CallInput {
-    Bytes(Bytes),
-}
-
-impl CallInput {
-    #[inline]
-    pub fn len(&self) -> usize {
-        match self {
-            Self::Bytes(bytes) => bytes.len(),
-        }
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    #[inline]
-    pub fn as_bytes(&self) -> &[u8] {
-        match self {
-            Self::Bytes(bytes) => bytes.as_ref(),
-        }
-    }
-}
-
-impl Default for CallInput {
-    #[inline]
-    fn default() -> Self {
-        Self::Bytes(Bytes::new())
-    }
-}
-
-#[doc(hidden)]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
-pub struct Inputs {
-    pub target_address: Address,
-    pub bytecode_address: Option<Address>,
-    pub caller_address: Address,
-    pub input: CallInput,
-    pub call_value: U256,
-}
-
-impl Inputs {
-    #[inline]
-    pub const fn input(&self) -> &CallInput {
-        &self.input
-    }
-}
-
 /// The EVM bytecode compiler runtime context.
 ///
 /// This is a simple wrapper around the interpreter's resources, allowing the compiled function to
@@ -86,8 +34,14 @@ impl Inputs {
 pub struct EvmContext<'a> {
     /// Active interpreter frame.
     interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
-    /// Input information (target address, caller, input data, call value).
-    pub input: &'a mut Inputs,
+    /// Active account address.
+    pub target_address: Address,
+    /// Caller address.
+    pub caller_address: Address,
+    /// Calldata bytes.
+    pub input: Bytes,
+    /// Call value.
+    pub call_value: U256,
     /// The gas.
     pub gas: Gas,
     /// The size of return data from the last call-like operation.
@@ -115,7 +69,10 @@ const _: () = {
     use core::mem::offset_of;
 
     assert!(offset_of!(EvmContext<'_>, interpreter) == 0);
+    assert!(offset_of!(EvmContext<'_>, target_address) > 0);
+    assert!(offset_of!(EvmContext<'_>, caller_address) > 0);
     assert!(offset_of!(EvmContext<'_>, input) > 0);
+    assert!(offset_of!(EvmContext<'_>, call_value) > 0);
     assert!(offset_of!(EvmContext<'_>, gas) > 0);
     assert!(offset_of!(EvmContext<'_>, return_data_len) > 0);
     assert!(offset_of!(EvmContext<'_>, calldatasize) > 0);
@@ -170,16 +127,10 @@ impl<'a> EvmContext<'a> {
         self.interpreter_mut().host()
     }
 
-    /// Returns the input shim visible to compiled code.
+    /// Returns calldata bytes.
     #[inline]
-    pub fn input(&self) -> &Inputs {
-        self.input
-    }
-
-    /// Returns the input shim visible to compiled code.
-    #[inline]
-    pub fn input_mut(&mut self) -> &mut Inputs {
-        self.input
+    pub fn input(&self) -> &Bytes {
+        &self.input
     }
 
     /// Returns the current block environment.

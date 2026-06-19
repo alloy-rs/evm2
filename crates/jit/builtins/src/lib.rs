@@ -239,11 +239,11 @@ pub unsafe extern "C" fn __revmc_builtin_calldataload_c(
 
 fn do_calldataload(ecx: &EvmContext<'_>, out: &mut EvmWord, offset: usize) {
     let mut word = B256::ZERO;
-    let input = ecx.input.input();
+    let input = ecx.input();
     let input_len = input.len();
     if offset < input_len {
         let count = 32.min(input_len - offset);
-        let input = ecx.input.input().as_bytes();
+        let input = ecx.input().as_ref();
         // SAFETY: `count` is bounded by the calldata length.
         // This is `word[..count].copy_from_slice(input[offset..offset + count])`, written using
         // raw pointers as apparently the compiler cannot optimize the slice version, and using
@@ -267,7 +267,7 @@ pub unsafe extern "C" fn __revmc_builtin_calldatacopy(
         let memory_offset = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
         let data_offset = word_to_usize_saturated(data_offset.to_u256());
-        let input = ecx.input.input().as_bytes();
+        let input = ecx.input().as_ref();
         let input = unsafe { core::slice::from_raw_parts(input.as_ptr(), input.len()) };
         ecx.memory_mut().set_data(memory_offset, data_offset, len, input);
     }
@@ -438,7 +438,7 @@ pub unsafe extern "C" fn __revmc_builtin_self_balance(
     ecx: &mut EvmContext<'_>,
     slot: &mut EvmWord,
 ) -> BuiltinResult {
-    let balance = load_account(ecx, ecx.input.target_address, false)?.balance;
+    let balance = load_account(ecx, ecx.target_address, false)?.balance;
     *slot = balance.into();
     Ok(())
 }
@@ -478,7 +478,7 @@ pub unsafe extern "C" fn __revmc_builtin_sload(
     ecx: &mut EvmContext<'_>,
     index: &mut EvmWord,
 ) -> BuiltinResult {
-    let address = ecx.input.target_address;
+    let address = ecx.target_address;
     let key = index.to_u256();
     if ecx.spec_id().enables(SpecId::BERLIN) {
         let additional_cold_cost = u64::from(ecx.gas_params().get(GasId::ColdStorageAdditionalCost));
@@ -517,7 +517,7 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
     let rev![index, value] = sp;
     require_non_staticcall(ecx)?;
 
-    let target = ecx.input.target_address;
+    let target = ecx.target_address;
     let is_istanbul = ecx.spec_id().enables(SpecId::ISTANBUL);
 
     // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
@@ -559,7 +559,7 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_tload(ecx: &mut EvmContext<'_>, key: &mut EvmWord) {
-    let target = ecx.input.target_address;
+    let target = ecx.target_address;
     let key_word = key.to_u256();
     *key = ecx.host().tload(&target, &key_word).into();
 }
@@ -571,7 +571,7 @@ pub unsafe extern "C" fn __revmc_builtin_tstore(
 ) -> BuiltinResult {
     let rev![key, value] = sp;
     require_non_staticcall(ecx)?;
-    let target = ecx.input.target_address;
+    let target = ecx.target_address;
     ecx.host().tstore(&target, &key.to_u256(), &value.to_u256());
     Ok(())
 }
@@ -619,7 +619,7 @@ pub unsafe extern "C" fn __revmc_builtin_log(
     }
 
     let log = Log {
-        address: ecx.input.target_address,
+        address: ecx.target_address,
         data: LogData::new(topics, data).expect("too many topics"),
     };
     ecx.host().log(log);
@@ -971,7 +971,7 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
 
     let cold_load_gas = ecx.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
-    let address = ecx.input.target_address;
+    let address = ecx.target_address;
     let target = target.to_address();
     let res = ecx
         .host()

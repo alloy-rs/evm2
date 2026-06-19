@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-context/src/lib.rs
 +++ evm2/crates/jit/context/src/lib.rs
-@@ -6,71 +6,71 @@
+@@ -6,73 +6,21 @@
  extern crate alloc;
 
  use alloc::vec::Vec;
@@ -28,15 +28,12 @@
  mod arch;
 -use arch::revmc_entry;
 -pub use arch::revmc_exit;
-+use arch::evm2_jit_entry;
-+pub use arch::evm2_jit_exit;
-
+-
 -#[cfg(feature = "evm")]
 -mod jit_evm;
 -#[cfg(feature = "evm")]
 -pub use jit_evm::JitEvm;
-+pub mod evm2_api;
-
+-
 -/// Resume point for compiled EVM code after a CALL/CREATE suspension.
 -///
 -/// Encoded as the interpreter's bytecode PC. `0` means no resume (initial state),
@@ -48,85 +45,64 @@
 -#[repr(transparent)]
 -#[doc(hidden)] // Not public API.
 -pub struct ResumeAt(usize);
-+#[doc(hidden)]
-+#[derive(Clone, Debug, PartialEq, Eq)]
-+pub enum CallInput {
-+    Bytes(Bytes),
-+}
-
+-
 -impl ResumeAt {
 -    /// Loads the resume point from the interpreter's current PC.
-+impl CallInput {
-     #[inline]
+-    #[inline]
 -    pub fn load(interpreter: &Interpreter) -> Self {
 -        Self(interpreter.bytecode.pc())
-+    pub fn len(&self) -> usize {
-+        match self {
-+            Self::Bytes(bytes) => bytes.len(),
-+        }
-     }
-
+-    }
+-
 -    /// Stores the resume point back into the interpreter's bytecode PC.
-     #[inline]
+-    #[inline]
 -    pub fn store(self, interpreter: &mut Interpreter) {
 -        interpreter.bytecode.absolute_jump(self.0);
-+    pub fn is_empty(&self) -> bool {
-+        self.len() == 0
-     }
-
+-    }
+-
 -    /// Returns the raw resume index.
-     #[inline]
+-    #[inline]
 -    pub const fn get(self) -> usize {
 -        self.0
-+    pub fn as_bytes(&self) -> &[u8] {
-+        match self {
-+            Self::Bytes(bytes) => bytes.as_ref(),
-+        }
-     }
- }
-
+-    }
+-}
+-
 -impl From<usize> for ResumeAt {
-+impl Default for CallInput {
-     #[inline]
+-    #[inline]
 -    fn from(value: usize) -> Self {
 -        Self(value)
-+    fn default() -> Self {
-+        Self::Bytes(Bytes::new())
-     }
- }
+-    }
+-}
++use arch::evm2_jit_entry;
++pub use arch::evm2_jit_exit;
 
 -impl PartialEq<usize> for ResumeAt {
-+#[doc(hidden)]
-+#[derive(Clone, Debug, Default, PartialEq, Eq)]
-+#[repr(C)]
-+pub struct Inputs {
-+    pub target_address: Address,
-+    pub bytecode_address: Option<Address>,
-+    pub caller_address: Address,
-+    pub input: CallInput,
-+    pub call_value: U256,
-+}
-+
-+impl Inputs {
-     #[inline]
+-    #[inline]
 -    fn eq(&self, other: &usize) -> bool {
 -        self.0 == *other
-+    pub const fn input(&self) -> &CallInput {
-+        &self.input
-     }
- }
+-    }
+-}
++pub mod evm2_api;
 
-@@ -84,48 +84,29 @@
+ /// The EVM bytecode compiler runtime context.
+ ///
+@@ -84,48 +32,35 @@
  /// generates code that accesses fields by offset using `offset_of!`.
  #[repr(C)]
  pub struct EvmContext<'a> {
 -    /// The memory.
 -    pub memory: &'a mut SharedMemory,
+-    /// Input information (target address, caller, input data, call value).
+-    pub input: &'a mut InputsImpl,
 +    /// Active interpreter frame.
 +    interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
-     /// Input information (target address, caller, input data, call value).
--    pub input: &'a mut InputsImpl,
-+    pub input: &'a mut Inputs,
++    /// Active account address.
++    pub target_address: Address,
++    /// Caller address.
++    pub caller_address: Address,
++    /// Calldata bytes.
++    pub input: Bytes,
++    /// Call value.
++    pub call_value: U256,
      /// The gas.
      pub gas: Gas,
 -    /// The host.
@@ -176,7 +152,7 @@
  }
 
  // Static assertions to ensure the struct layout matches expectations.
-@@ -133,69 +114,165 @@
+@@ -133,69 +68,162 @@
  const _: () = {
      use core::mem::offset_of;
 
@@ -187,7 +163,10 @@
 -    assert!(offset_of!(EvmContext<'_>, resume_at) == 120);
 -    assert!(offset_of!(EvmContext<'_>, calldatasize) == 160);
 +    assert!(offset_of!(EvmContext<'_>, interpreter) == 0);
++    assert!(offset_of!(EvmContext<'_>, target_address) > 0);
++    assert!(offset_of!(EvmContext<'_>, caller_address) > 0);
 +    assert!(offset_of!(EvmContext<'_>, input) > 0);
++    assert!(offset_of!(EvmContext<'_>, call_value) > 0);
 +    assert!(offset_of!(EvmContext<'_>, gas) > 0);
 +    assert!(offset_of!(EvmContext<'_>, return_data_len) > 0);
 +    assert!(offset_of!(EvmContext<'_>, calldatasize) > 0);
@@ -253,8 +232,9 @@
 +    #[inline]
 +    pub fn memory(&self) -> &Memory {
 +        self.interpreter().memory_ref()
-+    }
-+
+     }
+
+-    /// Refreshes the cached memory base pointer and length from `SharedMemory`.
 +    /// Returns the current linear memory.
 +    #[inline]
 +    pub fn memory_mut(&mut self) -> &mut Memory {
@@ -277,16 +257,10 @@
 +        self.interpreter_mut().host()
 +    }
 +
-+    /// Returns the input shim visible to compiled code.
++    /// Returns calldata bytes.
 +    #[inline]
-+    pub fn input(&self) -> &Inputs {
-+        self.input
-+    }
-+
-+    /// Returns the input shim visible to compiled code.
-+    #[inline]
-+    pub fn input_mut(&mut self) -> &mut Inputs {
-+        self.input
++    pub fn input(&self) -> &Bytes {
++        &self.input
 +    }
 +
 +    /// Returns the current block environment.
@@ -329,9 +303,8 @@
 +    #[inline]
 +    pub fn is_static(&self) -> bool {
 +        self.interpreter().is_static()
-     }
-
--    /// Refreshes the cached memory base pointer and length from `SharedMemory`.
++    }
++
 +    /// Sets the static-call flag for JIT test setup.
 +    #[inline]
 +    #[doc(hidden)]
@@ -387,7 +360,7 @@
      }
  }
 
-@@ -204,9 +281,9 @@
+@@ -204,9 +232,9 @@
  /// # Examples
  ///
  /// ```no_run
@@ -399,7 +372,7 @@
  ///    /// A simple function.
  ///    pub fn test_fn;
  /// }
-@@ -214,7 +291,7 @@
+@@ -214,7 +242,7 @@
  /// let test_fn = EvmCompilerFn::new(test_fn);
  /// ```
  #[macro_export]
@@ -408,7 +381,7 @@
      ($( $(#[$attr:meta])* $vis:vis fn $name:ident; )+) => {
          #[allow(improper_ctypes)]
          unsafe extern "C" {
-@@ -224,7 +301,7 @@
+@@ -224,7 +252,7 @@
                      ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
                      stack: ::core::ptr::NonNull<$crate::EvmStack>,
                      stack_len: ::core::ptr::NonNull<usize>,
@@ -417,7 +390,7 @@
              )+
          }
      };
-@@ -239,7 +316,7 @@
+@@ -239,7 +267,7 @@
      ecx: NonNull<EvmContext<'_>>,
      stack: NonNull<EvmStack>,
      stack_len: NonNull<usize>,
@@ -426,7 +399,7 @@
 
  /// An EVM bytecode function.
  #[derive(Clone, Copy, Debug, Hash)]
-@@ -272,82 +349,6 @@
+@@ -272,82 +300,6 @@
          self.0
      }
 
@@ -509,7 +482,7 @@
      /// Calls the function.
      ///
      /// Arguments:
-@@ -366,8 +367,15 @@
+@@ -366,8 +318,15 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -527,7 +500,7 @@
      }
 
      /// Same as [`call`](Self::call) but with `#[inline(never)]`.
-@@ -383,8 +391,8 @@
+@@ -383,8 +342,8 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -538,7 +511,7 @@
      }
  }
 
-@@ -415,20 +423,6 @@
+@@ -415,20 +374,6 @@
          Vec::with_capacity(1024)
      }
 
@@ -559,7 +532,7 @@
      /// Creates a stack from a vector's buffer.
      ///
      /// # Panics
-@@ -544,7 +538,7 @@
+@@ -544,7 +489,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked(&self, index: usize) -> &EvmWord {
@@ -568,7 +541,7 @@
      }
 
      /// Returns the word at the given index as a mutable reference.
-@@ -554,7 +548,7 @@
+@@ -554,7 +499,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut EvmWord {
@@ -577,7 +550,7 @@
      }
 
      /// Sets the value at the top of the stack to `value`, and grows the stack by 1.
-@@ -564,7 +558,7 @@
+@@ -564,7 +509,7 @@
      /// The caller must ensure that the stack is not full.
      #[inline]
      pub unsafe fn push(&mut self, value: EvmWord, len: &mut usize) {
@@ -586,7 +559,7 @@
          *len += 1;
      }
 
-@@ -575,7 +569,7 @@
+@@ -575,7 +520,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked(&self, len: usize) -> &EvmWord {
@@ -595,7 +568,7 @@
      }
 
      /// Returns the value at the top of the stack as a mutable reference.
-@@ -585,7 +579,7 @@
+@@ -585,7 +530,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked_mut(&mut self, len: usize) -> &mut EvmWord {
@@ -604,7 +577,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack.
-@@ -595,7 +589,7 @@
+@@ -595,7 +540,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked(&self, len: usize, n: usize) -> &EvmWord {
@@ -613,7 +586,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack as a mutable reference.
-@@ -605,7 +599,7 @@
+@@ -605,7 +550,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked_mut(&mut self, len: usize, n: usize) -> &mut EvmWord {
@@ -622,7 +595,7 @@
      }
 
      /// Sets the value at the given index.
-@@ -615,7 +609,7 @@
+@@ -615,7 +560,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn set_unchecked(&mut self, index: usize, value: EvmWord) {
@@ -631,7 +604,7 @@
      }
  }
 
-@@ -821,14 +815,6 @@
+@@ -821,14 +766,6 @@
      }
  }
 
@@ -646,7 +619,7 @@
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -841,7 +827,7 @@
+@@ -841,7 +778,7 @@
          assert_eq!(usize::try_from(&mut word), Ok(0));
      }
 
@@ -655,7 +628,7 @@
          #[link_name = "__test_fn"]
          fn test_fn;
      }
-@@ -851,8 +837,8 @@
+@@ -851,8 +788,8 @@
          _ecx: NonNull<EvmContext<'_>>,
          _stack: NonNull<EvmStack>,
          _stack_len: NonNull<usize>,
