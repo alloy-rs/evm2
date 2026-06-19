@@ -134,7 +134,7 @@ impl<'a> HostContext<'a> {
     pub fn new(
         host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
         tx_env: &'a TxEnv<BaseEvmTypes>,
-        version: &'a Version,
+        version: &Version,
     ) -> Self {
         let block_env = *host.block_env();
         Self {

@@ -117,13 +117,10 @@ impl InterpreterState {
     pub fn store(self, interpreter: &mut Interpreter<'_, BaseEvmTypes>) {
         interpreter.set_gas(self.gas);
         interpreter.set_return_data(self.return_data.into());
-        let parts = interpreter.jit_context_parts_mut();
-        parts.memory.clear();
-        parts
-            .memory
-            .resize(0, self.memory.len())
-            .expect("JIT memory snapshot exceeds evm2 memory limit");
-        parts.memory.set(0, &self.memory);
+        let memory = interpreter.memory_mut();
+        memory.clear();
+        memory.resize(0, self.memory.len()).expect("JIT memory snapshot exceeds evm2 memory limit");
+        memory.set(0, &self.memory);
         if let Some(output) = self.output {
             interpreter.set_output_bytes_for_jit(&output);
         }
@@ -208,53 +205,60 @@ impl<'a> EvmContext<'a> {
         interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
         host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
     ) -> (Self, &'a mut EvmStack, &'a mut usize) {
-        let parts = interpreter.jit_context_parts_mut();
-        let stack = unsafe { EvmStack::from_mut_ptr(parts.stack.cast()) };
+        let version = *interpreter.version();
+        let tx_env = interpreter.tx_env();
+        let message = interpreter.message();
+        let gas = interpreter.gas();
+        let return_data_scratch = interpreter.return_data().clone();
+        let memory_bytes = interpreter.memory_ref().as_slice();
         let mut memory_scratch = Box::new(Memory::new());
-        memory_scratch.set_memory_limit(parts.version.memory_limit);
-        let memory_bytes = parts.memory.as_slice();
+        memory_scratch.set_memory_limit(version.memory_limit);
         memory_scratch
             .resize(0, memory_bytes.len())
             .expect("JIT memory snapshot exceeds evm2 memory limit");
         memory_scratch.set(0, memory_bytes);
+        let bytecode = interpreter.bytecode().as_slice() as *const [u8];
+        let spec_id = interpreter.spec();
+        let is_static = interpreter.is_static();
+        let (stack_ptr, stack_len) = interpreter.stack_mut().into_raw_parts();
+        let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
         let memory = memory_scratch.as_mut() as *mut Memory;
-        let bytecode = parts.bytecode.original_byte_slice() as *const [u8];
-        let calldatasize = parts.message.input.len();
-        let spec_id = parts.spec;
+        let calldatasize = message.input.len();
         let mut input_scratch = Box::new(Inputs {
-            target_address: parts.message.destination,
-            bytecode_address: Some(parts.message.code_address),
-            caller_address: parts.message.caller,
-            input: CallInput::Bytes(Bytes::copy_from_slice(parts.message.input.as_ref())),
-            call_value: parts.message.value,
+            target_address: message.destination,
+            bytecode_address: Some(message.code_address),
+            caller_address: message.caller,
+            input: CallInput::Bytes(Bytes::copy_from_slice(message.input.as_ref())),
+            call_value: message.value,
         });
         let input = input_scratch.as_mut() as *mut Inputs;
-        let host = HostContext::new(host, parts.tx_env, parts.version);
+        let host = HostContext::new(host, tx_env, &version);
+        let return_data = unsafe { &*(return_data_scratch.as_ref() as *const [u8]) };
         let mut this = Self {
             memory,
             input,
-            gas: parts.gas,
+            gas,
             host,
-            return_data: parts.return_data.as_ref(),
-            is_static: parts.is_static,
+            return_data,
+            is_static,
             spec_id,
             bytecode,
             on_log: None,
             calldatasize,
             exit_result: InstrStop::Stop,
             exit_sp: ptr::null_mut(),
-            gas_params: parts.version.gas_params,
+            gas_params: version.gas_params,
             mem_base: ptr::null_mut(),
             mem_len: 0,
             output: Bytes::new(),
-            tx_env: parts.tx_env,
-            message: parts.message,
-            return_data_scratch: Bytes::new(),
+            tx_env,
+            message,
+            return_data_scratch,
             memory_scratch,
             input_scratch,
         };
         this.refresh_memory_cache();
-        (this, stack, parts.stack_len)
+        (this, stack, stack_len)
     }
 
     /// Returns the context state that must be copied back into an interpreter.
@@ -904,9 +908,9 @@ mod tests {
 
         interpreter.prepare_jit_run(&config, &mut host);
         {
-            let parts = interpreter.jit_context_parts_mut();
-            parts.memory.resize(0, 3).unwrap();
-            parts.memory.set(0, b"abc");
+            let memory = interpreter.memory_mut();
+            memory.resize(0, 3).unwrap();
+            memory.set(0, b"abc");
         }
 
         let ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);

@@ -43,47 +43,6 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     is_static: bool,
 }
 
-/// Interpreter state needed to build an external JIT call context.
-#[doc(hidden)]
-pub struct InterpreterJitContextParts<'a, 'frame, T: EvmTypes> {
-    /// Linear memory.
-    pub memory: &'a mut Memory,
-    /// Operand stack base pointer.
-    pub stack: *mut Word,
-    /// Active operand stack length.
-    pub stack_len: &'a mut usize,
-    /// Interpreter gas state.
-    pub gas: Gas,
-    /// Transaction-global environment.
-    pub tx_env: &'frame TxEnv<T>,
-    /// Frame-local message.
-    pub message: &'frame Message<T>,
-    /// Last call-like return data.
-    pub return_data: &'a Bytes,
-    /// Active bytecode.
-    pub bytecode: &'a Bytecode,
-    /// Active base specification ID.
-    pub spec: SpecId,
-    /// Active runtime version data.
-    pub version: &'a Version,
-    /// Whether the active frame forbids state-changing operations.
-    pub is_static: bool,
-}
-
-impl<T: EvmTypes> fmt::Debug for InterpreterJitContextParts<'_, '_, T> {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("InterpreterJitContextParts")
-            .field("memory", &self.memory)
-            .field("stack", &self.stack)
-            .field("stack_len", &self.stack_len)
-            .field("gas", &self.gas)
-            .field("spec", &self.spec)
-            .field("is_static", &self.is_static)
-            .finish_non_exhaustive()
-    }
-}
-
 // SAFETY: The interpreter's internal pointers are always valid. `pc` points into owned bytecode,
 // frame-local references are cleared before pooling, and host/inspector/version pointers are
 // installed for execution and not used after the owning execution context is gone.
@@ -218,34 +177,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         StackMut { stack: &mut self.stack, len: &mut self.stack_len }
     }
 
-    /// Returns the interpreter fields needed by external JIT execution.
-    #[inline]
-    #[doc(hidden)]
-    pub fn jit_context_parts_mut(&mut self) -> InterpreterJitContextParts<'_, 'frame, T> {
-        InterpreterJitContextParts {
-            memory: &mut self.memory,
-            stack: self.stack.as_mut_ptr().cast(),
-            stack_len: &mut self.stack_len,
-            gas: self.gas,
-            tx_env: {
-                // SAFETY: `tx_env` is initialized before execution starts.
-                unsafe { self.tx_env.unwrap_unchecked() }
-            },
-            message: {
-                // SAFETY: `message` is initialized before execution starts.
-                unsafe { self.message.unwrap_unchecked() }
-            },
-            return_data: &self.return_data,
-            bytecode: &self.bytecode,
-            spec: self.spec,
-            version: {
-                // SAFETY: `version` is initialized before execution starts.
-                unsafe { &*self.version }
-            },
-            is_static: self.is_static,
-        }
-    }
-
     /// Stops the interpreter with `stop`.
     #[inline]
     pub const fn set_stop(&mut self, stop: InstrStop) {
@@ -263,6 +194,13 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[inline]
     pub const fn memory_ref(&self) -> &Memory {
         &self.memory
+    }
+
+    /// Returns the current mutable linear memory.
+    #[inline]
+    #[doc(hidden)]
+    pub const fn memory_mut(&mut self) -> &mut Memory {
+        &mut self.memory
     }
 
     /// Returns the current gas state.
@@ -288,6 +226,14 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     pub const fn message(&self) -> &'frame Message<T> {
         // SAFETY: `message` is initialized before inspected execution starts.
         unsafe { self.message.unwrap_unchecked() }
+    }
+
+    /// Returns the cached transaction-global environment.
+    #[inline]
+    #[doc(hidden)]
+    pub const fn tx_env(&self) -> &'frame TxEnv<T> {
+        // SAFETY: `tx_env` is initialized before execution starts.
+        unsafe { self.tx_env.unwrap_unchecked() }
     }
 
     /// Returns return data from the last call-like operation.
@@ -333,6 +279,20 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[inline]
     pub const fn spec(&self) -> SpecId {
         self.spec
+    }
+
+    /// Returns the active runtime version data.
+    #[inline]
+    #[doc(hidden)]
+    pub const fn version(&self) -> &Version {
+        // SAFETY: `version` is initialized before execution starts.
+        unsafe { &*self.version }
+    }
+
+    /// Returns whether the active frame forbids state-changing operations.
+    #[inline]
+    pub const fn is_static(&self) -> bool {
+        self.is_static
     }
 
     /// Runs the interpreter until it stops.
