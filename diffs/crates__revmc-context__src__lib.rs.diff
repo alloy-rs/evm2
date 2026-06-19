@@ -1,15 +1,20 @@
 --- upstream/crates/revmc-context/src/lib.rs
 +++ evm2/crates/jit/context/src/lib.rs
-@@ -6,73 +6,21 @@
+@@ -6,73 +6,23 @@
  extern crate alloc;
 
  use alloc::vec::Vec;
--use core::{
--    fmt,
--    mem::MaybeUninit,
--    ptr::{self, NonNull},
 +use alloy_primitives::{Address, B256, Bytes, U256, ruint};
-+use core::{fmt, mem::MaybeUninit, ptr::NonNull};
+ use core::{
+     fmt,
+     mem::MaybeUninit,
+     ptr::{self, NonNull},
+ };
+-use revm_interpreter::{
+-    Gas, Host, InputsImpl, InstructionResult, Interpreter, InterpreterAction, InterpreterResult,
+-    SharedMemory,
+-    context_interface::cfg::GasParams,
+-    interpreter_types::{Jumps, LegacyBytecode, ReturnData, RuntimeFlag},
 +pub use evm2::interpreter::{Gas, InstrStop, Memory};
 +use evm2::{
 +    BaseEvmTypes, SpecId,
@@ -17,12 +22,6 @@
 +    interpreter::{Host as Evm2Host, Interpreter, Message},
 +    version::GasParams,
  };
--use revm_interpreter::{
--    Gas, Host, InputsImpl, InstructionResult, Interpreter, InterpreterAction, InterpreterResult,
--    SharedMemory,
--    context_interface::cfg::GasParams,
--    interpreter_types::{Jumps, LegacyBytecode, ReturnData, RuntimeFlag},
--};
 -use revm_primitives::{Address, B256, Bytes, Log, U256, hardfork::SpecId, ruint};
 
  mod arch;
@@ -72,20 +71,19 @@
 -        Self(value)
 -    }
 -}
-+use arch::evm2_jit_entry;
-+pub use arch::evm2_jit_exit;
-
+-
 -impl PartialEq<usize> for ResumeAt {
 -    #[inline]
 -    fn eq(&self, other: &usize) -> bool {
 -        self.0 == *other
 -    }
 -}
-+pub mod evm2_api;
++use arch::evm2_jit_entry;
++pub use arch::evm2_jit_exit;
 
  /// The EVM bytecode compiler runtime context.
  ///
-@@ -84,48 +32,27 @@
+@@ -84,43 +34,19 @@
  /// generates code that accesses fields by offset using `offset_of!`.
  #[repr(C)]
  pub struct EvmContext<'a> {
@@ -136,34 +134,23 @@
      /// Refreshed after any memory resize.
      pub mem_base: *mut u8,
      /// Cached length of the current memory context in bytes.
-     /// Refreshed after any memory resize.
+@@ -128,59 +54,41 @@
      pub mem_len: usize,
-+    /// Output produced by RETURN or REVERT.
-+    #[doc(hidden)]
-+    output: Bytes,
  }
 
- // Static assertions to ensure the struct layout matches expectations.
-@@ -133,69 +60,158 @@
- const _: () = {
-     use core::mem::offset_of;
-
+-// Static assertions to ensure the struct layout matches expectations.
+-// These offsets are used by the JIT compiler to access fields.
+-const _: () = {
+-    use core::mem::offset_of;
+-
 -    // Key fields accessed by JIT code
 -    assert!(offset_of!(EvmContext<'_>, memory) == 0);
 -    assert!(offset_of!(EvmContext<'_>, gas) == 16);
 -    assert!(offset_of!(EvmContext<'_>, spec_id) == 113);
 -    assert!(offset_of!(EvmContext<'_>, resume_at) == 120);
 -    assert!(offset_of!(EvmContext<'_>, calldatasize) == 160);
-+    assert!(offset_of!(EvmContext<'_>, interpreter) == 0);
-+    assert!(offset_of!(EvmContext<'_>, gas) > 0);
-+    assert!(offset_of!(EvmContext<'_>, return_data_len) > 0);
-+    assert!(offset_of!(EvmContext<'_>, calldatasize) > 0);
-+    assert!(offset_of!(EvmContext<'_>, exit_result) > 0);
-+    assert!(offset_of!(EvmContext<'_>, exit_sp) > 0);
-+    assert!(offset_of!(EvmContext<'_>, mem_base) > 0);
-+    assert!(offset_of!(EvmContext<'_>, mem_len) > 0);
- };
-
+-};
+-
  impl fmt::Debug for EvmContext<'_> {
      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 -        f.debug_struct("EvmContext").field("memory", &self.memory).finish_non_exhaustive()
@@ -172,26 +159,39 @@
  }
 
  impl<'a> EvmContext<'a> {
--    /// Creates a new context from an interpreter.
+     /// Creates a new context from an interpreter.
      #[inline]
 -    pub fn from_interpreter(interpreter: &'a mut Interpreter, host: &'a mut dyn Host) -> Self {
 -        Self::from_interpreter_with_stack(interpreter, host).0
-+    fn interpreter(&self) -> &Interpreter<'a, BaseEvmTypes> {
-+        unsafe { self.interpreter.as_ref() }
++    pub fn from_interpreter<'frame: 'a>(
++        interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
++    ) -> Self {
++        Self::from_interpreter_with_stack(interpreter).0
      }
 
 -    /// Creates a new context from an interpreter.
++    /// Creates a new context from an interpreter and returns the borrowed stack.
      #[inline]
 -    pub fn from_interpreter_with_stack<'b: 'a>(
 -        interpreter: &'a mut Interpreter,
 -        host: &'b mut dyn Host,
--    ) -> (Self, &'a mut EvmStack, &'a mut usize) {
++    pub fn from_interpreter_with_stack<'frame: 'a>(
++        interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
+     ) -> (Self, &'a mut EvmStack, &'a mut usize) {
 -        let resume_at = ResumeAt::load(interpreter);
 -        let (stack, stack_len) = EvmStack::from_interpreter_stack(&mut interpreter.stack);
 -        let bytecode = interpreter.bytecode.bytecode_slice() as *const [u8];
 -        let calldatasize = interpreter.input.input.len();
 -        let gas_params = host.gas_params().clone();
--        let mut this = Self {
++        let interpreter_ptr = ptr::from_mut(interpreter).cast::<Interpreter<'a, BaseEvmTypes>>();
++        let interpreter_ptr = unsafe { NonNull::new_unchecked(interpreter_ptr) };
++        let message = interpreter.message();
++        let gas = interpreter.gas();
++        let calldatasize = message.input.len();
++        let return_data_len = interpreter.return_data().len();
++        let (stack_ptr, stack_len) = interpreter.stack_mut().into_raw_parts();
++        let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
+         let mut this = Self {
 -            memory: &mut interpreter.memory,
 -            input: &mut interpreter.input,
 -            gas: interpreter.gas,
@@ -203,16 +203,38 @@
 -            resume_at,
 -            bytecode,
 -            on_log: None,
--            calldatasize,
++            interpreter: interpreter_ptr,
++            gas,
++            return_data_len,
+             calldatasize,
 -            exit_result: InstructionResult::Stop,
--            exit_sp: ptr::null_mut(),
++            exit_result: InstrStop::Stop,
+             exit_sp: ptr::null_mut(),
 -            gas_params,
--            mem_base: ptr::null_mut(),
--            mem_len: 0,
--        };
--        this.refresh_memory_cache();
--        (this, stack, stack_len)
-+    fn interpreter_mut(&mut self) -> &mut Interpreter<'a, BaseEvmTypes> {
+             mem_base: ptr::null_mut(),
+             mem_len: 0,
+         };
+@@ -188,14 +96,138 @@
+         (this, stack, stack_len)
+     }
+
+-    /// Refreshes the cached memory base pointer and length from `SharedMemory`.
++    /// Finishes state owned by the JIT context after compiled execution.
++    #[inline]
++    pub fn finish_interpreter_run(&mut self) {
++        let gas = self.gas;
++        self.interpreter_mut().set_gas(gas);
++    }
++
++    /// Returns the active interpreter frame.
++    #[inline]
++    pub const fn interpreter(&self) -> &Interpreter<'a, BaseEvmTypes> {
++        unsafe { self.interpreter.as_ref() }
++    }
++
++    /// Returns the active interpreter frame mutably.
++    #[inline]
++    pub const fn interpreter_mut(&mut self) -> &mut Interpreter<'a, BaseEvmTypes> {
 +        unsafe { self.interpreter.as_mut() }
 +    }
 +
@@ -220,9 +242,8 @@
 +    #[inline]
 +    pub fn memory(&self) -> &Memory {
 +        self.interpreter().memory_ref()
-     }
-
--    /// Refreshes the cached memory base pointer and length from `SharedMemory`.
++    }
++
 +    /// Returns the current linear memory.
 +    #[inline]
 +    pub fn memory_mut(&mut self) -> &mut Memory {
@@ -319,18 +340,6 @@
 +        self.interpreter_mut().set_return_data(data);
 +    }
 +
-+    /// Returns output produced by RETURN or REVERT.
-+    #[inline]
-+    pub fn output(&self) -> &Bytes {
-+        &self.output
-+    }
-+
-+    /// Sets output produced by RETURN or REVERT.
-+    #[inline]
-+    pub fn set_output(&mut self, output: Bytes) {
-+        self.output = output;
-+    }
-+
 +    /// Refreshes the cached memory base pointer and length.
      ///
      /// Must be called after any operation that may resize memory.
@@ -348,7 +357,7 @@
      }
  }
 
-@@ -204,9 +220,9 @@
+@@ -204,9 +236,9 @@
  /// # Examples
  ///
  /// ```no_run
@@ -360,7 +369,7 @@
  ///    /// A simple function.
  ///    pub fn test_fn;
  /// }
-@@ -214,7 +230,7 @@
+@@ -214,7 +246,7 @@
  /// let test_fn = EvmCompilerFn::new(test_fn);
  /// ```
  #[macro_export]
@@ -369,7 +378,7 @@
      ($( $(#[$attr:meta])* $vis:vis fn $name:ident; )+) => {
          #[allow(improper_ctypes)]
          unsafe extern "C" {
-@@ -224,7 +240,7 @@
+@@ -224,7 +256,7 @@
                      ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
                      stack: ::core::ptr::NonNull<$crate::EvmStack>,
                      stack_len: ::core::ptr::NonNull<usize>,
@@ -378,7 +387,7 @@
              )+
          }
      };
-@@ -239,7 +255,7 @@
+@@ -239,7 +271,7 @@
      ecx: NonNull<EvmContext<'_>>,
      stack: NonNull<EvmStack>,
      stack_len: NonNull<usize>,
@@ -387,7 +396,7 @@
 
  /// An EVM bytecode function.
  #[derive(Clone, Copy, Debug, Hash)]
-@@ -272,82 +288,6 @@
+@@ -272,82 +304,6 @@
          self.0
      }
 
@@ -470,10 +479,14 @@
      /// Calls the function.
      ///
      /// Arguments:
-@@ -366,8 +306,15 @@
+@@ -363,11 +319,18 @@
+     #[inline]
+     pub unsafe fn call(
+         self,
++        ecx: &mut EvmContext<'_>,
          stack: &mut EvmStack,
          stack_len: &mut usize,
-         ecx: &mut EvmContext<'_>,
+-        ecx: &mut EvmContext<'_>,
 -    ) -> InstructionResult {
 -        revmc_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
 +    ) -> InstrStop {
@@ -488,18 +501,41 @@
      }
 
      /// Same as [`call`](Self::call) but with `#[inline(never)]`.
-@@ -383,8 +330,8 @@
+@@ -380,11 +343,30 @@
+     #[inline(never)]
+     pub unsafe fn call_noinline(
+         self,
++        ecx: &mut EvmContext<'_>,
          stack: &mut EvmStack,
          stack_len: &mut usize,
-         ecx: &mut EvmContext<'_>,
+-        ecx: &mut EvmContext<'_>,
 -    ) -> InstructionResult {
 -        self.call(stack, stack_len, ecx)
 +    ) -> InstrStop {
-+        unsafe { self.call(stack, stack_len, ecx) }
++        unsafe { self.call(ecx, stack, stack_len) }
++    }
++
++    /// Calls the function by re-using an evm2 interpreter's resources.
++    ///
++    /// # Safety
++    ///
++    /// The caller must ensure that the function is safe to call for this interpreter state.
++    #[inline]
++    pub unsafe fn call_with_interpreter<'a, 'frame: 'a>(
++        self,
++        interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
++    ) -> InstrStop {
++        let (mut ecx, stack, stack_len) = EvmContext::from_interpreter_with_stack(interpreter);
++        let result = unsafe { self.call(&mut ecx, stack, stack_len) };
++        if result == InstrStop::OutOfGas {
++            ecx.gas.spend_all();
++        }
++        ecx.finish_interpreter_run();
++        result
      }
  }
 
-@@ -415,20 +362,6 @@
+@@ -415,20 +397,6 @@
          Vec::with_capacity(1024)
      }
 
@@ -520,7 +556,7 @@
      /// Creates a stack from a vector's buffer.
      ///
      /// # Panics
-@@ -544,7 +477,7 @@
+@@ -544,7 +512,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked(&self, index: usize) -> &EvmWord {
@@ -529,7 +565,7 @@
      }
 
      /// Returns the word at the given index as a mutable reference.
-@@ -554,7 +487,7 @@
+@@ -554,7 +522,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut EvmWord {
@@ -538,7 +574,7 @@
      }
 
      /// Sets the value at the top of the stack to `value`, and grows the stack by 1.
-@@ -564,7 +497,7 @@
+@@ -564,7 +532,7 @@
      /// The caller must ensure that the stack is not full.
      #[inline]
      pub unsafe fn push(&mut self, value: EvmWord, len: &mut usize) {
@@ -547,7 +583,7 @@
          *len += 1;
      }
 
-@@ -575,7 +508,7 @@
+@@ -575,7 +543,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked(&self, len: usize) -> &EvmWord {
@@ -556,7 +592,7 @@
      }
 
      /// Returns the value at the top of the stack as a mutable reference.
-@@ -585,7 +518,7 @@
+@@ -585,7 +553,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked_mut(&mut self, len: usize) -> &mut EvmWord {
@@ -565,7 +601,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack.
-@@ -595,7 +528,7 @@
+@@ -595,7 +563,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked(&self, len: usize, n: usize) -> &EvmWord {
@@ -574,7 +610,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack as a mutable reference.
-@@ -605,7 +538,7 @@
+@@ -605,7 +573,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked_mut(&mut self, len: usize, n: usize) -> &mut EvmWord {
@@ -583,7 +619,7 @@
      }
 
      /// Sets the value at the given index.
-@@ -615,7 +548,7 @@
+@@ -615,7 +583,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn set_unchecked(&mut self, index: usize, value: EvmWord) {
@@ -592,7 +628,7 @@
      }
  }
 
-@@ -821,14 +754,6 @@
+@@ -821,14 +789,6 @@
      }
  }
 
@@ -607,7 +643,7 @@
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -841,7 +766,7 @@
+@@ -841,7 +801,7 @@
          assert_eq!(usize::try_from(&mut word), Ok(0));
      }
 
@@ -616,7 +652,7 @@
          #[link_name = "__test_fn"]
          fn test_fn;
      }
-@@ -851,8 +776,8 @@
+@@ -851,8 +811,8 @@
          _ecx: NonNull<EvmContext<'_>>,
          _stack: NonNull<EvmStack>,
          _stack_len: NonNull<usize>,

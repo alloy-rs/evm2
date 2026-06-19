@@ -255,16 +255,13 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.return_data = return_data;
     }
 
-    /// Sets output bytes produced by external JIT execution.
+    /// Sets the current frame output memory range.
     #[inline]
-    #[doc(hidden)]
-    pub fn set_output_bytes_for_jit(&mut self, output: &[u8]) {
-        let end = u32::try_from(output.len()).expect("JIT output exceeds evm2 output range");
-        if !output.is_empty() {
-            self.memory.resize(0, output.len()).expect("JIT output exceeds evm2 memory limit");
-            self.memory.set(0, output);
-        }
-        self.output = 0..end;
+    pub fn set_output_range(&mut self, output: Range<usize>) {
+        debug_assert!(output.end <= self.memory.len());
+        let start = u32::try_from(output.start).expect("JIT output exceeds evm2 output range");
+        let end = u32::try_from(output.end).expect("JIT output exceeds evm2 output range");
+        self.output = start..end;
     }
 
     /// Returns a mutable reference to return data from the last call-like operation.

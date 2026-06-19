@@ -7,7 +7,7 @@ use evm2::{
     evm::{AccountInfo, InMemoryDB},
     interpreter::{Gas, InstrStop, Interpreter as Evm2Interpreter, Message as Evm2Message},
 };
-use evm2_jit_context::evm2_api;
+use evm2_jit_context::EvmContext;
 use similar_asserts::assert_eq;
 use std::{fmt, path::Path, sync::OnceLock};
 
@@ -92,7 +92,7 @@ pub struct TestCase<'a> {
     /// Override `inspect_stack` on the compiler. `None` uses the default (`true`).
     pub inspect_stack: Option<bool>,
     pub modify_message: Option<fn(&mut Evm2Message<BaseEvmTypes>)>,
-    pub modify_ecx: Option<fn(&mut TestEvmContext<'_>)>,
+    pub modify_ecx: Option<fn(&mut EvmContext<'_>)>,
 
     pub expected_return: InstrStop,
     pub expected_stack: &'a [U256],
@@ -100,7 +100,7 @@ pub struct TestCase<'a> {
     pub expected_gas: u64,
     pub expected_output: Option<&'a [u8]>,
     pub assert_host: Option<fn(&HostState)>,
-    pub assert_ecx: Option<fn(&TestEvmContext<'_>)>,
+    pub assert_ecx: Option<fn(&EvmContext<'_>)>,
 }
 
 #[cfg(feature = "__fuzzing")]
@@ -201,8 +201,6 @@ pub const STACK_WHAT_INTERPRETER_SAYS: &[U256] =
     &[U256::from_be_slice(&GAS_WHAT_INTERPRETER_SAYS.to_be_bytes())];
 pub const MEMORY_WHAT_INTERPRETER_SAYS: &[u8] = &GAS_WHAT_INTERPRETER_SAYS.to_be_bytes();
 pub const GAS_WHAT_INTERPRETER_SAYS: u64 = 0x4682e332d6612de1;
-
-pub type TestEvmContext<'a> = evm2_api::EvmContext<'a>;
 
 pub fn def_storage() -> &'static HashMap<U256, U256> {
     DEF_STORAGE.get_or_init(|| {
@@ -367,7 +365,7 @@ fn prepare_host(spec_id: SpecId) -> Evm<BaseEvmTypes> {
     evm
 }
 
-pub fn with_evm_context<F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
+pub fn with_evm_context<F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
     bytecode: &[u8],
     spec_id: SpecId,
     f: F,
@@ -376,7 +374,7 @@ pub fn with_evm_context<F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut u
 }
 
 fn with_evm_context_and_host_mut<
-    F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R,
+    F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R,
     R,
 >(
     bytecode: &[u8],
@@ -402,12 +400,12 @@ fn with_evm_context_and_host_mut<
     );
     interpreter.prepare_jit_run(&config, host);
 
-    let (mut ecx, stack, stack_len) = TestEvmContext::from_interpreter_with_stack(&mut interpreter);
+    let (mut ecx, stack, stack_len) = EvmContext::from_interpreter_with_stack(&mut interpreter);
     f(&mut ecx, stack, stack_len)
 }
 
 pub fn with_evm_context_and_host<
-    F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R,
+    F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R,
     R,
 >(
     bytecode: &[u8],
@@ -418,7 +416,7 @@ pub fn with_evm_context_and_host<
 }
 
 fn with_evm_context_and_host_modified<
-    F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R,
+    F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R,
     R,
 >(
     bytecode: &[u8],
@@ -471,7 +469,7 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
 fn run_compiled_test_case_with_context(
     test_case: &TestCase<'_>,
     f: EvmCompilerFn,
-    ecx: &mut TestEvmContext<'_>,
+    ecx: &mut EvmContext<'_>,
     stack: &mut EvmStack,
     stack_len: &mut usize,
 ) {
@@ -598,7 +596,7 @@ fn run_compiled_test_case_with_context(
     let skip_jit_gas =
         skip_interpreter_checks && test_case.expected_gas == GAS_WHAT_INTERPRETER_SAYS;
 
-    let actual_return = unsafe { f.call_with_evm2_context(stack, stack_len, ecx) };
+    let actual_return = unsafe { f.call(ecx, stack, stack_len) };
 
     if matches!(
         actual_return,
@@ -643,7 +641,7 @@ fn run_compiled_test_case_with_context(
     }
 
     if let Some(expected_output) = expected_output {
-        assert_eq!(ecx.output().as_ref(), expected_output, "output mismatch");
+        assert_eq!(ecx.interpreter().output(), expected_output, "output mismatch");
     }
 
     if let Some(assert_ecx) = assert_ecx {

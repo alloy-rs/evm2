@@ -18,9 +18,9 @@ matrix_tests!(
         let gas_fn = unsafe { compiler.jit_function(gas_id) }.unwrap();
         let no_gas_fn = unsafe { compiler.jit_function(no_gas_id) }.unwrap();
         with_evm_context(bytecode, spec_id, |ecx, stack, stack_len| {
-            let r = unsafe { gas_fn.call_with_evm2_context(stack, stack_len, ecx) };
+            let r = unsafe { gas_fn.call(ecx, stack, stack_len) };
             assert_eq!(r, InstrStop::Stop);
-            let r = unsafe { no_gas_fn.call_with_evm2_context(stack, stack_len, ecx) };
+            let r = unsafe { no_gas_fn.call(ecx, stack, stack_len) };
             assert_eq!(r, InstrStop::Stop);
         });
     }
@@ -47,7 +47,7 @@ matrix_tests!(
 
         // First function still works after clear_ir + second compilation.
         with_evm_context(bytecode1, spec_id, |ecx, stack, stack_len| {
-            let r = unsafe { f1.call_with_evm2_context(stack, stack_len, ecx) };
+            let r = unsafe { f1.call(ecx, stack, stack_len) };
             assert_eq!(r, InstrStop::Stop);
             assert_eq!(*stack_len, 1);
             assert_eq!(unsafe { stack.as_slice(*stack_len) }[0].to_u256(), U256::from(42));
@@ -55,7 +55,7 @@ matrix_tests!(
 
         // Second function works.
         with_evm_context(bytecode2, spec_id, |ecx, stack, stack_len| {
-            let r = unsafe { f2.call_with_evm2_context(stack, stack_len, ecx) };
+            let r = unsafe { f2.call(ecx, stack, stack_len) };
             assert_eq!(r, InstrStop::Stop);
             assert_eq!(*stack_len, 1);
             assert_eq!(unsafe { stack.as_slice(*stack_len) }[0].to_u256(), U256::from(3));
@@ -80,7 +80,7 @@ fn jit_and_verify<B: Backend>(
     let f = unsafe { compiler.jit_function(id) }.unwrap();
 
     with_evm_context(code, super::DEF_SPEC, |ecx, stack, stack_len| {
-        let r = unsafe { f.call_with_evm2_context(stack, stack_len, ecx) };
+        let r = unsafe { f.call(ecx, stack, stack_len) };
         assert_eq!(r, InstrStop::Stop, "{name}: unexpected return");
         assert_eq!(*stack_len, 1, "{name}: expected 1 stack element");
         assert_eq!(

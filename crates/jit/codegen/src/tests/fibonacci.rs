@@ -27,7 +27,7 @@ fn run_fibonacci_test<B: Backend>(compiler: &mut EvmCompiler<B>, input: u16, dyn
             stack.set(0, U256::from(input).into());
             *stack_len = 1;
         }
-        let r = unsafe { f.call_with_evm2_context(stack, stack_len, ecx) };
+        let r = unsafe { f.call(ecx, stack, stack_len) };
         assert_eq!(r, InstrStop::Stop);
         // Apparently the code does `fibonacci(input + 1)`.
         assert_eq!(*stack_len, 1);

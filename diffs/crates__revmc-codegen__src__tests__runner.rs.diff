@@ -22,7 +22,7 @@
 -    interpreter::ExtBytecode,
 -};
 -use revm_primitives::{B256, HashMap, Log, hardfork::SpecId};
-+use evm2_jit_context::evm2_api;
++use evm2_jit_context::EvmContext;
  use similar_asserts::assert_eq;
  use std::{fmt, path::Path, sync::OnceLock};
 
@@ -48,9 +48,8 @@
 
      /// Override `inspect_stack` on the compiler. `None` uses the default (`true`).
      pub inspect_stack: Option<bool>,
--    pub modify_ecx: Option<fn(&mut EvmContext<'_>)>,
 +    pub modify_message: Option<fn(&mut Evm2Message<BaseEvmTypes>)>,
-+    pub modify_ecx: Option<fn(&mut TestEvmContext<'_>)>,
+     pub modify_ecx: Option<fn(&mut EvmContext<'_>)>,
 
 -    pub expected_return: InstructionResult,
 +    pub expected_return: InstrStop,
@@ -59,10 +58,9 @@
      pub expected_gas: u64,
 -    pub expected_next_action: InterpreterAction,
 -    pub assert_host: Option<fn(&TestHost)>,
--    pub assert_ecx: Option<fn(&EvmContext<'_>)>,
 +    pub expected_output: Option<&'a [u8]>,
 +    pub assert_host: Option<fn(&HostState)>,
-+    pub assert_ecx: Option<fn(&TestEvmContext<'_>)>,
+     pub assert_ecx: Option<fn(&EvmContext<'_>)>,
  }
 
  #[cfg(feature = "__fuzzing")]
@@ -121,7 +119,7 @@
              assert_host: None,
              assert_ecx: None,
          }
-@@ -192,21 +192,17 @@
+@@ -192,21 +192,15 @@
  pub static DEF_DATA: &[u8] = &[0xcc; 64];
  pub const DEF_VALUE: U256 = uint!(123_456_789_U256);
  pub static DEF_STORAGE: OnceLock<HashMap<U256, U256>> = OnceLock::new();
@@ -142,12 +140,10 @@
 -        output: Bytes::from_static(MEMORY_WHAT_INTERPRETER_SAYS),
 -        result: RETURN_WHAT_INTERPRETER_SAYS,
 -    });
-+
-+pub type TestEvmContext<'a> = evm2_api::EvmContext<'a>;
 
  pub fn def_storage() -> &'static HashMap<U256, U256> {
      DEF_STORAGE.get_or_init(|| {
-@@ -218,12 +214,12 @@
+@@ -218,12 +212,12 @@
      })
  }
 
@@ -162,7 +158,7 @@
                  op::PUSH1,
                  0x69,
                  op::PUSH1,
-@@ -236,225 +232,204 @@
+@@ -236,199 +230,139 @@
      })
  }
 
@@ -374,7 +370,13 @@
 -        } else {
 -            None
 -        };
--
++/// Host state snapshot for codegen assertions.
++pub struct HostState {
++    pub storage: HashMap<U256, U256>,
++    pub transient_storage: HashMap<U256, U256>,
++    pub logs: Vec<Log>,
++}
+
 -        // Return address byte as balance (test convention)
 -        // The balance is the last byte of the address
 -        let balance = U256::from(address.0[19]);
@@ -385,17 +387,6 @@
 -        } else {
 -            KECCAK_EMPTY
 -        };
--
--        // Create owned account info
--        let info = AccountInfo { balance, nonce: 0, code_hash, account_id: None, code };
-+/// Host state snapshot for codegen assertions.
-+pub struct HostState {
-+    pub storage: HashMap<U256, U256>,
-+    pub transient_storage: HashMap<U256, U256>,
-+    pub logs: Vec<Log>,
-+}
-
--        let is_empty = info.code.is_none() && info.balance.is_zero() && info.nonce == 0;
 +impl HostState {
 +    fn from_evm(evm: &mut Evm<BaseEvmTypes>) -> Self {
 +        let keys = [
@@ -415,8 +406,8 @@
 +            }
 +        }
 
--        Ok(AccountInfoLoad { account: Cow::Owned(info), is_cold: false, is_empty })
--    }
+-        // Create owned account info
+-        let info = AccountInfo { balance, nonce: 0, code_hash, account_id: None, code };
 +        let mut transient_storage = HashMap::default();
 +        for key in keys {
 +            let value = evm.state_mut().tload(&DEF_ADDR, &key);
@@ -425,6 +416,14 @@
 +            }
 +        }
 
+-        let is_empty = info.code.is_none() && info.balance.is_zero() && info.nonce == 0;
++        Self { storage, transient_storage, logs: evm.logs().to_vec() }
++    }
++}
+
+-        Ok(AccountInfoLoad { account: Cow::Owned(info), is_cold: false, is_empty })
+-    }
+-
 -    fn sstore_skip_cold_load(
 -        &mut self,
 -        _address: Address,
@@ -438,10 +437,8 @@
 -            SStoreResult { original_value: original, present_value: original, new_value: value },
 -            false,
 -        ))
-+        Self { storage, transient_storage, logs: evm.logs().to_vec() }
-     }
-+}
-
+-    }
+-
 -    fn sload_skip_cold_load(
 -        &mut self,
 -        _address: Address,
@@ -475,9 +472,8 @@
 +    evm
  }
 
--pub fn with_evm_context<F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
-+pub fn with_evm_context<F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
-     bytecode: &[u8],
+ pub fn with_evm_context<F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
+@@ -436,25 +370,64 @@
      spec_id: SpecId,
      f: F,
  ) -> R {
@@ -494,7 +490,7 @@
 -    let bytecode_obj = revm_bytecode::Bytecode::new_raw(Bytes::copy_from_slice(bytecode));
 -    let ext_bytecode = ExtBytecode::new(bytecode_obj);
 +fn with_evm_context_and_host_mut<
-+    F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R,
++    F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R,
 +    R,
 +>(
 +    bytecode: &[u8],
@@ -522,13 +518,13 @@
 
 -    let mut interpreter =
 -        Interpreter::new(SharedMemory::new(), ext_bytecode, input, false, spec_id, DEF_GAS_LIMIT);
-+    let (mut ecx, stack, stack_len) = TestEvmContext::from_interpreter_with_stack(&mut interpreter);
++    let (mut ecx, stack, stack_len) = EvmContext::from_interpreter_with_stack(&mut interpreter);
 +    f(&mut ecx, stack, stack_len)
 +}
 
 -    let mut host = TestHost::with_spec(spec_id);
 +pub fn with_evm_context_and_host<
-+    F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R,
++    F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R,
 +    R,
 +>(
 +    bytecode: &[u8],
@@ -542,7 +538,7 @@
 -        EvmContext::from_interpreter_with_stack(&mut interpreter, &mut host);
 -    f(&mut ecx, stack, stack_len)
 +fn with_evm_context_and_host_modified<
-+    F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R,
++    F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R,
 +    R,
 +>(
 +    bytecode: &[u8],
@@ -557,7 +553,7 @@
  }
 
  pub fn set_test_dump<B: Backend>(compiler: &mut EvmCompiler<B>, module_path: &str) {
-@@ -462,7 +437,7 @@
+@@ -462,7 +435,7 @@
      let mut dump_path = root.to_path_buf();
      dump_path.push("target");
      dump_path.push("tests_dump");
@@ -566,7 +562,7 @@
      dump_path.extend(module_path.split("::").skip(2));
      dump_path.push(format!("{:?}", compiler.opt_level()));
      compiler.set_dump_to(Some(dump_path));
-@@ -477,308 +452,219 @@
+@@ -477,308 +450,219 @@
  }
 
  fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
@@ -589,7 +585,7 @@
 +fn run_compiled_test_case_with_context(
 +    test_case: &TestCase<'_>,
 +    f: EvmCompilerFn,
-+    ecx: &mut TestEvmContext<'_>,
++    ecx: &mut EvmContext<'_>,
 +    stack: &mut EvmStack,
 +    stack_len: &mut usize,
 +) {
@@ -856,7 +852,7 @@
 +    let skip_jit_gas =
 +        skip_interpreter_checks && test_case.expected_gas == GAS_WHAT_INTERPRETER_SAYS;
 +
-+    let actual_return = unsafe { f.call_with_evm2_context(stack, stack_len, ecx) };
++    let actual_return = unsafe { f.call(ecx, stack, stack_len) };
 +
 +    if matches!(
 +        actual_return,
@@ -930,7 +926,7 @@
 -        let chunks = self.0.chunks(32).map(revm_primitives::hex::encode_prefixed);
 -        f.debug_list().entries(chunks).finish()
 +    if let Some(expected_output) = expected_output {
-+        assert_eq!(ecx.output().as_ref(), expected_output, "output mismatch");
++        assert_eq!(ecx.interpreter().output(), expected_output, "output mismatch");
      }
 -}
 
