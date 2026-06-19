@@ -1,7 +1,7 @@
 //! evm2-facing runtime context.
 
 use crate::{CallInput, EvmStack, EvmWord, Inputs, InstrStop};
-use alloc::{boxed::Box, vec::Vec};
+use alloc::boxed::Box;
 use alloy_primitives::Bytes;
 use core::{
     cmp::min,
@@ -67,8 +67,7 @@ pub struct EvmContext<'a> {
     /// Frame-local call/create message.
     #[doc(hidden)]
     pub message: &'a Message<BaseEvmTypes>,
-    return_data_scratch: Bytes,
-    memory_scratch: Box<Memory>,
+    interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
     input_scratch: Box<Inputs>,
 }
 
@@ -103,32 +102,6 @@ const _: () = {
     assert!(offset_of!(EvmContext<'_>, output) == offset_of!(crate::EvmContext<'_>, output));
 };
 
-/// Interpreter state copied out of a JIT context after compiled execution.
-#[derive(Clone, Debug)]
-#[doc(hidden)]
-pub struct InterpreterState {
-    gas: Evm2Gas,
-    return_data: Vec<u8>,
-    memory: Vec<u8>,
-    output: Option<Vec<u8>>,
-}
-
-impl InterpreterState {
-    /// Stores this state back into an evm2 interpreter.
-    #[inline]
-    pub fn store(self, interpreter: &mut Interpreter<'_, BaseEvmTypes>) {
-        interpreter.set_gas(self.gas);
-        interpreter.set_return_data(self.return_data.into());
-        let memory = interpreter.memory_mut();
-        memory.clear();
-        memory.resize(0, self.memory.len()).expect("JIT memory snapshot exceeds evm2 memory limit");
-        memory.set(0, &self.memory);
-        if let Some(output) = self.output {
-            interpreter.set_output_bytes_for_jit(&output);
-        }
-    }
-}
-
 /// An evm2 bytecode function.
 pub type EvmCompilerFn = crate::EvmCompilerFn;
 
@@ -150,12 +123,7 @@ impl crate::EvmCompilerFn {
             ecx.gas.spend_all();
         }
 
-        let mut state = ecx.interpreter_state();
-        if matches!(result, InstrStop::Return | InstrStop::Revert) {
-            state.output = Some(ecx.output.to_vec());
-        }
-        drop(ecx);
-        state.store(interpreter);
+        ecx.finish_interpreter_run(result);
         result
     }
 
@@ -207,35 +175,29 @@ impl<'a> EvmContext<'a> {
         interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
         host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
     ) -> (Self, &'a mut EvmStack, &'a mut usize) {
+        let interpreter_ptr = ptr::from_mut(interpreter).cast::<Interpreter<'a, BaseEvmTypes>>();
+        let interpreter_ptr = unsafe { NonNull::new_unchecked(interpreter_ptr) };
         let version = *interpreter.version();
         let tx_env = interpreter.tx_env();
         let message = interpreter.message();
         let gas = interpreter.gas();
-        let return_data_scratch = interpreter.return_data().clone();
-        let memory_bytes = interpreter.memory_ref().as_slice();
-        let mut memory_scratch = Box::new(Memory::new());
-        memory_scratch.set_memory_limit(version.memory_limit);
-        memory_scratch
-            .resize(0, memory_bytes.len())
-            .expect("JIT memory snapshot exceeds evm2 memory limit");
-        memory_scratch.set(0, memory_bytes);
         let bytecode = interpreter.bytecode().as_slice() as *const [u8];
         let spec_id = interpreter.spec();
         let is_static = interpreter.is_static();
-        let (stack_ptr, stack_len) = interpreter.stack_mut().into_raw_parts();
-        let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
-        let memory = memory_scratch.as_mut() as *mut Memory;
+        let memory = interpreter.memory_mut() as *mut Memory;
         let calldatasize = message.input.len();
         let mut input_scratch = Box::new(Inputs {
             target_address: message.destination,
             bytecode_address: Some(message.code_address),
             caller_address: message.caller,
-            input: CallInput::Bytes(Bytes::copy_from_slice(message.input.as_ref())),
+            input: CallInput::Bytes(message.input.clone()),
             call_value: message.value,
         });
         let input = input_scratch.as_mut() as *mut Inputs;
         let block_env = *host.block_env();
-        let return_data = unsafe { &*(return_data_scratch.as_ref() as *const [u8]) };
+        let return_data = unsafe { &*(interpreter.return_data().as_ref() as *const [u8]) };
+        let (stack_ptr, stack_len) = interpreter.stack_mut().into_raw_parts();
+        let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
         let mut this = Self {
             memory,
             input,
@@ -256,29 +218,24 @@ impl<'a> EvmContext<'a> {
             mem_len: 0,
             output: Bytes::new(),
             message,
-            return_data_scratch,
-            memory_scratch,
+            interpreter: interpreter_ptr,
             input_scratch,
         };
         this.refresh_memory_cache();
         (this, stack, stack_len)
     }
 
-    /// Returns the context state that must be copied back into an interpreter.
+    /// Finishes state owned by the JIT context after compiled execution.
     #[inline]
-    pub fn interpreter_state(&self) -> InterpreterState {
-        InterpreterState {
-            gas: self.gas,
-            return_data: self.return_data.to_vec(),
-            memory: unsafe { &*self.memory }.as_slice().to_vec(),
-            output: None,
+    pub fn finish_interpreter_run(&mut self, result: InstrStop) {
+        let gas = self.gas;
+        let output =
+            matches!(result, InstrStop::Return | InstrStop::Revert).then(|| self.output.clone());
+        let interpreter = self.interpreter_mut();
+        interpreter.set_gas(gas);
+        if let Some(output) = output {
+            interpreter.set_output_bytes_for_jit(&output);
         }
-    }
-
-    /// Stores context state back into an interpreter after compiled execution.
-    #[inline]
-    pub fn store_interpreter_state(self, interpreter: &mut Interpreter<'_, BaseEvmTypes>) {
-        self.interpreter_state().store(interpreter);
     }
 
     /// Refreshes the cached memory base pointer and length from the evm2 memory snapshot.
@@ -295,9 +252,15 @@ impl<'a> EvmContext<'a> {
         &self.input_scratch
     }
 
+    #[inline]
+    fn interpreter_mut(&mut self) -> &mut Interpreter<'a, BaseEvmTypes> {
+        unsafe { self.interpreter.as_mut() }
+    }
+
     fn set_return_data(&mut self, data: Bytes) {
-        self.return_data_scratch = data;
-        self.return_data = unsafe { &*(self.return_data_scratch.as_ref() as *const [u8]) };
+        let interpreter = self.interpreter_mut();
+        interpreter.set_return_data(data);
+        self.return_data = unsafe { &*(interpreter.return_data().as_ref() as *const [u8]) };
     }
 }
 
@@ -903,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn evm2_context_uses_memory_scratch() {
+    fn evm2_context_uses_interpreter_memory() {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,
         );
@@ -933,9 +896,7 @@ mod tests {
         let ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);
         assert_eq!(unsafe { &*ecx.memory }.as_slice(), b"abc");
         unsafe { &mut *ecx.memory }.set(1, b"z");
-        let state = ecx.interpreter_state();
         drop(ecx);
-        state.store(&mut interpreter);
 
         assert_eq!(interpreter.memory_ref().slice(0, 3), b"azc");
     }
