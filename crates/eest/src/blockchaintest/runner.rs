@@ -4,10 +4,7 @@ use super::{
 };
 use crate::harness::{TestSuite, run_json_harnesses};
 #[cfg(feature = "jit")]
-use crate::{
-    execution::CompiledMode,
-    harness::{COMPILED_FIXTURE_STACK_SIZE, compiled_roots, run_with_stack},
-};
+use crate::{execution::CompiledMode, harness::compiled_roots};
 use libtest_mimic::Failed;
 use std::{
     path::{Path, PathBuf},
@@ -78,9 +75,7 @@ fn run_file_aot(path: PathBuf) -> Result<(), Failed> {
 
 #[cfg(feature = "jit")]
 fn run_compiled_file(path: PathBuf, mode: CompiledMode) -> Result<(), Failed> {
-    run_with_stack("eest-blockchain-compiled", COMPILED_FIXTURE_STACK_SIZE, move || {
-        run_file_with_mode(path, mode.execution_mode())
-    })
+    run_file_with_mode(path, mode.execution_mode())
 }
 
 fn should_descend(path: &Path) -> bool {

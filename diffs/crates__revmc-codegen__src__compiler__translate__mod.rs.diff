@@ -18,7 +18,23 @@
  use std::mem;
 
  mod peephole;
-@@ -128,13 +128,6 @@
+@@ -29,6 +29,7 @@
+
+     pub(super) debug: bool,
+     pub(super) inspect_stack: bool,
++    pub(super) local_stack: bool,
+     pub(super) stack_bound_checks: bool,
+     pub(super) gas_metering: bool,
+     pub(super) single_error: bool,
+@@ -42,6 +43,7 @@
+             frame_pointers: cfg!(debug_assertions) || cfg!(force_frame_pointers),
+             debug: false,
+             inspect_stack: false,
++            local_stack: false,
+             stack_bound_checks: true,
+             gas_metering: true,
+             single_error: true,
+@@ -128,13 +130,6 @@
      /// The return block that all return instructions branch to.
      return_block: Option<B::BasicBlock>,
 
@@ -32,7 +48,7 @@
      /// Builtins.
      builtins: &'a mut Builtins<B>,
  }
-@@ -145,8 +138,6 @@
+@@ -145,8 +140,6 @@
      /// Example pseudo-code:
      ///
      /// ```ignore (pseudo-code)
@@ -41,7 +57,7 @@
      /// fn evm_bytecode(args: ...) {
      ///     setup_locals();
      ///
-@@ -155,39 +146,16 @@
+@@ -155,39 +148,16 @@
      ///
      ///     load_arguments();
      ///
@@ -83,6 +99,19 @@
      ///         #[cfg(inspect_stack)]
      ///         *args.stack_len = stack_len;
      ///         return ir;
+@@ -218,10 +188,8 @@
+         let ecx = bcx.fn_param(0);
+
+         let sp_arg = bcx.fn_param(1);
+-        // Use a local alloca for the stack to allow the backend to eliminate dead stores to
+-        // stack slots above `stack_len` at function exit (e.g. `PUSH0 POP`).
+-        // Disabled when `inspect_stack` is set because the caller observes every store.
+-        let local_stack = !config.inspect_stack;
++        // Use a local alloca for the stack to allow the backend to eliminate dead stores.
++        let local_stack = config.local_stack && !config.inspect_stack;
+         let stack = if local_stack {
+             let stack_type = bcx.type_array(word_type, STACK_CAP as u32);
+             bcx.new_stack_slot(stack_type, "stack.addr")
 @@ -250,7 +218,6 @@
          assert!(!inst_entries.is_empty(), "translating empty bytecode");
 

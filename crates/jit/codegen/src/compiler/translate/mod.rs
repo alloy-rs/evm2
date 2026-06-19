@@ -29,6 +29,7 @@ pub(super) struct FcxConfig {
 
     pub(super) debug: bool,
     pub(super) inspect_stack: bool,
+    pub(super) local_stack: bool,
     pub(super) stack_bound_checks: bool,
     pub(super) gas_metering: bool,
     pub(super) single_error: bool,
@@ -42,6 +43,7 @@ impl Default for FcxConfig {
             frame_pointers: cfg!(debug_assertions) || cfg!(force_frame_pointers),
             debug: false,
             inspect_stack: false,
+            local_stack: false,
             stack_bound_checks: true,
             gas_metering: true,
             single_error: true,
@@ -186,10 +188,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let ecx = bcx.fn_param(0);
 
         let sp_arg = bcx.fn_param(1);
-        // Use a local alloca for the stack to allow the backend to eliminate dead stores to
-        // stack slots above `stack_len` at function exit (e.g. `PUSH0 POP`).
-        // Disabled when `inspect_stack` is set because the caller observes every store.
-        let local_stack = !config.inspect_stack;
+        // Use a local alloca for the stack to allow the backend to eliminate dead stores.
+        let local_stack = config.local_stack && !config.inspect_stack;
         let stack = if local_stack {
             let stack_type = bcx.type_array(word_type, STACK_CAP as u32);
             bcx.new_stack_slot(stack_type, "stack.addr")

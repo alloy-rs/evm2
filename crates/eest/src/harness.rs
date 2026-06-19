@@ -2,8 +2,6 @@ use crate::discover::find_json_tests;
 #[cfg(feature = "jit")]
 use crate::execution::CompiledMode;
 use libtest_mimic::{Arguments, Failed, Trial};
-#[cfg(feature = "jit")]
-use std::{any::Any, thread};
 use std::{
     env,
     path::{Path, PathBuf},
@@ -11,8 +9,6 @@ use std::{
 };
 
 const NEXTEST_ENV: &str = "NEXTEST";
-#[cfg(feature = "jit")]
-pub(crate) const COMPILED_FIXTURE_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 /// A named EEST fixture root.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,30 +124,6 @@ pub(crate) fn compiled_roots(roots: Vec<TestRoot>, mode: CompiledMode) -> Vec<Te
             root
         })
         .collect()
-}
-
-#[cfg(feature = "jit")]
-pub(crate) fn run_with_stack<F>(name: &'static str, stack_size: usize, f: F) -> Result<(), Failed>
-where
-    F: FnOnce() -> Result<(), Failed> + Send + 'static,
-{
-    let handle = thread::Builder::new()
-        .name(name.into())
-        .stack_size(stack_size)
-        .spawn(f)
-        .map_err(|err| err.to_string())?;
-    handle.join().map_err(panic_payload_message)?
-}
-
-#[cfg(feature = "jit")]
-fn panic_payload_message(payload: Box<dyn Any + Send>) -> String {
-    if let Some(message) = payload.downcast_ref::<&'static str>() {
-        (*message).to_string()
-    } else if let Some(message) = payload.downcast_ref::<String>() {
-        message.clone()
-    } else {
-        "test thread panicked".to_string()
-    }
 }
 
 #[cfg(all(test, feature = "jit"))]

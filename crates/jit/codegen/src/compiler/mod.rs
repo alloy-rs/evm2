@@ -370,6 +370,13 @@ impl<B: Backend> EvmCompiler<B> {
         self.config.inspect_stack = yes;
     }
 
+    /// Sets whether to copy the stack into a local alloca while executing.
+    ///
+    /// Defaults to `false`.
+    pub fn local_stack(&mut self, yes: bool) {
+        self.config.local_stack = yes;
+    }
+
     /// Sets whether to enable stack bound checks.
     ///
     /// Defaults to `true`.
