@@ -54,6 +54,9 @@ pub(crate) struct Replay {
     #[cfg(feature = "jit")]
     #[arg(long, conflicts_with = "jit")]
     pub(crate) aot: bool,
+    /// Print database method call counts after execution.
+    #[arg(long)]
+    pub(crate) db_stats: bool,
     /// EEST JSON fixture to replay.
     #[arg(value_name = "PATH")]
     pub(crate) path: PathBuf,

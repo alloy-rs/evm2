@@ -1697,7 +1697,17 @@ pub(crate) mod tests {
     fn fixture_entry_code(json: &str) -> Vec<u8> {
         let v: serde_json::Value = serde_json::from_str(json).unwrap();
         let case = v.as_object().unwrap().values().next().unwrap();
-        let to = case["transaction"][0]["to"].as_str().unwrap();
+        let transaction = &case["transaction"];
+        let to = transaction
+            .get("to")
+            .or_else(|| {
+                transaction
+                    .as_array()
+                    .and_then(|transactions| transactions.first())
+                    .and_then(|transaction| transaction.get("to"))
+            })
+            .and_then(|to| to.as_str())
+            .unwrap();
         let code = case["pre"][to]["code"].as_str().unwrap().trim_start_matches("0x");
         hex::decode(code).unwrap()
     }

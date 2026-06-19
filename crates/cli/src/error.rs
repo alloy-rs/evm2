@@ -14,6 +14,12 @@ pub(crate) enum Error {
         #[source]
         source: serde_json::Error,
     },
+    #[error("failed to decode fixture from {path}")]
+    DecodeFixture {
+        path: std::path::PathBuf,
+        #[source]
+        source: evm2_eest::FixtureReadError,
+    },
     #[error("failed to execute EEST state test fixture")]
     StateTest {
         #[source]

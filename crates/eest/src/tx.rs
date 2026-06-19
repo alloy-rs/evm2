@@ -41,13 +41,17 @@ impl<'de> Deserialize<'de> for TestAuthorization {
         D: Deserializer<'de>,
     {
         let mut value = serde_json::Value::deserialize(deserializer)?;
-        if let Some(object) = value.as_object_mut()
-            && object.contains_key("v")
-            && object.contains_key("yParity")
-        {
-            object.remove("v");
-        }
+        normalize_authorization_value(&mut value);
         Ok(Self { value })
+    }
+}
+
+fn normalize_authorization_value(value: &mut serde_json::Value) {
+    if let Some(object) = value.as_object_mut()
+        && object.contains_key("v")
+        && object.contains_key("yParity")
+    {
+        object.remove("v");
     }
 }
 
@@ -208,7 +212,7 @@ fn recovered_envelope(tx: TypedTransaction, caller: Address) -> RecoveredTxEnvel
             RecoveredTxEnvelope::Eip4844(Recovered::new_unchecked(tx, caller))
         }
         TypedTransaction::Eip7702(tx) => {
-            RecoveredTxEnvelope::Eip7702(Recovered::new_unchecked(tx, caller))
+            RecoveredTxEnvelope::from(Recovered::new_unchecked(tx, caller))
         }
     }
 }

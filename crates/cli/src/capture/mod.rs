@@ -8,13 +8,16 @@ mod rpc;
 
 pub(crate) use error::CaptureError;
 
-use crate::{args::Capture, error::Result, ethereum};
+use crate::{args::Capture, error::Result, ethereum, style};
 use alloy_consensus::{
     Block as ConsensusBlock, EthereumTxEnvelope, TxEip4844, transaction::SignerRecoverable,
 };
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, value::RawValue};
-use std::{fs::File, io::BufWriter, time::Instant};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 type MainnetBlock = ConsensusBlock<EthereumTxEnvelope<TxEip4844>>;
 
@@ -36,8 +39,9 @@ pub(crate) fn run(command: Capture) -> Result<()> {
     let summary = runtime
         .block_on(capture(&command.rpc, from, to, &command))
         .map_err(|source| crate::error::Error::Capture { source })?;
+    let ok = style::OK;
     println!(
-        "captured EEST {}: {} blocks, {} txs, {} base accounts, {} base storage slots in {:.2}s",
+        "{ok}ok{ok:#}: captured EEST {}: {} blocks, {} txs, {} base accounts, {} base storage slots in {:.2}s",
         command.output.display(),
         summary.blocks,
         summary.transactions,
@@ -72,12 +76,35 @@ async fn capture(
     builder.capture_block_hashes(&rpc, from).await?;
     let mut blocks = stream::iter(from..=to)
         .map(|number| fetch_block(&rpc, number))
-        .buffered(rpc.max_concurrent_requests());
+        .buffer_unordered(rpc.max_concurrent_requests());
+    let mut pending_blocks = BTreeMap::new();
+    let mut next_block = from;
+    let total_blocks = (to - from + 1) as usize;
 
-    while let Some(block) = blocks.next().await {
+    while next_block <= to {
+        let block = if let Some(block) = pending_blocks.remove(&next_block) {
+            block
+        } else {
+            loop {
+                let block = blocks
+                    .next()
+                    .await
+                    .expect("capture block stream ended before all blocks were processed")?;
+                if block.number == next_block {
+                    break block;
+                }
+                pending_blocks.insert(block.number, block);
+            }
+        };
         let block_started_at = Instant::now();
-        let PreparedBlock { number, consensus_block, pre_traces, diff_traces, transactions } =
-            block?;
+        let PreparedBlock {
+            number,
+            consensus_block,
+            pre_traces,
+            diff_traces,
+            transactions,
+            elapsed,
+        } = block;
 
         for (tx_index, ((pre_trace, diff_trace), tx)) in pre_traces
             .iter()
@@ -101,11 +128,19 @@ async fn capture(
         transaction_count += block_transaction_count;
         block_inputs.push(model::CapturedBlock { block: consensus_block, transactions });
 
-        eprintln!(
-            "captured block {number} ({} txs) in {:.2}s",
-            block_transaction_count,
-            block_started_at.elapsed().as_secs_f64()
-        );
+        let progress_index = (number - from + 1) as usize;
+        if style::should_print_progress(progress_index, total_blocks) {
+            let info = style::INFO;
+            eprintln!(
+                "{info}capture{info:#}: block {}/{} number={} ({} txs) in {:.2}s",
+                progress_index,
+                total_blocks,
+                number,
+                block_transaction_count,
+                (elapsed + block_started_at.elapsed()).as_secs_f64()
+            );
+        }
+        next_block += 1;
     }
 
     let capture = builder.finish(block_inputs);
@@ -113,11 +148,8 @@ async fn capture(
     let base_storage_slots =
         capture.pre_state.accounts.iter().map(|account| account.storage.len()).sum();
     let suite = export::suite(&capture)?;
-    let file = File::create(&command.output).map_err(|source| CaptureError::WriteOutput {
-        path: command.output.display().to_string(),
-        source,
-    })?;
-    serde_json::to_writer(BufWriter::new(file), &suite).map_err(CaptureError::EncodeJson)?;
+    evm2_eest::write_blockchain_fixture(&command.output, &suite)
+        .map_err(CaptureError::EncodeFixture)?;
 
     Ok(CaptureSummary {
         blocks: match &capture.input {
@@ -144,18 +176,23 @@ struct PreparedBlock {
     pre_traces: Vec<Value>,
     diff_traces: Vec<Value>,
     transactions: Vec<model::CapturedTransaction>,
+    elapsed: Duration,
 }
 
 async fn fetch_block(
     rpc: &rpc::RpcEndpoint,
     number: u64,
 ) -> std::result::Result<PreparedBlock, CaptureError> {
+    let started_at = Instant::now();
     let (consensus_block, pre_traces, diff_traces) = tokio::try_join!(
         rpc.block(number),
         rpc.trace_block(number, rpc::TraceMode::PreState),
         rpc.trace_block(number, rpc::TraceMode::Diff),
     )?;
-    prepare_block(FetchedBlock { number, consensus_block, pre_traces, diff_traces }).await
+    let mut block =
+        prepare_block(FetchedBlock { number, consensus_block, pre_traces, diff_traces }).await?;
+    block.elapsed = started_at.elapsed();
+    Ok(block)
 }
 
 async fn prepare_block(block: FetchedBlock) -> std::result::Result<PreparedBlock, CaptureError> {
@@ -185,7 +222,14 @@ async fn prepare_block(block: FetchedBlock) -> std::result::Result<PreparedBlock
             })
             .collect::<std::result::Result<Vec<_>, CaptureError>>()?;
 
-        Ok(PreparedBlock { number, consensus_block, pre_traces, diff_traces, transactions })
+        Ok(PreparedBlock {
+            number,
+            consensus_block,
+            pre_traces,
+            diff_traces,
+            transactions,
+            elapsed: Duration::default(),
+        })
     })
     .await
     .map_err(CaptureError::JoinBlockPreparation)?

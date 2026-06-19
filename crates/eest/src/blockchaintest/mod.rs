@@ -8,7 +8,7 @@ mod runner;
 mod types;
 
 pub use error::TestError;
-pub use execute::{ExecuteConfig, ExecuteSummary, ExecutionMode, execute_str};
+pub use execute::{ExecuteConfig, ExecuteSummary, ExecutionMode, execute_str, execute_suite};
 pub use hook::{
     BlockFailed, BlockFinished, BlockStarted, CaseStarted, Hook, NoopHook, TransactionFailed,
     TransactionFinished, TransactionStarted,

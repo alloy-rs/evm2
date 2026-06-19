@@ -8,6 +8,7 @@ mod fixture;
 mod fuzzer;
 mod list;
 mod replay;
+mod style;
 
 use crate::{args::Args, error::Result};
 use clap::Parser;
@@ -15,10 +16,12 @@ use std::{error::Error as _, process::ExitCode};
 
 fn main() -> ExitCode {
     if let Err(error) = run() {
-        eprintln!("{error}");
+        let style = style::ERROR;
+        eprintln!("{style}error{style:#}: {error}");
         let mut source = error.source();
         while let Some(error) = source {
-            eprintln!("  caused by: {error}");
+            let muted = style::MUTED;
+            eprintln!("{muted}caused by{muted:#}: {error}");
             source = error.source();
         }
         return ExitCode::FAILURE;

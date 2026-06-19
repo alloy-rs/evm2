@@ -145,14 +145,6 @@ impl<ExtDB> CacheDB<ExtDB> {
         self.cache.accounts.get(address).is_some_and(Option::is_none)
     }
 
-    /// Returns a cached storage value if it is known without loading the wrapped database.
-    #[inline]
-    pub(crate) fn storage_ref(&self, address: &Address, key: &Word) -> Option<Word> {
-        self.cache.storage.get(address).and_then(|storage| {
-            storage.slots.get(key).copied().or_else(|| storage.wiped.then_some(Word::ZERO))
-        })
-    }
-
     /// Inserts persistent storage.
     #[inline]
     pub fn insert_account_storage(&mut self, address: &Address, key: &Word, value: &Word) {

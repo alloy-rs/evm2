@@ -2,6 +2,7 @@ use crate::{
     error::{TestError, TestErrorKind},
     execution::ExecutionResources,
     filter::EntryPoint,
+    fixture_io,
     forks::is_fork_skipped,
     state::{
         insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
@@ -16,17 +17,19 @@ use alloy_trie::{
     TrieAccount,
     root::{state_root_unhashed, storage_root_unhashed},
 };
+use anstyle::{AnsiColor, Color, Style};
 use evm2::{
     BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
-        AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, HISTORY_STORAGE_ADDRESS, InMemoryDB,
+        AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, DbStats, DbStatsCounts,
+        HISTORY_STORAGE_ADDRESS, InMemoryDB,
     },
     registry::HandlerError,
 };
 use serde_json::json;
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, path::Path};
 
 pub use crate::execution::ExecutionMode;
 
@@ -52,6 +55,8 @@ pub struct ExecuteConfig {
     pub print_json_outcome: bool,
     /// Execution backend.
     pub mode: ExecutionMode,
+    /// Whether to print database method call counts.
+    pub db_stats: bool,
 }
 
 /// Per-file execution summary.
@@ -65,7 +70,8 @@ pub struct ExecuteSummary {
 
 /// Executes a single state test JSON file using explicit execution options.
 pub(crate) fn execute_test_suite(path: &Path, config: ExecuteConfig) -> Result<(), TestError> {
-    let input = fs::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
+    let input =
+        fixture_io::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
     execute_str_with_config(path, &input, config).map(|_| ())
 }
 
@@ -90,13 +96,17 @@ pub fn execute_str_with_filter(
     let resources =
         ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
+    let mut db_stats_counts = DbStatsCounts::default();
     for (name, unit) in suite.0 {
         if !entrypoint.matches(&name) {
             summary.skipped += 1;
             continue;
         }
-        execute_unit(path, &name, unit, config, &resources)?;
+        execute_unit(path, &name, unit, config, &resources, &mut db_stats_counts)?;
         summary.executed += 1;
+    }
+    if config.db_stats {
+        print_db_stats(db_stats_counts);
     }
     Ok(summary)
 }
@@ -107,6 +117,7 @@ fn execute_unit(
     unit: TestUnit,
     config: ExecuteConfig,
     resources: &ExecutionResources,
+    db_stats_counts: &mut DbStatsCounts,
 ) -> Result<(), TestError> {
     let state = parse_state(&unit.pre).map_err(|err| TestError::case(path, name, err))?;
     for (spec_name, posts) in &unit.post {
@@ -125,7 +136,15 @@ fn execute_unit(
                 }
                 Err(err) => return Err(TestError::case(path, name, err)),
             };
-            let result = execute_spec(spec, block, state.clone(), &tx, &unit.env, resources);
+            let result = execute_spec(
+                spec,
+                block,
+                state.clone(),
+                &tx,
+                &unit.env,
+                resources,
+                if config.db_stats { Some(&mut *db_stats_counts) } else { None },
+            );
             validate_result(path, name, &unit, post, result, spec, config)?;
         }
     }
@@ -246,19 +265,58 @@ fn execute_spec(
     tx: &RecoveredTxEnvelope,
     env: &Env,
     resources: &ExecutionResources,
+    db_stats_counts: Option<&mut DbStatsCounts>,
 ) -> Result<SpecOutcome, HandlerError> {
-    let mut evm = Evm::<BaseEvmTypes>::new(
-        spec,
-        block,
-        ethereum_tx_registry(spec),
-        database.clone(),
-        Precompiles::base(spec),
-    );
+    let db_stats = db_stats_counts.is_some();
+    let mut evm = if db_stats {
+        Evm::<BaseEvmTypes>::new(
+            spec,
+            block,
+            ethereum_tx_registry(spec),
+            DbStats::new(database.clone()),
+            Precompiles::base(spec),
+        )
+    } else {
+        Evm::<BaseEvmTypes>::new(
+            spec,
+            block,
+            ethereum_tx_registry(spec),
+            database.clone(),
+            Precompiles::base(spec),
+        )
+    };
     resources.configure_evm(&mut evm);
     let mut post = database;
     pre_block_system_calls(&mut evm, &mut post, spec, env);
     let Ok(result) = evm.transact(tx)?.commit_with(&mut post);
+    if let Some(counts) = db_stats_counts
+        && let Some(stats) = evm.database_as::<DbStats<InMemoryDB>>()
+    {
+        *counts += stats.counts();
+    }
     Ok(spec_outcome(post, result))
+}
+
+fn print_db_stats(counts: DbStatsCounts) {
+    let style = db_stats_style();
+    eprintln!("{style}db stats{style:#}: get_account={}", counts.get_account);
+    eprintln!("{style}db stats{style:#}: get_code_by_hash={}", counts.get_code_by_hash);
+    eprintln!("{style}db stats{style:#}: get_storage={}", counts.get_storage);
+    eprintln!(
+        "{style}db stats{style:#}: get_storage_same_address_repeats={}",
+        counts.get_storage_same_address_repeats
+    );
+    eprintln!(
+        "{style}db stats{style:#}: get_storage_same_address_longest_streak={}",
+        counts.get_storage_same_address_longest_streak
+    );
+    eprintln!("{style}db stats{style:#}: get_block_hash={}", counts.get_block_hash);
+    eprintln!("{style}db stats{style:#}: error={}", counts.error);
+}
+
+#[inline]
+const fn db_stats_style() -> Style {
+    Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightCyan))).bold()
 }
 
 fn spec_outcome(post: InMemoryDB, result: TxResult) -> SpecOutcome {

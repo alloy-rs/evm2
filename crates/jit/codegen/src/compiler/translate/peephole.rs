@@ -319,6 +319,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         if let Some((offset, len)) = self.const_memory_operands(self.const_operands()) {
             // Both operands constant; consume from virtual stack.
             self.pop_ignore(2);
+            self.sync_diverging_stack_effect();
             let ir = match op {
                 op::RETURN => InstrStop::Return,
                 op::REVERT => InstrStop::Revert,

@@ -40,6 +40,9 @@ pub(crate) enum TestErrorKind {
     /// JSON decoding failed.
     #[error(transparent)]
     SerdeDeserialize(#[from] serde_json::Error),
+    /// Fixture decoding failed.
+    #[error(transparent)]
+    FixtureRead(#[from] crate::fixture_io::FixtureReadError),
     /// Numeric value overflowed the target type.
     #[error("value overflows {0}")]
     Overflow(&'static str),

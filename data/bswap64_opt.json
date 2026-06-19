@@ -21,16 +21,35 @@
         "storage": {}
       }
     },
-    "transaction": [
-      {
-        "data": "0xff2f79f10000000000000000000000000000000000000000000000000000000000000102",
-        "gasLimit": "0x7fffffffffffffff",
-        "gasPrice": "0x0",
-        "nonce": "0x0",
-        "sender": "0x1111111111111111111111111111111111111111",
-        "to": "0xcccccccccccccccccccccccccccccccccccccccc",
-        "value": "0x0"
-      }
-    ]
+    "transaction": {
+      "data": [
+        "0xff2f79f10000000000000000000000000000000000000000000000000000000000000102"
+      ],
+      "gasLimit": [
+        "0x7fffffffffffffff"
+      ],
+      "gasPrice": "0x0",
+      "nonce": "0x0",
+      "sender": "0x1111111111111111111111111111111111111111",
+      "to": "0xcccccccccccccccccccccccccccccccccccccccc",
+      "value": [
+        "0x0"
+      ],
+      "secretKey": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "post": {
+      "Osaka": [
+        {
+          "expectException": null,
+          "indexes": {
+            "data": 0,
+            "gas": 0,
+            "value": 0
+          },
+          "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "logs": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    }
   }
 }

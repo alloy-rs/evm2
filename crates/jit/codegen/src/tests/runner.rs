@@ -332,7 +332,7 @@ impl HostState {
 
         let mut transient_storage = HashMap::default();
         for key in keys {
-            let value = evm.state_mut().transient_storage(&DEF_ADDR, &key);
+            let value = evm.state_mut().tload(&DEF_ADDR, &key);
             if !value.is_zero() {
                 transient_storage.insert(key, value);
             }
@@ -352,7 +352,7 @@ fn prepare_host(spec_id: SpecId) -> Evm<BaseEvmTypes> {
     );
     for address in [Address::ZERO, DEF_ADDR, DEF_CALLER, OTHER_ADDR, Address::with_last_byte(0x69)]
     {
-        evm.state_mut().warm_account_non_revertible(&address);
+        evm.state_mut().prewarm(&address);
     }
     for key in [
         U256::from(0),
@@ -362,7 +362,7 @@ fn prepare_host(spec_id: SpecId) -> Evm<BaseEvmTypes> {
         U256::from(200),
         U256::from(0xff),
     ] {
-        let _ = evm.state_mut().warm_storage_non_revertible(&DEF_ADDR, &key);
+        evm.state_mut().prewarm_storage_slot(&DEF_ADDR, key);
     }
     evm
 }

@@ -14,9 +14,11 @@
 
  /// i256 INT_MIN: 1 << 255.
  const INT_MIN: U256 = U256::ONE.wrapping_shl(255);
-@@ -321,8 +320,8 @@
+@@ -320,9 +319,10 @@
+         if let Some((offset, len)) = self.const_memory_operands(self.const_operands()) {
              // Both operands constant; consume from virtual stack.
              self.pop_ignore(2);
++            self.sync_diverging_stack_effect();
              let ir = match op {
 -                op::RETURN => InstructionResult::Return,
 -                op::REVERT => InstructionResult::Revert,

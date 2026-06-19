@@ -724,7 +724,7 @@ mod tests {
         // The redirected call transferred the value to the replacement, not the target.
         let mut balance = |address| {
             evm.state_mut()
-                .read_account_info(&address)
+                .account_info_untracked(&address)
                 .unwrap()
                 .map_or(U256::ZERO, |info| info.balance)
         };

@@ -625,7 +625,7 @@ impl CaseTx {
                 }),
                 self.caller,
             )),
-            TxKindCase::Eip7702 => RecoveredTxEnvelope::Eip7702(Recovered::new_unchecked(
+            TxKindCase::Eip7702 => RecoveredTxEnvelope::from(Recovered::new_unchecked(
                 TxEip7702 {
                     chain_id: 1,
                     nonce: self.nonce,
