@@ -212,10 +212,13 @@ evm_features! {
     ///
     /// Default: on since Amsterdam
     EIP7708,
-    /// Applies delayed burn logging for [EIP-7708](https://eips.ethereum.org/EIPS/eip-7708) selfdestructs.
+    /// Applies [EIP-8246](https://eips.ethereum.org/EIPS/eip-8246) SELFDESTRUCT balance-burn removal.
+    ///
+    /// Self-destructed accounts keep their balance instead of burning it; at finalization they are
+    /// reset to balance-only accounts (nonce 0, no code, no storage) rather than deleted.
     ///
     /// Default: on since Amsterdam
-    EIP7708_DELAYED_BURN,
+    EIP8246,
 }
 
 #[cfg(test)]

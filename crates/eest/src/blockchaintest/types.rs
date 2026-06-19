@@ -358,6 +358,10 @@ fn deserialize_maybe_empty<'de, D>(deserializer: D) -> Result<Option<Address>, D
 where
     D: Deserializer<'de>,
 {
+    if !deserializer.is_human_readable() {
+        return Option::<Address>::deserialize(deserializer);
+    }
+
     let value = serde_json::Value::deserialize(deserializer)?;
     match value {
         serde_json::Value::Null => Ok(None),

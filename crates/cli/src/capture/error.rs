@@ -14,8 +14,8 @@ pub(crate) enum CaptureError {
     MissingBlock(u64),
     #[error("failed to create Tokio runtime for capture")]
     Runtime(#[source] std::io::Error),
-    #[error("failed to encode JSON")]
-    EncodeJson(#[source] serde_json::Error),
+    #[error("failed to encode fixture")]
+    EncodeFixture(#[source] evm2_eest::FixtureWriteError),
     #[error("failed to decode RPC trace response")]
     DecodeTrace(#[source] serde_json::Error),
     #[error("failed to join blocking capture block preparation")]
@@ -53,10 +53,4 @@ pub(crate) enum CaptureError {
         "withdrawal balance for {address} exceeds traced balance: traced {traced_balance}, withdrawals {withdrawal_balance}"
     )]
     WithdrawalBalanceUnderflow { address: Address, traced_balance: U256, withdrawal_balance: U256 },
-    #[error("failed to write capture output {path}")]
-    WriteOutput {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
 }

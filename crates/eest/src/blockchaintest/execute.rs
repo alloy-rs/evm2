@@ -11,6 +11,7 @@ use super::{
 };
 use crate::{
     filter::EntryPoint,
+    fixture_io,
     forks::is_fork_skipped,
     state::{insert_account_with_storage, parse_bytecode},
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
@@ -24,12 +25,12 @@ use evm2::{
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
         AccountChangeRef, AccountInfo as EvmAccountInfo, AccountInfoRef, BEACON_ROOTS_ADDRESS,
-        BlockStateAccumulator, DbErrorCode, HISTORY_STORAGE_ADDRESS, InMemoryDB, StateChangeSink,
-        StateChangeSource, Tee, WITHDRAWAL_REQUEST_ADDRESS,
+        BlockStateAccumulator, DbErrorCode, DbStats, DbStatsCounts, HISTORY_STORAGE_ADDRESS,
+        InMemoryDB, StateChangeSink, StateChangeSource, Tee, WITHDRAWAL_REQUEST_ADDRESS,
     },
     registry::HandlerError,
 };
-use std::{fs, mem, path::Path};
+use std::{mem, path::Path};
 
 const ONE_GWEI: u64 = 1_000_000_000;
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
@@ -39,11 +40,13 @@ const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
 pub struct ExecuteConfig {
     /// Whether to validate final post-state when fixtures contain it.
     pub validate_post_state: bool,
+    /// Whether to print database method call counts.
+    pub db_stats: bool,
 }
 
 impl Default for ExecuteConfig {
     fn default() -> Self {
-        Self { validate_post_state: true }
+        Self { validate_post_state: true, db_stats: false }
     }
 }
 
@@ -56,15 +59,16 @@ pub struct ExecuteSummary {
     pub skipped: usize,
 }
 
-/// Executes a single blockchain test JSON file using explicit execution options.
+/// Executes a single blockchain test file using explicit execution options.
 pub(crate) fn execute_test_suite(
     path: &Path,
     config: ExecuteConfig,
 ) -> Result<ExecuteSummary, TestError> {
-    let input = fs::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
+    let suite =
+        fixture_io::read_blockchain(path).map_err(|err| TestError::unknown(path, err.into()))?;
     let entrypoint = EntryPoint::default();
     let mut hook = NoopHook;
-    execute_str(path, &input, config, &entrypoint, &mut hook)
+    execute_suite(path, &suite, config, &entrypoint, &mut hook)
 }
 
 /// Executes a loaded blockchain test JSON file.
@@ -77,16 +81,27 @@ pub fn execute_str(
 ) -> Result<ExecuteSummary, TestError> {
     let suite: BlockchainTest =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
+    execute_suite(path, &suite, config, entrypoint, hook)
+}
+
+/// Executes a parsed blockchain test suite.
+pub fn execute_suite(
+    path: &Path,
+    suite: &BlockchainTest,
+    config: ExecuteConfig,
+    entrypoint: &EntryPoint,
+    hook: &mut dyn Hook,
+) -> Result<ExecuteSummary, TestError> {
     let mut summary = ExecuteSummary::default();
-    for (name, test_case) in suite.0 {
-        if !entrypoint.matches(&name)
+    for (name, test_case) in &suite.0 {
+        if !entrypoint.matches(name)
             || test_case.network.is_transition()
             || is_fork_skipped(fork_to_spec_id(test_case.network))
         {
             summary.skipped += 1;
             continue;
         }
-        execute_case(path, &name, &test_case, config, hook)?;
+        execute_case(path, name, test_case, config, hook)?;
         summary.executed += 1;
     }
     Ok(summary)
@@ -138,6 +153,7 @@ fn execute_case(
             &mut parent_block_hash,
             &mut parent_excess_blob_gas,
             hook,
+            config.db_stats,
         ) {
             Ok(()) => hook.block_finished(BlockFinished {
                 block_index,
@@ -197,6 +213,7 @@ fn execute_block(
     parent_block_hash: &mut Option<B256>,
     parent_excess_blob_gas: &mut u64,
     hook: &mut dyn Hook,
+    db_stats: bool,
 ) -> Result<(), TestError> {
     let should_fail = block.expect_exception.is_some();
     let mut block_hash = None;
@@ -212,13 +229,23 @@ fn execute_block(
     }
 
     let initial_database = mem::take(database);
-    let mut evm = Evm::<BaseEvmTypes>::new(
-        spec,
-        next_block_env,
-        ethereum_tx_registry(spec),
-        initial_database,
-        Precompiles::base(spec),
-    );
+    let mut evm = if db_stats {
+        Evm::<BaseEvmTypes>::new(
+            spec,
+            next_block_env,
+            ethereum_tx_registry(spec),
+            DbStats::new(initial_database),
+            Precompiles::base(spec),
+        )
+    } else {
+        Evm::<BaseEvmTypes>::new(
+            spec,
+            next_block_env,
+            ethereum_tx_registry(spec),
+            initial_database,
+            Precompiles::base(spec),
+        )
+    };
     let mut block_state = BlockStateAccumulator::new();
 
     let result = (|| -> Result<BlockResolution, TestError> {
@@ -310,9 +337,23 @@ fn execute_block(
 
     // The EVM was constructed with this concrete database above; recover it before returning so
     // invalid blocks leave the caller's state unchanged.
-    let mut restored_database = mem::take(
-        evm.database_as_mut::<InMemoryDB>().expect("block EVM database should be InMemoryDB"),
-    );
+    let (mut restored_database, db_stats_counts) = if db_stats {
+        let stats = evm
+            .database_as_mut::<DbStats<InMemoryDB>>()
+            .expect("block EVM database should be DbStats<InMemoryDB>");
+        (mem::take(stats.inner_mut()), Some(stats.counts()))
+    } else {
+        (
+            mem::take(
+                evm.database_as_mut::<InMemoryDB>()
+                    .expect("block EVM database should be InMemoryDB"),
+            ),
+            None,
+        )
+    };
+    if let Some(counts) = db_stats_counts {
+        print_db_stats(counts);
+    }
 
     match result {
         Ok(BlockResolution::Commit) => {
@@ -336,6 +377,17 @@ fn execute_block(
             Err(err)
         }
     }
+}
+
+fn print_db_stats(counts: DbStatsCounts) {
+    eprintln!(
+        "db stats: get_account={} get_code_by_hash={} get_storage={} get_block_hash={} error={}",
+        counts.get_account,
+        counts.get_code_by_hash,
+        counts.get_storage,
+        counts.get_block_hash,
+        counts.error
+    );
 }
 
 fn block_number(block: &Block) -> Option<U256> {

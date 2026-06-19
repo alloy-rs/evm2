@@ -1,2 +1,2 @@
 [files]
-extend-exclude = ["diffs"]
+extend-exclude = ["*.zst", "diffs"]

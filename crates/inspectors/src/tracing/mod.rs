@@ -544,21 +544,6 @@ impl TracingInspector {
                             StorageChange { key: *key, value, had_value: Some(*previous), reason };
                         Some(Box::new(change))
                     }
-                    Some(JournalEntry::StorageInserted { address, key }) => {
-                        // SAFETY: (Address,key) exists if part if StorageChange
-                        let slot = host
-                            .state()
-                            .get_storage_slot(address, key)
-                            .copied()
-                            .unwrap_or_default();
-                        let change = StorageChange {
-                            key: *key,
-                            value: slot.current,
-                            had_value: Some(slot.original),
-                            reason,
-                        };
-                        Some(Box::new(change))
-                    }
                     Some(JournalEntry::StorageWarmed { key, address }) => {
                         // SAFETY: (Address,key) exists if part if StorageChange
                         let value = host.state().get_storage(address, key).unwrap_or_default();

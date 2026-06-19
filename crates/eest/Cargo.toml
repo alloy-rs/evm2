@@ -26,10 +26,12 @@ alloy-rpc-types-eth = { workspace = true, features = ["std"] }
 alloy-trie = { workspace = true, features = ["ethereum"] }
 k256 = { workspace = true, features = ["ecdsa", "std"] }
 libtest-mimic.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["preserve_order", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 walkdir.workspace = true
+zstd.workspace = true
 
 [[test]]
 name = "eest"
