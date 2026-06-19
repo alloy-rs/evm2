@@ -810,9 +810,6 @@ impl State {
             }
         }
 
-        // Code and account-info commits are fused into a single pass over `accounts`. They write to
-        // independent cache maps (`contracts` vs `accounts`), and the storage pass above already
-        // ran, so the delete branch's `storage` wipe still lands after any committed slots.
         for (&address, entry) in self.accounts.iter() {
             if let Some(account) = entry.present.as_ref()
                 && let Some((code_hash, code)) = Self::changed_code(entry.code_changed, account)
