@@ -16,6 +16,7 @@ use alloy_trie::{
     TrieAccount,
     root::{state_root_unhashed, storage_root_unhashed},
 };
+use anstyle::{AnsiColor, Color, Style};
 use evm2::{
     BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
     env::BlockEnv,
@@ -88,13 +89,17 @@ pub fn execute_str_with_filter(
     let suite: TestSuite =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
+    let mut db_stats_counts = DbStatsCounts::default();
     for (name, unit) in suite.0 {
         if !entrypoint.matches(&name) {
             summary.skipped += 1;
             continue;
         }
-        execute_unit(path, &name, unit, config)?;
+        execute_unit(path, &name, unit, config, &mut db_stats_counts)?;
         summary.executed += 1;
+    }
+    if config.db_stats {
+        print_db_stats(db_stats_counts);
     }
     Ok(summary)
 }
@@ -104,6 +109,7 @@ fn execute_unit(
     name: &str,
     unit: TestUnit,
     config: ExecuteConfig,
+    db_stats_counts: &mut DbStatsCounts,
 ) -> Result<(), TestError> {
     let state = parse_state(&unit.pre).map_err(|err| TestError::case(path, name, err))?;
     for (spec_name, posts) in &unit.post {
@@ -122,7 +128,14 @@ fn execute_unit(
                 }
                 Err(err) => return Err(TestError::case(path, name, err)),
             };
-            let result = execute_spec(spec, block, state.clone(), &tx, &unit.env, config.db_stats);
+            let result = execute_spec(
+                spec,
+                block,
+                state.clone(),
+                &tx,
+                &unit.env,
+                if config.db_stats { Some(&mut *db_stats_counts) } else { None },
+            );
             validate_result(path, name, &unit, post, result, spec, config)?;
         }
     }
@@ -242,8 +255,9 @@ fn execute_spec(
     database: InMemoryDB,
     tx: &RecoveredTxEnvelope,
     env: &Env,
-    db_stats: bool,
+    db_stats_counts: Option<&mut DbStatsCounts>,
 ) -> Result<SpecOutcome, HandlerError> {
+    let db_stats = db_stats_counts.is_some();
     let mut evm = if db_stats {
         Evm::<BaseEvmTypes>::new(
             spec,
@@ -264,21 +278,34 @@ fn execute_spec(
     let mut post = database;
     pre_block_system_calls(&mut evm, &mut post, spec, env);
     let Ok(result) = evm.transact(tx)?.commit_with(&mut post);
-    if db_stats && let Some(stats) = evm.database_as::<DbStats<InMemoryDB>>() {
-        print_db_stats(stats.counts());
+    if let Some(counts) = db_stats_counts
+        && let Some(stats) = evm.database_as::<DbStats<InMemoryDB>>()
+    {
+        *counts += stats.counts();
     }
     Ok(spec_outcome(post, result))
 }
 
 fn print_db_stats(counts: DbStatsCounts) {
+    let style = db_stats_style();
+    eprintln!("{style}db stats{style:#}: get_account={}", counts.get_account);
+    eprintln!("{style}db stats{style:#}: get_code_by_hash={}", counts.get_code_by_hash);
+    eprintln!("{style}db stats{style:#}: get_storage={}", counts.get_storage);
     eprintln!(
-        "db stats: get_account={} get_code_by_hash={} get_storage={} get_block_hash={} error={}",
-        counts.get_account,
-        counts.get_code_by_hash,
-        counts.get_storage,
-        counts.get_block_hash,
-        counts.error
+        "{style}db stats{style:#}: get_storage_same_address_repeats={}",
+        counts.get_storage_same_address_repeats
     );
+    eprintln!(
+        "{style}db stats{style:#}: get_storage_same_address_longest_streak={}",
+        counts.get_storage_same_address_longest_streak
+    );
+    eprintln!("{style}db stats{style:#}: get_block_hash={}", counts.get_block_hash);
+    eprintln!("{style}db stats{style:#}: error={}", counts.error);
+}
+
+#[inline]
+const fn db_stats_style() -> Style {
+    Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightCyan))).bold()
 }
 
 fn spec_outcome(post: InMemoryDB, result: TxResult) -> SpecOutcome {
