@@ -30,7 +30,7 @@ const fn should_charge_new_account_gas(
     target_is_empty_for_new_account_gas && (!eip161 || transfers_value)
 }
 
-fn resize_evm_range<T: EvmTypes>(
+fn resize_memory_range<T: EvmTypes>(
     gas: &mut Gas,
     state: &mut InterpreterState<'_, T>,
     offset: Word,
@@ -55,8 +55,8 @@ fn get_memory_input_and_out_ranges<T: EvmTypes>(
     return_offset: Word,
     return_len: Word,
 ) -> Result<(Range<usize>, Range<usize>)> {
-    let input = resize_evm_range(gas, state, input_offset, input_len)?;
-    let output = resize_evm_range(gas, state, return_offset, return_len)?;
+    let input = resize_memory_range(gas, state, input_offset, input_len)?;
+    let output = resize_memory_range(gas, state, return_offset, return_len)?;
     Ok((input, output))
 }
 
@@ -290,7 +290,7 @@ fn create_inner<T: EvmTypes>(
         }
         gas.spend(state.gas_params().initcode_cost(len))?;
     }
-    let code_range = resize_evm_range(gas, state, offset, Word::from(len))?;
+    let code_range = resize_memory_range(gas, state, offset, Word::from(len))?;
     let input = memory_range_bytes(state, code_range)?;
     let create_cost = if is_create2 {
         state.gas_params().create2_cost(len)

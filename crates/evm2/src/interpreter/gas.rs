@@ -263,6 +263,7 @@ impl RemainingGas {
 
 /// Interpreter gas state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(C)] // Puts `tracker`, and so `.remaining`, first.
 pub struct Gas {
     tracker: GasTracker,
     memory: MemoryGas,

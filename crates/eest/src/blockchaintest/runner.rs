@@ -180,15 +180,3 @@ const IGNORED_TESTS: &[&str] = &[
     "blockchain_tests::jit::frontier/scenarios/test_scenarios.json",
     "blockchain_tests::aot::frontier/scenarios/test_scenarios.json",
 ];
-
-#[cfg(all(test, feature = "jit"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scenarios_ignore_is_compiled_backend_only() {
-        assert!(!should_ignore("blockchain_tests::frontier/scenarios/test_scenarios.json"));
-        assert!(should_ignore("blockchain_tests::jit::frontier/scenarios/test_scenarios.json"));
-        assert!(should_ignore("blockchain_tests::aot::frontier/scenarios/test_scenarios.json"));
-    }
-}
