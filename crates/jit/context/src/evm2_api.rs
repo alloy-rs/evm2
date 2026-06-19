@@ -43,9 +43,6 @@ pub struct EvmContext<'a> {
     pub spec_id: SpecId,
     /// The contract bytecode, for CODECOPY at runtime.
     pub bytecode: *const [u8],
-    /// Optional callback invoked by the LOG builtin after constructing the log.
-    #[doc(hidden)]
-    pub on_log: Option<&'a mut (dyn FnMut(&alloy_primitives::Log) + 'a)>,
     /// The size of the call input data, cached for CALLDATASIZE.
     pub calldatasize: usize,
     /// The result set by a builtin before exiting via `evm2_jit_exit`.
@@ -85,7 +82,6 @@ const _: () = {
     assert!(offset_of!(EvmContext<'_>, is_static) == offset_of!(crate::EvmContext<'_>, is_static));
     assert!(offset_of!(EvmContext<'_>, spec_id) == offset_of!(crate::EvmContext<'_>, spec_id));
     assert!(offset_of!(EvmContext<'_>, bytecode) == offset_of!(crate::EvmContext<'_>, bytecode));
-    assert!(offset_of!(EvmContext<'_>, on_log) == offset_of!(crate::EvmContext<'_>, on_log));
     assert!(
         offset_of!(EvmContext<'_>, calldatasize) == offset_of!(crate::EvmContext<'_>, calldatasize)
     );
@@ -243,7 +239,6 @@ impl<'a> EvmContext<'a> {
             is_static,
             spec_id,
             bytecode,
-            on_log: None,
             calldatasize,
             exit_result: InstrStop::Stop,
             exit_sp: ptr::null_mut(),

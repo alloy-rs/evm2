@@ -12,7 +12,7 @@ use crate::{
     version::{EvmFeatures, GasParams},
 };
 use alloc::{boxed::Box, vec::Vec};
-use alloy_primitives::{Address, Bytes, Log};
+use alloy_primitives::{Address, Bytes};
 use core::{fmt, ops::Range, ptr::NonNull};
 use derive_where::derive_where;
 
@@ -525,16 +525,6 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step_end(&mut self.0);
-        }
-    }
-
-    #[inline]
-    pub(crate) fn inspect_log(&mut self, log: &Log) {
-        if let Some(mut inspector) = self.0.inspector {
-            unsafe {
-                let mut host = self.0.host.unwrap_unchecked();
-                inspector.as_mut().log(log, host.as_mut());
-            }
         }
     }
 

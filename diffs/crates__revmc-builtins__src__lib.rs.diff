@@ -407,7 +407,7 @@
          ensure_memory(ecx, dst.max(src), len)?;
          ecx.memory.copy(dst, src, len);
      }
-@@ -597,23 +573,23 @@
+@@ -597,35 +573,30 @@
      sp: *mut EvmWord,
      n: u8,
  ) -> BuiltinResult {
@@ -439,7 +439,20 @@
      }
 
      let log = Log {
-@@ -635,65 +611,7 @@
+         address: ecx.input.target_address,
+         data: LogData::new(topics, data).expect("too many topics"),
+     };
+-    if let Some(on_log) = &mut ecx.on_log {
+-        ecx.host.log(log.clone());
+-        on_log(&log);
+-    } else {
+-        ecx.host.log(log);
+-    }
++    ecx.host.log(log);
+     Ok(())
+ }
+
+@@ -635,65 +606,7 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
@@ -506,7 +519,7 @@
      Ok(())
  }
 
-@@ -703,122 +621,7 @@
+@@ -703,122 +616,7 @@
      sp: *mut EvmWord,
      call_kind: CallKind,
  ) -> BuiltinResult {
@@ -630,7 +643,7 @@
      Ok(())
  }
 
-@@ -826,19 +629,18 @@
+@@ -826,19 +624,18 @@
  pub unsafe extern "C" fn __revmc_builtin_do_return(
      ecx: &mut EvmContext<'_>,
      sp: &mut [EvmWord; 2],
@@ -655,7 +668,7 @@
      Err(result.into())
  }
 
-@@ -847,18 +649,17 @@
+@@ -847,18 +644,17 @@
      ecx: &mut EvmContext<'_>,
      offset: u64,
      len: u64,
@@ -677,7 +690,7 @@
      Err(result.into())
  }
 
-@@ -867,7 +668,7 @@
+@@ -867,7 +663,7 @@
      ecx: &mut EvmContext<'_>,
      target: &mut EvmWord,
  ) -> BuiltinResult {
@@ -686,7 +699,7 @@
 
      let cold_load_gas = ecx.gas_params.selfdestruct_cold_cost();
      let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
-@@ -875,24 +676,24 @@
+@@ -875,24 +671,24 @@
          ecx.host.selfdestruct(ecx.input.target_address, target.to_address(), skip_cold_load)?;
 
      // EIP-161: State trie clearing (invariant-preserving alternative)

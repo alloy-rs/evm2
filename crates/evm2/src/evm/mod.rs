@@ -1358,7 +1358,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
     }
 
     fn log(&mut self, log: Log) {
-        self.state.log(log);
+        self.emit_log(log);
     }
 
     #[inline]

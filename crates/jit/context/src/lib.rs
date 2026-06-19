@@ -367,11 +367,6 @@ pub struct EvmContext<'a> {
     pub spec_id: SpecId,
     /// The contract bytecode, for CODECOPY at runtime.
     pub bytecode: *const [u8],
-    /// Optional callback invoked by the LOG builtin after constructing the log.
-    ///
-    /// Set to `None` when no inspector is active.
-    #[doc(hidden)]
-    pub on_log: Option<&'a mut (dyn FnMut(&Log) + 'a)>,
     /// The size of the call input data, cached for CALLDATASIZE.
     pub calldatasize: usize,
     /// The result set by a builtin before exiting via [`evm2_jit_exit`].
