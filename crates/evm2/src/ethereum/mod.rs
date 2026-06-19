@@ -563,8 +563,8 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
 ) -> HandlerResult<TxResult<T>> {
     let is_eip3529 = host.feature(EvmFeatures::EIP3529);
     let (gas_remaining, gas_used) = final_tx_gas(&result, tx_gas_limit, is_eip3529, floor_gas);
-    // Self-contained gas breakdown mirroring revm's `ResultGas`. `total_gas_spent` is defined so
-    // that `TxResult::tx_gas_used` reproduces the local `gas_used` (used here for the beneficiary
+    // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
+    // `TxResult::tx_gas_used` reproduces the local `gas_used` (used here for the beneficiary
     // reward). The state gas omits the (unmodeled) EIP-7702 per-authorization state refund.
     let total_gas_spent = tx_gas_limit
         .saturating_sub(result.gas.remaining())

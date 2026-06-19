@@ -18,20 +18,19 @@ use derive_where::derive_where;
 pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     /// Whether execution succeeded.
     pub status: bool,
-    /// Total gas spent (regular + state) before refund. Mirrors revm `ResultGas::total_gas_spent`.
-    /// The receipt gas-used value is [`Self::tx_gas_used`].
+    /// Total gas spent (regular + state) before refund. The receipt gas-used value is
+    /// [`Self::tx_gas_used`].
     pub total_gas_spent: u64,
     /// State gas consumed by the transaction (EIP-8037): storage creation, account creation, code
-    /// deposit, and the top-level create's initial state gas. Mirrors revm
-    /// `ResultGas::state_gas_spent_final`. Zero when EIP-8037 is disabled.
+    /// deposit, and the top-level create's initial state gas. Zero when EIP-8037 is disabled.
     ///
-    /// Note: unlike revm this does not yet subtract an EIP-7702 per-authorization state-gas
-    /// refund, which evm2 does not model.
+    /// Note: this does not yet subtract an EIP-7702 per-authorization state-gas refund, which is
+    /// not modeled.
     pub state_gas_spent: u64,
-    /// Gas refund (capped per EIP-3529), before the EIP-7623 floor adjustment. Mirrors revm
-    /// `ResultGas::inner_refunded`; use [`Self::refund_post_floor`] for the post-floor refund.
+    /// Gas refund (capped per EIP-3529), before the EIP-7623 floor adjustment. Use
+    /// [`Self::refund_post_floor`] for the post-floor refund.
     pub refunded: u64,
-    /// EIP-7623 floor gas. Zero when not applicable. Mirrors revm `ResultGas::floor_gas`.
+    /// EIP-7623 floor gas. Zero when not applicable.
     pub floor_gas: u64,
     /// Interpreter stop reason.
     pub stop: InstrStop,
@@ -294,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn gas_breakdown_getters_match_revm_result_gas() {
+    fn gas_breakdown_getters() {
         // Floor inactive: tx_gas_used = total_gas_spent - refunded, refund is effective.
         let r = result(100_000, 30_000, 8_000, 21_000);
         assert_eq!(r.tx_gas_used(), 92_000);
@@ -302,7 +301,7 @@ mod tests {
         // Block split: regular + state == total.
         assert_eq!(r.block_regular_gas_used(), 70_000);
         assert_eq!(r.block_state_gas_used(), 30_000);
-        assert_eq!(r.block_regular_gas_used() + r.block_state_gas_used(), r.total_gas_spent());
+        assert_eq!(r.block_regular_gas_used() + r.block_state_gas_used(), r.total_gas_spent);
     }
 
     #[test]
