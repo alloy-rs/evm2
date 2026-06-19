@@ -46,7 +46,7 @@
       ]
     }
   },
-  "precompile/p256verify/perfnet": {
+  "precompile/p256verify/ethpandaops": {
     "env": {
       "currentBaseFee": "0x0",
       "currentCoinbase": "0x0000000000000000000000000000000000000000",

@@ -233,5 +233,52 @@
         "0x0"
       ]
     }
+  },
+  "precompile/sha256/ethpandaops": {
+    "env": {
+      "currentBaseFee": "0x0",
+      "currentCoinbase": "0x0000000000000000000000000000000000000000",
+      "currentGasLimit": "0x1000000",
+      "currentNumber": "0x1",
+      "currentTimestamp": "0x1"
+    },
+    "post": {
+      "Osaka": [
+        {
+          "expectException": null,
+          "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "indexes": {
+            "data": 0,
+            "gas": 0,
+            "value": 0
+          },
+          "logs": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    },
+    "pre": {
+      "0x1111111111111111111111111111111111111111": {
+        "balance": "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "code": "0x",
+        "nonce": "0x0",
+        "storage": {}
+      }
+    },
+    "transaction": {
+      "data": [
+        "0x9d79b1a37f31801cd11a6706fb40d6bd57526846903bb13ede562439e9c1b823a96089bca71f3d1a6d2d3cadb3669cbd50e165e434249d8b829f411669842a97"
+      ],
+      "gasLimit": [
+        "0x1000000"
+      ],
+      "gasPrice": "0x0",
+      "nonce": "0x0",
+      "secretKey": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "sender": "0x1111111111111111111111111111111111111111",
+      "to": "0x0000000000000000000000000000000000000002",
+      "value": [
+        "0x0"
+      ]
+    }
   }
 }

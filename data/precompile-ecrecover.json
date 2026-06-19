@@ -46,7 +46,7 @@
       ]
     }
   },
-  "precompile/ecrecover/perfnet": {
+  "precompile/ecrecover/ethpandaops": {
     "env": {
       "currentBaseFee": "0x0",
       "currentCoinbase": "0x0000000000000000000000000000000000000000",

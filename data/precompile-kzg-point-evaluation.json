@@ -46,7 +46,7 @@
       ]
     }
   },
-  "precompile/kzg_point_evaluation/perfnet": {
+  "precompile/kzg_point_evaluation/ethpandaops": {
     "env": {
       "currentBaseFee": "0x0",
       "currentCoinbase": "0x0000000000000000000000000000000000000000",
