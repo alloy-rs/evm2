@@ -43,7 +43,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req.host.state.account(&caller, false).map_err(db_error_handler!(req.host))?.bump_nonce();
     let execution_checkpoint = req.host.state.checkpoint();
 
-    let (gas_limit, reservoir) =
+    let (gas_limit, reservoir, initial_state_gas) =
         initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, tx.to.is_create());
     let tx_env = TxEnv {
         origin: caller,
@@ -57,5 +57,5 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
-    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)
+    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, initial_state_gas, result)
 }

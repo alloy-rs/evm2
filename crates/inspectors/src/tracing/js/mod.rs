@@ -326,7 +326,7 @@ impl JsInspector {
             to,
             input: tx.input().clone(),
             gas: tx.gas_limit(),
-            gas_used: result.gas_used,
+            gas_used: result.tx_gas_used(),
             gas_price: tx.effective_gas_price(Some(base_fee)).try_into().unwrap_or(u64::MAX),
             value: tx.value(),
             block: block.number.try_into().unwrap_or(u64::MAX),

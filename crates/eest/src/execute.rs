@@ -282,11 +282,12 @@ fn print_db_stats(counts: DbStatsCounts) {
 }
 
 fn spec_outcome(post: InMemoryDB, result: TxResult) -> SpecOutcome {
+    let gas_used = result.tx_gas_used();
     SpecOutcome {
         state_root: state_root_from_database(&post),
         logs_root: logs_hash(&result.logs),
         output: result.output,
-        gas_used: result.gas_used,
+        gas_used,
         evm_result: format!("{:?}", result.stop),
     }
 }

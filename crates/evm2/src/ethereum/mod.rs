@@ -419,14 +419,19 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
 /// reservoir is insufficient.
 ///
 /// Returns `(regular_gas_limit, reservoir)`.
+/// Returns `(regular_gas_limit, reservoir, initial_state_gas)` for the first frame.
+///
+/// `initial_state_gas` is the EIP-8037 state gas charged before execution (the top-level create's
+/// `create_state_gas`); it is reported back so transaction-level state-gas accounting can include
+/// it. Zero without EIP-8037.
 pub(super) fn initial_gas_and_reservoir(
     version: &Version,
     tx_gas_limit: u64,
     intrinsic: u64,
     is_create: bool,
-) -> (u64, u64) {
+) -> (u64, u64, u64) {
     if !version.feature(EvmFeatures::EIP8037) {
-        return (tx_gas_limit - intrinsic, 0);
+        return (tx_gas_limit - intrinsic, 0, 0);
     }
 
     let initial_state_gas = if is_create { version.gas_params.create_state_gas() } else { 0 };
@@ -443,7 +448,7 @@ pub(super) fn initial_gas_and_reservoir(
         reservoir = 0;
     }
 
-    (regular_gas_limit, reservoir)
+    (regular_gas_limit, reservoir, initial_state_gas)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -553,10 +558,20 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     gas_price: U256,
     tx_gas_limit: u64,
     floor_gas: u64,
+    initial_state_gas: u64,
     result: MessageResult<T>,
 ) -> HandlerResult<TxResult<T>> {
-    let (gas_remaining, gas_used) =
-        final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
+    let is_eip3529 = host.feature(EvmFeatures::EIP3529);
+    let (gas_remaining, gas_used) = final_tx_gas(&result, tx_gas_limit, is_eip3529, floor_gas);
+    // Self-contained gas breakdown mirroring revm's `ResultGas`. `total_gas_spent` is defined so
+    // that `TxResult::tx_gas_used` reproduces the local `gas_used` (used here for the beneficiary
+    // reward). The state gas omits the (unmodeled) EIP-7702 per-authorization state refund.
+    let total_gas_spent = tx_gas_limit
+        .saturating_sub(result.gas.remaining())
+        .saturating_sub(result.reservoir_reimbursed());
+    let refunded = result.final_refund(tx_gas_limit, is_eip3529);
+    let state_gas_spent =
+        result.gas.state_gas_spent().saturating_add_unsigned(initial_state_gas).max(0) as u64;
     if host.feature(EvmFeatures::FEE_CHARGE) {
         let caller_refund = U256::from(gas_remaining) * gas_price;
         host.state
@@ -577,7 +592,10 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     }
     Ok(TxResult {
         status: result.stop.is_success(),
-        gas_used,
+        total_gas_spent,
+        state_gas_spent,
+        refunded,
+        floor_gas,
         stop: result.stop,
         output: result.output,
         created_address: result.created_address,

@@ -65,7 +65,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let execution_checkpoint = req.host.state.checkpoint();
 
     // EIP-7702 transactions are always calls, never creates.
-    let (gas_limit, reservoir) =
+    let (gas_limit, reservoir, initial_state_gas) =
         initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, false);
     let tx_env = TxEnv {
         origin: caller,
@@ -89,7 +89,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         result.gas.refunded().saturating_add(i64::try_from(eip7702_refund).unwrap_or(i64::MAX)),
     );
 
-    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)
+    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, initial_state_gas, result)
 }
 
 fn eip7702_authorization_gas<T: EvmTypes<Host = Evm<T>>>(

@@ -72,7 +72,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let execution_checkpoint = req.host.state.checkpoint();
 
     // Blob transactions are always calls, never creates.
-    let (gas_limit, reservoir) =
+    let (gas_limit, reservoir, initial_state_gas) =
         initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, false);
     let tx_env = TxEnv {
         origin: caller,
@@ -95,7 +95,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
-    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)
+    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, initial_state_gas, result)
 }
 
 fn validate_blob_fee(max_fee_per_blob_gas: U256, blob_basefee: U256) -> HandlerResult<()> {

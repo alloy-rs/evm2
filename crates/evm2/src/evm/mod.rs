@@ -1645,7 +1645,7 @@ mod tests {
         req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
-        Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
+        Ok(TxResult { status: true, total_gas_spent: req.tx.nonce + 1, ..TxResult::default() })
     }
 
     fn handle_test_tx_version(
@@ -1653,7 +1653,7 @@ mod tests {
     ) -> HandlerResult<TxResult> {
         Ok(TxResult {
             status: true,
-            gas_used: req.host.version().tx_gas_limit_cap,
+            total_gas_spent: req.host.version().tx_gas_limit_cap,
             ..TxResult::default()
         })
     }
@@ -1675,7 +1675,7 @@ mod tests {
             address: LIFECYCLE_ACCOUNT,
             data: LogData::new_unchecked(vec![], Bytes::new()),
         });
-        Ok(TxResult { status: true, gas_used: req.tx.nonce, ..TxResult::default() })
+        Ok(TxResult { status: true, total_gas_spent: req.tx.nonce, ..TxResult::default() })
     }
 
     fn lifecycle_evm() -> Evm<BaseEvmTypes> {
@@ -2100,7 +2100,7 @@ mod tests {
         );
         let tx = test_tx(41);
 
-        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
     }
 
     #[test]
@@ -2120,7 +2120,7 @@ mod tests {
         );
         let tx = test_tx(41);
 
-        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
     }
 
     #[test]
@@ -2142,7 +2142,7 @@ mod tests {
         );
         let tx = test_tx(0);
 
-        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
     }
 
     #[test]
@@ -2162,7 +2162,7 @@ mod tests {
         let txs = [test_tx(1), test_tx(2)];
         let gas_used = evm
             .transact_iter(&txs)
-            .map(|result| result.map(|result| result.gas_used()))
+            .map(|result| result.map(|result| result.tx_gas_used()))
             .collect::<HandlerResult<Vec<_>>>();
 
         assert_eq!(gas_used, Ok(vec![2, 3]));
@@ -2174,7 +2174,7 @@ mod tests {
         let outcome =
             evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").discard();
 
-        assert_eq!(outcome.gas_used(), 7);
+        assert_eq!(outcome.tx_gas_used(), 7);
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
@@ -2193,7 +2193,7 @@ mod tests {
             .discard_with(&mut sink)
             .expect("block accumulator is infallible");
 
-        assert_eq!(outcome.gas_used(), 7);
+        assert_eq!(outcome.tx_gas_used(), 7);
         assert_eq!(outcome.logs.len(), 1);
         let storage = sink.storage_sorted();
         assert_eq!(storage.len(), 1);

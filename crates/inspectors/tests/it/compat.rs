@@ -378,17 +378,18 @@ pub enum ExecutionResult {
 
 impl ExecutionResult {
     fn from_tx_result(result: TxResult) -> Self {
+        let gas_used = result.tx_gas_used();
         if result.status {
             let output = if result.created_address.is_some() {
                 Output::Create(result.output, result.created_address)
             } else {
                 Output::Call(result.output)
             };
-            Self::Success { output, gas_used: result.gas_used }
+            Self::Success { output, gas_used }
         } else if result.stop.is_revert() {
-            Self::Revert { output: result.output, gas_used: result.gas_used }
+            Self::Revert { output: result.output, gas_used }
         } else {
-            Self::Halt { reason: result.stop, gas_used: result.gas_used }
+            Self::Halt { reason: result.stop, gas_used }
         }
     }
 
