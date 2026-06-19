@@ -324,9 +324,15 @@ pub(super) const fn validate_nonce_not_overflow(nonce: u64) -> HandlerResult<()>
     Ok(())
 }
 
-pub(super) const fn validate_intrinsic_gas(gas_limit: u64, intrinsic: u64) -> HandlerResult<()> {
-    if gas_limit < intrinsic {
-        return Err(HandlerError::IntrinsicGasTooLow { required: intrinsic, got: gas_limit });
+pub(super) const fn validate_intrinsic_gas(
+    gas_limit: u64,
+    intrinsic: u64,
+    initial_state_gas: u64,
+) -> HandlerResult<()> {
+    // EIP-8037: the gas limit must cover the regular intrinsic gas plus the upfront state gas.
+    let required = intrinsic.saturating_add(initial_state_gas);
+    if gas_limit < required {
+        return Err(HandlerError::IntrinsicGasTooLow { required, got: gas_limit });
     }
     Ok(())
 }
@@ -419,22 +425,33 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
 /// reservoir is insufficient.
 ///
 /// Returns `(regular_gas_limit, reservoir)`.
-/// Returns `(regular_gas_limit, reservoir, initial_state_gas)` for the first frame.
+/// Returns the EIP-8037 `initial_state_gas` charged before execution for `is_create` transactions
+/// (the top-level create's `create_state_gas`). Zero without EIP-8037 or for non-create calls.
+pub(super) const fn create_initial_state_gas(version: &Version, is_create: bool) -> u64 {
+    if version.feature(EvmFeatures::EIP8037) && is_create {
+        version.gas_params.create_state_gas()
+    } else {
+        0
+    }
+}
+
+/// Returns `(regular_gas_limit, reservoir)` for the first frame.
 ///
-/// `initial_state_gas` is the EIP-8037 state gas charged before execution (the top-level create's
-/// `create_state_gas`); it is reported back so transaction-level state-gas accounting can include
-/// it. Zero without EIP-8037.
+/// `initial_state_gas` is the EIP-8037 state gas charged before execution (top-level create state
+/// gas and EIP-7702 authorization state gas). It is deducted from the reservoir, spilling into the
+/// regular budget when the reservoir is insufficient. `state_refund` is the EIP-7702 state-gas
+/// refund, credited directly back to the reservoir so it stays state gas. Both are zero without
+/// EIP-8037.
 pub(super) fn initial_gas_and_reservoir(
     version: &Version,
     tx_gas_limit: u64,
     intrinsic: u64,
-    is_create: bool,
-) -> (u64, u64, u64) {
+    initial_state_gas: u64,
+    state_refund: u64,
+) -> (u64, u64) {
     if !version.feature(EvmFeatures::EIP8037) {
-        return (tx_gas_limit - intrinsic, 0, 0);
+        return (tx_gas_limit - intrinsic, 0);
     }
-
-    let initial_state_gas = if is_create { version.gas_params.create_state_gas() } else { 0 };
 
     let cap = version.tx_gas_limit_cap;
     let execution_gas = tx_gas_limit - intrinsic;
@@ -448,7 +465,11 @@ pub(super) fn initial_gas_and_reservoir(
         reservoir = 0;
     }
 
-    (regular_gas_limit, reservoir, initial_state_gas)
+    // EIP-7702 state-gas refund for existing authorities goes directly to the reservoir so it
+    // stays state gas rather than being routed through the capped regular refund counter.
+    reservoir += state_refund;
+
+    (regular_gas_limit, reservoir)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -552,6 +573,24 @@ pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
+/// EIP-8037: refunds a failed top-level CREATE's intrinsic `create_state_gas` back to the
+/// reservoir.
+///
+/// The charge was deducted upfront in [`initial_gas_and_reservoir`] (an unbalanced reservoir
+/// reduction, not a `spend_state`), so the inverse is an unbalanced reservoir add. A reverted or
+/// halted deployment is rolled back, so the state gas was never actually consumed. No-op on success
+/// or when `create_state_gas` is zero (non-create or pre-Amsterdam).
+pub(super) const fn refund_failed_create_state_gas<T: EvmTypes<Host = Evm<T>>>(
+    result: &mut MessageResult<T>,
+    create_state_gas: u64,
+) {
+    if create_state_gas != 0 && !result.stop.is_success() {
+        let reservoir = result.gas.reservoir().saturating_add(create_state_gas);
+        result.gas.set_reservoir(reservoir);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     caller: Address,
@@ -559,19 +598,22 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     tx_gas_limit: u64,
     floor_gas: u64,
     initial_state_gas: u64,
+    state_refund: u64,
     result: MessageResult<T>,
 ) -> HandlerResult<TxResult<T>> {
     let is_eip3529 = host.feature(EvmFeatures::EIP3529);
     let (gas_remaining, gas_used) = final_tx_gas(&result, tx_gas_limit, is_eip3529, floor_gas);
     // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
     // `TxResult::tx_gas_used` reproduces the local `gas_used` (used here for the beneficiary
-    // reward). The state gas omits the (unmodeled) EIP-7702 per-authorization state refund.
+    // reward). State gas is execution state gas plus the upfront `initial_state_gas`, less the
+    // EIP-7702 per-authorization `state_refund`.
     let total_gas_spent = tx_gas_limit
         .saturating_sub(result.gas.remaining())
         .saturating_sub(result.reservoir_reimbursed());
     let refunded = result.final_refund(tx_gas_limit, is_eip3529);
     let state_gas_spent =
-        result.gas.state_gas_spent().saturating_add_unsigned(initial_state_gas).max(0) as u64;
+        (result.gas.state_gas_spent().saturating_add_unsigned(initial_state_gas).max(0) as u64)
+            .saturating_sub(state_refund);
     if host.feature(EvmFeatures::FEE_CHARGE) {
         let caller_refund = U256::from(gas_remaining) * gas_price;
         host.state

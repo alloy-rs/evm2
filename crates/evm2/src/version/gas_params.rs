@@ -402,6 +402,29 @@ impl GasParams {
         self.get(GasId::NewAccountState) as u64
     }
 
+    /// Returns the EIP-8037 state gas charged per EIP-7702 authorization: the per-account portion
+    /// ([`Self::new_account_state_gas`]) plus the per-bytecode portion
+    /// ([`GasId::TxEip7702PerAuthState`]). Zero before Amsterdam.
+    #[inline]
+    pub const fn eip7702_auth_state_gas(&self) -> u64 {
+        self.new_account_state_gas().saturating_add(self.get(GasId::TxEip7702PerAuthState) as u64)
+    }
+
+    /// Returns the EIP-8037 total state-gas refund for an EIP-7702 transaction: the per-account
+    /// portion for existing authority accounts plus the per-bytecode portion for authorities that
+    /// already carry delegation bytecode (or are cleared). Zero before Amsterdam.
+    #[inline]
+    pub const fn eip7702_state_refund(
+        &self,
+        refunded_accounts: u64,
+        refunded_bytecodes: u64,
+    ) -> u64 {
+        let per_account = self.new_account_state_gas().saturating_mul(refunded_accounts);
+        let per_bytecode =
+            (self.get(GasId::TxEip7702PerAuthState) as u64).saturating_mul(refunded_bytecodes);
+        per_account.saturating_add(per_bytecode)
+    }
+
     /// Calculates the code-deposit state gas for `len` bytes (EIP-8037).
     #[inline]
     pub const fn code_deposit_state_gas(&self, len: usize) -> u64 {

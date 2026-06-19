@@ -5,7 +5,7 @@ use std::{env, sync::OnceLock};
 pub(crate) const SKIP_FORKS_ENV: &str = "EVM2_SKIP_FORKS";
 
 /// Hardforks skipped by default because evm2 does not support them yet.
-const UNSUPPORTED_FORKS: &[SpecId] = &[SpecId::AMSTERDAM];
+const UNSUPPORTED_FORKS: &[SpecId] = &[];
 
 /// Returns whether all test cases targeting `spec` should be skipped.
 #[inline]

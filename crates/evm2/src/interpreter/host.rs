@@ -118,18 +118,16 @@ impl<T: EvmTypes> MessageResult<T> {
     /// Returns the leftover EIP-8037 state-gas reservoir reimbursed to the caller
     /// at the top level.
     ///
-    /// On success this is the frame's final reservoir. On revert the rolled-back
-    /// state gas is recovered via the `reservoir + state_gas_spent` invariant. A
-    /// halt consumes all regular gas and reimburses no reservoir. Always zero
-    /// without EIP-8037.
+    /// On success this is the frame's final reservoir. On revert or halt the
+    /// rolled-back state gas is recovered via the `reservoir + state_gas_spent`
+    /// invariant: a regular-gas halt does not consume the separate state-gas
+    /// reservoir. Always zero without EIP-8037.
     #[inline]
     pub const fn reservoir_reimbursed(&self) -> u64 {
         if self.stop.is_success() {
             self.gas.reservoir()
-        } else if self.stop.is_revert() {
-            self.gas.reservoir().saturating_add_signed(self.gas.state_gas_spent())
         } else {
-            0
+            self.gas.reservoir().saturating_add_signed(self.gas.state_gas_spent())
         }
     }
 
