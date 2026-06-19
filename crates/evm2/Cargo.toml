@@ -100,8 +100,7 @@ default = [
     "std",
     "secp256k1",
     "blst",
-    # c-kzg doesn't play well with nextest.
-    # "c-kzg",
+    "c-kzg",
     "portable",
     "bn254-mcl",
 ]
