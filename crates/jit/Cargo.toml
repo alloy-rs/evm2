@@ -35,7 +35,5 @@ evm2-jit-build.workspace = true
 [features]
 default = ["llvm"]
 llvm = ["dep:evm2-jit-llvm", "evm2-jit-codegen/llvm", "evm2-jit-runtime/llvm"]
-llvm-prefer-static = ["llvm", "evm2-jit-codegen/llvm-prefer-static", "evm2-jit-runtime/llvm-prefer-static"]
-llvm-prefer-dynamic = ["llvm", "evm2-jit-codegen/llvm-prefer-dynamic", "evm2-jit-runtime/llvm-prefer-dynamic"]
 asm-keccak = ["evm2-jit-codegen/asm-keccak", "evm2-jit-runtime/asm-keccak"]
 __fuzzing = ["evm2-jit-codegen/__fuzzing"]

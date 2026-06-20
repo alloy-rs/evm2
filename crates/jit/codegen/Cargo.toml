@@ -61,8 +61,6 @@ walkdir.workspace = true
 [features]
 default = ["llvm"]
 llvm = ["dep:evm2-jit-llvm"]
-llvm-prefer-static = ["llvm", "evm2-jit-llvm?/prefer-static"]
-llvm-prefer-dynamic = ["llvm", "evm2-jit-llvm?/prefer-dynamic"]
 
 asm-keccak = ["alloy-primitives/asm-keccak"]
 

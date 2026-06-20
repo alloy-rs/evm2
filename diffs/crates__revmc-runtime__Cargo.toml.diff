@@ -49,7 +49,7 @@
 
  crossbeam-channel.workspace = true
  crossbeam-queue.workspace = true
-@@ -56,16 +45,12 @@
+@@ -56,16 +45,10 @@
  wincode.workspace = true
 
  [dev-dependencies]
@@ -67,6 +67,4 @@
 -alloy-evm = ["dep:alloy-evm"]
 -asm-keccak = ["revmc-codegen/asm-keccak", "alloy-primitives/asm-keccak"]
 +llvm = ["evm2-jit-codegen/llvm", "dep:evm2-jit-llvm"]
-+llvm-prefer-static = ["llvm", "evm2-jit-codegen/llvm-prefer-static", "evm2-jit-llvm?/prefer-static"]
-+llvm-prefer-dynamic = ["llvm", "evm2-jit-codegen/llvm-prefer-dynamic", "evm2-jit-llvm?/prefer-dynamic"]
 +asm-keccak = ["evm2-jit-codegen/asm-keccak", "alloy-primitives/asm-keccak"]

@@ -51,6 +51,4 @@ tracing-subscriber = { workspace = true, features = ["fmt"] }
 [features]
 default = ["llvm"]
 llvm = ["evm2-jit-codegen/llvm", "dep:evm2-jit-llvm"]
-llvm-prefer-static = ["llvm", "evm2-jit-codegen/llvm-prefer-static", "evm2-jit-llvm?/prefer-static"]
-llvm-prefer-dynamic = ["llvm", "evm2-jit-codegen/llvm-prefer-dynamic", "evm2-jit-llvm?/prefer-dynamic"]
 asm-keccak = ["evm2-jit-codegen/asm-keccak", "alloy-primitives/asm-keccak"]
