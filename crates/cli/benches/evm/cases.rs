@@ -129,8 +129,11 @@ static BENCHES: &[Bench] = &[
     Bench::transaction_suite(SpecId::ISTANBUL, "data/precompile-bn254.json"),
     Bench::transaction_suite(SpecId::PRAGUE, "data/precompile-bls12-381.json"),
     Bench::transaction_suite(SpecId::ISTANBUL, "data/precompile-ecrecover.json"),
+    Bench::transaction_suite(SpecId::OSAKA, "data/precompile-identity.json"),
     Bench::transaction_suite(SpecId::CANCUN, "data/precompile-kzg-point-evaluation.json"),
     Bench::transaction_suite(SpecId::BERLIN, "data/precompile-modexp.json"),
     Bench::transaction_suite(SpecId::OSAKA, "data/precompile-p256verify.json"),
+    Bench::transaction_suite(SpecId::OSAKA, "data/precompile-ripemd160.json"),
+    Bench::transaction_suite(SpecId::OSAKA, "data/precompile-sha256.json"),
     Bench::blockchain_replay("mainnet_25347446_25347455", "data/mainnet-25347446-25347455.bin.zst"),
 ];
