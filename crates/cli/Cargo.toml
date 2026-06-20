@@ -21,7 +21,7 @@ workspace = true
 
 [dependencies]
 evm2-eest = { path = "../eest", version = "0.1.0" }
-evm2.workspace = true
+evm2 = { workspace = true, default-features = true }
 
 alloy-consensus = { workspace = true, features = ["k256", "secp256k1", "std"] }
 alloy-chains.workspace = true
