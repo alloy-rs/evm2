@@ -15,7 +15,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-evm2 = { workspace = true, features = ["std"] }
+evm2.workspace = true
 
 alloy-consensus = { workspace = true, features = ["std"] }
 alloy-eip7928 = { workspace = true, features = ["std", "serde", "rlp"] }
@@ -33,6 +33,9 @@ serde_json = { workspace = true, features = ["preserve_order", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 walkdir.workspace = true
 zstd.workspace = true
+
+[dev-dependencies]
+evm2 = { workspace = true, default-features = true }
 
 [[test]]
 name = "eest"
