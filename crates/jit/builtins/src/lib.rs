@@ -675,13 +675,14 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         value,
         code_address: current.destination,
         disable_precompiles: false,
+        caller_is_static: false,
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
         ext: (),
         _non_exhaustive: (),
     };
     let bytecode = Bytecode::new_legacy(message.input.clone());
     let tx_env = ecx.tx_env();
-    let result = ecx.host().execute_message(tx_env, bytecode, &mut message, false);
+    let result = ecx.host().execute_message(tx_env, bytecode, &mut message);
     ecx.gas.erase_cost(result.gas_returned_to_parent());
     ecx.gas.record_refund(result.refund_propagated_to_parent());
 
@@ -763,14 +764,14 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         value: call_value,
         code_address,
         disable_precompiles,
+        caller_is_static: ecx.is_static(),
         salt: B256::ZERO,
         ext: (),
         _non_exhaustive: (),
     };
 
-    let caller_is_static = ecx.is_static();
     let tx_env = ecx.tx_env();
-    let mut result = ecx.host().execute_message(tx_env, loaded_code, &mut message, caller_is_static);
+    let mut result = ecx.host().execute_message(tx_env, loaded_code, &mut message);
     ecx.gas.erase_cost(result.gas_returned_to_parent());
     ecx.gas.record_refund(result.refund_propagated_to_parent());
 
@@ -1112,7 +1113,6 @@ mod tests {
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             &tx_env,
             &message,
-            false,
         );
 
         {
@@ -1170,7 +1170,6 @@ mod tests {
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             &tx_env,
             &message,
-            false,
         );
 
         {
@@ -1213,7 +1212,6 @@ mod tests {
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             &tx_env,
             &message,
-            false,
         );
 
         {
@@ -1255,7 +1253,6 @@ mod tests {
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             &tx_env,
             &message,
-            false,
         );
 
         {
@@ -1298,7 +1295,6 @@ mod tests {
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             &tx_env,
             &message,
-            false,
         );
 
         {
@@ -1343,7 +1339,6 @@ mod tests {
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             &tx_env,
             &message,
-            false,
         );
 
         {

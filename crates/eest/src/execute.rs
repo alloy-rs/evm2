@@ -671,6 +671,7 @@ mod tests {
             &tx,
             &env,
             &resources,
+            None,
         )
         .unwrap()
     }

@@ -949,7 +949,7 @@ mod tests {
         execute_str(
             Path::new("simple-storage.json"),
             &input,
-            ExecuteConfig { validate_post_state: true, mode },
+            ExecuteConfig { validate_post_state: true, mode, ..ExecuteConfig::default() },
             &EntryPoint::default(),
             &mut hook,
         )

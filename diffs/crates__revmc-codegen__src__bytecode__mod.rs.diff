@@ -151,18 +151,30 @@
      pub(crate) blocks: usize,
      pub(crate) block_min: usize,
      pub(crate) block_max: usize,
-@@ -1125,9 +1096,7 @@
-     /// Note that this does not include CALL and CREATE.
+@@ -1122,12 +1093,18 @@
+     }
+
+     /// Returns `true` if this instruction requires to know `gasleft()`.
+-    /// Note that this does not include CALL and CREATE.
      #[inline]
      pub(crate) fn requires_gasleft(&self, spec_id: SpecId) -> bool {
 -        // For SSTORE, see `revm_interpreter::gas::sstore_cost`.
 -        self.opcode == op::GAS
 -            || (self.opcode == op::SSTORE && spec_id.is_enabled_in(SpecId::ISTANBUL))
-+        self.opcode == op::GAS || (self.opcode == op::SSTORE && spec_id.enables(SpecId::ISTANBUL))
++        matches!(
++            self.opcode,
++            op::GAS
++                | op::CREATE
++                | op::CALL
++                | op::CALLCODE
++                | op::DELEGATECALL
++                | op::CREATE2
++                | op::STATICCALL
++        ) || (self.opcode == op::SSTORE && spec_id.enables(SpecId::ISTANBUL))
      }
 
      /// Returns `true` if execution can fall through to the next sequential instruction.
-@@ -1145,11 +1114,6 @@
+@@ -1145,11 +1122,6 @@
      /// Returns `true` if we know that this instruction will stop execution.
      #[inline]
      pub(crate) fn is_diverging(&self) -> bool {
@@ -174,7 +186,7 @@
          (self.opcode == op::JUMP && self.flags.contains(InstFlags::INVALID_JUMP))
              || self.flags.contains(InstFlags::DISABLED)
              || self.flags.contains(InstFlags::UNKNOWN)
-@@ -1158,20 +1122,6 @@
+@@ -1158,20 +1130,6 @@
                  op::STOP | op::RETURN | op::REVERT | op::INVALID | op::SELFDESTRUCT
              )
      }
@@ -195,7 +207,7 @@
  }
 
  bitflags::bitflags! {
-@@ -1181,7 +1131,7 @@
+@@ -1181,7 +1139,7 @@
          /// The `JUMP`/`JUMPI` target is known at compile time.
          const STATIC_JUMP = 1 << 0;
          /// The jump target is known to be invalid.
@@ -204,7 +216,7 @@
          const INVALID_JUMP = 1 << 1;
          /// The jump has multiple known targets (see `Bytecode::multi_jump_targets`).
          /// The target value is still on the stack and must be popped and switched on at runtime.
-@@ -1190,10 +1140,10 @@
+@@ -1190,10 +1148,10 @@
          const CONST_JUMP_CONDITION = 1 << 3;
 
          /// The instruction is disabled in this EVM version.
@@ -217,7 +229,7 @@
          const UNKNOWN = 1 << 5;
 
          /// Instruction is a no-op: skip generating logic, but keep the gas calculation.
-@@ -1218,13 +1168,6 @@
+@@ -1218,13 +1176,6 @@
  #[cfg(test)]
  mod tests {
      use super::*;

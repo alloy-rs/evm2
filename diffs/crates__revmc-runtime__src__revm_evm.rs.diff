@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-runtime/src/revm_evm.rs
 +++ evm2/crates/jit/runtime/src/evm2_evm.rs
-@@ -1,859 +1,221 @@
+@@ -1,965 +1,547 @@
 -//! Generic `revm` JIT EVM.
 -//!
 -//! Provides [`JitEvm`] which wraps any mainnet-shaped [`EvmTr`]-based EVM and overrides
@@ -265,22 +265,18 @@
 -            ResultAndState::new(result, state)
 -        })
 -    }
- }
-
+-}
+-
 -impl<EVM> ExecuteCommitEvm for JitEvm<EVM>
 -where
 -    Self: ExecuteEvm<State = EvmState>,
 -    EVM: EvmTr<Context: ContextTr<Db: DatabaseCommit>>,
 -{
-+impl JitInterpreterRunner {
-+    /// Creates a runner from a JIT backend.
-     #[inline]
+-    #[inline]
 -    fn commit(&mut self, state: Self::State) {
 -        self.ctx_mut().db_mut().commit(state);
-+    pub const fn new(backend: JitBackend) -> Self {
-+        Self { backend }
-     }
--}
+-    }
+ }
 
 -impl<EVM> SystemCallEvm for JitEvm<EVM>
 -where
@@ -291,7 +287,8 @@
 -            Precompiles: PrecompileProvider<EVM::Context, Output = InterpreterResult>,
 -        >,
 -{
-+    /// Returns the JIT backend.
++impl JitInterpreterRunner {
++    /// Creates a runner from a JIT backend.
      #[inline]
 -    fn system_call_one_with_caller(
 -        &mut self,
@@ -308,15 +305,18 @@
 -        );
 -        self.invalidate_cache();
 -        MainnetHandler::default().run_system_call(self)
--    }
++    pub const fn new(backend: JitBackend) -> Self {
++        Self { backend }
+     }
 -}
--
+
 -impl<EVM> SystemCallCommitEvm for JitEvm<EVM>
 -where
 -    Self: SystemCallEvm<State = EvmState> + ExecuteCommitEvm,
 -    EVM: EvmTr<Context: ContextTr<Db: DatabaseCommit>>,
 -{
--    #[inline]
++    /// Returns the JIT backend.
+     #[inline]
 -    fn system_call_with_caller_commit(
 -        &mut self,
 -        caller: Address,
@@ -549,11 +549,26 @@
 -    use revm_context_interface::result::{ExecutionResult, Output};
 -    use revm_database::{CacheDB, EmptyDB};
 -    use revm_handler::MainBuilder;
--
--    fn blocking_backend() -> JitBackend {
++    use crate::runtime::RuntimeConfig;
++    use alloy_primitives::{Address, Bytes};
++    use evm2::{
++        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
++        bytecode::Bytecode,
++        env::{BlockEnv, TxEnv},
++        ethereum::ethereum_tx_registry,
++        evm::{AccountInfo, EmptyDB, InMemoryDB},
++        interpreter::{Message, Word, op},
++    };
++
++    const BYTECODE_RET42: &[u8] =
++        &[op::PUSH1, 0x42, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH0, op::RETURN];
+
+     fn blocking_backend() -> JitBackend {
 -        JitBackend::new(RuntimeConfig { blocking: true, ..Default::default() }).unwrap()
--    }
--
++        JitBackend::new(RuntimeConfig { enabled: true, blocking: true, ..RuntimeConfig::default() })
++            .unwrap()
+     }
+
 -    type TestInnerEvm = revm_handler::MainnetEvm<
 -        revm_context::Context<
 -            revm_context::BlockEnv,
@@ -566,12 +581,22 @@
 -    fn test_jit_evm_with_spec(backend: JitBackend, spec_id: SpecId) -> JitEvm<TestInnerEvm> {
 -        let inner = revm_context::Context::new(CacheDB::default(), spec_id).build_mainnet();
 -        JitEvm::new(inner, backend)
--    }
--
++    fn push20(code: &mut Vec<u8>, address: Address) {
++        code.push(op::PUSH20);
++        code.extend_from_slice(address.as_slice());
+     }
+
 -    fn test_jit_evm(backend: JitBackend) -> JitEvm<TestInnerEvm> {
 -        test_jit_evm_with_spec(backend, SpecId::CANCUN)
--    }
--
++    fn staticcall_gas_leaf_code() -> Vec<u8> {
++        let mut code = Vec::with_capacity(60_005);
++        for _ in 0..12_000 {
++            code.extend([op::PUSH1, 1, op::PUSH1, 1, op::ADD]);
++        }
++        code.extend([op::PUSH1, 1, op::PUSH1, 0, op::SSTORE]);
++        code
+     }
+
 -    fn deploy_contract_with_nonce(
 -        evm: &mut JitEvm<TestInnerEvm>,
 -        bytecode: &[u8],
@@ -581,17 +606,35 @@
 -        assert!(len <= 255);
 -        let offset = 10u8;
 -        let mut deploy_code = vec![
--            op::PUSH1,
++    fn staticcall_loop_code(leaf: Address) -> Vec<u8> {
++        let mut code = vec![
++            op::JUMPDEST,
+             op::PUSH1,
 -            len as u8,
--            op::PUSH1,
++            0x32,
+             op::PUSH1,
 -            offset,
 -            op::PUSH0,
 -            op::CODECOPY,
--            op::PUSH1,
++            0x80,
++            op::MLOAD,
++            op::LT,
++            op::ISZERO,
+             op::PUSH1,
 -            len as u8,
 -            op::PUSH0,
 -            op::RETURN,
--        ];
++            0x3e,
++            op::JUMPI,
++            op::PUSH1,
++            0,
++            op::PUSH1,
++            0,
++            op::PUSH1,
++            0,
++            op::PUSH1,
++            0,
+         ];
 -        deploy_code.extend_from_slice(bytecode);
 -
 -        let tx = TxEnv {
@@ -631,22 +674,10 @@
 -    #[test]
 -    fn jit_evm_simple_return() {
 -        let backend = blocking_backend();
-+    use crate::runtime::RuntimeConfig;
-+    use alloy_primitives::{Address, Bytes};
-+    use evm2::{
-+        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
-+        bytecode::Bytecode,
-+        env::{BlockEnv, TxEnv},
-+        ethereum::ethereum_tx_registry,
-+        evm::{AccountInfo, EmptyDB, InMemoryDB},
-+        interpreter::{Message, op},
-+    };
-
+-
 -        // PUSH1 0x42 PUSH0 MSTORE PUSH1 0x20 PUSH0 RETURN
 -        let runtime_code: &[u8] = &[0x60, 0x42, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3];
-+    const BYTECODE_RET42: &[u8] =
-+        &[op::PUSH1, 0x42, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH0, op::RETURN];
-
+-
 -        let mut evm = test_jit_evm(backend.clone());
 -        let contract_addr = deploy_contract(&mut evm, runtime_code);
 -
@@ -672,9 +703,40 @@
 -        let stats = backend.stats();
 -        assert!(stats.compilations_succeeded > 0, "expected compilations, got: {stats:?}");
 -        assert!(stats.resident_entries > 0, "expected resident entries, got: {stats:?}");
-+    fn blocking_backend() -> JitBackend {
-+        JitBackend::new(RuntimeConfig { enabled: true, blocking: true, ..RuntimeConfig::default() })
-+            .unwrap()
++        push20(&mut code, leaf);
++        code.extend([
++            op::PUSH5,
++            0x14,
++            0x8c,
++            0x1c,
++            0x22,
++            0x80,
++            op::STATICCALL,
++            op::PUSH1,
++            0,
++            op::SSTORE,
++            op::PUSH1,
++            1,
++            op::PUSH1,
++            0x80,
++            op::MLOAD,
++            op::ADD,
++            op::PUSH1,
++            0x80,
++            op::MSTORE,
++            op::PUSH1,
++            0,
++            op::JUMP,
++            op::JUMPDEST,
++            op::PUSH1,
++            0x80,
++            op::MLOAD,
++            op::PUSH1,
++            1,
++            op::SSTORE,
++            op::STOP,
++        ]);
++        code
      }
 
 -    #[test]
@@ -710,9 +772,32 @@
 -        let stats = backend.stats();
 -        assert!(stats.compilations_succeeded > 0, "expected compilations, got: {stats:?}");
 -        assert!(stats.resident_entries > 0, "expected resident entries, got: {stats:?}");
-+    fn push20(code: &mut Vec<u8>, address: Address) {
-+        code.push(op::PUSH20);
-+        code.extend_from_slice(address.as_slice());
++    fn dynamic_call_outer_code() -> Vec<u8> {
++        vec![
++            op::PUSH1,
++            0,
++            op::PUSH1,
++            0,
++            op::PUSH1,
++            0,
++            op::PUSH1,
++            0,
++            op::CALLVALUE,
++            op::PUSH1,
++            0,
++            op::CALLDATALOAD,
++            op::GAS,
++            op::CALL,
++            op::PUSH1,
++            0,
++            op::SSTORE,
++            op::PUSH1,
++            1,
++            op::PUSH1,
++            1,
++            op::SSTORE,
++            op::STOP,
++        ]
      }
 
      #[test]
@@ -741,7 +826,6 @@
 +            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
 +            &tx_env,
 +            &message,
-+            false,
 +        );
 +        let mut host = Evm::<BaseEvmTypes>::new(
 +            SpecId::CANCUN,
@@ -778,7 +862,7 @@
 -    #[test]
 -    fn jit_evm_non_blocking() {
 -        use crate::runtime::RuntimeTuning;
-
+-
 -        let config = RuntimeConfig {
 -            enabled: true,
 -            tuning: RuntimeTuning {
@@ -815,7 +899,7 @@
 -            assert!(std::time::Instant::now() < deadline, "timed out waiting for JIT");
 -            std::thread::sleep(std::time::Duration::from_millis(50));
 -        }
--
+
 -        // Second call: should use JIT-compiled function.
 -        let mut evm = test_jit_evm(backend);
 -        let contract_addr = deploy_contract(&mut evm, runtime_code);
@@ -910,12 +994,8 @@
              op::RETURN,
          ]);
 -        let outer_addr = deploy_contract_with_nonce(&mut evm, &outer_code, 1);
-+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
-+            Bytecode::new_legacy(code.into()),
-+            &tx_env,
-+            &message,
-+            false,
-+        );
++        let mut interpreter =
++            Interpreter::<BaseEvmTypes>::new(Bytecode::new_legacy(code.into()), &tx_env, &message);
 
 -        let tx = TxEnv {
 -            kind: TxKind::Call(outer_addr),
@@ -946,7 +1026,14 @@
 -    /// All deployments share the same code hash and should hit the JIT cache.
      #[test]
 -    fn jit_evm_create2_factory() {
--        let backend = blocking_backend();
++    fn compiled_create_executes_message() {
++        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
++            SpecId::CANCUN,
++        );
++        let creator = Address::from([0x33; 20]);
++        let mut database = InMemoryDB::default();
++        database.insert_account_info(&creator, AccountInfo::default());
+         let backend = blocking_backend();
 -        let mut evm = test_jit_evm(backend.clone());
 -
 -        // Runtime code: PUSH1 0xAB PUSH0 MSTORE PUSH1 0x20 PUSH0 RETURN
@@ -956,22 +1043,6 @@
 -        let rt_len = runtime_code.len();
 -        let init_offset = 10u8;
 -        let mut init_code = vec![
--            op::PUSH1,
--            rt_len as u8,
--            op::PUSH1,
--            init_offset,
--            op::PUSH0,
--            op::CODECOPY,
--            op::PUSH1,
--            rt_len as u8,
-+    fn compiled_create_executes_message() {
-+        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
-+            SpecId::CANCUN,
-+        );
-+        let creator = Address::from([0x33; 20]);
-+        let mut database = InMemoryDB::default();
-+        database.insert_account_info(&creator, AccountInfo::default());
-+        let backend = blocking_backend();
 +        let mut host = Evm::<BaseEvmTypes>::new(
 +            SpecId::CANCUN,
 +            BlockEnv::default(),
@@ -994,38 +1065,109 @@
 +            0x60,
 +            0x00,
 +            0xf3,
++            op::PUSH0,
++            op::MSTORE,
+             op::PUSH1,
+-            rt_len as u8,
++            0x0a,
+             op::PUSH1,
+-            init_offset,
++            0x16,
++            op::PUSH0,
++            op::CREATE,
++            op::DUP1,
++            op::EXTCODESIZE,
              op::PUSH0,
--            op::RETURN,
--        ];
+-            op::CODECOPY,
++            op::MSTORE,
+             op::PUSH1,
+-            rt_len as u8,
++            0x20,
+             op::PUSH0,
+             op::RETURN,
+         ];
 -        init_code.extend_from_slice(runtime_code);
 -        let init_len = init_code.len();
--
++        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
++            Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
++            &tx_env,
++            &message,
++        );
+
 -        // Factory contract: copies embedded init_code to memory, reads salt from
 -        // calldata, then CREATE2. Returns the deployed address.
 -        let mut factory_code = vec![
-+            op::MSTORE,
-             op::PUSH1,
+-            op::PUSH1,
 -            0, // placeholder for init_len
-+            0x0a,
++        assert_eq!(
++            run_interpreter(&backend, &config, &mut interpreter, &mut host),
++            Some(InstrStop::Return),
++        );
++        assert_eq!(interpreter.output().len(), 32);
++        assert_eq!(interpreter.output()[31], 1);
++    }
++
++    #[test]
++    fn compiled_staticcall_zeros_child_callvalue() {
++        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
++            SpecId::CANCUN,
++        );
++        let caller = Address::from([0x11; 20]);
++        let target = Address::with_last_byte(0x68);
++        let mut database = InMemoryDB::default();
++        database.insert_account_info(&caller, AccountInfo::default());
++        database.insert_account_info(
++            &target,
++            AccountInfo::default().with_code(Bytecode::new_legacy(Bytes::from_static(&[
++                op::CALLVALUE,
++                op::PUSH0,
++                op::MSTORE,
++                op::PUSH1,
++                0x20,
++                op::PUSH0,
++                op::RETURN,
++            ]))),
++        );
++        let backend = blocking_backend();
++        let mut host = Evm::<BaseEvmTypes>::new(
++            SpecId::CANCUN,
++            BlockEnv::default(),
++            ethereum_tx_registry(SpecId::CANCUN),
++            database,
++            Precompiles::base(SpecId::CANCUN),
++        );
++        host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
++        let tx_env = TxEnv::default();
++        let message = Message {
++            gas_limit: 1_000_000,
++            destination: caller,
++            value: Word::from(30),
++            ..Message::default()
++        };
++        let code = vec![
              op::PUSH1,
 -            0, // placeholder for code_offset
-+            0x16,
++            0x20,
              op::PUSH0,
 -            op::CODECOPY, // mem[0..init_len] = init_code
--            op::PUSH0,
+             op::PUSH0,
 -            op::CALLDATALOAD, // salt from calldata[0..32]
 -            op::PUSH1,
 -            0,         // placeholder for init_len
 -            op::PUSH0, // offset
 -            op::PUSH0, // value
 -            op::CREATE2,
-+            op::CREATE,
-+            op::DUP1,
-+            op::EXTCODESIZE,
              op::PUSH0,
-             op::MSTORE,
+-            op::MSTORE,
++            op::PUSH1,
++            0x68,
++            op::PUSH2,
++            0x27,
++            0x10,
++            op::STATICCALL,
++            op::POP,
              op::PUSH1,
-@@ -861,105 +223,18 @@
+             0x20,
              op::PUSH0,
              op::RETURN,
          ];
@@ -1064,15 +1206,22 @@
 -                other => panic!("expected Success, got: {other:?}"),
 -            }
 -        }
--
++        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
++            Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
++            &tx_env,
++            &message,
++        );
+
 -        // All deployed addresses should be different (different salts).
 -        deployed_addrs.sort();
 -        deployed_addrs.dedup();
--        assert_eq!(
+         assert_eq!(
 -            deployed_addrs.len(),
 -            3,
 -            "CREATE2 with different salts should yield different addresses"
--        );
++            run_interpreter(&backend, &config, &mut interpreter, &mut host),
++            Some(InstrStop::Return),
+         );
 -
 -        // Call each deployed contract — all should return 0xAB.
 -        for (i, &addr) in deployed_addrs.iter().enumerate() {
@@ -1097,12 +1246,43 @@
 -
 -        let stats = backend.stats();
 -        assert!(stats.compilations_succeeded > 0, "expected compilations, got: {stats:?}");
--    }
--
++        assert_eq!(interpreter.output().len(), 32);
++        assert_eq!(interpreter.output()[31], 0);
+     }
+
 -    /// CREATE deploys a contract whose runtime code gets JIT-compiled and called.
--    #[test]
+     #[test]
 -    fn jit_evm_create_and_call() {
--        let backend = blocking_backend();
++    fn compiled_staticcall_child_callvalue_does_not_transfer() {
++        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
++            SpecId::CANCUN,
++        );
++        let caller = Address::from([0x11; 20]);
++        let child = Address::with_last_byte(0x68);
++        let beneficiary = Address::with_last_byte(0x69);
++        let initial_beneficiary_balance = Word::from(7);
++        let mut database = InMemoryDB::default();
++        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(100)));
++        database.insert_account_info(
++            &child,
++            AccountInfo::default().with_code(Bytecode::new_legacy(Bytes::from_static(&[
++                op::PUSH0,
++                op::PUSH0,
++                op::PUSH0,
++                op::PUSH0,
++                op::CALLVALUE,
++                op::PUSH0,
++                op::CALLDATALOAD,
++                op::GAS,
++                op::CALL,
++                op::STOP,
++            ]))),
++        );
++        database.insert_account_info(
++            &beneficiary,
++            AccountInfo::default().with_balance(initial_beneficiary_balance),
++        );
+         let backend = blocking_backend();
 -        let mut evm = test_jit_evm(backend);
 -
 -        // Runtime code: PUSH1 0x99 PUSH0 MSTORE PUSH1 0x20 PUSH0 RETURN
@@ -1110,20 +1290,27 @@
 -
 -        // Deploy via helper (uses CREATE internally).
 -        let contract_addr = deploy_contract(&mut evm, runtime_code);
-+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
-+            Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
-+            &tx_env,
-+            &message,
-+            false,
-+        );
-
+-
 -        // Call the deployed contract.
 -        let tx = TxEnv {
 -            kind: TxKind::Call(contract_addr),
 -            nonce: 1,
--            gas_limit: 1_000_000,
++        let mut host = Evm::<BaseEvmTypes>::new(
++            SpecId::CANCUN,
++            BlockEnv::default(),
++            ethereum_tx_registry(SpecId::CANCUN),
++            database,
++            Precompiles::base(SpecId::CANCUN),
++        );
++        host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
++        let tx_env = TxEnv::default();
++        let message = Message {
+             gas_limit: 1_000_000,
 -            ..Default::default()
--        };
++            destination: caller,
++            value: Word::from(30),
++            ..Message::default()
+         };
 -        let result = evm.transact(tx).unwrap();
 -        match result.result {
 -            ExecutionResult::Success { output, .. } => {
@@ -1132,14 +1319,108 @@
 -                    other => panic!("expected Call output, got: {other:?}"),
 -                };
 -                assert_eq!(U256::from_be_slice(data), U256::from(0x99u64));
--            }
--            other => panic!("expected Success, got: {other:?}"),
--        }
++        let code = vec![
++            op::PUSH1,
++            0x69,
++            op::PUSH0,
++            op::MSTORE,
++            op::PUSH0,
++            op::PUSH0,
++            op::PUSH1,
++            0x20,
++            op::PUSH0,
++            op::PUSH1,
++            0x68,
++            op::PUSH2,
++            0x27,
++            0x10,
++            op::STATICCALL,
++            op::STOP,
++        ];
++        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
++            Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
++            &tx_env,
++            &message,
++        );
++
 +        assert_eq!(
 +            run_interpreter(&backend, &config, &mut interpreter, &mut host),
-+            Some(InstrStop::Return),
++            Some(InstrStop::Stop),
 +        );
-+        assert_eq!(interpreter.output().len(), 32);
-+        assert_eq!(interpreter.output()[31], 1);
++        let beneficiary_balance = host.read_account_info(&beneficiary).unwrap().unwrap().balance;
++        assert_eq!(beneficiary_balance, initial_beneficiary_balance);
++    }
++
++    #[test]
++    fn compiled_dynamic_call_to_staticcall_loop_matches_interpreter_gas() {
++        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
++            SpecId::CANCUN,
++        );
++        let caller = Address::from([0x11; 20]);
++        let outer = Address::with_last_byte(0xfd);
++        let middle = Address::with_last_byte(0xed);
++        let leaf = Address::with_last_byte(0xdd);
++        let outer_code = dynamic_call_outer_code();
++        let mut input = [0u8; 32];
++        input[12..].copy_from_slice(middle.as_slice());
++        let message = Message {
++            gas_limit: 0xcd79195900 - 21_368,
++            destination: outer,
++            caller,
++            input: Bytes::copy_from_slice(&input),
++            value: Word::from(10),
++            code_address: outer,
++            ..Message::default()
++        };
++        let tx_env = TxEnv { gas_price: Word::from(10), ..TxEnv::default() };
++
++        let run = |with_jit: bool| {
++            let mut database = InMemoryDB::default();
++            database
++                .insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(100)));
++            database
++                .insert_account_info(&outer, AccountInfo::default().with_balance(Word::from(10)));
++            database.insert_account_storage(&outer, &Word::from(1), &Word::from(1));
++            database.insert_account_info(
++                &middle,
++                AccountInfo::default()
++                    .with_code(Bytecode::new_legacy(Bytes::from(staticcall_loop_code(leaf)))),
++            );
++            database.insert_account_info(
++                &leaf,
++                AccountInfo::default()
++                    .with_code(Bytecode::new_legacy(Bytes::from(staticcall_gas_leaf_code()))),
++            );
++            let backend = blocking_backend();
++            let mut host = Evm::<BaseEvmTypes>::new(
++                SpecId::CANCUN,
++                BlockEnv::default(),
++                ethereum_tx_registry(SpecId::CANCUN),
++                database,
++                Precompiles::base(SpecId::CANCUN),
++            );
++            host.state_mut().prewarm(&caller);
++            host.state_mut().prewarm(&outer);
++            if with_jit {
++                host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
+             }
+-            other => panic!("expected Success, got: {other:?}"),
+-        }
++            let mut interpreter = Interpreter::<BaseEvmTypes>::new(
++                Bytecode::new_legacy(Bytes::copy_from_slice(&outer_code)),
++                &tx_env,
++                &message,
++            );
++            let stop = if with_jit {
++                run_interpreter(&backend, &config, &mut interpreter, &mut host).unwrap()
++            } else {
++                interpreter.run(&config, &mut host)
++            };
++            (stop, interpreter.gas().spent(), interpreter.gas().refunded())
++        };
++
++        let interpreter = run(false);
++        let jit = run(true);
++        assert_eq!(jit, interpreter);
      }
  }

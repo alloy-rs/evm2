@@ -1355,6 +1355,24 @@ tests! {
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
+        call_value_static_cancun(@raw {
+            bytecode: &[
+                op::PUSH1, 1,   // ret length
+                op::PUSH1, 2,   // ret offset
+                op::PUSH1, 3,   // args length
+                op::PUSH1, 4,   // args offset
+                op::PUSH1, 5,   // value
+                op::PUSH1, 6,   // address
+                op::PUSH1, 7,   // gas
+                op::CALL,
+            ],
+            spec_id: SpecId::CANCUN,
+            is_static: true,
+            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
         call_no_value_cancun(@raw {
             bytecode: &[
                 op::PUSH1, 1,   // ret length
@@ -1387,6 +1405,27 @@ tests! {
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        staticcall_child_callvalue_is_zero(@raw {
+            bytecode: &[
+                op::PUSH1, 0x20, // ret length
+                op::PUSH0,       // ret offset
+                op::PUSH0,       // args length
+                op::PUSH0,       // args offset
+                op::PUSH1, 0x68, // address
+                op::PUSH2, 0x27, 0x10, // gas
+                op::STATICCALL,
+                op::POP,
+                op::PUSH1, 0x20,
+                op::PUSH0,
+                op::RETURN,
+            ],
+            spec_id: SpecId::CANCUN,
+            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
+            expected_memory: &U256::ZERO.to_be_bytes::<32>(),
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+            expected_output: Some(&U256::ZERO.to_be_bytes::<32>()),
         }),
         delegatecall_cancun(@raw {
             bytecode: &[
@@ -1586,6 +1625,76 @@ tests! {
                 op::PUSH1, 7,    // gas
                 op::CALL,
             ],
+            spec_id: SpecId::CANCUN,
+            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        call_gas_after_dynamic_target(@raw {
+            bytecode: &[
+                op::PUSH1, 0,     // ret length
+                op::PUSH1, 0,     // ret offset
+                op::PUSH1, 0,     // args length
+                op::PUSH1, 0,     // args offset
+                op::CALLVALUE,    // value
+                op::PUSH1, 0,
+                op::CALLDATALOAD, // address
+                op::GAS,          // gas
+                op::CALL,
+                op::PUSH1, 0,
+                op::SSTORE,
+                op::PUSH1, 1,
+                op::PUSH1, 1,
+                op::SSTORE,
+                op::STOP,
+            ],
+            spec_id: SpecId::CANCUN,
+            modify_message: Some(|message| {
+                message.input = Bytes::copy_from_slice(&U256::from(0x68).to_be_bytes::<32>());
+                message.value = U256::from(10);
+            }),
+            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        staticcall_loop_memory_gas(@raw {
+            bytecode: &asm("
+            loop:
+                JUMPDEST
+                PUSH 0x32
+                PUSH 0x80
+                MLOAD
+                LT
+                ISZERO
+                PUSH %done
+                JUMPI
+                PUSH0
+                PUSH0
+                PUSH0
+                PUSH0
+                PUSH 0x69
+                PUSH 0x148c1c2280
+                STATICCALL
+                PUSH0
+                SSTORE
+                PUSH 0x01
+                PUSH 0x80
+                MLOAD
+                ADD
+                PUSH 0x80
+                MSTORE
+                PUSH %loop
+                JUMP
+            done:
+                JUMPDEST
+                PUSH 0x80
+                MLOAD
+                PUSH 0x01
+                SSTORE
+                STOP
+            "),
             spec_id: SpecId::CANCUN,
             expected_return: RETURN_WHAT_INTERPRETER_SAYS,
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,

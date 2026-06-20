@@ -226,6 +226,18 @@ pub fn def_codemap() -> &'static HashMap<Address, Evm2Bytecode> {
                 op::STOP,
             ])),
         );
+        map.insert(
+            Address::with_last_byte(0x68),
+            Evm2Bytecode::new_legacy(Bytes::from_static(&[
+                op::CALLVALUE,
+                op::PUSH0,
+                op::MSTORE,
+                op::PUSH1,
+                0x20,
+                op::PUSH0,
+                op::RETURN,
+            ])),
+        );
         map
     })
 }
@@ -396,7 +408,6 @@ fn with_evm_context_and_host_mut<
         Evm2Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
         &tx_env,
         &message,
-        false,
     );
     interpreter.prepare_jit_run(&config, host);
 
@@ -431,7 +442,8 @@ fn with_evm_context_and_host_modified<
 }
 
 pub fn set_test_dump<B: Backend>(compiler: &mut EvmCompiler<B>, module_path: &str) {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    let root =
+        Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().parent().unwrap();
     let mut dump_path = root.to_path_buf();
     dump_path.push("target");
     dump_path.push("tests_dump");
@@ -509,11 +521,11 @@ fn run_compiled_test_case_with_context(
     if let Some(modify_message) = modify_message {
         modify_message(&mut message);
     }
+    message.caller_is_static = is_static;
     let mut interpreter = Evm2Interpreter::<BaseEvmTypes>::new(
         Evm2Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
         &tx_env,
         &message,
-        is_static,
     );
     let mut int_host = prepare_host(spec_id);
     let int_stop = interpreter.run(&config, &mut int_host);

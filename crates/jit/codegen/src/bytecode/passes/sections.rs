@@ -5,8 +5,7 @@ use evm2::interpreter::op;
 
 /// A gas section tracks the total base gas cost of a sequence of instructions.
 ///
-/// Gas sections end at instructions that require `gasleft` (e.g. `GAS`, `SSTORE`),
-/// branching instructions, or message instructions.
+/// Gas sections end at instructions that require `gasleft` or branching instructions.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct GasSection {
     /// The total base gas cost of all instructions in the section.
@@ -33,9 +32,9 @@ impl GasSection {
 
 /// A stack section tracks stack height requirements for a sequence of instructions.
 ///
-/// Stack sections end at instructions that require `gasleft`, branching instructions, or
-/// message instructions. This keeps stack failures after dynamic-gas and host-effect
-/// instructions from being hoisted ahead of those instructions.
+/// Stack sections end at instructions that require `gasleft` or branching instructions.
+/// This keeps stack failures after dynamic-gas and host-effect instructions from being hoisted
+/// ahead of those instructions.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct StackSection {
     /// The stack height required to execute the section.
@@ -316,6 +315,37 @@ mod tests {
              PUSH 2 EXP PUSH0 MSTORE STOP",
         );
         assert_eq!(gas, 1621, "max exponent should cost 50*32=1600 dynamic gas");
+    }
+
+    #[test]
+    fn call_requires_gasleft_ends_section() {
+        let bytecode = analyze_code_spec(
+            vec![
+                op::PUSH1,
+                0,
+                op::PUSH1,
+                0,
+                op::PUSH1,
+                0,
+                op::PUSH1,
+                0,
+                op::CALLVALUE,
+                op::PUSH1,
+                0,
+                op::CALLDATALOAD,
+                op::GAS,
+                op::CALL,
+                op::PUSH1,
+                0,
+                op::SSTORE,
+            ],
+            SpecId::CANCUN,
+        );
+        let call = bytecode.inst(Inst::from_usize(8));
+        let after_call = bytecode.inst(Inst::from_usize(9));
+        assert_eq!(call.gas_section.gas_cost, 100);
+        assert_eq!(after_call.gas_section.gas_cost, 3);
+        assert!(after_call.is_stack_section_head());
     }
 
     /// Disabled opcodes must not contribute stack I/O or gas to the preceding section.

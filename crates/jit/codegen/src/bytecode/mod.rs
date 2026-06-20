@@ -1093,10 +1093,18 @@ impl InstData {
     }
 
     /// Returns `true` if this instruction requires to know `gasleft()`.
-    /// Note that this does not include CALL and CREATE.
     #[inline]
     pub(crate) fn requires_gasleft(&self, spec_id: SpecId) -> bool {
-        self.opcode == op::GAS || (self.opcode == op::SSTORE && spec_id.enables(SpecId::ISTANBUL))
+        matches!(
+            self.opcode,
+            op::GAS
+                | op::CREATE
+                | op::CALL
+                | op::CALLCODE
+                | op::DELEGATECALL
+                | op::CREATE2
+                | op::STATICCALL
+        ) || (self.opcode == op::SSTORE && spec_id.enables(SpecId::ISTANBUL))
     }
 
     /// Returns `true` if execution can fall through to the next sequential instruction.

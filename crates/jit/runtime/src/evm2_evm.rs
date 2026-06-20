@@ -76,7 +76,7 @@ mod tests {
         env::{BlockEnv, TxEnv},
         ethereum::ethereum_tx_registry,
         evm::{AccountInfo, EmptyDB, InMemoryDB},
-        interpreter::{Message, op},
+        interpreter::{Message, Word, op},
     };
 
     const BYTECODE_RET42: &[u8] =
@@ -92,6 +92,101 @@ mod tests {
         code.extend_from_slice(address.as_slice());
     }
 
+    fn staticcall_gas_leaf_code() -> Vec<u8> {
+        let mut code = Vec::with_capacity(60_005);
+        for _ in 0..12_000 {
+            code.extend([op::PUSH1, 1, op::PUSH1, 1, op::ADD]);
+        }
+        code.extend([op::PUSH1, 1, op::PUSH1, 0, op::SSTORE]);
+        code
+    }
+
+    fn staticcall_loop_code(leaf: Address) -> Vec<u8> {
+        let mut code = vec![
+            op::JUMPDEST,
+            op::PUSH1,
+            0x32,
+            op::PUSH1,
+            0x80,
+            op::MLOAD,
+            op::LT,
+            op::ISZERO,
+            op::PUSH1,
+            0x3e,
+            op::JUMPI,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+        ];
+        push20(&mut code, leaf);
+        code.extend([
+            op::PUSH5,
+            0x14,
+            0x8c,
+            0x1c,
+            0x22,
+            0x80,
+            op::STATICCALL,
+            op::PUSH1,
+            0,
+            op::SSTORE,
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            0x80,
+            op::MLOAD,
+            op::ADD,
+            op::PUSH1,
+            0x80,
+            op::MSTORE,
+            op::PUSH1,
+            0,
+            op::JUMP,
+            op::JUMPDEST,
+            op::PUSH1,
+            0x80,
+            op::MLOAD,
+            op::PUSH1,
+            1,
+            op::SSTORE,
+            op::STOP,
+        ]);
+        code
+    }
+
+    fn dynamic_call_outer_code() -> Vec<u8> {
+        vec![
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::CALLVALUE,
+            op::PUSH1,
+            0,
+            op::CALLDATALOAD,
+            op::GAS,
+            op::CALL,
+            op::PUSH1,
+            0,
+            op::SSTORE,
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            1,
+            op::SSTORE,
+            op::STOP,
+        ]
+    }
+
     #[test]
     fn disabled_backend_falls_back_to_interpreter() {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
@@ -103,7 +198,6 @@ mod tests {
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             &tx_env,
             &message,
-            false,
         );
         let mut host = Evm::<BaseEvmTypes>::new(
             SpecId::CANCUN,
@@ -160,12 +254,8 @@ mod tests {
             op::PUSH0,
             op::RETURN,
         ]);
-        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
-            Bytecode::new_legacy(code.into()),
-            &tx_env,
-            &message,
-            false,
-        );
+        let mut interpreter =
+            Interpreter::<BaseEvmTypes>::new(Bytecode::new_legacy(code.into()), &tx_env, &message);
 
         assert_eq!(
             run_interpreter(&backend, &config, &mut interpreter, &mut host),
@@ -227,7 +317,6 @@ mod tests {
             Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
             &tx_env,
             &message,
-            false,
         );
 
         assert_eq!(
@@ -236,5 +325,223 @@ mod tests {
         );
         assert_eq!(interpreter.output().len(), 32);
         assert_eq!(interpreter.output()[31], 1);
+    }
+
+    #[test]
+    fn compiled_staticcall_zeros_child_callvalue() {
+        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
+            SpecId::CANCUN,
+        );
+        let caller = Address::from([0x11; 20]);
+        let target = Address::with_last_byte(0x68);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default());
+        database.insert_account_info(
+            &target,
+            AccountInfo::default().with_code(Bytecode::new_legacy(Bytes::from_static(&[
+                op::CALLVALUE,
+                op::PUSH0,
+                op::MSTORE,
+                op::PUSH1,
+                0x20,
+                op::PUSH0,
+                op::RETURN,
+            ]))),
+        );
+        let backend = blocking_backend();
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            database,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
+        let tx_env = TxEnv::default();
+        let message = Message {
+            gas_limit: 1_000_000,
+            destination: caller,
+            value: Word::from(30),
+            ..Message::default()
+        };
+        let code = vec![
+            op::PUSH1,
+            0x20,
+            op::PUSH0,
+            op::PUSH0,
+            op::PUSH0,
+            op::PUSH1,
+            0x68,
+            op::PUSH2,
+            0x27,
+            0x10,
+            op::STATICCALL,
+            op::POP,
+            op::PUSH1,
+            0x20,
+            op::PUSH0,
+            op::RETURN,
+        ];
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
+            Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            &tx_env,
+            &message,
+        );
+
+        assert_eq!(
+            run_interpreter(&backend, &config, &mut interpreter, &mut host),
+            Some(InstrStop::Return),
+        );
+        assert_eq!(interpreter.output().len(), 32);
+        assert_eq!(interpreter.output()[31], 0);
+    }
+
+    #[test]
+    fn compiled_staticcall_child_callvalue_does_not_transfer() {
+        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
+            SpecId::CANCUN,
+        );
+        let caller = Address::from([0x11; 20]);
+        let child = Address::with_last_byte(0x68);
+        let beneficiary = Address::with_last_byte(0x69);
+        let initial_beneficiary_balance = Word::from(7);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(100)));
+        database.insert_account_info(
+            &child,
+            AccountInfo::default().with_code(Bytecode::new_legacy(Bytes::from_static(&[
+                op::PUSH0,
+                op::PUSH0,
+                op::PUSH0,
+                op::PUSH0,
+                op::CALLVALUE,
+                op::PUSH0,
+                op::CALLDATALOAD,
+                op::GAS,
+                op::CALL,
+                op::STOP,
+            ]))),
+        );
+        database.insert_account_info(
+            &beneficiary,
+            AccountInfo::default().with_balance(initial_beneficiary_balance),
+        );
+        let backend = blocking_backend();
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            database,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
+        let tx_env = TxEnv::default();
+        let message = Message {
+            gas_limit: 1_000_000,
+            destination: caller,
+            value: Word::from(30),
+            ..Message::default()
+        };
+        let code = vec![
+            op::PUSH1,
+            0x69,
+            op::PUSH0,
+            op::MSTORE,
+            op::PUSH0,
+            op::PUSH0,
+            op::PUSH1,
+            0x20,
+            op::PUSH0,
+            op::PUSH1,
+            0x68,
+            op::PUSH2,
+            0x27,
+            0x10,
+            op::STATICCALL,
+            op::STOP,
+        ];
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
+            Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            &tx_env,
+            &message,
+        );
+
+        assert_eq!(
+            run_interpreter(&backend, &config, &mut interpreter, &mut host),
+            Some(InstrStop::Stop),
+        );
+        let beneficiary_balance = host.read_account_info(&beneficiary).unwrap().unwrap().balance;
+        assert_eq!(beneficiary_balance, initial_beneficiary_balance);
+    }
+
+    #[test]
+    fn compiled_dynamic_call_to_staticcall_loop_matches_interpreter_gas() {
+        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
+            SpecId::CANCUN,
+        );
+        let caller = Address::from([0x11; 20]);
+        let outer = Address::with_last_byte(0xfd);
+        let middle = Address::with_last_byte(0xed);
+        let leaf = Address::with_last_byte(0xdd);
+        let outer_code = dynamic_call_outer_code();
+        let mut input = [0u8; 32];
+        input[12..].copy_from_slice(middle.as_slice());
+        let message = Message {
+            gas_limit: 0xcd79195900 - 21_368,
+            destination: outer,
+            caller,
+            input: Bytes::copy_from_slice(&input),
+            value: Word::from(10),
+            code_address: outer,
+            ..Message::default()
+        };
+        let tx_env = TxEnv { gas_price: Word::from(10), ..TxEnv::default() };
+
+        let run = |with_jit: bool| {
+            let mut database = InMemoryDB::default();
+            database
+                .insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(100)));
+            database
+                .insert_account_info(&outer, AccountInfo::default().with_balance(Word::from(10)));
+            database.insert_account_storage(&outer, &Word::from(1), &Word::from(1));
+            database.insert_account_info(
+                &middle,
+                AccountInfo::default()
+                    .with_code(Bytecode::new_legacy(Bytes::from(staticcall_loop_code(leaf)))),
+            );
+            database.insert_account_info(
+                &leaf,
+                AccountInfo::default()
+                    .with_code(Bytecode::new_legacy(Bytes::from(staticcall_gas_leaf_code()))),
+            );
+            let backend = blocking_backend();
+            let mut host = Evm::<BaseEvmTypes>::new(
+                SpecId::CANCUN,
+                BlockEnv::default(),
+                ethereum_tx_registry(SpecId::CANCUN),
+                database,
+                Precompiles::base(SpecId::CANCUN),
+            );
+            host.state_mut().prewarm(&caller);
+            host.state_mut().prewarm(&outer);
+            if with_jit {
+                host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
+            }
+            let mut interpreter = Interpreter::<BaseEvmTypes>::new(
+                Bytecode::new_legacy(Bytes::copy_from_slice(&outer_code)),
+                &tx_env,
+                &message,
+            );
+            let stop = if with_jit {
+                run_interpreter(&backend, &config, &mut interpreter, &mut host).unwrap()
+            } else {
+                interpreter.run(&config, &mut host)
+            };
+            (stop, interpreter.gas().spent(), interpreter.gas().refunded())
+        };
+
+        let interpreter = run(false);
+        let jit = run(true);
+        assert_eq!(jit, interpreter);
     }
 }

@@ -158,7 +158,23 @@
                  op::PUSH1,
                  0x69,
                  op::PUSH1,
-@@ -236,199 +230,139 @@
+@@ -232,203 +226,155 @@
+                 op::STOP,
+             ])),
+         );
++        map.insert(
++            Address::with_last_byte(0x68),
++            Evm2Bytecode::new_legacy(Bytes::from_static(&[
++                op::CALLVALUE,
++                op::PUSH0,
++                op::MSTORE,
++                op::PUSH1,
++                0x20,
++                op::PUSH0,
++                op::RETURN,
++            ])),
++        );
+         map
      })
  }
 
@@ -473,7 +489,7 @@
  }
 
  pub fn with_evm_context<F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
-@@ -436,25 +370,64 @@
+@@ -436,33 +382,72 @@
      spec_id: SpecId,
      f: F,
  ) -> R {
@@ -512,7 +528,6 @@
 +        Evm2Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
 +        &tx_env,
 +        &message,
-+        false,
 +    );
 +    interpreter.prepare_jit_run(&config, host);
 
@@ -553,7 +568,9 @@
  }
 
  pub fn set_test_dump<B: Backend>(compiler: &mut EvmCompiler<B>, module_path: &str) {
-@@ -462,7 +435,7 @@
+-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
++    let root =
++        Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().parent().unwrap();
      let mut dump_path = root.to_path_buf();
      dump_path.push("target");
      dump_path.push("tests_dump");
@@ -562,7 +579,7 @@
      dump_path.extend(module_path.split("::").skip(2));
      dump_path.push(format!("{:?}", compiler.opt_level()));
      compiler.set_dump_to(Some(dump_path));
-@@ -477,308 +450,219 @@
+@@ -477,308 +462,219 @@
  }
 
  fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
@@ -656,11 +673,11 @@
 +    if let Some(modify_message) = modify_message {
 +        modify_message(&mut message);
 +    }
++    message.caller_is_static = is_static;
 +    let mut interpreter = Evm2Interpreter::<BaseEvmTypes>::new(
 +        Evm2Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
 +        &tx_env,
 +        &message,
-+        is_static,
 +    );
 +    let mut int_host = prepare_host(spec_id);
 +    let int_stop = interpreter.run(&config, &mut int_host);

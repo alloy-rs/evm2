@@ -1685,7 +1685,6 @@ mod tests {
             Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
             &tx_env,
             &message,
-            false,
         );
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);

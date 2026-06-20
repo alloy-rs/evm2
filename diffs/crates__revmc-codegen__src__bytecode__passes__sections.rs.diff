@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-codegen/src/bytecode/passes/sections.rs
 +++ evm2/crates/jit/codegen/src/bytecode/passes/sections.rs
-@@ -1,12 +1,12 @@
+@@ -1,12 +1,11 @@
  use crate::bytecode::{Bytecode, Inst, InstFlags};
 +use alloy_primitives::U256;
  use core::fmt;
@@ -10,22 +10,26 @@
 
  /// A gas section tracks the total base gas cost of a sequence of instructions.
  ///
- /// Gas sections end at instructions that require `gasleft` (e.g. `GAS`, `SSTORE`),
+-/// Gas sections end at instructions that require `gasleft` (e.g. `GAS`, `SSTORE`),
 -/// branching instructions, or suspending instructions.
-+/// branching instructions, or message instructions.
++/// Gas sections end at instructions that require `gasleft` or branching instructions.
  #[derive(Clone, Copy, Default, PartialEq, Eq)]
  pub(crate) struct GasSection {
      /// The total base gas cost of all instructions in the section.
-@@ -34,7 +34,7 @@
+@@ -33,9 +32,9 @@
+
  /// A stack section tracks stack height requirements for a sequence of instructions.
  ///
- /// Stack sections end at instructions that require `gasleft`, branching instructions, or
+-/// Stack sections end at instructions that require `gasleft`, branching instructions, or
 -/// suspending instructions. This keeps stack failures after dynamic-gas and host-effect
-+/// message instructions. This keeps stack failures after dynamic-gas and host-effect
- /// instructions from being hoisted ahead of those instructions.
+-/// instructions from being hoisted ahead of those instructions.
++/// Stack sections end at instructions that require `gasleft` or branching instructions.
++/// This keeps stack failures after dynamic-gas and host-effect instructions from being hoisted
++/// ahead of those instructions.
  #[derive(Clone, Copy, Default, PartialEq, Eq)]
  pub(crate) struct StackSection {
-@@ -235,9 +235,9 @@
+     /// The stack height required to execute the section.
+@@ -235,9 +234,9 @@
              self.gas.process_extra(bytecode.gas_params.exp_cost(exponent));
          }
 
@@ -37,7 +41,7 @@
              self.stack.save_to_reset(bytecode, next);
              self.gas.save_to_reset(bytecode, next);
          }
-@@ -277,8 +277,7 @@
+@@ -277,8 +276,7 @@
          Inst,
          passes::block_analysis::tests::{analyze_asm, analyze_asm_spec, analyze_code_spec},
      };
@@ -47,3 +51,41 @@
 
      /// Returns the gas section cost for the first non-dead instruction (the section head).
      fn section_gas(src: &str) -> u32 {
+@@ -319,6 +317,37 @@
+         assert_eq!(gas, 1621, "max exponent should cost 50*32=1600 dynamic gas");
+     }
+
++    #[test]
++    fn call_requires_gasleft_ends_section() {
++        let bytecode = analyze_code_spec(
++            vec![
++                op::PUSH1,
++                0,
++                op::PUSH1,
++                0,
++                op::PUSH1,
++                0,
++                op::PUSH1,
++                0,
++                op::CALLVALUE,
++                op::PUSH1,
++                0,
++                op::CALLDATALOAD,
++                op::GAS,
++                op::CALL,
++                op::PUSH1,
++                0,
++                op::SSTORE,
++            ],
++            SpecId::CANCUN,
++        );
++        let call = bytecode.inst(Inst::from_usize(8));
++        let after_call = bytecode.inst(Inst::from_usize(9));
++        assert_eq!(call.gas_section.gas_cost, 100);
++        assert_eq!(after_call.gas_section.gas_cost, 3);
++        assert!(after_call.is_stack_section_head());
++    }
++
+     /// Disabled opcodes must not contribute stack I/O or gas to the preceding section.
+     /// Otherwise the section-head underflow check fires before the disabled opcode's
+     /// `NotActivated` guard, producing a divergent `StackUnderflow`.

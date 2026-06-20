@@ -621,7 +621,7 @@
      Ok(())
  }
 
-@@ -635,65 +629,72 @@
+@@ -635,65 +629,73 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
@@ -710,13 +710,14 @@
 +        value,
 +        code_address: current.destination,
 +        disable_precompiles: false,
++        caller_is_static: false,
 +        salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
 +        ext: (),
 +        _non_exhaustive: (),
 +    };
 +    let bytecode = Bytecode::new_legacy(message.input.clone());
 +    let tx_env = ecx.tx_env();
-+    let result = ecx.host().execute_message(tx_env, bytecode, &mut message, false);
++    let result = ecx.host().execute_message(tx_env, bytecode, &mut message);
 +    ecx.gas.erase_cost(result.gas_returned_to_parent());
 +    ecx.gas.record_refund(result.refund_propagated_to_parent());
 +
@@ -745,7 +746,7 @@
      Ok(())
  }
 
-@@ -703,142 +704,223 @@
+@@ -703,142 +705,223 @@
      sp: *mut EvmWord,
      call_kind: CallKind,
  ) -> BuiltinResult {
@@ -844,6 +845,7 @@
 +        value: call_value,
 +        code_address,
 +        disable_precompiles,
++        caller_is_static: ecx.is_static(),
 +        salt: B256::ZERO,
 +        ext: (),
 +        _non_exhaustive: (),
@@ -854,9 +856,8 @@
 -        let out_offset = try_into_usize!(out_offset);
 -        ensure_memory(ecx, out_offset, out_len)?;
 -        out_offset
-+    let caller_is_static = ecx.is_static();
 +    let tx_env = ecx.tx_env();
-+    let mut result = ecx.host().execute_message(tx_env, loaded_code, &mut message, caller_is_static);
++    let mut result = ecx.host().execute_message(tx_env, loaded_code, &mut message);
 +    ecx.gas.erase_cost(result.gas_returned_to_parent());
 +    ecx.gas.record_refund(result.refund_propagated_to_parent());
 +
@@ -1077,7 +1078,7 @@
      Err(result.into())
  }
 
-@@ -847,18 +929,17 @@
+@@ -847,18 +930,17 @@
      ecx: &mut EvmContext<'_>,
      offset: u64,
      len: u64,
@@ -1102,7 +1103,7 @@
      Err(result.into())
  }
 
-@@ -867,32 +948,424 @@
+@@ -867,32 +949,418 @@
      ecx: &mut EvmContext<'_>,
      target: &mut EvmWord,
  ) -> BuiltinResult {
@@ -1282,7 +1283,6 @@
 +            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
 +            &tx_env,
 +            &message,
-+            false,
 +        );
 +
 +        {
@@ -1340,7 +1340,6 @@
 +            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
 +            &tx_env,
 +            &message,
-+            false,
 +        );
 +
 +        {
@@ -1383,7 +1382,6 @@
 +            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
 +            &tx_env,
 +            &message,
-+            false,
 +        );
 +
 +        {
@@ -1425,7 +1423,6 @@
 +            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
 +            &tx_env,
 +            &message,
-+            false,
 +        );
 +
 +        {
@@ -1468,7 +1465,6 @@
 +            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
 +            &tx_env,
 +            &message,
-+            false,
 +        );
 +
 +        {
@@ -1513,7 +1509,6 @@
 +            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
 +            &tx_env,
 +            &message,
-+            false,
 +        );
 +
 +        {
