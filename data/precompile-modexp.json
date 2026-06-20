@@ -233,5 +233,52 @@
         "0x0"
       ]
     }
+  },
+  "precompile/modexp/ethpandaops": {
+    "env": {
+      "currentBaseFee": "0x0",
+      "currentCoinbase": "0x0000000000000000000000000000000000000000",
+      "currentGasLimit": "0x1000000",
+      "currentNumber": "0x1",
+      "currentTimestamp": "0x1"
+    },
+    "post": {
+      "Berlin": [
+        {
+          "expectException": null,
+          "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "indexes": {
+            "data": 0,
+            "gas": 0,
+            "value": 0
+          },
+          "logs": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    },
+    "pre": {
+      "0x1111111111111111111111111111111111111111": {
+        "balance": "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "code": "0x",
+        "nonce": "0x0",
+        "storage": {}
+      }
+    },
+    "transaction": {
+      "data": [
+        "0x0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000209d79b1a37f31801cd11a6706fb40d6bd57526846903bb13ede562439e9c1b823ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff01"
+      ],
+      "gasLimit": [
+        "0x1000000"
+      ],
+      "gasPrice": "0x0",
+      "nonce": "0x0",
+      "secretKey": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "sender": "0x1111111111111111111111111111111111111111",
+      "to": "0x0000000000000000000000000000000000000005",
+      "value": [
+        "0x0"
+      ]
+    }
   }
 }
