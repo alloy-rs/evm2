@@ -104,6 +104,7 @@ default = [
     # "c-kzg",
     "portable",
     "bn254-mcl",
+    "p256-aws-lc-rs",
 ]
 std = [
     "alloy-consensus/std",
