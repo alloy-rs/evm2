@@ -109,6 +109,8 @@ const IGNORED_TESTS: &[&str] = &[
 
     // These validate block header fields/roots and belong to consensus-level block validation.
     "frontier/validation/header/gas_limit_below_minimum.json",
+    // The same test was renamed with a `block_` prefix on glamsterdam-devnet releases.
+    "frontier/validation/header/block_gas_limit_below_minimum.json",
     "london/validation/header/invalid_header.json",
     "shanghai/eip4895_withdrawals/withdrawals/withdrawals_root.json",
 
