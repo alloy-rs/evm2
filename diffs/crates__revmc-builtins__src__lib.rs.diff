@@ -11,7 +11,7 @@
 -    interpreter_types::{InputsTr, MemoryTr},
 +use alloc::vec::Vec;
 +use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
-+use core::{cmp::min, ops::Range};
++use core::cmp::min;
 +use evm2::{
 +    SpecId,
 +    bytecode::Bytecode,
@@ -25,25 +25,16 @@
 
  pub mod gas;
 
-@@ -47,17 +50,6 @@
+@@ -47,7 +50,7 @@
      StaticCall,
  }
 
 -impl From<CallKind> for CallScheme {
--    fn from(kind: CallKind) -> Self {
--        match kind {
--            CallKind::Call => Self::Call,
--            CallKind::CallCode => Self::CallCode,
--            CallKind::DelegateCall => Self::DelegateCall,
--            CallKind::StaticCall => Self::StaticCall,
--        }
--    }
--}
--
- /// The kind of a `CREATE*` instruction.
- #[derive(Clone, Copy, Debug, PartialEq, Eq)]
- #[repr(u8)]
-@@ -78,7 +70,7 @@
++impl From<CallKind> for MessageKind {
+     fn from(kind: CallKind) -> Self {
+         match kind {
+             CallKind::Call => Self::Call,
+@@ -78,7 +81,7 @@
  #[cold]
  fn fail(ecx: &mut EvmContext<'_>, e: BuiltinError) -> ! {
      ecx.exit_result = e.into();
@@ -52,7 +43,7 @@
  }
 
  macro_rules! builtins {
-@@ -115,10 +107,10 @@
+@@ -115,10 +118,10 @@
  }
 
  #[unsafe(no_mangle)]
@@ -66,7 +57,7 @@
      );
  }
 
-@@ -130,7 +122,7 @@
+@@ -130,7 +133,7 @@
 
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn __revmc_builtin_sdiv(rev![a, b]: &mut [EvmWord; 2]) {
@@ -75,7 +66,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -141,7 +133,7 @@
+@@ -141,7 +144,7 @@
 
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn __revmc_builtin_smod(rev![a, b]: &mut [EvmWord; 2]) {
@@ -84,7 +75,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -161,7 +153,7 @@
+@@ -161,7 +164,7 @@
  ) -> BuiltinResult {
      let rev![base, exponent_ptr] = sp;
      let exponent = exponent_ptr.to_u256();
@@ -93,7 +84,7 @@
      *exponent_ptr = base.to_u256().pow(exponent).into();
      Ok(())
  }
-@@ -171,7 +163,7 @@
+@@ -171,7 +174,7 @@
      ecx: &mut EvmContext<'_>,
      exponent: &EvmWord,
  ) -> BuiltinResult {
@@ -102,7 +93,7 @@
      Ok(())
  }
 
-@@ -181,7 +173,7 @@
+@@ -181,7 +184,7 @@
      sp: &mut [EvmWord; 2],
  ) -> BuiltinResult {
      let rev![offset, len_ptr] = sp;
@@ -111,7 +102,7 @@
      do_keccak256(ecx, len_ptr, *offset, len)
  }
 
-@@ -202,13 +194,12 @@
+@@ -202,13 +205,12 @@
      len: usize,
  ) -> BuiltinResult {
      *out = EvmWord::from_be_bytes(if len == 0 {
@@ -129,7 +120,7 @@
      });
      Ok(())
  }
-@@ -218,15 +209,14 @@
+@@ -218,15 +220,14 @@
      ecx: &mut EvmContext<'_>,
      address: &mut EvmWord,
  ) -> BuiltinResult {
@@ -147,7 +138,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -234,7 +224,7 @@
+@@ -234,7 +235,7 @@
      ecx: &EvmContext<'_>,
      offset_ptr: &mut EvmWord,
  ) {
@@ -156,7 +147,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -248,11 +238,11 @@
+@@ -248,11 +249,11 @@
 
  fn do_calldataload(ecx: &EvmContext<'_>, out: &mut EvmWord, offset: usize) {
      let mut word = B256::ZERO;
@@ -170,7 +161,7 @@
          // SAFETY: `count` is bounded by the calldata length.
          // This is `word[..count].copy_from_slice(input[offset..offset + count])`, written using
          // raw pointers as apparently the compiler cannot optimize the slice version, and using
-@@ -270,21 +260,15 @@
+@@ -270,21 +271,15 @@
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
      let rev![memory_offset, data_offset, len] = sp;
@@ -199,7 +190,7 @@
      }
      Ok(())
  }
-@@ -294,13 +278,13 @@
+@@ -294,13 +289,13 @@
      ecx: &mut EvmContext<'_>,
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
@@ -216,7 +207,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -308,9 +292,8 @@
+@@ -308,9 +303,8 @@
      ecx: &mut EvmContext<'_>,
      address: &mut EvmWord,
  ) -> BuiltinResult {
@@ -228,7 +219,7 @@
      Ok(())
  }
 
-@@ -320,21 +303,20 @@
+@@ -320,21 +314,20 @@
      sp: &mut [EvmWord; 4],
  ) -> BuiltinResult {
      let rev![address, memory_offset, code_offset, len] = sp;
@@ -257,7 +248,7 @@
      Ok(())
  }
 
-@@ -344,20 +326,23 @@
+@@ -344,20 +337,23 @@
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
      let rev![memory_offset, offset, len] = sp;
@@ -289,7 +280,7 @@
      }
      Ok(())
  }
-@@ -367,9 +352,8 @@
+@@ -367,9 +363,8 @@
      ecx: &mut EvmContext<'_>,
      address: &mut EvmWord,
  ) -> BuiltinResult {
@@ -301,7 +292,7 @@
      *address = EvmWord::from_be_bytes(code_hash);
      Ok(())
  }
-@@ -380,7 +364,7 @@
+@@ -380,7 +375,7 @@
      number_ptr: &mut EvmWord,
  ) -> BuiltinResult {
      let requested_number = number_ptr.to_u256();
@@ -310,7 +301,7 @@
 
      // Check if requested block is in the future
      let Some(diff) = block_number.checked_sub(requested_number) else {
-@@ -388,7 +372,7 @@
+@@ -388,7 +383,7 @@
          return Ok(());
      };
 
@@ -319,7 +310,7 @@
 
      // Current block returns 0
      if diff == 0 {
-@@ -400,7 +384,8 @@
+@@ -400,7 +395,8 @@
      const BLOCK_HASH_HISTORY: u64 = 256;
 
      if diff <= BLOCK_HASH_HISTORY {
@@ -329,7 +320,7 @@
          *number_ptr = EvmWord::from_be_bytes(hash);
      } else {
          // Too old, return 0
-@@ -411,37 +396,37 @@
+@@ -411,37 +407,37 @@
  }
 
  #[unsafe(no_mangle)]
@@ -380,7 +371,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -449,26 +434,29 @@
+@@ -449,26 +445,29 @@
      ecx: &mut EvmContext<'_>,
      slot: &mut EvmWord,
  ) -> BuiltinResult {
@@ -418,7 +409,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -477,8 +465,8 @@
+@@ -477,8 +476,8 @@
  }
 
  #[unsafe(no_mangle)]
@@ -429,7 +420,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -486,19 +474,21 @@
+@@ -486,19 +485,21 @@
      ecx: &mut EvmContext<'_>,
      index: &mut EvmWord,
  ) -> BuiltinResult {
@@ -459,7 +450,7 @@
      }
 
      Ok(())
-@@ -511,7 +501,7 @@
+@@ -511,7 +512,7 @@
      key: u64,
  ) -> BuiltinResult {
      *index = U256::from(key).into();
@@ -468,7 +459,7 @@
      Ok(())
  }
 
-@@ -521,46 +511,53 @@
+@@ -521,46 +522,53 @@
      sp: &mut [EvmWord; 2],
  ) -> BuiltinResult {
      let rev![index, value] = sp;
@@ -543,7 +534,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -569,8 +566,9 @@
+@@ -569,8 +577,9 @@
      sp: &mut [EvmWord; 2],
  ) -> BuiltinResult {
      let rev![key, value] = sp;
@@ -555,7 +546,7 @@
      Ok(())
  }
 
-@@ -580,13 +578,13 @@
+@@ -580,13 +589,13 @@
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
      let rev![dst, src, len] = sp;
@@ -574,7 +565,7 @@
      }
      Ok(())
  }
-@@ -597,35 +595,31 @@
+@@ -597,35 +606,31 @@
      sp: *mut EvmWord,
      n: u8,
  ) -> BuiltinResult {
@@ -621,84 +612,92 @@
      Ok(())
  }
 
-@@ -635,65 +629,73 @@
+@@ -635,65 +640,84 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
 -    ensure_non_staticcall!(ecx);
-+    if ecx.is_static() {
-+        return Err(InstrStop::StateChangeDuringStaticCall.into());
-+    }
++    require_non_staticcall(ecx)?;
 
--    let len = match create_kind {
--        CreateKind::Create => 3,
--        CreateKind::Create2 => 4,
--    };
+     let len = match create_kind {
+         CreateKind::Create => 3,
+         CreateKind::Create2 => 4,
+     };
 -    let mut sp = sp.add(len);
--    pop!(sp; value, code_offset, len);
--
++    let mut sp = unsafe { sp.add(len) };
+     pop!(sp; value, code_offset, len);
+
 -    let len = try_into_usize!(len);
--    let code = if len != 0 {
++    let len = word_to_usize(len.to_u256())?;
++    let version = *ecx.version();
+     let code = if len != 0 {
 -        if ecx.spec_id.is_enabled_in(SpecId::SHANGHAI) {
 -            // Limit is set as double of max contract bytecode size
 -            let max_initcode_size = ecx.host.max_initcode_size();
 -            if len > max_initcode_size {
 -                return Err(InstructionResult::CreateInitCodeSizeLimit.into());
--            }
++        if ecx.spec_id().enables(SpecId::SHANGHAI) {
++            if len > version.max_initcode_size {
++                return Err(InstrStop::CreateInitCodeSizeLimit.into());
+             }
 -            gas!(ecx, ecx.gas_params.initcode_cost(len));
-+    let is_create2 = create_kind == CreateKind::Create2;
-+    let inputs = if is_create2 { 4 } else { 3 };
-+    let mut cursor = unsafe { sp.add(inputs) };
-+    let value = unsafe { pop_word(&mut cursor) }.to_u256();
-+    let offset = unsafe { pop_word(&mut cursor) };
-+    let len_word = unsafe { pop_word(&mut cursor) };
-+    let salt = if is_create2 { Some(unsafe { pop_word(&mut cursor) }) } else { None };
-+
-+    let len = word_to_usize(len_word.to_u256())?;
-+    let version = *ecx.version();
-+    if ecx.spec_id().enables(SpecId::SHANGHAI) {
-+        if len > version.max_initcode_size {
-+            return Err(InstrStop::CreateInitCodeSizeLimit.into());
++            ecx.gas.spend(version.gas_params.initcode_cost(len))?;
          }
--
+
 -        let code_offset = try_into_usize!(code_offset);
--        ensure_memory(ecx, code_offset, len)?;
++        let code_offset = word_to_usize(code_offset.to_u256())?;
+         ensure_memory(ecx, code_offset, len)?;
 -        Bytes::copy_from_slice(&ecx.memory.slice(code_offset..code_offset + len))
-+        ecx.gas.spend(version.gas_params.initcode_cost(len))?;
-+    }
-+    let code_range = resize_evm_range(ecx, offset, EvmWord::from(Word::from(len)))?;
-+    let input = memory_range_bytes(ecx, code_range);
-+    let create_cost = if is_create2 {
-+        version.gas_params.create2_cost(len)
++        Bytes::copy_from_slice(ecx.memory().slice(code_offset, len))
      } else {
--        Bytes::new()
-+        version.gas_params.get(GasId::Create).into()
+         Bytes::new()
      };
--
--    let is_create2 = create_kind == CreateKind::Create2;
+
+     let is_create2 = create_kind == CreateKind::Create2;
 -    let gp = &ecx.gas_params;
 -    gas!(ecx, if is_create2 { gp.create2_cost(len) } else { gp.create_cost() });
 -
 -    let scheme = if is_create2 {
 -        pop!(sp; salt);
 -        CreateScheme::Create2 { salt: salt.to_u256() }
-+    ecx.gas.spend(create_cost)?;
-+    let gas_limit = if ecx.spec_id().enables(SpecId::TANGERINE) {
-+        version.gas_params.call_stipend_reduction(ecx.gas.remaining())
++    let create_cost = if is_create2 {
++        version.gas_params.create2_cost(len)
      } else {
 -        CreateScheme::Create
-+        ecx.gas.remaining()
++        version.gas_params.get(GasId::Create).into()
      };
-+    ecx.gas.spend(gas_limit)?;
-
+-
 -    // State gas for account creation + contract metadata (EIP-8037).
 -    if ecx.host.is_amsterdam_eip8037_enabled() {
 -        state_gas!(ecx, ecx.gas_params.create_state_gas());
 -    }
--
--    let mut gas_limit = ecx.gas.remaining();
++    ecx.gas.spend(create_cost)?;
+
+     let mut gas_limit = ecx.gas.remaining();
 -    if ecx.spec_id.is_enabled_in(SpecId::TANGERINE) {
 -        gas_limit = ecx.gas_params.call_stipend_reduction(gas_limit);
++    if ecx.spec_id().enables(SpecId::TANGERINE) {
++        gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
+     }
+-    gas!(ecx, gas_limit);
+-
+-    *ecx.next_action =
+-        Some(InterpreterAction::NewFrame(FrameInput::Create(Box::new(CreateInputs::new(
+-            ecx.input.target_address,
+-            scheme,
+-            value.to_u256(),
+-            code,
+-            gas_limit,
+-            ecx.gas.reservoir(),
+-        )))));
++    ecx.gas.spend(gas_limit)?;
++    let salt = if is_create2 {
++        pop!(sp; salt);
++        B256::from(salt.to_be_bytes())
++    } else {
++        B256::ZERO
++    };
+
 +    let current = ecx.message();
 +    let mut message = Message {
 +        kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
@@ -706,12 +705,12 @@
 +        gas_limit,
 +        destination: current.destination,
 +        caller: current.destination,
-+        input,
-+        value,
++        input: code,
++        value: value.to_u256(),
 +        code_address: current.destination,
 +        disable_precompiles: false,
 +        caller_is_static: false,
-+        salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
++        salt,
 +        ext: (),
 +        _non_exhaustive: (),
 +    };
@@ -729,114 +728,86 @@
 +        .unwrap_or_default();
 +    unsafe {
 +        sp.write(address);
-     }
--    gas!(ecx, gas_limit);
--
--    *ecx.next_action =
--        Some(InterpreterAction::NewFrame(FrameInput::Create(Box::new(CreateInputs::new(
--            ecx.input.target_address,
--            scheme,
--            value.to_u256(),
--            code,
--            gas_limit,
--            ecx.gas.reservoir(),
--        )))));
--
++    }
 +    ecx.set_return_data(return_data);
      Ok(())
  }
 
-@@ -703,142 +705,223 @@
-     sp: *mut EvmWord,
-     call_kind: CallKind,
- ) -> BuiltinResult {
--    let len = match call_kind {
--        CallKind::Call | CallKind::CallCode => 7,
--        CallKind::DelegateCall | CallKind::StaticCall => 6,
--    };
+@@ -707,23 +731,20 @@
+         CallKind::Call | CallKind::CallCode => 7,
+         CallKind::DelegateCall | CallKind::StaticCall => 6,
+     };
 -    let mut sp = sp.add(len);
--
--    pop!(sp; local_gas_limit, to);
--    let local_gas_limit = local_gas_limit.to_u256();
--    let to = to.to_address();
--
++    let mut sp = unsafe { sp.add(len) };
+
+     pop!(sp; local_gas_limit, to);
+     let local_gas_limit = local_gas_limit.to_u256();
+     let to = to.to_address();
+
 -    // max gas limit is not possible in real ethereum situation.
 -    // But for tests we would not like to fail on this.
 -    // Gas limit for subcall is taken as min of this value and current gas limit.
 -    let local_gas_limit = as_u64_saturated!(local_gas_limit);
--
--    let value = match call_kind {
--        CallKind::Call | CallKind::CallCode => {
--            pop!(sp; value);
--            let value = value.to_u256();
++    let local_gas_limit = word_to_u64_saturated(local_gas_limit);
+
+     let value = match call_kind {
+         CallKind::Call | CallKind::CallCode => {
+             pop!(sp; value);
+             let value = value.to_u256();
 -            if call_kind == CallKind::Call && ecx.is_static && value != U256::ZERO {
 -                return Err(InstructionResult::CallNotAllowedInsideStatic.into());
--            }
--            value
--        }
--        CallKind::DelegateCall | CallKind::StaticCall => U256::ZERO,
-+    let kind = match call_kind {
-+        CallKind::Call => MessageKind::Call,
-+        CallKind::CallCode => MessageKind::CallCode,
-+        CallKind::DelegateCall => MessageKind::DelegateCall,
-+        CallKind::StaticCall => MessageKind::StaticCall,
-     };
--    let transfers_value = value != U256::ZERO;
--
--    pop!(sp; in_offset, in_len, out_offset, out_len);
++            if call_kind == CallKind::Call && ecx.is_static() && value != U256::ZERO {
++                return Err(InstrStop::CallNotAllowedInsideStatic.into());
+             }
+             value
+         }
+@@ -733,112 +754,166 @@
+
+     pop!(sp; in_offset, in_len, out_offset, out_len);
 
 -    let in_len = try_into_usize!(in_len);
--    let input = if in_len != 0 {
++    let in_len = word_to_usize(in_len.to_u256())?;
+     let input = if in_len != 0 {
 -        let in_offset = try_into_usize!(in_offset);
--        ensure_memory(ecx, in_offset, in_len)?;
++        let in_offset = word_to_usize(in_offset.to_u256())?;
+         ensure_memory(ecx, in_offset, in_len)?;
 -        let local_offset = ecx.memory.local_memory_offset();
 -        let start = in_offset.saturating_add(local_offset);
 -        start..start.saturating_add(in_len)
-+    let inputs = match kind {
-+        MessageKind::Call | MessageKind::CallCode => 7,
-+        MessageKind::DelegateCall | MessageKind::StaticCall => 6,
-+        _ => unreachable!("invalid call message kind"),
-+    };
-+    let mut cursor = unsafe { sp.add(inputs) };
-+    let local_gas_limit = unsafe { pop_word(&mut cursor) };
-+    let to = unsafe { pop_word(&mut cursor) }.to_address();
-+    let value = if matches!(kind, MessageKind::Call | MessageKind::CallCode) {
-+        unsafe { pop_word(&mut cursor) }.to_u256()
++        Bytes::copy_from_slice(ecx.memory().slice(in_offset, in_len))
      } else {
 -        usize::MAX..usize::MAX
-+        Word::ZERO
-+    };
-+    let input_offset = unsafe { pop_word(&mut cursor) };
-+    let input_len = unsafe { pop_word(&mut cursor) };
-+    let return_offset = unsafe { pop_word(&mut cursor) };
-+    let return_len = unsafe { pop_word(&mut cursor) };
-+
-+    let has_transfer = !value.is_zero();
-+    if ecx.is_static() && kind == MessageKind::Call && has_transfer {
-+        return Err(InstrStop::CallNotAllowedInsideStatic.into());
-+    }
-+
-+    let local_gas_limit = word_to_usize_saturated(local_gas_limit.to_u256()) as u64;
-+    let (input_range, return_memory_range) =
-+        get_memory_input_and_out_ranges(ecx, input_offset, input_len, return_offset, return_len)?;
++        Bytes::new()
+     };
+
+-    let out_len = try_into_usize!(out_len);
++    let out_len = word_to_usize(out_len.to_u256())?;
+     let out_offset = if out_len != 0 {
+-        let out_offset = try_into_usize!(out_offset);
++        let out_offset = word_to_usize(out_offset.to_u256())?;
+         ensure_memory(ecx, out_offset, out_len)?;
+         out_offset
+     } else {
+-        usize::MAX // unrealistic value so we are sure it is not used
++        usize::MAX
+     };
+
 +    let (gas_limit, loaded_code, resolved_code_address, disable_precompiles) =
-+        load_acc_and_calc_gas(ecx, to, has_transfer, kind == MessageKind::Call, local_gas_limit)?;
-+    let input = memory_range_bytes(ecx, input_range);
++        load_acc_and_calc_gas(ecx, to, transfers_value, call_kind == CallKind::Call, local_gas_limit)?;
 +
 +    let current = ecx.message();
-+    let (destination, caller, call_value, code_address) = match kind {
-+        MessageKind::Call => (to, current.destination, value, resolved_code_address),
-+        MessageKind::CallCode => {
++    let (destination, caller, call_value, code_address) = match call_kind {
++        CallKind::Call => (to, current.destination, value, resolved_code_address),
++        CallKind::CallCode => {
 +            (current.destination, current.destination, value, resolved_code_address)
 +        }
-+        MessageKind::DelegateCall => {
++        CallKind::DelegateCall => {
 +            (current.destination, current.caller, current.value, resolved_code_address)
 +        }
-+        MessageKind::StaticCall => (to, current.destination, Word::ZERO, resolved_code_address),
-+        _ => unreachable!("invalid call message kind"),
++        CallKind::StaticCall => (to, current.destination, U256::ZERO, resolved_code_address),
 +    };
 +    let mut message = Message {
-+        kind,
++        kind: call_kind.into(),
 +        depth: current.depth.saturating_add(1),
 +        gas_limit,
 +        destination,
@@ -849,21 +820,16 @@
 +        salt: B256::ZERO,
 +        ext: (),
 +        _non_exhaustive: (),
-     };
-
--    let out_len = try_into_usize!(out_len);
--    let out_offset = if out_len != 0 {
--        let out_offset = try_into_usize!(out_offset);
--        ensure_memory(ecx, out_offset, out_len)?;
--        out_offset
++    };
++
 +    let tx_env = ecx.tx_env();
 +    let mut result = ecx.host().execute_message(tx_env, loaded_code, &mut message);
 +    ecx.gas.erase_cost(result.gas_returned_to_parent());
 +    ecx.gas.record_refund(result.refund_propagated_to_parent());
 +
-+    let copy_len = min(return_memory_range.len(), result.output.len());
++    let copy_len = min(out_len, result.output.len());
 +    if copy_len != 0 {
-+        ecx.memory_mut().set(return_memory_range.start, &result.output[..copy_len]);
++        ecx.memory_mut().set(out_offset, &result.output[..copy_len]);
 +    }
 +    let success = EvmWord::from(Word::from(u8::from(result.stop.is_success())));
 +    unsafe {
@@ -873,36 +839,26 @@
 +    Ok(())
 +}
 +
-+unsafe fn pop_word(sp: &mut *mut EvmWord) -> EvmWord {
-+    *sp = unsafe { (*sp).sub(1) };
-+    unsafe { **sp }
++const fn should_charge_new_account_gas(
++    eip161: bool,
++    transfers_value: bool,
++    target_is_empty_for_new_account_gas: bool,
++) -> bool {
++    target_is_empty_for_new_account_gas && (!eip161 || transfers_value)
 +}
 +
-+fn resize_evm_range(
++fn load_acc_and_calc_gas(
 +    ecx: &mut EvmContext<'_>,
-+    offset: EvmWord,
-+    len: EvmWord,
-+) -> Result<Range<usize>, BuiltinError> {
-+    let len = word_to_usize(len.to_u256())?;
-+    let offset = if len != 0 {
-+        let offset = word_to_usize(offset.to_u256())?;
-+        ensure_memory(ecx, offset, len)?;
-+        offset
-     } else {
--        usize::MAX // unrealistic value so we are sure it is not used
-+        usize::MAX
-     };
-+    Ok(offset..offset + len)
-+}
-
--    if transfers_value {
++    to: Address,
++    transfers_value: bool,
++    create_empty_account: bool,
++    stack_gas_limit: u64,
++) -> Result<(u64, Bytecode, Address, bool), BuiltinError> {
++    let version = *ecx.version();
+     if transfers_value {
 -        gas!(ecx, ecx.gas_params.transfer_value_cost());
-+fn memory_range_bytes(ecx: &mut EvmContext<'_>, range: Range<usize>) -> Bytes {
-+    if range.is_empty() {
-+        return Bytes::new();
++        ecx.gas.spend(version.gas_params.get(GasId::TransferValueCost).into())?;
      }
-+    Bytes::copy_from_slice(ecx.memory().slice(range.start, range.len()))
-+}
 
 -    // Match interpreter call path: load delegated account and pass resolved bytecode/hash
 -    // through CallInputs::known_bytecode (covers EIP-7702 delegation and EOF execution).
@@ -912,45 +868,6 @@
 -            ecx.spec_id,
 -            ecx.gas.remaining(),
 -            to,
--            transfers_value,
--            call_kind == CallKind::Call,
--        )?;
--    let charged_new_account_state_gas = state_gas_cost > 0;
-+fn get_memory_input_and_out_ranges(
-+    ecx: &mut EvmContext<'_>,
-+    input_offset: EvmWord,
-+    input_len: EvmWord,
-+    return_offset: EvmWord,
-+    return_len: EvmWord,
-+) -> Result<(Range<usize>, Range<usize>), BuiltinError> {
-+    let input = resize_evm_range(ecx, input_offset, input_len)?;
-+    let output = resize_evm_range(ecx, return_offset, return_len)?;
-+    Ok((input, output))
-+}
-
--    gas!(ecx, dynamic_gas);
-+const fn should_charge_new_account_gas(
-+    eip161: bool,
-+    transfers_value: bool,
-+    target_is_empty_for_new_account_gas: bool,
-+) -> bool {
-+    target_is_empty_for_new_account_gas && (!eip161 || transfers_value)
-+}
-
--    // Deduct state gas (EIP-8037) if any.
--    state_gas!(ecx, state_gas_cost);
-+fn load_acc_and_calc_gas(
-+    ecx: &mut EvmContext<'_>,
-+    to: Address,
-+    transfers_value: bool,
-+    create_empty_account: bool,
-+    stack_gas_limit: u64,
-+) -> Result<(u64, Bytecode, Address, bool), BuiltinError> {
-+    let version = *ecx.version();
-+    if transfers_value {
-+        ecx.gas.spend(version.gas_params.get(GasId::TransferValueCost).into())?;
-+    }
-+
 +    let additional_cold_cost = version.gas_params.cold_account_additional_cost();
 +    let remaining_gas = ecx.gas.remaining();
 +    let skip_cold_load = remaining_gas < additional_cold_cost;
@@ -987,7 +904,15 @@
 +    if create_empty_account
 +        && should_charge_new_account_gas(
 +            spec_id.enables(SpecId::SPURIOUS_DRAGON),
-+            transfers_value,
+             transfers_value,
+-            call_kind == CallKind::Call,
+-        )?;
+-    let charged_new_account_state_gas = state_gas_cost > 0;
+-
+-    gas!(ecx, dynamic_gas);
+-
+-    // Deduct state gas (EIP-8037) if any.
+-    state_gas!(ecx, state_gas_cost);
 +            ecx.host().target_is_empty_for_new_account_gas(&to, spec_id)?,
 +        )
 +    {
@@ -1078,7 +1003,7 @@
      Err(result.into())
  }
 
-@@ -847,18 +930,17 @@
+@@ -847,18 +922,17 @@
      ecx: &mut EvmContext<'_>,
      offset: u64,
      len: u64,
@@ -1103,7 +1028,7 @@
      Err(result.into())
  }
 
-@@ -867,32 +949,418 @@
+@@ -867,32 +941,418 @@
      ecx: &mut EvmContext<'_>,
      target: &mut EvmWord,
  ) -> BuiltinResult {

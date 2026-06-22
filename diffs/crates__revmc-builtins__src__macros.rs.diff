@@ -1,7 +1,7 @@
 --- upstream/crates/revmc-builtins/src/macros.rs
 +++ evm2/crates/jit/builtins/src/macros.rs
-@@ -1,66 +1,3 @@
--#[collapse_debuginfo(yes)]
+@@ -1,66 +1,13 @@
+ #[collapse_debuginfo(yes)]
 -macro_rules! gas {
 -    ($ecx:expr, $gas:expr) => {
 -        if !$ecx.gas.record_regular_cost($gas) {
@@ -40,15 +40,17 @@
 -}
 -
 -#[collapse_debuginfo(yes)]
--macro_rules! pop {
--    ($sp:expr; $($x:ident),* $(,)?) => {
--        $(
+ macro_rules! pop {
+     ($sp:expr; $($x:ident),* $(,)?) => {
+         $(
 -            $sp = $sp.sub(1);
 -            let $x = &mut *$sp;
--        )*
--    };
--}
--
++            $sp = unsafe { $sp.sub(1) };
++            let $x = unsafe { &mut *$sp };
+         )*
+     };
+ }
+
 -#[collapse_debuginfo(yes)]
 -macro_rules! try_into_usize {
 -    ($x:expr) => {

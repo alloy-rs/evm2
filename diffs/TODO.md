@@ -27,26 +27,26 @@ Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_di
 - [ ] crates__revmc-builtins__src__lib.rs.diff
 - [x] crates__revmc-builtins__src__macros.rs.diff
 - [x] crates__revmc-builtins__src__utils.rs.diff
-- [x] crates__revmc-codegen__Cargo.toml.diff
+- [ ] crates__revmc-codegen__Cargo.toml.diff
 - [x] crates__revmc-codegen__README.md.diff
 - [x] crates__revmc-codegen__build.rs.diff
 - [x] crates__revmc-codegen__src__bytecode__asm.rs.diff
 - [x] crates__revmc-codegen__src__bytecode__fmt.rs.diff
 - [x] crates__revmc-codegen__src__bytecode__info.rs.diff
-- [x] crates__revmc-codegen__src__bytecode__mod.rs.diff
+- [ ] crates__revmc-codegen__src__bytecode__mod.rs.diff
 - [x] crates__revmc-codegen__src__bytecode__opcode.rs.diff
 - [x] crates__revmc-codegen__src__bytecode__passes__block_analysis.rs.diff
 - [x] crates__revmc-codegen__src__bytecode__passes__const_fold.rs.diff
 - [x] crates__revmc-codegen__src__bytecode__passes__dead_store_elim.rs.diff
 - [x] crates__revmc-codegen__src__bytecode__passes__dedup.rs.diff
 - [x] crates__revmc-codegen__src__bytecode__passes__memory_sections.rs.diff
-- [x] crates__revmc-codegen__src__bytecode__passes__sections.rs.diff
+- [ ] crates__revmc-codegen__src__bytecode__passes__sections.rs.diff
 - [x] crates__revmc-codegen__src__compiler__mod.rs.diff
 - [ ] crates__revmc-codegen__src__compiler__translate__mod.rs.diff
   - suspend removal good
 - [x] crates__revmc-codegen__src__compiler__translate__peephole.rs.diff
 - [x] crates__revmc-codegen__src__compiler__translate__vstack.rs.diff
-- [x] crates__revmc-codegen__src__lib.rs.diff
+- [ ] crates__revmc-codegen__src__lib.rs.diff
 - [x] crates__revmc-codegen__src__linker.rs.diff
 - [ ] crates__revmc-codegen__src__tests__fibonacci.rs.diff
 - [x] crates__revmc-codegen__src__tests__macros.rs.diff
@@ -59,7 +59,7 @@ Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_di
 - [x] crates__revmc-context__src__arch__mod.rs.diff
 - [x] crates__revmc-context__src__arch__x86_64.rs.diff
 - [ ] crates__revmc-context__src__lib.rs.diff
-- [x] crates__revmc-llvm__Cargo.toml.diff
+- [ ] crates__revmc-llvm__Cargo.toml.diff
 - [x] crates__revmc-llvm__README.md.diff
 - [x] crates__revmc-llvm__build.rs.diff
 - [x] crates__revmc-llvm__cpp__lib.cpp.diff
@@ -67,10 +67,10 @@ Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_di
 - [x] crates__revmc-llvm__src__lib.rs.diff
 - [x] crates__revmc-llvm__src__orc.rs.diff
 - [x] crates__revmc-llvm__src__utils.rs.diff
-- [x] crates__revmc-runtime__Cargo.toml.diff
+- [ ] crates__revmc-runtime__Cargo.toml.diff
 - [x] crates__revmc-runtime__README.md.diff
 - [x] crates__revmc-runtime__src__lib.rs.diff
-- [x] crates__revmc-runtime__src__revm_evm.rs.diff
+- [ ] crates__revmc-runtime__src__revm_evm.rs.diff
 - [x] crates__revmc-runtime__src__runtime__api.rs.diff
 - [x] crates__revmc-runtime__src__runtime__backend.rs.diff
 - [x] crates__revmc-runtime__src__runtime__config.rs.diff
@@ -79,7 +79,7 @@ Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_di
 - [x] crates__revmc-runtime__src__runtime__storage.rs.diff
 - [x] crates__revmc-runtime__src__runtime__tests.rs.diff
 - [x] crates__revmc-runtime__src__runtime__worker.rs.diff
-- [x] crates__revmc__Cargo.toml.diff
+- [ ] crates__revmc__Cargo.toml.diff
 - [x] crates__revmc__build.rs.diff
 - [x] crates__revmc__src__lib.rs.diff
 - [x] scripts__bench.py.diff

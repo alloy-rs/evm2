@@ -1,3 +1,13 @@
+#[collapse_debuginfo(yes)]
+macro_rules! pop {
+    ($sp:expr; $($x:ident),* $(,)?) => {
+        $(
+            $sp = unsafe { $sp.sub(1) };
+            let $x = unsafe { &mut *$sp };
+        )*
+    };
+}
+
 // Credits: <https://github.com/AuroransSolis/rustconf-2023/blob/665a645d751dfe0e483261e3abca25ab4bb9e13a/reverse-tokens/src/main.rs>
 #[collapse_debuginfo(yes)]
 macro_rules! rev {

@@ -12,7 +12,7 @@ extern crate tracing;
 
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
-use core::{cmp::min, ops::Range};
+use core::cmp::min;
 use evm2::{
     SpecId,
     bytecode::Bytecode,
@@ -48,6 +48,17 @@ pub enum CallKind {
     DelegateCall,
     /// `STATICCALL`.
     StaticCall,
+}
+
+impl From<CallKind> for MessageKind {
+    fn from(kind: CallKind) -> Self {
+        match kind {
+            CallKind::Call => Self::Call,
+            CallKind::CallCode => Self::CallCode,
+            CallKind::DelegateCall => Self::DelegateCall,
+            CallKind::StaticCall => Self::StaticCall,
+        }
+    }
 }
 
 /// The kind of a `CREATE*` instruction.
@@ -629,40 +640,51 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     sp: *mut EvmWord,
     create_kind: CreateKind,
 ) -> BuiltinResult {
-    if ecx.is_static() {
-        return Err(InstrStop::StateChangeDuringStaticCall.into());
-    }
+    require_non_staticcall(ecx)?;
+
+    let len = match create_kind {
+        CreateKind::Create => 3,
+        CreateKind::Create2 => 4,
+    };
+    let mut sp = unsafe { sp.add(len) };
+    pop!(sp; value, code_offset, len);
+
+    let len = word_to_usize(len.to_u256())?;
+    let version = *ecx.version();
+    let code = if len != 0 {
+        if ecx.spec_id().enables(SpecId::SHANGHAI) {
+            if len > version.max_initcode_size {
+                return Err(InstrStop::CreateInitCodeSizeLimit.into());
+            }
+            ecx.gas.spend(version.gas_params.initcode_cost(len))?;
+        }
+
+        let code_offset = word_to_usize(code_offset.to_u256())?;
+        ensure_memory(ecx, code_offset, len)?;
+        Bytes::copy_from_slice(ecx.memory().slice(code_offset, len))
+    } else {
+        Bytes::new()
+    };
 
     let is_create2 = create_kind == CreateKind::Create2;
-    let inputs = if is_create2 { 4 } else { 3 };
-    let mut cursor = unsafe { sp.add(inputs) };
-    let value = unsafe { pop_word(&mut cursor) }.to_u256();
-    let offset = unsafe { pop_word(&mut cursor) };
-    let len_word = unsafe { pop_word(&mut cursor) };
-    let salt = if is_create2 { Some(unsafe { pop_word(&mut cursor) }) } else { None };
-
-    let len = word_to_usize(len_word.to_u256())?;
-    let version = *ecx.version();
-    if ecx.spec_id().enables(SpecId::SHANGHAI) {
-        if len > version.max_initcode_size {
-            return Err(InstrStop::CreateInitCodeSizeLimit.into());
-        }
-        ecx.gas.spend(version.gas_params.initcode_cost(len))?;
-    }
-    let code_range = resize_evm_range(ecx, offset, EvmWord::from(Word::from(len)))?;
-    let input = memory_range_bytes(ecx, code_range);
     let create_cost = if is_create2 {
         version.gas_params.create2_cost(len)
     } else {
         version.gas_params.get(GasId::Create).into()
     };
     ecx.gas.spend(create_cost)?;
-    let gas_limit = if ecx.spec_id().enables(SpecId::TANGERINE) {
-        version.gas_params.call_stipend_reduction(ecx.gas.remaining())
-    } else {
-        ecx.gas.remaining()
-    };
+
+    let mut gas_limit = ecx.gas.remaining();
+    if ecx.spec_id().enables(SpecId::TANGERINE) {
+        gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
+    }
     ecx.gas.spend(gas_limit)?;
+    let salt = if is_create2 {
+        pop!(sp; salt);
+        B256::from(salt.to_be_bytes())
+    } else {
+        B256::ZERO
+    };
 
     let current = ecx.message();
     let mut message = Message {
@@ -671,12 +693,12 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         gas_limit,
         destination: current.destination,
         caller: current.destination,
-        input,
-        value,
+        input: code,
+        value: value.to_u256(),
         code_address: current.destination,
         disable_precompiles: false,
         caller_is_static: false,
-        salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
+        salt,
         ext: (),
         _non_exhaustive: (),
     };
@@ -705,57 +727,67 @@ pub unsafe extern "C" fn __revmc_builtin_call(
     sp: *mut EvmWord,
     call_kind: CallKind,
 ) -> BuiltinResult {
-    let kind = match call_kind {
-        CallKind::Call => MessageKind::Call,
-        CallKind::CallCode => MessageKind::CallCode,
-        CallKind::DelegateCall => MessageKind::DelegateCall,
-        CallKind::StaticCall => MessageKind::StaticCall,
+    let len = match call_kind {
+        CallKind::Call | CallKind::CallCode => 7,
+        CallKind::DelegateCall | CallKind::StaticCall => 6,
     };
+    let mut sp = unsafe { sp.add(len) };
 
-    let inputs = match kind {
-        MessageKind::Call | MessageKind::CallCode => 7,
-        MessageKind::DelegateCall | MessageKind::StaticCall => 6,
-        _ => unreachable!("invalid call message kind"),
+    pop!(sp; local_gas_limit, to);
+    let local_gas_limit = local_gas_limit.to_u256();
+    let to = to.to_address();
+
+    let local_gas_limit = word_to_u64_saturated(local_gas_limit);
+
+    let value = match call_kind {
+        CallKind::Call | CallKind::CallCode => {
+            pop!(sp; value);
+            let value = value.to_u256();
+            if call_kind == CallKind::Call && ecx.is_static() && value != U256::ZERO {
+                return Err(InstrStop::CallNotAllowedInsideStatic.into());
+            }
+            value
+        }
+        CallKind::DelegateCall | CallKind::StaticCall => U256::ZERO,
     };
-    let mut cursor = unsafe { sp.add(inputs) };
-    let local_gas_limit = unsafe { pop_word(&mut cursor) };
-    let to = unsafe { pop_word(&mut cursor) }.to_address();
-    let value = if matches!(kind, MessageKind::Call | MessageKind::CallCode) {
-        unsafe { pop_word(&mut cursor) }.to_u256()
+    let transfers_value = value != U256::ZERO;
+
+    pop!(sp; in_offset, in_len, out_offset, out_len);
+
+    let in_len = word_to_usize(in_len.to_u256())?;
+    let input = if in_len != 0 {
+        let in_offset = word_to_usize(in_offset.to_u256())?;
+        ensure_memory(ecx, in_offset, in_len)?;
+        Bytes::copy_from_slice(ecx.memory().slice(in_offset, in_len))
     } else {
-        Word::ZERO
+        Bytes::new()
     };
-    let input_offset = unsafe { pop_word(&mut cursor) };
-    let input_len = unsafe { pop_word(&mut cursor) };
-    let return_offset = unsafe { pop_word(&mut cursor) };
-    let return_len = unsafe { pop_word(&mut cursor) };
 
-    let has_transfer = !value.is_zero();
-    if ecx.is_static() && kind == MessageKind::Call && has_transfer {
-        return Err(InstrStop::CallNotAllowedInsideStatic.into());
-    }
+    let out_len = word_to_usize(out_len.to_u256())?;
+    let out_offset = if out_len != 0 {
+        let out_offset = word_to_usize(out_offset.to_u256())?;
+        ensure_memory(ecx, out_offset, out_len)?;
+        out_offset
+    } else {
+        usize::MAX
+    };
 
-    let local_gas_limit = word_to_usize_saturated(local_gas_limit.to_u256()) as u64;
-    let (input_range, return_memory_range) =
-        get_memory_input_and_out_ranges(ecx, input_offset, input_len, return_offset, return_len)?;
     let (gas_limit, loaded_code, resolved_code_address, disable_precompiles) =
-        load_acc_and_calc_gas(ecx, to, has_transfer, kind == MessageKind::Call, local_gas_limit)?;
-    let input = memory_range_bytes(ecx, input_range);
+        load_acc_and_calc_gas(ecx, to, transfers_value, call_kind == CallKind::Call, local_gas_limit)?;
 
     let current = ecx.message();
-    let (destination, caller, call_value, code_address) = match kind {
-        MessageKind::Call => (to, current.destination, value, resolved_code_address),
-        MessageKind::CallCode => {
+    let (destination, caller, call_value, code_address) = match call_kind {
+        CallKind::Call => (to, current.destination, value, resolved_code_address),
+        CallKind::CallCode => {
             (current.destination, current.destination, value, resolved_code_address)
         }
-        MessageKind::DelegateCall => {
+        CallKind::DelegateCall => {
             (current.destination, current.caller, current.value, resolved_code_address)
         }
-        MessageKind::StaticCall => (to, current.destination, Word::ZERO, resolved_code_address),
-        _ => unreachable!("invalid call message kind"),
+        CallKind::StaticCall => (to, current.destination, U256::ZERO, resolved_code_address),
     };
     let mut message = Message {
-        kind,
+        kind: call_kind.into(),
         depth: current.depth.saturating_add(1),
         gas_limit,
         destination,
@@ -775,9 +807,9 @@ pub unsafe extern "C" fn __revmc_builtin_call(
     ecx.gas.erase_cost(result.gas_returned_to_parent());
     ecx.gas.record_refund(result.refund_propagated_to_parent());
 
-    let copy_len = min(return_memory_range.len(), result.output.len());
+    let copy_len = min(out_len, result.output.len());
     if copy_len != 0 {
-        ecx.memory_mut().set(return_memory_range.start, &result.output[..copy_len]);
+        ecx.memory_mut().set(out_offset, &result.output[..copy_len]);
     }
     let success = EvmWord::from(Word::from(u8::from(result.stop.is_success())));
     unsafe {
@@ -785,46 +817,6 @@ pub unsafe extern "C" fn __revmc_builtin_call(
     }
     ecx.set_return_data(core::mem::take(&mut result.output));
     Ok(())
-}
-
-unsafe fn pop_word(sp: &mut *mut EvmWord) -> EvmWord {
-    *sp = unsafe { (*sp).sub(1) };
-    unsafe { **sp }
-}
-
-fn resize_evm_range(
-    ecx: &mut EvmContext<'_>,
-    offset: EvmWord,
-    len: EvmWord,
-) -> Result<Range<usize>, BuiltinError> {
-    let len = word_to_usize(len.to_u256())?;
-    let offset = if len != 0 {
-        let offset = word_to_usize(offset.to_u256())?;
-        ensure_memory(ecx, offset, len)?;
-        offset
-    } else {
-        usize::MAX
-    };
-    Ok(offset..offset + len)
-}
-
-fn memory_range_bytes(ecx: &mut EvmContext<'_>, range: Range<usize>) -> Bytes {
-    if range.is_empty() {
-        return Bytes::new();
-    }
-    Bytes::copy_from_slice(ecx.memory().slice(range.start, range.len()))
-}
-
-fn get_memory_input_and_out_ranges(
-    ecx: &mut EvmContext<'_>,
-    input_offset: EvmWord,
-    input_len: EvmWord,
-    return_offset: EvmWord,
-    return_len: EvmWord,
-) -> Result<(Range<usize>, Range<usize>), BuiltinError> {
-    let input = resize_evm_range(ecx, input_offset, input_len)?;
-    let output = resize_evm_range(ecx, return_offset, return_len)?;
-    Ok((input, output))
 }
 
 const fn should_charge_new_account_gas(
