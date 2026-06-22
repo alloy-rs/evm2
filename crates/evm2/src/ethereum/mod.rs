@@ -610,7 +610,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     // EIP-7702 per-authorization `state_refund`.
     let mut total_gas_spent = tx_gas_limit
         .saturating_sub(result.gas.remaining())
-        .saturating_sub(result.reservoir_reimbursed());
+        .saturating_sub(result.gas.reservoir());
     let mut refunded = result.final_refund(tx_gas_limit, is_eip3529);
     // EIP-7623: when the calldata floor exceeds spent-minus-refund, the floor becomes the gas used
     // and absorbs the refund. revm folds this into `total_gas_spent` (so block-level regular gas

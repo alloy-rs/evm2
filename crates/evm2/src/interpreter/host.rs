@@ -62,29 +62,16 @@ impl<T: EvmTypes> MessageResult<T> {
         if refund < cap { refund } else { cap }
     }
 
-    /// Returns the leftover EIP-8037 state-gas reservoir reimbursed to the caller
-    /// at the top level.
-    ///
-    /// On success this is the frame's final reservoir. On revert or halt
-    /// [`GasTracker::unwind_state_gas`] has already restored the reservoir to its
-    /// frame-start value: a regular-gas halt does not consume the separate
-    /// state-gas reservoir, and any state gas that spilled into regular gas was
-    /// returned to `remaining` (and so is consumed on halt, not reimbursed via the
-    /// reservoir). Always zero without EIP-8037.
-    #[inline]
-    pub const fn reservoir_reimbursed(&self) -> u64 {
-        self.gas.reservoir()
-    }
-
     /// Returns top-level gas remaining after applying the final refund cap.
     #[inline]
     pub const fn gas_remaining_after_final_refund(&self, gas_limit: u64, is_eip3529: bool) -> u64 {
         let refunded = self.final_refund(gas_limit, is_eip3529);
-        // EIP-8037: the unused reservoir is also reimbursed to the caller.
+        // EIP-8037: the unused reservoir (already settled to its frame-start value
+        // on failure by `unwind_state_gas`) is also reimbursed to the caller.
         let remaining = self
             .gas
             .remaining()
-            .saturating_add(self.reservoir_reimbursed())
+            .saturating_add(self.gas.reservoir())
             .saturating_add(refunded);
         if remaining < gas_limit { remaining } else { gas_limit }
     }
