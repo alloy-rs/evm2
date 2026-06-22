@@ -103,18 +103,6 @@ pub struct TestCase<'a> {
     pub assert_ecx: Option<fn(&EvmContext<'_>)>,
 }
 
-#[cfg(feature = "__fuzzing")]
-impl<'a> arbitrary::Arbitrary<'a> for TestCase<'a> {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let spec_id_range = 0..=(SpecId::OSAKA as u32 - 1);
-        let spec_id = SpecId::try_from_u32(u.int_in_range(spec_id_range)?).unwrap_or(DEF_SPEC);
-
-        let bytecode: &'a [u8] = u.arbitrary()?;
-
-        Ok(Self::what_interpreter_says(bytecode, spec_id))
-    }
-}
-
 impl Default for TestCase<'_> {
     fn default() -> Self {
         Self {

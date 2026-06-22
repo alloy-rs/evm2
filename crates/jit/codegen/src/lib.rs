@@ -22,7 +22,7 @@ pub use linker::{Linker, shared_library_path};
 pub const ABI_VERSION: u32 = 0;
 
 /// Internal tests and testing utilities. Not public API.
-#[cfg(any(test, feature = "__fuzzing"))]
+#[cfg(test)]
 pub mod tests;
 
 type FxHashMap<K, V> = alloy_primitives::map::HashMap<K, V, alloy_primitives::map::FxBuildHasher>;

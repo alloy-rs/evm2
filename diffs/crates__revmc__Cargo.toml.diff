@@ -16,7 +16,7 @@
  categories.workspace = true
  keywords.workspace = true
  repository.workspace = true
-@@ -21,31 +21,19 @@
+@@ -21,31 +21,18 @@
  workspace = true
 
  [dependencies]
@@ -58,4 +58,3 @@
 -__fuzzing = ["revmc-codegen/__fuzzing"]
 +llvm = ["dep:evm2-jit-llvm", "evm2-jit-codegen/llvm", "evm2-jit-runtime/llvm"]
 +asm-keccak = ["evm2-jit-codegen/asm-keccak", "evm2-jit-runtime/asm-keccak"]
-+__fuzzing = ["evm2-jit-codegen/__fuzzing"]

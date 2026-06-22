@@ -11,7 +11,7 @@
 
  mod bytecode;
  pub use bytecode::*;
-@@ -18,11 +18,6 @@
+@@ -18,25 +18,20 @@
  mod linker;
  pub use linker::{Linker, shared_library_path};
 
@@ -23,7 +23,10 @@
  /// ABI version of compiled artifacts. Bump when the calling convention changes.
  pub const ABI_VERSION: u32 = 0;
 
-@@ -32,11 +27,11 @@
+ /// Internal tests and testing utilities. Not public API.
+-#[cfg(any(test, feature = "__fuzzing"))]
++#[cfg(test)]
+ pub mod tests;
 
  type FxHashMap<K, V> = alloy_primitives::map::HashMap<K, V, alloy_primitives::map::FxBuildHasher>;
 

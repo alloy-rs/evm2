@@ -44,7 +44,7 @@
  pub struct DefCfg {
      pub chain_id: u64,
  }
-@@ -95,22 +91,23 @@
+@@ -95,29 +91,18 @@
 
      /// Override `inspect_stack` on the compiler. `None` uses the default (`true`).
      pub inspect_stack: Option<bool>,
@@ -63,17 +63,22 @@
      pub assert_ecx: Option<fn(&EvmContext<'_>)>,
  }
 
- #[cfg(feature = "__fuzzing")]
- impl<'a> arbitrary::Arbitrary<'a> for TestCase<'a> {
-     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+-#[cfg(feature = "__fuzzing")]
+-impl<'a> arbitrary::Arbitrary<'a> for TestCase<'a> {
+-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
 -        let spec_id_range = 0..=(SpecId::OSAKA as u8 - 1);
 -        let spec_id = SpecId::try_from_u8(u.int_in_range(spec_id_range)?).unwrap_or(DEF_SPEC);
-+        let spec_id_range = 0..=(SpecId::OSAKA as u32 - 1);
-+        let spec_id = SpecId::try_from_u32(u.int_in_range(spec_id_range)?).unwrap_or(DEF_SPEC);
-
-         let bytecode: &'a [u8] = u.arbitrary()?;
-
-@@ -126,12 +123,13 @@
+-
+-        let bytecode: &'a [u8] = u.arbitrary()?;
+-
+-        Ok(Self::what_interpreter_says(bytecode, spec_id))
+-    }
+-}
+-
+ impl Default for TestCase<'_> {
+     fn default() -> Self {
+         Self {
+@@ -126,12 +111,13 @@
              is_static: false,
              gas_limit: DEF_GAS_LIMIT,
              inspect_stack: None,
@@ -89,7 +94,7 @@
              assert_host: None,
              assert_ecx: None,
          }
-@@ -144,12 +142,13 @@
+@@ -144,12 +130,13 @@
              .field("bytecode", &format_bytecode(self.bytecode, self.spec_id))
              .field("spec_id", &self.spec_id)
              .field("inspect_stack", &self.inspect_stack)
@@ -104,7 +109,7 @@
              .field("assert_host", &self.assert_host.is_some())
              .field("assert_ecx", &self.assert_ecx.is_some())
              .finish()
-@@ -164,12 +163,13 @@
+@@ -164,12 +151,13 @@
              is_static: false,
              gas_limit: DEF_GAS_LIMIT,
              inspect_stack: None,
@@ -119,7 +124,7 @@
              assert_host: None,
              assert_ecx: None,
          }
-@@ -192,21 +192,15 @@
+@@ -192,21 +180,15 @@
  pub static DEF_DATA: &[u8] = &[0xcc; 64];
  pub const DEF_VALUE: U256 = uint!(123_456_789_U256);
  pub static DEF_STORAGE: OnceLock<HashMap<U256, U256>> = OnceLock::new();
@@ -143,7 +148,7 @@
 
  pub fn def_storage() -> &'static HashMap<U256, U256> {
      DEF_STORAGE.get_or_init(|| {
-@@ -218,12 +212,12 @@
+@@ -218,12 +200,12 @@
      })
  }
 
@@ -158,7 +163,7 @@
                  op::PUSH1,
                  0x69,
                  op::PUSH1,
-@@ -232,203 +226,155 @@
+@@ -232,203 +214,155 @@
                  op::STOP,
              ])),
          );
@@ -350,18 +355,18 @@
              },
 -            false,
 -        ))
--    }
++        );
+     }
 -
 -    fn log(&mut self, log: Log) {
 -        self.logs.push(log);
-+        );
++    for (key, value) in def_storage() {
++        database.insert_account_storage(&DEF_ADDR, key, value);
      }
 -
 -    fn tstore(&mut self, _address: Address, key: U256, value: U256) {
 -        self.transient_storage.insert(key, value);
-+    for (key, value) in def_storage() {
-+        database.insert_account_storage(&DEF_ADDR, key, value);
-     }
+-    }
 -
 -    fn tload(&mut self, _address: Address, key: U256) -> U256 {
 -        self.transient_storage.get(&key).copied().unwrap_or(U256::ZERO)
@@ -489,7 +494,7 @@
  }
 
  pub fn with_evm_context<F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
-@@ -436,33 +382,72 @@
+@@ -436,33 +370,72 @@
      spec_id: SpecId,
      f: F,
  ) -> R {
@@ -579,7 +584,7 @@
      dump_path.extend(module_path.split("::").skip(2));
      dump_path.push(format!("{:?}", compiler.opt_level()));
      compiler.set_dump_to(Some(dump_path));
-@@ -477,308 +462,219 @@
+@@ -477,308 +450,219 @@
  }
 
  fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
