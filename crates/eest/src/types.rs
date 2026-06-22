@@ -136,9 +136,11 @@ pub enum SpecName {
     HomesteadToDaoAt5,
     /// Homestead to EIP-150 transition.
     HomesteadToEIP150At5,
-    /// EIP-150.
+    /// EIP-150 aka Tangerine Whistle.
+    #[serde(alias = "TangerineWhistle")]
     EIP150,
-    /// EIP-158.
+    /// EIP-158 aka Spurious Dragon.
+    #[serde(alias = "SpuriousDragon")]
     EIP158,
     /// EIP-158 to Byzantium transition.
     EIP158ToByzantiumAt5,

@@ -75,8 +75,8 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
-            export DEVNET_VERSION="snobal-devnet-6%40v1.1.0"
-            export DEVNET_TAR="fixtures_snobal-devnet-6.tar.gz"
+            export DEVNET_VERSION="tests-glamsterdam-devnet%40v6.0.0"
+            export DEVNET_TAR="fixtures_glamsterdam-devnet.tar.gz"
             export EVM2_STATETEST_DEVNET_ONLY=1
           fi
           ./scripts/setup_test_fixtures.py

@@ -1,4 +1,4 @@
-use crate::{cases::Bench, fixture::Suites};
+use crate::{cases::BenchCase, fixture::Suites};
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{SpecId, Version};
 use revm::{
@@ -8,14 +8,14 @@ use revm::{
     primitives::{U256, hardfork::SpecId as RevmSpecId},
     statetest_types::{Test, TestSuite, TestUnit},
 };
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 type BenchDB = CacheDB<Arc<InMemoryDB>>;
 type BenchEvm = revm::MainnetEvm<revm::handler::MainnetContext<BenchDB>>;
 
 #[derive(Clone)]
 pub(crate) struct PreparedBench {
-    name: &'static str,
+    name: Cow<'static, str>,
     cfg: CfgEnv,
     block: BlockEnv,
     db: Arc<InMemoryDB>,
@@ -23,14 +23,14 @@ pub(crate) struct PreparedBench {
 }
 
 impl PreparedBench {
-    pub(crate) fn load(bench: &Bench, suites: &Suites) -> Self {
+    pub(crate) fn load(bench: &BenchCase, suites: &Suites) -> Self {
         let spec = bench.transaction_spec().expect("transaction benchmark must have a spec");
         let suite = suites.get(bench.fixture_path);
-        let (unit, test) = revm_case(suite.input(), bench.name, spec);
+        let (unit, test) = revm_case(suite.input(), &bench.name, spec);
         let tx = test.tx_env(&unit).expect("revm benchmark transaction must build");
         let (cfg, block) = envs(&unit, revm_spec_id(spec));
         let db = Arc::new(database(&unit));
-        Self { name: bench.name, cfg, block, db, tx }
+        Self { name: bench.name.clone(), cfg, block, db, tx }
     }
 
     pub(crate) fn sanity_check(&self) {
@@ -41,7 +41,7 @@ impl PreparedBench {
     }
 
     pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
-        group.bench_function(format!("{}/revm/transact", self.name), |b| {
+        group.bench_function(format!("{}/revm", self.name), |b| {
             b.iter_batched(
                 || Runner::new(self),
                 |mut runner| {

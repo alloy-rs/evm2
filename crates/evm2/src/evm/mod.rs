@@ -829,18 +829,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         tx_env: &TxEnv<T>,
         bytecode: Bytecode,
         message: &mut Message<T>,
-        caller_is_static: bool,
     ) -> MessageResult<T> {
         match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
-                self.execute_create_message(tx_env, bytecode, message, caller_is_static)
+                self.execute_create_message(tx_env, bytecode, message)
             }
             MessageKind::Call
             | MessageKind::CallCode
             | MessageKind::DelegateCall
-            | MessageKind::StaticCall => {
-                self.execute_call_message(tx_env, bytecode, message, caller_is_static)
-            }
+            | MessageKind::StaticCall => self.execute_call_message(tx_env, bytecode, message),
         }
     }
 
@@ -854,10 +851,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         tx_env: &TxEnv<T>,
         bytecode: Bytecode,
         message: &mut Message<T>,
-        caller_is_static: bool,
     ) -> MessageResult<T> {
         let Some(inspector) = self.inspector.as_deref_mut() else {
-            return self.execute_message_impl(tx_env, bytecode, message, caller_is_static);
+            return self.execute_message_impl(tx_env, bytecode, message);
         };
         // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
         // message execution.
@@ -890,7 +886,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 let frame = top_frame.insert(self.interpreter_pool.pop());
                 // SAFETY: The message outlives the frame, which is returned to the pool below.
                 let frame_message = unsafe { trustme::decouple_lt(&*message) };
-                frame.init(bytecode.clone(), tx_env, frame_message, caller_is_static);
+                frame.init(bytecode.clone(), tx_env, frame_message);
                 // SAFETY: `execution_config` points to a private field that host execution does
                 // not replace or mutate, so the pointee remains valid for the lifetime of the
                 // frame.
@@ -908,9 +904,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             inspector.call(frame, message)
         };
 
-        let mut result = inspected.unwrap_or_else(|| {
-            self.execute_message_impl(tx_env, bytecode, message, caller_is_static)
-        });
+        let mut result =
+            inspected.unwrap_or_else(|| self.execute_message_impl(tx_env, bytecode, message));
 
         if is_create {
             inspector.create_end(frame, message, &mut result);
@@ -931,7 +926,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         tx_env: &TxEnv<T>,
         bytecode: Bytecode,
         message: &mut Message<T>,
-        caller_is_static: bool,
     ) -> MessageResult<T> {
         if message.depth > CALL_DEPTH_LIMIT {
             return Self::error_message_result(InstrStop::CallTooDeep, message.gas_limit);
@@ -948,7 +942,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message.disable_precompiles = false;
         let input = core::mem::take(&mut message.input);
 
-        let stop = self.run_interpreter(bytecode, tx_env, message, caller_is_static);
+        let stop = self.run_interpreter(bytecode, tx_env, message);
         message.input = input;
 
         self.finish_create_message_run(checkpoint, &message.destination, message.gas_limit, stop)
@@ -1094,7 +1088,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         tx_env: &TxEnv<T>,
         bytecode: Bytecode,
         message: &mut Message<T>,
-        caller_is_static: bool,
     ) -> MessageResult<T> {
         if message.depth > CALL_DEPTH_LIMIT {
             return Self::error_message_result(InstrStop::CallTooDeep, message.gas_limit);
@@ -1123,7 +1116,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             return self.execute_call_precompile(checkpoint, message);
         }
 
-        let stop = self.run_interpreter(bytecode, tx_env, message, caller_is_static);
+        let stop = self.run_interpreter(bytecode, tx_env, message);
 
         self.finish_call_message_run(checkpoint, stop)
     }
@@ -1204,12 +1197,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: Bytecode,
         tx_env: &'frame TxEnv<T>,
         message: &'frame Message<T>,
-        caller_is_static: bool,
     ) -> InstrStop {
         let mut interp = self.interpreter_pool.pop();
         let _guard = self.enter_execution();
         let interp_ref = interp.as_mut();
-        interp_ref.init(bytecode, tx_env, message, caller_is_static);
+        interp_ref.init(bytecode, tx_env, message);
         // SAFETY: `execution_config` points to a private field that host execution does not
         // replace or mutate, so the pointee remains valid here.
         let execution_config = unsafe { trustme::decouple_lt(&self.execution_config) };
@@ -1364,12 +1356,11 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         tx_env: &TxEnv<T>,
         bytecode: Bytecode,
         message: &mut Message<T>,
-        caller_is_static: bool,
     ) -> MessageResult<T> {
         if self.inspector.is_some() {
-            return self.execute_message_inspected(tx_env, bytecode, message, caller_is_static);
+            return self.execute_message_inspected(tx_env, bytecode, message);
         }
-        self.execute_message_impl(tx_env, bytecode, message, caller_is_static)
+        self.execute_message_impl(tx_env, bytecode, message)
     }
 
     fn selfdestruct(
@@ -1714,6 +1705,7 @@ mod tests {
             value: U256::ZERO,
             code_address: AccessingPrecompile::ADDRESS,
             disable_precompiles: false,
+            caller_is_static: false,
             salt: B256::ZERO,
             ext: (),
             _non_exhaustive: (),
@@ -1762,6 +1754,7 @@ mod tests {
             value: U256::ZERO,
             code_address: AccessingPrecompile::ADDRESS,
             disable_precompiles: false,
+            caller_is_static: false,
             salt: B256::ZERO,
             ext: (),
             _non_exhaustive: (),
@@ -1830,7 +1823,7 @@ mod tests {
         let message = Message::default();
         let tx_env = TxEnv::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
-        let _ = evm.run_interpreter(bytecode, &tx_env, &message, false);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message);
     }
 
     #[test]
@@ -1855,7 +1848,7 @@ mod tests {
         let tx_env = TxEnv::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
 
-        let _ = evm.run_interpreter(bytecode, &tx_env, &message, false);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message);
     }
 
     #[test]
@@ -1929,6 +1922,7 @@ mod tests {
             value: U256::from(99),
             code_address: address,
             disable_precompiles: false,
+            caller_is_static: false,
             salt: B256::ZERO,
             ext: (),
             _non_exhaustive: (),
@@ -1990,6 +1984,7 @@ mod tests {
                     value: U256::ZERO,
                     code_address: Self::INNER,
                     disable_precompiles: false,
+                    caller_is_static: false,
                     salt: B256::ZERO,
                     ext: (),
                     _non_exhaustive: (),
@@ -2015,6 +2010,7 @@ mod tests {
             value: U256::ZERO,
             code_address: NestedPrecompile::OUTER,
             disable_precompiles: false,
+            caller_is_static: false,
             salt: B256::ZERO,
             ext: (),
             _non_exhaustive: (),
@@ -2265,8 +2261,7 @@ mod tests {
             ..Message::default()
         };
 
-        let result =
-            Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
         assert!(result.stop.is_success());
     }
 
@@ -2323,8 +2318,7 @@ mod tests {
             ..Message::default()
         };
 
-        let result =
-            Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::FatalExternalError);
         let error_code = evm.db_error_code().unwrap();
@@ -2352,8 +2346,7 @@ mod tests {
             ..Message::default()
         };
 
-        let result =
-            Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
         assert!(!evm.state.storage(&contract).is_warm(&key));
@@ -2382,7 +2375,7 @@ mod tests {
         let code =
             Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &mut message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &mut message);
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
@@ -2415,7 +2408,7 @@ mod tests {
         let code =
             Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &mut message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &mut message);
         assert_eq!(result.stop, InstrStop::OutOfGas);
 
         evm.state.finalize_transaction_(Version::base(SpecId::HOMESTEAD));
@@ -2444,13 +2437,8 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(
-            &mut evm,
-            &TxEnv::default(),
-            Bytecode::default(),
-            &mut message,
-            false,
-        );
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
@@ -2485,13 +2473,8 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(
-            &mut evm,
-            &TxEnv::default(),
-            Bytecode::default(),
-            &mut message,
-            false,
-        );
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
@@ -2555,13 +2538,8 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(
-            &mut evm,
-            &TxEnv::default(),
-            Bytecode::default(),
-            &mut message,
-            false,
-        );
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
         assert!(result.stop.is_success());
 
         let version = *evm.version();

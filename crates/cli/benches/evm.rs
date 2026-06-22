@@ -23,10 +23,11 @@ fn evm(c: &mut Criterion) {
     let cases = cases::all();
     let suites =
         fixture::Suites::load(cases.iter().filter_map(|bench| bench.transaction_fixture_path()));
+    let cases = cases::expand(&suites);
     let bench_revm = env::var_os("EVM2_BENCH_REVM").is_some();
-    for bench in cases {
+    for bench in &cases {
         match bench.kind {
-            cases::BenchKind::Transaction { .. } => {
+            cases::BenchCaseKind::Transaction { .. } => {
                 let prepared = support::PreparedBench::load(bench, &suites);
                 prepared.sanity_check();
                 prepared.bench(&mut group);
@@ -37,7 +38,7 @@ fn evm(c: &mut Criterion) {
                     prepared.bench(&mut group);
                 }
             }
-            cases::BenchKind::BlockchainReplay => {
+            cases::BenchCaseKind::BlockchainReplay => {
                 let prepared = mainnet::PreparedBench::load(bench);
                 prepared.sanity_check();
                 prepared.bench(&mut group);

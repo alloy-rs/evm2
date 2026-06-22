@@ -431,6 +431,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 value,
                 code_address: initial_code.code_address,
                 disable_precompiles: initial_code.disable_precompiles,
+                caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
                 _non_exhaustive: (),
@@ -449,6 +450,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 value,
                 code_address: address,
                 disable_precompiles: false,
+                caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
                 _non_exhaustive: (),
@@ -863,8 +865,7 @@ mod tests {
         assert_eq!(message.code_address, delegated);
         assert!(message.disable_precompiles);
 
-        let result =
-            Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::Return);
         assert_eq!(result.output.len(), 32);
