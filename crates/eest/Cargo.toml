@@ -15,7 +15,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-evm2 = { workspace = true, features = ["std"] }
+evm2.workspace = true
 evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
 
 alloy-consensus = { workspace = true, features = ["std"] }
@@ -34,6 +34,9 @@ serde_json = { workspace = true, features = ["preserve_order", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 walkdir.workspace = true
 zstd.workspace = true
+
+[dev-dependencies]
+evm2 = { workspace = true, default-features = true }
 
 [build-dependencies]
 evm2-jit-build = { workspace = true, optional = true }

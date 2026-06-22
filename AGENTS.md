@@ -59,6 +59,7 @@ If fixtures are already available in another worktree, symlink `test-fixtures`
 to that directory instead of re-downloading them.
 By default it downloads EEST develop (or stable with `EVM2_STATETEST_STABLE=1`)
 and legacy Cancun/Constantinople state tests. Devnet fixtures are opt-in with
-`DEVNET_VERSION` and `DEVNET_TAR`; add `EVM2_STATETEST_DEVNET_ONLY=1` to skip
-main/legacy fixtures. Use `EVM2_STATETEST_ROOT` or `EVM2_BLOCKCHAINTEST_ROOT`
+`DEVNET_VERSION` and `DEVNET_TAR` (downloaded from the `ethereum/execution-specs`
+repo, overridable via `DEVNET_BASE_URL`); add `EVM2_STATETEST_DEVNET_ONLY=1` to
+skip main/legacy fixtures. Use `EVM2_STATETEST_ROOT` or `EVM2_BLOCKCHAINTEST_ROOT`
 for a single explicit root.
