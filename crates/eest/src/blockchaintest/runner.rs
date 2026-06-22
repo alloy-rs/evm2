@@ -40,7 +40,7 @@ fn should_descend(path: &Path) -> bool {
     )
 }
 
-fn should_ignore(name: &str) -> bool {
+pub(crate) fn should_ignore(name: &str) -> bool {
     IGNORED_TESTS.iter().any(|ignored| name.contains(ignored))
 }
 

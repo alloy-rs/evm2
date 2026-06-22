@@ -59,6 +59,6 @@ const IGNORED_TESTS: &[&str] = &[
     "dynamicAccountOverwriteEmpty_Paris.json",
 ];
 
-fn should_ignore(name: &str) -> bool {
+pub(crate) fn should_ignore(name: &str) -> bool {
     IGNORED_TESTS.iter().any(|pattern| name.contains(pattern))
 }

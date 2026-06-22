@@ -40,3 +40,11 @@ and legacy Cancun/Constantinople state tests. Devnet fixtures are opt-in with
 repo, overridable via `DEVNET_BASE_URL`); add `EVM2_STATETEST_DEVNET_ONLY=1` to
 skip main/legacy fixtures. Use `EVM2_STATETEST_ROOT` or `EVM2_BLOCKCHAINTEST_ROOT`
 for a single explicit root.
+
+To run an arbitrary folder (or single file) of fixtures without a test-name
+filter, use `./scripts/eest.sh <path>`. Every JSON fixture under the path runs
+as one suite whose kind (state vs blockchain) is detected per file;
+`transaction_tests` and the engine/sync blockchain variants are skipped. The
+path may be outside the repo. The script just sets `EVM2_FIXTURE_PATH` (honored
+by the `eest` harness) and runs `cargo nextest run -p evm2-eest --test eest
+--ignore-default-filter`; extra args are forwarded to nextest.
