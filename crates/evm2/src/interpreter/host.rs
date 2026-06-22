@@ -10,10 +10,9 @@ use derive_where::derive_where;
 
 /// Result of executing a call/create message.
 ///
-/// Gas accounting is split into unused gas and the refund counter because EVM refunds are not
-/// immediately spendable by the parent frame and are capped only at the top-level transaction. Use
-/// [`Self::gas_returned_to_parent`] and [`Self::refund_propagated_to_parent`] when applying a child
-/// result to a caller frame. Use [`Self::gas_remaining_after_final_refund`] or
+/// [`Self::gas`] is normalized for the frame's [`stop`](Self::stop) reason by the executor
+/// before it is returned, so applying a child result to its caller is just
+/// [`GasTracker::merge_child_gas`]. Use [`Self::gas_remaining_after_final_refund`] or
 /// [`Self::gas_used_after_final_refund`] for top-level transaction accounting.
 #[derive_where(Clone, Debug, Default, PartialEq, Eq; T::MessageResultExt)]
 pub struct MessageResult<T: EvmTypes = BaseEvmTypes> {
@@ -48,65 +47,6 @@ impl<T: EvmTypes> MessageResult<T> {
             .filter(|_| self.stop.is_success())
             .map(|address| Word::from_be_slice(address.as_slice()))
             .unwrap_or_default()
-    }
-
-    /// Returns whether the message can return unused gas to its parent frame.
-    #[inline]
-    pub const fn returns_unused_gas(&self) -> bool {
-        self.stop.is_success() || self.stop.is_revert()
-    }
-
-    /// Returns unused gas that should be returned to the parent frame.
-    #[inline]
-    pub const fn gas_returned_to_parent(&self) -> u64 {
-        if self.returns_unused_gas() { self.gas.remaining() } else { 0 }
-    }
-
-    /// Returns the refund counter delta that should be propagated to the parent frame.
-    #[inline]
-    pub const fn refund_propagated_to_parent(&self) -> i64 {
-        if self.stop.is_success() { self.gas.refunded() } else { 0 }
-    }
-
-    /// Returns the EIP-8037 state gas this returning child frame accumulates into
-    /// its parent's `state_gas_spent`.
-    ///
-    /// On success the parent absorbs the child's net state gas, which can be
-    /// negative when 0→x→0 restorations outnumber 0→x creations (the negative
-    /// contribution flows the parent's matching charge back out). On revert/halt
-    /// the child's state changes roll back, so it contributes nothing. Always zero
-    /// without EIP-8037.
-    #[inline]
-    pub const fn state_gas_to_parent(&self) -> i64 {
-        if self.stop.is_success() { self.gas.state_gas_spent() } else { 0 }
-    }
-
-    /// Returns the EIP-8037 spilled state gas (`state_gas_from_gas_left`) this
-    /// returning child frame merges into its parent.
-    ///
-    /// On success the spilled state gas the child funded from regular gas persists
-    /// and is now backed by the parent's merged regular gas, so the parent absorbs
-    /// it (a later parent rollback then returns it). On revert/halt the spilled
-    /// gas has already been refilled by [`GasTracker::unwind_state_gas`], so the
-    /// child contributes nothing. Always zero without EIP-8037.
-    #[inline]
-    pub const fn spilled_to_parent(&self) -> u64 {
-        if self.stop.is_success() { self.gas.state_gas_spilled() } else { 0 }
-    }
-
-    /// Returns the EIP-8037 state-gas reservoir this returning child frame hands
-    /// back to its parent.
-    ///
-    /// The reservoir is a shared pool the child inherited from the parent at call
-    /// time (see [`Message::reservoir`](crate::interpreter::Message::reservoir)).
-    /// On success the parent takes the child's final reservoir. On revert/halt the
-    /// child's gas has already been rolled back by
-    /// [`GasTracker::unwind_state_gas`], which restored the reservoir to the value
-    /// the child inherited — so the parent's reservoir is left untouched in both
-    /// cases. Always zero without EIP-8037.
-    #[inline]
-    pub const fn reservoir_to_parent(&self) -> u64 {
-        self.gas.reservoir()
     }
 
     /// Calculates the final refund amount for a top-level transaction.

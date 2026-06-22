@@ -42,7 +42,7 @@ pub struct Message<T: EvmTypes = BaseEvmTypes> {
     ///
     /// The reservoir is a shared pool threaded down into child frames and
     /// reconciled back on return by
-    /// [`MessageResult::reservoir_to_parent`](crate::interpreter::MessageResult::reservoir_to_parent).
+    /// [`GasTracker::merge_child_gas`](crate::interpreter::GasTracker::merge_child_gas).
     /// Zero for non-Amsterdam execution.
     pub reservoir: u64,
     /// Account whose context is being executed.

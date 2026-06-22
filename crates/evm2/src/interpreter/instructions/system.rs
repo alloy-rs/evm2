@@ -246,11 +246,7 @@ fn call_inner<T: EvmTypes>(
 
     let tx_env = state.tx();
     let mut result = state.host().execute_message(tx_env, code, &mut message, caller_is_static);
-    gas.erase_cost(result.gas_returned_to_parent());
-    gas.set_reservoir(result.reservoir_to_parent());
-    gas.add_state_gas_spent(result.state_gas_to_parent());
-    gas.add_state_gas_spilled(result.spilled_to_parent());
-    gas.record_refund(result.refund_propagated_to_parent());
+    gas.merge_child_gas(result.gas, result.stop);
     let copy_len = min(return_memory_range.len(), result.output.len());
     unsafe {
         let output = result.output.get_unchecked(..copy_len);
@@ -344,11 +340,7 @@ fn create_inner<T: EvmTypes>(
     let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
     let tx_env = state.tx();
     let mut result = state.host().execute_message(tx_env, bytecode, &mut message, false);
-    gas.erase_cost(result.gas_returned_to_parent());
-    gas.set_reservoir(result.reservoir_to_parent());
-    gas.add_state_gas_spent(result.state_gas_to_parent());
-    gas.add_state_gas_spilled(result.spilled_to_parent());
-    gas.record_refund(result.refund_propagated_to_parent());
+    gas.merge_child_gas(result.gas, result.stop);
 
     // EIP-8037: the CREATE/CREATE2 opcode charged `create_state_gas` upfront on
     // this frame's tracker. When the child fails to deploy a contract (revert,

@@ -59,8 +59,7 @@ pub struct GasTracker {
     /// Can be negative within a call frame when 0→x→0 storage restoration
     /// refills more state gas than the frame itself charged (the parent
     /// previously charged the 0→x portion). The net is reconciled on frame
-    /// return by
-    /// [`MessageResult::state_gas_to_parent`](crate::interpreter::MessageResult::state_gas_to_parent).
+    /// return by [`Self::merge_child_gas`].
     state_gas_spent: i64,
     /// State gas drawn from regular gas (`remaining`) because the reservoir was
     /// empty (EIP-8037's `state_gas_from_gas_left`).
@@ -304,6 +303,40 @@ impl GasTracker {
         self.remaining += returned;
     }
 
+    /// Merges a returning child frame's gas into this (parent) frame, per the
+    /// child's `stop` reason.
+    ///
+    /// A failing frame rolls back its state changes, so its state gas is first
+    /// refilled in LIFO order ([`Self::unwind_state_gas`]); this is idempotent, so
+    /// already-settled gas merges cleanly too. Then, per `stop`:
+    ///
+    /// - **Unused regular gas** returns to the parent only on success or revert;
+    ///   a halt consumes the child's regular gas.
+    /// - **The reservoir** is a shared state-gas pool the child inherited at call
+    ///   time, so the parent always adopts the child's (post-rollback) value —
+    ///   leaving its own reservoir untouched on revert/halt.
+    /// - **Net state gas, its spilled portion, and the refund counter** persist
+    ///   only on success; on revert/halt the child's state changes roll back, so
+    ///   it contributes none.
+    ///
+    /// Merging a returning frame into a fresh accumulator therefore also settles
+    /// that frame's own gas for its stop reason.
+    #[inline]
+    pub const fn merge_child_gas(&mut self, mut child: Self, stop: InstrStop) {
+        if !stop.is_success() {
+            child.unwind_state_gas();
+        }
+        if stop.is_success() || stop.is_revert() {
+            self.erase_cost(child.remaining);
+        }
+        self.set_reservoir(child.reservoir);
+        if stop.is_success() {
+            self.add_state_gas_spent(child.state_gas_spent);
+            self.add_state_gas_spilled(child.state_gas_spilled);
+            self.record_refund(child.refunded);
+        }
+    }
+
     /// Spends all remaining regular gas.
     #[inline]
     pub const fn spend_all(&mut self) {
@@ -540,6 +573,13 @@ impl Gas {
     #[inline]
     pub const fn erase_cost(&mut self, returned: u64) {
         self.tracker.erase_cost(returned);
+    }
+
+    /// Merges a returning child frame's gas into this frame.
+    /// See [`GasTracker::merge_child_gas`].
+    #[inline]
+    pub const fn merge_child_gas(&mut self, child: GasTracker, stop: InstrStop) {
+        self.tracker.merge_child_gas(child, stop);
     }
 
     /// Spends all remaining regular gas.

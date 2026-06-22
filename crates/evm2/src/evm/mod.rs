@@ -831,7 +831,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &mut Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
-        match message.kind {
+        let mut result = match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
                 self.execute_create_message(tx_env, bytecode, message, caller_is_static)
             }
@@ -841,7 +841,16 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             | MessageKind::StaticCall => {
                 self.execute_call_message(tx_env, bytecode, message, caller_is_static)
             }
-        }
+        };
+        // Settle the returning frame's gas for its stop reason at this single exit,
+        // rather than in each result builder, by merging it into a fresh
+        // accumulator (the same reconciliation a parent applies). Every consumer
+        // (parent `merge_child_gas`, top-level accounting, inspectors) then reads
+        // the settled gas.
+        let mut settled = GasTracker::from_parts(result.gas.limit(), 0, 0);
+        settled.merge_child_gas(result.gas, result.stop);
+        result.gas = settled;
+        result
     }
 
     /// Fires the inspector call/create hooks around message execution.
@@ -1031,7 +1040,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 self.state.rollback(checkpoint, self.features);
                 return MessageResult {
                     stop,
-                    gas: Self::message_gas(*gas.tracker(), stop),
+                    gas: *gas.tracker(),
                     output,
                     created_address: None,
                     ext: T::MessageResultExt::default(),
@@ -1057,7 +1066,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
         MessageResult {
             stop,
-            gas: Self::message_gas(*gas.tracker(), stop),
+            gas: *gas.tracker(),
             output,
             created_address: stop.is_success().then_some(*address),
             ext: T::MessageResultExt::default(),
@@ -1192,7 +1201,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
         MessageResult {
             stop,
-            gas: Self::message_gas(gas, stop),
+            gas,
             output,
             created_address: None,
             ext: T::MessageResultExt::default(),
@@ -1215,7 +1224,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
         MessageResult {
             stop,
-            gas: Self::message_gas(*child_gas.tracker(), stop),
+            gas: *child_gas.tracker(),
             output,
             created_address: None,
             ext: T::MessageResultExt::default(),
@@ -1234,23 +1243,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             gas: GasTracker::new_with_regular_gas_and_reservoir(gas_remaining, reservoir),
             ..MessageResult::default()
         }
-    }
-
-    #[inline]
-    const fn message_gas(mut gas: GasTracker, stop: InstrStop) -> GasTracker {
-        if !stop.is_success() {
-            // EIP-8037: a reverting or halting frame rolls back its state changes,
-            // so refill the state gas it charged in LIFO order — the spilled
-            // portion back to `remaining`, the rest restoring the reservoir to the
-            // value the frame inherited. On halt `remaining` is then zeroed below,
-            // consuming the spilled gas while still leaving the reservoir untouched.
-            gas.unwind_state_gas();
-            gas.set_refunded(0);
-        }
-        if stop.is_halt() {
-            gas.set_remaining(0);
-        }
-        gas
     }
 
     #[inline(never)]
