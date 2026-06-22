@@ -62,6 +62,15 @@ pub struct GasTracker {
     /// return by
     /// [`MessageResult::state_gas_to_parent`](crate::interpreter::MessageResult::state_gas_to_parent).
     state_gas_spent: i64,
+    /// State gas drawn from regular gas (`remaining`) because the reservoir was
+    /// empty (EIP-8037's `state_gas_from_gas_left`).
+    ///
+    /// Incremented by [`Self::spend_state`] whenever a state-gas charge spills
+    /// out of the reservoir into regular gas. On frame rollback (revert or halt)
+    /// the spilled portion is credited back to `remaining` in last-in-first-out
+    /// order by [`Self::unwind_state_gas`]; on success it is propagated to the
+    /// parent frame so a later parent rollback can return it.
+    state_gas_spilled: u64,
     refunded: i64,
 }
 
@@ -87,7 +96,14 @@ impl GasTracker {
     /// Creates a gas tracker from its raw counters.
     #[inline]
     pub const fn from_parts(gas_limit: u64, remaining: u64, reservoir: u64) -> Self {
-        Self { remaining, gas_limit, reservoir, state_gas_spent: 0, refunded: 0 }
+        Self {
+            remaining,
+            gas_limit,
+            reservoir,
+            state_gas_spent: 0,
+            state_gas_spilled: 0,
+            refunded: 0,
+        }
     }
 
     /// Creates a gas tracker from already used gas.
@@ -142,6 +158,22 @@ impl GasTracker {
     #[inline]
     pub const fn add_state_gas_spent(&mut self, delta: i64) {
         self.state_gas_spent = self.state_gas_spent.saturating_add(delta);
+    }
+
+    /// Returns state gas drawn from regular gas because the reservoir was empty
+    /// (EIP-8037's `state_gas_from_gas_left`). See the field docs.
+    #[inline]
+    pub const fn state_gas_spilled(&self) -> u64 {
+        self.state_gas_spilled
+    }
+
+    /// Adds `delta` to the spilled state gas, saturating.
+    ///
+    /// Used to merge a successful child frame's spilled state gas into this
+    /// frame, since it is now backed by the merged regular gas.
+    #[inline]
+    pub const fn add_state_gas_spilled(&mut self, delta: u64) {
+        self.state_gas_spilled = self.state_gas_spilled.saturating_add(delta);
     }
 
     /// Returns gas refund.
@@ -205,22 +237,58 @@ impl GasTracker {
 
         self.spend(spill)?;
         self.state_gas_spent = self.state_gas_spent.saturating_add(cost as i64);
+        self.state_gas_spilled = self.state_gas_spilled.saturating_add(spill);
         self.reservoir = 0;
         Ok(())
     }
 
-    /// Refills the reservoir with state gas returned by 0→x→0 storage
-    /// restoration (EIP-8037).
+    /// Rolls back this frame's state-gas charges on revert or exceptional halt
+    /// (EIP-8037).
     ///
-    /// When a storage slot is restored to its original zero value within the
-    /// same transaction, the state gas charged for the initial 0→x transition
-    /// is restored to the reservoir directly rather than routed through the
-    /// capped refund counter. `state_gas_spent` is decremented by the same
-    /// amount and may become negative when the matching 0→x charge was made by
-    /// a parent frame; the parent's total is reconciled on frame return.
+    /// The state gas charged within the frame is refilled in last-in-first-out
+    /// order: the spilled portion is credited back to `remaining` (the pool
+    /// charged last) and the rest restores the reservoir to its frame-start
+    /// value. Concretely, `remaining` gains `state_gas_spilled` and the reservoir
+    /// becomes `reservoir + state_gas_spent - state_gas_spilled`, which is exactly
+    /// the reservoir the frame inherited. Both state-gas counters are then reset.
+    ///
+    /// On revert the resulting `remaining` (including the refilled spill) is
+    /// returned to the parent; on halt the caller additionally zeroes `remaining`
+    /// so the spilled gas is consumed while the reservoir is still left untouched.
+    #[inline]
+    pub const fn unwind_state_gas(&mut self) {
+        self.reservoir = self
+            .reservoir
+            .saturating_add_signed(self.state_gas_spent)
+            .saturating_sub(self.state_gas_spilled);
+        self.remaining = self.remaining.saturating_add(self.state_gas_spilled);
+        self.state_gas_spent = 0;
+        self.state_gas_spilled = 0;
+    }
+
+    /// Refills `amount` of state gas undone during execution, in last-in-first-out
+    /// order (EIP-8037).
+    ///
+    /// When a state creation is undone within the same transaction — a storage
+    /// slot restored to its original zero value (0→x→0), or a failed CREATE's
+    /// upfront charge — the corresponding state gas is restored directly rather
+    /// than routed through the capped refund counter. Because charges deduct from
+    /// the reservoir first and from regular gas (`remaining`) last, the refill
+    /// credits the pool charged last first: `remaining` is credited up to
+    /// `state_gas_spilled` (decrementing it by the same amount) and any remainder
+    /// tops up the reservoir.
+    ///
+    /// `state_gas_spent` is decremented by the full `amount` and may become
+    /// negative when the matching charge was made by a parent frame (so this
+    /// frame's `state_gas_spilled` is zero and the whole refill lands in the
+    /// reservoir); the parent's total is reconciled on frame return.
     #[inline]
     pub const fn refill_reservoir(&mut self, amount: u64) {
-        self.reservoir = self.reservoir.saturating_add(amount);
+        let to_remaining =
+            if amount < self.state_gas_spilled { amount } else { self.state_gas_spilled };
+        self.remaining = self.remaining.saturating_add(to_remaining);
+        self.state_gas_spilled -= to_remaining;
+        self.reservoir = self.reservoir.saturating_add(amount - to_remaining);
         self.state_gas_spent = self.state_gas_spent.saturating_sub(amount as i64);
     }
 
@@ -388,6 +456,20 @@ impl Gas {
         self.tracker.add_state_gas_spent(delta);
     }
 
+    /// Returns state gas drawn from regular gas because the reservoir was empty
+    /// (EIP-8037). See [`GasTracker::state_gas_spilled`].
+    #[inline]
+    pub const fn state_gas_spilled(&self) -> u64 {
+        self.tracker.state_gas_spilled()
+    }
+
+    /// Adds `delta` to the spilled state gas, saturating.
+    /// See [`GasTracker::add_state_gas_spilled`].
+    #[inline]
+    pub const fn add_state_gas_spilled(&mut self, delta: u64) {
+        self.tracker.add_state_gas_spilled(delta);
+    }
+
     /// Returns gas refund.
     #[inline]
     pub const fn refunded(&self) -> i64 {
@@ -553,6 +635,92 @@ mod tests {
         assert_matches!(gas.spend_state(100), Err(InstrStop::OutOfGas));
         assert_eq!(gas.state_gas_spent(), 0);
         assert_eq!(gas.reservoir(), 20);
+    }
+
+    #[test]
+    fn test_spend_state_tracks_spilled() {
+        // No spill while the reservoir covers the charge.
+        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 500);
+        assert!(gas.spend_state(300).is_ok());
+        assert_eq!((gas.state_gas_spilled(), gas.reservoir()), (0, 200));
+
+        // Spilling the remainder into regular gas records it.
+        assert!(gas.spend_state(500).is_ok());
+        assert_eq!((gas.state_gas_spilled(), gas.reservoir(), gas.remaining()), (300, 0, 700));
+
+        // Further charges spill in full once the reservoir is empty.
+        assert!(gas.spend_state(100).is_ok());
+        assert_eq!((gas.state_gas_spilled(), gas.remaining()), (400, 600));
+    }
+
+    #[test]
+    fn test_unwind_state_gas_no_spill() {
+        // Pure-reservoir spend: unwind restores the reservoir, leaving regular gas alone.
+        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 500);
+        assert!(gas.spend_state(300).is_ok());
+        gas.tracker_mut().unwind_state_gas();
+        assert_eq!(
+            (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
+            (500, 1000, 0, 0)
+        );
+    }
+
+    #[test]
+    fn test_unwind_state_gas_with_spill() {
+        // Reservoir exhausted then spilled: unwind returns the spill to regular gas
+        // and restores the reservoir to its frame-start value.
+        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 200);
+        assert!(gas.spend_state(500).is_ok());
+        assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spilled()), (0, 700, 300));
+        gas.tracker_mut().unwind_state_gas();
+        assert_eq!(
+            (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
+            (200, 1000, 0, 0)
+        );
+    }
+
+    #[test]
+    fn test_refill_reservoir_lifo() {
+        // Refill credits the spilled (regular-gas) portion first, remainder to reservoir.
+        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 200);
+        assert!(gas.spend_state(500).is_ok()); // spill 300, reservoir 0, remaining 700
+        assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spilled()), (0, 700, 300));
+        // Refund 200: less than the 300 spilled, so it all returns to regular gas.
+        gas.refill_reservoir(200);
+        assert_eq!(
+            (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
+            (0, 900, 300, 100)
+        );
+        // Refund 250: 100 returns to regular gas (draining the spill), 150 to the reservoir.
+        gas.refill_reservoir(250);
+        assert_eq!(
+            (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
+            (150, 1000, 50, 0)
+        );
+
+        // With no spill recorded, the refill lands entirely in the reservoir and may
+        // drive `state_gas_spent` negative (charge made by a parent frame).
+        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 100);
+        gas.refill_reservoir(300);
+        assert_eq!(
+            (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
+            (400, 1000, -300, 0)
+        );
+    }
+
+    #[test]
+    fn test_unwind_state_gas_after_refill() {
+        // A partial refill returns part of the spill to regular gas; unwind still
+        // restores the original split.
+        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 200);
+        assert!(gas.spend_state(500).is_ok()); // spill 300, reservoir 0, remaining 700
+        gas.refill_reservoir(100); // LIFO: remaining 800, spilled 200, reservoir 0
+        assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spilled()), (0, 800, 200));
+        gas.tracker_mut().unwind_state_gas();
+        assert_eq!(
+            (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
+            (200, 1000, 0, 0)
+        );
     }
 
     #[test]

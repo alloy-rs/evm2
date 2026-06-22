@@ -1238,11 +1238,17 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     #[inline]
     const fn message_gas(mut gas: GasTracker, stop: InstrStop) -> GasTracker {
+        if !stop.is_success() {
+            // EIP-8037: a reverting or halting frame rolls back its state changes,
+            // so refill the state gas it charged in LIFO order — the spilled
+            // portion back to `remaining`, the rest restoring the reservoir to the
+            // value the frame inherited. On halt `remaining` is then zeroed below,
+            // consuming the spilled gas while still leaving the reservoir untouched.
+            gas.unwind_state_gas();
+            gas.set_refunded(0);
+        }
         if stop.is_halt() {
             gas.set_remaining(0);
-        }
-        if !stop.is_success() {
-            gas.set_refunded(0);
         }
         gas
     }

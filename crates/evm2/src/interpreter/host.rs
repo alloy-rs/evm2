@@ -81,25 +81,32 @@ impl<T: EvmTypes> MessageResult<T> {
         if self.stop.is_success() { self.gas.state_gas_spent() } else { 0 }
     }
 
+    /// Returns the EIP-8037 spilled state gas (`state_gas_from_gas_left`) this
+    /// returning child frame merges into its parent.
+    ///
+    /// On success the spilled state gas the child funded from regular gas persists
+    /// and is now backed by the parent's merged regular gas, so the parent absorbs
+    /// it (a later parent rollback then returns it). On revert/halt the spilled
+    /// gas has already been refilled by [`GasTracker::unwind_state_gas`], so the
+    /// child contributes nothing. Always zero without EIP-8037.
+    #[inline]
+    pub const fn spilled_to_parent(&self) -> u64 {
+        if self.stop.is_success() { self.gas.state_gas_spilled() } else { 0 }
+    }
+
     /// Returns the EIP-8037 state-gas reservoir this returning child frame hands
     /// back to its parent.
     ///
     /// The reservoir is a shared pool the child inherited from the parent at call
     /// time (see [`Message::reservoir`](crate::interpreter::Message::reservoir)).
     /// On success the parent takes the child's final reservoir. On revert/halt the
-    /// child's reservoir spending (and any 0→x→0 refills) unwinds, recovering the
-    /// rolled-back state gas via the `reservoir + state_gas_spent` invariant. This
-    /// is derived from the child's own gas rather than the parent's pre-call
-    /// reservoir, so a child that exhausted its reservoir and spilled state gas
-    /// into regular gas is still reconciled correctly. Always zero without
-    /// EIP-8037.
+    /// child's gas has already been rolled back by
+    /// [`GasTracker::unwind_state_gas`], which restored the reservoir to the value
+    /// the child inherited — so the parent's reservoir is left untouched in both
+    /// cases. Always zero without EIP-8037.
     #[inline]
     pub const fn reservoir_to_parent(&self) -> u64 {
-        if self.stop.is_success() {
-            self.gas.reservoir()
-        } else {
-            self.gas.reservoir().saturating_add_signed(self.gas.state_gas_spent())
-        }
+        self.gas.reservoir()
     }
 
     /// Calculates the final refund amount for a top-level transaction.
@@ -118,17 +125,15 @@ impl<T: EvmTypes> MessageResult<T> {
     /// Returns the leftover EIP-8037 state-gas reservoir reimbursed to the caller
     /// at the top level.
     ///
-    /// On success this is the frame's final reservoir. On revert or halt the
-    /// rolled-back state gas is recovered via the `reservoir + state_gas_spent`
-    /// invariant: a regular-gas halt does not consume the separate state-gas
-    /// reservoir. Always zero without EIP-8037.
+    /// On success this is the frame's final reservoir. On revert or halt
+    /// [`GasTracker::unwind_state_gas`] has already restored the reservoir to its
+    /// frame-start value: a regular-gas halt does not consume the separate
+    /// state-gas reservoir, and any state gas that spilled into regular gas was
+    /// returned to `remaining` (and so is consumed on halt, not reimbursed via the
+    /// reservoir). Always zero without EIP-8037.
     #[inline]
     pub const fn reservoir_reimbursed(&self) -> u64 {
-        if self.stop.is_success() {
-            self.gas.reservoir()
-        } else {
-            self.gas.reservoir().saturating_add_signed(self.gas.state_gas_spent())
-        }
+        self.gas.reservoir()
     }
 
     /// Returns top-level gas remaining after applying the final refund cap.

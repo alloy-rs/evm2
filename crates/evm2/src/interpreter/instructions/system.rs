@@ -249,6 +249,7 @@ fn call_inner<T: EvmTypes>(
     gas.erase_cost(result.gas_returned_to_parent());
     gas.set_reservoir(result.reservoir_to_parent());
     gas.add_state_gas_spent(result.state_gas_to_parent());
+    gas.add_state_gas_spilled(result.spilled_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());
     let copy_len = min(return_memory_range.len(), result.output.len());
     unsafe {
@@ -346,6 +347,7 @@ fn create_inner<T: EvmTypes>(
     gas.erase_cost(result.gas_returned_to_parent());
     gas.set_reservoir(result.reservoir_to_parent());
     gas.add_state_gas_spent(result.state_gas_to_parent());
+    gas.add_state_gas_spilled(result.spilled_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());
 
     // EIP-8037: the CREATE/CREATE2 opcode charged `create_state_gas` upfront on
