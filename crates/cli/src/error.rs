@@ -39,4 +39,6 @@ pub(crate) enum Error {
     Fuzzer(String),
     #[error("could not detect EEST fixture kind in {path}")]
     UnknownFixtureKind { path: std::path::PathBuf },
+    #[error("no replayable fixtures found in {path}")]
+    NoFixtures { path: std::path::PathBuf },
 }

@@ -49,7 +49,7 @@ pub(crate) struct Replay {
     /// Print database method call counts after execution.
     #[arg(long)]
     pub(crate) db_stats: bool,
-    /// EEST JSON fixture to replay.
+    /// EEST fixture file, or a directory to replay every fixture within recursively.
     #[arg(value_name = "PATH")]
     pub(crate) path: PathBuf,
 }

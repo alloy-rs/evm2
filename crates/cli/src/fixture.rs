@@ -34,6 +34,21 @@ pub(crate) fn is_binary_path(path: &Path) -> bool {
     evm2_eest::is_binary_fixture_path(path)
 }
 
+/// Returns true when the path looks like a replayable fixture: a binary fixture
+/// (`*.bin` / `*.bin.zst`) or a JSON fixture (`*.json` / `*.json.zst`).
+pub(crate) fn is_fixture_path(path: &Path) -> bool {
+    is_binary_path(path) || has_extension(path, "json") || is_zstd_json_path(path)
+}
+
+fn is_zstd_json_path(path: &Path) -> bool {
+    has_extension(path, "zst")
+        && path.file_stem().is_some_and(|stem| has_extension(Path::new(stem), "json"))
+}
+
+fn has_extension(path: &Path, extension: &str) -> bool {
+    path.extension().is_some_and(|candidate| candidate == extension)
+}
+
 pub(crate) fn detect_str(path: &Path, input: &str) -> Result<Option<FixtureKind>> {
     struct FixtureKindVisitor;
 

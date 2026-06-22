@@ -13,71 +13,133 @@ use evm2_eest::{
     execute_blockchain_tests_str, execute_blockchain_tests_suite,
     execute_state_tests_str_with_filter,
 };
-use std::time::Instant;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 pub(crate) fn run(command: Replay) -> Result<()> {
     let entrypoint = EntryPoint::new(command.entrypoint);
-    if fixture::is_binary_path(&command.path) {
-        let suite = fixture::read_blockchain(&command.path)?;
+    if command.path.is_dir() {
+        return run_directory(&command.path, &entrypoint, command.db_stats);
+    }
+    replay_file(&command.path, &entrypoint, command.db_stats).map(|_| ())
+}
+
+fn run_directory(path: &Path, entrypoint: &EntryPoint, db_stats: bool) -> Result<()> {
+    let fixtures = collect_fixtures(path)?;
+    if fixtures.is_empty() {
+        return Err(Error::NoFixtures { path: path.to_path_buf() });
+    }
+    let mut executed = 0;
+    let mut skipped = 0;
+    for fixture in &fixtures {
+        let summary = replay_file(fixture, entrypoint, db_stats)?;
+        executed += summary.executed;
+        skipped += summary.skipped;
+    }
+    let ok = style::OK;
+    println!(
+        "{ok}ok{ok:#}: replayed {} fixtures in {}: {executed} executed, {skipped} skipped",
+        fixtures.len(),
+        path.display(),
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy, Default)]
+struct ReplaySummary {
+    executed: usize,
+    skipped: usize,
+}
+
+fn replay_file(path: &Path, entrypoint: &EntryPoint, db_stats: bool) -> Result<ReplaySummary> {
+    if fixture::is_binary_path(path) {
+        let suite = fixture::read_blockchain(path)?;
         let mut hook = ReplayProgressHook::default();
         let summary = execute_blockchain_tests_suite(
-            &command.path,
+            path,
             &suite,
-            BlockchainTestExecuteConfig { db_stats: command.db_stats, ..Default::default() },
-            &entrypoint,
+            BlockchainTestExecuteConfig { db_stats, ..Default::default() },
+            entrypoint,
             &mut hook,
         )
         .map_err(|source| Error::BlockchainTest { source })?;
         let ok = style::OK;
         println!(
             "{ok}ok{ok:#}: replayed blockchain fixture {}: {} executed, {} skipped",
-            command.path.display(),
+            path.display(),
             summary.executed,
             summary.skipped
         );
-        return Ok(());
+        return Ok(ReplaySummary { executed: summary.executed, skipped: summary.skipped });
     }
 
-    let input = fixture::read_text(&command.path)?;
-    match fixture::detect_str(&command.path, &input)? {
+    let input = fixture::read_text(path)?;
+    match fixture::detect_str(path, &input)? {
         Some(FixtureKind::StateTest) => {
             let summary = execute_state_tests_str_with_filter(
-                &command.path,
+                path,
                 &input,
-                StateTestExecuteConfig { db_stats: command.db_stats, ..Default::default() },
-                &entrypoint,
+                StateTestExecuteConfig { db_stats, ..Default::default() },
+                entrypoint,
             )
             .map_err(|source| Error::StateTest { source })?;
             let ok = style::OK;
             println!(
                 "{ok}ok{ok:#}: replayed state fixture {}: {} executed, {} skipped",
-                command.path.display(),
+                path.display(),
                 summary.executed,
                 summary.skipped
             );
-            Ok(())
+            Ok(ReplaySummary { executed: summary.executed, skipped: summary.skipped })
         }
         Some(FixtureKind::BlockchainTest) => {
             let mut hook = ReplayProgressHook::default();
             let summary = execute_blockchain_tests_str(
-                &command.path,
+                path,
                 &input,
-                BlockchainTestExecuteConfig { db_stats: command.db_stats, ..Default::default() },
-                &entrypoint,
+                BlockchainTestExecuteConfig { db_stats, ..Default::default() },
+                entrypoint,
                 &mut hook,
             )
             .map_err(|source| Error::BlockchainTest { source })?;
             let ok = style::OK;
             println!(
                 "{ok}ok{ok:#}: replayed blockchain fixture {}: {} executed, {} skipped",
-                command.path.display(),
+                path.display(),
                 summary.executed,
                 summary.skipped
             );
-            Ok(())
+            Ok(ReplaySummary { executed: summary.executed, skipped: summary.skipped })
         }
-        None => Err(Error::UnknownFixtureKind { path: command.path }),
+        None => Err(Error::UnknownFixtureKind { path: path.to_path_buf() }),
     }
+}
+
+/// Recursively collects replayable fixture files under `path`, sorted by path.
+fn collect_fixtures(path: &Path) -> Result<Vec<PathBuf>> {
+    let mut fixtures = Vec::new();
+    collect_fixtures_into(path, &mut fixtures)?;
+    fixtures.sort_unstable();
+    Ok(fixtures)
+}
+
+fn collect_fixtures_into(path: &Path, fixtures: &mut Vec<PathBuf>) -> Result<()> {
+    let entries = fs::read_dir(path)
+        .map_err(|source| Error::ReadInput { path: path.to_path_buf(), source })?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|source| Error::ReadInput { path: path.to_path_buf(), source })?;
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            collect_fixtures_into(&entry_path, fixtures)?;
+        } else if fixture::is_fixture_path(&entry_path) {
+            fixtures.push(entry_path);
+        }
+    }
+    Ok(())
 }
 
 #[derive(Default)]
