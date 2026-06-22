@@ -1615,13 +1615,13 @@ mod tests {
         interpreter::{GasTracker, Interpreter, MessageKind, op},
         registry::TxRequest,
     };
-    use alloc::{string::ToString, vec, vec::Vec};
+    use alloc::{string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
-    use core::{error::Error, fmt};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    use core::{
+        error::Error,
+        fmt,
+        sync::atomic::{AtomicUsize, Ordering},
     };
 
     const TEST_TX_TYPE: u8 = 0x00;

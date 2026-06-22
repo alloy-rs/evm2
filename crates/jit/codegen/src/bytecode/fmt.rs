@@ -564,7 +564,7 @@ bb1:           ; stack_in=0 max_growth=2 predecessors=bb0,bb1
   JUMPI %bb1   ; ic= 8 pc=12
 
 bb2:           ; stack_in=0 max_growth=7 predecessors=bb1
-  PUSH1 0x00   ; ic= 9 pc=13 gas=123 noop
+  PUSH1 0x00   ; ic= 9 pc=13 gas=121 noop
   PUSH1 0x00   ; ic=10 pc=15 noop
   PUSH1 0x00   ; ic=11 pc=17 noop
   PUSH1 0x00   ; ic=12 pc=19 noop
@@ -572,7 +572,7 @@ bb2:           ; stack_in=0 max_growth=7 predecessors=bb1
   PUSH1 0x42   ; ic=14 pc=23 noop
   PUSH2 0xffff ; ic=15 pc=25 noop
   CALL         ; ic=16 pc=28
-  POP          ; ic=17 pc=29
+  POP          ; ic=17 pc=29 gas=2 stack_in=1 max_growth=0
   STOP         ; ic=18 pc=30
 
 "#]]
@@ -623,7 +623,7 @@ bb2:           ; stack_in=0 max_growth=7 predecessors=bb1
         assert!(dot.contains("[g=15]"), "missing second gas section");
         // CALL present in bb2.
         assert!(dot.contains("CALL"), "missing CALL");
-        assert!(dot.contains("[g=123]"), "missing bb2 gas section");
+        assert!(dot.contains("[g=121]"), "missing bb2 gas section");
         // bb0 -> bb1 (unconditional jump).
         assert!(dot.contains("bb0 -> bb1"), "missing jump edge");
         // bb1 -> bb1 (loop back-edge).

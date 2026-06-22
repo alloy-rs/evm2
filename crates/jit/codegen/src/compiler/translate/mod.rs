@@ -484,7 +484,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             self.check_stack_bounds(data.stack_section);
         }
 
-        // NOOPs need no codegen beyond gas and bounds checks.
+        // No-op instructions need no codegen beyond gas and bounds checks.
         if data.flags.contains(InstFlags::NOOP) {
             self.sync_noop_diff(inst, diff);
             self.section_len_offset += diff;

@@ -68,30 +68,42 @@ pub fn run_interpreter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "llvm")]
     use crate::runtime::RuntimeConfig;
-    use alloy_primitives::{Address, Bytes};
+    #[cfg(feature = "llvm")]
+    use alloy_primitives::Address;
+    use alloy_primitives::Bytes;
     use evm2::{
         BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
         bytecode::Bytecode,
         env::{BlockEnv, TxEnv},
         ethereum::ethereum_tx_registry,
-        evm::{AccountInfo, EmptyDB, InMemoryDB},
-        interpreter::{Message, Word, op},
+        evm::EmptyDB,
+        interpreter::{Message, op},
+    };
+    #[cfg(feature = "llvm")]
+    use evm2::{
+        evm::{AccountInfo, InMemoryDB},
+        interpreter::Word,
     };
 
+    #[cfg(feature = "llvm")]
     const BYTECODE_RET42: &[u8] =
         &[op::PUSH1, 0x42, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH0, op::RETURN];
 
+    #[cfg(feature = "llvm")]
     fn blocking_backend() -> JitBackend {
         JitBackend::new(RuntimeConfig { enabled: true, blocking: true, ..RuntimeConfig::default() })
             .unwrap()
     }
 
+    #[cfg(feature = "llvm")]
     fn push20(code: &mut Vec<u8>, address: Address) {
         code.push(op::PUSH20);
         code.extend_from_slice(address.as_slice());
     }
 
+    #[cfg(feature = "llvm")]
     fn staticcall_gas_leaf_code() -> Vec<u8> {
         let mut code = Vec::with_capacity(60_005);
         for _ in 0..12_000 {
@@ -101,6 +113,7 @@ mod tests {
         code
     }
 
+    #[cfg(feature = "llvm")]
     fn staticcall_loop_code(leaf: Address) -> Vec<u8> {
         let mut code = vec![
             op::JUMPDEST,
@@ -159,6 +172,7 @@ mod tests {
         code
     }
 
+    #[cfg(feature = "llvm")]
     fn dynamic_call_outer_code() -> Vec<u8> {
         vec![
             op::PUSH1,
@@ -214,6 +228,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "llvm")]
     fn compiled_call_executes_message() {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,
@@ -266,6 +281,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "llvm")]
     fn compiled_create_executes_message() {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,
@@ -328,6 +344,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "llvm")]
     fn compiled_staticcall_zeros_child_callvalue() {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,
@@ -397,6 +414,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "llvm")]
     fn compiled_staticcall_child_callvalue_does_not_transfer() {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,
@@ -475,6 +493,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "llvm")]
     fn compiled_dynamic_call_to_staticcall_loop_matches_interpreter_gas() {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,

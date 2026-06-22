@@ -35,6 +35,15 @@
              eyre::bail!("out-of-process JIT helper is only available on Unix with LLVM")
          }
          Ok(ControlFlow::Continue(()))
+@@ -137,7 +139,7 @@
+ /// JIT compilation backend with O(1) compiled-function lookup.
+ ///
+ /// Created via [`JitBackend::new`] or [`JitBackend::disabled`].
+-/// This type is cheaply clonable (backed by `Arc`).
++/// This type is cheaply cloneable (backed by `Arc`).
+ /// All clones share the same backend thread, resident map, and statistics.
+ #[derive(Clone, Debug)]
+ pub struct JitBackend {
 @@ -147,7 +149,8 @@
  impl JitBackend {
      /// Creates a disabled backend that performs no compilation and spawns no threads.

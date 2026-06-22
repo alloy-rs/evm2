@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-runtime/src/revm_evm.rs
 +++ evm2/crates/jit/runtime/src/evm2_evm.rs
-@@ -1,965 +1,547 @@
+@@ -1,965 +1,566 @@
 -//! Generic `revm` JIT EVM.
 -//!
 -//! Provides [`JitEvm`] which wraps any mainnet-shaped [`EvmTr`]-based EVM and overrides
@@ -549,20 +549,30 @@
 -    use revm_context_interface::result::{ExecutionResult, Output};
 -    use revm_database::{CacheDB, EmptyDB};
 -    use revm_handler::MainBuilder;
++    #[cfg(feature = "llvm")]
 +    use crate::runtime::RuntimeConfig;
-+    use alloy_primitives::{Address, Bytes};
++    #[cfg(feature = "llvm")]
++    use alloy_primitives::Address;
++    use alloy_primitives::Bytes;
 +    use evm2::{
 +        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
 +        bytecode::Bytecode,
 +        env::{BlockEnv, TxEnv},
 +        ethereum::ethereum_tx_registry,
-+        evm::{AccountInfo, EmptyDB, InMemoryDB},
-+        interpreter::{Message, Word, op},
++        evm::EmptyDB,
++        interpreter::{Message, op},
++    };
++    #[cfg(feature = "llvm")]
++    use evm2::{
++        evm::{AccountInfo, InMemoryDB},
++        interpreter::Word,
 +    };
 +
++    #[cfg(feature = "llvm")]
 +    const BYTECODE_RET42: &[u8] =
 +        &[op::PUSH1, 0x42, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH0, op::RETURN];
 
++    #[cfg(feature = "llvm")]
      fn blocking_backend() -> JitBackend {
 -        JitBackend::new(RuntimeConfig { blocking: true, ..Default::default() }).unwrap()
 +        JitBackend::new(RuntimeConfig { enabled: true, blocking: true, ..RuntimeConfig::default() })
@@ -581,6 +591,7 @@
 -    fn test_jit_evm_with_spec(backend: JitBackend, spec_id: SpecId) -> JitEvm<TestInnerEvm> {
 -        let inner = revm_context::Context::new(CacheDB::default(), spec_id).build_mainnet();
 -        JitEvm::new(inner, backend)
++    #[cfg(feature = "llvm")]
 +    fn push20(code: &mut Vec<u8>, address: Address) {
 +        code.push(op::PUSH20);
 +        code.extend_from_slice(address.as_slice());
@@ -588,6 +599,7 @@
 
 -    fn test_jit_evm(backend: JitBackend) -> JitEvm<TestInnerEvm> {
 -        test_jit_evm_with_spec(backend, SpecId::CANCUN)
++    #[cfg(feature = "llvm")]
 +    fn staticcall_gas_leaf_code() -> Vec<u8> {
 +        let mut code = Vec::with_capacity(60_005);
 +        for _ in 0..12_000 {
@@ -606,6 +618,7 @@
 -        assert!(len <= 255);
 -        let offset = 10u8;
 -        let mut deploy_code = vec![
++    #[cfg(feature = "llvm")]
 +    fn staticcall_loop_code(leaf: Address) -> Vec<u8> {
 +        let mut code = vec![
 +            op::JUMPDEST,
@@ -772,6 +785,7 @@
 -        let stats = backend.stats();
 -        assert!(stats.compilations_succeeded > 0, "expected compilations, got: {stats:?}");
 -        assert!(stats.resident_entries > 0, "expected resident entries, got: {stats:?}");
++    #[cfg(feature = "llvm")]
 +    fn dynamic_call_outer_code() -> Vec<u8> {
 +        vec![
 +            op::PUSH1,
@@ -930,6 +944,7 @@
 -    /// CALL into another contract: JIT handles the nested call frame.
      #[test]
 -    fn jit_evm_nested_call() {
++    #[cfg(feature = "llvm")]
 +    fn compiled_call_executes_message() {
 +        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
 +            SpecId::CANCUN,
@@ -1026,6 +1041,7 @@
 -    /// All deployments share the same code hash and should hit the JIT cache.
      #[test]
 -    fn jit_evm_create2_factory() {
++    #[cfg(feature = "llvm")]
 +    fn compiled_create_executes_message() {
 +        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
 +            SpecId::CANCUN,
@@ -1073,12 +1089,12 @@
              op::PUSH1,
 -            init_offset,
 +            0x16,
-+            op::PUSH0,
+             op::PUSH0,
+-            op::CODECOPY,
 +            op::CREATE,
 +            op::DUP1,
 +            op::EXTCODESIZE,
-             op::PUSH0,
--            op::CODECOPY,
++            op::PUSH0,
 +            op::MSTORE,
              op::PUSH1,
 -            rt_len as u8,
@@ -1108,6 +1124,7 @@
 +    }
 +
 +    #[test]
++    #[cfg(feature = "llvm")]
 +    fn compiled_staticcall_zeros_child_callvalue() {
 +        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
 +            SpecId::CANCUN,
@@ -1253,6 +1270,7 @@
 -    /// CREATE deploys a contract whose runtime code gets JIT-compiled and called.
      #[test]
 -    fn jit_evm_create_and_call() {
++    #[cfg(feature = "llvm")]
 +    fn compiled_staticcall_child_callvalue_does_not_transfer() {
 +        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
 +            SpecId::CANCUN,
@@ -1352,6 +1370,7 @@
 +    }
 +
 +    #[test]
++    #[cfg(feature = "llvm")]
 +    fn compiled_dynamic_call_to_staticcall_loop_matches_interpreter_gas() {
 +        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
 +            SpecId::CANCUN,

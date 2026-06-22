@@ -28,5 +28,5 @@ tracing = { workspace = true, optional = true }
 
 [features]
 default = ["std", "ir"]
-std = ["evm2-jit-context/std", "alloy-primitives/std"]
+std = ["evm2/std", "evm2-jit-context/std", "alloy-primitives/std"]
 ir = ["std", "dep:tracing", "dep:evm2-jit-backend"]

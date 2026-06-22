@@ -39,5 +39,5 @@
  default = ["std", "ir"]
 -std = ["revmc-context/std", "revm-primitives/std", "revm-interpreter/std"]
 -ir = ["std", "dep:tracing", "dep:revmc-backend"]
-+std = ["evm2-jit-context/std", "alloy-primitives/std"]
++std = ["evm2/std", "evm2-jit-context/std", "alloy-primitives/std"]
 +ir = ["std", "dep:tracing", "dep:evm2-jit-backend"]

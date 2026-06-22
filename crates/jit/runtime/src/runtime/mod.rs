@@ -139,7 +139,7 @@ struct BackendThread {
 /// JIT compilation backend with O(1) compiled-function lookup.
 ///
 /// Created via [`JitBackend::new`] or [`JitBackend::disabled`].
-/// This type is cheaply clonable (backed by `Arc`).
+/// This type is cheaply cloneable (backed by `Arc`).
 /// All clones share the same backend thread, resident map, and statistics.
 #[derive(Clone, Debug)]
 pub struct JitBackend {

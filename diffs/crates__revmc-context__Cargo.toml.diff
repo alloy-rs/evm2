@@ -16,7 +16,7 @@
  categories.workspace = true
  keywords.workspace = true
  repository.workspace = true
-@@ -17,33 +17,13 @@
+@@ -17,33 +17,14 @@
  workspace = true
 
  [dependencies]
@@ -53,4 +53,5 @@
 -    "dep:revm-state",
 +    "alloy-primitives/std",
 +    "evm2/std",
++    "ruint/std",
  ]

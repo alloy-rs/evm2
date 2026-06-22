@@ -19,7 +19,7 @@ Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_di
 - [x] crates__revmc-build__Cargo.toml.diff
 - [x] crates__revmc-build__README.md.diff
 - [x] crates__revmc-build__src__lib.rs.diff
-- [x] crates__revmc-builtins__Cargo.toml.diff
+- [ ] crates__revmc-builtins__Cargo.toml.diff
 - [x] crates__revmc-builtins__README.md.diff
 - [x] crates__revmc-builtins__src__gas.rs.diff
   - re-use gas constants
@@ -31,7 +31,7 @@ Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_di
 - [x] crates__revmc-codegen__README.md.diff
 - [x] crates__revmc-codegen__build.rs.diff
 - [x] crates__revmc-codegen__src__bytecode__asm.rs.diff
-- [x] crates__revmc-codegen__src__bytecode__fmt.rs.diff
+- [ ] crates__revmc-codegen__src__bytecode__fmt.rs.diff
 - [x] crates__revmc-codegen__src__bytecode__info.rs.diff
 - [ ] crates__revmc-codegen__src__bytecode__mod.rs.diff
 - [x] crates__revmc-codegen__src__bytecode__opcode.rs.diff
@@ -53,7 +53,7 @@ Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_di
 - [ ] crates__revmc-codegen__src__tests__meta.rs.diff
 - [ ] crates__revmc-codegen__src__tests__mod.rs.diff
 - [ ] crates__revmc-codegen__src__tests__runner.rs.diff
-- [x] crates__revmc-context__Cargo.toml.diff
+- [ ] crates__revmc-context__Cargo.toml.diff
 - [x] crates__revmc-context__README.md.diff
 - [x] crates__revmc-context__src__arch__aarch64.rs.diff
 - [x] crates__revmc-context__src__arch__mod.rs.diff
@@ -74,7 +74,7 @@ Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_di
 - [x] crates__revmc-runtime__src__runtime__api.rs.diff
 - [x] crates__revmc-runtime__src__runtime__backend.rs.diff
 - [x] crates__revmc-runtime__src__runtime__config.rs.diff
-- [x] crates__revmc-runtime__src__runtime__mod.rs.diff
+- [ ] crates__revmc-runtime__src__runtime__mod.rs.diff
 - [x] crates__revmc-runtime__src__runtime__out_of_process.rs.diff
 - [x] crates__revmc-runtime__src__runtime__storage.rs.diff
 - [x] crates__revmc-runtime__src__runtime__tests.rs.diff

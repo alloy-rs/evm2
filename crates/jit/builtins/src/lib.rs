@@ -963,6 +963,7 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::boxed::Box;
     use alloy_primitives::Address;
     use evm2::{
         BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,

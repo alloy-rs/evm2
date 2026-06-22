@@ -26,4 +26,5 @@ default = ["std"]
 std = [
     "alloy-primitives/std",
     "evm2/std",
+    "ruint/std",
 ]
