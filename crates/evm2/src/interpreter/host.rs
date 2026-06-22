@@ -68,11 +68,8 @@ impl<T: EvmTypes> MessageResult<T> {
         let refunded = self.final_refund(gas_limit, is_eip3529);
         // EIP-8037: the unused reservoir (already settled to its frame-start value
         // on failure by `unwind_state_gas`) is also reimbursed to the caller.
-        let remaining = self
-            .gas
-            .remaining()
-            .saturating_add(self.gas.reservoir())
-            .saturating_add(refunded);
+        let remaining =
+            self.gas.remaining().saturating_add(self.gas.reservoir()).saturating_add(refunded);
         if remaining < gas_limit { remaining } else { gas_limit }
     }
 

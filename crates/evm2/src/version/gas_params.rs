@@ -163,6 +163,13 @@ gas_ids! {
     /// EIP-7702 transaction state gas per authorization.
     TxEip7702PerAuthState;
 
+    /// EIP-2780 regular gas cost of the EIP-7708 transfer log on a nonzero-value transfer.
+    TxTransferLogCost;
+    /// EIP-2780 additional intrinsic charge for a value-bearing non-create, non-self transaction.
+    TxValueCost;
+    /// EIP-2780/EIP-8038 regular gas cost of a top-level CREATE access.
+    TxCreateAccessCost;
+
     // Reserved custom gas parameter slots.
 
     /// Reserved custom gas parameter slot 0.
@@ -522,11 +529,20 @@ mod tests {
         assert_eq!(prague.get(GasId::TxFloorCostPerToken), 10);
 
         let amsterdam = gas_params(SpecId::AMSTERDAM);
-        assert_eq!(amsterdam.get(GasId::Create), 9000);
+        // EIP-8038 (ethereum/EIPs#11802) state-access cost values.
+        assert_eq!(amsterdam.get(GasId::Create), 11_000);
+        assert_eq!(amsterdam.get(GasId::WarmStorageReadCost), 100); // unchanged
+        assert_eq!(amsterdam.get(GasId::ColdStorageCost), 2900);
+        assert_eq!(amsterdam.get(GasId::ColdAccountAdditionalCost), 2900);
+        assert_eq!(amsterdam.get(GasId::TransferValueCost), 10_300);
+        assert_eq!(amsterdam.get(GasId::NewAccountCost), 8000);
+        assert_eq!(amsterdam.get(GasId::SstoreSetWithoutLoadCost), 10_000);
+        assert_eq!(amsterdam.get(GasId::SstoreClearingSlotRefund), 12_480);
+        assert_eq!(amsterdam.get(GasId::TxEip7702PerEmptyAccountCost), 9200);
         assert_eq!(amsterdam.get(GasId::SstoreSetState), 64 * 1530);
         assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthState), 23 * 1530);
-        assert_eq!(amsterdam.get(GasId::TxAccessListAddressCost), 2400 + 20 * 64);
-        assert_eq!(amsterdam.get(GasId::TxAccessListStorageKeyCost), 1900 + 32 * 64);
+        assert_eq!(amsterdam.get(GasId::TxAccessListAddressCost), 3000 + 20 * 64);
+        assert_eq!(amsterdam.get(GasId::TxAccessListStorageKeyCost), 3000 + 32 * 64);
         assert_eq!(amsterdam.get(GasId::TxAccessListFloorByteMultiplier), 4);
     }
 

@@ -40,10 +40,12 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let (access_list_accounts, access_list_storage_keys) = access_list_counts(&tx.access_list);
     let intrinsic = intrinsic_gas(
         req.host.version(),
+        caller,
         tx.to.into(),
         &tx.input,
         access_list_accounts,
         access_list_storage_keys,
+        tx.value,
     ) + eip7702_authorization_gas(req.host, tx.authorization_list.len());
     // EIP-8037: per-auth state gas (account + bytecode) is charged before execution. Zero before
     // Amsterdam.

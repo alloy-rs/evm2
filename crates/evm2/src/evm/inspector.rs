@@ -995,7 +995,10 @@ mod tests {
             TxLegacy {
                 to: TxKind::Call(target),
                 value: U256::from(7),
-                gas_limit: 100_000,
+                // High enough to cover the EIP-2780 intrinsic plus the depth-0
+                // `new_account_state_gas` charge for transferring value to the
+                // empty target account.
+                gas_limit: 300_000,
                 ..Default::default()
             },
             caller,

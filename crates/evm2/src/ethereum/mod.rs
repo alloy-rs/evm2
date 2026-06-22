@@ -13,7 +13,10 @@ use crate::{
     Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
     evm::{AccountInfo, StateCheckpoint, db_error_handler},
-    interpreter::{Message, MessageKind, MessageResult, Word},
+    interpreter::{
+        Message, MessageKind, MessageResult, Word,
+        gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS},
+    },
     registry::{HandlerError, HandlerResult, TxRegistry},
     utils::num_words,
     version::GasId,
@@ -608,9 +611,8 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     // `TxResult::tx_gas_used` reproduces the local `gas_used` (used here for the beneficiary
     // reward). State gas is execution state gas plus the upfront `initial_state_gas`, less the
     // EIP-7702 per-authorization `state_refund`.
-    let mut total_gas_spent = tx_gas_limit
-        .saturating_sub(result.gas.remaining())
-        .saturating_sub(result.gas.reservoir());
+    let mut total_gas_spent =
+        tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(result.gas.reservoir());
     let mut refunded = result.final_refund(tx_gas_limit, is_eip3529);
     // EIP-7623: when the calldata floor exceeds spent-minus-refund, the floor becomes the gas used
     // and absorbs the refund. revm folds this into `total_gas_spent` (so block-level regular gas
@@ -712,26 +714,72 @@ pub(super) fn floor_gas(
 }
 
 /// Calculates intrinsic transaction gas.
+///
+/// `caller`/`value` feed the EIP-2780 decomposed model (which branches on
+/// self-transfer and whether `tx.value` is zero); the legacy model ignores them.
 pub(super) fn intrinsic_gas(
     version: &Version,
+    caller: Address,
     to: TxKind,
     input: &Bytes,
     access_list_accounts: u64,
     access_list_storage_keys: u64,
+    value: U256,
 ) -> u64 {
     let params = &version.gas_params;
     let non_zero_multiplier = if version.feature(EvmFeatures::EIP2028) { 16 } else { 68 };
-    let mut gas = 21_000;
+    let mut gas = 0;
     for byte in input {
         gas += if *byte == 0 { 4 } else { non_zero_multiplier };
     }
     gas += access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressCost));
     gas += access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyCost));
-    if to.is_create() && version.feature(EvmFeatures::EIP2) {
-        gas += u64::from(params.get(GasId::TxCreateCost));
+
+    // Base + `to`-based + `value`-based charges.
+    let is_create = to.is_create();
+    if version.feature(EvmFeatures::EIP2780) {
+        // EIP-2780: decomposed model replacing the legacy 21,000 base.
+        let is_self_transfer = matches!(to, TxKind::Call(to) if to == caller);
+        gas += eip2780_base_to_value_gas(version, is_create, is_self_transfer, value);
+    } else {
+        gas += 21_000;
+        if is_create && version.feature(EvmFeatures::EIP2) {
+            gas += u64::from(params.get(GasId::TxCreateCost));
+        }
     }
-    if to.is_create() && version.feature(EvmFeatures::EIP3860) {
+    if is_create && version.feature(EvmFeatures::EIP3860) {
         gas += u64::from(params.get(GasId::TxInitcodeCost)) * num_words(input.len()) as u64;
+    }
+    gas
+}
+
+/// EIP-2780: sum of the sender base, `tx.to`-based, and `tx.value`-based
+/// regular-gas charges. Excludes calldata, access list, authorizations, and
+/// initcode pieces which are added by the caller.
+///
+/// Per execution-specs, a self-transfer (`tx.to == sender`) pays neither the
+/// `to`- nor `value`-based charge — only the base. Precompile recipients are
+/// charged the same as any other account (the precompile carve-out from the
+/// draft is not implemented).
+fn eip2780_base_to_value_gas(
+    version: &Version,
+    is_create: bool,
+    is_self_transfer: bool,
+    value: U256,
+) -> u64 {
+    let params = &version.gas_params;
+    let mut gas = u64::from(EIP2780_TX_BASE_COST);
+    if is_create {
+        gas += u64::from(params.get(GasId::TxCreateAccessCost));
+        if !value.is_zero() {
+            gas += u64::from(params.get(GasId::TxTransferLogCost));
+        }
+    } else if !is_self_transfer {
+        gas += u64::from(EIP8038_COLD_ACCOUNT_ACCESS);
+        if !value.is_zero() {
+            gas += u64::from(params.get(GasId::TxTransferLogCost))
+                + u64::from(params.get(GasId::TxValueCost));
+        }
     }
     gas
 }
@@ -754,12 +802,29 @@ mod tests {
     fn intrinsic_gas_charges_shanghai_create_initcode_words() {
         let input = Bytes::from(vec![1; 74]);
 
+        let sender = Address::with_last_byte(0xaa);
         assert_eq!(
-            intrinsic_gas(Version::base(SpecId::LONDON), TxKind::Create, &input, 0, 0),
+            intrinsic_gas(
+                Version::base(SpecId::LONDON),
+                sender,
+                TxKind::Create,
+                &input,
+                0,
+                0,
+                U256::ZERO
+            ),
             21_000 + 32_000 + 74 * 16
         );
         assert_eq!(
-            intrinsic_gas(Version::base(SpecId::SHANGHAI), TxKind::Create, &input, 0, 0),
+            intrinsic_gas(
+                Version::base(SpecId::SHANGHAI),
+                sender,
+                TxKind::Create,
+                &input,
+                0,
+                0,
+                U256::ZERO
+            ),
             21_000 + 32_000 + 74 * 16 + 3 * 2
         );
     }
@@ -767,20 +832,35 @@ mod tests {
     #[test]
     fn intrinsic_gas_charges_access_list_items() {
         let input = Bytes::new();
+        let sender = Address::with_last_byte(0xaa);
 
         assert_eq!(
-            intrinsic_gas(Version::base(SpecId::BERLIN), TxKind::Call(Address::ZERO), &input, 2, 3),
+            intrinsic_gas(
+                Version::base(SpecId::BERLIN),
+                sender,
+                TxKind::Call(Address::ZERO),
+                &input,
+                2,
+                3,
+                U256::ZERO
+            ),
             21_000 + 2 * 2400 + 3 * 1900
         );
         assert_eq!(
             intrinsic_gas(
                 Version::base(SpecId::AMSTERDAM),
+                sender,
                 TxKind::Call(Address::ZERO),
                 &input,
                 1,
-                1
+                1,
+                U256::ZERO
             ),
-            21_000 + (2400 + 20 * 64) + (1900 + 32 * 64)
+            // EIP-2780 replaces the 21,000 base with TX_BASE (12,000) +
+            // COLD_ACCOUNT_ACCESS (3,000) for the zero-value call recipient.
+            // EIP-8038 sets the per-item access-list base to COLD_ACCOUNT_ACCESS /
+            // COLD_STORAGE_ACCESS (both 3,000).
+            (12_000 + 3000) + (3000 + 20 * 64) + (3000 + 32 * 64)
         );
     }
 
@@ -836,7 +916,8 @@ mod tests {
 
         assert_eq!(
             floor_gas(Version::base(SpecId::AMSTERDAM), &input, 1, 1),
-            21_000 + (1000 * 4 + 80 + 128) * 16
+            // EIP-2780: the floor base drops from 21,000 to TX_BASE (12,000).
+            12_000 + (1000 * 4 + 80 + 128) * 16
         );
     }
 

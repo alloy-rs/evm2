@@ -28,7 +28,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     validate_block_gas_limit(req.host.version(), tx.gas_limit, req.host.block.gas_limit)?;
     validate_create_initcode(req.host.version(), tx.to, &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
-    let intrinsic = intrinsic_gas(req.host.version(), tx.to, &tx.input, 0, 0);
+    let intrinsic = intrinsic_gas(req.host.version(), caller, tx.to, &tx.input, 0, 0, tx.value);
     let initial_state_gas = create_initial_state_gas(req.host.version(), tx.to.is_create());
     validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
     let floor_gas = floor_gas(req.host.version(), &tx.input, 0, 0);

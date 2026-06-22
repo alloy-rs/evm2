@@ -301,10 +301,11 @@ mod tests {
             .gas_limit(200_000));
 
         assert_matches!(interp.err, InstrStop::Stop);
-        // Regular: PUSH1(3)·2 + SSTORE warm (100 static + 2800 set) = 2906.
+        // Regular: PUSH1(3)·2 + SSTORE warm (100 static + EIP-8038 STORAGE_WRITE
+        // 10_000 set) = 10_106.
         // State gas (64 × 1530 = 97_920) spills into regular gas (no reservoir).
         assert_eq!(interp.state_gas_spent(), 97_920);
-        assert_eq!(interp.gas_remaining(), 200_000 - 2906 - 97_920);
+        assert_eq!(interp.gas_remaining(), 200_000 - 10_106 - 97_920);
     }
 
     #[test]

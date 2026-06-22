@@ -36,10 +36,12 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let (access_list_accounts, access_list_storage_keys) = access_list_counts(&tx.access_list);
     let intrinsic = intrinsic_gas(
         req.host.version(),
+        caller,
         tx.to,
         &tx.input,
         access_list_accounts,
         access_list_storage_keys,
+        tx.value,
     );
     let initial_state_gas = create_initial_state_gas(req.host.version(), tx.to.is_create());
     validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;

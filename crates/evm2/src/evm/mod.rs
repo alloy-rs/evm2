@@ -124,7 +124,7 @@ use crate::{
     env::{BlockEnv, TxEnv},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
-        MessageResult, Word,
+        MessageResult, Word, gas::EIP8038_COLD_ACCOUNT_ACCESS,
     },
     registry::{HandlerResult, TxRegistry},
     trustme,
@@ -843,13 +843,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             }
         };
         // Settle the returning frame's gas for its stop reason at this single exit,
-        // rather than in each result builder, by merging it into a fresh
-        // accumulator (the same reconciliation a parent applies). Every consumer
-        // (parent `merge_child_gas`, top-level accounting, inspectors) then reads
-        // the settled gas.
-        let mut settled = GasTracker::from_parts(result.gas.limit(), 0, 0);
-        settled.merge_child_gas(result.gas, result.stop);
-        result.gas = settled;
+        // rather than in each result builder, so every consumer (parent
+        // `merge_child_gas`, top-level accounting, inspectors) reads the settled gas.
+        result.gas.settle_gas(result.stop);
         result
     }
 
@@ -965,7 +961,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message.disable_precompiles = false;
         let input = core::mem::take(&mut message.input);
 
-        let stop = self.run_interpreter(bytecode, tx_env, message, caller_is_static);
+        let stop = self.run_interpreter(bytecode, tx_env, message, caller_is_static, (0, 0));
         message.input = input;
 
         self.finish_create_message_run(checkpoint, &message.destination, message.gas_limit, stop)
@@ -1139,6 +1135,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             );
         }
         let checkpoint = self.state.checkpoint();
+        // EIP-2780 top-level execution charges, computed from the recipient's
+        // pre-call state (before the value transfer below). Applied to the frame's
+        // gas tracker after interpreter init in `run_interpreter`. Computed inside
+        // the checkpoint so the delegated-target warming it performs is unwound if
+        // the frame later rolls back.
+        let eip2780_charges = self.eip2780_call_charges(message);
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
         let transfers_balance = matches!(
             message.kind,
@@ -1170,9 +1172,57 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             return self.execute_call_precompile(checkpoint, message);
         }
 
-        let stop = self.run_interpreter(bytecode, tx_env, message, caller_is_static);
+        let stop =
+            self.run_interpreter(bytecode, tx_env, message, caller_is_static, eip2780_charges);
 
         self.finish_call_message_run(checkpoint, stop)
+    }
+
+    /// Computes the EIP-2780 top-level (depth-0) execution charges for a call to
+    /// `message.destination`, from the recipient's pre-call state:
+    /// - a regular-gas `COLD_ACCOUNT_ACCESS` surcharge when the recipient carries
+    ///   an EIP-7702 delegation, and
+    /// - `new_account_state_gas` of state gas when the recipient is empty
+    ///   (EIP-161) and the call transfers value.
+    ///
+    /// Returns `(regular, state)`, both zero unless EIP-2780 is active at depth 0.
+    fn eip2780_call_charges(&mut self, message: &Message<T>) -> (u64, u64) {
+        if message.depth != 0 || !self.feature(EvmFeatures::EIP2780) {
+            return (0, 0);
+        }
+        let dest = message.destination;
+        // A nonexistent recipient reads as an empty account (EIP-161).
+        let recipient_is_empty = match self.state.account_info_untracked(&dest) {
+            Ok(info) => info.as_ref().is_none_or(AccountInfo::is_empty),
+            Err(_) => return (0, 0),
+        };
+        // EIP-2780: a delegated recipient is charged an extra COLD_ACCOUNT_ACCESS
+        // of regular gas, and the delegation target is warmed for subsequent
+        // access (matching execution-specs' `accessed_addresses.add`). The
+        // recipient's stored code must be loaded — the warmed tx-target overlay
+        // entry may not carry the code bytes needed to read the designator. An
+        // empty recipient is never delegated, so skip the load to avoid touching
+        // an otherwise-untouched account.
+        let delegated = if recipient_is_empty {
+            None
+        } else {
+            match self.state.account(&dest, false) {
+                Ok(mut acc) => acc.load_code().ok().and_then(|code| code.eip7702_address()),
+                Err(_) => None,
+            }
+        };
+        let regular = if let Some(delegated) = delegated {
+            let _ = self.state.account(&delegated, false).map(|mut a| a.warm());
+            u64::from(EIP8038_COLD_ACCOUNT_ACCESS)
+        } else {
+            0
+        };
+        let state = if !message.value.is_zero() && recipient_is_empty {
+            self.version().gas_params.new_account_state_gas()
+        } else {
+            0
+        };
+        (regular, state)
     }
 
     #[inline(never)]
@@ -1252,11 +1302,27 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         tx_env: &'frame TxEnv<T>,
         message: &'frame Message<T>,
         caller_is_static: bool,
+        eip2780_charges: (u64, u64),
     ) -> InstrStop {
         let mut interp = self.interpreter_pool.pop();
         let _guard = self.enter_execution();
         let interp_ref = interp.as_mut();
         interp_ref.init(bytecode, tx_env, message, caller_is_static);
+        // EIP-2780: apply the depth-0 execution charges (delegated-recipient cold
+        // access as regular gas, empty-recipient-with-value as state gas) to the
+        // freshly-initialized frame gas. A revert/halt unwinds the state charge
+        // via the existing `unwind_state_gas` reconciliation, just like any other
+        // in-frame state gas. On OOG the frame halts before executing any opcode.
+        let (eip2780_regular, eip2780_state) = eip2780_charges;
+        if eip2780_regular != 0 || eip2780_state != 0 {
+            let tracker = interp_ref.gas_mut().tracker_mut();
+            if tracker.spend(eip2780_regular).is_err()
+                || tracker.spend_state(eip2780_state).is_err()
+            {
+                self.interpreter_pool.push(interp);
+                return InstrStop::OutOfGas;
+            }
+        }
         // SAFETY: `execution_config` points to a private field that host execution does not
         // replace or mutate, so the pointee remains valid here.
         let execution_config = unsafe { trustme::decouple_lt(&self.execution_config) };
@@ -1879,7 +1945,7 @@ mod tests {
         let message = Message::default();
         let tx_env = TxEnv::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
-        let _ = evm.run_interpreter(bytecode, &tx_env, &message, false);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message, false, (0, 0));
     }
 
     #[test]
@@ -1904,7 +1970,7 @@ mod tests {
         let tx_env = TxEnv::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
 
-        let _ = evm.run_interpreter(bytecode, &tx_env, &message, false);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message, false, (0, 0));
     }
 
     #[test]
@@ -2603,7 +2669,9 @@ mod tests {
             destination: target,
             caller,
             value: U256::from(7),
-            gas_limit: 50_000,
+            // Covers the EIP-2780 depth-0 `new_account_state_gas` charge for the
+            // value transfer to the empty target account.
+            gas_limit: 300_000,
             ..Message::default()
         };
 

@@ -48,6 +48,68 @@ pub(crate) const WARM_SSTORE_RESET: u32 = SSTORE_RESET - COLD_SLOAD_COST;
 pub(crate) const EIP7702_PER_AUTH_BASE_COST: u32 = 12500;
 pub(crate) const EIP7702_PER_EMPTY_ACCOUNT_COST: u32 = 25000;
 
+// EIP-8038: State-access gas cost update. Increases the gas cost of state-access
+// operations to reflect Ethereum's larger state. Values are the parameters
+// proposed in ethereum/EIPs#11802 (still an open draft — preliminary). Active
+// alongside EIP-8037 starting at the Amsterdam hardfork.
+/// Touch of an already-warm account or storage slot. Unchanged by EIP-8038.
+pub(crate) const EIP8038_WARM_ACCESS: u32 = 100;
+/// Cold touch of an account (was 2,600 pre-EIP-8038).
+pub(crate) const EIP8038_COLD_ACCOUNT_ACCESS: u32 = 3000;
+/// Cold touch of a storage slot (was 2,100 pre-EIP-8038).
+pub(crate) const EIP8038_COLD_STORAGE_ACCESS: u32 = 3000;
+/// First-time account-write surcharge (was 6,700 pre-EIP-8038).
+pub(crate) const EIP8038_ACCOUNT_WRITE: u32 = 8000;
+/// First-time storage-write surcharge (was 2,800 pre-EIP-8038).
+pub(crate) const EIP8038_STORAGE_WRITE: u32 = 10000;
+/// Refund for clearing a storage slot (was 4,800 pre-EIP-8038).
+///
+/// Derived per the spec as `(STORAGE_WRITE + COLD_STORAGE_ACCESS) * 4800 / 5000`
+/// = 12,480.
+pub(crate) const EIP8038_STORAGE_CLEAR_REFUND: u32 =
+    (EIP8038_STORAGE_WRITE + EIP8038_COLD_STORAGE_ACCESS) * 4800 / 5000;
+/// State-access cost for contract deployment (was 7,000 pre-EIP-8038).
+///
+/// Per the spec, `CREATE_ACCESS = ACCOUNT_WRITE + COLD_STORAGE_ACCESS` = 11,000.
+/// This does not match the legacy decomposition (`GAS_CREATE - GAS_NEW_ACCOUNT`);
+/// the EIP keeps that discrepancy rather than reconciling it.
+pub(crate) const EIP8038_CREATE_ACCESS: u32 = EIP8038_ACCOUNT_WRITE + EIP8038_COLD_STORAGE_ACCESS;
+/// Access-list per-address base cost, `COLD_ACCOUNT_ACCESS` (was 2,400 pre-EIP-8038).
+pub(crate) const EIP8038_ACCESS_LIST_ADDRESS_COST: u32 = EIP8038_COLD_ACCOUNT_ACCESS;
+/// Access-list per-storage-key base cost, `COLD_STORAGE_ACCESS` (was 1,900 pre-EIP-8038).
+pub(crate) const EIP8038_ACCESS_LIST_STORAGE_KEY_COST: u32 = EIP8038_COLD_STORAGE_ACCESS;
+/// Cold premium on top of `EIP8038_WARM_ACCESS` for account access.
+pub(crate) const EIP8038_COLD_ACCOUNT_ACCESS_ADDITIONAL: u32 =
+    EIP8038_COLD_ACCOUNT_ACCESS - EIP8038_WARM_ACCESS;
+/// Cold premium on top of `EIP8038_WARM_ACCESS` for storage access.
+pub(crate) const EIP8038_COLD_STORAGE_ACCESS_ADDITIONAL: u32 =
+    EIP8038_COLD_STORAGE_ACCESS - EIP8038_WARM_ACCESS;
+/// CALL value-transfer cost: `ACCOUNT_WRITE + CALL_STIPEND` per the EIP = 10,300.
+pub(crate) const EIP8038_CALL_VALUE: u32 = EIP8038_ACCOUNT_WRITE + CALL_STIPEND;
+/// Regular-gas portion of the EIP-7702 per-auth cost under EIP-8038.
+///
+/// Built on the EIP-8037 regular base (7,500) by applying only the EIP-8038
+/// deltas of the primitives in the per-auth breakdown: `ACCOUNT_WRITE`
+/// (6,700→8,000) and `COLD_ACCOUNT_ACCESS` (2,600→3,000). The two `WARM_ACCESS`
+/// occurrences and the ecRecover / calldata terms are unchanged by EIP-8038, so
+/// they contribute no delta. Evaluates to 9,200.
+pub(crate) const EIP8038_EIP7702_PER_EMPTY_ACCOUNT_REGULAR: u32 =
+    7500 + (EIP8038_ACCOUNT_WRITE - 6700) + (EIP8038_COLD_ACCOUNT_ACCESS - 2600);
+
+// EIP-2780: Reduce intrinsic transaction gas. Replaces the legacy 21,000 base
+// with a decomposed model (sender base + `tx.to`-based + `tx.value`-based).
+// Active alongside EIP-8037 / EIP-8038 starting at the Amsterdam hardfork.
+/// Reduced intrinsic base charged to `tx.sender` (execution-specs `TX_BASE`).
+pub(crate) const EIP2780_TX_BASE_COST: u32 = 12_000;
+/// Regular gas cost of the EIP-7708 transfer log emitted for every nonzero-value
+/// transfer to a different account: `GAS_LOG + 3 * GAS_LOG_TOPIC + 32 *
+/// GAS_LOG_DATA_PER_BYTE = 375 + 1_125 + 256 = 1_756`.
+pub(crate) const EIP2780_TRANSFER_LOG_COST: u32 = 1_756;
+/// Additional intrinsic regular-gas charge for a value-bearing (non-create,
+/// non-self) transaction (execution-specs `TX_VALUE_COST`), on top of
+/// [`EIP2780_TRANSFER_LOG_COST`].
+pub(crate) const EIP2780_TX_VALUE_COST: u32 = 4_244;
+
 /// Tracks regular, state, and refunded gas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GasTracker {
@@ -303,29 +365,38 @@ impl GasTracker {
         self.remaining += returned;
     }
 
-    /// Merges a returning child frame's gas into this (parent) frame, per the
-    /// child's `stop` reason.
+    /// Settles this returning frame's own gas for its `stop` reason.
     ///
-    /// A failing frame rolls back its state changes, so its state gas is first
-    /// refilled in LIFO order ([`Self::unwind_state_gas`]); this is idempotent, so
-    /// already-settled gas merges cleanly too. Then, per `stop`:
+    /// A failing frame rolls back its state changes, so its state gas is refilled
+    /// in LIFO order ([`Self::unwind_state_gas`]) and the execution refund counter
+    /// is dropped; an exceptional halt additionally consumes the frame's regular
+    /// gas. On success the gas is left as-is. Applied once when a frame returns, so
+    /// every consumer — the parent [`Self::merge_child_gas`], top-level accounting,
+    /// and inspectors — reads the same settled gas.
+    #[inline]
+    pub const fn settle_gas(&mut self, stop: InstrStop) {
+        if !stop.is_success() {
+            self.unwind_state_gas();
+            self.set_refunded(0);
+        }
+        if stop.is_halt() {
+            self.set_remaining(0);
+        }
+    }
+
+    /// Merges a returning child frame's (already [settled](Self::settle_gas)) gas
+    /// into this (parent) frame, per the child's `stop` reason.
     ///
-    /// - **Unused regular gas** returns to the parent only on success or revert;
-    ///   a halt consumes the child's regular gas.
+    /// - **Unused regular gas** returns to the parent only on success or revert; a
+    ///   halt consumes the child's regular gas (already zeroed when settled).
     /// - **The reservoir** is a shared state-gas pool the child inherited at call
-    ///   time, so the parent always adopts the child's (post-rollback) value —
-    ///   leaving its own reservoir untouched on revert/halt.
+    ///   time, so the parent always adopts the child's value — which settling
+    ///   restored to the inherited amount on revert/halt, leaving it untouched.
     /// - **Net state gas, its spilled portion, and the refund counter** persist
     ///   only on success; on revert/halt the child's state changes roll back, so
     ///   it contributes none.
-    ///
-    /// Merging a returning frame into a fresh accumulator therefore also settles
-    /// that frame's own gas for its stop reason.
     #[inline]
-    pub const fn merge_child_gas(&mut self, mut child: Self, stop: InstrStop) {
-        if !stop.is_success() {
-            child.unwind_state_gas();
-        }
+    pub const fn merge_child_gas(&mut self, child: Self, stop: InstrStop) {
         if stop.is_success() || stop.is_revert() {
             self.erase_cost(child.remaining);
         }
