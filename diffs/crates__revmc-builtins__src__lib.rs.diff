@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-builtins/src/lib.rs
 +++ evm2/crates/jit/builtins/src/lib.rs
-@@ -10,14 +10,17 @@
+@@ -10,14 +10,16 @@
  #[cfg(feature = "ir")]
  extern crate tracing;
 
@@ -13,11 +13,10 @@
 +use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
 +use core::cmp::min;
 +use evm2::{
-+    SpecId,
 +    bytecode::Bytecode,
 +    interpreter::{Host, Message, MessageKind, Word, i256},
 +    utils::{word_to_usize, word_to_usize_saturated},
-+    version::GasId,
++    version::{EvmFeatures, GasId},
  };
 -use revm_primitives::{B256, Bytes, KECCAK_EMPTY, Log, LogData, U256, hardfork::SpecId};
 -use revmc_context::{EvmContext, EvmWord};
@@ -25,7 +24,7 @@
 
  pub mod gas;
 
-@@ -47,7 +50,7 @@
+@@ -47,7 +49,7 @@
      StaticCall,
  }
 
@@ -34,7 +33,7 @@
      fn from(kind: CallKind) -> Self {
          match kind {
              CallKind::Call => Self::Call,
-@@ -78,7 +81,7 @@
+@@ -78,7 +80,7 @@
  #[cold]
  fn fail(ecx: &mut EvmContext<'_>, e: BuiltinError) -> ! {
      ecx.exit_result = e.into();
@@ -43,7 +42,7 @@
  }
 
  macro_rules! builtins {
-@@ -115,10 +118,10 @@
+@@ -115,10 +117,10 @@
  }
 
  #[unsafe(no_mangle)]
@@ -57,7 +56,7 @@
      );
  }
 
-@@ -130,7 +133,7 @@
+@@ -130,7 +132,7 @@
 
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn __revmc_builtin_sdiv(rev![a, b]: &mut [EvmWord; 2]) {
@@ -66,7 +65,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -141,7 +144,7 @@
+@@ -141,7 +143,7 @@
 
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn __revmc_builtin_smod(rev![a, b]: &mut [EvmWord; 2]) {
@@ -75,7 +74,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -161,7 +164,7 @@
+@@ -161,7 +163,7 @@
  ) -> BuiltinResult {
      let rev![base, exponent_ptr] = sp;
      let exponent = exponent_ptr.to_u256();
@@ -84,7 +83,7 @@
      *exponent_ptr = base.to_u256().pow(exponent).into();
      Ok(())
  }
-@@ -171,7 +174,7 @@
+@@ -171,7 +173,7 @@
      ecx: &mut EvmContext<'_>,
      exponent: &EvmWord,
  ) -> BuiltinResult {
@@ -93,7 +92,7 @@
      Ok(())
  }
 
-@@ -181,7 +184,7 @@
+@@ -181,7 +183,7 @@
      sp: &mut [EvmWord; 2],
  ) -> BuiltinResult {
      let rev![offset, len_ptr] = sp;
@@ -102,7 +101,7 @@
      do_keccak256(ecx, len_ptr, *offset, len)
  }
 
-@@ -202,13 +205,12 @@
+@@ -202,13 +204,12 @@
      len: usize,
  ) -> BuiltinResult {
      *out = EvmWord::from_be_bytes(if len == 0 {
@@ -120,7 +119,7 @@
      });
      Ok(())
  }
-@@ -218,15 +220,14 @@
+@@ -218,15 +219,14 @@
      ecx: &mut EvmContext<'_>,
      address: &mut EvmWord,
  ) -> BuiltinResult {
@@ -138,7 +137,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -234,7 +235,7 @@
+@@ -234,7 +234,7 @@
      ecx: &EvmContext<'_>,
      offset_ptr: &mut EvmWord,
  ) {
@@ -147,7 +146,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -248,11 +249,11 @@
+@@ -248,11 +248,11 @@
 
  fn do_calldataload(ecx: &EvmContext<'_>, out: &mut EvmWord, offset: usize) {
      let mut word = B256::ZERO;
@@ -161,7 +160,7 @@
          // SAFETY: `count` is bounded by the calldata length.
          // This is `word[..count].copy_from_slice(input[offset..offset + count])`, written using
          // raw pointers as apparently the compiler cannot optimize the slice version, and using
-@@ -270,21 +271,15 @@
+@@ -270,21 +270,15 @@
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
      let rev![memory_offset, data_offset, len] = sp;
@@ -190,7 +189,7 @@
      }
      Ok(())
  }
-@@ -294,13 +289,13 @@
+@@ -294,13 +288,13 @@
      ecx: &mut EvmContext<'_>,
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
@@ -207,7 +206,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -308,9 +303,8 @@
+@@ -308,9 +302,8 @@
      ecx: &mut EvmContext<'_>,
      address: &mut EvmWord,
  ) -> BuiltinResult {
@@ -219,7 +218,7 @@
      Ok(())
  }
 
-@@ -320,21 +314,20 @@
+@@ -320,21 +313,20 @@
      sp: &mut [EvmWord; 4],
  ) -> BuiltinResult {
      let rev![address, memory_offset, code_offset, len] = sp;
@@ -248,7 +247,7 @@
      Ok(())
  }
 
-@@ -344,20 +337,23 @@
+@@ -344,20 +336,23 @@
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
      let rev![memory_offset, offset, len] = sp;
@@ -280,7 +279,7 @@
      }
      Ok(())
  }
-@@ -367,9 +363,8 @@
+@@ -367,9 +362,8 @@
      ecx: &mut EvmContext<'_>,
      address: &mut EvmWord,
  ) -> BuiltinResult {
@@ -292,7 +291,7 @@
      *address = EvmWord::from_be_bytes(code_hash);
      Ok(())
  }
-@@ -380,7 +375,7 @@
+@@ -380,7 +374,7 @@
      number_ptr: &mut EvmWord,
  ) -> BuiltinResult {
      let requested_number = number_ptr.to_u256();
@@ -301,7 +300,7 @@
 
      // Check if requested block is in the future
      let Some(diff) = block_number.checked_sub(requested_number) else {
-@@ -388,7 +383,7 @@
+@@ -388,7 +382,7 @@
          return Ok(());
      };
 
@@ -310,7 +309,7 @@
 
      // Current block returns 0
      if diff == 0 {
-@@ -400,7 +395,8 @@
+@@ -400,7 +394,8 @@
      const BLOCK_HASH_HISTORY: u64 = 256;
 
      if diff <= BLOCK_HASH_HISTORY {
@@ -320,7 +319,7 @@
          *number_ptr = EvmWord::from_be_bytes(hash);
      } else {
          // Too old, return 0
-@@ -411,37 +407,37 @@
+@@ -411,37 +406,37 @@
  }
 
  #[unsafe(no_mangle)]
@@ -349,7 +348,7 @@
 -    *slot = if ecx.spec_id.is_enabled_in(SpecId::MERGE) {
 -        ecx.host.prevrandao().unwrap().into()
 +pub unsafe extern "C" fn __revmc_builtin_difficulty(ecx: &mut EvmContext<'_>, slot: &mut EvmWord) {
-+    *slot = if ecx.spec_id().enables(SpecId::MERGE) {
++    *slot = if ecx.enables(EvmFeatures::EIP4399) {
 +        ecx.block_env().prevrandao.into()
      } else {
 -        ecx.host.difficulty().into()
@@ -371,7 +370,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -449,26 +445,29 @@
+@@ -449,26 +444,29 @@
      ecx: &mut EvmContext<'_>,
      slot: &mut EvmWord,
  ) -> BuiltinResult {
@@ -409,7 +408,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -477,8 +476,8 @@
+@@ -477,8 +475,8 @@
  }
 
  #[unsafe(no_mangle)]
@@ -420,7 +419,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -486,19 +485,21 @@
+@@ -486,20 +484,17 @@
      ecx: &mut EvmContext<'_>,
      index: &mut EvmWord,
  ) -> BuiltinResult {
@@ -429,28 +428,28 @@
      let key = index.to_u256();
 -    if ecx.spec_id.is_enabled_in(SpecId::BERLIN) {
 -        let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
-+    if ecx.spec_id().enables(SpecId::BERLIN) {
-+        let additional_cold_cost = u64::from(ecx.gas_params().get(GasId::ColdStorageAdditionalCost));
-         let skip_cold = ecx.gas.remaining() < additional_cold_cost;
+-        let skip_cold = ecx.gas.remaining() < additional_cold_cost;
 -        let storage = ecx.host.sload_skip_cold_load(address, key, skip_cold)?;
-+        let storage =
-+            ecx.host().sload(address, &key, skip_cold).map_err(|stop| host_error_stop(stop, skip_cold))?;
-         if storage.is_cold {
+-        if storage.is_cold {
 -            gas!(ecx, additional_cold_cost);
-+            ecx.gas.spend(additional_cold_cost)?;
-         }
+-        }
 -        *index = storage.data.into();
-+        *index = storage.value.into();
-     } else {
+-    } else {
 -        let storage = ecx.host.sload(address, key).ok_or_fatal()?;
 -        *index = storage.data.into();
-+        let storage =
-+            ecx.host().sload(address, &key, false).map_err(|stop| host_error_stop(stop, false))?;
-+        *index = storage.value.into();
++    let additional_cold_cost = u64::from(ecx.gas_params().get(GasId::ColdStorageAdditionalCost));
++    let skip_cold =
++        ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
++    let storage =
++        ecx.host().sload(address, &key, skip_cold).map_err(|stop| host_error_stop(stop, skip_cold))?;
++    if storage.is_cold {
++        ecx.gas.spend(additional_cold_cost)?;
      }
++    *index = storage.value.into();
 
      Ok(())
-@@ -511,7 +512,7 @@
+ }
+@@ -511,7 +506,7 @@
      key: u64,
  ) -> BuiltinResult {
      *index = U256::from(key).into();
@@ -459,7 +458,7 @@
      Ok(())
  }
 
-@@ -521,46 +522,53 @@
+@@ -521,46 +516,47 @@
      sp: &mut [EvmWord; 2],
  ) -> BuiltinResult {
      let rev![index, value] = sp;
@@ -469,12 +468,12 @@
 -    let target = ecx.input.target_address;
 -    let is_istanbul = ecx.spec_id.is_enabled_in(SpecId::ISTANBUL);
 +    let target = &ecx.message().destination;
-+    let is_istanbul = ecx.spec_id().enables(SpecId::ISTANBUL);
++    let is_eip2200 = ecx.enables(EvmFeatures::EIP2200);
 
      // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
 -    if is_istanbul && ecx.gas.remaining() <= ecx.gas_params.call_stipend() {
 -        return Err(InstructionResult::ReentrancySentryOOG.into());
-+    if is_istanbul && ecx.gas.remaining() <= u64::from(ecx.gas_params().get(GasId::CallStipend)) {
++    if is_eip2200 && ecx.gas.remaining() <= u64::from(ecx.gas_params().get(GasId::CallStipend)) {
 +        return Err(InstrStop::ReentrancySentryOOG.into());
      }
 
@@ -483,27 +482,24 @@
 
 -    let state_load = if ecx.spec_id.is_enabled_in(SpecId::BERLIN) {
 -        let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
-+    let state_load = if ecx.spec_id().enables(SpecId::BERLIN) {
-+        let additional_cold_cost = u64::from(ecx.gas_params().get(GasId::ColdStorageAdditionalCost));
-         let skip_cold = ecx.gas.remaining() < additional_cold_cost;
+-        let skip_cold = ecx.gas.remaining() < additional_cold_cost;
 -        ecx.host.sstore_skip_cold_load(target, index.to_u256(), value.to_u256(), skip_cold)?
-+        let index = index.to_u256();
-+        let value = value.to_u256();
-+        ecx.host()
-+            .sstore(target, &index, &value, skip_cold)
-+            .map_err(|stop| host_error_stop(stop, skip_cold))?
-     } else {
+-    } else {
 -        ecx.host.sstore(target, index.to_u256(), value.to_u256()).ok_or_fatal()?
-+        let index = index.to_u256();
-+        let value = value.to_u256();
-+        ecx.host()
-+            .sstore(target, &index, &value, false)
-+            .map_err(|stop| host_error_stop(stop, false))?
-     };
+-    };
++    let additional_cold_cost = u64::from(ecx.gas_params().get(GasId::ColdStorageAdditionalCost));
++    let skip_cold =
++        ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
++    let index = index.to_u256();
++    let value = value.to_u256();
++    let state_load = ecx
++        .host()
++        .sstore(target, &index, &value, skip_cold)
++        .map_err(|stop| host_error_stop(stop, skip_cold))?;
 
 -    let gp = &ecx.gas_params;
 -    gas!(ecx, gp.sstore_dynamic_gas(is_istanbul, &state_load.data, state_load.is_cold));
-+    let dynamic_gas = ecx.gas_params().sstore_dynamic_gas(is_istanbul, &state_load);
++    let dynamic_gas = ecx.gas_params().sstore_dynamic_gas(is_eip2200, &state_load);
 +    ecx.gas.spend(dynamic_gas)?;
 
      // State gas for new slot creation (EIP-8037).
@@ -514,13 +510,13 @@
 -        if refill > 0 {
 -            ecx.gas.refill_reservoir(refill);
 -        }
-+    if ecx.spec_id().enables(SpecId::AMSTERDAM) {
++    if ecx.enables(EvmFeatures::EIP8037) {
 +        let state_gas = ecx.gas_params().sstore_state_gas(&state_load);
 +        ecx.gas.spend_state(state_gas)?;
      }
 
 -    ecx.gas.record_refund(gp.sstore_refund(is_istanbul, &state_load.data));
-+    let refund = ecx.gas_params().sstore_refund(is_istanbul, &state_load);
++    let refund = ecx.gas_params().sstore_refund(is_eip2200, &state_load);
 +    ecx.gas.record_refund(refund);
      Ok(())
  }
@@ -534,7 +530,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -569,8 +577,9 @@
+@@ -569,8 +565,9 @@
      sp: &mut [EvmWord; 2],
  ) -> BuiltinResult {
      let rev![key, value] = sp;
@@ -546,7 +542,7 @@
      Ok(())
  }
 
-@@ -580,13 +589,13 @@
+@@ -580,13 +577,13 @@
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
      let rev![dst, src, len] = sp;
@@ -565,7 +561,7 @@
      }
      Ok(())
  }
-@@ -597,35 +606,31 @@
+@@ -597,35 +594,31 @@
      sp: *mut EvmWord,
      n: u8,
  ) -> BuiltinResult {
@@ -612,7 +608,7 @@
      Ok(())
  }
 
-@@ -635,65 +640,84 @@
+@@ -635,65 +628,84 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
@@ -636,7 +632,7 @@
 -            let max_initcode_size = ecx.host.max_initcode_size();
 -            if len > max_initcode_size {
 -                return Err(InstructionResult::CreateInitCodeSizeLimit.into());
-+        if ecx.spec_id().enables(SpecId::SHANGHAI) {
++        if ecx.enables(EvmFeatures::EIP3860) {
 +            if len > version.max_initcode_size {
 +                return Err(InstrStop::CreateInitCodeSizeLimit.into());
              }
@@ -676,7 +672,7 @@
      let mut gas_limit = ecx.gas.remaining();
 -    if ecx.spec_id.is_enabled_in(SpecId::TANGERINE) {
 -        gas_limit = ecx.gas_params.call_stipend_reduction(gas_limit);
-+    if ecx.spec_id().enables(SpecId::TANGERINE) {
++    if ecx.enables(EvmFeatures::EIP150) {
 +        gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
      }
 -    gas!(ecx, gas_limit);
@@ -733,7 +729,7 @@
      Ok(())
  }
 
-@@ -707,23 +731,20 @@
+@@ -707,23 +719,20 @@
          CallKind::Call | CallKind::CallCode => 7,
          CallKind::DelegateCall | CallKind::StaticCall => 6,
      };
@@ -761,7 +757,7 @@
              }
              value
          }
-@@ -733,112 +754,166 @@
+@@ -733,112 +742,166 @@
 
      pop!(sp; in_offset, in_len, out_offset, out_len);
 
@@ -790,8 +786,8 @@
      } else {
 -        usize::MAX // unrealistic value so we are sure it is not used
 +        usize::MAX
-     };
-
++    };
++
 +    let (gas_limit, loaded_code, resolved_code_address, disable_precompiles) =
 +        load_acc_and_calc_gas(ecx, to, transfers_value, call_kind == CallKind::Call, local_gas_limit)?;
 +
@@ -805,7 +801,7 @@
 +            (current.destination, current.caller, current.value, resolved_code_address)
 +        }
 +        CallKind::StaticCall => (to, current.destination, U256::ZERO, resolved_code_address),
-+    };
+     };
 +    let mut message = Message {
 +        kind: call_kind.into(),
 +        depth: current.depth.saturating_add(1),
@@ -838,7 +834,7 @@
 +    ecx.set_return_data(core::mem::take(&mut result.output));
 +    Ok(())
 +}
-+
+
 +const fn should_charge_new_account_gas(
 +    eip161: bool,
 +    transfers_value: bool,
@@ -882,7 +878,7 @@
 +    }
 +    let mut code = account.code;
 +    let mut code_address = to;
-+    if ecx.spec_id().enables(SpecId::PRAGUE)
++    if ecx.enables(EvmFeatures::EIP7702)
 +        && let Some(delegated_address) = code.eip7702_address()
 +    {
 +        cost += u64::from(version.gas_params.get(GasId::WarmStorageReadCost));
@@ -903,7 +899,7 @@
 +    let spec_id = ecx.spec_id();
 +    if create_empty_account
 +        && should_charge_new_account_gas(
-+            spec_id.enables(SpecId::SPURIOUS_DRAGON),
++            ecx.enables(EvmFeatures::EIP161),
              transfers_value,
 -            call_kind == CallKind::Call,
 -        )?;
@@ -924,7 +920,7 @@
 -    let mut gas_limit = if ecx.spec_id.is_enabled_in(SpecId::TANGERINE) {
 -        let gas = ecx.gas.remaining();
 -        ecx.gas_params.call_stipend_reduction(gas).min(local_gas_limit)
-+    let mut gas_limit = if ecx.spec_id().enables(SpecId::TANGERINE) {
++    let mut gas_limit = if ecx.enables(EvmFeatures::EIP150) {
 +        min(version.gas_params.call_stipend_reduction(ecx.gas.remaining()), stack_gas_limit)
      } else {
 -        local_gas_limit
@@ -1003,7 +999,7 @@
      Err(result.into())
  }
 
-@@ -847,18 +922,17 @@
+@@ -847,18 +910,17 @@
      ecx: &mut EvmContext<'_>,
      offset: u64,
      len: u64,
@@ -1028,7 +1024,7 @@
      Err(result.into())
  }
 
-@@ -867,32 +941,418 @@
+@@ -867,32 +929,415 @@
      ecx: &mut EvmContext<'_>,
      target: &mut EvmWord,
  ) -> BuiltinResult {
@@ -1050,12 +1046,11 @@
      // EIP-161: State trie clearing (invariant-preserving alternative)
 -    let should_charge_topup = if ecx.spec_id.is_enabled_in(SpecId::SPURIOUS_DRAGON) {
 -        res.had_value && !res.target_exists
-+    let should_charge_topup = if ecx.spec_id().enables(SpecId::SPURIOUS_DRAGON) {
-+        res.had_value && res.target_is_empty
-     } else {
+-    } else {
 -        !res.target_exists
-+        res.target_is_empty
-     };
+-    };
++    let should_charge_topup =
++        should_charge_new_account_gas(ecx.enables(EvmFeatures::EIP161), res.had_value, res.target_is_empty);
 
 -    gas!(ecx, ecx.gas_params.selfdestruct_cost(should_charge_topup, res.is_cold));
 +    ecx.gas.spend(ecx.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
@@ -1063,7 +1058,7 @@
      // State gas for new account creation (EIP-8037).
 -    if ecx.host.is_amsterdam_eip8037_enabled() && should_charge_topup {
 -        state_gas!(ecx, ecx.gas_params.new_account_state_gas());
-+    if ecx.spec_id().enables(SpecId::AMSTERDAM) && should_charge_topup {
++    if ecx.enables(EvmFeatures::EIP8037) && should_charge_topup {
 +        ecx.gas.spend_state(u64::from(ecx.gas_params().get(GasId::NewAccountState)))?;
      }
 
@@ -1074,16 +1069,16 @@
 
 -    Err(InstructionResult::SelfDestruct.into())
 +    Err(InstrStop::SelfDestruct.into())
-+}
-+
  }
 
+ }
++
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
 +    use alloy_primitives::Address;
 +    use evm2::{
-+        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles,
++        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
 +        env::{BlockEnv, TxEnv},
 +        ethereum::ethereum_tx_registry,
 +        evm::{EmptyDB, inspector::Inspector},
@@ -1458,4 +1453,4 @@
 +        assert_eq!(inspector.creates[0].input.as_ref(), initcode);
 +        assert_eq!(inspector.creates[0].salt, B256::from(salt.to_be_bytes()));
 +    }
- }
++}

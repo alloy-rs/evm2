@@ -20,7 +20,7 @@
 +    BaseEvmTypes, SpecId,
 +    env::{BlockEnv, TxEnv},
 +    interpreter::{Host as Evm2Host, Interpreter, Message},
-+    version::GasParams,
++    version::{EvmFeatures, GasParams},
  };
 -use revm_primitives::{Address, B256, Bytes, Log, U256, hardfork::SpecId, ruint};
 
@@ -214,7 +214,7 @@
              mem_base: ptr::null_mut(),
              mem_len: 0,
          };
-@@ -188,14 +96,138 @@
+@@ -188,14 +96,144 @@
          (this, stack, stack_len)
      }
 
@@ -302,6 +302,12 @@
 +        self.interpreter().spec()
 +    }
 +
++    /// Returns whether the active runtime version enables `feature`.
++    #[inline]
++    pub fn enables(&self, feature: EvmFeatures) -> bool {
++        self.version().feature(feature)
++    }
++
 +    /// Returns the active frame-local call/create message.
 +    #[inline]
 +    pub fn message(&self) -> &'a Message<BaseEvmTypes> {
@@ -357,7 +363,7 @@
      }
  }
 
-@@ -204,9 +236,9 @@
+@@ -204,9 +242,9 @@
  /// # Examples
  ///
  /// ```no_run
@@ -369,7 +375,7 @@
  ///    /// A simple function.
  ///    pub fn test_fn;
  /// }
-@@ -214,7 +246,7 @@
+@@ -214,7 +252,7 @@
  /// let test_fn = EvmCompilerFn::new(test_fn);
  /// ```
  #[macro_export]
@@ -378,7 +384,7 @@
      ($( $(#[$attr:meta])* $vis:vis fn $name:ident; )+) => {
          #[allow(improper_ctypes)]
          unsafe extern "C" {
-@@ -224,7 +256,7 @@
+@@ -224,7 +262,7 @@
                      ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
                      stack: ::core::ptr::NonNull<$crate::EvmStack>,
                      stack_len: ::core::ptr::NonNull<usize>,
@@ -387,7 +393,7 @@
              )+
          }
      };
-@@ -239,7 +271,7 @@
+@@ -239,7 +277,7 @@
      ecx: NonNull<EvmContext<'_>>,
      stack: NonNull<EvmStack>,
      stack_len: NonNull<usize>,
@@ -396,7 +402,7 @@
 
  /// An EVM bytecode function.
  #[derive(Clone, Copy, Debug, Hash)]
-@@ -272,82 +304,6 @@
+@@ -272,82 +310,6 @@
          self.0
      }
 
@@ -479,7 +485,7 @@
      /// Calls the function.
      ///
      /// Arguments:
-@@ -363,11 +319,18 @@
+@@ -363,11 +325,18 @@
      #[inline]
      pub unsafe fn call(
          self,
@@ -501,7 +507,7 @@
      }
 
      /// Same as [`call`](Self::call) but with `#[inline(never)]`.
-@@ -380,11 +343,30 @@
+@@ -380,11 +349,30 @@
      #[inline(never)]
      pub unsafe fn call_noinline(
          self,
@@ -535,7 +541,7 @@
      }
  }
 
-@@ -415,20 +397,6 @@
+@@ -415,20 +403,6 @@
          Vec::with_capacity(1024)
      }
 
@@ -556,7 +562,7 @@
      /// Creates a stack from a vector's buffer.
      ///
      /// # Panics
-@@ -544,7 +512,7 @@
+@@ -544,7 +518,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked(&self, index: usize) -> &EvmWord {
@@ -565,7 +571,7 @@
      }
 
      /// Returns the word at the given index as a mutable reference.
-@@ -554,7 +522,7 @@
+@@ -554,7 +528,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut EvmWord {
@@ -574,7 +580,7 @@
      }
 
      /// Sets the value at the top of the stack to `value`, and grows the stack by 1.
-@@ -564,7 +532,7 @@
+@@ -564,7 +538,7 @@
      /// The caller must ensure that the stack is not full.
      #[inline]
      pub unsafe fn push(&mut self, value: EvmWord, len: &mut usize) {
@@ -583,7 +589,7 @@
          *len += 1;
      }
 
-@@ -575,7 +543,7 @@
+@@ -575,7 +549,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked(&self, len: usize) -> &EvmWord {
@@ -592,7 +598,7 @@
      }
 
      /// Returns the value at the top of the stack as a mutable reference.
-@@ -585,7 +553,7 @@
+@@ -585,7 +559,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked_mut(&mut self, len: usize) -> &mut EvmWord {
@@ -601,7 +607,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack.
-@@ -595,7 +563,7 @@
+@@ -595,7 +569,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked(&self, len: usize, n: usize) -> &EvmWord {
@@ -610,7 +616,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack as a mutable reference.
-@@ -605,7 +573,7 @@
+@@ -605,7 +579,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked_mut(&mut self, len: usize, n: usize) -> &mut EvmWord {
@@ -619,7 +625,7 @@
      }
 
      /// Sets the value at the given index.
-@@ -615,7 +583,7 @@
+@@ -615,7 +589,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn set_unchecked(&mut self, index: usize, value: EvmWord) {
@@ -628,7 +634,7 @@
      }
  }
 
-@@ -821,14 +789,6 @@
+@@ -821,14 +795,6 @@
      }
  }
 
@@ -643,7 +649,7 @@
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -841,7 +801,7 @@
+@@ -841,7 +807,7 @@
          assert_eq!(usize::try_from(&mut word), Ok(0));
      }
 
@@ -652,7 +658,7 @@
          #[link_name = "__test_fn"]
          fn test_fn;
      }
-@@ -851,8 +811,8 @@
+@@ -851,8 +817,8 @@
          _ecx: NonNull<EvmContext<'_>>,
          _stack: NonNull<EvmStack>,
          _stack_len: NonNull<usize>,

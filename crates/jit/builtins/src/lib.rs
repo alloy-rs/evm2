@@ -14,11 +14,10 @@ use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
 use core::cmp::min;
 use evm2::{
-    SpecId,
     bytecode::Bytecode,
     interpreter::{Host, Message, MessageKind, Word, i256},
     utils::{word_to_usize, word_to_usize_saturated},
-    version::GasId,
+    version::{EvmFeatures, GasId},
 };
 use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 
@@ -423,7 +422,7 @@ pub unsafe extern "C" fn __revmc_builtin_number(ecx: &mut EvmContext<'_>, slot: 
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_difficulty(ecx: &mut EvmContext<'_>, slot: &mut EvmWord) {
-    *slot = if ecx.spec_id().enables(SpecId::MERGE) {
+    *slot = if ecx.enables(EvmFeatures::EIP4399) {
         ecx.block_env().prevrandao.into()
     } else {
         ecx.block_env().difficulty.into()
@@ -487,20 +486,15 @@ pub unsafe extern "C" fn __revmc_builtin_sload(
 ) -> BuiltinResult {
     let address = &ecx.message().destination;
     let key = index.to_u256();
-    if ecx.spec_id().enables(SpecId::BERLIN) {
-        let additional_cold_cost = u64::from(ecx.gas_params().get(GasId::ColdStorageAdditionalCost));
-        let skip_cold = ecx.gas.remaining() < additional_cold_cost;
-        let storage =
-            ecx.host().sload(address, &key, skip_cold).map_err(|stop| host_error_stop(stop, skip_cold))?;
-        if storage.is_cold {
-            ecx.gas.spend(additional_cold_cost)?;
-        }
-        *index = storage.value.into();
-    } else {
-        let storage =
-            ecx.host().sload(address, &key, false).map_err(|stop| host_error_stop(stop, false))?;
-        *index = storage.value.into();
+    let additional_cold_cost = u64::from(ecx.gas_params().get(GasId::ColdStorageAdditionalCost));
+    let skip_cold =
+        ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
+    let storage =
+        ecx.host().sload(address, &key, skip_cold).map_err(|stop| host_error_stop(stop, skip_cold))?;
+    if storage.is_cold {
+        ecx.gas.spend(additional_cold_cost)?;
     }
+    *index = storage.value.into();
 
     Ok(())
 }
@@ -525,41 +519,35 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
     require_non_staticcall(ecx)?;
 
     let target = &ecx.message().destination;
-    let is_istanbul = ecx.spec_id().enables(SpecId::ISTANBUL);
+    let is_eip2200 = ecx.enables(EvmFeatures::EIP2200);
 
     // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
-    if is_istanbul && ecx.gas.remaining() <= u64::from(ecx.gas_params().get(GasId::CallStipend)) {
+    if is_eip2200 && ecx.gas.remaining() <= u64::from(ecx.gas_params().get(GasId::CallStipend)) {
         return Err(InstrStop::ReentrancySentryOOG.into());
     }
 
     ecx.gas.spend(u64::from(ecx.gas_params().get(GasId::SstoreStatic)))?;
 
-    let state_load = if ecx.spec_id().enables(SpecId::BERLIN) {
-        let additional_cold_cost = u64::from(ecx.gas_params().get(GasId::ColdStorageAdditionalCost));
-        let skip_cold = ecx.gas.remaining() < additional_cold_cost;
-        let index = index.to_u256();
-        let value = value.to_u256();
-        ecx.host()
-            .sstore(target, &index, &value, skip_cold)
-            .map_err(|stop| host_error_stop(stop, skip_cold))?
-    } else {
-        let index = index.to_u256();
-        let value = value.to_u256();
-        ecx.host()
-            .sstore(target, &index, &value, false)
-            .map_err(|stop| host_error_stop(stop, false))?
-    };
+    let additional_cold_cost = u64::from(ecx.gas_params().get(GasId::ColdStorageAdditionalCost));
+    let skip_cold =
+        ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
+    let index = index.to_u256();
+    let value = value.to_u256();
+    let state_load = ecx
+        .host()
+        .sstore(target, &index, &value, skip_cold)
+        .map_err(|stop| host_error_stop(stop, skip_cold))?;
 
-    let dynamic_gas = ecx.gas_params().sstore_dynamic_gas(is_istanbul, &state_load);
+    let dynamic_gas = ecx.gas_params().sstore_dynamic_gas(is_eip2200, &state_load);
     ecx.gas.spend(dynamic_gas)?;
 
     // State gas for new slot creation (EIP-8037).
-    if ecx.spec_id().enables(SpecId::AMSTERDAM) {
+    if ecx.enables(EvmFeatures::EIP8037) {
         let state_gas = ecx.gas_params().sstore_state_gas(&state_load);
         ecx.gas.spend_state(state_gas)?;
     }
 
-    let refund = ecx.gas_params().sstore_refund(is_istanbul, &state_load);
+    let refund = ecx.gas_params().sstore_refund(is_eip2200, &state_load);
     ecx.gas.record_refund(refund);
     Ok(())
 }
@@ -652,7 +640,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     let len = word_to_usize(len.to_u256())?;
     let version = *ecx.version();
     let code = if len != 0 {
-        if ecx.spec_id().enables(SpecId::SHANGHAI) {
+        if ecx.enables(EvmFeatures::EIP3860) {
             if len > version.max_initcode_size {
                 return Err(InstrStop::CreateInitCodeSizeLimit.into());
             }
@@ -675,7 +663,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     ecx.gas.spend(create_cost)?;
 
     let mut gas_limit = ecx.gas.remaining();
-    if ecx.spec_id().enables(SpecId::TANGERINE) {
+    if ecx.enables(EvmFeatures::EIP150) {
         gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
     }
     ecx.gas.spend(gas_limit)?;
@@ -853,7 +841,7 @@ fn load_acc_and_calc_gas(
     }
     let mut code = account.code;
     let mut code_address = to;
-    if ecx.spec_id().enables(SpecId::PRAGUE)
+    if ecx.enables(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
         cost += u64::from(version.gas_params.get(GasId::WarmStorageReadCost));
@@ -874,7 +862,7 @@ fn load_acc_and_calc_gas(
     let spec_id = ecx.spec_id();
     if create_empty_account
         && should_charge_new_account_gas(
-            spec_id.enables(SpecId::SPURIOUS_DRAGON),
+            ecx.enables(EvmFeatures::EIP161),
             transfers_value,
             ecx.host().target_is_empty_for_new_account_gas(&to, spec_id)?,
         )
@@ -883,7 +871,7 @@ fn load_acc_and_calc_gas(
     }
     ecx.gas.spend(cost)?;
 
-    let mut gas_limit = if ecx.spec_id().enables(SpecId::TANGERINE) {
+    let mut gas_limit = if ecx.enables(EvmFeatures::EIP150) {
         min(version.gas_params.call_stipend_reduction(ecx.gas.remaining()), stack_gas_limit)
     } else {
         stack_gas_limit
@@ -953,16 +941,13 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
         .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
 
     // EIP-161: State trie clearing (invariant-preserving alternative)
-    let should_charge_topup = if ecx.spec_id().enables(SpecId::SPURIOUS_DRAGON) {
-        res.had_value && res.target_is_empty
-    } else {
-        res.target_is_empty
-    };
+    let should_charge_topup =
+        should_charge_new_account_gas(ecx.enables(EvmFeatures::EIP161), res.had_value, res.target_is_empty);
 
     ecx.gas.spend(ecx.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
 
     // State gas for new account creation (EIP-8037).
-    if ecx.spec_id().enables(SpecId::AMSTERDAM) && should_charge_topup {
+    if ecx.enables(EvmFeatures::EIP8037) && should_charge_topup {
         ecx.gas.spend_state(u64::from(ecx.gas_params().get(GasId::NewAccountState)))?;
     }
 
@@ -980,7 +965,7 @@ mod tests {
     use super::*;
     use alloy_primitives::Address;
     use evm2::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles,
+        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
         env::{BlockEnv, TxEnv},
         ethereum::ethereum_tx_registry,
         evm::{EmptyDB, inspector::Inspector},

@@ -17,7 +17,7 @@ use evm2::{
     BaseEvmTypes, SpecId,
     env::{BlockEnv, TxEnv},
     interpreter::{Host as Evm2Host, Interpreter, Message},
-    version::GasParams,
+    version::{EvmFeatures, GasParams},
 };
 
 mod arch;
@@ -177,6 +177,12 @@ impl<'a> EvmContext<'a> {
     #[inline]
     pub fn spec_id(&self) -> SpecId {
         self.interpreter().spec()
+    }
+
+    /// Returns whether the active runtime version enables `feature`.
+    #[inline]
+    pub fn enables(&self, feature: EvmFeatures) -> bool {
+        self.version().feature(feature)
     }
 
     /// Returns the active frame-local call/create message.
