@@ -109,7 +109,7 @@ bn = { package = "substrate-bn", version = "0.6", default-features = false }
 c-kzg = { version = "2.1.7", default-features = false }
 gmp-mpfr-sys = { version = "1.6", default-features = false }
 k256 = { version = "0.13", default-features = false }
-mcl_rust = { version = "1", default-features = false }
+mcl_rust = { version = "1.1.0", default-features = false, git = "https://github.com/herumi/mcl-rust", rev = "v1.1.0" }
 p256 = { version = "0.13.2", default-features = false }
 ripemd = { version = "0.2.0", default-features = false }
 secp256k1 = { version = "0.31.1", default-features = false }
@@ -157,5 +157,3 @@ ark-ff-macros = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e
 ark-poly = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
 ark-serialize = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
 ark-serialize-derive = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
-
-mcl_rust = { git = "https://github.com/DaniPopes/mcl-rust", branch = "link-cplusplus" }
