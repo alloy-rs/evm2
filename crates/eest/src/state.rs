@@ -1,4 +1,8 @@
 use alloy_primitives::{Address, B256};
+use alloy_trie::{
+    TrieAccount,
+    root::{state_root_unhashed, storage_root_unhashed},
+};
 use evm2::{
     bytecode::Bytecode,
     evm::{AccountInfo, InMemoryDB},
@@ -46,4 +50,23 @@ pub(crate) fn storage_for_root(
         .flat_map(|storage| storage.slots.iter())
         .filter_map(|(&key, &value)| (!value.is_zero()).then_some((B256::from(key), value)))
         .collect()
+}
+
+/// Computes the state root of all accounts currently cached in the database.
+pub(crate) fn state_root_from_database(state: &InMemoryDB) -> B256 {
+    let accounts = state.cache.accounts.iter().filter_map(|(&address, info)| {
+        let info = info.as_ref()?;
+        let storage = storage_for_root(state, address);
+        Some((
+            address,
+            TrieAccount {
+                nonce: info.nonce,
+                balance: info.balance,
+                storage_root: storage_root_unhashed(storage),
+                code_hash: info.code_hash,
+            },
+        ))
+    });
+
+    state_root_unhashed(accounts)
 }

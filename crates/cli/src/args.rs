@@ -49,6 +49,10 @@ pub(crate) struct Replay {
     /// Print database method call counts after execution.
     #[arg(long)]
     pub(crate) db_stats: bool,
+    /// Verify each block's computed state root and gas used against its header
+    /// (blockchain tests). State tests always verify their post-state root.
+    #[arg(long)]
+    pub(crate) verify: bool,
     /// EEST fixture file, or a directory to replay every fixture within recursively.
     #[arg(value_name = "PATH")]
     pub(crate) path: PathBuf,

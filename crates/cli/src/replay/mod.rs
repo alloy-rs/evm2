@@ -21,13 +21,20 @@ use std::{
 
 pub(crate) fn run(command: Replay) -> Result<()> {
     let entrypoint = EntryPoint::new(command.entrypoint);
+    let options = ReplayOptions { db_stats: command.db_stats, verify: command.verify };
     if command.path.is_dir() {
-        return run_directory(&command.path, &entrypoint, command.db_stats);
+        return run_directory(&command.path, &entrypoint, options);
     }
-    replay_file(&command.path, &entrypoint, command.db_stats).map(|_| ())
+    replay_file(&command.path, &entrypoint, options).map(|_| ())
 }
 
-fn run_directory(path: &Path, entrypoint: &EntryPoint, db_stats: bool) -> Result<()> {
+#[derive(Clone, Copy)]
+struct ReplayOptions {
+    db_stats: bool,
+    verify: bool,
+}
+
+fn run_directory(path: &Path, entrypoint: &EntryPoint, options: ReplayOptions) -> Result<()> {
     let fixtures = collect_fixtures(path)?;
     if fixtures.is_empty() {
         return Err(Error::NoFixtures { path: path.to_path_buf() });
@@ -35,7 +42,7 @@ fn run_directory(path: &Path, entrypoint: &EntryPoint, db_stats: bool) -> Result
     let mut executed = 0;
     let mut skipped = 0;
     for fixture in &fixtures {
-        let summary = replay_file(fixture, entrypoint, db_stats)?;
+        let summary = replay_file(fixture, entrypoint, options)?;
         executed += summary.executed;
         skipped += summary.skipped;
     }
@@ -54,14 +61,19 @@ struct ReplaySummary {
     skipped: usize,
 }
 
-fn replay_file(path: &Path, entrypoint: &EntryPoint, db_stats: bool) -> Result<ReplaySummary> {
+fn replay_file(
+    path: &Path,
+    entrypoint: &EntryPoint,
+    options: ReplayOptions,
+) -> Result<ReplaySummary> {
+    let ReplayOptions { db_stats, verify } = options;
     if fixture::is_binary_path(path) {
         let suite = fixture::read_blockchain(path)?;
         let mut hook = ReplayProgressHook::default();
         let summary = execute_blockchain_tests_suite(
             path,
             &suite,
-            BlockchainTestExecuteConfig { db_stats, ..Default::default() },
+            BlockchainTestExecuteConfig { db_stats, verify, ..Default::default() },
             entrypoint,
             &mut hook,
         )
@@ -100,7 +112,7 @@ fn replay_file(path: &Path, entrypoint: &EntryPoint, db_stats: bool) -> Result<R
             let summary = execute_blockchain_tests_str(
                 path,
                 &input,
-                BlockchainTestExecuteConfig { db_stats, ..Default::default() },
+                BlockchainTestExecuteConfig { db_stats, verify, ..Default::default() },
                 entrypoint,
                 &mut hook,
             )

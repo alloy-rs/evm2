@@ -13,7 +13,7 @@ use crate::{
     filter::EntryPoint,
     fixture_io,
     forks::is_fork_skipped,
-    state::{insert_account_with_storage, parse_bytecode},
+    state::{insert_account_with_storage, parse_bytecode, state_root_from_database},
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
 };
 use alloy_eips::eip7840::BlobParams;
@@ -43,11 +43,13 @@ pub struct ExecuteConfig {
     pub validate_post_state: bool,
     /// Whether to print database method call counts.
     pub db_stats: bool,
+    /// Whether to verify each block's computed state root and gas used against its header.
+    pub verify: bool,
 }
 
 impl Default for ExecuteConfig {
     fn default() -> Self {
-        Self { validate_post_state: true, db_stats: false }
+        Self { validate_post_state: true, db_stats: false, verify: false }
     }
 }
 
@@ -156,6 +158,7 @@ fn execute_case(
             &mut parent_excess_blob_gas,
             hook,
             if config.db_stats { Some(&mut db_stats_counts) } else { None },
+            config.verify,
         ) {
             Ok(()) => hook.block_finished(BlockFinished {
                 block_index,
@@ -219,9 +222,11 @@ fn execute_block(
     parent_excess_blob_gas: &mut u64,
     hook: &mut dyn Hook,
     db_stats_counts: Option<&mut DbStatsCounts>,
+    verify: bool,
 ) -> Result<(), TestError> {
     let db_stats = db_stats_counts.is_some();
     let should_fail = block.expect_exception.is_some();
+    let mut computed_gas_used: u64 = 0;
     let mut block_hash = None;
     let mut beacon_root = None;
     let mut this_excess_blob_gas = None;
@@ -293,7 +298,8 @@ fn execute_block(
             };
 
             match execute_tx(&mut evm, &mut block_state, &tx) {
-                Ok(_) => {
+                Ok(result) => {
+                    computed_gas_used = computed_gas_used.saturating_add(result.gas_used);
                     hook.transaction_finished(TransactionFinished {
                         block_index,
                         total_blocks,
@@ -373,6 +379,30 @@ fn execute_block(
             *parent_block_hash = block_hash;
             if let Some(excess_blob_gas) = this_excess_blob_gas {
                 *parent_excess_blob_gas = excess_blob_gas;
+            }
+            if verify && let Some(header) = block_header(block) {
+                let expected_gas = header.gas_used.saturating_to::<u64>();
+                if computed_gas_used != expected_gas {
+                    return Err(TestError::case(
+                        path,
+                        name,
+                        TestErrorKind::GasUsedMismatch {
+                            got: computed_gas_used,
+                            expected: expected_gas,
+                        },
+                    ));
+                }
+                let got_root = state_root_from_database(database);
+                if got_root != header.state_root {
+                    return Err(TestError::case(
+                        path,
+                        name,
+                        TestErrorKind::StateRootMismatch {
+                            got: got_root,
+                            expected: header.state_root,
+                        },
+                    ));
+                }
             }
             Ok(())
         }

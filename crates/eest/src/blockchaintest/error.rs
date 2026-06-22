@@ -64,6 +64,22 @@ pub(crate) enum TestErrorKind {
     /// A system call failed.
     #[error("system call failed: {0}")]
     SystemCall(&'static str),
+    /// The computed post-block state root did not match the block header.
+    #[error("state root mismatch: got {got}, expected {expected}")]
+    StateRootMismatch {
+        /// Computed state root.
+        got: alloy_primitives::B256,
+        /// Expected state root from the block header.
+        expected: alloy_primitives::B256,
+    },
+    /// The computed block gas used did not match the block header.
+    #[error("gas used mismatch: got {got}, expected {expected}")]
+    GasUsedMismatch {
+        /// Computed cumulative gas used by the block's transactions.
+        got: u64,
+        /// Expected gas used from the block header.
+        expected: u64,
+    },
 }
 
 impl From<TxBuildError> for TestErrorKind {

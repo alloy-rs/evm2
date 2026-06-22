@@ -4,7 +4,8 @@ use crate::{
     fixture_io,
     forks::is_fork_skipped,
     state::{
-        insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
+        insert_account_with_storage, parse_bytecode, state_root_from_database,
+        system_contract_has_code,
     },
     tx::{TxFields, build_recovered_tx, recover_address, rpc_access_list, signed_authorizations},
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
@@ -12,10 +13,6 @@ use crate::{
 use alloy_eips::{eip4844, eip7691};
 use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256, keccak256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
-use alloy_trie::{
-    TrieAccount,
-    root::{state_root_unhashed, storage_root_unhashed},
-};
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
     BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
@@ -367,24 +364,6 @@ fn logs_hash(logs: &[Log]) -> B256 {
     let mut out = Vec::with_capacity(alloy_rlp::list_length(logs));
     alloy_rlp::encode_list(logs, &mut out);
     keccak256(out)
-}
-
-fn state_root_from_database(state: &InMemoryDB) -> B256 {
-    let accounts = state.cache.accounts.iter().filter_map(|(&address, info)| {
-        let info = info.as_ref()?;
-        let storage = storage_for_root(state, address);
-        Some((
-            address,
-            TrieAccount {
-                nonce: info.nonce,
-                balance: info.balance,
-                storage_root: storage_root_unhashed(storage),
-                code_hash: info.code_hash,
-            },
-        ))
-    });
-
-    state_root_unhashed(accounts)
 }
 
 fn parse_state(pre: &BTreeMap<Address, AccountInfo>) -> Result<InMemoryDB, TestErrorKind> {
