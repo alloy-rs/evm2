@@ -4,7 +4,7 @@ mod env;
 mod error;
 mod execute;
 mod hook;
-pub(crate) mod runner;
+mod runner;
 mod types;
 
 pub use error::TestError;

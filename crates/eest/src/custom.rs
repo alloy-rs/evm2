@@ -1,56 +1,42 @@
 //! Single-path fixture suite.
 //!
 //! When `EVM2_FIXTURE_PATH` points at a folder (or file), every JSON fixture
-//! found under it runs as one suite whose kind (state vs blockchain) is detected
-//! per file, so no test-name filter is needed to isolate it.
+//! found anywhere under it runs as one suite whose kind (state vs blockchain) is
+//! detected per file, so no test-name filter is needed to isolate it.
 
 use crate::{
-    blockchaintest::{self, ExecuteConfig as BlockchainConfig, NoopHook},
+    blockchaintest::{ExecuteConfig as BlockchainConfig, NoopHook, execute_str},
     execute::{self, ExecuteConfig as StateConfig},
     filter::EntryPoint,
     fixture_io,
-    harness::{TestRoot, TestSuite},
+    harness::{TestRoot, TestSuite, descend_all},
 };
 use libtest_mimic::Failed;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Builds the auto-detecting suite rooted at `path`.
 pub(crate) fn suite(path: PathBuf) -> TestSuite {
     TestSuite {
         name: "fixtures",
         roots: vec![TestRoot { name: "fixtures", label: "custom fixtures", path }],
-        should_descend,
-        should_ignore,
+        // Descend into every directory so all JSON files under the path run.
+        should_descend: descend_all,
+        should_ignore: ignore_none,
         run_file,
     }
 }
 
-/// Skips fixture directories this runner cannot execute: transaction tests and
-/// the engine/sync blockchain variants.
-fn should_descend(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return true;
-    };
-    !matches!(
-        name,
-        "transaction_tests"
-            | "blockchain_tests_engine"
-            | "blockchain_tests_engine_x"
-            | "blockchain_tests_sync"
-    )
-}
-
-/// Skips fixtures that either suite would skip, keeping behavior consistent with
-/// the default runs.
-fn should_ignore(name: &str) -> bool {
-    crate::runner::should_ignore(name) || blockchaintest::runner::should_ignore(name)
+/// Runs every JSON file: a custom path is an explicit request, so nothing is
+/// skipped.
+const fn ignore_none(_name: &str) -> bool {
+    false
 }
 
 fn run_file(path: PathBuf) -> Result<(), Failed> {
     let input =
         fixture_io::read_to_string(&path).map_err(|err| format!("{}: {err}", path.display()))?;
     match detect_kind(&input) {
-        Some(FixtureKind::Blockchain) => blockchaintest::execute_str(
+        Some(FixtureKind::Blockchain) => execute_str(
             &path,
             &input,
             BlockchainConfig::default(),
