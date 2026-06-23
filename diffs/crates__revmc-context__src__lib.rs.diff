@@ -402,7 +402,7 @@
 
  /// An EVM bytecode function.
  #[derive(Clone, Copy, Debug, Hash)]
-@@ -272,82 +310,6 @@
+@@ -272,80 +310,23 @@
          self.0
      }
 
@@ -410,9 +410,10 @@
 -    ///
 -    /// This behaves similarly to `Interpreter::run_plain`, returning an [`InstructionResult`]
 -    /// and the next action in an [`InterpreterAction`].
--    ///
--    /// # Safety
--    ///
++    /// Calls the function by re-using an evm2 interpreter's resources.
+     ///
+     /// # Safety
+     ///
 -    /// The caller must ensure that the function is safe to call.
 -    pub unsafe fn call_with_interpreter(
 -        self,
@@ -442,7 +443,10 @@
 -    }
 -
 -    unsafe fn call_with_interpreter_inner(
--        self,
++    /// The caller must ensure that the function is safe to call for this interpreter state.
++    #[inline]
++    pub unsafe fn call_with_interpreter<'a, 'frame: 'a>(
+         self,
 -        interpreter: &mut Interpreter,
 -        host: &mut dyn Host,
 -        configure: impl FnOnce(&mut EvmContext<'_>),
@@ -459,8 +463,13 @@
 -        // Set the remaining gas to 0 if the result is `OutOfGas`,
 -        // as it might have overflown inside of the function.
 -        if result == InstructionResult::OutOfGas {
--            ecx.gas.spend_all();
--        }
++        interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
++    ) -> InstrStop {
++        let (mut ecx, stack, stack_len) = EvmContext::from_interpreter_with_stack(interpreter);
++        let result = unsafe { self.call(&mut ecx, stack, stack_len) };
++        if result == InstrStop::OutOfGas {
+             ecx.gas.spend_all();
+         }
 -
 -        let return_data_is_empty = ecx.return_data.is_empty();
 -        interpreter.gas = ecx.gas;
@@ -480,12 +489,12 @@
 -                gas: interpreter.gas,
 -            })
 -        }
--    }
--
++        ecx.finish_interpreter_run();
++        result
+     }
+
      /// Calls the function.
-     ///
-     /// Arguments:
-@@ -363,11 +325,18 @@
+@@ -363,11 +344,18 @@
      #[inline]
      pub unsafe fn call(
          self,
@@ -507,7 +516,7 @@
      }
 
      /// Same as [`call`](Self::call) but with `#[inline(never)]`.
-@@ -380,11 +349,30 @@
+@@ -380,11 +368,11 @@
      #[inline(never)]
      pub unsafe fn call_noinline(
          self,
@@ -519,25 +528,6 @@
 -        self.call(stack, stack_len, ecx)
 +    ) -> InstrStop {
 +        unsafe { self.call(ecx, stack, stack_len) }
-+    }
-+
-+    /// Calls the function by re-using an evm2 interpreter's resources.
-+    ///
-+    /// # Safety
-+    ///
-+    /// The caller must ensure that the function is safe to call for this interpreter state.
-+    #[inline]
-+    pub unsafe fn call_with_interpreter<'a, 'frame: 'a>(
-+        self,
-+        interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
-+    ) -> InstrStop {
-+        let (mut ecx, stack, stack_len) = EvmContext::from_interpreter_with_stack(interpreter);
-+        let result = unsafe { self.call(&mut ecx, stack, stack_len) };
-+        if result == InstrStop::OutOfGas {
-+            ecx.gas.spend_all();
-+        }
-+        ecx.finish_interpreter_run();
-+        result
      }
  }
 

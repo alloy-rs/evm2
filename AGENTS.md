@@ -9,6 +9,9 @@ This is a work-in-progress repo with no public API stability guarantees. Do not 
 backwards-compatibility aliases, deprecated wrappers, compatibility shims, or similar
 transitional API layers unless explicitly requested.
 
+For all work under `crates/jit`, follow `crates/jit/AGENTS.md` in addition to
+this root file.
+
 ## Temporary Branch Context
 
 This branch is porting `paradigmxyz/revmc` into `crates/jit` as the `evm2-jit`

@@ -310,6 +310,25 @@ impl EvmCompilerFn {
         self.0
     }
 
+    /// Calls the function by re-using an evm2 interpreter's resources.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the function is safe to call for this interpreter state.
+    #[inline]
+    pub unsafe fn call_with_interpreter<'a, 'frame: 'a>(
+        self,
+        interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
+    ) -> InstrStop {
+        let (mut ecx, stack, stack_len) = EvmContext::from_interpreter_with_stack(interpreter);
+        let result = unsafe { self.call(&mut ecx, stack, stack_len) };
+        if result == InstrStop::OutOfGas {
+            ecx.gas.spend_all();
+        }
+        ecx.finish_interpreter_run();
+        result
+    }
+
     /// Calls the function.
     ///
     /// Arguments:
@@ -354,25 +373,6 @@ impl EvmCompilerFn {
         stack_len: &mut usize,
     ) -> InstrStop {
         unsafe { self.call(ecx, stack, stack_len) }
-    }
-
-    /// Calls the function by re-using an evm2 interpreter's resources.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that the function is safe to call for this interpreter state.
-    #[inline]
-    pub unsafe fn call_with_interpreter<'a, 'frame: 'a>(
-        self,
-        interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
-    ) -> InstrStop {
-        let (mut ecx, stack, stack_len) = EvmContext::from_interpreter_with_stack(interpreter);
-        let result = unsafe { self.call(&mut ecx, stack, stack_len) };
-        if result == InstrStop::OutOfGas {
-            ecx.gas.spend_all();
-        }
-        ecx.finish_interpreter_run();
-        result
     }
 }
 
