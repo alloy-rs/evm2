@@ -398,14 +398,13 @@ impl GasTracker {
     /// Merges a returning child frame's (already [settled](Self::settle_gas)) gas
     /// into this (parent) frame, per the child's `stop` reason.
     ///
-    /// - **Unused regular gas** returns to the parent only on success or revert; a
-    ///   halt consumes the child's regular gas (already zeroed when settled).
-    /// - **The reservoir** is a shared state-gas pool the child inherited at call
-    ///   time, so the parent always adopts the child's value — which settling
-    ///   restored to the inherited amount on revert/halt, leaving it untouched.
-    /// - **Net state gas, its spilled portion, and the refund counter** persist
-    ///   only on success; on revert/halt the child's state changes roll back, so
-    ///   it contributes none.
+    /// - **Unused regular gas** returns to the parent only on success or revert; a halt consumes
+    ///   the child's regular gas (already zeroed when settled).
+    /// - **The reservoir** is a shared state-gas pool the child inherited at call time, so the
+    ///   parent always adopts the child's value — which settling restored to the inherited amount
+    ///   on revert/halt, leaving it untouched.
+    /// - **Net state gas, its spilled portion, and the refund counter** persist only on success; on
+    ///   revert/halt the child's state changes roll back, so it contributes none.
     #[inline]
     pub const fn merge_child_gas(&mut self, child: Self, stop: InstrStop) {
         if stop.is_success() || stop.is_revert() {

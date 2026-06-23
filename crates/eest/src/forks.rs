@@ -58,8 +58,10 @@ mod tests {
 
     #[test]
     fn unsupported_forks_are_skipped() {
-        assert!(is_fork_skipped(SpecId::AMSTERDAM));
-        assert!(!is_fork_skipped(SpecId::OSAKA));
-        assert!(!is_fork_skipped(SpecId::FRONTIER));
+        // Absent `EVM2_SKIP_FORKS`, a fork is skipped iff it is in `UNSUPPORTED_FORKS`.
+        // The list is currently empty (evm2 targets all forks, including Amsterdam).
+        for spec in [SpecId::AMSTERDAM, SpecId::OSAKA, SpecId::FRONTIER] {
+            assert_eq!(is_fork_skipped(spec), UNSUPPORTED_FORKS.contains(&spec));
+        }
     }
 }

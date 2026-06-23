@@ -1172,10 +1172,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Computes the EIP-2780 top-level (depth-0) execution charges for a call to
     /// `message.destination`, from the recipient's pre-call state:
-    /// - a regular-gas `COLD_ACCOUNT_ACCESS` surcharge when the recipient carries
-    ///   an EIP-7702 delegation, and
-    /// - `new_account_state_gas` of state gas when the recipient is empty
-    ///   (EIP-161) and the call transfers value.
+    /// - a regular-gas `COLD_ACCOUNT_ACCESS` surcharge when the recipient carries an EIP-7702
+    ///   delegation, and
+    /// - `new_account_state_gas` of state gas when the recipient is empty (EIP-161) and the call
+    ///   transfers value.
     ///
     /// Returns `(regular, state)`, both zero unless EIP-2780 is active at depth 0.
     fn eip2780_call_charges(&mut self, message: &Message<T>) -> (u64, u64) {
