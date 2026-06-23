@@ -709,6 +709,8 @@ evm_versions! {
             TxEip7702AuthRefund: EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST,
             TxFloorCostPerToken: TOTAL_COST_FLOOR_PER_TOKEN,
             TxFloorCostBase: 21000,
+            // EIP-7623: zero calldata bytes count as one floor token.
+            TxFloorZeroByteMultiplier: 1,
         ],
     }
 
@@ -760,6 +762,10 @@ evm_versions! {
             // EIP-2780: the EIP-7623 calldata floor uses the reduced `TX_BASE`
             // (12,000) as its base instead of the legacy 21,000.
             TxFloorCostBase: EIP2780_TX_BASE_COST,
+            // EIP-7976: the calldata floor charges every byte uniformly (64 gas
+            // each), so zero bytes weigh the same as non-zero bytes in the
+            // floor-tokens count.
+            TxFloorZeroByteMultiplier: NON_ZERO_BYTE_MULTIPLIER_ISTANBUL,
             TxAccessListFloorByteMultiplier: EIP7981_ACCESS_LIST_FLOOR_BYTE_MULTIPLIER,
             // EIP-7702 under EIP-8037: only the regular-gas portion lives here.
             // The state-gas portions come from `NewAccountState` (per-account)

@@ -86,15 +86,26 @@ pub(crate) const EIP8038_COLD_STORAGE_ACCESS_ADDITIONAL: u32 =
     EIP8038_COLD_STORAGE_ACCESS - EIP8038_WARM_ACCESS;
 /// CALL value-transfer cost: `ACCOUNT_WRITE + CALL_STIPEND` per the EIP = 10,300.
 pub(crate) const EIP8038_CALL_VALUE: u32 = EIP8038_ACCOUNT_WRITE + CALL_STIPEND;
-/// Regular-gas portion of the EIP-7702 per-auth cost under EIP-8038.
+/// Calldata bytes charged for one EIP-7702 authorization tuple (execution-specs
+/// `AUTH_TUPLE_BYTES`): chain id, authority address, nonce, signature parity, and
+/// the two signature scalars. Charged at the calldata floor rate.
+pub(crate) const EIP7702_AUTH_TUPLE_BYTES: u32 = 101;
+/// ecRecover precompile base cost, charged once per EIP-7702 authorization to
+/// recover the authority. Matches `secp256k1::ECRECOVER_BASE`.
+pub(crate) const EIP7702_ECRECOVER_COST: u32 = 3000;
+/// Regular-gas portion of the EIP-7702 per-auth cost under EIP-8038/Amsterdam.
 ///
-/// Built on the EIP-8037 regular base (7,500) by applying only the EIP-8038
-/// deltas of the primitives in the per-auth breakdown: `ACCOUNT_WRITE`
-/// (6,700→8,000) and `COLD_ACCOUNT_ACCESS` (2,600→3,000). The two `WARM_ACCESS`
-/// occurrences and the ecRecover / calldata terms are unchanged by EIP-8038, so
-/// they contribute no delta. Evaluates to 9,200.
-pub(crate) const EIP8038_EIP7702_PER_EMPTY_ACCOUNT_REGULAR: u32 =
-    7500 + (EIP8038_ACCOUNT_WRITE - 6700) + (EIP8038_COLD_ACCOUNT_ACCESS - 2600);
+/// Per execution-specs, the regular per-auth charge is
+/// `ACCOUNT_WRITE + REGULAR_PER_AUTH_BASE_COST`, where
+/// `REGULAR_PER_AUTH_BASE_COST = AUTH_TUPLE_BYTES * TX_DATA_TOKEN_FLOOR
+/// + PRECOMPILE_ECRECOVER + COLD_ACCOUNT_ACCESS + 2 * WARM_ACCESS`.
+/// Evaluates to `8,000 + (101*16 + 3,000 + 3,000 + 200) = 8,000 + 7,816 = 15,816`.
+/// (The per-auth state gas — `NEW_ACCOUNT + AUTH_BASE` — is charged separately.)
+pub(crate) const EIP8038_EIP7702_PER_EMPTY_ACCOUNT_REGULAR: u32 = EIP8038_ACCOUNT_WRITE
+    + (EIP7702_AUTH_TUPLE_BYTES * TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM
+        + EIP7702_ECRECOVER_COST
+        + EIP8038_COLD_ACCOUNT_ACCESS
+        + 2 * EIP8038_WARM_ACCESS);
 
 // EIP-2780: Reduce intrinsic transaction gas. Replaces the legacy 21,000 base
 // with a decomposed model (sender base + `tx.to`-based + `tx.value`-based).

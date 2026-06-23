@@ -706,11 +706,14 @@ pub(super) fn floor_gas(
     let al_multiplier = version.gas_params.get(GasId::TxAccessListFloorByteMultiplier) as u64;
     let mut tokens = (access_list_accounts * 20 + access_list_storage_keys * 32) * al_multiplier;
 
-    // tokens for input.
+    // tokens for input. EIP-7623 weights zero bytes at `TxFloorZeroByteMultiplier`
+    // (1) and non-zero bytes at `TxTokenNonZeroByteMultiplier` (4); EIP-7976
+    // raises the zero-byte weight to 4 so every byte counts uniformly.
     let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
+    let zero_multiplier = u64::from(params.get(GasId::TxFloorZeroByteMultiplier));
     let zero_data_len = input.iter().filter(|v| **v == 0).count() as u64;
     let non_zero_data_len = input.len() as u64 - zero_data_len;
-    tokens += zero_data_len + non_zero_data_len * non_zero_multiplier;
+    tokens += zero_data_len * zero_multiplier + non_zero_data_len * non_zero_multiplier;
 
     params.get(GasId::TxFloorCostBase) as u64 + tokens * floor_cost_per_token
 }
@@ -921,6 +924,16 @@ mod tests {
             // EIP-2780: the floor base drops from 21,000 to TX_BASE (12,000).
             12_000 + (1000 * 4 + 80 + 128) * 16
         );
+
+        // EIP-7976: amsterdam weights zero calldata bytes the same as non-zero
+        // bytes in the floor (4 tokens each), unlike EIP-7623 (zero = 1 token).
+        let zero_input = Bytes::from(vec![0; 1000]);
+        assert_eq!(
+            floor_gas(Version::base(SpecId::AMSTERDAM), &zero_input, 1, 1),
+            12_000 + (1000 * 4 + 80 + 128) * 16
+        );
+        // Prague keeps the EIP-7623 split: zero bytes count as one token each.
+        assert_eq!(floor_gas(Version::base(SpecId::PRAGUE), &zero_input, 0, 0), 21_000 + 1000 * 10);
     }
 
     #[test]

@@ -134,6 +134,8 @@ gas_ids! {
     TxFloorCostPerToken;
     /// Transaction floor base gas.
     TxFloorCostBase;
+    /// Multiplier for a zero calldata byte in the floor-tokens calculation (EIP-7623 `1`, EIP-7976 `4`).
+    TxFloorZeroByteMultiplier;
     /// Transaction access-list address cost.
     TxAccessListAddressCost;
     /// Transaction access-list storage-key cost.
@@ -527,6 +529,8 @@ mod tests {
         assert_eq!(prague.get(GasId::TxEip7702PerEmptyAccountCost), 25000);
         assert_eq!(prague.get(GasId::TxEip7702AuthRefund), 12500);
         assert_eq!(prague.get(GasId::TxFloorCostPerToken), 10);
+        // EIP-7623: zero calldata bytes weigh one floor token each.
+        assert_eq!(prague.get(GasId::TxFloorZeroByteMultiplier), 1);
 
         let amsterdam = gas_params(SpecId::AMSTERDAM);
         // EIP-8038 (ethereum/EIPs#11802) state-access cost values.
@@ -538,12 +542,16 @@ mod tests {
         assert_eq!(amsterdam.get(GasId::NewAccountCost), 8000);
         assert_eq!(amsterdam.get(GasId::SstoreSetWithoutLoadCost), 10_000);
         assert_eq!(amsterdam.get(GasId::SstoreClearingSlotRefund), 12_480);
-        assert_eq!(amsterdam.get(GasId::TxEip7702PerEmptyAccountCost), 9200);
+        // EIP-8038/Amsterdam per-auth regular gas: ACCOUNT_WRITE + REGULAR_PER_AUTH_BASE_COST
+        // = 8000 + (101*16 + 3000 + 3000 + 2*100) = 15_816.
+        assert_eq!(amsterdam.get(GasId::TxEip7702PerEmptyAccountCost), 15_816);
         assert_eq!(amsterdam.get(GasId::SstoreSetState), 64 * 1530);
         assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthState), 23 * 1530);
         assert_eq!(amsterdam.get(GasId::TxAccessListAddressCost), 3000 + 20 * 64);
         assert_eq!(amsterdam.get(GasId::TxAccessListStorageKeyCost), 3000 + 32 * 64);
         assert_eq!(amsterdam.get(GasId::TxAccessListFloorByteMultiplier), 4);
+        // EIP-7976: zero bytes weigh the same as non-zero bytes in the floor.
+        assert_eq!(amsterdam.get(GasId::TxFloorZeroByteMultiplier), 4);
     }
 
     #[test]
