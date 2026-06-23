@@ -12,6 +12,19 @@ pub(crate) const EEST_STABLE_ENV: &str = "EVM2_EEST_STABLE";
 /// Repo-relative fixture root used by the setup script and CI.
 pub(crate) const DEFAULT_FIXTURES_PATH: &str = "test-fixtures";
 
+/// Environment variable pointing at additional tests to run: a folder (or file)
+/// whose fixtures execute as state or blockchain tests by per-file field
+/// detection.
+pub(crate) const ADDITIONAL_TESTS_ENV: &str = "EVM2_ADDITIONAL_TESTS";
+
+/// Returns the additional-tests path configured through the environment.
+pub(crate) fn additional_tests_path() -> Option<PathBuf> {
+    env::var_os(ADDITIONAL_TESTS_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(workspace_relative)
+}
+
 /// Resolves the workspace root by walking up from this crate.
 pub(crate) fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

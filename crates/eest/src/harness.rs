@@ -93,7 +93,9 @@ fn exact_trial(suites: &[TestSuite], name: &str) -> Option<Trial> {
             relative.strip_prefix("::").map(|relative| (suite, root, relative))
         })
         .max_by_key(|(_, root, _)| root.name.len())?;
-    let path = root.path.join(relative);
+    // A root pointing directly at a file has an empty relative; the file itself
+    // is the only path it can resolve to.
+    let path = if root.path.is_file() { root.path.clone() } else { root.path.join(relative) };
     path.is_file().then(|| {
         let ignored = (suite.should_ignore)(name);
         let run_file = suite.run_file;
@@ -103,6 +105,12 @@ fn exact_trial(suites: &[TestSuite], name: &str) -> Option<Trial> {
 
 fn test_name(root_name: &str, root: &Path, path: &Path) -> String {
     let relative = path.strip_prefix(root).unwrap_or(path);
+    // When the root is the file itself the relative is empty; name it after the
+    // file so the trial has a stable, matchable name.
+    if relative.as_os_str().is_empty() {
+        let file = path.file_name().map(|name| name.to_string_lossy()).unwrap_or_default();
+        return format!("{root_name}::{file}");
+    }
     format!("{root_name}::{}", path_name(relative))
 }
 
