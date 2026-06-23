@@ -56,7 +56,12 @@ impl<T: EvmTypes> MessageResult<T> {
             return 0;
         }
         let max_refund_quotient = if is_eip3529 { 5 } else { 2 };
-        let spent = gas_limit.saturating_sub(self.gas.remaining());
+        // EIP-8037: the unused state-gas reservoir is reimbursed to the caller, so it
+        // is not part of the gas actually spent. The EIP-3529 refund cap is a fraction
+        // of the gas the transaction truly consumed, so the reservoir must be excluded
+        // — otherwise a large idle reservoir inflates `spent` and disables the cap.
+        let spent =
+            gas_limit.saturating_sub(self.gas.remaining()).saturating_sub(self.gas.reservoir());
         let refund = self.gas.refunded() as u64;
         let cap = spent / max_refund_quotient;
         if refund < cap { refund } else { cap }
