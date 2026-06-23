@@ -2,9 +2,9 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+mod additional;
 mod binary;
 pub mod blockchaintest;
-mod custom;
 mod discover;
 mod env;
 mod error;
@@ -52,11 +52,12 @@ pub use types::{
 
 /// Runs all EEST harnesses.
 ///
-/// When `EVM2_FIXTURE_PATH` is set, only that folder (or file) runs, as a single
-/// suite that detects each fixture's kind, so no test-name filter is required.
+/// When `EVM2_ADDITIONAL_TESTS` is set, only that folder (or file) runs, as a
+/// single suite that detects each fixture's kind, so no test-name filter is
+/// required.
 pub fn run() -> std::process::ExitCode {
-    if let Some(path) = fixtures::custom_fixture_path() {
-        return harness::run_json_harnesses(vec![custom::suite(path)]);
+    if let Some(path) = fixtures::additional_tests_path() {
+        return harness::run_json_harnesses(vec![additional::suite(path)]);
     }
     harness::run_json_harnesses(vec![runner::suite(), blockchaintest::suite()])
 }

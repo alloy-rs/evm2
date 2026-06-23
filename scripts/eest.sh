@@ -28,5 +28,5 @@ fi
 # the workspace root.
 abs_path="$(cd "$(dirname "$path")" && pwd)/$(basename "$path")"
 
-EVM2_FIXTURE_PATH="$abs_path" exec cargo nextest run \
+EVM2_ADDITIONAL_TESTS="$abs_path" exec cargo nextest run \
     -p evm2-eest --test eest --ignore-default-filter "$@"

@@ -1,6 +1,6 @@
-//! Single-path fixture suite.
+//! Additional-tests suite.
 //!
-//! When `EVM2_FIXTURE_PATH` points at a folder (or file), every JSON fixture
+//! When `EVM2_ADDITIONAL_TESTS` points at a folder (or file), every JSON file
 //! found anywhere under it runs as one suite whose kind (state vs blockchain) is
 //! detected per file, so no test-name filter is needed to isolate it.
 
@@ -17,19 +17,22 @@ use std::path::PathBuf;
 /// Builds the auto-detecting suite rooted at `path`.
 pub(crate) fn suite(path: PathBuf) -> TestSuite {
     TestSuite {
-        name: "fixtures",
-        roots: vec![TestRoot { name: "fixtures", label: "custom fixtures", path }],
+        name: "additional",
+        roots: vec![TestRoot { name: "additional", label: "additional tests", path }],
         // Descend into every directory so all JSON files under the path run.
         should_descend: descend_all,
-        should_ignore: ignore_none,
+        should_ignore,
         run_file,
     }
 }
 
-/// Runs every JSON file: a custom path is an explicit request, so nothing is
-/// skipped.
-const fn ignore_none(_name: &str) -> bool {
-    false
+/// Honors the same ignore lists the state and blockchain runners use, since an
+/// additional path can hold fixtures of either kind.
+fn should_ignore(name: &str) -> bool {
+    crate::runner::IGNORED_TESTS
+        .iter()
+        .chain(crate::blockchaintest::IGNORED_TESTS)
+        .any(|pattern| name.contains(pattern))
 }
 
 fn run_file(path: PathBuf) -> Result<(), Failed> {
