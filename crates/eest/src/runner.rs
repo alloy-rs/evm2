@@ -28,7 +28,7 @@ fn run_file(path: PathBuf) -> Result<(), Failed> {
 }
 
 #[rustfmt::skip]
-const IGNORED_TESTS: &[&str] = &[
+pub(crate) const IGNORED_TESTS: &[&str] = &[
     // Skip slow fixtures and create-collision fixtures that need storage-aware collision handling.
     "stTimeConsuming/static_Call50000_sha256.json",
     "CALLBlake2f_MaxRounds.json",

@@ -45,7 +45,7 @@ fn should_ignore(name: &str) -> bool {
 }
 
 #[rustfmt::skip]
-const IGNORED_TESTS: &[&str] = &[
+pub(crate) const IGNORED_TESTS: &[&str] = &[
     // Block header/blob-gas validation is consensus-level block validation, not EVM execution.
     "cancun/eip4844_blobs/test_blob_type_tx_pre_fork.json",
     "cancun/eip4844_blobs/test_invalid_blob_gas_used_in_header.json",
