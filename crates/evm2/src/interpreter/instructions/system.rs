@@ -155,7 +155,7 @@ fn prepare_call<T: EvmTypes>(
     message: &mut Message<T>,
     code: &mut Bytecode,
     return_memory_range: &mut Range<usize>,
-) -> Result<bool> {
+) -> Result {
     let has_value = match kind {
         MessageKind::Call | MessageKind::CallCode => true,
         MessageKind::DelegateCall | MessageKind::StaticCall => false,
@@ -213,15 +213,15 @@ fn prepare_call<T: EvmTypes>(
         value: call_value,
         code_address,
         disable_precompiles,
+        caller_is_static: state.is_static(),
         salt: B256::ZERO,
         ext: T::MessageExt::default(),
         _non_exhaustive: (),
     };
     *code = loaded_code;
     *return_memory_range = prepared_return_memory_range;
-    let caller_is_static = state.is_static();
 
-    Ok(caller_is_static)
+    Ok(())
 }
 
 #[inline(never)]
@@ -234,7 +234,7 @@ fn call_inner<T: EvmTypes>(
     let mut message = Message::<T>::default();
     let mut code = Bytecode::default();
     let mut return_memory_range = 0..0;
-    let caller_is_static = prepare_call(
+    prepare_call(
         stack.reborrow(),
         gas,
         state,
@@ -245,7 +245,7 @@ fn call_inner<T: EvmTypes>(
     )?;
 
     let tx_env = state.tx();
-    let mut result = state.host().execute_message(tx_env, code, &mut message, caller_is_static);
+    let mut result = state.host().execute_message(tx_env, code, &mut message);
     gas.merge_child_gas(result.gas, result.stop);
     let copy_len = min(return_memory_range.len(), result.output.len());
     unsafe {
@@ -333,13 +333,15 @@ fn create_inner<T: EvmTypes>(
         value,
         code_address: current.destination,
         disable_precompiles: false,
+        // CREATE is rejected in a static context (see `require_non_staticcall`).
+        caller_is_static: false,
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
         ext: T::MessageExt::default(),
         _non_exhaustive: (),
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
     let tx_env = state.tx();
-    let mut result = state.host().execute_message(tx_env, bytecode, &mut message, false);
+    let mut result = state.host().execute_message(tx_env, bytecode, &mut message);
     gas.merge_child_gas(result.gas, result.stop);
 
     // EIP-8037: the CREATE/CREATE2 opcode charged `create_state_gas` upfront on

@@ -8,7 +8,7 @@ mod rpc;
 
 pub(crate) use error::CaptureError;
 
-use crate::{args::Capture, error::Result, ethereum};
+use crate::{args::Capture, error::Result, ethereum, style};
 use alloy_consensus::{
     Block as ConsensusBlock, EthereumTxEnvelope, TxEip4844, transaction::SignerRecoverable,
 };
@@ -39,8 +39,9 @@ pub(crate) fn run(command: Capture) -> Result<()> {
     let summary = runtime
         .block_on(capture(&command.rpc, from, to, &command))
         .map_err(|source| crate::error::Error::Capture { source })?;
+    let ok = style::OK;
     println!(
-        "captured EEST {}: {} blocks, {} txs, {} base accounts, {} base storage slots in {:.2}s",
+        "{ok}ok{ok:#}: captured EEST {}: {} blocks, {} txs, {} base accounts, {} base storage slots in {:.2}s",
         command.output.display(),
         summary.blocks,
         summary.transactions,
@@ -78,6 +79,7 @@ async fn capture(
         .buffer_unordered(rpc.max_concurrent_requests());
     let mut pending_blocks = BTreeMap::new();
     let mut next_block = from;
+    let total_blocks = (to - from + 1) as usize;
 
     while next_block <= to {
         let block = if let Some(block) = pending_blocks.remove(&next_block) {
@@ -126,11 +128,18 @@ async fn capture(
         transaction_count += block_transaction_count;
         block_inputs.push(model::CapturedBlock { block: consensus_block, transactions });
 
-        eprintln!(
-            "captured block {number} ({} txs) in {:.2}s",
-            block_transaction_count,
-            (elapsed + block_started_at.elapsed()).as_secs_f64()
-        );
+        let progress_index = (number - from + 1) as usize;
+        if style::should_print_progress(progress_index, total_blocks) {
+            let info = style::INFO;
+            eprintln!(
+                "{info}capture{info:#}: block {}/{} number={} ({} txs) in {:.2}s",
+                progress_index,
+                total_blocks,
+                number,
+                block_transaction_count,
+                (elapsed + block_started_at.elapsed()).as_secs_f64()
+            );
+        }
         next_block += 1;
     }
 

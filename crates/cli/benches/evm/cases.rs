@@ -1,4 +1,6 @@
+use crate::fixture::Suites;
 use evm2::SpecId;
+use std::borrow::Cow;
 
 pub(crate) struct Bench {
     pub(crate) name: &'static str,
@@ -6,8 +8,22 @@ pub(crate) struct Bench {
     pub(crate) kind: BenchKind,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct BenchCase {
+    pub(crate) name: Cow<'static, str>,
+    pub(crate) fixture_path: &'static str,
+    pub(crate) kind: BenchCaseKind,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum BenchKind {
+    Transaction { spec: SpecId },
+    TransactionSuite { spec: SpecId },
+    BlockchainReplay,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum BenchCaseKind {
     Transaction { spec: SpecId },
     BlockchainReplay,
 }
@@ -21,27 +37,70 @@ impl Bench {
         Self { name, fixture_path, kind: BenchKind::Transaction { spec } }
     }
 
+    pub(crate) const fn transaction_suite(spec: SpecId, fixture_path: &'static str) -> Self {
+        Self { name: "", fixture_path, kind: BenchKind::TransactionSuite { spec } }
+    }
+
     pub(crate) const fn blockchain_replay(name: &'static str, fixture_path: &'static str) -> Self {
         Self { name, fixture_path, kind: BenchKind::BlockchainReplay }
     }
 
-    pub(crate) const fn transaction_spec(&self) -> Option<SpecId> {
+    pub(crate) const fn transaction_fixture_path(&self) -> Option<&'static str> {
         match self.kind {
-            BenchKind::Transaction { spec } => Some(spec),
+            BenchKind::Transaction { .. } | BenchKind::TransactionSuite { .. } => {
+                Some(self.fixture_path)
+            }
             BenchKind::BlockchainReplay => None,
         }
     }
+}
 
-    pub(crate) const fn transaction_fixture_path(&self) -> Option<&'static str> {
+impl BenchCase {
+    fn transaction(
+        name: impl Into<Cow<'static, str>>,
+        spec: SpecId,
+        fixture_path: &'static str,
+    ) -> Self {
+        Self { name: name.into(), fixture_path, kind: BenchCaseKind::Transaction { spec } }
+    }
+
+    fn blockchain_replay(name: &'static str, fixture_path: &'static str) -> Self {
+        Self { name: name.into(), fixture_path, kind: BenchCaseKind::BlockchainReplay }
+    }
+
+    pub(crate) const fn transaction_spec(&self) -> Option<SpecId> {
         match self.kind {
-            BenchKind::Transaction { .. } => Some(self.fixture_path),
-            BenchKind::BlockchainReplay => None,
+            BenchCaseKind::Transaction { spec } => Some(spec),
+            BenchCaseKind::BlockchainReplay => None,
         }
     }
 }
 
 pub(crate) const fn all() -> &'static [Bench] {
     BENCHES
+}
+
+pub(crate) fn expand(suites: &Suites) -> Vec<BenchCase> {
+    let mut cases = Vec::new();
+    for bench in BENCHES {
+        match bench.kind {
+            BenchKind::Transaction { spec } => {
+                cases.push(BenchCase::transaction(bench.name, spec, bench.fixture_path));
+            }
+            BenchKind::TransactionSuite { spec } => {
+                let suite = suites.get(bench.fixture_path);
+                cases.extend(
+                    suite.case_names().map(|name| {
+                        BenchCase::transaction(name.to_owned(), spec, bench.fixture_path)
+                    }),
+                );
+            }
+            BenchKind::BlockchainReplay => {
+                cases.push(BenchCase::blockchain_replay(bench.name, bench.fixture_path));
+            }
+        }
+    }
+    cases
 }
 
 static BENCHES: &[Bench] = &[
@@ -66,5 +125,15 @@ static BENCHES: &[Bench] = &[
     Bench::transaction("burntpix", SpecId::CANCUN, "data/burntpix.json"),
     Bench::transaction("curve_stableswap", SpecId::CANCUN, "data/curve-stableswap-2pool.json"),
     Bench::transaction("onchain_lm_v2", SpecId::CANCUN, "data/onchain-lm-v2.json"),
+    Bench::transaction_suite(SpecId::ISTANBUL, "data/precompile-blake2.json"),
+    Bench::transaction_suite(SpecId::ISTANBUL, "data/precompile-bn254.json"),
+    Bench::transaction_suite(SpecId::PRAGUE, "data/precompile-bls12-381.json"),
+    Bench::transaction_suite(SpecId::ISTANBUL, "data/precompile-ecrecover.json"),
+    Bench::transaction_suite(SpecId::OSAKA, "data/precompile-identity.json"),
+    Bench::transaction_suite(SpecId::CANCUN, "data/precompile-kzg-point-evaluation.json"),
+    Bench::transaction_suite(SpecId::BERLIN, "data/precompile-modexp.json"),
+    Bench::transaction_suite(SpecId::OSAKA, "data/precompile-p256verify.json"),
+    Bench::transaction_suite(SpecId::OSAKA, "data/precompile-ripemd160.json"),
+    Bench::transaction_suite(SpecId::OSAKA, "data/precompile-sha256.json"),
     Bench::blockchain_replay("mainnet_25347446_25347455", "data/mainnet-25347446-25347455.bin.zst"),
 ];

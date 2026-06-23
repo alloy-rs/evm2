@@ -59,6 +59,9 @@ pub struct Message<T: EvmTypes = BaseEvmTypes> {
     /// Whether native precompile dispatch is disabled for this frame because its bytecode was
     /// loaded through an EIP-7702 delegation designation.
     pub disable_precompiles: bool,
+    /// Whether the immediate caller frame is executing in a static context. Combined with a
+    /// `STATICCALL` kind, this determines whether the new frame is static.
+    pub caller_is_static: bool,
     /// CREATE2 salt. Ignored for other message kinds.
     pub salt: B256,
     /// EVM type-specific extension data.

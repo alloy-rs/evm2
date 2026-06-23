@@ -19,6 +19,7 @@ use crate::{
 use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
+use anstyle::{AnsiColor, Color, Style};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId, TxResult,
     env::BlockEnv,
@@ -125,6 +126,7 @@ fn execute_case(
     let mut block_env =
         block_env_from_header(&test_case.genesis_block_header, parent_excess_blob_gas, spec);
     let total_blocks = test_case.blocks.len();
+    let mut db_stats_counts = DbStatsCounts::default();
 
     hook.case_started(CaseStarted { name, total_blocks, network: test_case.network });
 
@@ -153,7 +155,7 @@ fn execute_case(
             &mut parent_block_hash,
             &mut parent_excess_blob_gas,
             hook,
-            config.db_stats,
+            if config.db_stats { Some(&mut db_stats_counts) } else { None },
         ) {
             Ok(()) => hook.block_finished(BlockFinished {
                 block_index,
@@ -178,6 +180,9 @@ fn execute_case(
         && let Some(expected) = &test_case.post_state
     {
         validate_post_state(&database, expected).map_err(|err| TestError::case(path, name, err))?;
+    }
+    if config.db_stats {
+        print_db_stats(db_stats_counts);
     }
     Ok(())
 }
@@ -213,8 +218,9 @@ fn execute_block(
     parent_block_hash: &mut Option<B256>,
     parent_excess_blob_gas: &mut u64,
     hook: &mut dyn Hook,
-    db_stats: bool,
+    db_stats_counts: Option<&mut DbStatsCounts>,
 ) -> Result<(), TestError> {
+    let db_stats = db_stats_counts.is_some();
     let should_fail = block.expect_exception.is_some();
     let mut block_hash = None;
     let mut beacon_root = None;
@@ -366,7 +372,7 @@ fn execute_block(
 
     // The EVM was constructed with this concrete database above; recover it before returning so
     // invalid blocks leave the caller's state unchanged.
-    let (mut restored_database, db_stats_counts) = if db_stats {
+    let (mut restored_database, block_db_stats_counts) = if db_stats {
         let stats = evm
             .database_as_mut::<DbStats<InMemoryDB>>()
             .expect("block EVM database should be DbStats<InMemoryDB>");
@@ -380,8 +386,10 @@ fn execute_block(
             None,
         )
     };
-    if let Some(counts) = db_stats_counts {
-        print_db_stats(counts);
+    if let Some(counts) = db_stats_counts
+        && let Some(block_counts) = block_db_stats_counts
+    {
+        *counts += block_counts;
     }
 
     match result {
@@ -409,14 +417,25 @@ fn execute_block(
 }
 
 fn print_db_stats(counts: DbStatsCounts) {
+    let style = db_stats_style();
+    eprintln!("{style}db stats{style:#}: get_account={}", counts.get_account);
+    eprintln!("{style}db stats{style:#}: get_code_by_hash={}", counts.get_code_by_hash);
+    eprintln!("{style}db stats{style:#}: get_storage={}", counts.get_storage);
     eprintln!(
-        "db stats: get_account={} get_code_by_hash={} get_storage={} get_block_hash={} error={}",
-        counts.get_account,
-        counts.get_code_by_hash,
-        counts.get_storage,
-        counts.get_block_hash,
-        counts.error
+        "{style}db stats{style:#}: get_storage_same_address_repeats={}",
+        counts.get_storage_same_address_repeats
     );
+    eprintln!(
+        "{style}db stats{style:#}: get_storage_same_address_longest_streak={}",
+        counts.get_storage_same_address_longest_streak
+    );
+    eprintln!("{style}db stats{style:#}: get_block_hash={}", counts.get_block_hash);
+    eprintln!("{style}db stats{style:#}: error={}", counts.error);
+}
+
+#[inline]
+const fn db_stats_style() -> Style {
+    Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightCyan))).bold()
 }
 
 fn block_number(block: &Block) -> Option<U256> {

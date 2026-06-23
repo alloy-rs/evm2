@@ -196,10 +196,29 @@ pub struct DbStatsCounts {
     pub get_code_by_hash: u64,
     /// Number of storage slot loads.
     pub get_storage: u64,
+    /// Number of storage loads whose address matched the previous storage load.
+    pub get_storage_same_address_repeats: u64,
+    /// Longest run of storage loads for the same address.
+    pub get_storage_same_address_longest_streak: u64,
     /// Number of block hash loads.
     pub get_block_hash: u64,
     /// Number of error lookups.
     pub error: u64,
+}
+
+impl core::ops::AddAssign for DbStatsCounts {
+    #[inline]
+    fn add_assign(&mut self, rhs: Self) {
+        self.get_account += rhs.get_account;
+        self.get_code_by_hash += rhs.get_code_by_hash;
+        self.get_storage += rhs.get_storage;
+        self.get_storage_same_address_repeats += rhs.get_storage_same_address_repeats;
+        self.get_storage_same_address_longest_streak = self
+            .get_storage_same_address_longest_streak
+            .max(rhs.get_storage_same_address_longest_streak);
+        self.get_block_hash += rhs.get_block_hash;
+        self.error += rhs.error;
+    }
 }
 
 /// Database wrapper that records method call counts.
@@ -207,6 +226,8 @@ pub struct DbStatsCounts {
 pub struct DbStats<D> {
     db: D,
     counts: DbStatsCounts,
+    last_storage_address: Option<Address>,
+    storage_address_streak: u64,
 }
 
 impl<D> DbStats<D> {
@@ -219,9 +240,13 @@ impl<D> DbStats<D> {
                 get_account: 0,
                 get_code_by_hash: 0,
                 get_storage: 0,
+                get_storage_same_address_repeats: 0,
+                get_storage_same_address_longest_streak: 0,
                 get_block_hash: 0,
                 error: 0,
             },
+            last_storage_address: None,
+            storage_address_streak: 0,
         }
     }
 
@@ -248,6 +273,20 @@ impl<D> DbStats<D> {
     pub const fn counts(&self) -> DbStatsCounts {
         self.counts
     }
+
+    #[inline]
+    fn record_storage_load(&mut self, address: &Address) {
+        self.counts.get_storage += 1;
+        if self.last_storage_address.as_ref() == Some(address) {
+            self.counts.get_storage_same_address_repeats += 1;
+            self.storage_address_streak += 1;
+        } else {
+            self.last_storage_address = Some(*address);
+            self.storage_address_streak = 1;
+        }
+        self.counts.get_storage_same_address_longest_streak =
+            self.counts.get_storage_same_address_longest_streak.max(self.storage_address_streak);
+    }
 }
 
 impl<D: DynDatabase> DynDatabase for DbStats<D> {
@@ -265,7 +304,7 @@ impl<D: DynDatabase> DynDatabase for DbStats<D> {
 
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        self.counts.get_storage += 1;
+        self.record_storage_load(address);
         self.db.get_storage(address, key)
     }
 

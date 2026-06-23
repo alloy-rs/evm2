@@ -138,7 +138,6 @@ pub trait Host<T: EvmTypes> {
         tx_env: &TxEnv<T>,
         bytecode: Bytecode,
         message: &mut Message<T>,
-        caller_is_static: bool,
     ) -> MessageResult<T>;
 
     /// Registers the current contract for self-destruction.

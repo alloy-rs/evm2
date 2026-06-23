@@ -103,7 +103,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         gas_limit,
         reservoir,
     )?;
-    let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
+    let mut result = req.host.execute_message(&tx_env, bytecode, &mut message);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
     result.gas.set_refunded(
         result.gas.refunded().saturating_add(i64::try_from(regular_refund).unwrap_or(i64::MAX)),

@@ -100,7 +100,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         gas_limit,
         reservoir,
     )?;
-    let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
+    let mut result = req.host.execute_message(&tx_env, bytecode, &mut message);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
     settle_gas(

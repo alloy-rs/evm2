@@ -534,7 +534,7 @@ mod tests {
         let bytecode = Bytecode::new_legacy(Bytes::from(code));
         let mut message = message.clone();
         message.gas_limit = gas_limit;
-        let result = Host::execute_message(&mut evm, &tx_env, bytecode, &mut message, false);
+        let result = Host::execute_message(&mut evm, &tx_env, bytecode, &mut message);
         let inspector = evm.clear_inspector_as::<I>().unwrap();
         (result, inspector, evm)
     }
@@ -718,7 +718,7 @@ mod tests {
         let tx_env = TxEnv::default();
         let bytecode = Bytecode::new_legacy(Bytes::from(code));
         let mut message = Message { gas_limit: 100_000, ..Default::default() };
-        let result = Host::execute_message(&mut evm, &tx_env, bytecode, &mut message, false);
+        let result = Host::execute_message(&mut evm, &tx_env, bytecode, &mut message);
 
         assert_matches!(result.stop, InstrStop::Stop);
         // The redirected call transferred the value to the replacement, not the target.
@@ -921,7 +921,7 @@ mod tests {
         let tx_env = TxEnv::default();
         let bytecode = Bytecode::new_legacy(Bytes::from(code));
         let message = Message::<TestTypes> { gas_limit: 10_000, ..Default::default() };
-        let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
+        let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
         let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
         let stop = interp.run_inspect(&config, &mut host, &mut inspector);
 

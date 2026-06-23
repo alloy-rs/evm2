@@ -21,15 +21,7 @@ workspace = true
 
 [dependencies]
 evm2-eest = { path = "../eest", version = "0.1.0" }
-evm2 = { workspace = true, default-features = true, features = [
-    "asm-keccak",
-    "blst",
-    # c-kzg doesn't play well with nextest.
-    # "c-kzg",
-    "map-foldhash",
-    "p256-aws-lc-rs",
-    "secp256k1",
-] }
+evm2 = { workspace = true, default-features = true }
 
 alloy-consensus = { workspace = true, features = ["k256", "secp256k1", "std"] }
 alloy-chains.workspace = true
@@ -40,6 +32,7 @@ alloy-provider = { workspace = true, features = ["debug-api", "reqwest", "reqwes
 alloy-rpc-client = { workspace = true, features = ["reqwest"] }
 alloy-rpc-types-eth = { workspace = true, features = ["serde", "std"] }
 alloy-rpc-types-trace.workspace = true
+anstyle.workspace = true
 clap.workspace = true
 futures-util.workspace = true
 rand.workspace = true

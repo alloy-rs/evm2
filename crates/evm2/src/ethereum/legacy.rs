@@ -60,7 +60,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let (bytecode, mut message) = initial_message(
         req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, gas_limit, reservoir,
     )?;
-    let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
+    let mut result = req.host.execute_message(&tx_env, bytecode, &mut message);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
     refund_failed_create_state_gas(&mut result, initial_state_gas);
 

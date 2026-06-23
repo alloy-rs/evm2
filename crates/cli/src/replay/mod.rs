@@ -2,6 +2,7 @@ use crate::{
     args::Replay,
     error::{Error, Result},
     fixture::{self, FixtureKind},
+    style,
 };
 use alloy_primitives::U256;
 use evm2_eest::{
@@ -27,8 +28,9 @@ pub(crate) fn run(command: Replay) -> Result<()> {
             &mut hook,
         )
         .map_err(|source| Error::BlockchainTest { source })?;
+        let ok = style::OK;
         println!(
-            "replayed blockchain fixture {}: {} executed, {} skipped",
+            "{ok}ok{ok:#}: replayed blockchain fixture {}: {} executed, {} skipped",
             command.path.display(),
             summary.executed,
             summary.skipped
@@ -46,8 +48,9 @@ pub(crate) fn run(command: Replay) -> Result<()> {
                 &entrypoint,
             )
             .map_err(|source| Error::StateTest { source })?;
+            let ok = style::OK;
             println!(
-                "replayed state fixture {}: {} executed, {} skipped",
+                "{ok}ok{ok:#}: replayed state fixture {}: {} executed, {} skipped",
                 command.path.display(),
                 summary.executed,
                 summary.skipped
@@ -64,8 +67,9 @@ pub(crate) fn run(command: Replay) -> Result<()> {
                 &mut hook,
             )
             .map_err(|source| Error::BlockchainTest { source })?;
+            let ok = style::OK;
             println!(
-                "replayed blockchain fixture {}: {} executed, {} skipped",
+                "{ok}ok{ok:#}: replayed blockchain fixture {}: {} executed, {} skipped",
                 command.path.display(),
                 summary.executed,
                 summary.skipped
@@ -92,56 +96,57 @@ impl BlockchainTestHook for ReplayProgressHook {
         self.case_elapsed_sec = 0.0;
         self.case_gas_used = 0;
         self.case_blocks_with_gas = 0;
+        let info = style::INFO;
         eprintln!(
-            "replay case {}: {} blocks, network {:?}",
+            "{info}replay{info:#}: case {}: {} blocks, network {:?}",
             event.name, event.total_blocks, event.network
         );
     }
 
-    fn block_started(&mut self, event: BlockchainTestBlockStarted) {
+    fn block_started(&mut self, _event: BlockchainTestBlockStarted) {
         self.block_started_at = Some(Instant::now());
         self.printed_transaction_failure = false;
-        eprintln!(
-            "replay block {}/{} number={} started ({} txs)",
-            event.block_index + 1,
-            event.total_blocks,
-            display_block_number(event.block_number, event.block_index),
-            event.total_transactions
-        );
     }
 
     fn block_finished(&mut self, event: BlockchainTestBlockFinished) {
         let elapsed = self.take_block_elapsed();
         self.record_block(event.block_gas_used, elapsed);
-        if let Some(ggas_per_second) = ggas_per_second(event.block_gas_used, elapsed) {
+        let block_index = event.block_index + 1;
+        if !style::should_print_progress(block_index, event.total_blocks) {
+            if block_index == event.total_blocks {
+                self.print_case_summary(event.total_blocks);
+            }
+            return;
+        }
+        let ok = style::OK;
+        let block_width = decimal_width(event.total_blocks);
+        let total_blocks = event.total_blocks;
+        let block_number = display_block_number(event.block_number, event.block_index);
+        if let Some(block_gas_used) = event.block_gas_used
+            && let Some(ggas_per_second) =
+                ggas_per_second_from_gas(block_gas_used.saturating_to::<u128>(), elapsed)
+        {
+            let block_ggas = ggas(block_gas_used.saturating_to::<u128>());
             eprintln!(
-                "replay block {}/{} number={} done in {:.2}s ({:.3} Ggas/s)",
-                event.block_index + 1,
-                event.total_blocks,
-                display_block_number(event.block_number, event.block_index),
-                elapsed,
-                ggas_per_second
+                "{ok}done{ok:#}: block {block_index:block_width$}/{total_blocks} number={block_number} in {elapsed:.2}s ({block_ggas:.3} Ggas, {ggas_per_second:.3} Ggas/s)"
             );
         } else {
             eprintln!(
-                "replay block {}/{} number={} done in {:.2}s",
-                event.block_index + 1,
-                event.total_blocks,
-                display_block_number(event.block_number, event.block_index),
-                elapsed
+                "{ok}done{ok:#}: block {block_index:block_width$}/{total_blocks} number={block_number} in {elapsed:.2}s"
             );
         }
 
-        if event.block_index + 1 == event.total_blocks {
+        if block_index == event.total_blocks {
             self.print_case_summary(event.total_blocks);
         }
     }
 
     fn block_failed(&mut self, event: BlockchainTestBlockFailed<'_>) {
         let elapsed = self.take_block_elapsed();
+        let error = style::ERROR;
         if self.printed_transaction_failure {
             eprintln!(
-                "replay block {}/{} number={} failed in {:.2}s after transaction failure",
+                "{error}failed{error:#}: block {}/{} number={} in {:.2}s after transaction failure",
                 event.block_index + 1,
                 event.total_blocks,
                 display_block_number(event.block_number, event.block_index),
@@ -149,7 +154,7 @@ impl BlockchainTestHook for ReplayProgressHook {
             );
         } else {
             eprintln!(
-                "replay block {}/{} number={} failed in {:.2}s: {}",
+                "{error}failed{error:#}: block {}/{} number={} in {:.2}s: {}",
                 event.block_index + 1,
                 event.total_blocks,
                 display_block_number(event.block_number, event.block_index),
@@ -159,28 +164,16 @@ impl BlockchainTestHook for ReplayProgressHook {
         }
     }
 
-    fn transaction_started(&mut self, event: BlockchainTestTransactionStarted) {
-        if event.total_transactions >= 100
-            && (event.transaction_index == 0 || (event.transaction_index + 1).is_multiple_of(100))
-        {
-            eprintln!(
-                "replay tx {}/{} in block {}/{} number={} started",
-                event.transaction_index + 1,
-                event.total_transactions,
-                event.block_index + 1,
-                event.total_blocks,
-                display_block_number(event.block_number, event.block_index)
-            );
-        }
-    }
+    fn transaction_started(&mut self, _event: BlockchainTestTransactionStarted) {}
 
     fn transaction_finished(&mut self, event: BlockchainTestTransactionFinished) {
-        if event.total_transactions >= 100
-            && ((event.transaction_index + 1).is_multiple_of(100)
+        if event.total_transactions >= 1_000
+            && ((event.transaction_index + 1).is_multiple_of(500)
                 || event.transaction_index + 1 == event.total_transactions)
         {
+            let info = style::INFO;
             eprintln!(
-                "replay tx {}/{} in block {}/{} number={} done",
+                "{info}progress{info:#}: tx {}/{} in block {}/{} number={} done",
                 event.transaction_index + 1,
                 event.total_transactions,
                 event.block_index + 1,
@@ -192,8 +185,9 @@ impl BlockchainTestHook for ReplayProgressHook {
 
     fn transaction_failed(&mut self, event: BlockchainTestTransactionFailed<'_>) {
         self.printed_transaction_failure = true;
+        let error = style::ERROR;
         eprintln!(
-            "replay tx {}/{} in block {}/{} number={} failed: {}",
+            "{error}failed{error:#}: tx {}/{} in block {}/{} number={}: {}",
             event.transaction_index + 1,
             event.total_transactions,
             event.block_index + 1,
@@ -224,16 +218,18 @@ impl ReplayProgressHook {
         let Some(ggas_per_second) =
             ggas_per_second_from_gas(self.case_gas_used, self.case_elapsed_sec)
         else {
+            let ok = style::OK;
             eprintln!(
-                "replay case {}: {} blocks done in {:.2}s",
+                "{ok}done{ok:#}: case {}: {} blocks in {:.2}s",
                 case_name, total_blocks, self.case_elapsed_sec
             );
             return;
         };
 
+        let ok = style::OK;
         if self.case_blocks_with_gas == total_blocks {
             eprintln!(
-                "replay case {}: {} blocks done in {:.2}s ({:.3} Ggas/s aggregate, {:.3} Ggas total)",
+                "{ok}done{ok:#}: case {}: {} blocks in {:.2}s ({:.3} Ggas/s aggregate, {:.3} Ggas total)",
                 case_name,
                 total_blocks,
                 self.case_elapsed_sec,
@@ -241,8 +237,9 @@ impl ReplayProgressHook {
                 ggas(self.case_gas_used)
             );
         } else {
+            let warn = style::WARN;
             eprintln!(
-                "replay case {}: {} blocks done in {:.2}s ({:.3} Ggas/s aggregate, {:.3} Ggas total across {}/{} blocks with gasUsed)",
+                "{warn}done{warn:#}: case {}: {} blocks in {:.2}s ({:.3} Ggas/s aggregate, {:.3} Ggas total across {}/{} blocks with gasUsed)",
                 case_name,
                 total_blocks,
                 self.case_elapsed_sec,
@@ -259,8 +256,8 @@ fn display_block_number(block_number: Option<U256>, fallback: usize) -> String {
     block_number.map(|number| number.to_string()).unwrap_or_else(|| fallback.to_string())
 }
 
-fn ggas_per_second(block_gas_used: Option<U256>, elapsed: f64) -> Option<f64> {
-    ggas_per_second_from_gas(block_gas_used?.saturating_to::<u128>(), elapsed)
+fn decimal_width(value: usize) -> usize {
+    value.checked_ilog10().unwrap_or_default() as usize + 1
 }
 
 fn ggas_per_second_from_gas(gas_used: u128, elapsed: f64) -> Option<f64> {

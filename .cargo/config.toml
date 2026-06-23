@@ -1,5 +1,6 @@
 [alias]
 cl = "clippy --workspace --all-features --all-targets"
 docs = "doc --workspace --all-features --no-deps --document-private-items"
-t = "nextest run --workspace"
-st = "nextest run --workspace --ignore-default-filter"
+cli = "run --bin evm2 --all-features"
+t = "nextest run --workspace --all-features"
+st = "nextest run --workspace --all-features --ignore-default-filter"
