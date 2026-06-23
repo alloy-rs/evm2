@@ -21,8 +21,14 @@ workspace = true
 
 [dependencies]
 evm2-eest = { path = "../eest", version = "0.1.0" }
-evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
 evm2 = { workspace = true, default-features = true }
+
+# jit
+evm2-jit-context = { workspace = true, optional = true }
+evm2-jit-llvm = { workspace = true, optional = true }
+evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
+libloading = { version = "0.9", optional = true }
+open = { version = "5", optional = true }
 
 alloy-consensus = { workspace = true, features = ["k256", "secp256k1", "std"] }
 alloy-chains.workspace = true
@@ -50,7 +56,15 @@ evm2-jit-build = { workspace = true, optional = true }
 
 [features]
 default = []
-jit = ["evm2-eest/jit", "dep:evm2-jit-runtime", "dep:evm2-jit-build"]
+jit = [
+    "evm2-eest/jit",
+    "dep:evm2-jit-context",
+    "dep:evm2-jit-llvm",
+    "dep:evm2-jit-runtime",
+    "dep:evm2-jit-build",
+    "dep:libloading",
+    "dep:open",
+]
 
 [dev-dependencies]
 criterion.workspace = true

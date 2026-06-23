@@ -38,8 +38,13 @@ def cargo_build(root: str, incremental: bool = True) -> str:
     env = {**os.environ, "CARGO_TARGET_DIR": target_dir}
     if not incremental:
         env["CARGO_INCREMENTAL"] = "0"
-    subprocess.run(["cargo", "build", "--quiet"], check=True, cwd=root, env=env)
-    return os.path.join(target_dir, "debug", "evm2-jit")
+    subprocess.run(
+        ["cargo", "build", "--quiet", "-p", "evm2-cli", "--bin", "evm2", "--all-features"],
+        check=True,
+        cwd=root,
+        env=env,
+    )
+    return os.path.join(target_dir, "debug", "evm2")
 
 
 def get_benches(binary: str) -> list[str]:

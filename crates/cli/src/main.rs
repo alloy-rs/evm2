@@ -8,6 +8,8 @@ mod fixture;
 mod fuzzer;
 mod list;
 mod replay;
+#[cfg(feature = "jit")]
+mod run;
 mod style;
 
 use crate::{args::Args, error::Result};
@@ -42,5 +44,7 @@ fn run() -> Result<()> {
         args::Command::Fuzzer(command) => fuzzer::run(command).map_err(error::Error::Fuzzer),
         args::Command::List(command) => list::run(command),
         args::Command::Replay(command) => replay::run(command),
+        #[cfg(feature = "jit")]
+        args::Command::Run(command) => command.run().map_err(|source| error::Error::Run { source }),
     }
 }

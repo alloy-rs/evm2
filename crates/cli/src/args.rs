@@ -20,6 +20,9 @@ pub(crate) enum Command {
     List(List),
     /// Replay an EEST JSON fixture.
     Replay(Replay),
+    /// Compile and/or run EVM bytecode.
+    #[cfg(feature = "jit")]
+    Run(crate::run::RunArgs),
 }
 
 #[derive(Debug, clap::Args)]

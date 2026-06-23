@@ -9,8 +9,8 @@ cargo nextest run -p evm2-jit-codegen --test codegen                            
 cargo nextest run -p evm2-jit-codegen --test codegen "test_name"                 # single compiler test
 EVM2_JIT_TEST_DUMP=1 cargo nextest run -p evm2-jit-codegen --test codegen "test_name" # dump single compiler test
 cargo nextest run -p evm2-jit-runtime                                            # runtime tests
-cargo st "state-jit"                                                             # EEST JIT state tests
-cargo st "blockchain-jit"                                                        # EEST JIT blockchain tests
+cargo st "statetests::devnet::jit"                                               # EEST JIT state tests
+cargo st "blockchain_tests::devnet::jit"                                         # EEST JIT blockchain tests
 ```
 
 ## Architecture
@@ -103,24 +103,26 @@ threshold (1% for codegen, 5% for compile times); the `<details>` tables still
 show every change.
 
 ```bash
-./scripts/jit/bench.py /tmp/bench --diff main                          # codegen + compile time vs main
-./scripts/jit/bench.py /tmp/bench --diff main usdc_proxy seaport       # specific benchmarks
-./scripts/jit/bench.py /tmp/bench --diff main --extra-dir tmp/mainnet  # include mainnet .bin files
+./scripts/jit/bench.py /tmp/bench --diff <base-rev>                    # codegen + compile time vs base
+./scripts/jit/bench.py /tmp/bench --diff <base-rev> usdc_proxy seaport # specific benchmarks
+./scripts/jit/bench.py /tmp/bench --diff <base-rev> --extra-dir tmp/mainnet # include mainnet .bin files
 ./scripts/jit/bench.py /tmp/bench                                      # current branch only (no diff)
-./scripts/jit/bench.py /tmp/bench --diff main --compile-times          # compile times only
-./scripts/jit/bench.py /tmp/bench --diff main --codegen-lines          # codegen lines only
+./scripts/jit/bench.py /tmp/bench --diff <base-rev> --compile-times    # compile times only
+./scripts/jit/bench.py /tmp/bench --diff <base-rev> --codegen-lines    # codegen lines only
 ./scripts/jit/bench.py /tmp/bench --jump-resolution                    # jump resolution stats
 ./scripts/jit/bench.py /tmp/bench --input-stats                        # constant-input stats
 ./scripts/jit/bench.py /tmp/bench --block-stats                        # block stats
 ./scripts/jit/bench.py /tmp/bench --codegen-lines --jump-resolution    # combine multiple analyses
 ```
 
+Use a base revision that already contains the JIT CLI `run` command.
+
 ## Bench-and-PR workflow
 
 When the user asks to "bench and open pr", "post results to pr", or whenever
 making a perf change that needs benchmark numbers in the PR description:
 
-1. Run `./scripts/jit/bench.py <dump_dir> --diff <base>` (typically `--diff main`).
+1. Run `./scripts/jit/bench.py <dump_dir> --diff <base>` with a base revision that contains the JIT CLI `run` command.
 2. Build the PR body **in a single bash command** that inlines
    `<dump_dir>/results.md` VERBATIM. Do NOT reformat, summarize, drop
    columns, or rewrite the numbers in the tables — `cat` the file as-is.

@@ -1106,7 +1106,8 @@ def main():
     outputs = collect(benches, binary, dump_dir, rust_log)
 
     if args.base_rev:
-        # Detect self-diff: abort if base_rev resolves to the same commit as HEAD.
+        # Detect self-diff: abort if base_rev resolves to the same commit as HEAD
+        # and there are no working-tree changes to compare against.
         head_sha = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             capture_output=True,
@@ -1121,7 +1122,14 @@ def main():
             check=True,
             cwd=root,
         ).stdout.strip()
-        if head_sha == base_sha:
+        is_dirty = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=root,
+        ).stdout.strip()
+        if head_sha == base_sha and not is_dirty:
             eprint(
                 f"error: --diff {args.base_rev!r} resolves to HEAD ({head_sha[:12]}); "
                 f"diffing a branch against itself is pointless"

@@ -43,6 +43,12 @@ pub(crate) enum Error {
         #[source]
         source: evm2_jit_runtime::eyre::Report,
     },
+    #[cfg(feature = "jit")]
+    #[error("failed to run bytecode command")]
+    Run {
+        #[source]
+        source: evm2_jit_runtime::eyre::Report,
+    },
     #[error("could not detect EEST fixture kind in {path}")]
     UnknownFixtureKind { path: std::path::PathBuf },
 }
