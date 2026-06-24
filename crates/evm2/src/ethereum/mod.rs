@@ -578,8 +578,8 @@ pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
-/// EIP-8037: refunds a top-level CREATE's intrinsic `create_state_gas` back to the reservoir when no
-/// new account leaf ends up created.
+/// EIP-8037: refunds a top-level CREATE's intrinsic `create_state_gas` back to the reservoir when
+/// no new account leaf ends up created.
 ///
 /// The charge was deducted upfront in [`initial_gas_and_reservoir`] (an unbalanced reservoir
 /// reduction, not a `spend_state`), so the inverse is an unbalanced reservoir add. It is refunded

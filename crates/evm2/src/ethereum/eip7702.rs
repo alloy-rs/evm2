@@ -130,8 +130,8 @@ const fn eip7702_authorization_state_gas<T: EvmTypes<Host = Evm<T>>>(
     (authorizations as u64).saturating_mul(host.version().gas_params.eip7702_auth_state_gas())
 }
 
-/// Outcome of applying one accepted EIP-7702 authorization, carrying the facts needed to compute its
-/// gas refunds (execution-specs `set_delegation`).
+/// Outcome of applying one accepted EIP-7702 authorization, carrying the facts needed to compute
+/// its gas refunds (execution-specs `set_delegation`).
 struct AppliedAuth {
     /// Whether the authority account already existed when this authorization was processed.
     existed: bool,
