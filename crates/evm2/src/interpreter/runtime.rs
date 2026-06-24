@@ -252,11 +252,8 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     /// Sets the current frame output memory range.
     #[inline]
-    pub fn set_output_range(&mut self, output: Range<usize>) {
-        debug_assert!(output.end <= self.memory.len());
-        let start = u32::try_from(output.start).expect("JIT output exceeds evm2 output range");
-        let end = u32::try_from(output.end).expect("JIT output exceeds evm2 output range");
-        self.output = start..end;
+    pub const fn set_output(&mut self, output: Range<u32>) {
+        self.output = output;
     }
 
     /// Returns a mutable reference to return data from the last call-like operation.

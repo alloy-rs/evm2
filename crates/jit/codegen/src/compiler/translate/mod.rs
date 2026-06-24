@@ -707,10 +707,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
 
             op::ADDRESS => {
-                self.push_message_address(
-                    mem::offset_of!(Message<BaseEvmTypes>, destination),
-                    "message.destination",
-                );
+                let message = self.load_message_ptr();
+                field!(@push @[endian = "big"] self.address_type, message, Message<BaseEvmTypes>; destination);
             }
             op::BALANCE => {
                 let sp = self.sp_after_inputs();
@@ -722,16 +720,12 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.narrow_to_address(slot);
             }
             op::CALLER => {
-                self.push_message_address(
-                    mem::offset_of!(Message<BaseEvmTypes>, caller),
-                    "message.caller",
-                );
+                let message = self.load_message_ptr();
+                field!(@push @[endian = "big"] self.address_type, message, Message<BaseEvmTypes>; caller);
             }
             op::CALLVALUE => {
-                self.push_message_word(
-                    mem::offset_of!(Message<BaseEvmTypes>, value),
-                    "message.value",
-                );
+                let message = self.load_message_ptr();
+                field!(@push self.word_type, message, Message<BaseEvmTypes>; value);
             }
             op::CALLDATALOAD => {
                 let sp = self.sp_after_inputs();
@@ -1303,24 +1297,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             "interpreter.message.addr",
         );
         self.bcx.load(ptr_type, field, "interpreter.message")
-    }
-
-    fn push_message_address(&mut self, offset: usize, name: &str) {
-        let message = self.load_message_ptr();
-        let field = self.get_field(message, offset, name);
-        let mut value = self.bcx.load_aligned(self.address_type, field, 1, name);
-        if !cfg!(target_endian = "big") {
-            value = self.bcx.bswap(value);
-        }
-        let value = self.bcx.zext(self.word_type, value);
-        self.push(value);
-    }
-
-    fn push_message_word(&mut self, offset: usize, name: &str) {
-        let message = self.load_message_ptr();
-        let field = self.get_field(message, offset, name);
-        let value = self.bcx.load_aligned(self.word_type, field, 1, name);
-        self.push(value);
     }
 
     /// Gets a field at the given offset.

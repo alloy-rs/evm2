@@ -1287,6 +1287,82 @@ tests! {
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
+        create(@raw {
+            bytecode: &[op::PUSH1, 0x69, op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::PUSH1, 0x42, op::CREATE],
+            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        create2(@raw {
+            bytecode: &[op::PUSH1, 0x69, op::PUSH0, op::MSTORE, op::PUSH1, 100, op::PUSH1, 32, op::PUSH0, op::PUSH1, 0x42, op::CREATE2],
+            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        call(@raw {
+            bytecode: &[
+                op::PUSH1, 1, // ret length
+                op::PUSH1, 2, // ret offset
+                op::PUSH1, 3, // args length
+                op::PUSH1, 4, // args offset
+                op::PUSH1, 5, // value
+                op::PUSH1, 6, // address
+                op::PUSH1, 7, // gas
+                op::CALL,
+            ],
+            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        callcode(@raw {
+            bytecode: &[
+                op::PUSH1, 1, // ret length
+                op::PUSH1, 2, // ret offset
+                op::PUSH1, 3, // args length
+                op::PUSH1, 4, // args offset
+                op::PUSH1, 5, // value
+                op::PUSH1, 6, // address
+                op::PUSH1, 7, // gas
+                op::CALLCODE,
+            ],
+            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        delegatecall(@raw {
+            bytecode: &[
+                op::PUSH1, 1, // ret length
+                op::PUSH1, 2, // ret offset
+                op::PUSH1, 3, // args length
+                op::PUSH1, 4, // args offset
+                op::PUSH1, 5, // address
+                op::PUSH1, 6, // gas
+                op::DELEGATECALL,
+            ],
+            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        staticcall(@raw {
+            bytecode: &[
+                op::PUSH1, 1, // ret length
+                op::PUSH1, 2, // ret offset
+                op::PUSH1, 3, // args length
+                op::PUSH1, 4, // args offset
+                op::PUSH1, 5, // address
+                op::PUSH1, 6, // gas
+                op::STATICCALL,
+            ],
+            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
         ret_empty_dynamic_offset(@raw {
             bytecode: &[op::PUSH0, op::ADDRESS, op::RETURN],
             expected_return: InstrStop::Return,

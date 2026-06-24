@@ -1,11 +1,11 @@
 use super::*;
 use evm2::{
     BaseEvmConfigSelector, BaseEvmTypes, Evm, Precompiles,
-    bytecode::Bytecode as Evm2Bytecode,
-    env::{BlockEnv as Evm2BlockEnv, TxEnv as Evm2TxEnv},
+    bytecode::Bytecode,
+    env::{BlockEnv, TxEnv},
     ethereum::ethereum_tx_registry,
     evm::{AccountInfo, InMemoryDB},
-    interpreter::{Gas, InstrStop, Interpreter as Evm2Interpreter, Message as Evm2Message},
+    interpreter::{Gas, InstrStop, Interpreter, Message},
 };
 use evm2_jit_context::EvmContext;
 use similar_asserts::assert_eq;
@@ -91,7 +91,7 @@ pub struct TestCase<'a> {
 
     /// Override `inspect_stack` on the compiler. `None` uses the default (`true`).
     pub inspect_stack: Option<bool>,
-    pub modify_message: Option<fn(&mut Evm2Message<BaseEvmTypes>)>,
+    pub modify_message: Option<fn(&mut Message<BaseEvmTypes>)>,
     pub modify_ecx: Option<fn(&mut EvmContext<'_>)>,
 
     pub expected_return: InstrStop,
@@ -180,7 +180,7 @@ pub static DEF_RD: &[u8] = &[0xbb; 64];
 pub static DEF_DATA: &[u8] = &[0xcc; 64];
 pub const DEF_VALUE: U256 = uint!(123_456_789_U256);
 pub static DEF_STORAGE: OnceLock<HashMap<U256, U256>> = OnceLock::new();
-pub static DEF_CODEMAP: OnceLock<HashMap<Address, Evm2Bytecode>> = OnceLock::new();
+pub static DEF_CODEMAP: OnceLock<HashMap<Address, Bytecode>> = OnceLock::new();
 pub const OTHER_ADDR: Address = Address::repeat_byte(0x69);
 pub const DEF_BN: U256 = uint!(500_U256);
 
@@ -200,12 +200,12 @@ pub fn def_storage() -> &'static HashMap<U256, U256> {
     })
 }
 
-pub fn def_codemap() -> &'static HashMap<Address, Evm2Bytecode> {
+pub fn def_codemap() -> &'static HashMap<Address, Bytecode> {
     DEF_CODEMAP.get_or_init(|| {
         let mut map = HashMap::default();
         map.insert(
             OTHER_ADDR,
-            Evm2Bytecode::new_legacy(Bytes::from_static(&[
+            Bytecode::new_legacy(Bytes::from_static(&[
                 op::PUSH1,
                 0x69,
                 op::PUSH1,
@@ -216,7 +216,7 @@ pub fn def_codemap() -> &'static HashMap<Address, Evm2Bytecode> {
         );
         map.insert(
             Address::with_last_byte(0x68),
-            Evm2Bytecode::new_legacy(Bytes::from_static(&[
+            Bytecode::new_legacy(Bytes::from_static(&[
                 op::CALLVALUE,
                 op::PUSH0,
                 op::MSTORE,
@@ -230,9 +230,9 @@ pub fn def_codemap() -> &'static HashMap<Address, Evm2Bytecode> {
     })
 }
 
-fn def_block_env() -> Evm2BlockEnv<BaseEvmTypes> {
+fn def_block_env() -> BlockEnv<BaseEvmTypes> {
     let env = def_env();
-    Evm2BlockEnv {
+    BlockEnv {
         number: env.block.number,
         beneficiary: env.block.coinbase,
         timestamp: env.block.timestamp,
@@ -246,9 +246,9 @@ fn def_block_env() -> Evm2BlockEnv<BaseEvmTypes> {
     }
 }
 
-fn def_tx_env() -> Evm2TxEnv<BaseEvmTypes> {
+fn def_tx_env() -> TxEnv<BaseEvmTypes> {
     let env = def_env();
-    Evm2TxEnv::<BaseEvmTypes> {
+    TxEnv::<BaseEvmTypes> {
         origin: env.tx.caller,
         gas_price: env.effective_gas_price(),
         chain_id: U256::from(env.cfg.chain_id),
@@ -257,8 +257,8 @@ fn def_tx_env() -> Evm2TxEnv<BaseEvmTypes> {
     }
 }
 
-fn def_message(gas_limit: u64) -> Evm2Message<BaseEvmTypes> {
-    Evm2Message::<BaseEvmTypes> {
+fn def_message(gas_limit: u64) -> Message<BaseEvmTypes> {
+    Message::<BaseEvmTypes> {
         destination: DEF_ADDR,
         caller: DEF_CALLER,
         input: Bytes::from_static(DEF_CD),
@@ -380,20 +380,18 @@ fn with_evm_context_and_host_mut<
     bytecode: &[u8],
     spec_id: SpecId,
     host: &mut Evm<BaseEvmTypes>,
-    modify_message: Option<fn(&mut Evm2Message<BaseEvmTypes>)>,
+    modify_message: Option<fn(&mut Message<BaseEvmTypes>)>,
     f: F,
 ) -> R {
-    let evm2_spec_id = spec_id;
-    let config = <BaseEvmConfigSelector as evm2::EvmConfigSelector<BaseEvmTypes>>::execution_config(
-        evm2_spec_id,
-    );
+    let config =
+        <BaseEvmConfigSelector as evm2::EvmConfigSelector<BaseEvmTypes>>::execution_config(spec_id);
     let tx_env = def_tx_env();
     let mut message = def_message(DEF_GAS_LIMIT);
     if let Some(modify_message) = modify_message {
         modify_message(&mut message);
     }
-    let mut interpreter = Evm2Interpreter::<BaseEvmTypes>::new(
-        Evm2Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
+    let mut interpreter = Interpreter::<BaseEvmTypes>::new(
+        Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
         &tx_env,
         &message,
     );
@@ -420,7 +418,7 @@ fn with_evm_context_and_host_modified<
 >(
     bytecode: &[u8],
     spec_id: SpecId,
-    modify_message: Option<fn(&mut Evm2Message<BaseEvmTypes>)>,
+    modify_message: Option<fn(&mut Message<BaseEvmTypes>)>,
     f: F,
 ) -> (R, HostState) {
     let mut host = prepare_host(spec_id);
@@ -510,8 +508,8 @@ fn run_compiled_test_case_with_context(
         modify_message(&mut message);
     }
     message.caller_is_static = is_static;
-    let mut interpreter = Evm2Interpreter::<BaseEvmTypes>::new(
-        Evm2Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
+    let mut interpreter = Interpreter::<BaseEvmTypes>::new(
+        Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
         &tx_env,
         &message,
     );
