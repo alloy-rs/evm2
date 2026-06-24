@@ -13,7 +13,7 @@ use alloy_primitives::B256;
 use evm2_macros::instruction;
 
 fn load_account<T: EvmTypes>(
-    cx: &mut GasInstructionCx<'_, '_, T>,
+    cx: &mut GasInstructionCx<'_, '_, '_, T>,
     addr: Word,
     load_code: bool,
 ) -> Result<AccountLoad> {

@@ -8,7 +8,7 @@ use evm2::{
 };
 use std::borrow::Cow;
 
-type BenchEvm = Evm<BaseEvmTypes>;
+type BenchEvm = Evm<'static, BaseEvmTypes>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedBench {

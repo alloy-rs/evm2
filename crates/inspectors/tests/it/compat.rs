@@ -527,25 +527,29 @@ impl<I> RawInspector<I> {
 }
 
 impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
         self.inner().initialize_interp(interp);
     }
 
-    fn step(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
         self.inner().step(interp);
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
         self.inner().step_end(interp);
     }
 
-    fn log(&mut self, log: &alloy_primitives::Log, host: &mut <BaseEvmTypes as EvmTypes>::Host) {
+    fn log(
+        &mut self,
+        log: &alloy_primitives::Log,
+        host: &mut <BaseEvmTypes as EvmTypes>::Host<'_>,
+    ) {
         self.inner().log(log, host);
     }
 
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &mut Message<BaseEvmTypes>,
     ) -> Option<MessageResult<BaseEvmTypes>> {
         self.inner().call(interp, message)
@@ -553,7 +557,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
 
     fn call_end(
         &mut self,
-        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &Message<BaseEvmTypes>,
         result: &mut MessageResult<BaseEvmTypes>,
     ) {
@@ -562,7 +566,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
 
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &mut Message<BaseEvmTypes>,
     ) -> Option<MessageResult<BaseEvmTypes>> {
         self.inner().create(interp, message)
@@ -570,7 +574,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
 
     fn create_end(
         &mut self,
-        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &Message<BaseEvmTypes>,
         result: &mut MessageResult<BaseEvmTypes>,
     ) {
@@ -582,7 +586,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
         contract: &Address,
         target: &Address,
         value: &U256,
-        host: &mut <BaseEvmTypes as EvmTypes>::Host,
+        host: &mut <BaseEvmTypes as EvmTypes>::Host<'_>,
     ) {
         self.inner().selfdestruct(contract, target, value, host);
     }

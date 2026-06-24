@@ -18,7 +18,7 @@ use derive_where::derive_where;
 
 /// EVM interpreter.
 #[derive_where(Debug)]
-pub struct Interpreter<'frame, T: EvmTypes> {
+pub struct Interpreter<'frame, 'host, T: EvmTypes> {
     pub(in crate::interpreter) bytecode: Bytecode,
     pub(in crate::interpreter) memory: Memory,
     pub(in crate::interpreter) return_data: Bytes,
@@ -29,8 +29,8 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     tx_env: Option<&'frame TxEnv<T>>,
     #[derive_where(skip)]
     message: Option<&'frame Message<T>>,
-    host: Option<NonNull<T::Host>>,
-    inspector: Option<NonNull<dyn Inspector<T> + 'frame>>,
+    host: Option<NonNull<T::Host<'host>>>,
+    inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
     version: *const Version,
     pub(in crate::interpreter) stack_len: usize,
     #[derive_where(skip)]
@@ -46,9 +46,9 @@ pub struct Interpreter<'frame, T: EvmTypes> {
 // SAFETY: The interpreter's internal pointers are always valid. `pc` points into owned bytecode,
 // frame-local references are cleared before pooling, and host/inspector/version pointers are
 // installed for execution and not used after the owning execution context is gone.
-unsafe impl<T: EvmTypes> Send for Interpreter<'_, T> {}
+unsafe impl<T: EvmTypes> Send for Interpreter<'_, '_, T> {}
 
-impl<T: EvmTypes> Default for Interpreter<'_, T> {
+impl<T: EvmTypes> Default for Interpreter<'_, '_, T> {
     fn default() -> Self {
         let bytecode = Bytecode::new();
         Self {
@@ -74,7 +74,7 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
     }
 }
 
-impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
+impl<'frame, 'host, T: EvmTypes> Interpreter<'frame, 'host, T> {
     /// Creates an interpreter from analyzed bytecode, a transaction-global environment, and a
     /// frame-local message.
     pub fn new(bytecode: Bytecode, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) -> Self {
@@ -207,7 +207,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     /// Returns the host implementation.
     #[inline]
-    pub const fn host(&mut self) -> &mut T::Host {
+    pub const fn host(&mut self) -> &mut T::Host<'host> {
         // SAFETY: `host` is initialized at the beginning of inspected execution.
         unsafe { self.host.unwrap_unchecked().as_mut() }
     }
@@ -220,7 +220,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     /// Runs the interpreter until it stops.
     #[inline]
-    pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
+    pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host<'host>) -> InstrStop {
         self.run_inner(config.base_spec_id(), config.version(), host, None, config.instructions)
     }
 
@@ -229,8 +229,8 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     pub fn run_inspect(
         &mut self,
         config: &ExecutionConfig<T>,
-        host: &mut T::Host,
-        inspector: &mut (dyn Inspector<T> + 'frame),
+        host: &mut T::Host<'host>,
+        inspector: &mut (dyn Inspector<T> + 'host),
     ) -> InstrStop {
         self.run_inner(
             config.base_spec_id(),
@@ -246,8 +246,8 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         &mut self,
         spec: SpecId,
         version: &Version,
-        host: &mut T::Host,
-        inspector: Option<NonNull<dyn Inspector<T> + 'frame>>,
+        host: &mut T::Host<'host>,
+        inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
         instructions: &InstrTable<T>,
     ) -> InstrStop {
         self.memory.set_memory_limit(version.memory_limit);
@@ -266,7 +266,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         &mut self,
         spec: SpecId,
         version: &Version,
-        host: &mut T::Host,
+        host: &mut T::Host<'host>,
     ) {
         self.host = Some(NonNull::from(host));
         self.version = version;
@@ -277,20 +277,22 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
 /// Interpreter state exposed to instruction implementations.
 #[repr(transparent)]
-pub struct InterpreterState<'frame, T: EvmTypes>(pub(crate) Interpreter<'frame, T>);
+pub struct InterpreterState<'frame, 'host, T: EvmTypes>(pub(crate) Interpreter<'frame, 'host, T>);
 
-impl<T: EvmTypes> fmt::Debug for InterpreterState<'_, T> {
+impl<T: EvmTypes> fmt::Debug for InterpreterState<'_, '_, T> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
-impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
+impl<'frame, 'host, T: EvmTypes> InterpreterState<'frame, 'host, T> {
     #[inline]
-    pub(crate) const fn wrap_mut<'a>(interp: &'a mut Interpreter<'frame, T>) -> &'a mut Self {
+    pub(crate) const fn wrap_mut<'a>(
+        interp: &'a mut Interpreter<'frame, 'host, T>,
+    ) -> &'a mut Self {
         // SAFETY: `InterpreterState` is a transparent wrapper over `Interpreter`.
-        unsafe { core::mem::transmute::<&mut Interpreter<'frame, T>, &mut Self>(interp) }
+        unsafe { core::mem::transmute::<&mut Interpreter<'frame, 'host, T>, &mut Self>(interp) }
     }
 
     #[inline]
@@ -342,7 +344,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     /// Returns the host implementation.
     #[inline]
-    pub const fn host(&mut self) -> &mut T::Host {
+    pub const fn host(&mut self) -> &mut T::Host<'host> {
         // SAFETY: `host` is initialized at the beginning of `run` and cleared before the
         // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
         // `run` host borrow.
@@ -461,7 +463,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
 #[derive(Default)]
 pub(crate) struct InterpreterPool<T: EvmTypes> {
-    frames: Vec<Box<Interpreter<'static, T>>>,
+    frames: Vec<Box<Interpreter<'static, 'static, T>>>,
 }
 
 impl<T: EvmTypes> InterpreterPool<T> {
@@ -469,7 +471,7 @@ impl<T: EvmTypes> InterpreterPool<T> {
         Self { frames: Vec::new() }
     }
 
-    pub(crate) fn pop<'frame>(&mut self) -> Box<Interpreter<'frame, T>> {
+    pub(crate) fn pop<'frame, 'host>(&mut self) -> Box<Interpreter<'frame, 'host, T>> {
         let frame = self.frames.pop().unwrap_or_default();
         // SAFETY: Frames stored in the pool have their frame-local references cleared before they
         // are erased to `'static`. Rebinding the lifetime is only used to initialize the next
@@ -477,10 +479,10 @@ impl<T: EvmTypes> InterpreterPool<T> {
         unsafe { trustme::decouple_lt_box(frame) }
     }
 
-    pub(crate) fn push<'pool, 'frame>(
+    pub(crate) fn push<'pool, 'frame, 'host>(
         &'pool mut self,
-        mut frame: Box<Interpreter<'frame, T>>,
-    ) -> &'pool mut Interpreter<'frame, T> {
+        mut frame: Box<Interpreter<'frame, 'host, T>>,
+    ) -> &'pool mut Interpreter<'frame, 'host, T> {
         frame.clear_frame_refs();
         // SAFETY: `clear_frame_refs` removes every reference carrying `'frame`, so the boxed
         // interpreter can be stored in the pool with the erased `'static` lifetime.
@@ -491,7 +493,7 @@ impl<T: EvmTypes> InterpreterPool<T> {
         unsafe { trustme::decouple_interpreter_lt_mut(frame) }
     }
 
-    pub(crate) fn last_mut<'frame>(&mut self) -> Option<&mut Interpreter<'frame, T>> {
+    pub(crate) fn last_mut<'frame, 'host>(&mut self) -> Option<&mut Interpreter<'frame, 'host, T>> {
         let frame = self.frames.last_mut()?.as_mut();
         // SAFETY: Frames stored in the pool have had their frame-local references cleared by
         // `push`, and this borrow is tied to the pool borrow.

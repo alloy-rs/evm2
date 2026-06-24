@@ -18,8 +18,8 @@ pub use evm::{
     AccountInfo, BlockStateAccumulator, Evm, ExecutedTx, JournalEntry, TxResult, TxResultWithState,
     config,
     config::{
-        BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
-        ExecutionConfig,
+        BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector,
+        EvmHostTypes, EvmTypes, ExecutionConfig,
     },
     env, inspector, precompile, registry,
 };

@@ -958,7 +958,7 @@ mod tests {
     }
 
     fn handle_test_tx(
-        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
+        req: TxRequest<'_, '_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
         Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
@@ -1020,7 +1020,7 @@ mod tests {
 
         fn execute(
             &mut self,
-            _evm: &mut Evm<BaseEvmTypes>,
+            _evm: &mut Evm<'_, BaseEvmTypes>,
             _message: &Message<BaseEvmTypes>,
             _gas: &mut GasTracker,
         ) -> Option<Result<PrecompileOutput, PrecompileError>> {
@@ -1033,7 +1033,7 @@ mod tests {
     }
 
     impl crate::evm::Inspector<BaseEvmTypes> for NonSendInspector {
-        fn step(&mut self, _interp: &mut crate::interpreter::Interpreter<'_, BaseEvmTypes>) {
+        fn step(&mut self, _interp: &mut crate::interpreter::Interpreter<'_, '_, BaseEvmTypes>) {
             let _ = Rc::strong_count(&self.marker);
         }
     }

@@ -20,12 +20,13 @@ cfg_if::cfg_if! {
 pub(in crate::interpreter) use imp::run;
 
 #[inline(always)]
-fn run_state<'a, 'frame, T: EvmTypes>(
-    interpreter: &'a mut Interpreter<'frame, T>,
-) -> (&'a mut InterpreterState<'frame, T>, Pc, Stack<'a>) {
+fn run_state<'a, 'frame, 'host, T: EvmTypes>(
+    interpreter: &'a mut Interpreter<'frame, 'host, T>,
+) -> (&'a mut InterpreterState<'frame, 'host, T>, Pc, Stack<'a>) {
     // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
     // the dispatch loop does not create an extra `&mut` alias for `interpreter`.
-    let raw = unsafe { trustme::decouple_lt_mut_ptr(interpreter as *mut Interpreter<'frame, T>) };
+    let raw =
+        unsafe { trustme::decouple_lt_mut_ptr(interpreter as *mut Interpreter<'frame, 'host, T>) };
     // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
     // the separate stack view is live.
     let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
@@ -217,9 +218,9 @@ const fn instruction_changed<T: EvmTypes>(
 trait InspectMode<T: EvmTypes> {
     const INSPECT: bool;
 
-    fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
+    fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
 
-    fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
+    fn step_end(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
 }
 
 struct NoInspector;
@@ -228,10 +229,10 @@ impl<T: EvmTypes> InspectMode<T> for NoInspector {
     const INSPECT: bool = false;
 
     #[inline(always)]
-    fn step(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
+    fn step(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}
 
     #[inline(always)]
-    fn step_end(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
+    fn step_end(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}
 }
 
 struct DynInspector;
@@ -240,12 +241,12 @@ impl<T: EvmTypes> InspectMode<T> for DynInspector {
     const INSPECT: bool = true;
 
     #[inline(always)]
-    fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
+    fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) {
         state.inspect_step(pc, stack_len);
     }
 
     #[inline(always)]
-    fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
+    fn step_end(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize) {
         state.inspect_step_end(pc, stack_len);
     }
 }

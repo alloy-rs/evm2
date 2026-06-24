@@ -114,7 +114,7 @@
 //! ```
 
 use self::{
-    inspector::{Inspector, boxed_inspector, erase_boxed_inspector_lifetime},
+    inspector::{Inspector, boxed_inspector},
     precompile::{PrecompileOutput, PrecompileProvider, boxed_precompile_provider},
 };
 use crate::{
@@ -210,7 +210,7 @@ macro_rules! db_error_stop {
 
 /// EVM host and transaction dispatcher.
 #[derive_where(Debug)]
-pub struct Evm<T: EvmTypes> {
+pub struct Evm<'a, T: EvmTypes> {
     #[derive_where(skip)]
     spec_id: T::SpecId,
     #[derive_where(skip)]
@@ -219,18 +219,18 @@ pub struct Evm<T: EvmTypes> {
     pub(crate) block: BlockEnv<T>,
     registry: TxRegistry<T, TxResult<T>>,
     #[derive_where(skip)]
-    pub(crate) state: State,
+    pub(crate) state: State<'a>,
     #[derive_where(skip)]
-    precompiles: Box<dyn PrecompileProvider<T>>,
+    precompiles: Box<dyn PrecompileProvider<T> + 'a>,
     #[derive_where(skip)]
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
-    inspector: Option<Box<dyn Inspector<T>>>,
+    inspector: Option<Box<dyn Inspector<T> + 'a>>,
     /// The currently running interpreter frame, if any.
     ///
     /// This is passed to the inspector call and create hooks as the parent frame.
     #[derive_where(skip)]
-    current_frame: Option<NonNull<Interpreter<'static, T>>>,
+    current_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
     #[derive_where(skip)]
     running: bool,
     #[cfg(feature = "async")]
@@ -240,7 +240,10 @@ pub struct Evm<T: EvmTypes> {
     pub(crate) db_error_code: Option<DbErrorCode>,
 }
 
-impl<T: EvmTypes<Host = Self>> Evm<T> {
+impl<'a, T> Evm<'a, T>
+where
+    T: EvmTypes<Host<'a> = Self>,
+{
     /// Creates an EVM for `spec_id` with the provided transaction registry, database, and
     /// precompile provider.
     #[inline]
@@ -248,8 +251,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv<T>,
         registry: TxRegistry<T, TxResult<T>>,
-        database: impl DynDatabase,
-        precompiles: impl PrecompileProvider<T>,
+        database: impl DynDatabase + 'a,
+        precompiles: impl PrecompileProvider<T> + 'a,
     ) -> Self {
         Self::new_with_execution_config(
             <T::ConfigSelector as EvmConfigSelector<T>>::execution_config(spec_id),
@@ -268,8 +271,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv<T>,
         registry: TxRegistry<T, TxResult<T>>,
-        database: impl DynDatabase,
-        precompiles: impl PrecompileProvider<T>,
+        database: impl DynDatabase + 'a,
+        precompiles: impl PrecompileProvider<T> + 'a,
     ) -> Self {
         Self::new_mono(
             execution_config,
@@ -287,8 +290,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv<T>,
         registry: TxRegistry<T, TxResult<T>>,
-        database: Box<dyn DynDatabase>,
-        precompiles: Box<dyn PrecompileProvider<T>>,
+        database: Box<dyn DynDatabase + 'a>,
+        precompiles: Box<dyn PrecompileProvider<T> + 'a>,
     ) -> Self {
         assert_eq!(
             spec_id.into(),
@@ -367,7 +370,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// [`Self::commit_source`]. The wrapped backing database is available through
     /// [`Self::database`].
     #[inline]
-    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase>> {
+    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase + 'a>> {
         self.state.overlay_db()
     }
 
@@ -377,7 +380,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// overlay with a [`Tee`] or another [`StateChangeSink`]. The wrapped backing database is
     /// available through [`Self::database_mut`].
     #[inline]
-    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase>> {
+    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase + 'a>> {
         self.state.overlay_db_mut()
     }
 
@@ -419,7 +422,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Replaces the backing database.
     #[inline]
-    pub fn set_database(&mut self, database: impl DynDatabase) {
+    pub fn set_database(&mut self, database: impl DynDatabase + 'a) {
         self.state.set_initial(database);
         self.evm_send = false;
     }
@@ -506,13 +509,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Returns the mutable EVM state.
     #[inline]
-    pub const fn state(&self) -> &State {
+    pub const fn state(&self) -> &State<'a> {
         &self.state
     }
 
     /// Returns the mutable EVM state.
     #[inline]
-    pub const fn state_mut(&mut self) -> &mut State {
+    pub const fn state_mut(&mut self) -> &mut State<'a> {
         &mut self.state
     }
 
@@ -549,7 +552,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Replaces the precompile provider.
     #[inline]
-    pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T>) {
+    pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
         self.precompiles = boxed_precompile_provider(precompiles);
         self.evm_send = false;
@@ -618,7 +621,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Sets the active execution inspector.
     #[inline]
-    pub fn set_inspector<I: Inspector<T>>(&mut self, inspector: I) {
+    pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.assert_inspector_mutable();
         self.inspector = Some(boxed_inspector(inspector));
         self.evm_send = false;
@@ -626,15 +629,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Sets the active boxed execution inspector.
     #[inline]
-    pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T> + '_>) {
+    pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T> + 'a>) {
         self.assert_inspector_mutable();
-        self.inspector = Some(erase_boxed_inspector_lifetime(inspector));
+        self.inspector = Some(inspector);
         self.evm_send = false;
     }
 
     /// Removes the active execution inspector.
     #[inline]
-    pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T>>> {
+    pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T> + 'a>> {
         self.assert_inspector_mutable();
         self.evm_send = false;
         self.inspector.take()
@@ -696,14 +699,14 @@ impl Drop for ExecutionGuard {
 }
 
 #[cfg(feature = "async")]
-struct SendEvmRef<'a, T: EvmTypes> {
-    evm: &'a mut Evm<T>,
+struct SendEvmRef<'a, 'evm, T: EvmTypes> {
+    evm: &'a mut Evm<'evm, T>,
 }
 
 #[cfg(feature = "async")]
 // SAFETY: `SendEvmRef` is only constructed by async entrypoints after `Evm::evm_is_send` has
 // verified the concrete erased field types as `Send`.
-unsafe impl<T> Send for SendEvmRef<'_, T>
+unsafe impl<T> Send for SendEvmRef<'_, '_, T>
 where
     T: EvmTypes,
     T::SpecId: Send,
@@ -717,22 +720,28 @@ where
 }
 
 #[cfg(feature = "async")]
-impl<'a, T: EvmTypes> SendEvmRef<'a, T> {
+impl<'a, 'evm, T: EvmTypes> SendEvmRef<'a, 'evm, T> {
     #[inline]
-    const fn new(evm: &'a mut Evm<T>) -> Self {
+    const fn new(evm: &'a mut Evm<'evm, T>) -> Self {
         Self { evm }
     }
 }
 
 #[cfg(feature = "async")]
-impl<T: EvmTypes<Tx: Typed2718, Host = Evm<T>>> SendEvmRef<'_, T> {
+impl<'evm, T> SendEvmRef<'_, 'evm, T>
+where
+    T: EvmTypes<Tx: Typed2718, Host<'evm> = Evm<'evm, T>>,
+{
     #[inline]
     fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
         self.evm.transact(tx).map(ExecutedTx::commit)
     }
 }
 
-impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
+impl<'a, T> Evm<'a, T>
+where
+    T: EvmTypes<Tx: Typed2718, Host<'a> = Self>,
+{
     /// Dispatches the transaction to its handler and returns an executed transaction handle.
     ///
     /// The returned [`ExecutedTx`] keeps post-finalization writes in the transaction scratch layer.
@@ -741,7 +750,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// [`ExecutedTx::detach`] before
     /// another transaction can be executed. Dropping the handle is equivalent to
     /// [`ExecutedTx::discard`].
-    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<ExecutedTx<'_, T>> {
+    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         self.db_error_code = None;
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let mut result = handler.call(tx, self);
@@ -792,10 +801,10 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// provider, and optional inspector must be verified with [`Self::evm_is_send`] or
     /// [`Self::evm_is_send_with_inspector`].
     #[cfg(feature = "async")]
-    pub fn transact_async<'a>(
-        &'a mut self,
-        tx: &'a T::Tx,
-    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, registry::HandlerError>> + Send + 'a
+    pub fn transact_async<'fut>(
+        &'fut mut self,
+        tx: &'fut T::Tx,
+    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, registry::HandlerError>> + Send + 'fut
     where
         T::Tx: Sync,
         T::TxResultExt: Send,
@@ -813,21 +822,24 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     ///
     /// Use [`Self::transact`] directly when the caller wants to choose between commit, discard,
     /// detach, and accumulator/sink commits for each transaction.
-    pub fn transact_iter<'a, I>(
-        &'a mut self,
+    pub fn transact_iter<'txs, I>(
+        &'txs mut self,
         txs: I,
-    ) -> impl Iterator<Item = HandlerResult<TxResult<T>>> + 'a
+    ) -> impl Iterator<Item = HandlerResult<TxResult<T>>> + 'txs
     where
-        I: IntoIterator<Item = &'a T::Tx>,
-        I::IntoIter: 'a,
-        T::Tx: 'a,
-        Self: 'a,
+        I: IntoIterator<Item = &'txs T::Tx>,
+        I::IntoIter: 'txs,
+        T::Tx: 'txs,
+        Self: 'txs,
     {
         txs.into_iter().map(move |tx| self.transact(tx).map(ExecutedTx::commit))
     }
 }
 
-impl<T: EvmTypes<Host = Self>> Evm<T> {
+impl<'a, T> Evm<'a, T>
+where
+    T: EvmTypes<Host<'a> = Self>,
+{
     #[inline]
     fn execute_message_impl(
         &mut self,
@@ -851,11 +863,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// This is invoked for every message when an inspector is installed; hook overrides skip
     /// execution entirely, including the call depth check.
     #[inline(never)]
-    fn execute_message_inspected(
+    fn execute_message_inspected<'frame>(
         &mut self,
-        tx_env: &TxEnv<T>,
+        tx_env: &'frame TxEnv<T>,
         bytecode: Bytecode,
-        message: &mut Message<T>,
+        message: &'frame mut Message<T>,
     ) -> MessageResult<T> {
         let Some(inspector) = self.inspector.as_deref_mut() else {
             return self.execute_message_impl(tx_env, bytecode, message);
@@ -882,11 +894,16 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             message.destination = Self::derive_create_address(&bytecode, message, nonce);
         }
 
-        let mut top_frame = None;
+        let mut top_frame: Option<Box<Interpreter<'frame, 'a, T>>> = None;
         let frame = match self.current_frame {
             // SAFETY: The parent frame is suspended on this call stack for the duration of the
             // message execution.
-            Some(mut frame) => unsafe { frame.as_mut() },
+            Some(mut frame) => unsafe {
+                core::mem::transmute::<
+                    &mut Interpreter<'static, 'static, T>,
+                    &mut Interpreter<'frame, 'a, T>,
+                >(frame.as_mut())
+            },
             None => {
                 let frame = top_frame.insert(self.interpreter_pool.pop());
                 // SAFETY: The message outlives the frame, which is returned to the pool below.
@@ -1203,7 +1220,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         tx_env: &'frame TxEnv<T>,
         message: &'frame Message<T>,
     ) -> InstrStop {
-        let mut interp = self.interpreter_pool.pop();
+        let mut interp: Box<Interpreter<'frame, 'a, T>> = self.interpreter_pool.pop();
         let _guard = self.enter_execution();
         let interp_ref = interp.as_mut();
         interp_ref.init(bytecode, tx_env, message);
@@ -1218,7 +1235,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         });
         let prev_frame = self
             .current_frame
-            .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, T>>());
+            .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(execution_config, self, inspector)
         } else {
@@ -1229,7 +1246,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         stop
     }
 
-    fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, 'a, T>) {
         if let Some(inspector) = self.inspector.as_deref_mut() {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // hook.
@@ -1245,7 +1262,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 }
 
-impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
+impl<'a, T> Host<T> for Evm<'a, T>
+where
+    T: EvmTypes<Host<'a> = Self>,
+{
     fn spec_id(&self) -> SpecId {
         self.spec_id()
     }
@@ -1589,14 +1609,14 @@ mod tests {
     }
 
     fn handle_test_tx(
-        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
+        req: TxRequest<'_, '_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
         Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
     }
 
     fn handle_test_tx_version(
-        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
+        req: TxRequest<'_, '_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         Ok(TxResult {
             status: true,
@@ -1609,7 +1629,7 @@ mod tests {
     const LIFECYCLE_STORAGE_KEY: Word = Word::from_limbs([1, 0, 0, 0]);
 
     fn handle_lifecycle_tx(
-        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
+        req: TxRequest<'_, '_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         let value = Word::from(req.tx.nonce);
         req.host
@@ -1625,7 +1645,7 @@ mod tests {
         Ok(TxResult { status: true, gas_used: req.tx.nonce, ..TxResult::default() })
     }
 
-    fn lifecycle_evm() -> Evm<BaseEvmTypes> {
+    fn lifecycle_evm() -> Evm<'static, BaseEvmTypes> {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             RecoveredTxEnvelope::as_legacy,
@@ -1672,7 +1692,7 @@ mod tests {
 
         fn execute(
             &mut self,
-            evm: &mut Evm<BaseEvmTypes>,
+            evm: &mut Evm<'_, BaseEvmTypes>,
             message: &Message,
             _gas: &mut GasTracker,
         ) -> Option<Result<PrecompileOutput, PrecompileError>> {
@@ -1729,7 +1749,7 @@ mod tests {
 
             fn execute(
                 &mut self,
-                evm: &mut Evm<BaseEvmTypes>,
+                evm: &mut Evm<'_, BaseEvmTypes>,
                 message: &Message,
                 _gas: &mut GasTracker,
             ) -> Option<Result<PrecompileOutput, PrecompileError>> {
@@ -1800,7 +1820,7 @@ mod tests {
         }
 
         impl Inspector<BaseEvmTypes> for AccessingInspector {
-            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 let evm = interp.host();
                 match self.access {
                     InspectorAccess::Mut => {
@@ -1836,7 +1856,7 @@ mod tests {
         struct ReadingInspector {}
 
         impl Inspector<BaseEvmTypes> for ReadingInspector {
-            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 let _ = interp.host().inspector();
             }
         }
@@ -1895,7 +1915,7 @@ mod tests {
 
             fn execute(
                 &mut self,
-                evm: &mut Evm<BaseEvmTypes>,
+                evm: &mut Evm<'_, BaseEvmTypes>,
                 message: &Message,
                 _gas: &mut GasTracker,
             ) -> Option<Result<PrecompileOutput, PrecompileError>> {
@@ -1967,7 +1987,7 @@ mod tests {
 
             fn execute(
                 &mut self,
-                evm: &mut Evm<BaseEvmTypes>,
+                evm: &mut Evm<'_, BaseEvmTypes>,
                 message: &Message,
                 gas: &mut GasTracker,
             ) -> Option<Result<PrecompileOutput, PrecompileError>> {

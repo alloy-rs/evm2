@@ -443,7 +443,7 @@ fn block_withdrawals(block: &Block) -> &[Withdrawal] {
 }
 
 fn pre_block_system_calls(
-    evm: &mut Evm<BaseEvmTypes>,
+    evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     spec: SpecId,
     block: BlockEnv,
@@ -479,7 +479,7 @@ fn pre_block_system_calls(
 }
 
 fn post_block_transition(
-    evm: &mut Evm<BaseEvmTypes>,
+    evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     spec: SpecId,
     block: BlockEnv,
@@ -515,7 +515,7 @@ fn post_block_transition(
 }
 
 fn run_system_call(
-    evm: &mut Evm<BaseEvmTypes>,
+    evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     address: Address,
     data: Bytes,
@@ -538,7 +538,7 @@ fn run_system_call(
 }
 
 fn execute_tx(
-    evm: &mut Evm<BaseEvmTypes>,
+    evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     tx: &RecoveredTxEnvelope,
 ) -> Result<TxResult, HandlerError> {
@@ -546,7 +546,7 @@ fn execute_tx(
 }
 
 fn commit_state_changes<S: StateChangeSource>(
-    evm: &mut Evm<BaseEvmTypes>,
+    evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     changes: &S,
 ) {
@@ -579,7 +579,7 @@ const fn account_info_ref(info: &EvmAccountInfo) -> AccountInfoRef<'_> {
     }
 }
 
-fn database_error(evm: &mut Evm<BaseEvmTypes>, code: DbErrorCode) -> TestErrorKind {
+fn database_error(evm: &mut Evm<'_, BaseEvmTypes>, code: DbErrorCode) -> TestErrorKind {
     TestErrorKind::UnexpectedFailure(evm.database_mut().error(code).to_string())
 }
 
@@ -693,7 +693,7 @@ const fn block_reward(spec: SpecId, ommers: usize) -> u128 {
 }
 
 fn increment_balance(
-    evm: &mut Evm<BaseEvmTypes>,
+    evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     address: Address,
     amount: U256,

@@ -46,7 +46,7 @@ impl FourByteInspector {
 impl<T: EvmTypes> Inspector<T> for FourByteInspector {
     fn call(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         if message.input.len() >= 4 {

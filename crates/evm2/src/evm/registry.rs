@@ -143,11 +143,11 @@ pub enum HandlerError {
 
 /// Request passed to a typed transaction handler.
 #[derive(Debug)]
-pub struct TxRequest<'a, T: EvmTypes, Tx> {
+pub struct TxRequest<'a, 'host, T: EvmTypes, Tx> {
     /// Concrete transaction extracted from the envelope.
     pub tx: &'a Tx,
     /// Mutable host used by this handler.
-    pub host: &'a mut T::Host,
+    pub host: &'a mut T::Host<'host>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -158,14 +158,14 @@ pub struct TxRequest<'a, T: EvmTypes, Tx> {
 /// even though the registry itself is type-erased.
 pub trait TxHandler<T: EvmTypes, Tx, Output> {
     /// Executes the handler.
-    fn call(&self, req: TxRequest<'_, T, Tx>) -> HandlerResult<Output>;
+    fn call(&self, req: TxRequest<'_, '_, T, Tx>) -> HandlerResult<Output>;
 }
 
 impl<T: EvmTypes, Tx, Output, F> TxHandler<T, Tx, Output> for F
 where
-    F: for<'a> Fn(TxRequest<'a, T, Tx>) -> HandlerResult<Output>,
+    F: for<'a, 'host> Fn(TxRequest<'a, 'host, T, Tx>) -> HandlerResult<Output>,
 {
-    fn call(&self, req: TxRequest<'_, T, Tx>) -> HandlerResult<Output> {
+    fn call(&self, req: TxRequest<'_, '_, T, Tx>) -> HandlerResult<Output> {
         self(req)
     }
 }
@@ -184,13 +184,13 @@ impl<T: EvmTypes, Output> fmt::Debug for AnyTxHandler<T, Output> {
 
 impl<T: EvmTypes, Output> AnyTxHandler<T, Output> {
     /// Executes the erased handler against an envelope and host.
-    pub fn call(&self, env: &T::Tx, host: &mut T::Host) -> HandlerResult<Output> {
+    pub fn call<'host>(&self, env: &T::Tx, host: &mut T::Host<'host>) -> HandlerResult<Output> {
         self.inner.call(env, host)
     }
 }
 
 trait ErasedTxHandler<T: EvmTypes, Output>: Send + Sync {
-    fn call(&self, env: &T::Tx, host: &mut T::Host) -> HandlerResult<Output>;
+    fn call<'host>(&self, env: &T::Tx, host: &mut T::Host<'host>) -> HandlerResult<Output>;
 }
 
 struct HandlerAdapter<Tx, H, F> {
@@ -212,7 +212,7 @@ where
     H: TxHandler<T, Tx, Output> + Send + Sync,
     F: for<'a> Fn(&'a T::Tx) -> Option<&'a Tx> + Send + Sync,
 {
-    fn call(&self, env: &T::Tx, host: &mut T::Host) -> HandlerResult<Output> {
+    fn call<'host>(&self, env: &T::Tx, host: &mut T::Host<'host>) -> HandlerResult<Output> {
         let tx = (self.extract)(env)
             .ok_or(HandlerError::WrongTransactionType { expected: self.type_id })?;
         self.handler.call(TxRequest { tx, host, _non_exhaustive: () })
@@ -324,7 +324,7 @@ mod tests {
         type TxEnvExt = ();
         type TxResultExt = ();
         type BlockEnvExt = ();
-        type Host = TestHost;
+        type Host<'a> = TestHost;
     }
 
     struct TestHost {
@@ -435,12 +435,12 @@ mod tests {
         Receipt { success: true, cumulative_gas_used }
     }
 
-    fn handle_transfer(req: TxRequest<'_, TestTypes, TransferTx>) -> HandlerResult<Receipt> {
+    fn handle_transfer(req: TxRequest<'_, '_, TestTypes, TransferTx>) -> HandlerResult<Receipt> {
         let gas_used = 21_000 + req.tx.amount;
         Ok(receipt(gas_used))
     }
 
-    fn handle_create(req: TxRequest<'_, TestTypes, CreateTx>) -> HandlerResult<Receipt> {
+    fn handle_create(req: TxRequest<'_, '_, TestTypes, CreateTx>) -> HandlerResult<Receipt> {
         let gas_used = 53_000 + req.tx.initcode.len() as u64;
         Ok(receipt(gas_used))
     }

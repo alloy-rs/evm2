@@ -15,7 +15,7 @@ use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
 #[inline]
-const fn require_non_staticcall<T: EvmTypes>(state: &InterpreterState<'_, T>) -> Result {
+const fn require_non_staticcall<T: EvmTypes>(state: &InterpreterState<'_, '_, T>) -> Result {
     if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -33,7 +33,7 @@ const fn should_charge_new_account_gas(
 
 fn resize_memory_range<T: EvmTypes>(
     gas: &mut Gas,
-    state: &mut InterpreterState<'_, T>,
+    state: &mut InterpreterState<'_, '_, T>,
     offset: Word,
     len: Word,
 ) -> Result<Range<usize>> {
@@ -50,7 +50,7 @@ fn resize_memory_range<T: EvmTypes>(
 
 fn get_memory_input_and_out_ranges<T: EvmTypes>(
     gas: &mut Gas,
-    state: &mut InterpreterState<'_, T>,
+    state: &mut InterpreterState<'_, '_, T>,
     input_offset: Word,
     input_len: Word,
     return_offset: Word,
@@ -62,7 +62,7 @@ fn get_memory_input_and_out_ranges<T: EvmTypes>(
 }
 
 fn memory_range_bytes<T: EvmTypes>(
-    state: &mut InterpreterState<'_, T>,
+    state: &mut InterpreterState<'_, '_, T>,
     range: Range<usize>,
 ) -> Result<Bytes> {
     if range.is_empty() {
@@ -73,7 +73,7 @@ fn memory_range_bytes<T: EvmTypes>(
 
 fn load_acc_and_calc_gas<T: EvmTypes>(
     gas: &mut Gas,
-    state: &mut InterpreterState<'_, T>,
+    state: &mut InterpreterState<'_, '_, T>,
     to: Address,
     transfers_value: bool,
     create_empty_account: bool,
@@ -141,7 +141,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
 fn prepare_call<T: EvmTypes>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
-    state: &mut InterpreterState<'_, T>,
+    state: &mut InterpreterState<'_, '_, T>,
     kind: MessageKind,
     message: &mut Message<T>,
     code: &mut Bytecode,
@@ -218,7 +218,7 @@ fn prepare_call<T: EvmTypes>(
 fn call_inner<T: EvmTypes>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
-    state: &mut InterpreterState<'_, T>,
+    state: &mut InterpreterState<'_, '_, T>,
     kind: MessageKind,
 ) -> Result {
     let mut message = Message::<T>::default();
@@ -276,7 +276,7 @@ pub(crate) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
 fn create_inner<T: EvmTypes>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
-    state: &mut InterpreterState<'_, T>,
+    state: &mut InterpreterState<'_, '_, T>,
     is_create2: bool,
 ) -> Result {
     require_non_staticcall(state)?;

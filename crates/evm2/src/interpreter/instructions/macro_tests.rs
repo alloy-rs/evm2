@@ -55,7 +55,7 @@ impl MacroHostExt for TestHost {
     }
 }
 
-#[instruction(EvmTypes<Host: MacroHostExt>)]
+#[instruction(EvmTypes = TestTypes)]
 fn macro_assoc_bound(cx: _) -> out {
     *out = cx.state.host().macro_bound_value();
 }
@@ -74,7 +74,7 @@ const fn macro_opcode_config() -> OpcodeConfig<TestTypes> {
     config.set_instruction::<macro_no_stack_preamble<TestTypes>>(NO_STACK_PREAMBLE_OPCODE, 0);
     config.set_instruction::<macro_concrete_eq>(CONCRETE_EQ_OPCODE, 0);
     config.set_instruction::<macro_type_bound<TestTypes>>(TYPE_BOUND_OPCODE, 0);
-    config.set_instruction::<macro_assoc_bound<TestTypes>>(ASSOC_BOUND_OPCODE, 0);
+    config.set_instruction::<macro_assoc_bound>(ASSOC_BOUND_OPCODE, 0);
     config
 }
 

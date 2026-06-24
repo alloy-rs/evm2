@@ -66,7 +66,7 @@ impl TransferInspector {
         self.transfers.iter()
     }
 
-    fn on_transfer<T: EvmTypes>(&mut self, message: &Message<T>, host: &mut T::Host) {
+    fn on_transfer<T: EvmTypes>(&mut self, message: &Message<T>, host: &mut T::Host<'_>) {
         let kind = match message.kind {
             MessageKind::Call | MessageKind::CallCode => TransferKind::Call,
             MessageKind::Create => TransferKind::Create,
@@ -102,13 +102,10 @@ impl TransferInspector {
     }
 }
 
-impl<T: EvmTypes> Inspector<T> for TransferInspector
-where
-    T::Host: Host<T>,
-{
+impl<T: EvmTypes> Inspector<T> for TransferInspector {
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         self.on_transfer(message, interp.host());
@@ -117,7 +114,7 @@ where
 
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         self.on_transfer(message, interp.host());
@@ -129,7 +126,7 @@ where
         contract: &Address,
         target: &Address,
         value: &U256,
-        _host: &mut T::Host,
+        _host: &mut T::Host<'_>,
     ) {
         self.transfers.push(TransferOperation {
             kind: TransferKind::SelfDestruct,

@@ -43,8 +43,8 @@ use syn::{
 ///   implementor instead of generating a generic implementation.
 /// - `#[instruction(EvmTypes: CustomTypesTrait)]`: Adds a trait bound to the generated generic
 ///   `EvmTypes` type parameter.
-/// - `#[instruction(EvmTypes<Host: CustomHostTrait>)]`: Adds associated-type constraints to the
-///   generated generic `EvmTypes` implementation.
+/// - `#[instruction(EvmTypes<Host<'static>: CustomHostTrait>)]`: Adds associated-type constraints
+///   to the generated generic `EvmTypes` implementation.
 ///
 /// ## Examples
 ///
@@ -311,7 +311,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
             fn execute(
                 __evm2_pc: &mut evm2::interpreter::Pc,
                 mut stack: evm2::interpreter::StackMut<'_>,
-                __evm2_state: &mut evm2::interpreter::InterpreterState<'_, #evm_types>,
+                __evm2_state: &mut evm2::interpreter::InterpreterState<'_, '_, #evm_types>,
             ) -> evm2::interpreter::Result {
                 evm2::asm_comment!(#asm_comment);
                 #cx_setup

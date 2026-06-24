@@ -64,13 +64,13 @@ enum PendingState {
 ///
 /// Dropping `ExecutedTx` without calling one of those methods is equivalent to [`Self::discard`].
 #[must_use = "executed transaction state must be committed, discarded, or detached"]
-pub struct ExecutedTx<'evm, T: EvmTypes = crate::BaseEvmTypes> {
-    evm: &'evm mut Evm<T>,
+pub struct ExecutedTx<'evm, 'host, T: EvmTypes = crate::BaseEvmTypes> {
+    evm: &'evm mut Evm<'host, T>,
     result: Option<TxResult<T>>,
     state: PendingState,
 }
 
-impl<T: EvmTypes> fmt::Debug for ExecutedTx<'_, T> {
+impl<T: EvmTypes> fmt::Debug for ExecutedTx<'_, '_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExecutedTx")
             .field("has_pending_state", &self.has_pending_state())
@@ -78,10 +78,10 @@ impl<T: EvmTypes> fmt::Debug for ExecutedTx<'_, T> {
     }
 }
 
-impl<'evm, T: EvmTypes> ExecutedTx<'evm, T> {
+impl<'evm, 'host, T: EvmTypes> ExecutedTx<'evm, 'host, T> {
     #[inline]
     pub(crate) const fn from_result(
-        evm: &'evm mut Evm<T>,
+        evm: &'evm mut Evm<'host, T>,
         result: TxResult<T>,
         has_pending_state: bool,
     ) -> Self {
@@ -213,7 +213,7 @@ impl<'evm, T: EvmTypes> ExecutedTx<'evm, T> {
     }
 }
 
-impl<T: EvmTypes> Drop for ExecutedTx<'_, T> {
+impl<T: EvmTypes> Drop for ExecutedTx<'_, '_, T> {
     #[inline]
     fn drop(&mut self) {
         self.clear_pending_state();

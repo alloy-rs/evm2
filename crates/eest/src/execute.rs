@@ -18,7 +18,7 @@ use alloy_trie::{
 };
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
+    BaseEvmTypes, Evm, EvmHostTypes, Precompiles, SpecId, TxResult,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
@@ -318,8 +318,8 @@ fn spec_outcome(post: InMemoryDB, result: TxResult) -> SpecOutcome {
     }
 }
 
-fn pre_block_system_calls<T: EvmTypes<Host = Evm<T>>>(
-    evm: &mut Evm<T>,
+fn pre_block_system_calls<T: EvmHostTypes>(
+    evm: &mut Evm<'_, T>,
     post: &mut InMemoryDB,
     spec: SpecId,
     env: &Env,
@@ -352,8 +352,8 @@ fn pre_block_system_calls<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
-fn commit_system_call<T: EvmTypes<Host = Evm<T>>>(
-    evm: &mut Evm<T>,
+fn commit_system_call<T: EvmHostTypes>(
+    evm: &mut Evm<'_, T>,
     post: &mut InMemoryDB,
     address: Address,
     data: Bytes,

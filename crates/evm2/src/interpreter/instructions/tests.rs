@@ -26,7 +26,7 @@ impl EvmTypes for TestTypes {
     type TxEnvExt = ();
     type TxResultExt = ();
     type BlockEnvExt = ();
-    type Host = TestHost;
+    type Host<'a> = TestHost;
 }
 
 #[derive(Debug)]

@@ -177,9 +177,11 @@ impl Typed2718 for RecoveredTxEnvelope {
 }
 
 /// Returns the Ethereum transaction registry for `spec_id`.
-pub fn ethereum_tx_registry<T: EvmTypes<Tx = RecoveredTxEnvelope, Host = Evm<T>>>(
-    spec_id: SpecId,
-) -> TxRegistry<T, TxResult<T>> {
+pub fn ethereum_tx_registry<T>(spec_id: SpecId) -> TxRegistry<T, TxResult<T>>
+where
+    T: EvmTypes<Tx = RecoveredTxEnvelope>,
+    for<'a> T: EvmTypes<Host<'a> = Evm<'a, T>>,
+{
     let mut registry =
         TxRegistry::new().with_handler(0, RecoveredTxEnvelope::as_legacy, legacy::handle::<T>);
 
@@ -338,12 +340,15 @@ pub(super) const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> Handle
     Ok(())
 }
 
-pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(super) fn validate_sender<'a, T>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
     max_upfront: U256,
-) -> HandlerResult<AccountInfo> {
+) -> HandlerResult<AccountInfo>
+where
+    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+{
     let has_nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let has_balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
@@ -367,11 +372,10 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
     Ok(sender.get().cloned().unwrap_or_default())
 }
 
-pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
-    caller: Address,
-    to: TxKind,
-) {
+pub(super) fn warm_base_accounts<'a, T>(host: &mut Evm<'a, T>, caller: Address, to: TxKind)
+where
+    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+{
     host.state.prewarm(&caller);
     if host.feature(EvmFeatures::EIP3651) {
         host.state.prewarm(&host.block.beneficiary);
@@ -382,10 +386,10 @@ pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
     host.warm_precompiles();
 }
 
-pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
-    access_list: &AccessList,
-) {
+pub(super) fn warm_access_list<'a, T>(host: &mut Evm<'a, T>, access_list: &AccessList)
+where
+    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+{
     for item in access_list.iter() {
         host.state.prewarm_storage(
             &item.address,
@@ -394,11 +398,14 @@ pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
-pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(super) fn charge_upfront<'a, T>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     max_gas_cost: U256,
-) -> HandlerResult<()> {
+) -> HandlerResult<()>
+where
+    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+{
     if !host.feature(EvmFeatures::FEE_CHARGE) {
         return Ok(());
     }
@@ -409,15 +416,18 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
     Ok(())
 }
 
-pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(crate) fn initial_message<'a, T>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
     to: TxKind,
     input: &Bytes,
     value: U256,
     gas_limit: u64,
-) -> HandlerResult<(Bytecode, Message<T>)> {
+) -> HandlerResult<(Bytecode, Message<T>)>
+where
+    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+{
     let r = match to {
         TxKind::Call(to) => {
             let initial_code = initial_call_code(host, to)?;
@@ -468,10 +478,10 @@ struct InitialCallCode {
     disable_precompiles: bool,
 }
 
-fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
-    to: Address,
-) -> HandlerResult<InitialCallCode> {
+fn initial_call_code<'a, T>(host: &mut Evm<'a, T>, to: Address) -> HandlerResult<InitialCallCode>
+where
+    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+{
     let code = host
         .state
         .account(&to, false)
@@ -494,11 +504,13 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     Ok(InitialCallCode { code, code_address: to, disable_precompiles: false })
 }
 
-pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(super) fn rollback_failed_execution<'a, T>(
+    host: &mut Evm<'a, T>,
     checkpoint: StateCheckpoint,
     result: &mut MessageResult<T>,
-) {
+) where
+    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+{
     if !result.stop.is_success() {
         let features = host.version().features;
         host.state.rollback(checkpoint, features);
@@ -508,14 +520,17 @@ pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
-pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(super) fn settle_gas<'a, T>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     gas_price: U256,
     tx_gas_limit: u64,
     floor_gas: u64,
     result: MessageResult<T>,
-) -> HandlerResult<TxResult<T>> {
+) -> HandlerResult<TxResult<T>>
+where
+    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+{
     let (gas_remaining, gas_used) =
         final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {

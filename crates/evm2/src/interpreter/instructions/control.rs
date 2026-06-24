@@ -31,7 +31,7 @@ pub(crate) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
 }
 
 #[inline(always)]
-fn jump_inner<T: EvmTypes>(target: Word, cx: &mut InstructionCx<'_, '_, T>) -> Result {
+fn jump_inner<T: EvmTypes>(target: Word, cx: &mut InstructionCx<'_, '_, '_, T>) -> Result {
     let target = word_to_usize_saturated(target);
     if !cx.state.bytecode().is_valid_jumpdest(target) {
         cold_path();
@@ -66,7 +66,7 @@ pub(crate) fn revert(cx: _, [offset, len]: [Word]) -> Result {
 
 #[inline]
 fn return_inner<T: EvmTypes>(
-    cx: GasInstructionCx<'_, '_, T>,
+    cx: GasInstructionCx<'_, '_, '_, T>,
     offset: &Word,
     len: &Word,
     result: InstrStop,

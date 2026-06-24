@@ -24,12 +24,13 @@ pub(crate) unsafe fn decouple_lt_box<T, U>(x: alloc::boxed::Box<T>) -> alloc::bo
 }
 
 /// Changes the lifetime of an interpreter reference stored in the pool.
-pub(crate) unsafe fn decouple_interpreter_lt_mut<'pool, 'frame, T: EvmTypes>(
-    x: &'pool mut Interpreter<'static, T>,
-) -> &'pool mut Interpreter<'frame, T> {
+pub(crate) unsafe fn decouple_interpreter_lt_mut<'pool, 'frame, 'host, T: EvmTypes>(
+    x: &'pool mut Interpreter<'static, 'static, T>,
+) -> &'pool mut Interpreter<'frame, 'host, T> {
     unsafe {
-        core::mem::transmute::<&'pool mut Interpreter<'static, T>, &'pool mut Interpreter<'frame, T>>(
-            x,
-        )
+        core::mem::transmute::<
+            &'pool mut Interpreter<'static, 'static, T>,
+            &'pool mut Interpreter<'frame, 'host, T>,
+        >(x)
     }
 }

@@ -13,7 +13,7 @@ use derive_where::derive_where;
 
 /// Precompile implementation function.
 pub type PrecompileFn<T = BaseEvmTypes> =
-    fn(&mut Evm<T>, &Message<T>, &mut GasTracker) -> PrecompileResult;
+    fn(&mut Evm<'_, T>, &Message<T>, &mut GasTracker) -> PrecompileResult;
 
 /// Precompile descriptor.
 #[derive_where(Clone, Debug)]
@@ -75,7 +75,7 @@ impl<T: EvmTypes> Precompile<T> {
 }
 
 fn dummy_precompile<T: EvmTypes>(
-    _evm: &mut Evm<T>,
+    _evm: &mut Evm<'_, T>,
     _message: &Message<T>,
     _gas: &mut GasTracker,
 ) -> PrecompileResult {
@@ -128,7 +128,7 @@ impl<T: EvmTypes> PrecompileData<T> {
     #[inline]
     pub fn execute(
         &self,
-        evm: &mut Evm<T>,
+        evm: &mut Evm<'_, T>,
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> PrecompileResult {
@@ -395,7 +395,7 @@ macro_rules! define_precompiles {
             #[allow(non_snake_case)]
             $vis const fn $name<T: $crate::EvmTypes>() -> $crate::precompiles::Precompile<T> {
                 fn run<T: $crate::EvmTypes>(
-                    _evm: &mut $crate::Evm<T>,
+                    _evm: &mut $crate::Evm<'_, T>,
                     message: &$crate::interpreter::Message<T>,
                     gas: &mut $crate::interpreter::GasTracker,
                 ) -> $crate::precompiles::PrecompileResult {
@@ -473,7 +473,7 @@ mod tests {
     use core::assert_matches;
 
     fn test_run_a(
-        _evm: &mut Evm<BaseEvmTypes>,
+        _evm: &mut Evm<'_, BaseEvmTypes>,
         _message: &Message,
         _gas: &mut GasTracker,
     ) -> PrecompileResult {
@@ -481,7 +481,7 @@ mod tests {
     }
 
     fn test_run_b(
-        _evm: &mut Evm<BaseEvmTypes>,
+        _evm: &mut Evm<'_, BaseEvmTypes>,
         _message: &Message,
         _gas: &mut GasTracker,
     ) -> PrecompileResult {

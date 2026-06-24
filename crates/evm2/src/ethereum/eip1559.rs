@@ -16,9 +16,13 @@ use crate::{
 use alloy_consensus::{TxEip1559, transaction::Recovered};
 use alloy_primitives::U256;
 
-pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
-    req: TxRequest<'_, T, Recovered<TxEip1559>>,
-) -> HandlerResult<TxResult<T>> {
+pub(super) fn handle<T>(
+    req: TxRequest<'_, '_, T, Recovered<TxEip1559>>,
+) -> HandlerResult<TxResult<T>>
+where
+    T: EvmTypes,
+    for<'a> T: EvmTypes<Host<'a> = Evm<'a, T>>,
+{
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let max_fee_per_gas = U256::from(tx.max_fee_per_gas);

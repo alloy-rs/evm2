@@ -11,7 +11,7 @@ use alloy_rpc_types_trace::geth::{
     erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    Evm, EvmTypes, Inspector, NoopInspector, TxResultWithState,
+    EvmHostTypes, EvmTypes, Inspector, NoopInspector, TxResultWithState,
     env::BlockEnv,
     ethereum::RecoveredTxEnvelope,
     evm::{DbErrorCode, DynDatabase},
@@ -288,26 +288,26 @@ macro_rules! delegate {
     };
 }
 
-impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+impl<T: EvmHostTypes> Inspector<T> for DebugInspector {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         delegate!(self => inspector.initialize_interp(interp))
     }
 
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         delegate!(self => inspector.step(interp))
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         delegate!(self => inspector.step_end(interp))
     }
 
-    fn log(&mut self, log: &Log, host: &mut T::Host) {
+    fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {
         delegate!(self => inspector.log(log, host))
     }
 
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         delegate!(self => inspector.call(interp, message))
@@ -315,7 +315,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
 
     fn call_end(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -324,7 +324,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
 
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         delegate!(self => inspector.create(interp, message))
@@ -332,7 +332,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
 
     fn create_end(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -344,7 +344,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
         contract: &Address,
         target: &Address,
         value: &U256,
-        host: &mut T::Host,
+        host: &mut T::Host<'_>,
     ) {
         delegate!(self => inspector.selfdestruct(contract, target, value, host))
     }

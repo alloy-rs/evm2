@@ -20,7 +20,7 @@ impl OpcodeCountInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for OpcodeCountInspector {
-    fn step(&mut self, _interp: &mut Interpreter<'_, T>) {
+    fn step(&mut self, _interp: &mut Interpreter<'_, '_, T>) {
         self.count += 1;
     }
 }

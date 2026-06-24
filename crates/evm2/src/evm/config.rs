@@ -44,7 +44,17 @@ pub trait EvmTypes: Sized + 'static {
     type BlockEnvExt: Copy + core::fmt::Debug + Default;
 
     /// Host type used by this EVM.
-    type Host: Host<Self> + ?Sized;
+    type Host<'a>: Host<Self> + ?Sized;
+}
+
+/// EVM type family whose host is [`crate::Evm`] for every stored-object lifetime.
+pub trait EvmHostTypes: EvmTypes + for<'a> EvmTypes<Host<'a> = crate::Evm<'a, Self>> {}
+
+impl<T> EvmHostTypes for T
+where
+    T: EvmTypes,
+    for<'a> T: EvmTypes<Host<'a> = crate::Evm<'a, T>>,
+{
 }
 
 /// Compile-time EVM table configuration.
@@ -212,7 +222,7 @@ impl EvmTypes for BaseEvmTypes {
     type TxEnvExt = ();
     type TxResultExt = ();
     type BlockEnvExt = ();
-    type Host = crate::evm::Evm<Self>;
+    type Host<'a> = crate::evm::Evm<'a, Self>;
 }
 
 /// Base EVM configuration for an inherited base specification ID.

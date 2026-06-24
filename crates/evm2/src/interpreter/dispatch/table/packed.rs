@@ -18,7 +18,7 @@ pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
+        state: &mut InterpreterState<'_, '_, T>,
     ) -> InstrFnRet
 );
 
@@ -27,7 +27,7 @@ pub(super) fn dispatch_loop_call<T: EvmTypes>(
     instr: RawInstrFn<T>,
     pc: Pc,
     stack: Stack<'_>,
-    state: &mut InterpreterState<'_, T>,
+    state: &mut InterpreterState<'_, '_, T>,
     remaining_gas: &mut LoopState,
 ) -> (Pc, usize) {
     let (next_pc, gas_spent) = instr(pc, stack, *remaining_gas, state);
@@ -47,7 +47,7 @@ pub(super) const fn finish_loop(gas: &mut Gas, remaining_gas: LoopState) {
 
 #[inline(always)]
 pub(super) const fn sync_loop_state<T: EvmTypes>(
-    state: &mut InterpreterState<'_, T>,
+    state: &mut InterpreterState<'_, '_, T>,
     loop_state: LoopState,
 ) {
     state.gas_mut().set_remaining(loop_state.get());
@@ -57,7 +57,7 @@ impl super::DispatchGas for RemainingGas {
     #[inline(always)]
     fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
         &mut self,
-        _state: &mut InterpreterState<'_, T>,
+        _state: &mut InterpreterState<'_, '_, T>,
         op: u8,
     ) -> Result {
         self.spend(C::OPCODE_CONFIG.static_gas(op) as _)
@@ -66,7 +66,7 @@ impl super::DispatchGas for RemainingGas {
     #[inline(always)]
     fn sync_before_exec<T: EvmTypes>(
         &self,
-        state: &mut InterpreterState<'_, T>,
+        state: &mut InterpreterState<'_, '_, T>,
         dynamic_gas: bool,
     ) {
         if dynamic_gas {
@@ -77,7 +77,7 @@ impl super::DispatchGas for RemainingGas {
     #[inline(always)]
     fn sync_after_exec<T: EvmTypes>(
         &mut self,
-        state: &mut InterpreterState<'_, T>,
+        state: &mut InterpreterState<'_, '_, T>,
         dynamic_gas: bool,
     ) {
         if dynamic_gas {
@@ -96,7 +96,7 @@ extern_table! {
         pc: Pc,
         mut stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
+        state: &mut InterpreterState<'_, '_, T>,
     ) -> InstrFnRet {
         let initial_remaining_gas = remaining_gas;
         let (pc, remaining_gas) =

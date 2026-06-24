@@ -338,9 +338,8 @@ impl<'a> core::ops::DerefMut for dyn DynDatabase + 'a {
 }
 
 #[inline]
-pub(crate) fn boxed_dyn_database(database: impl DynDatabase) -> Box<dyn DynDatabase> {
-    let database: Box<dyn DynDatabase + '_> = Box::new(database);
-    unsafe { core::mem::transmute::<Box<dyn DynDatabase + '_>, Box<dyn DynDatabase>>(database) }
+pub(crate) fn boxed_dyn_database<'a>(database: impl DynDatabase + 'a) -> Box<dyn DynDatabase + 'a> {
+    Box::new(database)
 }
 
 impl<T: DynDatabase + ?Sized> DynDatabase for Box<T> {

@@ -14,7 +14,7 @@ type TailInstrFn<T> = extern_table!(
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
+        state: &mut InterpreterState<'_, '_, T>,
         instructions: *const (),
     )
 );
@@ -28,7 +28,7 @@ pub(super) type RawInstrTable<T> = TailInstrTable<T>;
 
 #[inline(always)]
 pub(in crate::interpreter) fn run<T: EvmTypes>(
-    interpreter: &mut Interpreter<'_, T>,
+    interpreter: &mut Interpreter<'_, '_, T>,
     instructions: &RawInstrTable<T>,
 ) -> InstrStop {
     let remaining_gas = RemainingGas::new(interpreter.gas.remaining());
@@ -49,7 +49,7 @@ extern_table! {
         mut pc: Pc,
         mut stack: Stack<'_>,
         mut remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
+        state: &mut InterpreterState<'_, '_, T>,
         instructions: *const (),
     ) {
         let instruction = C::OPCODE_CONFIG.instruction(OP);
@@ -108,7 +108,7 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
+        state: &mut InterpreterState<'_, '_, T>,
         _instructions: *const (),
     ) {
         state.gas_mut().set_remaining(remaining_gas.get());

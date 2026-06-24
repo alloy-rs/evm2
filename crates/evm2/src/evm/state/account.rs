@@ -151,21 +151,21 @@ pub(crate) struct Account {
 /// warm-access queries without going back through [`State`](super::State), mirroring the database
 /// and access-list references revm's `AccountHandle` holds.
 #[derive_where(Debug)]
-pub struct AccountHandle<'a> {
+pub struct AccountHandle<'a, 'db> {
     /// Address of the account.
     address: Address,
     /// Transaction overlay entry: account overlay plus warm/touched access metadata.
     tracked: &'a mut Account,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
-    inner: &'a mut StateInner,
+    inner: &'a mut StateInner<'db>,
     /// Revert entry capturing the overlay as it was before the first mutation made through this
     /// handle. `Some` once a change has been recorded; on drop it is pushed onto the journal as a
     /// single [`JournalEntry::AccountChange`].
     snapshot: Option<JournalEntry>,
 }
 
-impl Drop for AccountHandle<'_> {
+impl Drop for AccountHandle<'_, '_> {
     #[inline]
     fn drop(&mut self) {
         if let Some(entry) = self.snapshot.take() {
@@ -180,14 +180,14 @@ fn empty_account() -> AccountInfo {
     AccountInfo::default()
 }
 
-impl<'a> AccountHandle<'a> {
+impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Creates a handle over a loaded account overlay slot and the shared inner state (backing
     /// database, revert journal, and transaction-initial base warm set).
     #[inline]
     pub(crate) const fn new(
         address: Address,
         tracked: &'a mut Account,
-        inner: &'a mut StateInner,
+        inner: &'a mut StateInner<'db>,
     ) -> Self {
         Self { address, tracked, inner, snapshot: None }
     }

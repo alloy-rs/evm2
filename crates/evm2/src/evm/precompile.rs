@@ -48,22 +48,17 @@ pub trait PrecompileProvider<T: EvmTypes>: NonStaticAny {
     /// Executes the precompile at `address`, if one is registered.
     fn execute(
         &mut self,
-        evm: &mut Evm<T>,
+        evm: &mut Evm<'_, T>,
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
 }
 
 #[inline]
-pub(crate) fn boxed_precompile_provider<T: EvmTypes>(
-    precompiles: impl PrecompileProvider<T>,
-) -> Box<dyn PrecompileProvider<T>> {
-    let precompiles: Box<dyn PrecompileProvider<T> + '_> = Box::new(precompiles);
-    unsafe {
-        core::mem::transmute::<Box<dyn PrecompileProvider<T> + '_>, Box<dyn PrecompileProvider<T>>>(
-            precompiles,
-        )
-    }
+pub(crate) fn boxed_precompile_provider<'a, T: EvmTypes>(
+    precompiles: impl PrecompileProvider<T> + 'a,
+) -> Box<dyn PrecompileProvider<T> + 'a> {
+    Box::new(precompiles)
 }
 
 impl<'a, T: EvmTypes> core::ops::Deref for dyn PrecompileProvider<T> + 'a {
@@ -96,7 +91,7 @@ impl<T: EvmTypes, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for B
     #[inline]
     fn execute(
         &mut self,
-        evm: &mut Evm<T>,
+        evm: &mut Evm<'_, T>,
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
@@ -123,7 +118,7 @@ impl<T: EvmTypes> PrecompileProvider<T> for NoPrecompiles {
     #[inline]
     fn execute(
         &mut self,
-        _evm: &mut Evm<T>,
+        _evm: &mut Evm<'_, T>,
         _message: &Message<T>,
         _gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {

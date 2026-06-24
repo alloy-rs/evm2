@@ -58,24 +58,24 @@ impl StorageSlot {
 /// [`Self::is_warm`] / [`Self::is_loaded`], so callers can make EIP-2929 cold/warm decisions before
 /// paying for a cold database read.
 #[derive_where(Debug)]
-pub struct StorageHandle<'a> {
+pub struct StorageHandle<'a, 'db> {
     /// Address of the account whose storage this handle exposes.
     address: Address,
     /// Transaction overlay entry: the per-account storage slots plus the wipe flag.
     storage: &'a mut StorageOverlay,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
-    inner: &'a mut StateInner,
+    inner: &'a mut StateInner<'db>,
 }
 
-impl<'a> StorageHandle<'a> {
+impl<'a, 'db> StorageHandle<'a, 'db> {
     /// Creates a handle over an account's storage overlay and the shared inner state (backing
     /// database, revert journal, and transaction-initial base warm set).
     #[inline]
     pub(crate) const fn new(
         address: Address,
         storage: &'a mut StorageOverlay,
-        inner: &'a mut StateInner,
+        inner: &'a mut StateInner<'db>,
     ) -> Self {
         Self { address, storage, inner }
     }
@@ -131,7 +131,11 @@ impl<'a> StorageHandle<'a> {
     /// place by [`State::rollback`](super::State::rollback) as a harmless cache. Used by
     /// [`State::storage_slot`](super::State::storage_slot) to reach a single slot directly.
     #[inline]
-    pub fn into_slot(self, key: Word, skip_cold_load: bool) -> DbResult<StorageSlotHandle<'a>> {
+    pub fn into_slot(
+        self,
+        key: Word,
+        skip_cold_load: bool,
+    ) -> DbResult<StorageSlotHandle<'a, 'db>> {
         let Self { address, storage, inner } = self;
         let slot = match storage.slots.entry(key) {
             hash_map::Entry::Occupied(entry) => {
@@ -195,7 +199,7 @@ impl<'a> StorageHandle<'a> {
 /// [`StateInner`] (backing database, revert journal, and base warm set) needed to journal effects
 /// and answer warm-access queries.
 #[derive_where(Debug)]
-pub struct StorageSlotHandle<'a> {
+pub struct StorageSlotHandle<'a, 'db> {
     /// Address of the account that owns the slot.
     address: Address,
     /// Storage key of the slot.
@@ -204,10 +208,10 @@ pub struct StorageSlotHandle<'a> {
     slot: &'a mut StorageSlot,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
-    inner: &'a mut StateInner,
+    inner: &'a mut StateInner<'db>,
 }
 
-impl StorageSlotHandle<'_> {
+impl StorageSlotHandle<'_, '_> {
     /// Returns the account address.
     #[inline]
     pub const fn address(&self) -> Address {

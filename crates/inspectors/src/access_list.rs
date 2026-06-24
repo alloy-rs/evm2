@@ -5,7 +5,7 @@ use alloy_primitives::{
 };
 use alloy_rpc_types_eth::{AccessList, AccessListItem};
 use evm2::{
-    Evm, EvmTypes, Inspector,
+    Evm, EvmHostTypes, Inspector,
     ethereum::RecoveredTxEnvelope,
     interpreter::{Interpreter, Message, MessageResult, op},
 };
@@ -103,10 +103,10 @@ impl AccessListInspector {
     /// top-level call.
     ///
     /// Those include caller, callee and precompiles.
-    fn collect_excluded_addresses<T: EvmTypes<Host = Evm<T>>>(
+    fn collect_excluded_addresses<T: EvmHostTypes>(
         &mut self,
         message: &Message<T>,
-        host: &Evm<T>,
+        host: &Evm<'_, T>,
     ) {
         self.excluded.extend(
             [message.caller, message.destination].into_iter().chain(host.precompiles().addresses()),
@@ -114,8 +114,8 @@ impl AccessListInspector {
     }
 }
 
-impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+impl<T: EvmHostTypes> Inspector<T> for AccessListInspector {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         match interp.opcode() {
             op::SLOAD | op::SSTORE => {
                 if let Some([slot]) = interp.stack().peekn() {
@@ -152,7 +152,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
 
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.
@@ -164,7 +164,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
 
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.

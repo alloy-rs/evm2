@@ -61,7 +61,7 @@ impl EvmTypes for CustomTypes {
     type TxEnvExt = CustomTxEnvExt;
     type TxResultExt = CustomTxResultExt;
     type BlockEnvExt = CustomBlockEnvExt;
-    type Host = Evm<Self>;
+    type Host<'a> = Evm<'a, Self>;
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

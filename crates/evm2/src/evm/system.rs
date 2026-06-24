@@ -42,14 +42,17 @@ pub const WITHDRAWAL_REQUEST_ADDRESS: Address =
 pub const CONSOLIDATION_REQUEST_ADDRESS: Address =
     address!("0x0000BBdDc7CE488642fb579F8B00f3a590007251");
 
-impl<T: EvmTypes<Host = Self>> Evm<T> {
+impl<'a, T> Evm<'a, T>
+where
+    T: EvmTypes<Host<'a> = Self>,
+{
     /// Executes a system call from [`SYSTEM_ADDRESS`] to `system_contract_address`.
     #[inline]
     pub fn system_call(
         &mut self,
         system_contract_address: Address,
         data: Bytes,
-    ) -> ExecutedTx<'_, T> {
+    ) -> ExecutedTx<'_, 'a, T> {
         self.system_call_with_caller(SYSTEM_ADDRESS, system_contract_address, data)
     }
 
@@ -100,7 +103,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller: Address,
         system_contract_address: Address,
         data: Bytes,
-    ) -> ExecutedTx<'_, T> {
+    ) -> ExecutedTx<'_, 'a, T> {
         self.state.prewarm(&system_contract_address);
         let tx_env = TxEnv {
             origin: caller,
@@ -195,7 +198,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 }
 
 #[cfg(feature = "async")]
-impl<T: EvmTypes<Host = Evm<T>>> SendEvmRef<'_, T> {
+impl<'evm, T> SendEvmRef<'_, 'evm, T>
+where
+    T: EvmTypes<Host<'evm> = Evm<'evm, T>>,
+{
     #[inline]
     fn system_call(&mut self, system_contract_address: Address, data: Bytes) -> TxResult<T> {
         self.evm.system_call(system_contract_address, data).commit()
@@ -224,7 +230,7 @@ mod tests {
         registry::TxRegistry,
     };
 
-    type TestEvm = Evm<BaseEvmTypes>;
+    type TestEvm = Evm<'static, BaseEvmTypes>;
 
     #[test]
     fn system_call_uses_system_sender_without_fee_accounting() {

@@ -11,7 +11,7 @@ use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
 #[inline]
-const fn require_non_staticcall<T: EvmTypes>(state: &InterpreterState<'_, T>) -> Result {
+const fn require_non_staticcall<T: EvmTypes>(state: &InterpreterState<'_, '_, T>) -> Result {
     if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -96,7 +96,7 @@ pub(crate) fn log<const N: usize>(cx: _) -> Result {
 
 #[inline(never)]
 fn log_common<T: EvmTypes>(
-    cx: GasInstructionCx<'_, '_, T>,
+    cx: GasInstructionCx<'_, '_, '_, T>,
     mut stack: StackMut<'_>,
     n: usize,
 ) -> Result {
