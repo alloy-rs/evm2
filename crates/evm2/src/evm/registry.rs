@@ -7,7 +7,7 @@
 //! it does not force a particular transaction or receipt representation onto
 //! the rest of the crate.
 
-use alloc::sync::Arc;
+use alloc::{string::String, sync::Arc};
 use alloy_primitives::{Address, U256, map::HashMap};
 use core::{fmt, marker::PhantomData};
 use thiserror::Error;
@@ -18,11 +18,14 @@ use crate::EvmTypes;
 pub type HandlerResult<T> = core::result::Result<T, HandlerError>;
 
 /// Registry, transaction validation, and transaction handler errors.
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum HandlerError {
     /// Database operation failed.
     #[error("database error {0:?}")]
     Database(super::DbErrorCode),
+    /// Custom error from a handler or fatal extension boundary.
+    #[error("{0}")]
+    Custom(String),
     /// No handler is registered for the transaction type byte.
     #[error("unsupported transaction type 0x{0:02x}")]
     UnsupportedTransactionType(u8),

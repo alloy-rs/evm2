@@ -516,6 +516,10 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     floor_gas: u64,
     result: MessageResult<T>,
 ) -> HandlerResult<TxResult<T>> {
+    if let Some(error) = host.take_fatal_precompile_error() {
+        return Err(HandlerError::Custom(error));
+    }
+
     let (gas_remaining, gas_used) =
         final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {

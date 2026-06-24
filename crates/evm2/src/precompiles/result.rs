@@ -188,6 +188,12 @@ impl From<crate::interpreter::InstrStop> for PrecompileError {
     #[inline]
     fn from(x: crate::interpreter::InstrStop) -> Self {
         debug_assert!(x.is_halt());
+        if x == crate::interpreter::InstrStop::FatalExternalError {
+            return Self::Fatal("fatal external error".into());
+        }
+        if x == crate::interpreter::InstrStop::FatalPrecompileError {
+            return Self::Fatal("fatal precompile error".into());
+        }
         Self::Halt(PrecompileHalt::OutOfGas)
     }
 }
@@ -252,5 +258,25 @@ impl From<&'static str> for PrecompileError {
     #[inline]
     fn from(err: &'static str) -> Self {
         Self::Fatal(err.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interpreter::InstrStop;
+
+    #[test]
+    fn fatal_instr_stop_becomes_fatal_precompile_error() {
+        assert!(PrecompileError::from(InstrStop::FatalExternalError).is_fatal());
+        assert!(PrecompileError::from(InstrStop::FatalPrecompileError).is_fatal());
+    }
+
+    #[test]
+    fn non_fatal_instr_stop_remains_oog_precompile_halt() {
+        assert_eq!(
+            PrecompileError::from(InstrStop::OutOfGas),
+            PrecompileError::Halt(PrecompileHalt::OutOfGas)
+        );
     }
 }
