@@ -31,7 +31,7 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     message: Option<&'frame Message<T>>,
     host: Option<NonNull<T::Host>>,
     inspector: Option<NonNull<dyn Inspector<T>>>,
-    version: *const Version,
+    version: Option<&'frame Version>,
     pub(in crate::interpreter) stack_len: usize,
     #[derive_where(skip)]
     pub(in crate::interpreter) stack: Box<StackBacking>,
@@ -44,8 +44,8 @@ pub struct Interpreter<'frame, T: EvmTypes> {
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` points into owned bytecode,
-// frame-local references are cleared before pooling, and host/inspector/version pointers are
-// installed for execution and not used after the owning execution context is gone.
+// frame-local references are cleared before pooling, and host/inspector pointers are installed for
+// execution and not used after the owning execution context is gone.
 unsafe impl<T: EvmTypes> Send for Interpreter<'_, T> {}
 
 impl<T: EvmTypes> Default for Interpreter<'_, T> {
@@ -65,7 +65,7 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             return_data: Bytes::new(),
             host: None,
             inspector: None,
-            version: core::ptr::null(),
+            version: None,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
@@ -108,6 +108,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     pub(crate) const fn clear_frame_refs(&mut self) {
         self.tx_env = None;
         self.message = None;
+        self.version = None;
     }
 
     #[cfg(test)]
@@ -251,10 +252,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         instructions: &InstrTable<T>,
     ) -> InstrStop {
         self.memory.set_memory_limit(version.memory_limit);
+        // SAFETY: `version` remains alive for the duration of this interpreter run.
+        let version = unsafe { trustme::decouple_lt(version) };
 
         self.host = Some(NonNull::from(host));
         self.inspector = inspector;
-        self.version = version;
+        self.version = Some(version);
         self.spec = spec;
         self.features = version.features;
 
@@ -268,8 +271,11 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         version: &Version,
         host: &mut T::Host,
     ) {
+        // SAFETY: `version` remains alive for the duration of the inspection hook or run that
+        // installed it.
+        let version = unsafe { trustme::decouple_lt(version) };
         self.host = Some(NonNull::from(host));
-        self.version = version;
+        self.version = Some(version);
         self.spec = spec;
         self.features = version.features;
     }
@@ -351,10 +357,10 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     /// Returns the active runtime version data.
     #[inline]
-    pub const fn version(&self) -> &Version {
-        // SAFETY: `version` is initialized at the beginning of `run` and points into the
-        // `Version` borrowed by the current run.
-        unsafe { &*self.0.version }
+    pub const fn version(&self) -> &'frame Version {
+        // SAFETY: `version` is initialized at the beginning of `run` and remains set for
+        // instruction execution.
+        unsafe { self.0.version.unwrap_unchecked() }
     }
 
     /// Returns the active frame-local call/create message.
@@ -379,7 +385,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     /// Returns the active dynamic gas parameters.
     #[inline]
-    pub const fn gas_params(&self) -> &GasParams {
+    pub const fn gas_params(&self) -> &'frame GasParams {
         &self.version().gas_params
     }
 
@@ -387,6 +393,12 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     #[inline]
     pub const fn memory(&mut self) -> &mut Memory {
         &mut self.0.memory
+    }
+
+    /// Resizes linear memory using the active runtime gas parameters.
+    #[inline]
+    pub fn resize_memory(&mut self, gas: &mut Gas, offset: usize, len: usize) -> Result {
+        self.0.memory.resize_evm(gas, self.gas_params(), offset, len)
     }
 
     /// Returns return data from the last call-like operation.

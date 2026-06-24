@@ -5,7 +5,6 @@ use crate::{
     bytecode::Bytecode,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageKind, Result, StackMut, Word,
-        memory::resize_memory,
     },
     utils::{word_to_address, word_to_usize},
     version::GasId,
@@ -40,7 +39,7 @@ fn resize_memory_range<T: EvmTypes>(
     let len = word_to_usize(len)?;
     let offset = if len != 0 {
         let offset = word_to_usize(offset)?;
-        resize_memory(gas, state.memory(), offset, len)?;
+        state.resize_memory(gas, offset, len)?;
         offset
     } else {
         usize::MAX
