@@ -91,6 +91,7 @@ serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false }
 snapbox = "0.6"
 thiserror = { version = "2.0", default-features = false }
+typeid = { version = "1.0.3", default-features = false }
 tokio = { version = "1", default-features = false }
 walkdir = { version = "2.5", default-features = false }
 zstd = "0.13"

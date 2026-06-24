@@ -22,7 +22,7 @@ pub use tracked::Tracked;
 
 use super::{
     PrewarmSet,
-    db::{CacheDB, DbErrorCode, DbResult, DynDatabase},
+    db::{CacheDB, DbErrorCode, DbResult, DynDatabase, boxed_dyn_database},
 };
 use crate::{
     EvmFeatures, Version,
@@ -95,7 +95,7 @@ pub struct StateInner {
 impl State {
     /// Creates a new state over an initial database.
     pub fn new(initial: impl DynDatabase) -> Self {
-        Self::new_mono(Box::new(initial))
+        Self::new_mono(boxed_dyn_database(initial))
     }
 
     pub(crate) fn new_mono(initial: Box<dyn DynDatabase>) -> Self {
@@ -134,7 +134,7 @@ impl State {
     /// Replaces the initial database and clears all in-memory state layers.
     #[inline]
     pub fn set_initial(&mut self, initial: impl DynDatabase) {
-        self.database = CacheDB::new(Box::new(initial));
+        self.database = CacheDB::new(boxed_dyn_database(initial));
         self.clear_transaction_state();
     }
 

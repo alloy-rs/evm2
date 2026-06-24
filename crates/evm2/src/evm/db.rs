@@ -1,10 +1,10 @@
 //! Database helpers for the EVM state overlay.
 
-use super::state::AccountInfo;
+use super::{NonStaticAny, state::AccountInfo};
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloc::{boxed::Box, string::ToString};
 use alloy_primitives::{Address, B256, keccak256};
-use core::{any::Any, error::Error, fmt, num::NonZeroUsize};
+use core::{error::Error, fmt, num::NonZeroUsize};
 
 mod cache;
 pub use cache::{AccountStorageCache, Cache, CacheDB, InMemoryDB};
@@ -46,7 +46,7 @@ impl DbErrorCode {
 pub type DbResult<T> = Result<T, DbErrorCode>;
 
 /// Backing database implementation with a concrete error type.
-pub trait Database: Any {
+pub trait Database: NonStaticAny {
     /// Database error type.
     type Error: Error + 'static;
 
@@ -168,7 +168,7 @@ impl<T: Database> DynDatabase for Db<T> {
 }
 
 /// Backing database view used to initialize mutable [`super::State`].
-pub trait DynDatabase: Any {
+pub trait DynDatabase: NonStaticAny {
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
 
@@ -321,8 +321,8 @@ impl<D: DynDatabase> DynDatabase for DbStats<D> {
     }
 }
 
-impl core::ops::Deref for dyn DynDatabase + '_ {
-    type Target = dyn Any;
+impl<'a> core::ops::Deref for dyn DynDatabase + 'a {
+    type Target = dyn NonStaticAny + 'a;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -330,11 +330,17 @@ impl core::ops::Deref for dyn DynDatabase + '_ {
     }
 }
 
-impl core::ops::DerefMut for dyn DynDatabase + '_ {
+impl<'a> core::ops::DerefMut for dyn DynDatabase + 'a {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self
     }
+}
+
+#[inline]
+pub(crate) fn boxed_dyn_database(database: impl DynDatabase) -> Box<dyn DynDatabase> {
+    let database: Box<dyn DynDatabase + '_> = Box::new(database);
+    unsafe { core::mem::transmute::<Box<dyn DynDatabase + '_>, Box<dyn DynDatabase>>(database) }
 }
 
 impl<T: DynDatabase + ?Sized> DynDatabase for Box<T> {
@@ -411,5 +417,44 @@ impl DynDatabase for EmptyDB {
     #[inline]
     fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
         Db::new(*self).get_block_hash(number)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct BorrowingDb<'a> {
+        value: &'a u8,
+    }
+
+    impl DynDatabase for BorrowingDb<'_> {
+        fn get_account(&mut self, _address: &Address) -> DbResult<Option<AccountInfo>> {
+            Ok(None)
+        }
+
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> DbResult<Bytecode> {
+            Ok(Bytecode::default())
+        }
+
+        fn get_storage(&mut self, _address: &Address, _key: &Word) -> DbResult<Word> {
+            Ok(Word::ZERO)
+        }
+
+        fn get_block_hash(&mut self, _number: &Word) -> DbResult<Option<B256>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn database_downcast_erases_lifetimes() {
+        let value = 1;
+        let db = BorrowingDb { value: &value };
+        let erased = &db as &dyn DynDatabase;
+
+        let downcasted = erased.downcast_ref::<BorrowingDb<'static>>().unwrap();
+        let static_value: &'static u8 = downcasted.value;
+
+        assert_eq!(static_value as *const u8, &value as *const u8);
     }
 }

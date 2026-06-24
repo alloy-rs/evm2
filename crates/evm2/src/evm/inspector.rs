@@ -2,13 +2,13 @@
 
 use crate::{
     EvmTypes,
+    evm::NonStaticAny,
     interpreter::{Interpreter, Message, MessageResult},
 };
 use alloy_primitives::{Address, Log, U256};
-use core::any::Any;
 
 /// EVM execution inspector.
-pub trait Inspector<T: EvmTypes>: Any {
+pub trait Inspector<T: EvmTypes>: NonStaticAny {
     /// Called after a frame interpreter has been initialized.
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
@@ -106,6 +106,19 @@ pub trait Inspector<T: EvmTypes>: Any {
     }
 }
 
+#[inline]
+pub(crate) fn boxed_inspector<T: EvmTypes>(inspector: impl Inspector<T>) -> Box<dyn Inspector<T>> {
+    let inspector: Box<dyn Inspector<T> + '_> = Box::new(inspector);
+    erase_boxed_inspector_lifetime(inspector)
+}
+
+#[inline]
+pub(crate) fn erase_boxed_inspector_lifetime<T: EvmTypes>(
+    inspector: Box<dyn Inspector<T> + '_>,
+) -> Box<dyn Inspector<T>> {
+    unsafe { core::mem::transmute::<Box<dyn Inspector<T> + '_>, Box<dyn Inspector<T>>>(inspector) }
+}
+
 /// Inspector that does nothing.
 #[allow(missing_copy_implementations)]
 #[derive(Clone, Debug, Default)]
@@ -113,8 +126,8 @@ pub struct NoopInspector(());
 
 impl<T: EvmTypes> Inspector<T> for NoopInspector {}
 
-impl<T: EvmTypes> core::ops::Deref for dyn Inspector<T> + '_ {
-    type Target = dyn Any;
+impl<'a, T: EvmTypes> core::ops::Deref for dyn Inspector<T> + 'a {
+    type Target = dyn NonStaticAny + 'a;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -122,7 +135,7 @@ impl<T: EvmTypes> core::ops::Deref for dyn Inspector<T> + '_ {
     }
 }
 
-impl<T: EvmTypes> core::ops::DerefMut for dyn Inspector<T> + '_ {
+impl<'a, T: EvmTypes> core::ops::DerefMut for dyn Inspector<T> + 'a {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self
@@ -506,7 +519,7 @@ mod tests {
         }
     }
 
-    fn run_evm_with_inspector<I: Inspector<BaseEvmTypes> + 'static>(
+    fn run_evm_with_inspector<I: Inspector<BaseEvmTypes>>(
         code: Vec<u8>,
         message: &Message<BaseEvmTypes>,
         gas_limit: u64,
@@ -515,7 +528,7 @@ mod tests {
         run_evm_with_inspector_db(InMemoryDB::default(), code, message, gas_limit, inspector)
     }
 
-    fn run_evm_with_inspector_db<I: Inspector<BaseEvmTypes> + 'static>(
+    fn run_evm_with_inspector_db<I: Inspector<BaseEvmTypes>>(
         db: InMemoryDB,
         code: Vec<u8>,
         message: &Message<BaseEvmTypes>,

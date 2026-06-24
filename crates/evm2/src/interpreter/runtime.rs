@@ -30,7 +30,7 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     #[derive_where(skip)]
     message: Option<&'frame Message<T>>,
     host: Option<NonNull<T::Host>>,
-    inspector: Option<NonNull<dyn Inspector<T>>>,
+    inspector: Option<NonNull<dyn Inspector<T> + 'frame>>,
     version: *const Version,
     pub(in crate::interpreter) stack_len: usize,
     #[derive_where(skip)]
@@ -230,7 +230,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         &mut self,
         config: &ExecutionConfig<T>,
         host: &mut T::Host,
-        inspector: &mut dyn Inspector<T>,
+        inspector: &mut (dyn Inspector<T> + 'frame),
     ) -> InstrStop {
         self.run_inner(
             config.base_spec_id(),
@@ -247,7 +247,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         spec: SpecId,
         version: &Version,
         host: &mut T::Host,
-        inspector: Option<NonNull<dyn Inspector<T>>>,
+        inspector: Option<NonNull<dyn Inspector<T> + 'frame>>,
         instructions: &InstrTable<T>,
     ) -> InstrStop {
         self.memory.set_memory_limit(version.memory_limit);

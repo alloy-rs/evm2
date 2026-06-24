@@ -114,8 +114,8 @@
 //! ```
 
 use self::{
-    inspector::Inspector,
-    precompile::{PrecompileOutput, PrecompileProvider},
+    inspector::{Inspector, boxed_inspector, erase_boxed_inspector_lifetime},
+    precompile::{PrecompileOutput, PrecompileProvider, boxed_precompile_provider},
 };
 use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
@@ -135,7 +135,7 @@ use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 #[cfg(feature = "async")]
 use core::future::Future;
-use core::{any::TypeId, ptr::NonNull};
+use core::ptr::NonNull;
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
@@ -151,7 +151,11 @@ pub use system::{
     SYSTEM_CALL_GAS_LIMIT, WITHDRAWAL_REQUEST_ADDRESS,
 };
 
+mod any;
+pub use any::NonStaticAny;
+
 mod db;
+use db::boxed_dyn_database;
 pub use db::{
     AccountStorageCache, Cache, CacheDB, Database, Db, DbErrorCode, DbResult, DbStats,
     DbStatsCounts, DynDatabase, EmptyDB, InMemoryDB,
@@ -272,8 +276,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             spec_id,
             block,
             registry,
-            Box::new(database),
-            Box::new(precompiles),
+            boxed_dyn_database(database),
+            boxed_precompile_provider(precompiles),
         )
     }
 
@@ -385,7 +389,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Returns the backing database mutably.
     #[inline]
-    pub fn database_mut(&mut self) -> &mut dyn DynDatabase {
+    pub fn database_mut(&mut self) -> &mut (dyn DynDatabase + '_) {
         self.state.initial_mut()
     }
 
@@ -470,24 +474,22 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     #[inline]
     fn assert_database_type<D: DynDatabase>(&self) {
-        assert_eq!(self.database().type_id(), TypeId::of::<D>(), "database type mismatch");
+        assert_eq!(self.database().type_id(), typeid::of::<D>(), "database type mismatch");
     }
 
     #[inline]
     fn assert_precompiles_type<P: PrecompileProvider<T>>(&self) {
         assert_eq!(
             self.precompiles().type_id(),
-            TypeId::of::<P>(),
+            typeid::of::<P>(),
             "precompile provider type mismatch"
         );
     }
 
     #[inline]
     fn assert_inspector_type<I: Inspector<T>>(&self) {
-        let Some(inspector) = self.inspector() else {
-            panic!("inspector type mismatch");
-        };
-        assert_eq!(inspector.type_id(), TypeId::of::<I>(), "inspector type mismatch");
+        let inspector = self.inspector().expect("inspector type mismatch");
+        assert_eq!(inspector.type_id(), typeid::of::<I>(), "inspector type mismatch");
     }
 
     /// Returns the backing database as `D` if it has that concrete type.
@@ -540,7 +542,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Returns the precompile provider mutably.
     #[inline]
-    pub fn precompiles_mut(&mut self) -> &mut dyn PrecompileProvider<T> {
+    pub fn precompiles_mut(&mut self) -> &mut (dyn PrecompileProvider<T> + '_) {
         self.assert_precompiles_mutable();
         self.precompiles.as_mut()
     }
@@ -549,21 +551,21 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T>) {
         self.assert_precompiles_mutable();
-        self.precompiles = Box::new(precompiles);
+        self.precompiles = boxed_precompile_provider(precompiles);
         self.evm_send = false;
     }
 
     /// Returns the precompile provider as `P` if it has that concrete type.
     #[inline]
     pub fn precompiles_as<P: PrecompileProvider<T>>(&self) -> Option<&P> {
-        <dyn core::any::Any>::downcast_ref(self.precompiles())
+        self.precompiles().downcast_ref()
     }
 
     /// Returns the precompile provider mutably as `P` if it has that concrete type.
     #[inline]
     pub fn precompiles_as_mut<P: PrecompileProvider<T>>(&mut self) -> Option<&mut P> {
         self.assert_precompiles_mutable();
-        <dyn core::any::Any>::downcast_mut(self.precompiles_mut())
+        self.precompiles_mut().downcast_mut()
     }
 
     /// Returns the active execution inspector.
@@ -574,9 +576,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Returns the active execution inspector mutably.
     #[inline]
-    pub fn inspector_mut(&mut self) -> Option<&mut dyn Inspector<T>> {
+    pub fn inspector_mut(&mut self) -> Option<&mut (dyn Inspector<T> + '_)> {
         self.assert_inspector_mutable();
-        self.inspector.as_deref_mut()
+        let inspector = self.inspector.as_deref_mut()?;
+        Some(unsafe {
+            core::mem::transmute::<&mut dyn Inspector<T>, &mut (dyn Inspector<T> + '_)>(inspector)
+        })
     }
 
     #[inline]
@@ -613,17 +618,17 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Sets the active execution inspector.
     #[inline]
-    pub fn set_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
+    pub fn set_inspector<I: Inspector<T>>(&mut self, inspector: I) {
         self.assert_inspector_mutable();
-        self.inspector = Some(Box::new(inspector));
+        self.inspector = Some(boxed_inspector(inspector));
         self.evm_send = false;
     }
 
     /// Sets the active boxed execution inspector.
     #[inline]
-    pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T>>) {
+    pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T> + '_>) {
         self.assert_inspector_mutable();
-        self.inspector = Some(inspector);
+        self.inspector = Some(erase_boxed_inspector_lifetime(inspector));
         self.evm_send = false;
     }
 
@@ -637,10 +642,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Removes the active execution inspector if it has type `I`.
     #[inline]
-    pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>> {
+    pub fn clear_inspector_as<I: Inspector<T>>(&mut self) -> Option<Box<I>> {
         self.assert_inspector_mutable();
         let i = self.inspector.take_if(|i| i.is::<I>())?;
-        (i as Box<dyn core::any::Any>).downcast().ok()
+        Some(unsafe { Box::from_raw(Box::into_raw(i).cast::<I>()) })
     }
 
     /// Returns the active EVM version.

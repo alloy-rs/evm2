@@ -1,13 +1,12 @@
 //! Precompile dispatch interface.
 
-use super::Evm;
+use super::{Evm, NonStaticAny};
 use crate::{
     EvmTypes, PrecompileError,
     interpreter::{GasTracker, Message},
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes};
-use core::any::Any;
 
 /// Result returned by a precompile.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -37,7 +36,7 @@ impl PrecompileOutput {
 }
 
 /// Precompile execution hook.
-pub trait PrecompileProvider<T: EvmTypes>: Any {
+pub trait PrecompileProvider<T: EvmTypes>: NonStaticAny {
     /// Returns precompile addresses.
     fn addresses(&self) -> Vec<Address> {
         Vec::new()
@@ -53,6 +52,34 @@ pub trait PrecompileProvider<T: EvmTypes>: Any {
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
+}
+
+#[inline]
+pub(crate) fn boxed_precompile_provider<T: EvmTypes>(
+    precompiles: impl PrecompileProvider<T>,
+) -> Box<dyn PrecompileProvider<T>> {
+    let precompiles: Box<dyn PrecompileProvider<T> + '_> = Box::new(precompiles);
+    unsafe {
+        core::mem::transmute::<Box<dyn PrecompileProvider<T> + '_>, Box<dyn PrecompileProvider<T>>>(
+            precompiles,
+        )
+    }
+}
+
+impl<'a, T: EvmTypes> core::ops::Deref for dyn PrecompileProvider<T> + 'a {
+    type Target = dyn NonStaticAny + 'a;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self
+    }
+}
+
+impl<'a, T: EvmTypes> core::ops::DerefMut for dyn PrecompileProvider<T> + 'a {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self
+    }
 }
 
 impl<T: EvmTypes, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for Box<P> {

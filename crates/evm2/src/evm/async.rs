@@ -7,15 +7,14 @@
 use crate::{
     bytecode::Bytecode,
     evm::{
-        AccountInfo, DbErrorCode, DbResult, DynDatabase, db_error_unavailable, stored_error_code,
+        AccountInfo, DbErrorCode, DbResult, DynDatabase, NonStaticAny, db_error_unavailable,
+        stored_error_code,
     },
     interpreter::Word,
 };
 use alloc::boxed::Box;
 use alloy_primitives::{Address, B256};
-use core::{
-    any::Any, fmt, future::Future, marker::PhantomData, pin::Pin, ptr::NonNull, task::Poll,
-};
+use core::{fmt, future::Future, marker::PhantomData, pin::Pin, ptr::NonNull, task::Poll};
 use corosensei::{Coroutine, CoroutineResult, Yielder, stack::DefaultStack};
 use std::{cell::Cell, error::Error, io, task::Context};
 use tokio::{runtime::Handle, task};
@@ -423,7 +422,7 @@ unsafe fn restore_context_lifetime<'a>(cx: &'a mut Context<'static>) -> &'a mut 
 /// async EVM entrypoints such as [`crate::Evm::transact_async`]. Calling synchronous EVM
 /// entrypoints with an [`AsyncDb`] can still execute the futures by blocking on Tokio, but it
 /// cannot suspend the EVM fiber and yield back to the caller.
-pub trait AsyncDatabase: Any {
+pub trait AsyncDatabase: NonStaticAny {
     /// Database error type.
     type Error: Error + Send + 'static;
 
