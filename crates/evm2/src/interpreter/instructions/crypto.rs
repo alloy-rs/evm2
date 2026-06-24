@@ -22,11 +22,8 @@ pub(crate) fn keccak256(cx: _, [offset, len]: [Word]) -> Result<out> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        interpreter::{
-            InstrStop, Word,
-            instructions::tests::{RunConfig, push, run, run_stack},
-            op,
-        },
+        interpreter::{InstrStop, Word, op},
+        test_utils::{RunConfig, push, run, run_stack},
         utils::b256_to_word,
     };
     use alloc::vec::Vec;

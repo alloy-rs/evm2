@@ -97,10 +97,9 @@ pub(crate) fn invalid() -> Result {
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{
-        InstrStop, Word,
-        instructions::tests::{RunConfig, push, run, run_stack},
-        op,
+    use crate::{
+        interpreter::{InstrStop, Word, op},
+        test_utils::{RunConfig, push, run, run_stack},
     };
     use alloc::vec::Vec;
     use core::assert_matches;

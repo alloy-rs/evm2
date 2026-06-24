@@ -46,16 +46,11 @@ pub(crate) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
 mod tests {
     use crate::{
         ExecutionConfig, SpecId, Version,
-        bytecode::Bytecode,
         env::TxEnv,
-        interpreter::{
-            InstrStop, Interpreter, Message, Word,
-            instructions::tests::{RunConfig, TestHost, TestTypes, push, run, run_stack},
-            op,
-        },
+        interpreter::{InstrStop, Interpreter, Message, Word, op},
+        test_utils::{RunConfig, TestHost, TestTypes, legacy_bytecode, push, run, run_stack},
     };
     use alloc::vec::Vec;
-    use alloy_primitives::Bytes;
     use core::assert_matches;
 
     #[test]
@@ -110,7 +105,7 @@ mod tests {
 
         let tx_env = TxEnv::default();
         let message = Message { gas_limit: 10_000, ..Message::default() };
-        let bytecode = Bytecode::new_legacy(Bytes::from(code));
+        let bytecode = legacy_bytecode(code);
         let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
         let mut host = TestHost::default();
         let err = interp.run(&config, &mut host);

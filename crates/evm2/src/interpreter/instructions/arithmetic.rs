@@ -69,16 +69,9 @@ mod tests {
 
     use crate::{
         SpecId,
-        interpreter::{
-            InstrStop, Word,
-            instructions::tests::{RunConfig, assert_stack, push, run},
-            op,
-        },
+        interpreter::{InstrStop, Word, op},
+        test_utils::{RunConfig, assert_stack, neg, push, run},
     };
-
-    fn neg(value: u64) -> Word {
-        Word::from(0).wrapping_sub(Word::from(value))
-    }
 
     #[test]
     fn add_opcode() {
