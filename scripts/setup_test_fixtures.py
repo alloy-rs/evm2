@@ -41,6 +41,11 @@ DEVNET_BASE_URL = os.environ.get(
     "DEVNET_BASE_URL",
     "https://github.com/ethereum/execution-specs/releases/download",
 )
+# Default fork-specific devnet fixtures: glamsterdam (Amsterdam) devnet-6. Downloaded by default so
+# the Amsterdam tests run without extra configuration; override DEVNET_VERSION/DEVNET_TAR to select a
+# different devnet release. The version is a URL path component, so the `@` is percent-encoded.
+DEFAULT_DEVNET_VERSION = "tests-glamsterdam-devnet%40v6.0.0"
+DEFAULT_DEVNET_TAR = "fixtures_glamsterdam-devnet.tar.gz"
 LEGACY_URL = (
     f"https://github.com/ethereum/tests/archive/refs/tags/{LEGACY_VERSION}.tar.gz"
 )
@@ -116,13 +121,12 @@ def legacy_fixture() -> Fixture:
 
 
 def devnet_fixture() -> Fixture | None:
-    version = os.environ.get("DEVNET_VERSION")
-    tar_name = os.environ.get("DEVNET_TAR")
+    version = os.environ.get("DEVNET_VERSION", DEFAULT_DEVNET_VERSION)
+    tar_name = os.environ.get("DEVNET_TAR", DEFAULT_DEVNET_TAR)
 
-    if not version and not tar_name:
-        return None
+    # An explicitly cleared version or tar disables the devnet fixtures.
     if not version or not tar_name:
-        raise SystemExit("DEVNET_VERSION and DEVNET_TAR must be set together.")
+        return None
 
     return Fixture(
         label="devnet",
@@ -134,9 +138,17 @@ def devnet_fixture() -> Fixture | None:
 
 def fixture_plan() -> list[Fixture]:
     fixtures: list[Fixture] = []
-    if not env_flag("EVM2_STATETEST_DEVNET_ONLY"):
-        fixtures.extend([main_fixture(), legacy_fixture()])
 
+    # The glamsterdam devnet fixtures cover frontier..amsterdam, superseding the main develop suite
+    # by fork coverage, so main develop/stable is now opt-in via EVM2_STATETEST_MAIN.
+    if env_flag("EVM2_STATETEST_MAIN"):
+        fixtures.append(main_fixture())
+
+    # Legacy hand-written GeneralStateTests, unless a devnet-only run was requested.
+    if not env_flag("EVM2_STATETEST_DEVNET_ONLY"):
+        fixtures.append(legacy_fixture())
+
+    # Glamsterdam (Amsterdam) devnet fixtures: the default suite.
     if devnet := devnet_fixture():
         fixtures.append(devnet)
 
