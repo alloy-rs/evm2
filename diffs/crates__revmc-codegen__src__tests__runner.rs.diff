@@ -13,7 +13,7 @@
 +    env::{BlockEnv as Evm2BlockEnv, TxEnv as Evm2TxEnv},
 +    ethereum::ethereum_tx_registry,
 +    evm::{AccountInfo, InMemoryDB},
-+    interpreter::{Gas, InstrStop, Interpreter as Evm2Interpreter, Message as Evm2Message},
++    interpreter::{Gas, InstrStop, Interpreter as Evm2Interpreter, Memory, Message as Evm2Message},
  };
 -use revm_bytecode::opcode as op;
 -use revm_interpreter::{
@@ -584,7 +584,7 @@
      dump_path.extend(module_path.split("::").skip(2));
      dump_path.push(format!("{:?}", compiler.opt_level()));
      compiler.set_dump_to(Some(dump_path));
-@@ -477,308 +450,219 @@
+@@ -477,308 +450,223 @@
  }
 
  fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
@@ -777,7 +777,7 @@
 -            }
 -        } else if !skip_interpreter_checks {
 -            assert_eq!(interpreter.gas.total_gas_spent(), expected_gas, "interpreter gas mismatch");
-+    let interpreter_memory = interpreter.memory_ref().as_slice();
++    let interpreter_memory = memory_slice(interpreter.memory_ref());
 +    let mut expected_memory = expected_memory;
 +    if expected_memory == MEMORY_WHAT_INTERPRETER_SAYS {
 +        if skip_interpreter_checks {
@@ -926,7 +926,7 @@
 -            _assert_host(host);
 +        if !skip_jit_memory {
 +            assert_eq!(
-+                MemDisplay(ecx.memory().as_slice()),
++                MemDisplay(memory_slice(ecx.memory())),
 +                MemDisplay(expected_memory),
 +                "memory mismatch"
 +            );
@@ -938,19 +938,35 @@
 +            assert_eq!(ecx.gas.spent(), expected_gas, "gas mismatch");
          }
 -    });
--}
 +    }
-
--#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
--struct MemDisplay<'a>(&'a [u8]);
--impl fmt::Debug for MemDisplay<'_> {
--    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
--        let chunks = self.0.chunks(32).map(revm_primitives::hex::encode_prefixed);
--        f.debug_list().entries(chunks).finish()
++
 +    if let Some(expected_output) = expected_output {
 +        assert_eq!(ecx.interpreter().output(), expected_output, "output mismatch");
++    }
++
++    if let Some(assert_ecx) = assert_ecx {
++        assert_ecx(ecx);
++    }
++}
++
++fn instruction_results_match_for_oracle(actual: InstrStop, expected: InstrStop) -> bool {
++    actual == expected
++        || matches!(
++            (actual, expected),
++            (InstrStop::InvalidOpcode, InstrStop::NotActivated)
++                | (InstrStop::StackUnderflow, InstrStop::StackOverflow)
++        )
+ }
+
+ #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+ struct MemDisplay<'a>(&'a [u8]);
+ impl fmt::Debug for MemDisplay<'_> {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+-        let chunks = self.0.chunks(32).map(revm_primitives::hex::encode_prefixed);
++        let chunks = self.0.chunks(32).map(hex::encode_prefixed);
+         f.debug_list().entries(chunks).finish()
      }
--}
+ }
 
 -#[track_caller]
 -fn assert_actions(actual: &InterpreterAction, expected: &InterpreterAction) {
@@ -1013,11 +1029,9 @@
 -            );
 -        }
 -        (a, b) => assert_eq!(a, b, "next action mismatch"),
-+    if let Some(assert_ecx) = assert_ecx {
-+        assert_ecx(ecx);
-     }
- }
-
+-    }
+-}
+-
 -/// Insert a call outcome into the interpreter state (for testing call_with_interpreter).
 -///
 -/// Mimics revm-handler's insert_call_outcome: pushes success indicator, copies return data
@@ -1050,22 +1064,10 @@
 -            }
 -        }
 -    }
-+fn instruction_results_match_for_oracle(actual: InstrStop, expected: InstrStop) -> bool {
-+    actual == expected
-+        || matches!(
-+            (actual, expected),
-+            (InstrStop::InvalidOpcode, InstrStop::NotActivated)
-+                | (InstrStop::StackUnderflow, InstrStop::StackOverflow)
-+        )
-+}
-
+-
 -    if ins_result.is_ok() {
 -        interpreter.gas.record_refund(out_gas.refunded());
-+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-+struct MemDisplay<'a>(&'a [u8]);
-+impl fmt::Debug for MemDisplay<'_> {
-+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-+        let chunks = self.0.chunks(32).map(hex::encode_prefixed);
-+        f.debug_list().entries(chunks).finish()
-     }
+-    }
++fn memory_slice(memory: &Memory) -> &[u8] {
++    memory.slice(0, memory.len())
  }

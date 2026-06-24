@@ -214,7 +214,7 @@
              mem_base: ptr::null_mut(),
              mem_len: 0,
          };
-@@ -188,14 +96,144 @@
+@@ -188,14 +96,143 @@
          (this, stack, stack_len)
      }
 
@@ -253,9 +253,10 @@
 +    /// Resizes memory using EVM memory gas accounting.
 +    #[inline]
 +    pub fn resize_memory(&mut self, offset: usize, len: usize) -> Result<(), InstrStop> {
++        let gas_params = *self.gas_params();
 +        let memory = self.memory_mut() as *mut Memory;
 +        let gas = &mut self.gas as *mut Gas;
-+        unsafe { (*memory).resize_evm(&mut *gas, offset, len)? };
++        unsafe { (*memory).resize_evm(&mut *gas, &gas_params, offset, len)? };
 +        self.refresh_memory_cache();
 +        Ok(())
 +    }
@@ -354,16 +355,14 @@
 -        let mut slice = self.memory.context_memory_mut();
 -        self.mem_base = slice.as_mut_ptr();
 -        self.mem_len = slice.len();
-+        let (mem_base, mem_len) = {
-+            let slice = self.memory_mut().as_mut_slice();
-+            (slice.as_mut_ptr(), slice.len())
-+        };
++        let mem_len = self.memory().len();
++        let mem_base = self.memory_mut().as_mut_ptr();
 +        self.mem_base = mem_base;
 +        self.mem_len = mem_len;
      }
  }
 
-@@ -204,9 +242,9 @@
+@@ -204,9 +241,9 @@
  /// # Examples
  ///
  /// ```no_run
@@ -375,7 +374,7 @@
  ///    /// A simple function.
  ///    pub fn test_fn;
  /// }
-@@ -214,7 +252,7 @@
+@@ -214,7 +251,7 @@
  /// let test_fn = EvmCompilerFn::new(test_fn);
  /// ```
  #[macro_export]
@@ -384,7 +383,7 @@
      ($( $(#[$attr:meta])* $vis:vis fn $name:ident; )+) => {
          #[allow(improper_ctypes)]
          unsafe extern "C" {
-@@ -224,7 +262,7 @@
+@@ -224,7 +261,7 @@
                      ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
                      stack: ::core::ptr::NonNull<$crate::EvmStack>,
                      stack_len: ::core::ptr::NonNull<usize>,
@@ -393,7 +392,7 @@
              )+
          }
      };
-@@ -239,7 +277,7 @@
+@@ -239,7 +276,7 @@
      ecx: NonNull<EvmContext<'_>>,
      stack: NonNull<EvmStack>,
      stack_len: NonNull<usize>,
@@ -402,7 +401,7 @@
 
  /// An EVM bytecode function.
  #[derive(Clone, Copy, Debug, Hash)]
-@@ -272,80 +310,23 @@
+@@ -272,80 +309,23 @@
          self.0
      }
 
@@ -410,10 +409,9 @@
 -    ///
 -    /// This behaves similarly to `Interpreter::run_plain`, returning an [`InstructionResult`]
 -    /// and the next action in an [`InterpreterAction`].
-+    /// Calls the function by re-using an evm2 interpreter's resources.
-     ///
-     /// # Safety
-     ///
+-    ///
+-    /// # Safety
+-    ///
 -    /// The caller must ensure that the function is safe to call.
 -    pub unsafe fn call_with_interpreter(
 -        self,
@@ -428,9 +426,10 @@
 -    ///
 -    /// This can be used to install callbacks (e.g. [`EvmContext::on_log`]) that fire during
 -    /// execution.
--    ///
--    /// # Safety
--    ///
++    /// Calls the function by re-using an evm2 interpreter's resources.
+     ///
+     /// # Safety
+     ///
 -    /// Same requirements as [`call_with_interpreter`](Self::call_with_interpreter).
 -    #[doc(hidden)]
 -    pub unsafe fn call_with_interpreter_with(
@@ -494,7 +493,7 @@
      }
 
      /// Calls the function.
-@@ -363,11 +344,18 @@
+@@ -363,11 +343,18 @@
      #[inline]
      pub unsafe fn call(
          self,
@@ -516,7 +515,7 @@
      }
 
      /// Same as [`call`](Self::call) but with `#[inline(never)]`.
-@@ -380,11 +368,11 @@
+@@ -380,11 +367,11 @@
      #[inline(never)]
      pub unsafe fn call_noinline(
          self,
@@ -531,7 +530,7 @@
      }
  }
 
-@@ -415,20 +403,6 @@
+@@ -415,20 +402,6 @@
          Vec::with_capacity(1024)
      }
 
@@ -552,7 +551,7 @@
      /// Creates a stack from a vector's buffer.
      ///
      /// # Panics
-@@ -544,7 +518,7 @@
+@@ -544,7 +517,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked(&self, index: usize) -> &EvmWord {
@@ -561,7 +560,7 @@
      }
 
      /// Returns the word at the given index as a mutable reference.
-@@ -554,7 +528,7 @@
+@@ -554,7 +527,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut EvmWord {
@@ -570,7 +569,7 @@
      }
 
      /// Sets the value at the top of the stack to `value`, and grows the stack by 1.
-@@ -564,7 +538,7 @@
+@@ -564,7 +537,7 @@
      /// The caller must ensure that the stack is not full.
      #[inline]
      pub unsafe fn push(&mut self, value: EvmWord, len: &mut usize) {
@@ -579,7 +578,7 @@
          *len += 1;
      }
 
-@@ -575,7 +549,7 @@
+@@ -575,7 +548,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked(&self, len: usize) -> &EvmWord {
@@ -588,7 +587,7 @@
      }
 
      /// Returns the value at the top of the stack as a mutable reference.
-@@ -585,7 +559,7 @@
+@@ -585,7 +558,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked_mut(&mut self, len: usize) -> &mut EvmWord {
@@ -597,7 +596,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack.
-@@ -595,7 +569,7 @@
+@@ -595,7 +568,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked(&self, len: usize, n: usize) -> &EvmWord {
@@ -606,7 +605,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack as a mutable reference.
-@@ -605,7 +579,7 @@
+@@ -605,7 +578,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked_mut(&mut self, len: usize, n: usize) -> &mut EvmWord {
@@ -615,7 +614,7 @@
      }
 
      /// Sets the value at the given index.
-@@ -615,7 +589,7 @@
+@@ -615,7 +588,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn set_unchecked(&mut self, index: usize, value: EvmWord) {
@@ -624,7 +623,7 @@
      }
  }
 
-@@ -821,14 +795,6 @@
+@@ -821,14 +794,6 @@
      }
  }
 
@@ -639,7 +638,7 @@
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -841,7 +807,7 @@
+@@ -841,7 +806,7 @@
          assert_eq!(usize::try_from(&mut word), Ok(0));
      }
 
@@ -648,7 +647,7 @@
          #[link_name = "__test_fn"]
          fn test_fn;
      }
-@@ -851,8 +817,8 @@
+@@ -851,8 +816,8 @@
          _ecx: NonNull<EvmContext<'_>>,
          _stack: NonNull<EvmStack>,
          _stack_len: NonNull<usize>,

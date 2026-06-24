@@ -21,12 +21,19 @@
 
 
  def cargo_env(rust_log: str | None = None) -> dict[str, str]:
-@@ -39,7 +39,7 @@
+@@ -38,8 +38,13 @@
+     env = {**os.environ, "CARGO_TARGET_DIR": target_dir}
      if not incremental:
          env["CARGO_INCREMENTAL"] = "0"
-     subprocess.run(["cargo", "build", "--quiet"], check=True, cwd=root, env=env)
+-    subprocess.run(["cargo", "build", "--quiet"], check=True, cwd=root, env=env)
 -    return os.path.join(target_dir, "debug", "revmc")
-+    return os.path.join(target_dir, "debug", "evm2-jit")
++    subprocess.run(
++        ["cargo", "build", "--quiet", "-p", "evm2-cli", "--bin", "evm2", "--all-features"],
++        check=True,
++        cwd=root,
++        env=env,
++    )
++    return os.path.join(target_dir, "debug", "evm2")
 
 
  def get_benches(binary: str) -> list[str]:
