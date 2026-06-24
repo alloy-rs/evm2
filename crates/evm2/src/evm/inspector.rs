@@ -908,6 +908,28 @@ mod tests {
     }
 
     #[test]
+    fn selfdestruct_dynamic_gas_oog_is_not_inspected() {
+        let contract = Address::from([0x11; 20]);
+        let target = Address::from([0x99; 20]);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&contract, AccountInfo::default());
+        let mut code = Vec::new();
+        push(&mut code, address_to_word(&target));
+        code.push(op::SELFDESTRUCT);
+
+        let (result, inspector, _) = run_evm_with_inspector_db(
+            db,
+            code,
+            &Message { destination: contract, ..Default::default() },
+            7_000,
+            SelfdestructInspector::default(),
+        );
+
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert_eq!(inspector.selfdestruct, None);
+    }
+
+    #[test]
     fn selfdestruct_host_error_is_not_inspected() {
         // Host failures are injected through the mock host; this intentionally uses [`TestHost`].
         let target = Address::from([0x99; 20]);
