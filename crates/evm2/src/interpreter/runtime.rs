@@ -397,10 +397,8 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     /// Resizes linear memory using the active runtime gas parameters.
     #[inline]
-    pub(crate) fn resize_memory(&mut self, gas: &mut Gas, offset: usize, len: usize) -> Result {
-        let version = self.0.version.expect("version is set during instruction execution");
-        let gas_params = &version.gas_params;
-        self.0.memory.resize_evm(gas, gas_params, offset, len)
+    pub fn resize_memory(&mut self, gas: &mut Gas, offset: usize, len: usize) -> Result {
+        self.0.memory.resize_evm(gas, self.gas_params(), offset, len)
     }
 
     /// Returns return data from the last call-like operation.

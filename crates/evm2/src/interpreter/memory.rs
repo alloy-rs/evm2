@@ -65,6 +65,8 @@ impl Memory {
     }
 
     /// Resizes memory to cover `offset..offset + len`.
+    ///
+    /// Does not account for gas.
     #[inline]
     pub fn resize(&mut self, offset: usize, len: usize) -> Result {
         let Some(end) = offset.checked_add(len) else {
