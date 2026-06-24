@@ -42,7 +42,7 @@ cargo fmt --all # format
 cargo docs # check docs
 
 cargo nextest run # test (default filter)
-cargo nextest run -E "not test(glob*)" # further filter tests
+cargo nextest run -E "not (test(glob*)) | package(/regex.*/)" # further filter tests
 cargo nextest run -p evm2-eest --test eest --ignore-default-filter # include EEST fixtures
 cargo st # include EEST fixtures with interpreter, JIT, and AOT suites
 ```
