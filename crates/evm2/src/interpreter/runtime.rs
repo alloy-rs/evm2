@@ -389,6 +389,13 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         &mut self.0.memory
     }
 
+    /// Resizes linear memory using the active runtime gas parameters.
+    #[inline]
+    pub(crate) fn resize_memory(&mut self, gas: &mut Gas, offset: usize, len: usize) -> Result {
+        let gas_params = *self.gas_params();
+        super::memory::resize_memory(gas, &mut self.0.memory, &gas_params, offset, len)
+    }
+
     /// Returns return data from the last call-like operation.
     #[inline]
     pub const fn return_data(&self) -> &Bytes {
