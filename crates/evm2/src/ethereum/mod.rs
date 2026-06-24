@@ -10,7 +10,7 @@ mod legacy;
 pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
-    Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
+    Evm, EvmFeatures, EvmHostTypes, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
     evm::{AccountInfo, StateCheckpoint, db_error_handler},
     interpreter::{Message, MessageKind, MessageResult, Word},
@@ -180,7 +180,7 @@ impl Typed2718 for RecoveredTxEnvelope {
 pub fn ethereum_tx_registry<T>(spec_id: SpecId) -> TxRegistry<T, TxResult<T>>
 where
     T: EvmTypes<Tx = RecoveredTxEnvelope>,
-    for<'a> T: EvmTypes<Host<'a> = Evm<'a, T>>,
+    T: EvmHostTypes,
 {
     let mut registry =
         TxRegistry::new().with_handler(0, RecoveredTxEnvelope::as_legacy, legacy::handle::<T>);
@@ -347,7 +347,7 @@ pub(super) fn validate_sender<'a, T>(
     max_upfront: U256,
 ) -> HandlerResult<AccountInfo>
 where
-    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+    T: EvmHostTypes,
 {
     let has_nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let has_balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
@@ -374,7 +374,7 @@ where
 
 pub(super) fn warm_base_accounts<'a, T>(host: &mut Evm<'a, T>, caller: Address, to: TxKind)
 where
-    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+    T: EvmHostTypes,
 {
     host.state.prewarm(&caller);
     if host.feature(EvmFeatures::EIP3651) {
@@ -388,7 +388,7 @@ where
 
 pub(super) fn warm_access_list<'a, T>(host: &mut Evm<'a, T>, access_list: &AccessList)
 where
-    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+    T: EvmHostTypes,
 {
     for item in access_list.iter() {
         host.state.prewarm_storage(
@@ -404,7 +404,7 @@ pub(super) fn charge_upfront<'a, T>(
     max_gas_cost: U256,
 ) -> HandlerResult<()>
 where
-    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+    T: EvmHostTypes,
 {
     if !host.feature(EvmFeatures::FEE_CHARGE) {
         return Ok(());
@@ -426,7 +426,7 @@ pub(crate) fn initial_message<'a, T>(
     gas_limit: u64,
 ) -> HandlerResult<(Bytecode, Message<T>)>
 where
-    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+    T: EvmHostTypes,
 {
     let r = match to {
         TxKind::Call(to) => {
@@ -480,7 +480,7 @@ struct InitialCallCode {
 
 fn initial_call_code<'a, T>(host: &mut Evm<'a, T>, to: Address) -> HandlerResult<InitialCallCode>
 where
-    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+    T: EvmHostTypes,
 {
     let code = host
         .state
@@ -509,7 +509,7 @@ pub(super) fn rollback_failed_execution<'a, T>(
     checkpoint: StateCheckpoint,
     result: &mut MessageResult<T>,
 ) where
-    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+    T: EvmHostTypes,
 {
     if !result.stop.is_success() {
         let features = host.version().features;
@@ -529,7 +529,7 @@ pub(super) fn settle_gas<'a, T>(
     result: MessageResult<T>,
 ) -> HandlerResult<TxResult<T>>
 where
-    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+    T: EvmHostTypes,
 {
     let (gas_remaining, gas_used) =
         final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);

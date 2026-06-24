@@ -48,14 +48,9 @@ pub trait EvmTypes: Sized + 'static {
 }
 
 /// EVM type family whose host is [`crate::Evm`] for every stored-object lifetime.
-pub trait EvmHostTypes: EvmTypes + for<'a> EvmTypes<Host<'a> = crate::Evm<'a, Self>> {}
+pub trait EvmHostTypes: for<'a> EvmTypes<Host<'a> = crate::Evm<'a, Self>> {}
 
-impl<T> EvmHostTypes for T
-where
-    T: EvmTypes,
-    for<'a> T: EvmTypes<Host<'a> = crate::Evm<'a, T>>,
-{
-}
+impl<T> EvmHostTypes for T where for<'a> T: EvmTypes<Host<'a> = crate::Evm<'a, T>> {}
 
 /// Compile-time EVM table configuration.
 ///

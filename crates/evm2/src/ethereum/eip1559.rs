@@ -7,7 +7,7 @@ use super::{
     warm_base_accounts,
 };
 use crate::{
-    Evm, EvmTypes, TxResult,
+    EvmHostTypes, TxResult,
     env::TxEnv,
     evm::db_error_handler,
     interpreter::Host,
@@ -20,8 +20,7 @@ pub(super) fn handle<T>(
     req: TxRequest<'_, '_, T, Recovered<TxEip1559>>,
 ) -> HandlerResult<TxResult<T>>
 where
-    T: EvmTypes,
-    for<'a> T: EvmTypes<Host<'a> = Evm<'a, T>>,
+    T: EvmHostTypes,
 {
     let caller = req.tx.signer();
     let tx = req.tx.inner();

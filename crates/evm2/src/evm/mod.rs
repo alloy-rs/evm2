@@ -118,7 +118,8 @@ use self::{
     precompile::{PrecompileOutput, PrecompileProvider, boxed_precompile_provider},
 };
 use crate::{
-    EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
+    EvmConfigSelector, EvmHostTypes, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt,
+    SpecId,
     bytecode::Bytecode,
     constants::{CALL_DEPTH_LIMIT, EIP7708_TRANSFER_TOPIC},
     env::{BlockEnv, TxEnv},
@@ -242,7 +243,7 @@ pub struct Evm<'a, T: EvmTypes> {
 
 impl<'a, T> Evm<'a, T>
 where
-    T: EvmTypes<Host<'a> = Self>,
+    T: EvmHostTypes,
 {
     /// Creates an EVM for `spec_id` with the provided transaction registry, database, and
     /// precompile provider.
@@ -730,7 +731,7 @@ impl<'a, 'evm, T: EvmTypes> SendEvmRef<'a, 'evm, T> {
 #[cfg(feature = "async")]
 impl<'evm, T> SendEvmRef<'_, 'evm, T>
 where
-    T: EvmTypes<Tx: Typed2718, Host<'evm> = Evm<'evm, T>>,
+    T: EvmHostTypes<Tx: Typed2718>,
 {
     #[inline]
     fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
@@ -740,7 +741,7 @@ where
 
 impl<'a, T> Evm<'a, T>
 where
-    T: EvmTypes<Tx: Typed2718, Host<'a> = Self>,
+    T: EvmHostTypes<Tx: Typed2718>,
 {
     /// Dispatches the transaction to its handler and returns an executed transaction handle.
     ///
@@ -838,7 +839,7 @@ where
 
 impl<'a, T> Evm<'a, T>
 where
-    T: EvmTypes<Host<'a> = Self>,
+    T: EvmHostTypes,
 {
     #[inline]
     fn execute_message_impl(
@@ -1264,7 +1265,7 @@ where
 
 impl<'a, T> Host<T> for Evm<'a, T>
 where
-    T: EvmTypes<Host<'a> = Self>,
+    T: EvmHostTypes,
 {
     fn spec_id(&self) -> SpecId {
         self.spec_id()

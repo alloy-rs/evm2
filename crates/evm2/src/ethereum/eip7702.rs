@@ -7,7 +7,7 @@ use super::{
     warm_base_accounts,
 };
 use crate::{
-    Evm, EvmTypes, TxResult,
+    Evm, EvmHostTypes, TxResult,
     env::TxEnv,
     evm::db_error_handler,
     interpreter::Host,
@@ -21,8 +21,7 @@ pub(super) fn handle<T>(
     req: TxRequest<'_, '_, T, Recovered<super::LazyTxEip7702>>,
 ) -> HandlerResult<TxResult<T>>
 where
-    T: EvmTypes,
-    for<'a> T: EvmTypes<Host<'a> = Evm<'a, T>>,
+    T: EvmHostTypes,
 {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
@@ -88,7 +87,7 @@ where
 
 fn eip7702_authorization_gas<'a, T>(host: &Evm<'a, T>, authorizations: usize) -> u64
 where
-    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+    T: EvmHostTypes,
 {
     let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
     u64::try_from(authorizations).unwrap_or(u64::MAX).saturating_mul(per_auth)
@@ -100,7 +99,7 @@ fn apply_auth_list<'a, T>(
     authorizations: &[super::LazyAuthorization],
 ) -> HandlerResult<u64>
 where
-    T: EvmTypes<Host<'a> = Evm<'a, T>>,
+    T: EvmHostTypes,
 {
     let mut refunded_accounts = 0u64;
     for authorization in authorizations {
