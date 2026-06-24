@@ -130,7 +130,7 @@ use crate::{
     trustme,
     version::{EvmFeatures, GasId},
 };
-use alloc::{boxed::Box, vec};
+use alloc::{boxed::Box, string::String, vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 #[cfg(feature = "async")]
@@ -234,6 +234,7 @@ pub struct Evm<T: EvmTypes> {
     async_stack: r#async::FiberStack,
     evm_send: bool,
     pub(crate) db_error_code: Option<DbErrorCode>,
+    fatal_precompile_error: Option<String>,
 }
 
 impl<T: EvmTypes<Host = Self>> Evm<T> {
@@ -307,6 +308,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             async_stack: r#async::FiberStack::default(),
             evm_send: false,
             db_error_code: None,
+            fatal_precompile_error: None,
         }
     }
 
@@ -393,6 +395,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     pub const fn db_error_code(&self) -> Option<DbErrorCode> {
         self.db_error_code
+    }
+
+    pub(crate) fn take_fatal_precompile_error(&mut self) -> Option<String> {
+        self.fatal_precompile_error.take()
     }
 
     /// Returns account information visible through the accepted state overlay.
@@ -738,6 +744,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// [`ExecutedTx::discard`].
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<ExecutedTx<'_, T>> {
         self.db_error_code = None;
+        self.fatal_precompile_error = None;
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let mut result = handler.call(tx, self);
         let mut has_pending_state = false;
@@ -1135,8 +1142,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
                 (InstrStop::PrecompileOOG, Bytes::new())
             }
-            Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
-                (InstrStop::PrecompileError, Bytes::new())
+            Err(PrecompileError::Halt(_)) => (InstrStop::PrecompileError, Bytes::new()),
+            Err(PrecompileError::Fatal(err)) => {
+                self.fatal_precompile_error = Some(err.to_string());
+                (InstrStop::FatalPrecompileError, Bytes::new())
             }
         };
         if !stop.is_success() {
@@ -1566,14 +1575,14 @@ mod tests {
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         env::TxEnv,
-        ethereum::RecoveredTxEnvelope,
+        ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, MessageKind, op},
-        registry::TxRequest,
-        test_utils::{legacy_bytecode, push_address},
+        registry::{HandlerError, TxRequest},
+        test_utils::{legacy_bytecode, push as push_word, push_address},
     };
     use alloc::{string::ToString, sync::Arc, vec, vec::Vec};
-    use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
+    use alloy_consensus::{transaction::Recovered, TxLegacy};
+    use alloy_primitives::{Address, Bytes, TxKind, KECCAK256_EMPTY, U256};
     use core::{
         error::Error,
         fmt,
@@ -1635,6 +1644,171 @@ mod tests {
             database,
             Precompiles::base(SpecId::OSAKA),
         )
+    }
+
+    struct FatalPrecompile;
+
+    impl FatalPrecompile {
+        const ADDRESS: Address = Address::with_last_byte(0x43);
+    }
+
+    impl PrecompileProvider<BaseEvmTypes> for FatalPrecompile {
+        fn addresses(&self) -> Vec<Address> {
+            vec![Self::ADDRESS]
+        }
+
+        fn contains(&self, address: &Address) -> bool {
+            *address == Self::ADDRESS
+        }
+
+        fn execute(
+            &mut self,
+            _evm: &mut Evm<BaseEvmTypes>,
+            message: &Message,
+            _gas: &mut GasTracker,
+        ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+            (message.code_address == Self::ADDRESS).then(|| Err("fatal precompile".into()))
+        }
+    }
+
+    fn call_precompile_then_store_code(address: Address) -> Vec<u8> {
+        let mut code = Vec::new();
+        for value in [
+            Word::ZERO,
+            Word::ZERO,
+            Word::ZERO,
+            Word::ZERO,
+            Word::ZERO,
+            Word::from_be_slice(address.as_slice()),
+            Word::from(30_000),
+        ] {
+            push_word(&mut code, value);
+        }
+        code.push(op::CALL);
+        push_word(&mut code, Word::from(1));
+        push_word(&mut code, Word::from(1));
+        code.extend([op::SSTORE, op::STOP]);
+        code
+    }
+
+    #[test]
+    fn fatal_custom_precompile_aborts_parent_call() {
+        let contract = Address::from([0xbb; 20]);
+        let bytecode = Bytecode::new_legacy(Bytes::from(call_precompile_then_store_code(
+            FatalPrecompile::ADDRESS,
+        )));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            FatalPrecompile,
+        );
+        let mut message = Message {
+            kind: MessageKind::Call,
+            destination: contract,
+            code_address: contract,
+            gas_limit: 200_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+
+        assert_eq!(result.stop, InstrStop::FatalPrecompileError);
+        evm.state.finalize_transaction_(Version::base(SpecId::OSAKA));
+        let changes = evm.state.build_state_changes();
+        assert!(
+            !changes
+                .accounts
+                .get(&contract)
+                .is_some_and(|account| account.storage.contains_key(&Word::from(1)))
+        );
+    }
+
+    struct OogPrecompile;
+
+    impl OogPrecompile {
+        const ADDRESS: Address = Address::with_last_byte(0x44);
+    }
+
+    impl PrecompileProvider<BaseEvmTypes> for OogPrecompile {
+        fn addresses(&self) -> Vec<Address> {
+            vec![Self::ADDRESS]
+        }
+
+        fn contains(&self, address: &Address) -> bool {
+            *address == Self::ADDRESS
+        }
+
+        fn execute(
+            &mut self,
+            _evm: &mut Evm<BaseEvmTypes>,
+            message: &Message,
+            _gas: &mut GasTracker,
+        ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+            (message.code_address == Self::ADDRESS).then(|| Err(PrecompileHalt::OutOfGas.into()))
+        }
+    }
+
+    #[test]
+    fn precompile_oog_halt_remains_recoverable_by_parent_call() {
+        let contract = Address::from([0xbc; 20]);
+        let bytecode = Bytecode::new_legacy(Bytes::from(call_precompile_then_store_code(
+            OogPrecompile::ADDRESS,
+        )));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            OogPrecompile,
+        );
+        let mut message = Message {
+            kind: MessageKind::Call,
+            destination: contract,
+            code_address: contract,
+            gas_limit: 200_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+
+        assert_eq!(result.stop, InstrStop::Stop);
+        assert!(evm.take_fatal_precompile_error().is_none());
+        evm.state.finalize_transaction_(Version::base(SpecId::OSAKA));
+        let changes = evm.state.build_state_changes();
+        assert!(
+            changes
+                .accounts
+                .get(&contract)
+                .is_some_and(|account| account.storage.contains_key(&Word::from(1)))
+        );
+    }
+
+    #[test]
+    fn fatal_custom_precompile_tx_returns_custom_error() {
+        let caller = Address::from([0xaa; 20]);
+        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy {
+                gas_limit: 50_000,
+                to: TxKind::Call(FatalPrecompile::ADDRESS),
+                ..TxLegacy::default()
+            },
+            caller,
+        ));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::OSAKA),
+            InMemoryDB::default(),
+            FatalPrecompile,
+        );
+
+        assert_eq!(
+            evm.transact(&tx).map(ExecutedTx::discard),
+            Err(HandlerError::Custom("fatal precompile".to_string()))
+        );
+        assert!(evm.db_error_code().is_none());
     }
 
     #[derive(Clone, Copy)]
