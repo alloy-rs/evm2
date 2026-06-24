@@ -114,12 +114,9 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     "london/validation/header/invalid_header.json",
     "shanghai/eip4895_withdrawals/withdrawals/withdrawals_root.json",
 
-    // These validate block access list format/content/hash and belong to consensus-level block validation.
-    "amsterdam/eip7928_block_level_access_lists/block_access_lists_invalid/",
-
-    // These validate block/transaction gas allowance rules, not EVM execution.
-    "amsterdam/eip8037_state_creation_gas_cost_increase/block_2d_gas_accounting/tx_rejected_when_regular_gas_exceeds_block_limit_small.json",
-    "amsterdam/eip8037_state_creation_gas_cost_increase/state_gas_reservoir/creation_tx_state_check_exceeded.json",
+    // Amsterdam and later blockchain tests are skipped wholesale by fork in `execute_suite`
+    // (`is_blockchain_fork_skipped`): evm2 does not build block access lists (EIP-7928) or block-level
+    // gas accounting (EIP-7778) yet, so no per-fixture entries are needed here.
 
     // Prague request/deposit fixtures validate EL request extraction and system-contract block processing.
     "prague/eip6110_deposits",

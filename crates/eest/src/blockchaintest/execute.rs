@@ -97,7 +97,7 @@ pub fn execute_suite(
     for (name, test_case) in &suite.0 {
         if !entrypoint.matches(name)
             || test_case.network.is_transition()
-            || is_fork_skipped(fork_to_spec_id(test_case.network))
+            || is_blockchain_fork_skipped(fork_to_spec_id(test_case.network))
         {
             summary.skipped += 1;
             continue;
@@ -807,6 +807,20 @@ fn validate_post_state(
 
 fn assert_block_access_list(_block_index: usize, _expected: &alloy_eip7928::BlockAccessList) {
     todo!("evm2 does not build block access lists yet")
+}
+
+/// Whether a blockchain test targeting `spec` should be skipped.
+///
+/// In addition to the globally unsupported forks ([`is_fork_skipped`]), Amsterdam and later are
+/// skipped at the blockchain layer only. Amsterdam blocks require building and validating block
+/// access lists ([EIP-7928], see the `todo!` in [`assert_block_access_list`]) and block-level gas
+/// accounting without refunds (EIP-7778), neither of which evm2 implements yet, so every Amsterdam
+/// blockchain fixture fails on block structure/gas regardless of the EIP it targets. State tests
+/// have no block layer, so [`crate::runner`] still runs the Amsterdam state suite.
+///
+/// [EIP-7928]: https://eips.ethereum.org/EIPS/eip-7928
+fn is_blockchain_fork_skipped(spec: SpecId) -> bool {
+    is_fork_skipped(spec) || spec.enables(SpecId::AMSTERDAM)
 }
 
 fn fork_to_spec_id(fork: ForkSpec) -> SpecId {
