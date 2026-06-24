@@ -433,45 +433,39 @@ pub(super) const fn create_initial_state_gas(version: &Version, is_create: bool)
     }
 }
 
-/// Returns `(regular_gas_limit, reservoir)` for the first frame.
+/// Returns `(regular_gas_limit, reservoir)` for the first frame, mirroring execution-specs' split of
+/// execution gas into the regular budget and the EIP-8037 state-gas reservoir
+/// (`process_transaction`):
 ///
-/// `initial_state_gas` is the EIP-8037 state gas charged before execution (top-level create state
-/// gas and EIP-7702 authorization state gas). It is deducted from the reservoir, spilling into the
-/// regular budget when the reservoir is insufficient. `state_refund` is the EIP-7702 state-gas
-/// refund, credited directly back to the reservoir so it stays state gas. Both are zero without
-/// EIP-8037.
+/// ```text
+/// execution_gas      = tx.gas - initial
+/// regular_gas_budget = TX_MAX_GAS_LIMIT - intrinsic
+/// gas                = min(regular_gas_budget, execution_gas)
+/// state_gas_reservoir = execution_gas - gas
+/// ```
 ///
-/// `initial_state_gas` and `state_refund` are kept as separate arguments deliberately: per
-/// execution-specs the state refund is added to the state-gas reservoir (`set_delegation` does
-/// `state_gas_reservoir += refund`), not applied to regular gas first. Folding them into a single
-/// regular-first refund — as an earlier note suggested — would diverge from the spec.
+/// `intrinsic` is `IntrinsicGas.regular`; `initial` is the full intrinsic charge
+/// `IntrinsicGas.regular + .state` (the top-level create state gas and EIP-7702 authorization state
+/// gas charged upfront). The two are equal without EIP-8037 — there is no state gas — so the
+/// reservoir is empty there.
+///
+/// The EIP-7702 per-authorization state-gas refund is added to the reservoir by the caller (per
+/// execution-specs `set_delegation`, which does `state_gas_reservoir += refund`), so it is not an
+/// argument here.
 pub(super) fn initial_gas_and_reservoir(
     version: &Version,
     tx_gas_limit: u64,
     intrinsic: u64,
-    initial_state_gas: u64,
-    state_refund: u64,
+    initial: u64,
 ) -> (u64, u64) {
     if !version.feature(EvmFeatures::EIP8037) {
         return (tx_gas_limit - intrinsic, 0);
     }
 
-    let cap = version.tx_gas_limit_cap;
-    let execution_gas = tx_gas_limit - intrinsic;
-    let mut regular_gas_limit = core::cmp::min(tx_gas_limit, cap).saturating_sub(intrinsic);
-    let mut reservoir = execution_gas - regular_gas_limit;
-
-    if reservoir >= initial_state_gas {
-        reservoir -= initial_state_gas;
-    } else {
-        regular_gas_limit -= initial_state_gas - reservoir;
-        reservoir = 0;
-    }
-
-    // EIP-7702 state-gas refund for existing authorities goes directly to the reservoir so it
-    // stays state gas rather than being routed through the capped regular refund counter.
-    reservoir += state_refund;
-
+    let execution_gas = tx_gas_limit - initial;
+    let regular_gas_budget = version.tx_gas_limit_cap.saturating_sub(intrinsic);
+    let regular_gas_limit = core::cmp::min(regular_gas_budget, execution_gas);
+    let reservoir = execution_gas - regular_gas_limit;
     (regular_gas_limit, reservoir)
 }
 

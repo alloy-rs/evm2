@@ -60,8 +60,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         req.host.version(),
         tx.gas_limit,
         intrinsic,
-        initial_state_gas,
-        0,
+        intrinsic + initial_state_gas,
     );
     let tx_env = TxEnv {
         origin: caller,

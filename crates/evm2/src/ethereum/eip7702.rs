@@ -75,9 +75,12 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         req.host.version(),
         tx.gas_limit,
         intrinsic,
-        initial_state_gas,
-        state_refund,
+        intrinsic + initial_state_gas,
     );
+    // EIP-7702 state-gas refund for existing authorities goes directly to the reservoir so it stays
+    // state gas rather than being routed through the capped regular refund counter (execution-specs
+    // `set_delegation`: `state_gas_reservoir += refund`).
+    let reservoir = reservoir.saturating_add(state_refund);
     let tx_env = TxEnv {
         origin: caller,
         gas_price,
