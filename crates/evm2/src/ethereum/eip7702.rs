@@ -216,20 +216,21 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
             continue;
         };
 
+        // Existing authority: the worst-case `ACCOUNT_WRITE` regular gas was not needed. This
+        // refund applies in every regime (it is the only authorization refund before EIP-8037).
+        if auth.existed {
+            regular_refund = regular_refund.saturating_add(regular_per_auth);
+        }
+
+        // The remaining refunds are state gas, which only exists under EIP-8037.
         if !is_eip8037 {
-            // Prague: regular refund per existing authority only.
-            if auth.existed {
-                regular_refund = regular_refund.saturating_add(regular_per_auth);
-            }
             continue;
         }
 
         let mut refund = 0u64;
-        // Existing authority: its `NEW_ACCOUNT` state gas and worst-case `ACCOUNT_WRITE` regular
-        // gas were not needed.
+        // Existing authority: its `NEW_ACCOUNT` state gas was not needed.
         if auth.existed {
             refund += new_account;
-            regular_refund = regular_refund.saturating_add(regular_per_auth);
         }
         // Bytecode (`AUTH_BASE`) refunds.
         if auth.clearing {
