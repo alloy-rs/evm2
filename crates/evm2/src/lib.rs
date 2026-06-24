@@ -32,6 +32,9 @@ pub use precompiles::{
 
 pub(crate) mod trustme;
 
+#[cfg(test)]
+pub(crate) mod test_utils;
+
 pub mod version;
 pub use version::{EvmFeatures, OpcodeConfig, Version};
 

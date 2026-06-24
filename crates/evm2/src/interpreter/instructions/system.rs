@@ -368,22 +368,13 @@ mod tests {
     use crate::{
         SpecId,
         constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
-        interpreter::{
-            InstrStop, Message, MessageKind, MessageResult, Word,
-            instructions::tests::{RunConfig, TestHost, push, run},
-            op,
-        },
+        interpreter::{InstrStop, Message, MessageKind, MessageResult, Word, op},
+        test_utils::{RunConfig, TestHost, push, push_all, run},
         utils::address_to_word,
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, Bytes};
     use core::assert_matches;
-
-    fn push_all<const N: usize>(code: &mut Vec<u8>, values: [Word; N]) {
-        for value in values {
-            push(code, value);
-        }
-    }
 
     #[test]
     fn call_opcode() {

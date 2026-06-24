@@ -89,11 +89,8 @@ mod tests {
     use crate::{
         SpecId,
         env::{BlockEnv, TxEnv},
-        interpreter::{
-            InstrStop, Message, Word,
-            instructions::tests::{RunConfig, TestHost, TestTypes, push, run},
-            op,
-        },
+        interpreter::{InstrStop, Message, Word, op},
+        test_utils::{RunConfig, TestHost, TestTypes, push, run},
         utils::{address_to_word, b256_to_word},
     };
     use alloc::vec::Vec;

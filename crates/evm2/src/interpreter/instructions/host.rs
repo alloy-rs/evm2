@@ -125,12 +125,9 @@ fn log_common<T: EvmTypes>(
 mod tests {
     use crate::{
         SpecId,
-        interpreter::{
-            InstrStop, Message, MessageKind, Word,
-            instructions::tests::{RunConfig, TestHost, push, run},
-            op,
-        },
+        interpreter::{InstrStop, Message, MessageKind, Word, op},
         storage_key::StorageKey,
+        test_utils::{RunConfig, TestHost, push, run},
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256, Bytes};
