@@ -44,7 +44,7 @@ DEVNET_BASE_URL = os.environ.get(
 # Default fork-specific devnet fixtures: glamsterdam (Amsterdam) devnet-6. Downloaded by default so
 # the Amsterdam tests run without extra configuration; override DEVNET_VERSION/DEVNET_TAR to select a
 # different devnet release. The version is a URL path component, so the `@` is percent-encoded.
-DEFAULT_DEVNET_VERSION = "tests-glamsterdam-devnet%40v6.0.0"
+DEFAULT_DEVNET_VERSION = "tests-glamsterdam-devnet%40v6.0.1"
 DEFAULT_DEVNET_TAR = "fixtures_glamsterdam-devnet.tar.gz"
 LEGACY_URL = (
     f"https://github.com/ethereum/tests/archive/refs/tags/{LEGACY_VERSION}.tar.gz"
