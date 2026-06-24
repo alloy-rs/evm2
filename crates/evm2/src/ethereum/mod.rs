@@ -418,18 +418,13 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
     Ok(())
 }
 
-/// Computes the regular gas budget and EIP-8037 state-gas reservoir for the
-/// initial call frame.
-///
-/// Without EIP-8037 all execution gas is regular and the reservoir is zero. With
-/// EIP-8037 the execution gas above the `tx_gas_limit_cap` forms the reservoir;
-/// the initial state gas (e.g. `create_state_gas` for a top-level CREATE) is then
-/// deducted from the reservoir, spilling into the regular budget when the
-/// reservoir is insufficient.
-///
-/// Returns `(regular_gas_limit, reservoir)`.
 /// Returns the EIP-8037 `initial_state_gas` charged before execution for `is_create` transactions
 /// (the top-level create's `create_state_gas`). Zero without EIP-8037 or for non-create calls.
+///
+/// This is the create transaction's contribution to execution-specs `IntrinsicGas.state`; the
+/// EIP-7702 authorization contribution is computed separately in the EIP-7702 handler. Keeping the
+/// state-gas intrinsic distinct from the regular intrinsic ([`intrinsic_gas`]) mirrors the spec,
+/// which tracks `IntrinsicGas.regular` and `.state` separately.
 pub(super) const fn create_initial_state_gas(version: &Version, is_create: bool) -> u64 {
     if version.feature(EvmFeatures::EIP8037) && is_create {
         version.gas_params.create_state_gas()
@@ -445,6 +440,11 @@ pub(super) const fn create_initial_state_gas(version: &Version, is_create: bool)
 /// regular budget when the reservoir is insufficient. `state_refund` is the EIP-7702 state-gas
 /// refund, credited directly back to the reservoir so it stays state gas. Both are zero without
 /// EIP-8037.
+///
+/// `initial_state_gas` and `state_refund` are kept as separate arguments deliberately: per
+/// execution-specs the state refund is added to the state-gas reservoir (`set_delegation` does
+/// `state_gas_reservoir += refund`), not applied to regular gas first. Folding them into a single
+/// regular-first refund — as an earlier note suggested — would diverge from the spec.
 pub(super) fn initial_gas_and_reservoir(
     version: &Version,
     tx_gas_limit: u64,
@@ -578,18 +578,20 @@ pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
-/// EIP-8037: refunds a failed top-level CREATE's intrinsic `create_state_gas` back to the
-/// reservoir.
+/// EIP-8037: refunds a top-level CREATE's intrinsic `create_state_gas` back to the reservoir when no
+/// new account leaf ends up created.
 ///
 /// The charge was deducted upfront in [`initial_gas_and_reservoir`] (an unbalanced reservoir
-/// reduction, not a `spend_state`), so the inverse is an unbalanced reservoir add. A reverted or
-/// halted deployment is rolled back, so the state gas was never actually consumed. No-op on success
-/// or when `create_state_gas` is zero (non-create or pre-Amsterdam).
-pub(super) const fn refund_failed_create_state_gas<T: EvmTypes<Host = Evm<T>>>(
+/// reduction, not a `spend_state`), so the inverse is an unbalanced reservoir add. It is refunded
+/// when the deployment failed (a reverted or halted deployment is rolled back, so the state gas was
+/// never actually consumed) or when it succeeded at a pre-existing alive (balance-only) target (no
+/// new leaf was created — execution-specs `created_target_alive`). No-op when `create_state_gas` is
+/// zero (non-create or pre-Amsterdam).
+pub(super) const fn refund_create_state_gas<T: EvmTypes<Host = Evm<T>>>(
     result: &mut MessageResult<T>,
     create_state_gas: u64,
 ) {
-    if create_state_gas != 0 && !result.stop.is_success() {
+    if create_state_gas != 0 && (!result.stop.is_success() || result.created_target_was_alive) {
         let reservoir = result.gas.reservoir().saturating_add(create_state_gas);
         result.gas.set_reservoir(reservoir);
     }
@@ -625,7 +627,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     }
     // Execution state gas contributes only on success: a revert/halt rolls back its state changes.
     // A failed top-level CREATE additionally unwinds its intrinsic `create_state_gas` (refunded to
-    // the reservoir by `refund_failed_create_state_gas`), so it nets out of the block state gas.
+    // the reservoir by `refund_create_state_gas`), so it nets out of the block state gas.
     let exec_state_gas = if result.stop.is_success() {
         result.gas.state_gas_spent()
     } else if is_create {
@@ -633,8 +635,18 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     } else {
         0
     };
+    // A top-level CREATE that succeeds at a pre-existing alive target refunds its upfront
+    // `create_state_gas` (already credited to the reservoir by `refund_create_state_gas`), so it
+    // must not count toward block state gas either.
+    let alive_create_refund =
+        if is_create && result.stop.is_success() && result.created_target_was_alive {
+            initial_state_gas
+        } else {
+            0
+        };
     let state_gas_spent = (exec_state_gas.saturating_add_unsigned(initial_state_gas).max(0) as u64)
-        .saturating_sub(state_refund);
+        .saturating_sub(state_refund)
+        .saturating_sub(alive_create_refund);
     if host.feature(EvmFeatures::FEE_CHARGE) {
         let caller_refund = U256::from(gas_remaining) * gas_price;
         host.state

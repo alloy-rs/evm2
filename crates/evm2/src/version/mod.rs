@@ -743,12 +743,13 @@ evm_versions! {
             STATICCALL: WARM_STORAGE_READ_COST,
             // EIP-8038 §"EXT* family update": EXTCODESIZE and EXTCODECOPY perform
             // two database reads (load the account, then read its code), so their
-            // per-access base is charged an extra WARM_ACCESS above the normal
-            // account access. WARM_ACCESS itself is unchanged by EIP-8038 (100),
-            // so every other access opcode keeps its Berlin warm base; only these
-            // two change. The dynamic cold premium is still added by `load_account`.
-            EXTCODESIZE: EIP8038_WARM_ACCESS + EIP8038_WARM_ACCESS,
-            EXTCODECOPY: EIP8038_WARM_ACCESS + EIP8038_WARM_ACCESS,
+            // per-access base is charged an extra warm access above the normal
+            // account access. The warm access cost itself is unchanged by EIP-8038
+            // (100 = `WARM_STORAGE_READ_COST`), so every other access opcode keeps
+            // its Berlin warm base; only these two change. The dynamic cold premium
+            // is still added by `load_account`.
+            EXTCODESIZE: WARM_STORAGE_READ_COST + WARM_STORAGE_READ_COST,
+            EXTCODECOPY: WARM_STORAGE_READ_COST + WARM_STORAGE_READ_COST,
             SELFDESTRUCT: 5000,
         ],
         dynamic_gas: [
@@ -767,10 +768,14 @@ evm_versions! {
             // floor-tokens count.
             TxFloorZeroByteMultiplier: NON_ZERO_BYTE_MULTIPLIER_ISTANBUL,
             TxAccessListFloorByteMultiplier: EIP7981_ACCESS_LIST_FLOOR_BYTE_MULTIPLIER,
-            // EIP-7702 under EIP-8037: only the regular-gas portion lives here.
-            // The state-gas portions come from `NewAccountState` (per-account)
-            // and `TxEip7702PerAuthState` (per-bytecode, AUTH_BASE_BYTES × CPSB).
-            TxEip7702AuthRefund: 0,
+            // EIP-7702 under EIP-8037: per-authorization regular-gas refund. The
+            // intrinsic per-auth regular charge bundles a worst-case
+            // `ACCOUNT_WRITE`; when the authority leaf already exists (or the auth
+            // is rejected) that account write is not needed and is refunded to the
+            // regular refund counter (execution-specs `set_delegation`). The
+            // state-gas portions come from `NewAccountState` (per-account) and
+            // `TxEip7702PerAuthState` (per-bytecode, AUTH_BASE_BYTES × CPSB).
+            TxEip7702AuthRefund: EIP8038_ACCOUNT_WRITE,
             TxEip7702PerAuthState: 23 * AMSTERDAM_CPSB,
 
             // EIP-8038: State-access gas cost update (ethereum/EIPs#11802;
@@ -797,13 +802,14 @@ evm_versions! {
             // is the premium above warm (2900), unlike pre-8038 forks which add
             // the full `COLD_SLOAD_COST` on top of the warm base.
             ColdStorageCost: EIP8038_COLD_STORAGE_ACCESS_ADDITIONAL,
-            // CALL_VALUE = ACCOUNT_WRITE + CALL_STIPEND.
+            // CALL_VALUE = ACCOUNT_WRITE + CALL_STIPEND. A value-bearing CALL already
+            // pays the ACCOUNT_WRITE surcharge here, so creating the target charges
+            // no extra regular gas — only the NEW_ACCOUNT state gas (hence
+            // `NewAccountCost` is zero). SELFDESTRUCT has no such bundled charge, so
+            // it still pays a separate ACCOUNT_WRITE when sending balance to an empty
+            // account (execution-specs `selfdestruct`).
             TransferValueCost: EIP8038_CALL_VALUE,
-            // ACCOUNT_WRITE surcharge for first-time writes to an account: CALL to
-            // an empty account and SELFDESTRUCT sending balance to one. EIP-8037
-            // zeroed these (cost moved to state gas); EIP-8038 reintroduces a
-            // regular-gas surcharge on top of the unchanged state-gas portion.
-            NewAccountCost: EIP8038_ACCOUNT_WRITE,
+            NewAccountCost: 0,
             NewAccountCostForSelfdestruct: EIP8038_ACCOUNT_WRITE,
             // SSTORE write surcharge / refunds = STORAGE_WRITE.
             SstoreSetWithoutLoadCost: EIP8038_STORAGE_WRITE,

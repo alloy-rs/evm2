@@ -947,6 +947,19 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             return Self::error_message_result(stop, message.gas_limit, message.reservoir);
         }
         let checkpoint = self.state.checkpoint();
+        // EIP-8037: capture whether the target leaf was already alive (existing, non-empty) before
+        // creation, so a successful create at a pre-existing balance-only account can refund the
+        // upfront NEW_ACCOUNT state gas (execution-specs `created_target_alive`).
+        let target_alive = if self.feature(EvmFeatures::EIP8037) {
+            match self.account_is_alive(&message.destination) {
+                Ok(alive) => alive,
+                Err(stop) => {
+                    return Self::error_message_result(stop, message.gas_limit, message.reservoir);
+                }
+            }
+        } else {
+            false
+        };
         if let Err(stop) = self.create_message_account(message) {
             self.state.rollback(checkpoint, self.features);
             return Self::error_message_result(stop, message.gas_limit, message.reservoir);
@@ -958,7 +971,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let stop = self.run_interpreter(bytecode, tx_env, message, (0, 0));
         message.input = input;
 
-        self.finish_create_message_run(checkpoint, &message.destination, message.gas_limit, stop)
+        self.finish_create_message_run(
+            checkpoint,
+            &message.destination,
+            message.gas_limit,
+            stop,
+            target_alive,
+        )
     }
 
     #[inline(never)]
@@ -1004,6 +1023,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         Ok(())
     }
 
+    /// Returns whether the account is alive (exists and is non-empty), matching execution-specs
+    /// `is_account_alive`. Used by EIP-8037 to detect a create at a pre-existing leaf.
+    fn account_is_alive(&mut self, address: &Address) -> Result<bool, InstrStop> {
+        match self.state.account(address, false) {
+            Ok(account) => Ok(account.get().is_some_and(|info| !info.is_empty())),
+            Err(code) => Err(db_error_stop!(self, code)),
+        }
+    }
+
     #[inline(never)]
     fn create_message_account(&mut self, message: &Message<T>) -> Result<(), InstrStop> {
         self.state
@@ -1021,6 +1049,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         address: &Address,
         gas_limit: u64,
         stop: InstrStop,
+        target_alive: bool,
     ) -> MessageResult<T> {
         let interp = self.interpreter_pool.last_mut().unwrap();
         let mut gas = interp.gas();
@@ -1033,6 +1062,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                     gas: *gas.tracker(),
                     output,
                     created_address: None,
+                    created_target_was_alive: false,
                     ext: T::MessageResultExt::default(),
                     _non_exhaustive: (),
                 };
@@ -1059,6 +1089,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             gas: *gas.tracker(),
             output,
             created_address: stop.is_success().then_some(*address),
+            created_target_was_alive: stop.is_success() && target_alive,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
         }
@@ -1246,6 +1277,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             gas,
             output,
             created_address: None,
+            created_target_was_alive: false,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
         }
@@ -1269,6 +1301,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             gas: *child_gas.tracker(),
             output,
             created_address: None,
+            created_target_was_alive: false,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
         }
@@ -1302,7 +1335,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         // EIP-2780: apply the depth-0 execution charges (delegated-recipient cold
         // access as regular gas, empty-recipient-with-value as state gas) to the
         // freshly-initialized frame gas. A revert/halt unwinds the state charge
-        // via the existing `unwind_state_gas` reconciliation, just like any other
+        // via the existing `rollback_state_gas` reconciliation, just like any other
         // in-frame state gas. On OOG the frame halts before executing any opcode.
         let (eip2780_regular, eip2780_state) = eip2780_charges;
         if eip2780_regular != 0 || eip2780_state != 0 {

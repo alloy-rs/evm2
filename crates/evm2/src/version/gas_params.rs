@@ -419,21 +419,6 @@ impl GasParams {
         self.new_account_state_gas().saturating_add(self.get(GasId::TxEip7702PerAuthState) as u64)
     }
 
-    /// Returns the EIP-8037 total state-gas refund for an EIP-7702 transaction: the per-account
-    /// portion for existing authority accounts plus the per-bytecode portion for authorities that
-    /// already carry delegation bytecode (or are cleared). Zero before Amsterdam.
-    #[inline]
-    pub const fn eip7702_state_refund(
-        &self,
-        refunded_accounts: u64,
-        refunded_bytecodes: u64,
-    ) -> u64 {
-        let per_account = self.new_account_state_gas().saturating_mul(refunded_accounts);
-        let per_bytecode =
-            (self.get(GasId::TxEip7702PerAuthState) as u64).saturating_mul(refunded_bytecodes);
-        per_account.saturating_add(per_bytecode)
-    }
-
     /// Calculates the code-deposit state gas for `len` bytes (EIP-8037).
     #[inline]
     pub const fn code_deposit_state_gas(&self, len: usize) -> u64 {
@@ -539,7 +524,9 @@ mod tests {
         assert_eq!(amsterdam.get(GasId::ColdStorageCost), 2900);
         assert_eq!(amsterdam.get(GasId::ColdAccountAdditionalCost), 2900);
         assert_eq!(amsterdam.get(GasId::TransferValueCost), 10_300);
-        assert_eq!(amsterdam.get(GasId::NewAccountCost), 8000);
+        // CALL folds the account-write surcharge into CALL_VALUE, so a new target
+        // adds no extra regular gas (only NEW_ACCOUNT state gas).
+        assert_eq!(amsterdam.get(GasId::NewAccountCost), 0);
         assert_eq!(amsterdam.get(GasId::SstoreSetWithoutLoadCost), 10_000);
         assert_eq!(amsterdam.get(GasId::SstoreClearingSlotRefund), 12_480);
         // EIP-8038/Amsterdam per-auth regular gas: ACCOUNT_WRITE + REGULAR_PER_AUTH_BASE_COST

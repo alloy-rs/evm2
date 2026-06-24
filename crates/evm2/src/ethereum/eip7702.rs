@@ -7,7 +7,7 @@ use super::{
     warm_base_accounts,
 };
 use crate::{
-    Evm, EvmTypes, TxResult,
+    Evm, EvmFeatures, EvmTypes, TxResult,
     env::TxEnv,
     evm::db_error_handler,
     interpreter::Host,
@@ -49,9 +49,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     ) + eip7702_authorization_gas(req.host, tx.authorization_list.len());
     // EIP-8037: per-auth state gas (account + bytecode) is charged before execution. Zero before
     // Amsterdam.
-    let num_auths = u64::try_from(tx.authorization_list.len()).unwrap_or(u64::MAX);
-    let initial_state_gas =
-        num_auths.saturating_mul(req.host.version().gas_params.eip7702_auth_state_gas());
+    let initial_state_gas = eip7702_authorization_state_gas(req.host, tx.authorization_list.len());
     validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
     let floor_gas =
         floor_gas(req.host.version(), &tx.input, access_list_accounts, access_list_storage_keys);
@@ -68,15 +66,8 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     charge_upfront(req.host, caller, effective_gas_cost)?;
     req.host.state.account(&caller, false).map_err(db_error_handler!(req.host))?.bump_nonce();
     let chain_id = req.host.version().chain_id;
-    let (refunded_accounts, refunded_bytecodes) =
+    let (state_refund, regular_refund) =
         apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
-    // EIP-8037: existing authorities / already-delegated bytecodes earn a state-gas refund (zero
-    // before Amsterdam). The regular-gas refund per existing account (Prague: 12500; Amsterdam: 0)
-    // is routed through the capped refund counter as before.
-    let state_refund =
-        req.host.version().gas_params.eip7702_state_refund(refunded_accounts, refunded_bytecodes);
-    let regular_refund = refunded_accounts
-        .saturating_mul(u64::from(req.host.version().gas_params.get(GasId::TxEip7702AuthRefund)));
     let execution_checkpoint = req.host.state.checkpoint();
 
     // EIP-7702 transactions are always calls, never creates.
@@ -127,56 +118,132 @@ fn eip7702_authorization_gas<T: EvmTypes<Host = Evm<T>>>(
     authorizations: usize,
 ) -> u64 {
     let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
-    u64::try_from(authorizations).unwrap_or(u64::MAX).saturating_mul(per_auth)
+    (authorizations as u64).saturating_mul(per_auth)
 }
 
-/// Applies the EIP-7702 authorization list and returns `(refunded_accounts, refunded_bytecodes)`:
-/// the number of authorizations whose authority already existed, and the number whose authority
-/// already carried delegation bytecode (or whose designation is being cleared). These drive the
-/// EIP-7702 gas refunds (regular and, under EIP-8037, state).
+/// EIP-8037 per-authorization state gas (account + bytecode) charged before execution. Zero before
+/// Amsterdam.
+const fn eip7702_authorization_state_gas<T: EvmTypes<Host = Evm<T>>>(
+    host: &Evm<T>,
+    authorizations: usize,
+) -> u64 {
+    (authorizations as u64).saturating_mul(host.version().gas_params.eip7702_auth_state_gas())
+}
+
+/// Outcome of applying one accepted EIP-7702 authorization, carrying the facts needed to compute its
+/// gas refunds (execution-specs `set_delegation`).
+struct AppliedAuth {
+    /// Whether the authority account already existed when this authorization was processed.
+    existed: bool,
+    /// Whether the authority's code was a valid delegation at the start of the transaction.
+    delegated_before_tx: bool,
+    /// Whether the authority's code was a valid delegation when this authorization was processed
+    /// (i.e. as left by an earlier authorization for the same authority in this transaction).
+    delegated_now: bool,
+    /// Whether this authorization clears the delegation (target is the zero address).
+    clearing: bool,
+}
+
+/// Validates one authorization against current state and, if accepted, applies the delegation
+/// (setting code and bumping the nonce). Returns `Some` for an accepted authorization or `None` for
+/// a rejected one. Mirrors execution-specs `validate_authorization` + the per-auth body of
+/// `set_delegation`.
+fn apply_one_auth<T: EvmTypes<Host = Evm<T>>>(
+    host: &mut Evm<T>,
+    chain_id: u64,
+    authorization: &super::LazyAuthorization,
+) -> HandlerResult<Option<AppliedAuth>> {
+    if !authorization.chain_id().is_zero() && authorization.chain_id() != &U256::from(chain_id) {
+        return Ok(None);
+    }
+    if authorization.nonce() == u64::MAX {
+        return Ok(None);
+    }
+    let Some(authority) = authorization.authority() else {
+        return Ok(None);
+    };
+    let mut account = host.state.account(&authority, false).map_err(db_error_handler!(host))?;
+    account.warm();
+    let existed = account.exists();
+    let authority_nonce = account.nonce();
+    let code = account.load_code().map_err(db_error_handler!(host))?;
+    // Reject an authority that already carries non-delegation code; otherwise non-empty code is
+    // necessarily a valid delegation.
+    let delegated_now = !code.is_empty();
+    if delegated_now && !code.is_eip7702() {
+        return Ok(None);
+    }
+    if authorization.nonce() != authority_nonce {
+        return Ok(None);
+    }
+    let delegated_before_tx =
+        account.original_code().map_err(db_error_handler!(host))?.is_eip7702();
+    let clearing = authorization.address().is_zero();
+    account.set_delegation(*authorization.address());
+    Ok(Some(AppliedAuth { existed, delegated_before_tx, delegated_now, clearing }))
+}
+
+/// Applies the EIP-7702 authorization list and returns `(state_refund, regular_refund)`.
+///
+/// Follows execution-specs `set_delegation`. The per-authorization state and regular gas charged in
+/// the intrinsic cost is refilled when it turns out not to be needed: the state refund is credited
+/// to the reservoir (so it stays state gas) and the regular refund is routed through the capped
+/// refund counter.
+///
+/// Before EIP-8037 (Prague) there is no state gas: only the per-existing-account regular refund
+/// applies and rejected authorizations refund nothing.
 fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     chain_id: u64,
     authorizations: &[super::LazyAuthorization],
 ) -> HandlerResult<(u64, u64)> {
-    let mut refunded_accounts = 0u64;
-    let mut refunded_bytecodes = 0u64;
-    for authorization in authorizations {
-        if !authorization.chain_id().is_zero() && authorization.chain_id() != &U256::from(chain_id)
-        {
-            continue;
-        }
-        if authorization.nonce() == u64::MAX {
-            continue;
-        }
+    let is_eip8037 = host.feature(EvmFeatures::EIP8037);
+    let new_account = host.version().gas_params.new_account_state_gas();
+    let auth_base = u64::from(host.version().gas_params.get(GasId::TxEip7702PerAuthState));
+    let regular_per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702AuthRefund));
 
-        let Some(authority) = authorization.authority() else {
+    let mut state_refund = 0u64;
+    let mut regular_refund = 0u64;
+    for authorization in authorizations {
+        let Some(auth) = apply_one_auth(host, chain_id, authorization)? else {
+            // Rejected authorization. Under EIP-8037 its full intrinsic state gas (account +
+            // bytecode) refills the reservoir and the speculative account write is refunded;
+            // before EIP-8037 nothing is refunded.
+            if is_eip8037 {
+                state_refund = state_refund.saturating_add(new_account + auth_base);
+                regular_refund = regular_refund.saturating_add(regular_per_auth);
+            }
             continue;
         };
-        let mut account = host.state.account(&authority, false).map_err(db_error_handler!(host))?;
-        account.warm();
-        let existed = account.exists();
-        let authority_nonce = account.nonce();
-        let code = account.load_code().map_err(db_error_handler!(host))?;
-        // Past the filter below, non-empty code is necessarily an existing EIP-7702 delegation.
-        let has_delegation_code = !code.is_empty();
-        if has_delegation_code && !code.is_eip7702() {
-            continue;
-        }
-        if authorization.nonce() != authority_nonce {
+
+        if !is_eip8037 {
+            // Prague: regular refund per existing authority only.
+            if auth.existed {
+                regular_refund = regular_refund.saturating_add(regular_per_auth);
+            }
             continue;
         }
 
-        if existed {
-            refunded_accounts = refunded_accounts.saturating_add(1);
+        let mut refund = 0u64;
+        // Existing authority: its `NEW_ACCOUNT` state gas and worst-case `ACCOUNT_WRITE` regular
+        // gas were not needed.
+        if auth.existed {
+            refund += new_account;
+            regular_refund = regular_refund.saturating_add(regular_per_auth);
         }
-        // Per-bytecode refund: the authority already held delegation bytecode, or the designation
-        // is being cleared (target is the zero address).
-        if has_delegation_code || authorization.address().is_zero() {
-            refunded_bytecodes = refunded_bytecodes.saturating_add(1);
+        // Bytecode (`AUTH_BASE`) refunds.
+        if auth.clearing {
+            refund += auth_base;
+            // Clearing a delegation freshly installed earlier in this transaction refills the
+            // bytecode state gas a second time.
+            if auth.delegated_now && !auth.delegated_before_tx {
+                refund += auth_base;
+            }
+        } else if auth.delegated_now || auth.delegated_before_tx {
+            refund += auth_base;
         }
-        account.set_delegation(*authorization.address());
+        state_refund = state_refund.saturating_add(refund);
     }
 
-    Ok((refunded_accounts, refunded_bytecodes))
+    Ok((state_refund, regular_refund))
 }

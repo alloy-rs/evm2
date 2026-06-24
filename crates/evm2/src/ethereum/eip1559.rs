@@ -1,6 +1,6 @@
 use super::{
     access_list_counts, charge_upfront, create_initial_state_gas, effective_gas_price, floor_gas,
-    initial_gas_and_reservoir, initial_message, intrinsic_gas, refund_failed_create_state_gas,
+    initial_gas_and_reservoir, initial_message, intrinsic_gas, refund_create_state_gas,
     rollback_failed_execution, settle_gas, validate_block_gas_limit, validate_chain_id,
     validate_create_initcode, validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
     validate_nonce_not_overflow, validate_priority_fee, validate_regular_gas_limit_cap,
@@ -79,7 +79,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     )?;
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
-    refund_failed_create_state_gas(&mut result, initial_state_gas);
+    refund_create_state_gas(&mut result, initial_state_gas);
 
     settle_gas(
         req.host,

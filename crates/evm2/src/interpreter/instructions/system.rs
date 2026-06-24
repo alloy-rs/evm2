@@ -78,7 +78,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
-) -> Result<(u64, Bytecode, Address, bool)> {
+) -> Result<(u64, u64, Bytecode, Address, bool)> {
     if transfers_value {
         gas.spend(state.gas_params().get(GasId::TransferValueCost).into())?;
     }
@@ -127,9 +127,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         }
     }
     gas.spend(cost)?;
-    if new_account_state_gas > 0 {
-        gas.spend_state(new_account_state_gas)?;
-    }
+    gas.spend_state(new_account_state_gas)?;
 
     let mut gas_limit = if state.feature(EvmFeatures::EIP150) {
         min(state.gas_params().call_stipend_reduction(gas.remaining()), stack_gas_limit)
@@ -143,7 +141,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     }
 
     let disable_precompiles = code_address != to;
-    Ok((gas_limit, code, code_address, disable_precompiles))
+    Ok((gas_limit, new_account_state_gas, code, code_address, disable_precompiles))
 }
 
 #[inline(never)]
@@ -155,7 +153,7 @@ fn prepare_call<T: EvmTypes>(
     message: &mut Message<T>,
     code: &mut Bytecode,
     return_memory_range: &mut Range<usize>,
-) -> Result {
+) -> Result<u64> {
     let has_value = match kind {
         MessageKind::Call | MessageKind::CallCode => true,
         MessageKind::DelegateCall | MessageKind::StaticCall => false,
@@ -179,7 +177,7 @@ fn prepare_call<T: EvmTypes>(
         return_offset,
         return_len,
     )?;
-    let (gas_limit, loaded_code, resolved_code_address, disable_precompiles) =
+    let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address, disable_precompiles) =
         load_acc_and_calc_gas(
             gas,
             state,
@@ -221,7 +219,7 @@ fn prepare_call<T: EvmTypes>(
     *code = loaded_code;
     *return_memory_range = prepared_return_memory_range;
 
-    Ok(())
+    Ok(new_account_state_gas)
 }
 
 #[inline(never)]
@@ -234,7 +232,7 @@ fn call_inner<T: EvmTypes>(
     let mut message = Message::<T>::default();
     let mut code = Bytecode::default();
     let mut return_memory_range = 0..0;
-    prepare_call(
+    let new_account_state_gas = prepare_call(
         stack.reborrow(),
         gas,
         state,
@@ -247,6 +245,13 @@ fn call_inner<T: EvmTypes>(
     let tx_env = state.tx();
     let mut result = state.host().execute_message(tx_env, code, &mut message);
     gas.merge_child_gas(result.gas, result.stop);
+    // EIP-8037: a value-bearing CALL that creates the target charges NEW_ACCOUNT state
+    // gas upfront on this frame. If the call does not succeed (depth/balance failure,
+    // child revert or halt) the target is not created, so refund the upfront charge to
+    // the reservoir (execution-specs `credit_state_gas_refund`), mirroring CREATE.
+    if new_account_state_gas != 0 && !result.stop.is_success() {
+        gas.refill_reservoir(new_account_state_gas);
+    }
     let copy_len = min(return_memory_range.len(), result.output.len());
     unsafe {
         let output = result.output.get_unchecked(..copy_len);
@@ -345,13 +350,13 @@ fn create_inner<T: EvmTypes>(
     gas.merge_child_gas(result.gas, result.stop);
 
     // EIP-8037: the CREATE/CREATE2 opcode charged `create_state_gas` upfront on
-    // this frame's tracker. When the child fails to deploy a contract (revert,
-    // halt, or early-fail paths that leave `created_address == None`), refund the
-    // upfront charge to the reservoir via `refill_reservoir`, matching 0→x→0
-    // storage restoration. Gate on the missing address rather than only the stop
-    // so early-fail paths (depth, out-of-funds, nonce overflow) are covered.
+    // this frame's tracker. Refund it to the reservoir via `refill_reservoir`
+    // (matching 0→x→0 storage restoration) when no new account leaf ends up
+    // created: either the create failed to deploy (revert, halt, or early-fail
+    // paths that leave `created_address == None` — depth, out-of-funds, nonce
+    // overflow), or it succeeded at a pre-existing alive (balance-only) target.
     let create_failed = result.created_address.is_none() || !result.stop.is_success();
-    if create_failed && state.feature(EvmFeatures::EIP8037) {
+    if (create_failed || result.created_target_was_alive) && state.feature(EvmFeatures::EIP8037) {
         gas.refill_reservoir(state.gas_params().create_state_gas());
     }
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.

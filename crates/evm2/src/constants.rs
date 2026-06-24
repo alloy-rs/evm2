@@ -13,7 +13,10 @@ pub(crate) const MAX_CODE_SIZE: usize = 0x6000;
 pub(crate) const MAX_INITCODE_SIZE: usize = 2 * MAX_CODE_SIZE;
 
 /// Maximum deployed contract bytecode size since Amsterdam.
-pub(crate) const MAX_CODE_SIZE_AMSTERDAM: usize = 0x8000;
+///
+/// EIP-7954 raises the EIP-170 limit to 0x10000 (64 KiB); initcode stays at twice
+/// the code size (execution-specs `MAX_CODE_SIZE` / `MAX_INIT_CODE_SIZE`).
+pub(crate) const MAX_CODE_SIZE_AMSTERDAM: usize = 0x10000;
 
 /// Maximum contract creation initcode size since Amsterdam.
 pub(crate) const MAX_INITCODE_SIZE_AMSTERDAM: usize = 2 * MAX_CODE_SIZE_AMSTERDAM;

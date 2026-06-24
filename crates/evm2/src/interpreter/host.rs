@@ -24,6 +24,11 @@ pub struct MessageResult<T: EvmTypes = BaseEvmTypes> {
     pub output: Bytes,
     /// Created address for successful create messages.
     pub created_address: Option<Address>,
+    /// EIP-8037: for a create message, whether the target address was already alive (existing and
+    /// non-empty) before creation. When a create at such an address succeeds, the upfront
+    /// `NEW_ACCOUNT` state gas is refunded because no new account leaf was created. Always `false`
+    /// for call messages and fresh-target creates.
+    pub created_target_was_alive: bool,
     /// EVM type-specific extension data.
     pub ext: T::MessageResultExt,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
@@ -72,7 +77,7 @@ impl<T: EvmTypes> MessageResult<T> {
     pub const fn gas_remaining_after_final_refund(&self, gas_limit: u64, is_eip3529: bool) -> u64 {
         let refunded = self.final_refund(gas_limit, is_eip3529);
         // EIP-8037: the unused reservoir (already settled to its frame-start value
-        // on failure by `unwind_state_gas`) is also reimbursed to the caller.
+        // on failure by `rollback_state_gas`) is also reimbursed to the caller.
         let remaining =
             self.gas.remaining().saturating_add(self.gas.reservoir()).saturating_add(refunded);
         if remaining < gas_limit { remaining } else { gas_limit }

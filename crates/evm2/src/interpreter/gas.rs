@@ -51,9 +51,9 @@ pub(crate) const EIP7702_PER_EMPTY_ACCOUNT_COST: u32 = 25000;
 // EIP-8038: State-access gas cost update. Increases the gas cost of state-access
 // operations to reflect Ethereum's larger state. Values are the parameters
 // proposed in ethereum/EIPs#11802 (still an open draft — preliminary). Active
-// alongside EIP-8037 starting at the Amsterdam hardfork.
-/// Touch of an already-warm account or storage slot. Unchanged by EIP-8038.
-pub(crate) const EIP8038_WARM_ACCESS: u32 = 100;
+// alongside EIP-8037 starting at the Amsterdam hardfork. Touching an already-warm
+// account or storage slot is unchanged by EIP-8038, so the existing
+// `WARM_STORAGE_READ_COST` (100) is reused throughout.
 /// Cold touch of an account (was 2,600 pre-EIP-8038).
 pub(crate) const EIP8038_COLD_ACCOUNT_ACCESS: u32 = 3000;
 /// Cold touch of a storage slot (was 2,100 pre-EIP-8038).
@@ -78,12 +78,12 @@ pub(crate) const EIP8038_CREATE_ACCESS: u32 = EIP8038_ACCOUNT_WRITE + EIP8038_CO
 pub(crate) const EIP8038_ACCESS_LIST_ADDRESS_COST: u32 = EIP8038_COLD_ACCOUNT_ACCESS;
 /// Access-list per-storage-key base cost, `COLD_STORAGE_ACCESS` (was 1,900 pre-EIP-8038).
 pub(crate) const EIP8038_ACCESS_LIST_STORAGE_KEY_COST: u32 = EIP8038_COLD_STORAGE_ACCESS;
-/// Cold premium on top of `EIP8038_WARM_ACCESS` for account access.
+/// Cold premium on top of `WARM_STORAGE_READ_COST` for account access.
 pub(crate) const EIP8038_COLD_ACCOUNT_ACCESS_ADDITIONAL: u32 =
-    EIP8038_COLD_ACCOUNT_ACCESS - EIP8038_WARM_ACCESS;
-/// Cold premium on top of `EIP8038_WARM_ACCESS` for storage access.
+    EIP8038_COLD_ACCOUNT_ACCESS - WARM_STORAGE_READ_COST;
+/// Cold premium on top of `WARM_STORAGE_READ_COST` for storage access.
 pub(crate) const EIP8038_COLD_STORAGE_ACCESS_ADDITIONAL: u32 =
-    EIP8038_COLD_STORAGE_ACCESS - EIP8038_WARM_ACCESS;
+    EIP8038_COLD_STORAGE_ACCESS - WARM_STORAGE_READ_COST;
 /// CALL value-transfer cost: `ACCOUNT_WRITE + CALL_STIPEND` per the EIP = 10,300.
 pub(crate) const EIP8038_CALL_VALUE: u32 = EIP8038_ACCOUNT_WRITE + CALL_STIPEND;
 /// Calldata bytes charged for one EIP-7702 authorization tuple (execution-specs
@@ -105,7 +105,7 @@ pub(crate) const EIP8038_EIP7702_PER_EMPTY_ACCOUNT_REGULAR: u32 = EIP8038_ACCOUN
     + (EIP7702_AUTH_TUPLE_BYTES * TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM
         + EIP7702_ECRECOVER_COST
         + EIP8038_COLD_ACCOUNT_ACCESS
-        + 2 * EIP8038_WARM_ACCESS);
+        + 2 * WARM_STORAGE_READ_COST);
 
 // EIP-2780: Reduce intrinsic transaction gas. Replaces the legacy 21,000 base
 // with a decomposed model (sender base + `tx.to`-based + `tx.value`-based).
@@ -140,7 +140,7 @@ pub struct GasTracker {
     /// Incremented by [`Self::spend_state`] whenever a state-gas charge spills
     /// out of the reservoir into regular gas. On frame rollback (revert or halt)
     /// the spilled portion is credited back to `remaining` in last-in-first-out
-    /// order by [`Self::unwind_state_gas`]; on success it is propagated to the
+    /// order by [`Self::rollback_state_gas`]; on success it is propagated to the
     /// parent frame so a later parent rollback can return it.
     state_gas_spilled: u64,
     refunded: i64,
@@ -328,7 +328,7 @@ impl GasTracker {
     /// returned to the parent; on halt the caller additionally zeroes `remaining`
     /// so the spilled gas is consumed while the reservoir is still left untouched.
     #[inline]
-    pub const fn unwind_state_gas(&mut self) {
+    pub const fn rollback_state_gas(&mut self) {
         self.reservoir = self
             .reservoir
             .saturating_add_signed(self.state_gas_spent)
@@ -379,7 +379,7 @@ impl GasTracker {
     /// Settles this returning frame's own gas for its `stop` reason.
     ///
     /// A failing frame rolls back its state changes, so its state gas is refilled
-    /// in LIFO order ([`Self::unwind_state_gas`]) and the execution refund counter
+    /// in LIFO order ([`Self::rollback_state_gas`]) and the execution refund counter
     /// is dropped; an exceptional halt additionally consumes the frame's regular
     /// gas. On success the gas is left as-is. Applied once when a frame returns, so
     /// every consumer — the parent [`Self::merge_child_gas`], top-level accounting,
@@ -387,7 +387,7 @@ impl GasTracker {
     #[inline]
     pub const fn settle_gas(&mut self, stop: InstrStop) {
         if !stop.is_success() {
-            self.unwind_state_gas();
+            self.rollback_state_gas();
             self.set_refunded(0);
         }
         if stop.is_halt() {
@@ -775,11 +775,11 @@ mod tests {
     }
 
     #[test]
-    fn test_unwind_state_gas_no_spill() {
+    fn test_rollback_state_gas_no_spill() {
         // Pure-reservoir spend: unwind restores the reservoir, leaving regular gas alone.
         let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 500);
         assert!(gas.spend_state(300).is_ok());
-        gas.tracker_mut().unwind_state_gas();
+        gas.tracker_mut().rollback_state_gas();
         assert_eq!(
             (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
             (500, 1000, 0, 0)
@@ -787,13 +787,13 @@ mod tests {
     }
 
     #[test]
-    fn test_unwind_state_gas_with_spill() {
+    fn test_rollback_state_gas_with_spill() {
         // Reservoir exhausted then spilled: unwind returns the spill to regular gas
         // and restores the reservoir to its frame-start value.
         let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 200);
         assert!(gas.spend_state(500).is_ok());
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spilled()), (0, 700, 300));
-        gas.tracker_mut().unwind_state_gas();
+        gas.tracker_mut().rollback_state_gas();
         assert_eq!(
             (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
             (200, 1000, 0, 0)
@@ -830,14 +830,14 @@ mod tests {
     }
 
     #[test]
-    fn test_unwind_state_gas_after_refill() {
+    fn test_rollback_state_gas_after_refill() {
         // A partial refill returns part of the spill to regular gas; unwind still
         // restores the original split.
         let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 200);
         assert!(gas.spend_state(500).is_ok()); // spill 300, reservoir 0, remaining 700
         gas.refill_reservoir(100); // LIFO: remaining 800, spilled 200, reservoir 0
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spilled()), (0, 800, 200));
-        gas.tracker_mut().unwind_state_gas();
+        gas.tracker_mut().rollback_state_gas();
         assert_eq!(
             (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
             (200, 1000, 0, 0)
