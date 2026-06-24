@@ -170,12 +170,9 @@ mod tests {
     use crate::{
         SpecId,
         env::TxEnv,
-        interpreter::{
-            InstrStop, Message, Word,
-            instructions::tests::{
-                RunConfig, TestHost, TestTypes, assert_stack, push, run, run_stack,
-            },
-            op,
+        interpreter::{InstrStop, Message, Word, op},
+        test_utils::{
+            RunConfig, TestHost, TestTypes, assert_stack, neg, push, run, run_stack, stack_code,
         },
         utils::{address_to_word, b256_to_word},
     };
@@ -183,21 +180,8 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes};
     use core::assert_matches;
 
-    fn neg(value: u64) -> Word {
-        Word::from(0).wrapping_sub(Word::from(value))
-    }
-
     fn test_message() -> Message<TestTypes> {
         Message { gas_limit: 10_000, ..Message::default() }
-    }
-
-    fn stack_code<const N: usize>(inputs: [Word; N], opcode: u8) -> Vec<u8> {
-        let mut code = Vec::new();
-        for input in inputs.into_iter().rev() {
-            push(&mut code, input);
-        }
-        code.extend([opcode, op::STOP]);
-        code
     }
 
     #[test]

@@ -1569,6 +1569,7 @@ mod tests {
         ethereum::RecoveredTxEnvelope,
         interpreter::{GasTracker, Interpreter, MessageKind, op},
         registry::TxRequest,
+        test_utils::{legacy_bytecode, push_address},
     };
     use alloc::{string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
@@ -1595,49 +1596,27 @@ mod tests {
         Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
     }
 
-    fn handle_test_tx_version(
-        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
-    ) -> HandlerResult<TxResult> {
-        Ok(TxResult {
-            status: true,
-            gas_used: req.host.version().tx_gas_limit_cap,
-            ..TxResult::default()
-        })
-    }
-
-    fn push_word(code: &mut Vec<u8>, value: Word) {
-        let bytes = value.to_be_bytes::<32>();
-        let first_nonzero = bytes.iter().position(|byte| *byte != 0).unwrap_or(31);
-        let data = &bytes[first_nonzero..];
-        code.push(op::PUSH1 + data.len() as u8 - 1);
-        code.extend_from_slice(data);
-    }
-
-    fn push_address(code: &mut Vec<u8>, address: &Address) {
-        push_word(code, Word::from_be_slice(address.as_slice()));
-    }
-
     const LIFECYCLE_ACCOUNT: Address = Address::with_last_byte(0x7a);
     const LIFECYCLE_STORAGE_KEY: Word = Word::from_limbs([1, 0, 0, 0]);
 
-    fn handle_lifecycle_tx(
-        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
-    ) -> HandlerResult<TxResult> {
-        let value = Word::from(req.tx.nonce);
-        req.host
-            .state
-            .storage(&LIFECYCLE_ACCOUNT)
-            .into_slot(LIFECYCLE_STORAGE_KEY, false)
-            .map_err(registry::HandlerError::Database)?
-            .write(value);
-        req.host.state.log(Log {
-            address: LIFECYCLE_ACCOUNT,
-            data: LogData::new_unchecked(vec![], Bytes::new()),
-        });
-        Ok(TxResult { status: true, gas_used: req.tx.nonce, ..TxResult::default() })
-    }
-
     fn lifecycle_evm() -> Evm<BaseEvmTypes> {
+        fn handle_lifecycle_tx(
+            req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
+        ) -> HandlerResult<TxResult> {
+            let value = Word::from(req.tx.nonce);
+            req.host
+                .state
+                .storage(&LIFECYCLE_ACCOUNT)
+                .into_slot(LIFECYCLE_STORAGE_KEY, false)
+                .map_err(registry::HandlerError::Database)?
+                .write(value);
+            req.host.state.log(Log {
+                address: LIFECYCLE_ACCOUNT,
+                data: LogData::new_unchecked(vec![], Bytes::new()),
+            });
+            Ok(TxResult { status: true, gas_used: req.tx.nonce, ..TxResult::default() })
+        }
+
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             RecoveredTxEnvelope::as_legacy,
@@ -2084,6 +2063,16 @@ mod tests {
 
     #[test]
     fn dispatches_transaction_with_dynamic_version() {
+        fn handle_test_tx_version(
+            req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
+        ) -> HandlerResult<TxResult> {
+            Ok(TxResult {
+                status: true,
+                gas_used: req.host.version().tx_gas_limit_cap,
+                ..TxResult::default()
+            })
+        }
+
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             RecoveredTxEnvelope::as_legacy,
@@ -2282,42 +2271,49 @@ mod tests {
         assert!(result.stop.is_success());
     }
 
-    #[derive(Debug)]
-    struct FailingDbError;
-
-    impl fmt::Display for FailingDbError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("storage read failed")
-        }
-    }
-
-    impl Error for FailingDbError {}
-
-    #[derive(Debug, Default)]
-    struct FailingStorageDb;
-
-    impl Database for FailingStorageDb {
-        type Error = FailingDbError;
-
-        fn get_account(&mut self, _address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
-            Ok(Some(AccountInfo::default()))
-        }
-
-        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
-            Ok(Bytecode::default())
-        }
-
-        fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
-            Err(FailingDbError)
-        }
-
-        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
-        }
-    }
-
     #[test]
     fn host_records_database_error_code() {
+        #[derive(Debug)]
+        struct FailingDbError;
+
+        impl fmt::Display for FailingDbError {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("storage read failed")
+            }
+        }
+
+        impl Error for FailingDbError {}
+
+        #[derive(Debug, Default)]
+        struct FailingStorageDb;
+
+        impl Database for FailingStorageDb {
+            type Error = FailingDbError;
+
+            fn get_account(
+                &mut self,
+                _address: &Address,
+            ) -> Result<Option<AccountInfo>, Self::Error> {
+                Ok(Some(AccountInfo::default()))
+            }
+
+            fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+                Ok(Bytecode::default())
+            }
+
+            fn get_storage(
+                &mut self,
+                _address: &Address,
+                _key: &Word,
+            ) -> Result<Word, Self::Error> {
+                Err(FailingDbError)
+            }
+
+            fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
+                Ok(None)
+            }
+        }
+
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -2369,56 +2365,63 @@ mod tests {
         assert!(!evm.state.storage(&contract).is_warm(&key));
     }
 
-    #[derive(Clone, Debug)]
-    struct SelfdestructTargetLoadDb {
-        target: Address,
-        target_reads: Arc<AtomicUsize>,
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    struct SelfdestructTargetLoadError;
-
-    impl fmt::Display for SelfdestructTargetLoadError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("selfdestruct target account was loaded")
-        }
-    }
-
-    impl Error for SelfdestructTargetLoadError {}
-
-    impl Database for SelfdestructTargetLoadDb {
-        type Error = SelfdestructTargetLoadError;
-
-        fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
-            if *address == self.target {
-                self.target_reads.fetch_add(1, Ordering::SeqCst);
-                return Err(SelfdestructTargetLoadError);
-            }
-            Ok(Some(AccountInfo::default().with_balance(Word::from(1))))
-        }
-
-        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
-            Ok(Bytecode::default())
-        }
-
-        fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
-            Ok(Word::ZERO)
-        }
-
-        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
-        }
-    }
-
-    fn selfdestruct_to_code(target: &Address) -> Bytecode {
-        let mut code = Vec::new();
-        push_address(&mut code, target);
-        code.push(op::SELFDESTRUCT);
-        Bytecode::new_legacy(Bytes::from(code))
-    }
-
     #[test]
     fn unaffordable_cold_target_selfdestruct_does_not_load_target_account() {
+        #[derive(Clone, Debug)]
+        struct SelfdestructTargetLoadDb {
+            target: Address,
+            target_reads: Arc<AtomicUsize>,
+        }
+
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        struct SelfdestructTargetLoadError;
+
+        impl fmt::Display for SelfdestructTargetLoadError {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("selfdestruct target account was loaded")
+            }
+        }
+
+        impl Error for SelfdestructTargetLoadError {}
+
+        impl Database for SelfdestructTargetLoadDb {
+            type Error = SelfdestructTargetLoadError;
+
+            fn get_account(
+                &mut self,
+                address: &Address,
+            ) -> Result<Option<AccountInfo>, Self::Error> {
+                if *address == self.target {
+                    self.target_reads.fetch_add(1, Ordering::SeqCst);
+                    return Err(SelfdestructTargetLoadError);
+                }
+                Ok(Some(AccountInfo::default().with_balance(Word::from(1))))
+            }
+
+            fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+                Ok(Bytecode::default())
+            }
+
+            fn get_storage(
+                &mut self,
+                _address: &Address,
+                _key: &Word,
+            ) -> Result<Word, Self::Error> {
+                Ok(Word::ZERO)
+            }
+
+            fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
+                Ok(None)
+            }
+        }
+
+        fn selfdestruct_to_code(target: &Address) -> Bytecode {
+            let mut code = Vec::new();
+            push_address(&mut code, target);
+            code.push(op::SELFDESTRUCT);
+            legacy_bytecode(code)
+        }
+
         let contract = Address::from([0xbb; 20]);
         let target = Address::from([0xcc; 20]);
         let target_reads = Arc::new(AtomicUsize::new(0));
