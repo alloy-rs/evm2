@@ -76,6 +76,50 @@ impl Memory {
         Ok(())
     }
 
+    /// Resizes memory to cover `offset..offset + len` and charges EVM expansion gas.
+    #[inline]
+    pub fn resize_evm(
+        &mut self,
+        gas: &mut Gas,
+        gas_params: &GasParams,
+        offset: usize,
+        len: usize,
+    ) -> Result {
+        let new_num_words = num_words(offset.saturating_add(len));
+        if new_num_words > gas.memory().words_num {
+            return self.resize_evm_cold(gas, gas_params, new_num_words);
+        }
+
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn resize_evm_cold(
+        &mut self,
+        gas: &mut Gas,
+        gas_params: &GasParams,
+        new_num_words: usize,
+    ) -> Result {
+        let Some(new_size) = new_num_words.checked_mul(32) else {
+            cold_path();
+            return Err(InstrStop::MemoryOOG);
+        };
+
+        if self.limit_reached(new_num_words) {
+            cold_path();
+            return Err(InstrStop::MemoryLimitOOG);
+        }
+
+        let cost = gas_params.memory_cost(new_num_words);
+        let cost =
+            unsafe { gas.memory_mut().set_words_num(new_num_words, cost).unwrap_unchecked() };
+
+        gas.spend(cost).map_err(|_| InstrStop::MemoryOOG)?;
+        self.resize_to(new_size);
+        Ok(())
+    }
+
     /// Returns whether `new_words` exceeds the memory limit.
     #[inline]
     pub const fn limit_reached(&self, new_words: usize) -> bool {
@@ -192,48 +236,6 @@ unsafe fn set_data(dst: &mut [u8], src: &[u8], dst_offset: usize, src_offset: us
     unsafe { dst.get_unchecked_mut(dst_offset + src_len..dst_offset + len).fill(0) };
 }
 
-#[inline]
-pub(super) fn resize_memory(
-    gas: &mut Gas,
-    memory: &mut Memory,
-    gas_params: &GasParams,
-    offset: usize,
-    len: usize,
-) -> Result {
-    let new_num_words = num_words(offset.saturating_add(len));
-    if new_num_words > gas.memory().words_num {
-        return resize_memory_cold(gas, memory, gas_params, new_num_words);
-    }
-
-    Ok(())
-}
-
-#[cold]
-#[inline(never)]
-fn resize_memory_cold(
-    gas: &mut Gas,
-    memory: &mut Memory,
-    gas_params: &GasParams,
-    new_num_words: usize,
-) -> Result {
-    let Some(new_size) = new_num_words.checked_mul(32) else {
-        cold_path();
-        return Err(InstrStop::MemoryOOG);
-    };
-
-    if memory.limit_reached(new_num_words) {
-        cold_path();
-        return Err(InstrStop::MemoryLimitOOG);
-    }
-
-    let cost = gas_params.memory_cost(new_num_words);
-    let cost = unsafe { gas.memory_mut().set_words_num(new_num_words, cost).unwrap_unchecked() };
-
-    gas.spend(cost).map_err(|_| InstrStop::MemoryOOG)?;
-    memory.resize_to(new_size);
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,43 +258,43 @@ mod tests {
     }
 
     #[test]
-    fn resize_memory_accounts_expansion_gas() {
+    fn resize_evm_accounts_expansion_gas() {
         let mut gas = Gas::new(100);
         let mut memory = Memory::new();
 
         let gas_params = Version::new(SpecId::FRONTIER).gas_params;
-        resize_memory(&mut gas, &mut memory, &gas_params, 0, 32).unwrap();
+        memory.resize_evm(&mut gas, &gas_params, 0, 32).unwrap();
         assert_eq!(gas.remaining(), 97);
         assert_eq!(gas.memory().words_num, 1);
         assert_eq!(memory.len(), 32);
 
         let gas_params = Version::new(SpecId::FRONTIER).gas_params;
-        resize_memory(&mut gas, &mut memory, &gas_params, 0, 1).unwrap();
+        memory.resize_evm(&mut gas, &gas_params, 0, 1).unwrap();
         assert_eq!(gas.remaining(), 97);
         assert_eq!(memory.len(), 32);
 
         let gas_params = Version::new(SpecId::FRONTIER).gas_params;
-        resize_memory(&mut gas, &mut memory, &gas_params, 0, 64).unwrap();
+        memory.resize_evm(&mut gas, &gas_params, 0, 64).unwrap();
         assert_eq!(gas.remaining(), 94);
         assert_eq!(gas.memory().words_num, 2);
         assert_eq!(memory.len(), 64);
     }
 
     #[test]
-    fn resize_memory_respects_memory_limit() {
+    fn resize_evm_respects_memory_limit() {
         let mut gas = Gas::new(100_000);
         let mut memory = Memory::new();
         memory.set_memory_limit(64);
 
         let gas_params = Version::new(SpecId::FRONTIER).gas_params;
-        resize_memory(&mut gas, &mut memory, &gas_params, 0, 32).unwrap();
+        memory.resize_evm(&mut gas, &gas_params, 0, 32).unwrap();
         assert_eq!(memory.len(), 32);
 
-        resize_memory(&mut gas, &mut memory, &gas_params, 0, 64).unwrap();
+        memory.resize_evm(&mut gas, &gas_params, 0, 64).unwrap();
         assert_eq!(memory.len(), 64);
 
         assert_matches!(
-            resize_memory(&mut gas, &mut memory, &gas_params, 0, 96),
+            memory.resize_evm(&mut gas, &gas_params, 0, 96),
             Err(InstrStop::MemoryLimitOOG)
         );
         assert_eq!(memory.len(), 64);
