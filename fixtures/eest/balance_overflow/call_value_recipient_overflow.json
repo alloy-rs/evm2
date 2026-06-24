@@ -1,0 +1,57 @@
+{
+  "call_value_recipient_overflow": {
+    "_info": {
+      "comment": "CALL value transfer to an account at U256::MAX balance must fail with OverflowPayment instead of saturating the recipient balance."
+    },
+    "env": {
+      "currentCoinbase": "0x0000000000000000000000000000000000000000",
+      "currentDifficulty": "0x00",
+      "currentGasLimit": "0x0f4240",
+      "currentNumber": "0x01",
+      "currentTimestamp": "0x01"
+    },
+    "pre": {
+      "0x1000000000000000000000000000000000000000": {
+        "balance": "0x01",
+        "code": "0x",
+        "nonce": "0x00",
+        "storage": {}
+      },
+      "0x2000000000000000000000000000000000000000": {
+        "balance": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "code": "0x",
+        "nonce": "0x00",
+        "storage": {}
+      }
+    },
+    "transaction": {
+      "data": [
+        "0x"
+      ],
+      "gasLimit": [
+        "0x5208"
+      ],
+      "gasPrice": "0x00",
+      "nonce": "0x00",
+      "sender": "0x1000000000000000000000000000000000000000",
+      "to": "0x2000000000000000000000000000000000000000",
+      "value": [
+        "0x01"
+      ]
+    },
+    "post": {
+      "Osaka": [
+        {
+          "expectException": null,
+          "hash": "0x5e60a4c32203f4790ac27130c586b9f613ba8d74d4482d15fff7ce023605fe2c",
+          "indexes": {
+            "data": 0,
+            "gas": 0,
+            "value": 0
+          },
+          "logs": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"
+        }
+      ]
+    }
+  }
+}

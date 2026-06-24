@@ -167,7 +167,7 @@ pub use state::{
     AccountChange, AccountChangeRef, AccountHandle, AccountInfo, AccountInfoRef,
     BlockStateAccumulator, JournalEntry, NoopChangeSink, State, StateChangeSink, StateChangeSource,
     StateChanges, StateCheckpoint, StateInner, StorageChange, StorageHandle, StorageOverlay,
-    StorageSlot, StorageSlotHandle, Tee, Tracked,
+    StorageSlot, StorageSlotHandle, Tee, Tracked, TransferError,
 };
 
 mod prewarm_set;
@@ -661,6 +661,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         InstrStop::FatalExternalError
     }
 
+    #[inline]
+    const fn transfer_error_stop(error: TransferError) -> InstrStop {
+        match error {
+            TransferError::OutOfFunds => InstrStop::OutOfFunds,
+            TransferError::OverflowPayment => InstrStop::OverflowPayment,
+            TransferError::CreateCollision => InstrStop::CreateCollision,
+        }
+    }
+
     /// Returns the active base specification ID.
     #[inline]
     pub fn spec_id(&self) -> SpecId {
@@ -954,38 +963,38 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: &Bytecode,
         message: &mut Message<T>,
     ) -> Result<(), InstrStop> {
-        let info = if message.value > 0 || message.depth > 0 {
-            self.state
-                .account_info_untracked(&message.caller)
-                .map_err(|code| self.db_error_stop(code))?
+        let caller_nonce = if message.value > 0 || message.depth > 0 {
+            let mut caller = match self.state.account(&message.caller, false) {
+                Ok(caller) => caller,
+                Err(code) => return Err(db_error_stop!(self, code)),
+            };
+
+            if message.value > 0 && caller.balance() < message.value {
+                return Err(InstrStop::OutOfFunds);
+            }
+
+            let nonce = caller.nonce();
+            // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero instead of
+            // wrapping or saturating the creator nonce.
+            if message.depth > 0 && !caller.bump_nonce() {
+                return Err(InstrStop::Return);
+            }
+            nonce
         } else {
-            None
+            0
         };
-
-        if message.value > 0 && info.as_ref().is_none_or(|info| info.balance < message.value) {
-            return Err(InstrStop::OutOfFunds);
-        }
-
-        // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero instead of
-        // wrapping or saturating the creator nonce.
-        if message.depth > 0 && info.as_ref().is_some_and(|info| info.nonce == u64::MAX) {
-            return Err(InstrStop::Return);
-        }
 
         // When an inspector is installed, the destination is already derived for the create hook,
         // and inspector mutations of it are respected.
         if self.inspector.is_none() {
-            message.destination =
-                Self::derive_create_address(bytecode, message, info.map_or(0, |info| info.nonce));
+            message.destination = Self::derive_create_address(bytecode, message, caller_nonce);
         }
 
-        let _ = self.state.account(&message.destination, false).map(|mut a| a.warm());
-
-        if message.depth > 0
-            && let Err(code) =
-                self.state.account(&message.caller, false).map(|mut a| a.bump_nonce())
-        {
-            return Err(self.db_error_stop(code));
+        match self.state.account(&message.destination, false) {
+            Ok(mut account) => {
+                account.warm();
+            }
+            Err(code) => return Err(db_error_stop!(self, code)),
         }
 
         Ok(())
@@ -995,7 +1004,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     fn create_message_account(&mut self, message: &Message<T>) -> Result<(), InstrStop> {
         self.state
             .create_account(&message.caller, &message.destination, &message.value, self.features)
-            .map_err(|code| self.db_error_stop(code))??;
+            .map_err(Self::transfer_error_stop)?;
 
         self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         Ok(())
@@ -1098,17 +1107,21 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             message.kind,
             MessageKind::Call | MessageKind::CallCode | MessageKind::StaticCall
         );
-        let transfer_succeeded = !transfers_balance
-            || match self.state.transfer(&message.caller, &message.destination, &message.value) {
-                Ok(result) => result,
+        if transfers_balance {
+            match self.state.transfer(&message.caller, &message.destination, &message.value) {
+                Ok(None) => {}
+                Ok(Some(error)) => {
+                    self.state.rollback(checkpoint, self.features);
+                    return Self::error_message_result(
+                        Self::transfer_error_stop(error),
+                        message.gas_limit,
+                    );
+                }
                 Err(code) => {
+                    self.state.rollback(checkpoint, self.features);
                     return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
                 }
-            };
-        if transfers_balance && !transfer_succeeded {
-            return Self::error_message_result(InstrStop::OutOfFunds, message.gas_limit);
-        }
-        if transfers_balance {
+            }
             self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         }
 
@@ -1405,13 +1418,14 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         };
 
         if contract != target {
-            let transferred = self
+            if let Some(error) = self
                 .state
                 .transfer(contract, target, &balance)
-                .map_err(|code| self.db_error_stop(code))?;
-            if transferred {
-                self.log_eip7708_transfer(contract, target, &balance);
+                .map_err(|code| self.db_error_stop(code))?
+            {
+                return Err(Self::transfer_error_stop(error));
             }
+            self.log_eip7708_transfer(contract, target, &balance);
         } else if should_destroy && !balance.is_zero() && !self.feature(EvmFeatures::EIP8246) {
             // Pre-EIP-8246: SELFDESTRUCT to self burns the contract's balance. EIP-8246 removes
             // this burn, leaving the balance untouched; finalization resets the account
@@ -2497,7 +2511,7 @@ mod tests {
         let mut state = State::new(InMemoryDB::default());
         state.account(&from, false).unwrap().add_balance(U256::from(10));
 
-        assert!(state.transfer(&from, &to, &U256::from(7)).unwrap());
+        assert_eq!(state.transfer(&from, &to, &U256::from(7)).unwrap(), None);
         assert_eq!(
             state
                 .account_info_untracked(&from)
@@ -2514,6 +2528,95 @@ mod tests {
                 .balance,
             U256::from(7)
         );
+    }
+
+    #[test]
+    fn transfer_recipient_overflow_returns_overflow_payment() {
+        let from = Address::from([0x01; 20]);
+        let to = Address::from([0x02; 20]);
+        let mut state = State::new(InMemoryDB::default());
+        state.account(&from, false).unwrap().add_balance(U256::from(1));
+        state.account(&to, false).unwrap().add_balance(U256::MAX);
+
+        assert_eq!(
+            state.transfer(&from, &to, &U256::from(1)).unwrap(),
+            Some(TransferError::OverflowPayment)
+        );
+        assert_eq!(state.account_info_untracked(&from).unwrap().unwrap().balance, U256::from(1));
+        assert_eq!(state.account_info_untracked(&to).unwrap().unwrap().balance, U256::MAX);
+    }
+
+    #[test]
+    fn call_value_transfer_recipient_overflow_halts() {
+        let caller = Address::from([0x01; 20]);
+        let target = Address::from([0x02; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(1)));
+        database.insert_account_info(&target, AccountInfo::default().with_balance(U256::MAX));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let mut message = Message {
+            kind: MessageKind::Call,
+            caller,
+            destination: target,
+            code_address: target,
+            value: U256::from(1),
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
+
+        assert_eq!(result.stop, InstrStop::OverflowPayment);
+        assert_eq!(
+            evm.state.account_info_untracked(&caller).unwrap().unwrap().balance,
+            U256::from(1)
+        );
+        assert_eq!(evm.state.account_info_untracked(&target).unwrap().unwrap().balance, U256::MAX);
+    }
+
+    #[test]
+    fn create_prefunded_target_endowment_overflow_halts() {
+        let caller = Address::from([0x01; 20]);
+        let created = Address::from([0x02; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(1)));
+        database.insert_account_info(&created, AccountInfo::default().with_balance(U256::MAX));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let mut message = Message {
+            kind: MessageKind::Create,
+            caller,
+            destination: created,
+            value: U256::from(1),
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnv::default(),
+            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            &mut message,
+        );
+
+        assert_eq!(result.stop, InstrStop::OverflowPayment);
+        assert_eq!(
+            evm.state.account_info_untracked(&caller).unwrap().unwrap().balance,
+            U256::from(1)
+        );
+        assert_eq!(evm.state.account_info_untracked(&created).unwrap().unwrap().balance, U256::MAX);
     }
 
     #[test]
