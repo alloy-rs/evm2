@@ -130,7 +130,11 @@ use crate::{
     trustme,
     version::{EvmFeatures, GasId},
 };
-use alloc::{boxed::Box, string::String, vec};
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+    vec,
+};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 #[cfg(feature = "async")]
@@ -1581,8 +1585,8 @@ mod tests {
         test_utils::{legacy_bytecode, push as push_word, push_address},
     };
     use alloc::{string::ToString, sync::Arc, vec, vec::Vec};
-    use alloy_consensus::{transaction::Recovered, TxLegacy};
-    use alloy_primitives::{Address, Bytes, TxKind, KECCAK256_EMPTY, U256};
+    use alloy_consensus::{TxLegacy, transaction::Recovered};
+    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, TxKind, U256};
     use core::{
         error::Error,
         fmt,
