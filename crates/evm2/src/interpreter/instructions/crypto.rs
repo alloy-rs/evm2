@@ -1,7 +1,4 @@
-use crate::{
-    interpreter::memory::resize_memory,
-    utils::{b256_to_word, word_to_usize},
-};
+use crate::utils::{b256_to_word, word_to_usize};
 use alloy_primitives::keccak256 as keccak256_hash;
 use evm2_macros::instruction;
 
@@ -13,7 +10,7 @@ pub(crate) fn keccak256(cx: _, [offset, len]: [Word]) -> Result<out> {
         keccak256_hash([])
     } else {
         let offset = word_to_usize(*offset)?;
-        resize_memory(cx.gas, cx.state.memory(), offset, len)?;
+        cx.state.resize_memory(cx.gas, offset, len)?;
         keccak256_hash(cx.state.memory().slice(offset, len))
     };
     *out = b256_to_word(hash);

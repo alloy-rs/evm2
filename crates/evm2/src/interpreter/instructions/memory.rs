@@ -1,27 +1,24 @@
-use crate::{
-    interpreter::{Word, memory::resize_memory},
-    utils::word_to_usize,
-};
+use crate::{interpreter::Word, utils::word_to_usize};
 use evm2_macros::instruction;
 
 #[instruction(dynamic_gas)]
 pub(crate) fn mload(cx: _, [offset]: [Word]) -> Result<out> {
     let offset = word_to_usize(*offset)?;
-    resize_memory(cx.gas, cx.state.memory(), offset, 32)?;
+    cx.state.resize_memory(cx.gas, offset, 32)?;
     *out = cx.state.memory().get_word(offset);
 }
 
 #[instruction(dynamic_gas)]
 pub(crate) fn mstore(cx: _, [offset, value]: [Word]) -> Result {
     let offset = word_to_usize(*offset)?;
-    resize_memory(cx.gas, cx.state.memory(), offset, 32)?;
+    cx.state.resize_memory(cx.gas, offset, 32)?;
     cx.state.memory().set(offset, &value.to_be_bytes::<32>());
 }
 
 #[instruction(dynamic_gas)]
 pub(crate) fn mstore8(cx: _, [offset, value]: [Word]) -> Result {
     let offset = word_to_usize(*offset)?;
-    resize_memory(cx.gas, cx.state.memory(), offset, 1)?;
+    cx.state.resize_memory(cx.gas, offset, 1)?;
     cx.state.memory().set(offset, &[value.byte(0)]);
 }
 
@@ -37,7 +34,7 @@ pub(crate) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
     if len != 0 {
         let dst = word_to_usize(*dst)?;
         let src = word_to_usize(*src)?;
-        resize_memory(cx.gas, cx.state.memory(), dst.max(src), len)?;
+        cx.state.resize_memory(cx.gas, dst.max(src), len)?;
         cx.state.memory().copy(dst, src, len);
     };
 }
@@ -49,6 +46,7 @@ mod tests {
         env::TxEnv,
         interpreter::{InstrStop, Interpreter, Message, Word, op},
         test_utils::{RunConfig, TestHost, TestTypes, legacy_bytecode, push, run, run_stack},
+        version::GasId,
     };
     use alloc::vec::Vec;
     use core::assert_matches;
@@ -111,6 +109,28 @@ mod tests {
         let err = interp.run(&config, &mut host);
 
         assert_matches!(err, InstrStop::MemoryLimitOOG);
+        assert_eq!(interp.memory_len(), 0);
+    }
+
+    #[test]
+    fn mstore_respects_version_memory_gas_params() {
+        let mut version = Version::new(SpecId::OSAKA);
+        version.gas_params[GasId::MemoryLinearCost] = 9;
+        let config = ExecutionConfig::<TestTypes>::for_spec_and_version(SpecId::OSAKA, version);
+        let mut code = Vec::new();
+        push(&mut code, Word::ZERO);
+        push(&mut code, Word::ZERO);
+        code.push(op::MSTORE);
+        code.push(op::STOP);
+
+        let tx_env = TxEnv::default();
+        let message = Message { gas_limit: 17, ..Message::default() };
+        let bytecode = Bytecode::new_legacy(Bytes::from(code));
+        let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
+        let mut host = TestHost::default();
+        let err = interp.run(&config, &mut host);
+
+        assert_matches!(err, InstrStop::MemoryOOG);
         assert_eq!(interp.memory_len(), 0);
     }
 

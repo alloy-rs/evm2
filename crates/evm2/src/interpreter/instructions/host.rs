@@ -1,9 +1,6 @@
 use crate::{
     EvmFeatures, EvmTypes,
-    interpreter::{
-        Host, InstrStop, InterpreterState, Result, StackMut, memory::resize_memory,
-        private::GasInstructionCx,
-    },
+    interpreter::{Host, InstrStop, InterpreterState, Result, StackMut, private::GasInstructionCx},
     utils::word_to_usize,
     version::GasId,
 };
@@ -109,7 +106,7 @@ fn log_common<T: EvmTypes>(
         Bytes::new()
     } else {
         let offset = word_to_usize(offset)?;
-        resize_memory(cx.gas, cx.state.memory(), offset, len)?;
+        cx.state.resize_memory(cx.gas, offset, len)?;
         Bytes::copy_from_slice(cx.state.memory().slice(offset, len))
     };
 
