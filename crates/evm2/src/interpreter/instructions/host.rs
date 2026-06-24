@@ -106,7 +106,7 @@ fn log_common<T: EvmTypes>(
         Bytes::new()
     } else {
         let offset = word_to_usize(offset)?;
-        cx.state.memory().resize_evm(cx.gas, offset, len)?;
+        cx.state.resize_memory(cx.gas, offset, len)?;
         Bytes::copy_from_slice(cx.state.memory().slice(offset, len))
     };
 

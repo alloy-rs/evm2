@@ -1,7 +1,7 @@
 //! System opcode implementations.
 
 use crate::{
-    EvmFeatures, EvmTypes, SpecId,
+    EvmFeatures, EvmTypes,
     bytecode::Bytecode,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageKind, Result, StackMut, Word,
@@ -39,7 +39,7 @@ fn resize_memory_range<T: EvmTypes>(
     let len = word_to_usize(len)?;
     let offset = if len != 0 {
         let offset = word_to_usize(offset)?;
-        state.memory().resize_evm(gas, offset, len)?;
+        state.resize_memory(gas, offset, len)?;
         offset
     } else {
         usize::MAX
@@ -109,12 +109,13 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         code = delegated_account.code;
         code_address = delegated_address;
     }
-    let spec_id = state.spec();
+    let features = state.version().features;
+    let spec = state.spec();
     if create_empty_account
         && should_charge_new_account_gas(
-            spec_id.enables(SpecId::SPURIOUS_DRAGON),
+            features.contains(EvmFeatures::EIP161),
             transfers_value,
-            state.host().target_is_empty_for_new_account_gas(&to, spec_id)?,
+            state.host().target_is_empty_for_new_account_gas(&to, spec)?,
         )
     {
         cost += u64::from(state.gas_params().get(GasId::NewAccountCost));
@@ -349,7 +350,6 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let destination = &cx.state.message().destination;
     let res = cx.state.host().selfdestruct(destination, &target, skip_cold_load)?;
-    cx.state.inspect_selfdestruct(destination, &target, &res.value);
     let should_charge_topup = should_charge_new_account_gas(
         cx.state.feature(EvmFeatures::EIP161),
         res.had_value,
@@ -359,6 +359,7 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     if !res.previously_destroyed {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);
     }
+    cx.state.inspect_selfdestruct(destination, &target, &res.value);
     Err(InstrStop::SelfDestruct)
 }
 

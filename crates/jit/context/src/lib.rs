@@ -130,9 +130,10 @@ impl<'a> EvmContext<'a> {
     /// Resizes memory using EVM memory gas accounting.
     #[inline]
     pub fn resize_memory(&mut self, offset: usize, len: usize) -> Result<(), InstrStop> {
+        let gas_params = *self.gas_params();
         let memory = self.memory_mut() as *mut Memory;
         let gas = &mut self.gas as *mut Gas;
-        unsafe { (*memory).resize_evm(&mut *gas, offset, len)? };
+        unsafe { (*memory).resize_evm(&mut *gas, &gas_params, offset, len)? };
         self.refresh_memory_cache();
         Ok(())
     }
@@ -228,10 +229,8 @@ impl<'a> EvmContext<'a> {
     /// Must be called after any operation that may resize memory.
     #[inline]
     pub fn refresh_memory_cache(&mut self) {
-        let (mem_base, mem_len) = {
-            let slice = self.memory_mut().as_mut_slice();
-            (slice.as_mut_ptr(), slice.len())
-        };
+        let mem_len = self.memory().len();
+        let mem_base = self.memory_mut().as_mut_ptr();
         self.mem_base = mem_base;
         self.mem_len = mem_len;
     }

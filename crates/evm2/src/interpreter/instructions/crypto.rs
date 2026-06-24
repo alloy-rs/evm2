@@ -10,7 +10,7 @@ pub(crate) fn keccak256(cx: _, [offset, len]: [Word]) -> Result<out> {
         keccak256_hash([])
     } else {
         let offset = word_to_usize(*offset)?;
-        cx.state.memory().resize_evm(cx.gas, offset, len)?;
+        cx.state.resize_memory(cx.gas, offset, len)?;
         keccak256_hash(cx.state.memory().slice(offset, len))
     };
     *out = b256_to_word(hash);

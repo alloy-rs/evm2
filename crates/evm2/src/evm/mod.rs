@@ -1417,8 +1417,9 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
         let is_cold = if self.feature(EvmFeatures::EIP2929) {
-            match self.state.account(target, false).map(|mut a| a.warm()) {
+            match self.state.account(target, skip_cold_load).map(|mut a| a.warm()) {
                 Ok(is_cold) => is_cold,
+                Err(DbErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
                 Err(code) => return Err(self.db_error_stop(code)),
             }
         } else {
@@ -1689,6 +1690,18 @@ mod tests {
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         stop
+    }
+
+    fn push_word(code: &mut Vec<u8>, value: Word) {
+        let bytes = value.to_be_bytes::<32>();
+        let first_nonzero = bytes.iter().position(|byte| *byte != 0).unwrap_or(31);
+        let data = &bytes[first_nonzero..];
+        code.push(op::PUSH1 + data.len() as u8 - 1);
+        code.extend_from_slice(data);
+    }
+
+    fn push_address(code: &mut Vec<u8>, address: &Address) {
+        push_word(code, Word::from_be_slice(address.as_slice()));
     }
 
     const LIFECYCLE_ACCOUNT: Address = Address::with_last_byte(0x7a);
@@ -2454,6 +2467,86 @@ mod tests {
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
         assert!(!evm.state.storage(&contract).is_warm(&key));
+    }
+
+    #[derive(Clone, Debug)]
+    struct SelfdestructTargetLoadDb {
+        target: Address,
+        target_reads: Arc<AtomicUsize>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct SelfdestructTargetLoadError;
+
+    impl fmt::Display for SelfdestructTargetLoadError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("selfdestruct target account was loaded")
+        }
+    }
+
+    impl Error for SelfdestructTargetLoadError {}
+
+    impl Database for SelfdestructTargetLoadDb {
+        type Error = SelfdestructTargetLoadError;
+
+        fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+            if *address == self.target {
+                self.target_reads.fetch_add(1, Ordering::SeqCst);
+                return Err(SelfdestructTargetLoadError);
+            }
+            Ok(Some(AccountInfo::default().with_balance(Word::from(1))))
+        }
+
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
+        }
+
+        fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
+            Ok(Word::ZERO)
+        }
+
+        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
+        }
+    }
+
+    fn selfdestruct_to_code(target: &Address) -> Bytecode {
+        let mut code = Vec::new();
+        push_address(&mut code, target);
+        code.push(op::SELFDESTRUCT);
+        Bytecode::new_legacy(Bytes::from(code))
+    }
+
+    #[test]
+    fn unaffordable_cold_target_selfdestruct_does_not_load_target_account() {
+        let contract = Address::from([0xbb; 20]);
+        let target = Address::from([0xcc; 20]);
+        let target_reads = Arc::new(AtomicUsize::new(0));
+        let database = SelfdestructTargetLoadDb { target, target_reads: Arc::clone(&target_reads) };
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::BERLIN,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            Db::new(database),
+            Precompiles::base(SpecId::BERLIN),
+        );
+        let mut message = Message {
+            kind: MessageKind::Call,
+            destination: contract,
+            code_address: contract,
+            gas_limit: 6_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnv::default(),
+            selfdestruct_to_code(&target),
+            &mut message,
+        );
+
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert_eq!(target_reads.load(Ordering::SeqCst), 0);
     }
 
     #[test]

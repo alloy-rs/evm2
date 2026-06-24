@@ -79,7 +79,7 @@ fn return_inner<T: EvmTypes>(
         if end > u32::MAX as usize {
             return Err(InstrStop::MemoryLimitOOG);
         }
-        cx.state.memory().resize_evm(cx.gas, offset, len)?;
+        cx.state.resize_memory(cx.gas, offset, len)?;
         offset as u32..end as u32
     } else {
         0..0
