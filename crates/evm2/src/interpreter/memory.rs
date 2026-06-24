@@ -47,6 +47,12 @@ impl Memory {
         self.data.len()
     }
 
+    /// Returns all initialized memory bytes.
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        self.data.as_slice()
+    }
+
     /// Returns a raw pointer to memory bytes.
     #[inline]
     #[doc(hidden)]

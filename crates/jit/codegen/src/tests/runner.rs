@@ -5,7 +5,7 @@ use evm2::{
     env::{BlockEnv as Evm2BlockEnv, TxEnv as Evm2TxEnv},
     ethereum::ethereum_tx_registry,
     evm::{AccountInfo, InMemoryDB},
-    interpreter::{Gas, InstrStop, Interpreter as Evm2Interpreter, Memory, Message as Evm2Message},
+    interpreter::{Gas, InstrStop, Interpreter as Evm2Interpreter, Message as Evm2Message},
 };
 use evm2_jit_context::EvmContext;
 use similar_asserts::assert_eq;
@@ -550,7 +550,7 @@ fn run_compiled_test_case_with_context(
         assert_eq!(interpreter_stack.unwrap(), expected_stack, "interpreter stack mismatch");
     }
 
-    let interpreter_memory = memory_slice(interpreter.memory_ref());
+    let interpreter_memory = interpreter.memory_ref().as_slice();
     let mut expected_memory = expected_memory;
     if expected_memory == MEMORY_WHAT_INTERPRETER_SAYS {
         if skip_interpreter_checks {
@@ -629,7 +629,7 @@ fn run_compiled_test_case_with_context(
 
         if !skip_jit_memory {
             assert_eq!(
-                MemDisplay(memory_slice(ecx.memory())),
+                MemDisplay(ecx.memory().as_slice()),
                 MemDisplay(expected_memory),
                 "memory mismatch"
             );
@@ -665,8 +665,4 @@ impl fmt::Debug for MemDisplay<'_> {
         let chunks = self.0.chunks(32).map(hex::encode_prefixed);
         f.debug_list().entries(chunks).finish()
     }
-}
-
-fn memory_slice(memory: &Memory) -> &[u8] {
-    memory.slice(0, memory.len())
 }
