@@ -16,13 +16,5 @@ filter = 'test(blockchain_tests::)'
 priority = 1
 
 [[profile.default.overrides]]
-filter = 'test(/::aot::/)'
-slow-timeout = { period = "180s", terminate-after = 1 }
-
-[[profile.default.overrides]]
-filter = 'test(/::jit::static\/state_tests\/stPreCompiledContracts\/precompsEIP2929Cancun\.json$/)'
+filter = 'test(/::(?:jit|aot)::/)'
 slow-timeout = { period = "300s", terminate-after = 1 }
-
-[[profile.default.overrides]]
-filter = 'test(/::jit::.*(?:stStackTests\/stackOverflow|test_stack_overflow)/)'
-slow-timeout = { period = "180s", terminate-after = 1 }
