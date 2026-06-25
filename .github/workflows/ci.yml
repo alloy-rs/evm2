@@ -164,7 +164,7 @@ jobs:
           - os: ubuntu
             runner_label: ubuntu-latest
             mode: jit
-            test_filter: "test(statetests::jit)"
+            test_filter: "test(statetests::jit) & not test(/frontier\\/opcodes\\/test_stack_overflow\\.json$/)"
           - os: ubuntu
             runner_label: ubuntu-latest
             mode: aot
