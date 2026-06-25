@@ -5,7 +5,6 @@ use crate::{
     bytecode::Bytecode,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageKind, Result, StackMut, Word,
-        memory::resize_memory,
     },
     utils::{word_to_address, word_to_usize},
     version::GasId,
@@ -40,7 +39,7 @@ fn resize_memory_range<T: EvmTypes>(
     let len = word_to_usize(len)?;
     let offset = if len != 0 {
         let offset = word_to_usize(offset)?;
-        resize_memory(gas, state.memory(), offset, len)?;
+        state.resize_memory(gas, offset, len)?;
         offset
     } else {
         usize::MAX
@@ -376,7 +375,6 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let destination = &cx.state.message().destination;
     let res = cx.state.host().selfdestruct(destination, &target, skip_cold_load)?;
-    cx.state.inspect_selfdestruct(destination, &target, &res.value);
     let should_charge_topup = should_charge_new_account_gas(
         cx.state.feature(EvmFeatures::EIP161),
         res.had_value,
@@ -391,6 +389,7 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     if !res.previously_destroyed {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);
     }
+    cx.state.inspect_selfdestruct(destination, &target, &res.value);
     Err(InstrStop::SelfDestruct)
 }
 
@@ -399,22 +398,13 @@ mod tests {
     use crate::{
         SpecId,
         constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
-        interpreter::{
-            InstrStop, Message, MessageKind, MessageResult, Word,
-            instructions::tests::{RunConfig, TestHost, push, run},
-            op,
-        },
+        interpreter::{InstrStop, Message, MessageKind, MessageResult, Word, op},
+        test_utils::{RunConfig, TestHost, push, push_all, run},
         utils::address_to_word,
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, Bytes};
     use core::assert_matches;
-
-    fn push_all<const N: usize>(code: &mut Vec<u8>, values: [Word; N]) {
-        for value in values {
-            push(code, value);
-        }
-    }
 
     #[test]
     fn call_opcode() {

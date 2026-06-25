@@ -31,24 +31,24 @@ impl EvmTypes for TestTypes {
 
 #[derive(Debug)]
 pub(crate) struct TestHost {
-    pub(super) spec_id: SpecId,
-    pub(super) block: BlockEnv<TestTypes>,
-    pub(super) code_hash: B256,
-    pub(super) code: Bytes,
-    pub(super) exists: bool,
-    pub(super) is_empty: bool,
-    pub(super) is_cold: bool,
-    pub(super) is_touched: bool,
-    pub(super) storage: StorageKeyMap<Word>,
-    pub(super) original_storage: StorageKeyMap<Word>,
-    pub(super) transient_storage: StorageKeyMap<Word>,
+    pub(crate) spec_id: SpecId,
+    pub(crate) block: BlockEnv<TestTypes>,
+    pub(crate) code_hash: B256,
+    pub(crate) code: Bytes,
+    pub(crate) exists: bool,
+    pub(crate) is_empty: bool,
+    pub(crate) is_cold: bool,
+    pub(crate) is_touched: bool,
+    pub(crate) storage: StorageKeyMap<Word>,
+    pub(crate) original_storage: StorageKeyMap<Word>,
+    pub(crate) transient_storage: StorageKeyMap<Word>,
     pub(crate) logs: Vec<Log>,
-    pub(super) execute_result: MessageResult<TestTypes>,
+    pub(crate) execute_result: MessageResult<TestTypes>,
     pub(crate) selfdestruct_result: SelfDestructResult,
     pub(crate) selfdestruct_error: Option<InstrStop>,
     pub(crate) calls: Vec<Message<TestTypes>>,
-    pub(super) call_static_flags: Vec<bool>,
-    pub(super) selfdestructs: Vec<(Address, Address, bool)>,
+    pub(crate) call_static_flags: Vec<bool>,
+    pub(crate) selfdestructs: Vec<(Address, Address, bool)>,
 }
 
 impl Default for TestHost {
@@ -213,87 +213,87 @@ impl Host<TestTypes> for TestHost {
     }
 }
 
-pub(super) struct TestInterpreter {
-    pub(super) stack: Box<StackBacking>,
-    pub(super) stack_len: usize,
-    pub(super) gas: Gas,
-    pub(super) memory: Memory,
-    pub(super) output: Range<u32>,
-    pub(super) err: InstrStop,
+pub(crate) struct TestInterpreter {
+    pub(crate) stack: Box<StackBacking>,
+    pub(crate) stack_len: usize,
+    pub(crate) gas: Gas,
+    pub(crate) memory: Memory,
+    pub(crate) output: Range<u32>,
+    pub(crate) err: InstrStop,
 }
 
 impl TestInterpreter {
-    pub(super) fn stack(&self) -> &[Word] {
+    pub(crate) fn stack(&self) -> &[Word] {
         unsafe { core::slice::from_raw_parts(self.stack.as_ptr().cast(), self.stack_len) }
     }
 
-    pub(super) fn memory(&mut self, offset: usize, len: usize) -> &[u8] {
+    pub(crate) fn memory(&mut self, offset: usize, len: usize) -> &[u8] {
         self.memory.slice(offset, len)
     }
 
-    pub(super) fn gas_remaining(&self) -> u64 {
+    pub(crate) fn gas_remaining(&self) -> u64 {
         self.gas.remaining()
     }
 
-    pub(super) fn gas_refunded(&self) -> i64 {
+    pub(crate) fn gas_refunded(&self) -> i64 {
         self.gas.refunded()
     }
 
-    pub(super) fn state_gas_spent(&self) -> i64 {
+    pub(crate) fn state_gas_spent(&self) -> i64 {
         self.gas.state_gas_spent()
     }
 
-    pub(super) fn output(&self) -> &[u8] {
+    pub(crate) fn output(&self) -> &[u8] {
         self.memory.slice(self.output.start as usize, self.output.len())
     }
 }
 
-pub(super) struct RunConfig<'a> {
-    pub(super) code: Vec<u8>,
-    pub(super) host: Option<&'a mut TestHost>,
-    pub(super) spec_id: SpecId,
-    pub(super) tx_env: TxEnv<TestTypes>,
-    pub(super) message: Message<TestTypes>,
-    pub(super) gas_limit: u64,
-    pub(super) return_data: Bytes,
+pub(crate) struct RunConfig<'a> {
+    pub(crate) code: Vec<u8>,
+    pub(crate) host: Option<&'a mut TestHost>,
+    pub(crate) spec_id: SpecId,
+    pub(crate) tx_env: TxEnv<TestTypes>,
+    pub(crate) message: Message<TestTypes>,
+    pub(crate) gas_limit: u64,
+    pub(crate) return_data: Bytes,
 }
 
 impl<'a> RunConfig<'a> {
-    pub(super) fn new(code: impl Into<Vec<u8>>) -> Self {
+    pub(crate) fn new(code: impl Into<Vec<u8>>) -> Self {
         Self { code: code.into(), ..Self::default() }
     }
 
-    pub(super) fn host(mut self, host: &'a mut TestHost) -> Self {
+    pub(crate) fn host(mut self, host: &'a mut TestHost) -> Self {
         self.host = Some(host);
         self
     }
 
-    pub(super) const fn spec(mut self, spec_id: SpecId) -> Self {
+    pub(crate) const fn spec(mut self, spec_id: SpecId) -> Self {
         self.spec_id = spec_id;
         self
     }
 
-    pub(super) fn tx_env(mut self, tx_env: TxEnv<TestTypes>) -> Self {
+    pub(crate) fn tx_env(mut self, tx_env: TxEnv<TestTypes>) -> Self {
         self.tx_env = tx_env;
         self
     }
 
-    pub(super) fn message(mut self, message: Message<TestTypes>) -> Self {
+    pub(crate) fn message(mut self, message: Message<TestTypes>) -> Self {
         self.message = message;
         self
     }
 
-    pub(super) fn staticcall(mut self) -> Self {
+    pub(crate) fn staticcall(mut self) -> Self {
         self.message.kind = MessageKind::StaticCall;
         self
     }
 
-    pub(super) const fn gas_limit(mut self, gas_limit: u64) -> Self {
+    pub(crate) const fn gas_limit(mut self, gas_limit: u64) -> Self {
         self.gas_limit = gas_limit;
         self
     }
 
-    pub(super) fn return_data(mut self, return_data: Bytes) -> Self {
+    pub(crate) fn return_data(mut self, return_data: Bytes) -> Self {
         self.return_data = return_data;
         self
     }
@@ -313,9 +313,9 @@ impl Default for RunConfig<'_> {
     }
 }
 
-pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
+pub(crate) fn run(config: RunConfig<'_>) -> TestInterpreter {
     let RunConfig { code, host, spec_id, tx_env, mut message, gas_limit, return_data } = config;
-    let bytecode = Bytecode::new_legacy(Bytes::from(code));
+    let bytecode = legacy_bytecode(code);
     message.gas_limit = gas_limit;
     let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
     inner.set_return_data(return_data);
@@ -356,16 +356,20 @@ impl ToWord for usize {
     }
 }
 
-pub(super) fn run_stack<T: ToWord, const N: usize>(inputs: [T; N], opcode: u8) -> TestInterpreter {
+pub(crate) fn stack_code<T: ToWord, const N: usize>(inputs: [T; N], opcode: u8) -> Vec<u8> {
     let mut code = Vec::new();
     for input in inputs.into_iter().rev() {
         push(&mut code, input);
     }
     code.extend([opcode, op::STOP]);
-    run(RunConfig::new(code))
+    code
 }
 
-pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word]) {
+pub(crate) fn run_stack<T: ToWord, const N: usize>(inputs: [T; N], opcode: u8) -> TestInterpreter {
+    run(RunConfig::new(stack_code(inputs, opcode)))
+}
+
+pub(crate) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word]) {
     let mut code = Vec::new();
     for input in inputs.iter().rev() {
         push(&mut code, *input);
@@ -380,7 +384,7 @@ macro_rules! assert_stack {
     ($op:ident($($input:expr),* $(,)?), $expected:expr $(,)?) => {{
         let inputs = [$($crate::interpreter::Word::from($input)),*];
         let expected = [$crate::interpreter::Word::from($expected)];
-        $crate::interpreter::instructions::tests::assert_stack_words(
+        $crate::test_utils::assert_stack_words(
             &inputs,
             $crate::interpreter::op::$op,
             &expected,
@@ -401,4 +405,22 @@ pub(crate) fn push(code: &mut Vec<u8>, value: impl ToWord) {
     let len = bytes.len() - start;
     code.push(op::PUSH1 + len as u8 - 1);
     code.extend_from_slice(&bytes[start..]);
+}
+
+pub(crate) fn push_all<T: ToWord, const N: usize>(code: &mut Vec<u8>, values: [T; N]) {
+    for value in values {
+        push(code, value);
+    }
+}
+
+pub(crate) fn push_address(code: &mut Vec<u8>, address: &Address) {
+    push(code, Word::from_be_slice(address.as_slice()));
+}
+
+pub(crate) fn neg(value: u64) -> Word {
+    Word::ZERO.wrapping_sub(Word::from(value))
+}
+
+pub(crate) fn legacy_bytecode(code: impl Into<Vec<u8>>) -> Bytecode {
+    Bytecode::new_legacy(Bytes::from(code.into()))
 }

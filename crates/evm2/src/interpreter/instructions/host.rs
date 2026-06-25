@@ -1,9 +1,6 @@
 use crate::{
     EvmFeatures, EvmTypes,
-    interpreter::{
-        Host, InstrStop, InterpreterState, Result, StackMut, memory::resize_memory,
-        private::GasInstructionCx,
-    },
+    interpreter::{Host, InstrStop, InterpreterState, Result, StackMut, private::GasInstructionCx},
     utils::word_to_usize,
     version::GasId,
 };
@@ -115,7 +112,7 @@ fn log_common<T: EvmTypes>(
         Bytes::new()
     } else {
         let offset = word_to_usize(offset)?;
-        resize_memory(cx.gas, cx.state.memory(), offset, len)?;
+        cx.state.resize_memory(cx.gas, offset, len)?;
         Bytes::copy_from_slice(cx.state.memory().slice(offset, len))
     };
 
@@ -135,12 +132,9 @@ fn log_common<T: EvmTypes>(
 mod tests {
     use crate::{
         SpecId,
-        interpreter::{
-            InstrStop, Message, MessageKind, Word,
-            instructions::tests::{RunConfig, TestHost, push, run},
-            op,
-        },
+        interpreter::{InstrStop, Message, MessageKind, Word, op},
         storage_key::StorageKey,
+        test_utils::{RunConfig, TestHost, push, run},
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256, Bytes};
