@@ -99,6 +99,11 @@ jobs:
           if [[ "${{ matrix.kind }}" == "eest" ]]; then
             package_flags=(-p evm2-eest)
             extra_flags+=(--ignore-default-filter)
+          elif [[ "${{ matrix.os }}" == "windows" ]]; then
+            package_flags+=(
+              --exclude evm2-jit
+              --exclude evm2-jit-*
+            )
           fi
           if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
             export EVM2_STATETEST_ROOT="test-fixtures/devnet/state_tests"
