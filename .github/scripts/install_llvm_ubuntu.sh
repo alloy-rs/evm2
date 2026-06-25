@@ -28,10 +28,5 @@ for bin in "${bins[@]}"; do
     ln -fs "$(which "$bin-$v")" "/usr/bin/$bin"
 done
 
-prefix="$(llvm-config --prefix)"
-version_major_minor="$(llvm-config --version | awk -F. '{ print $1 $2 }')"
-echo "LLVM_SYS_${version_major_minor}_PREFIX=${prefix}" >> "$GITHUB_ENV"
-echo "LLVM_CONFIG_PATH=$(which llvm-config)" >> "$GITHUB_ENV"
-
 echo "LLVM $v installed:"
 llvm-config --version
