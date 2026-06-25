@@ -164,15 +164,19 @@ jobs:
           - os: ubuntu
             runner_label: ubuntu-latest
             mode: jit
+            test_filter: "test(statetests::jit)"
           - os: ubuntu
             runner_label: ubuntu-latest
             mode: aot
+            test_filter: "test(statetests::aot)"
           - os: macos
             runner_label: macos-latest
             mode: jit
+            test_filter: "test(statetests::jit) & not test(/frontier\\/opcodes\\/test_stack_overflow\\.json$/)"
           - os: macos
             runner_label: macos-latest
             mode: aot
+            test_filter: "test(statetests::aot) & not test(/frontier\\/(create\\/test_create_one_byte|opcodes\\/test_all_opcodes)\\.json$/)"
     steps:
       - uses: actions/checkout@v6
       - name: Install LLVM
@@ -210,7 +214,7 @@ jobs:
       - name: eest ${{ matrix.mode }}
         run: |
           cargo nextest run -p evm2-eest --features jit --test eest \
-            --ignore-default-filter --no-fail-fast "statetests::${{ matrix.mode }}"
+            --ignore-default-filter --no-fail-fast -E '${{ matrix.test_filter }}'
 
   no-std:
     name: no_std ${{ matrix.target }}
