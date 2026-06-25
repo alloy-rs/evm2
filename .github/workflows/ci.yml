@@ -84,6 +84,19 @@ jobs:
         if: ${{ !matrix.command || matrix.command == 'nextest' }}
         shell: bash
         run: |
+          package_flags=()
+          if [[ "${{ matrix.kind }}" == "test" ]]; then
+            package_flags+=(
+              --exclude evm2-jit
+              --exclude evm2-jit-backend
+              --exclude evm2-jit-build
+              --exclude evm2-jit-builtins
+              --exclude evm2-jit-codegen
+              --exclude evm2-jit-context
+              --exclude evm2-jit-llvm
+              --exclude evm2-jit-runtime
+            )
+          fi
           if [[ -n "${{ matrix.cxx }}" ]]; then
             export CXX="${{ matrix.cxx }}"
             cargo clean -p mcl_rust
@@ -99,7 +112,7 @@ jobs:
           if [[ "${{ runner.os }}" == "Windows" && "${{ matrix.kind }}" == "eest" ]]; then
             export RUSTFLAGS="-C link-arg=/STACK:8388608"
           fi
-          cargo nextest run --workspace --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
+          cargo nextest run --workspace "${package_flags[@]}" --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
       - name: cross test
         if: ${{ matrix.command == 'cross-test' }}
         shell: bash
@@ -124,7 +137,79 @@ jobs:
         run: cargo test -p evm2 --target ${{ matrix.target }} --no-fail-fast --lib --tests ${{ matrix.flags }}
       - name: doctest
         if: ${{ matrix.kind == 'test' && !matrix.target }}
-        run: cargo test --workspace ${{ matrix.flags }} --doc
+        run: |
+          cargo test --workspace \
+            --exclude evm2-jit \
+            --exclude evm2-jit-backend \
+            --exclude evm2-jit-build \
+            --exclude evm2-jit-builtins \
+            --exclude evm2-jit-codegen \
+            --exclude evm2-jit-context \
+            --exclude evm2-jit-llvm \
+            --exclude evm2-jit-runtime \
+            ${{ matrix.flags }} \
+            --doc
+
+  jit:
+    name: jit ${{ matrix.os }} ${{ matrix.mode }}
+    runs-on: ${{ matrix.runner_label }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu
+            runner_label: ubuntu-latest
+            mode: jit
+          - os: ubuntu
+            runner_label: ubuntu-latest
+            mode: aot
+          - os: macos
+            runner_label: macos-latest
+            mode: jit
+          - os: macos
+            runner_label: macos-latest
+            mode: aot
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install LLVM
+        if: ${{ matrix.os == 'ubuntu' }}
+        run: .github/scripts/install_llvm.sh ubuntu
+      - name: Install LLVM
+        if: ${{ matrix.os == 'macos' }}
+        run: .github/scripts/install_llvm.sh macos
+      - name: llvm-config
+        run: llvm-config --version --bindir --libdir
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+        if: runner.os == 'Linux'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-bin: false
+      - uses: taiki-e/install-action@nextest
+      - uses: astral-sh/setup-uv@v7
+      - name: Download EEST fixtures
+        run: ./scripts/setup_test_fixtures.py
+      - name: jit crates
+        if: ${{ matrix.mode == 'jit' }}
+        run: |
+          cargo nextest run \
+            -p evm2-jit \
+            -p evm2-jit-backend \
+            -p evm2-jit-builtins \
+            -p evm2-jit-codegen \
+            -p evm2-jit-context \
+            -p evm2-jit-llvm \
+            -p evm2-jit-runtime \
+            --no-fail-fast
+          cargo nextest run -p evm2-cli --features jit --no-fail-fast
+      - name: eest ${{ matrix.mode }}
+        run: |
+          cargo nextest run -p evm2-eest --features jit --test eest \
+            --ignore-default-filter --no-fail-fast "::${{ matrix.mode }}"
 
   no-std:
     name: no_std ${{ matrix.target }}
@@ -156,6 +241,8 @@ jobs:
         flags: ["", "--all-targets"]
     steps:
       - uses: actions/checkout@v6
+      - name: Install LLVM
+        run: .github/scripts/install_llvm.sh ubuntu
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@v1
       - uses: taiki-e/install-action@cargo-hack
@@ -205,6 +292,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+      - name: Install LLVM
+        run: .github/scripts/install_llvm.sh ubuntu
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy
@@ -220,6 +309,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+      - name: Install LLVM
+        run: .github/scripts/install_llvm.sh ubuntu
       - uses: dtolnay/rust-toolchain@nightly
       - uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
@@ -249,6 +340,7 @@ jobs:
     needs:
       - matrices
       - test
+      - jit
       - no-std
       - feature-checks
       - feature-propagation
