@@ -47,6 +47,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+      - name: Install LLVM
+        if: ${{ matrix.os == 'ubuntu' }}
+        run: .github/scripts/install_llvm.sh ubuntu
+      - name: Install LLVM
+        if: ${{ matrix.os == 'macos' }}
+        run: .github/scripts/install_llvm.sh macos
       - uses: dtolnay/rust-toolchain@master
         if: ${{ !matrix.target }}
         with:
