@@ -112,13 +112,15 @@ class Expanded:
 
 
 toolchains = ["stable", "nightly"]
-feature_sets = ["--no-default-features", ""]
+feature_sets = ["--no-default-features", "", "--all-features"]
 kinds = ["test", "eest"]
 
-t_linux_x86 = Target("ubuntu", "ubuntu-latest", os="ubuntu", tier=1)
+t_linux_x86 = Target("ubuntu", "ubuntu-latest", tier=1)
 t_macos_arm = Target("macos", "macos-latest", os="macos", tier=1)
 t_linux_arm = Target("ubuntu arm", "ubuntu-24.04-arm", cxx="clang++")
-t_windows = Target("windows", "windows-latest", os="windows", flags="--no-default-features")
+t_windows = Target(
+    "windows", "windows-latest", os="windows", flags="--no-default-features"
+)
 t_wasm_unknown = Target(
     "wasm",
     "ubuntu-latest",

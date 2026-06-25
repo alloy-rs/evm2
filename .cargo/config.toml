@@ -4,3 +4,11 @@ docs = "doc --workspace --all-features --no-deps --document-private-items"
 cli = "run --bin evm2 --all-features --"
 t = "nextest run --workspace --all-features"
 st = "nextest run --workspace --all-features --ignore-default-filter"
+
+# Increase the stack size to 10MB for Windows targets, which is in line with Linux
+# (whereas default for Windows is 1MB).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-Clink-arg=/STACK:10000000"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-Clink-arg=/STACK:10000000"]

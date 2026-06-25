@@ -85,18 +85,6 @@ jobs:
         shell: bash
         run: |
           package_flags=(--workspace)
-          if [[ "${{ matrix.kind }}" == "test" ]]; then
-            package_flags+=(
-              --exclude evm2-jit
-              --exclude evm2-jit-backend
-              --exclude evm2-jit-build
-              --exclude evm2-jit-builtins
-              --exclude evm2-jit-codegen
-              --exclude evm2-jit-context
-              --exclude evm2-jit-llvm
-              --exclude evm2-jit-runtime
-            )
-          fi
           if [[ -n "${{ matrix.cxx }}" ]]; then
             export CXX="${{ matrix.cxx }}"
             cargo clean -p mcl_rust
@@ -110,10 +98,7 @@ jobs:
             export EVM2_STATETEST_ROOT="test-fixtures/devnet/state_tests"
             export EVM2_BLOCKCHAINTEST_ROOT="test-fixtures/devnet/blockchain_tests"
           fi
-          if [[ "${{ runner.os }}" == "Windows" && "${{ matrix.kind }}" == "eest" ]]; then
-            export RUSTFLAGS="-C link-arg=/STACK:8388608"
-          fi
-          cargo nextest run "${package_flags[@]}" --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
+          cargo nextest --profile ci run "${package_flags[@]}" --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
       - name: cross test
         if: ${{ matrix.command == 'cross-test' }}
         shell: bash
@@ -138,18 +123,7 @@ jobs:
         run: cargo test -p evm2 --target ${{ matrix.target }} --no-fail-fast --lib --tests ${{ matrix.flags }}
       - name: doctest
         if: ${{ matrix.kind == 'test' && !matrix.target }}
-        run: |
-          cargo test --workspace \
-            --exclude evm2-jit \
-            --exclude evm2-jit-backend \
-            --exclude evm2-jit-build \
-            --exclude evm2-jit-builtins \
-            --exclude evm2-jit-codegen \
-            --exclude evm2-jit-context \
-            --exclude evm2-jit-llvm \
-            --exclude evm2-jit-runtime \
-            ${{ matrix.flags }} \
-            --doc
+        run: cargo test --workspace ${{ matrix.flags }} --doc
 
   jit:
     name: jit ${{ matrix.os }} ${{ matrix.mode }}
@@ -164,19 +138,15 @@ jobs:
           - os: ubuntu
             runner_label: ubuntu-latest
             mode: jit
-            test_filter: "test(statetests::jit) & not test(/frontier\\/opcodes\\/test_stack_overflow\\.json$/)"
           - os: ubuntu
             runner_label: ubuntu-latest
             mode: aot
-            test_filter: "test(statetests::aot)"
           - os: macos
             runner_label: macos-latest
             mode: jit
-            test_filter: "test(statetests::jit) & not test(/frontier\\/opcodes\\/test_stack_overflow\\.json$/)"
           - os: macos
             runner_label: macos-latest
             mode: aot
-            test_filter: "test(statetests::aot) & not test(/frontier\\/(create\\/test_create_one_byte|opcodes\\/test_all_opcodes)\\.json$/)"
     steps:
       - uses: actions/checkout@v6
       - name: Install LLVM
@@ -198,23 +168,10 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - name: Download EEST fixtures
         run: ./scripts/setup_test_fixtures.py
-      - name: jit crates
-        if: ${{ matrix.mode == 'jit' }}
-        run: |
-          cargo nextest run \
-            -p evm2-jit \
-            -p evm2-jit-backend \
-            -p evm2-jit-builtins \
-            -p evm2-jit-codegen \
-            -p evm2-jit-context \
-            -p evm2-jit-llvm \
-            -p evm2-jit-runtime \
-            --no-fail-fast
-          cargo nextest run -p evm2-cli --features jit --no-fail-fast
       - name: eest ${{ matrix.mode }}
         run: |
-          cargo nextest run -p evm2-eest --features jit --test eest \
-            --ignore-default-filter --no-fail-fast -E '${{ matrix.test_filter }}'
+          cargo nextest --profile ci run -p evm2-eest --features jit --test eest \
+            --ignore-default-filter --no-fail-fast -E "test(::${{ matrix.mode }})"
 
   no-std:
     name: no_std ${{ matrix.target }}
