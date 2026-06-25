@@ -210,7 +210,7 @@ jobs:
       - name: eest ${{ matrix.mode }}
         run: |
           cargo nextest run -p evm2-eest --features jit --test eest \
-            --ignore-default-filter --no-fail-fast "::${{ matrix.mode }}"
+            --ignore-default-filter --no-fail-fast "statetests::${{ matrix.mode }}"
 
   no-std:
     name: no_std ${{ matrix.target }}
