@@ -152,12 +152,18 @@ jobs:
           - os: ubuntu
             runner_label: depot-ubuntu-latest-4
             mode: jit
+            subset: all
+            filter: test(statetests::jit)
           - os: ubuntu
             runner_label: depot-ubuntu-latest-4
             mode: aot
+            subset: ci-aot
+            filter: test(statetests::aot)
           - os: macos
             runner_label: depot-macos-latest
             mode: jit
+            subset: ci-smoke
+            filter: test(statetests::jit)
     steps:
       - uses: actions/checkout@v6
       - name: Install LLVM
@@ -181,9 +187,11 @@ jobs:
       - name: Download EEST fixtures
         run: ./scripts/setup_test_fixtures.py
       - name: eest ${{ matrix.mode }}
+        env:
+          EVM2_COMPILED_EEST_SUBSET: ${{ matrix.subset }}
         run: |
           cargo nextest --profile ci run -p evm2-eest --features jit --test eest \
-            --ignore-default-filter --no-fail-fast -E "test(::${{ matrix.mode }})"
+            --ignore-default-filter --no-fail-fast -E "${{ matrix.filter }}"
 
   no-std:
     name: no_std ${{ matrix.target }}
