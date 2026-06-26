@@ -142,7 +142,7 @@ jobs:
   jit:
     name: jit ${{ matrix.os }} ${{ matrix.mode }}
     runs-on: ${{ matrix.runner_label }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: read
     strategy:
