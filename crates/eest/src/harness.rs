@@ -10,6 +10,9 @@ use std::{
 
 const NEXTEST_ENV: &str = "NEXTEST";
 
+type FileRunner = fn(PathBuf) -> Result<(), Failed>;
+type BatchRunner = fn(Vec<PathBuf>) -> Result<(), Failed>;
+
 /// A named EEST fixture root.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TestRoot {
@@ -32,7 +35,9 @@ pub(crate) struct TestSuite {
     /// Test ignore filter.
     pub(crate) should_ignore: fn(&str) -> bool,
     /// Test file runner.
-    pub(crate) run_file: fn(PathBuf) -> Result<(), Failed>,
+    pub(crate) run_file: FileRunner,
+    /// Optional batched file runner.
+    pub(crate) run_files: Option<BatchRunner>,
 }
 
 /// Runs cargo-nextest JSON fixture harnesses in one test binary.
@@ -64,11 +69,16 @@ fn collect_trials(args: &Arguments, suites: &[TestSuite]) -> Result<Vec<Trial>, 
     if args.exact
         && let Some(filter) = &args.filter
     {
-        return Ok(exact_trial(suites, filter).into_iter().collect());
+        return exact_trial(suites, filter).map(|trial| trial.into_iter().collect());
     }
 
     let mut trials = Vec::new();
     for suite in suites {
+        if let Some(trial) = batched_trial(suite)? {
+            trials.push(trial);
+            continue;
+        }
+
         for root in &suite.roots {
             let files = find_json_tests(std::slice::from_ref(&root.path), suite.should_descend)?;
             for path in files {
@@ -82,8 +92,13 @@ fn collect_trials(args: &Arguments, suites: &[TestSuite]) -> Result<Vec<Trial>, 
     Ok(trials)
 }
 
-fn exact_trial(suites: &[TestSuite], name: &str) -> Option<Trial> {
-    let (suite, root, relative) = suites
+fn exact_trial(suites: &[TestSuite], name: &str) -> Result<Option<Trial>, String> {
+    if let Some(suite) = suites.iter().find(|suite| suite.run_files.is_some() && suite.name == name)
+    {
+        return batched_trial(suite);
+    }
+
+    let Some((suite, root, relative)) = suites
         .iter()
         .flat_map(|suite| suite.roots.iter().map(move |root| (suite, root)))
         .filter_map(|(suite, root)| {
@@ -92,15 +107,35 @@ fn exact_trial(suites: &[TestSuite], name: &str) -> Option<Trial> {
         .filter_map(|(suite, root, relative)| {
             relative.strip_prefix("::").map(|relative| (suite, root, relative))
         })
-        .max_by_key(|(_, root, _)| root.name.len())?;
+        .max_by_key(|(_, root, _)| root.name.len())
+    else {
+        return Ok(None);
+    };
     // A root pointing directly at a file has an empty relative; the file itself
     // is the only path it can resolve to.
     let path = if root.path.is_file() { root.path.clone() } else { root.path.join(relative) };
-    path.is_file().then(|| {
+    Ok(path.is_file().then(|| {
         let ignored = (suite.should_ignore)(name);
         let run_file = suite.run_file;
         Trial::test(name.to_string(), move || run_file(path)).with_ignored_flag(ignored)
-    })
+    }))
+}
+
+fn batched_trial(suite: &TestSuite) -> Result<Option<Trial>, String> {
+    let Some(run_files) = suite.run_files else {
+        return Ok(None);
+    };
+
+    let mut paths = Vec::new();
+    for root in &suite.roots {
+        let files = find_json_tests(std::slice::from_ref(&root.path), suite.should_descend)?;
+        paths.extend(files.into_iter().filter(|path| {
+            let name = test_name(&root.name, &root.path, path);
+            !(suite.should_ignore)(&name)
+        }));
+    }
+
+    Ok((!paths.is_empty()).then(|| Trial::test(suite.name.to_string(), move || run_files(paths))))
 }
 
 fn test_name(root_name: &str, root: &Path, path: &Path) -> String {

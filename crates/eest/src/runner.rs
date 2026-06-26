@@ -4,7 +4,7 @@ use crate::{
     harness::{TestSuite, descend_all, run_json_harnesses},
 };
 #[cfg(feature = "jit")]
-use crate::{execution::CompiledMode, harness::compiled_roots};
+use crate::{execute::execute_test_suites, execution::CompiledMode, harness::compiled_roots};
 use libtest_mimic::Failed;
 use std::{path::PathBuf, process::ExitCode};
 
@@ -18,11 +18,12 @@ pub(crate) fn suites() -> Vec<TestSuite> {
     {
         let mut suites = vec![suite()];
         suites.push(TestSuite {
-            name: "state-jit",
+            name: "statetests::jit",
             roots: compiled_roots(state_test_roots(), CompiledMode::Jit),
             should_descend: descend_all,
             should_ignore,
             run_file: run_file_jit,
+            run_files: Some(run_files_jit),
         });
         suites.push(TestSuite {
             name: "state-aot",
@@ -30,6 +31,7 @@ pub(crate) fn suites() -> Vec<TestSuite> {
             should_descend: descend_all,
             should_ignore,
             run_file: run_file_aot,
+            run_files: None,
         });
         suites
     }
@@ -47,6 +49,7 @@ fn suite() -> TestSuite {
         should_descend: descend_all,
         should_ignore,
         run_file,
+        run_files: None,
     }
 }
 
@@ -66,6 +69,11 @@ fn run_file_jit(path: PathBuf) -> Result<(), Failed> {
 }
 
 #[cfg(feature = "jit")]
+fn run_files_jit(paths: Vec<PathBuf>) -> Result<(), Failed> {
+    run_compiled_files(paths, CompiledMode::Jit)
+}
+
+#[cfg(feature = "jit")]
 fn run_file_aot(path: PathBuf) -> Result<(), Failed> {
     run_compiled_file(path, CompiledMode::Aot)
 }
@@ -73,6 +81,13 @@ fn run_file_aot(path: PathBuf) -> Result<(), Failed> {
 #[cfg(feature = "jit")]
 fn run_compiled_file(path: PathBuf, mode: CompiledMode) -> Result<(), Failed> {
     run_file_with_mode(path, mode.execution_mode())
+}
+
+#[cfg(feature = "jit")]
+fn run_compiled_files(paths: Vec<PathBuf>, mode: CompiledMode) -> Result<(), Failed> {
+    execute_test_suites(&paths, ExecuteConfig { mode: mode.execution_mode(), ..Default::default() })
+        .map(|_| ())
+        .map_err(|err| err.to_string().into())
 }
 
 #[rustfmt::skip]

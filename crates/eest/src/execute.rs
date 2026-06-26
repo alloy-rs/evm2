@@ -29,6 +29,8 @@ use evm2::{
     registry::HandlerError,
 };
 use serde_json::json;
+#[cfg(feature = "jit")]
+use std::path::PathBuf;
 use std::{collections::BTreeMap, path::Path};
 
 pub use crate::execution::ExecutionMode;
@@ -75,6 +77,40 @@ pub(crate) fn execute_test_suite(path: &Path, config: ExecuteConfig) -> Result<(
     execute_str_with_config(path, &input, config).map(|_| ())
 }
 
+/// Executes multiple state test JSON files using one shared execution resource set.
+#[cfg(feature = "jit")]
+pub(crate) fn execute_test_suites(
+    paths: &[PathBuf],
+    config: ExecuteConfig,
+) -> Result<ExecuteSummary, TestError> {
+    let error_path = paths.first().map_or_else(|| Path::new("state tests"), PathBuf::as_path);
+    let resources = ExecutionResources::new(config.mode)
+        .map_err(|err| TestError::unknown(error_path, err.into()))?;
+    let mut summary = ExecuteSummary::default();
+    let mut db_stats_counts = DbStatsCounts::default();
+
+    for path in paths {
+        let input =
+            fixture_io::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
+        let file_summary = execute_str_with_resources(
+            path,
+            &input,
+            config,
+            &EntryPoint::default(),
+            &resources,
+            &mut db_stats_counts,
+        )?;
+        summary.executed += file_summary.executed;
+        summary.skipped += file_summary.skipped;
+    }
+
+    if config.db_stats {
+        print_db_stats(db_stats_counts);
+    }
+
+    Ok(summary)
+}
+
 /// Executes a loaded state test JSON file using explicit execution options.
 pub fn execute_str_with_config(
     path: &Path,
@@ -91,22 +127,41 @@ pub fn execute_str_with_filter(
     config: ExecuteConfig,
     entrypoint: &EntryPoint,
 ) -> Result<ExecuteSummary, TestError> {
-    let suite: TestSuite =
-        serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let resources =
         ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
-    let mut summary = ExecuteSummary::default();
     let mut db_stats_counts = DbStatsCounts::default();
+    let summary = execute_str_with_resources(
+        path,
+        input,
+        config,
+        entrypoint,
+        &resources,
+        &mut db_stats_counts,
+    )?;
+    if config.db_stats {
+        print_db_stats(db_stats_counts);
+    }
+    Ok(summary)
+}
+
+fn execute_str_with_resources(
+    path: &Path,
+    input: &str,
+    config: ExecuteConfig,
+    entrypoint: &EntryPoint,
+    resources: &ExecutionResources,
+    db_stats_counts: &mut DbStatsCounts,
+) -> Result<ExecuteSummary, TestError> {
+    let suite: TestSuite =
+        serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
+    let mut summary = ExecuteSummary::default();
     for (name, unit) in suite.0 {
         if !entrypoint.matches(&name) {
             summary.skipped += 1;
             continue;
         }
-        execute_unit(path, &name, unit, config, &resources, &mut db_stats_counts)?;
+        execute_unit(path, &name, unit, config, resources, db_stats_counts)?;
         summary.executed += 1;
-    }
-    if config.db_stats {
-        print_db_stats(db_stats_counts);
     }
     Ok(summary)
 }

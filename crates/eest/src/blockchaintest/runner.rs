@@ -26,6 +26,7 @@ pub(crate) fn suites() -> Vec<TestSuite> {
             should_descend,
             should_ignore,
             run_file: run_file_jit,
+            run_files: None,
         });
         suites.push(TestSuite {
             name: "blockchain-aot",
@@ -33,6 +34,7 @@ pub(crate) fn suites() -> Vec<TestSuite> {
             should_descend,
             should_ignore,
             run_file: run_file_aot,
+            run_files: None,
         });
         suites
     }
@@ -50,6 +52,7 @@ pub(crate) fn suite() -> TestSuite {
         should_descend,
         should_ignore,
         run_file,
+        run_files: None,
     }
 }
 

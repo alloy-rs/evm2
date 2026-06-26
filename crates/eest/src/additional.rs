@@ -23,6 +23,7 @@ pub(crate) fn suite(path: PathBuf) -> TestSuite {
         should_descend: descend_all,
         should_ignore,
         run_file,
+        run_files: None,
     }
 }
 
