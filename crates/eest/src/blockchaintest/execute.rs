@@ -32,7 +32,10 @@ use evm2::{
     },
     registry::HandlerError,
 };
-use std::{mem, path::Path};
+use std::{
+    mem,
+    path::{Path, PathBuf},
+};
 
 pub use crate::execution::ExecutionMode;
 
@@ -77,6 +80,31 @@ pub(crate) fn execute_test_suite(
     execute_suite(path, &suite, config, &entrypoint, &mut hook)
 }
 
+/// Executes multiple blockchain test JSON files using one shared execution resource set.
+#[cfg(feature = "jit")]
+pub(crate) fn execute_test_suites(
+    paths: &[PathBuf],
+    config: ExecuteConfig,
+) -> Result<ExecuteSummary, TestError> {
+    let error_path = paths.first().map_or_else(|| Path::new("blockchain tests"), PathBuf::as_path);
+    let resources = ExecutionResources::new(config.mode)
+        .map_err(|err| TestError::unknown(error_path, err.into()))?;
+    let entrypoint = EntryPoint::default();
+    let mut hook = NoopHook;
+    let mut summary = ExecuteSummary::default();
+
+    for path in paths {
+        let suite = fixture_io::read_blockchain(path)
+            .map_err(|err| TestError::unknown(path, err.into()))?;
+        let file_summary =
+            execute_suite_with_resources(path, &suite, config, &entrypoint, &mut hook, &resources)?;
+        summary.executed += file_summary.executed;
+        summary.skipped += file_summary.skipped;
+    }
+
+    Ok(summary)
+}
+
 /// Executes a loaded blockchain test JSON file.
 pub fn execute_str(
     path: &Path,
@@ -100,6 +128,17 @@ pub fn execute_suite(
 ) -> Result<ExecuteSummary, TestError> {
     let resources =
         ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
+    execute_suite_with_resources(path, suite, config, entrypoint, hook, &resources)
+}
+
+fn execute_suite_with_resources(
+    path: &Path,
+    suite: &BlockchainTest,
+    config: ExecuteConfig,
+    entrypoint: &EntryPoint,
+    hook: &mut dyn Hook,
+    resources: &ExecutionResources,
+) -> Result<ExecuteSummary, TestError> {
     let mut summary = ExecuteSummary::default();
     for (name, test_case) in &suite.0 {
         if !entrypoint.matches(name)
@@ -109,7 +148,7 @@ pub fn execute_suite(
             summary.skipped += 1;
             continue;
         }
-        execute_case(path, name, test_case, config, hook, &resources)?;
+        execute_case(path, name, test_case, config, hook, resources)?;
         summary.executed += 1;
     }
     Ok(summary)

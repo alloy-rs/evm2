@@ -4,7 +4,9 @@ use super::{
 };
 use crate::harness::{TestSuite, run_json_harnesses};
 #[cfg(feature = "jit")]
-use crate::{execution::CompiledMode, harness::compiled_roots};
+use crate::{
+    blockchaintest::execute::execute_test_suites, execution::CompiledMode, harness::compiled_roots,
+};
 use libtest_mimic::Failed;
 use std::{
     path::{Path, PathBuf},
@@ -21,20 +23,20 @@ pub(crate) fn suites() -> Vec<TestSuite> {
     {
         let mut suites = vec![suite()];
         suites.push(TestSuite {
-            name: "blockchain-jit",
+            name: "blockchain_tests::jit",
             roots: compiled_roots(blockchain_test_roots(), CompiledMode::Jit),
             should_descend,
             should_ignore,
             run_file: run_file_jit,
-            run_files: None,
+            run_files: Some(run_files_jit),
         });
         suites.push(TestSuite {
-            name: "blockchain-aot",
+            name: "blockchain_tests::aot",
             roots: compiled_roots(blockchain_test_roots(), CompiledMode::Aot),
             should_descend,
             should_ignore,
             run_file: run_file_aot,
-            run_files: None,
+            run_files: Some(run_files_aot),
         });
         suites
     }
@@ -72,13 +74,30 @@ fn run_file_jit(path: PathBuf) -> Result<(), Failed> {
 }
 
 #[cfg(feature = "jit")]
+fn run_files_jit(paths: Vec<PathBuf>) -> Result<(), Failed> {
+    run_compiled_files(paths, CompiledMode::Jit)
+}
+
+#[cfg(feature = "jit")]
 fn run_file_aot(path: PathBuf) -> Result<(), Failed> {
     run_compiled_file(path, CompiledMode::Aot)
 }
 
 #[cfg(feature = "jit")]
+fn run_files_aot(paths: Vec<PathBuf>) -> Result<(), Failed> {
+    run_compiled_files(paths, CompiledMode::Aot)
+}
+
+#[cfg(feature = "jit")]
 fn run_compiled_file(path: PathBuf, mode: CompiledMode) -> Result<(), Failed> {
     run_file_with_mode(path, mode.execution_mode())
+}
+
+#[cfg(feature = "jit")]
+fn run_compiled_files(paths: Vec<PathBuf>, mode: CompiledMode) -> Result<(), Failed> {
+    execute_test_suites(&paths, ExecuteConfig { mode: mode.execution_mode(), ..Default::default() })
+        .map(|_| ())
+        .map_err(|err| err.to_string().into())
 }
 
 fn should_descend(path: &Path) -> bool {
