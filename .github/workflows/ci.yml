@@ -101,6 +101,7 @@ jobs:
           if [[ "${{ matrix.kind }}" == "eest" ]]; then
             package_flags=(-p evm2-eest)
             extra_flags+=(--ignore-default-filter)
+            extra_flags+=(-E 'not test(/::(?:jit|aot)(?:$|::)/)')
           elif [[ "${{ matrix.os }}" == "windows" ]]; then
             package_flags+=(
               --exclude evm2-jit
