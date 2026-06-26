@@ -26,12 +26,12 @@ pub(crate) fn suites() -> Vec<TestSuite> {
             run_files: Some(run_files_jit),
         });
         suites.push(TestSuite {
-            name: "state-aot",
+            name: "statetests::aot",
             roots: compiled_roots(state_test_roots(), CompiledMode::Aot),
             should_descend: descend_all,
             should_ignore,
             run_file: run_file_aot,
-            run_files: None,
+            run_files: Some(run_files_aot),
         });
         suites
     }
@@ -76,6 +76,11 @@ fn run_files_jit(paths: Vec<PathBuf>) -> Result<(), Failed> {
 #[cfg(feature = "jit")]
 fn run_file_aot(path: PathBuf) -> Result<(), Failed> {
     run_compiled_file(path, CompiledMode::Aot)
+}
+
+#[cfg(feature = "jit")]
+fn run_files_aot(paths: Vec<PathBuf>) -> Result<(), Failed> {
+    run_compiled_files(paths, CompiledMode::Aot)
 }
 
 #[cfg(feature = "jit")]
