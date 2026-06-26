@@ -101,6 +101,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> ExecutedTx<'_, T> {
+        self.clear_top_level_error_state();
         self.state.prewarm(&system_contract_address);
         let tx_env = TxEnv {
             origin: caller,
@@ -136,7 +137,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             0
         };
         let gas_used = gas_spent.saturating_sub(gas_refunded);
-        let mut outcome = TxResult {
+        let outcome = TxResult {
             status: result.stop.is_success(),
             gas_used,
             stop: result.stop,
@@ -144,19 +145,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             ..TxResult::default()
         };
 
-        let has_pending_state = if let Err(stop) = self.finalize_transaction() {
-            outcome.status = false;
-            outcome.stop = stop;
-            outcome.output = Bytes::new();
-            outcome.logs.clear();
-            self.state.clear_transaction_state();
-            false
-        } else {
-            outcome.logs = self.state.take_logs();
-            true
-        };
-        outcome.db_error_code = self.db_error_code();
-        ExecutedTx::from_result(self, outcome, has_pending_state)
+        self.finish_executed_tx(outcome)
     }
 
     /// Executes a system call from `caller` to `system_contract_address` on an async fiber.
@@ -220,7 +209,8 @@ mod tests {
         bytecode::Bytecode,
         env::BlockEnv,
         evm::{AccountInfo, InMemoryDB},
-        interpreter::{InstrStop, op},
+        interpreter::{GasTracker, InstrStop, Message, op},
+        precompiles::{Precompile, PrecompileId, PrecompileResult},
         registry::TxRegistry,
     };
 
@@ -341,5 +331,39 @@ mod tests {
         assert!(!result.result.status);
         assert_eq!(result.result.stop, InstrStop::Revert);
         assert!(!result.state_changes.is_changed());
+    }
+
+    #[test]
+    fn system_call_consumes_fatal_precompile_error() {
+        const FATAL_PRECOMPILE_ADDRESS: Address = Address::with_last_byte(0x43);
+
+        fn fatal_precompile(
+            _evm: &mut Evm<BaseEvmTypes>,
+            _message: &Message,
+            _gas: &mut GasTracker,
+        ) -> PrecompileResult {
+            Err("fatal precompile".into())
+        }
+
+        let mut precompiles = Precompiles::base(SpecId::OSAKA);
+        precompiles.as_map_mut().insert(Precompile::new(
+            FATAL_PRECOMPILE_ADDRESS,
+            PrecompileId::custom("fatal-test"),
+            fatal_precompile,
+        ));
+
+        let mut evm = TestEvm::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+
+        let outcome = evm.system_call(FATAL_PRECOMPILE_ADDRESS, Bytes::new()).discard();
+
+        assert!(!outcome.status);
+        assert_eq!(outcome.stop, InstrStop::FatalPrecompileError);
+        assert!(evm.take_fatal_precompile_error().is_none());
     }
 }
