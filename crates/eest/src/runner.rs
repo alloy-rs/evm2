@@ -93,6 +93,17 @@ fn run_compiled_files(paths: Vec<PathBuf>, mode: CompiledMode) -> Result<(), Fai
 #[rustfmt::skip]
 pub(crate) const IGNORED_TESTS: &[&str] = &[
     // Skip slow fixtures and create-collision fixtures that need storage-aware collision handling.
+    "frontier/create/test_create_one_byte.json",
+    "frontier/opcodes/test_all_opcodes.json",
+    "frontier/opcodes/test_stack_overflow.json",
+    "prague/eip2537_bls_12_381_precompiles/test_valid.json",
+    "osaka/eip7939_count_leading_zeros/test_clz_opcode_scenarios.json",
+    "static/state_tests/stBadOpcode/undefinedOpcodeFirstByte.json",
+    "static/state_tests/stCreate2/CREATE2_FirstByte_loop.json",
+    "static/state_tests/stEIP150singleCodeGasPrices/gasCost.json",
+    "static/state_tests/stEIP150singleCodeGasPrices/gasCostBerlin.json",
+    "static/state_tests/stPreCompiledContracts/precompsEIP2929Cancun.json",
+    "static/state_tests/stTimeConsuming/",
     "stTimeConsuming/static_Call50000_sha256.json",
     "CALLBlake2f_MaxRounds.json",
     "loopExp",

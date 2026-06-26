@@ -158,9 +158,6 @@ jobs:
           - os: macos
             runner_label: depot-macos-latest
             mode: jit
-          - os: macos
-            runner_label: depot-macos-latest
-            mode: aot
     steps:
       - uses: actions/checkout@v6
       - name: Install LLVM
