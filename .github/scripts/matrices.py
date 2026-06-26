@@ -108,13 +108,13 @@ toolchains = ["stable", "nightly"]
 feature_sets = ["--no-default-features", "", "--all-features"]
 kinds = ["test", "eest"]
 
-t_linux_x86 = Target("ubuntu", "ubuntu-latest", tier=1)
-t_macos_arm = Target("macos", "macos-latest", tier=1)
-t_linux_arm = Target("ubuntu arm", "ubuntu-24.04-arm", cxx="clang++")
-t_windows = Target("windows", "windows-latest", flags="--no-default-features")
+t_linux_x86 = Target("ubuntu", "depot-ubuntu-latest-4", tier=1)
+t_macos_arm = Target("macos", "depot-macos-latest", tier=1)
+t_linux_arm = Target("ubuntu arm", "depot-ubuntu-latest-arm-4", cxx="clang++")
+t_windows = Target("windows", "depot-windows-latest-4", flags="--no-default-features")
 t_wasm_unknown = Target(
     "wasm",
-    "ubuntu-latest",
+    "depot-ubuntu-latest-4",
     target="wasm32-unknown-unknown",
     command="build",
     kinds=["wasm"],
@@ -122,7 +122,7 @@ t_wasm_unknown = Target(
 )
 t_wasm_wasi = Target(
     "wasm wasi",
-    "ubuntu-latest",
+    "depot-ubuntu-latest-4",
     target="wasm32-wasip1",
     command="wasm-test",
     kinds=["wasm"],
@@ -131,7 +131,7 @@ t_wasm_wasi = Target(
 )
 t_wasm_wasi_tail = Target(
     "wasm tail-call",
-    "ubuntu-latest",
+    "depot-ubuntu-latest-4",
     target="wasm32-wasip1",
     command="wasm-test",
     kinds=["wasm"],
@@ -141,7 +141,7 @@ t_wasm_wasi_tail = Target(
 )
 t_linux_i686 = Target(
     "i686",
-    "ubuntu-latest",
+    "depot-ubuntu-latest-4",
     target="i686-unknown-linux-gnu",
     command="cross-test",
     kinds=["test"],
@@ -149,7 +149,7 @@ t_linux_i686 = Target(
 )
 t_linux_armv7 = Target(
     "armv7",
-    "ubuntu-latest",
+    "depot-ubuntu-latest-4",
     target="armv7-unknown-linux-gnueabihf",
     command="cross-test",
     kinds=["test"],
