@@ -7,6 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: "sccache"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -64,6 +65,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: rui314/setup-mold@v1
         if: runner.os == 'Linux'
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -147,16 +149,16 @@ jobs:
       matrix:
         include:
           - os: ubuntu
-            runner_label: ubuntu-latest
+            runner_label: depot-ubuntu-latest-4
             mode: jit
           - os: ubuntu
-            runner_label: ubuntu-latest
+            runner_label: depot-ubuntu-latest-4
             mode: aot
           - os: macos
-            runner_label: macos-latest
+            runner_label: depot-macos-latest
             mode: jit
           - os: macos
-            runner_label: macos-latest
+            runner_label: depot-macos-latest
             mode: aot
     steps:
       - uses: actions/checkout@v6
@@ -186,7 +188,7 @@ jobs:
 
   no-std:
     name: no_std ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -197,6 +199,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -206,7 +209,7 @@ jobs:
 
   feature-checks:
     name: features ${{ matrix.flags }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -219,6 +222,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@v1
       - uses: taiki-e/install-action@cargo-hack
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -227,12 +231,13 @@ jobs:
         run: cargo hack check --workspace --each-feature --skip nightly ${{ matrix.flags }}
 
   feature-propagation:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: taiki-e/cache-cargo-install-action@v3
         with:
           tool: zepter
@@ -241,11 +246,12 @@ jobs:
       - run: zepter run check
 
   examples:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -261,7 +267,7 @@ jobs:
       - uses: crate-ci/typos@v1
 
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -271,6 +277,7 @@ jobs:
         with:
           components: clippy
       - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -278,7 +285,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features
 
   docs:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -286,6 +293,7 @@ jobs:
         run: .github/scripts/install_llvm.sh ubuntu
       - uses: dtolnay/rust-toolchain@nightly
       - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
