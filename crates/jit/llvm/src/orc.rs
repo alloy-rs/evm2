@@ -72,12 +72,12 @@ impl ThreadSafeContext {
     }
 
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(ctx: LLVMOrcThreadSafeContextRef) -> Self {
+    pub const unsafe fn from_inner(ctx: LLVMOrcThreadSafeContextRef) -> Self {
         Self { ctx }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcThreadSafeContextRef {
+    pub const fn as_inner(&self) -> LLVMOrcThreadSafeContextRef {
         self.ctx
     }
 
@@ -128,12 +128,12 @@ impl ThreadSafeModule {
     }
 
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(ptr: LLVMOrcThreadSafeModuleRef) -> Self {
+    pub const unsafe fn from_inner(ptr: LLVMOrcThreadSafeModuleRef) -> Self {
         Self { ptr }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcThreadSafeModuleRef {
+    pub const fn as_inner(&self) -> LLVMOrcThreadSafeModuleRef {
         self.ptr
     }
 
@@ -171,12 +171,12 @@ pub struct SymbolStringPoolRef {
 
 impl SymbolStringPoolRef {
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(ptr: LLVMOrcSymbolStringPoolRef) -> Self {
+    pub const unsafe fn from_inner(ptr: LLVMOrcSymbolStringPoolRef) -> Self {
         Self { ptr }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcSymbolStringPoolRef {
+    pub const fn as_inner(&self) -> LLVMOrcSymbolStringPoolRef {
         self.ptr
     }
 
@@ -228,12 +228,12 @@ impl SymbolStringPoolEntry {
     }
 
     /// Wraps a raw pointer. Must not be null.
-    pub unsafe fn from_inner_unchecked(ptr: LLVMOrcSymbolStringPoolEntryRef) -> Self {
+    pub const unsafe fn from_inner_unchecked(ptr: LLVMOrcSymbolStringPoolEntryRef) -> Self {
         Self { ptr: unsafe { NonNull::new_unchecked(ptr) } }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcSymbolStringPoolEntryRef {
+    pub const fn as_inner(&self) -> LLVMOrcSymbolStringPoolEntryRef {
         self.ptr.as_ptr()
     }
 
@@ -261,17 +261,17 @@ pub struct EvaluatedSymbol {
 
 impl EvaluatedSymbol {
     /// Create a new EvaluatedSymbol from the given address and flags.
-    pub fn new(address: u64, flags: SymbolFlags) -> Self {
+    pub const fn new(address: u64, flags: SymbolFlags) -> Self {
         Self { address, flags }
     }
 
     /// Create a new EvaluatedSymbol from the given flags.
-    pub fn from_flags(flags: SymbolFlags) -> Self {
+    pub const fn from_flags(flags: SymbolFlags) -> Self {
         Self { address: 0, flags }
     }
 
     /// Create a new EvaluatedSymbol from the given address.
-    pub fn from_address(address: usize) -> Self {
+    pub const fn from_address(address: usize) -> Self {
         Self { address: address as u64, flags: SymbolFlags::none() }
     }
 }
@@ -294,73 +294,73 @@ impl Default for SymbolFlags {
 
 impl SymbolFlags {
     /// Create a new, empty SymbolFlags.
-    pub fn none() -> Self {
+    pub const fn none() -> Self {
         Self { generic: LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsNone as u8, target: 0 }
     }
 
     /// Set the `Exported` flag.
-    pub fn set_exported(&mut self) {
+    pub const fn set_exported(&mut self) {
         self.generic |= LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsExported as u8;
     }
 
     /// Set the `Exported` flag.
-    pub fn exported(mut self) -> Self {
+    pub const fn exported(mut self) -> Self {
         self.set_exported();
         self
     }
 
     /// Returns `true` if the `Exported` flag is set.
-    pub fn is_exported(&self) -> bool {
+    pub const fn is_exported(&self) -> bool {
         (self.generic & LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsExported as u8) != 0
     }
 
     /// Set the `Weak` flag.
-    pub fn set_weak(&mut self) {
+    pub const fn set_weak(&mut self) {
         self.generic |= LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsWeak as u8;
     }
 
     /// Set the `Weak` flag.
-    pub fn weak(mut self) -> Self {
+    pub const fn weak(mut self) -> Self {
         self.set_weak();
         self
     }
 
     /// Returns `true` if the `Weak` flag is set.
-    pub fn is_weak(&self) -> bool {
+    pub const fn is_weak(&self) -> bool {
         (self.generic & LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsWeak as u8) != 0
     }
 
     /// Set the `Callable` flag.
-    pub fn set_callable(&mut self) {
+    pub const fn set_callable(&mut self) {
         self.generic |= LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsCallable as u8;
     }
 
     /// Set the `Callable` flag.
-    pub fn callable(mut self) -> Self {
+    pub const fn callable(mut self) -> Self {
         self.set_callable();
         self
     }
 
     /// Returns `true` if the `Callable` flag is set.
-    pub fn is_callable(&self) -> bool {
+    pub const fn is_callable(&self) -> bool {
         (self.generic & LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsCallable as u8) != 0
     }
 
     /// Set the `MaterializationSideEffectsOnly` flag.
-    pub fn set_materialization_side_effects_only(&mut self) {
+    pub const fn set_materialization_side_effects_only(&mut self) {
         self.generic |=
             LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsMaterializationSideEffectsOnly
                 as u8;
     }
 
     /// Set the `MaterializationSideEffectsOnly` flag.
-    pub fn materialization_side_effects_only(mut self) -> Self {
+    pub const fn materialization_side_effects_only(mut self) -> Self {
         self.set_materialization_side_effects_only();
         self
     }
 
     /// Returns `true` if the `MaterializationSideEffectsOnly` flag is set.
-    pub fn is_materialization_side_effects_only(&self) -> bool {
+    pub const fn is_materialization_side_effects_only(&self) -> bool {
         (self.generic
             & LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsMaterializationSideEffectsOnly
                 as u8)
@@ -368,23 +368,23 @@ impl SymbolFlags {
     }
 
     /// Add a generic flag.
-    pub fn set_generic(&mut self, flag: LLVMJITSymbolGenericFlags) {
+    pub const fn set_generic(&mut self, flag: LLVMJITSymbolGenericFlags) {
         self.generic |= flag as u8;
     }
 
     /// Add a generic flag.
-    pub fn with_generic(mut self, flag: LLVMJITSymbolGenericFlags) -> Self {
+    pub const fn with_generic(mut self, flag: LLVMJITSymbolGenericFlags) -> Self {
         self.set_generic(flag);
         self
     }
 
     /// Add a target flag.
-    pub fn set_target(&mut self, flag: LLVMJITSymbolTargetFlags) {
+    pub const fn set_target(&mut self, flag: LLVMJITSymbolTargetFlags) {
         self.target |= flag;
     }
 
     /// Add a target flag.
-    pub fn with_target(mut self, flag: LLVMJITSymbolTargetFlags) -> Self {
+    pub const fn with_target(mut self, flag: LLVMJITSymbolTargetFlags) -> Self {
         self.set_target(flag);
         self
     }
@@ -402,7 +402,7 @@ pub struct SymbolFlagsMapPair {
 
 impl SymbolFlagsMapPair {
     /// Create a new pair.
-    pub fn new(name: SymbolStringPoolEntry, flags: SymbolFlags) -> Self {
+    pub const fn new(name: SymbolStringPoolEntry, flags: SymbolFlags) -> Self {
         Self { name, flags }
     }
 }
@@ -419,7 +419,7 @@ pub struct SymbolMapPair {
 
 impl SymbolMapPair {
     /// Create a new pair.
-    pub fn new(name: SymbolStringPoolEntry, evaluated_symbol: EvaluatedSymbol) -> Self {
+    pub const fn new(name: SymbolStringPoolEntry, evaluated_symbol: EvaluatedSymbol) -> Self {
         Self { name, evaluated_symbol }
     }
 }
@@ -431,7 +431,7 @@ pub struct SymbolFlagsMapPairs<'a>(&'a [SymbolFlagsMapPair]);
 
 impl<'a> SymbolFlagsMapPairs<'a> {
     /// Returns the slice of pairs.
-    pub fn as_slice(&self) -> &'a [SymbolFlagsMapPair] {
+    pub const fn as_slice(&self) -> &'a [SymbolFlagsMapPair] {
         self.0
     }
 }
@@ -578,12 +578,12 @@ impl MaterializationUnit {
     // TODO: fn lazy_reexports
 
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(mu: LLVMOrcMaterializationUnitRef) -> Self {
+    pub const unsafe fn from_inner(mu: LLVMOrcMaterializationUnitRef) -> Self {
         Self { mu }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcMaterializationUnitRef {
+    pub const fn as_inner(&self) -> LLVMOrcMaterializationUnitRef {
         self.mu
     }
 }
@@ -614,18 +614,18 @@ pub struct MaterializationResponsibility {
 
 impl MaterializationResponsibility {
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(mr: LLVMOrcMaterializationResponsibilityRef) -> Self {
+    pub const unsafe fn from_inner(mr: LLVMOrcMaterializationResponsibilityRef) -> Self {
         Self { mr }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcMaterializationResponsibilityRef {
+    pub const fn as_inner(&self) -> LLVMOrcMaterializationResponsibilityRef {
         self.mr
     }
 
     /// Returns a reference to the MaterializationResponsibility.
     #[inline]
-    pub fn as_ref(&self) -> MaterializationResponsibilityRef<'_> {
+    pub const fn as_ref(&self) -> MaterializationResponsibilityRef<'_> {
         unsafe { MaterializationResponsibilityRef::from_inner(self.as_inner()) }
     }
 }
@@ -644,12 +644,12 @@ pub struct MaterializationResponsibilityRef<'mr> {
 
 impl<'mr> MaterializationResponsibilityRef<'mr> {
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(mr: LLVMOrcMaterializationResponsibilityRef) -> Self {
+    pub const unsafe fn from_inner(mr: LLVMOrcMaterializationResponsibilityRef) -> Self {
         Self { mr, _marker: PhantomData }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcMaterializationResponsibilityRef {
+    pub const fn as_inner(&self) -> LLVMOrcMaterializationResponsibilityRef {
         self.mr
     }
 
@@ -799,12 +799,12 @@ impl fmt::Debug for ResourceTracker {
 
 impl ResourceTracker {
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(rt: LLVMOrcResourceTrackerRef) -> Self {
+    pub const unsafe fn from_inner(rt: LLVMOrcResourceTrackerRef) -> Self {
         Self { rt }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcResourceTrackerRef {
+    pub const fn as_inner(&self) -> LLVMOrcResourceTrackerRef {
         self.rt
     }
 
@@ -842,12 +842,12 @@ pub struct ExecutionSessionRef<'ee> {
 
 impl ExecutionSessionRef<'_> {
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(es: LLVMOrcExecutionSessionRef) -> Self {
+    pub const unsafe fn from_inner(es: LLVMOrcExecutionSessionRef) -> Self {
         Self { es, _marker: PhantomData }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcExecutionSessionRef {
+    pub const fn as_inner(&self) -> LLVMOrcExecutionSessionRef {
         self.es
     }
 
@@ -960,12 +960,12 @@ impl JITDylibRef {
     }
 
     /// Wraps a raw pointer. Must not be null.
-    pub unsafe fn from_inner_unchecked(dylib: LLVMOrcJITDylibRef) -> Self {
+    pub const unsafe fn from_inner_unchecked(dylib: LLVMOrcJITDylibRef) -> Self {
         Self { dylib: unsafe { NonNull::new_unchecked(dylib) } }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(self) -> LLVMOrcJITDylibRef {
+    pub const fn as_inner(self) -> LLVMOrcJITDylibRef {
         self.dylib.as_ptr()
     }
 
@@ -1090,12 +1090,12 @@ impl DefinitionGenerator {
     }
 
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(dg: LLVMOrcDefinitionGeneratorRef) -> Self {
+    pub const unsafe fn from_inner(dg: LLVMOrcDefinitionGeneratorRef) -> Self {
         Self { dg }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcDefinitionGeneratorRef {
+    pub const fn as_inner(&self) -> LLVMOrcDefinitionGeneratorRef {
         self.dg
     }
 }
@@ -1196,12 +1196,12 @@ impl JITTargetMachineBuilder {
     }
 
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(builder: LLVMOrcJITTargetMachineBuilderRef) -> Self {
+    pub const unsafe fn from_inner(builder: LLVMOrcJITTargetMachineBuilderRef) -> Self {
         Self { builder }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcJITTargetMachineBuilderRef {
+    pub const fn as_inner(&self) -> LLVMOrcJITTargetMachineBuilderRef {
         self.builder
     }
 
@@ -1230,17 +1230,17 @@ pub struct LLJITBuilder {
 
 impl LLJITBuilder {
     /// Creates a new default LLJIT builder.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { builder: ptr::null_mut() }
     }
 
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(builder: LLVMOrcLLJITBuilderRef) -> Self {
+    pub const unsafe fn from_inner(builder: LLVMOrcLLJITBuilderRef) -> Self {
         Self { builder }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcLLJITBuilderRef {
+    pub const fn as_inner(&self) -> LLVMOrcLLJITBuilderRef {
         self.builder
     }
 
@@ -1339,7 +1339,7 @@ impl fmt::Debug for LLJIT {
 
 impl LLJIT {
     /// Creates a new LLJIT builder.
-    pub fn builder() -> LLJITBuilder {
+    pub const fn builder() -> LLJITBuilder {
         LLJITBuilder::new()
     }
 
@@ -1349,12 +1349,12 @@ impl LLJIT {
     }
 
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(jit: LLVMOrcLLJITRef) -> Self {
+    pub const unsafe fn from_inner(jit: LLVMOrcLLJITRef) -> Self {
         Self { jit }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcLLJITRef {
+    pub const fn as_inner(&self) -> LLVMOrcLLJITRef {
         self.jit
     }
 
@@ -1535,12 +1535,12 @@ pub struct ObjectLayerRef {
 
 impl ObjectLayerRef {
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(ptr: LLVMOrcObjectLayerRef) -> Self {
+    pub const unsafe fn from_inner(ptr: LLVMOrcObjectLayerRef) -> Self {
         Self { ptr }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcObjectLayerRef {
+    pub const fn as_inner(&self) -> LLVMOrcObjectLayerRef {
         self.ptr
     }
 }
@@ -1558,12 +1558,12 @@ pub struct ObjectTransformLayerRef {
 
 impl ObjectTransformLayerRef {
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(ptr: LLVMOrcObjectTransformLayerRef) -> Self {
+    pub const unsafe fn from_inner(ptr: LLVMOrcObjectTransformLayerRef) -> Self {
         Self { ptr }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcObjectTransformLayerRef {
+    pub const fn as_inner(&self) -> LLVMOrcObjectTransformLayerRef {
         self.ptr
     }
 
@@ -1626,12 +1626,12 @@ pub struct IRTransformLayerRef {
 
 impl IRTransformLayerRef {
     /// Wraps a raw pointer.
-    pub unsafe fn from_inner(ptr: LLVMOrcIRTransformLayerRef) -> Self {
+    pub const unsafe fn from_inner(ptr: LLVMOrcIRTransformLayerRef) -> Self {
         Self { ptr }
     }
 
     /// Unwraps the raw pointer.
-    pub fn as_inner(&self) -> LLVMOrcIRTransformLayerRef {
+    pub const fn as_inner(&self) -> LLVMOrcIRTransformLayerRef {
         self.ptr
     }
 
@@ -1765,7 +1765,7 @@ struct ManuallyDropElements<T> {
 
 impl<T> ManuallyDropElements<T> {
     #[inline(always)]
-    fn new(vec: Vec<T>) -> Self {
+    const fn new(vec: Vec<T>) -> Self {
         Self { vec }
     }
 }

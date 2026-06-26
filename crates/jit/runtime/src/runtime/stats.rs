@@ -119,7 +119,7 @@ pub struct RuntimeStatsSnapshot {
 
 impl RuntimeStatsSnapshot {
     /// Total bytes allocated by the JIT engine (code + data).
-    pub fn jit_total_bytes(&self) -> u64 {
+    pub const fn jit_total_bytes(&self) -> u64 {
         self.jit_code_bytes + self.jit_data_bytes
     }
 }

@@ -1,5 +1,5 @@
 [alias]
-cl = "clippy --workspace --all-features --all-targets"
+cl = "clippy --workspace --all-features --all-targets -- -D warnings"
 docs = "doc --workspace --all-features --no-deps --document-private-items"
 cli = "run --bin evm2 --all-features --"
 t = "nextest run --workspace --all-features"

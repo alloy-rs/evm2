@@ -26,7 +26,7 @@ impl Default for Linker {
 
 impl Linker {
     /// Creates a new linker.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { cc: None, linker: None, cflags: vec![] }
     }
 

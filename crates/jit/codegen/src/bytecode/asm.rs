@@ -86,7 +86,7 @@ pub(super) struct Tokenizer<'a> {
 }
 
 impl<'a> Tokenizer<'a> {
-    pub(super) fn new(src: &'a str) -> Self {
+    pub(super) const fn new(src: &'a str) -> Self {
         Self { src, pos: 0 }
     }
 
@@ -98,7 +98,7 @@ impl<'a> Tokenizer<'a> {
         self.remaining().chars().next()
     }
 
-    fn advance(&mut self, n: usize) {
+    const fn advance(&mut self, n: usize) {
         self.pos += n;
     }
 
@@ -636,7 +636,7 @@ fn encode_imm(num: U256, size: Option<u8>) -> Result<Vec<u8>> {
 }
 
 /// Compute the minimum push width for a value (0 for zero, 1 for 1..=0xff, etc.).
-fn min_push_width(val: usize) -> u8 {
+const fn min_push_width(val: usize) -> u8 {
     if val == 0 {
         0
     } else {

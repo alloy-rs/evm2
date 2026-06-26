@@ -81,7 +81,7 @@ pub(crate) enum AbsValue {
 
 impl AbsValue {
     /// Returns the single constant if this is `Const`, or `None` otherwise.
-    pub(crate) fn as_const(self) -> Option<U256Imm> {
+    pub(crate) const fn as_const(self) -> Option<U256Imm> {
         match self {
             Self::Const(v) => Some(v),
             _ => None,
@@ -316,23 +316,23 @@ enum JumpCondition {
 }
 
 impl JumpResolution {
-    fn new(target: JumpTarget) -> Self {
+    const fn new(target: JumpTarget) -> Self {
         Self { target, condition: JumpCondition::Unknown }
     }
 
-    fn bottom() -> Self {
+    const fn bottom() -> Self {
         Self::new(JumpTarget::Bottom)
     }
 
-    fn invalid() -> Self {
+    const fn invalid() -> Self {
         Self::new(JumpTarget::Invalid)
     }
 
-    fn top() -> Self {
+    const fn top() -> Self {
         Self::new(JumpTarget::Top)
     }
 
-    fn resolved(targets: SmallVec<[Inst; 4]>) -> Self {
+    const fn resolved(targets: SmallVec<[Inst; 4]>) -> Self {
         Self::new(JumpTarget::Resolved(targets))
     }
 
@@ -349,16 +349,16 @@ impl JumpResolution {
         }
     }
 
-    fn with_condition(mut self, condition: JumpCondition) -> Self {
+    const fn with_condition(mut self, condition: JumpCondition) -> Self {
         self.condition = condition;
         self
     }
 
-    fn is_top(&self) -> bool {
+    const fn is_top(&self) -> bool {
         matches!(self.target, JumpTarget::Top)
     }
 
-    fn is_resolved(&self) -> bool {
+    const fn is_resolved(&self) -> bool {
         matches!(self.target, JumpTarget::Resolved(_) | JumpTarget::Invalid)
     }
 }

@@ -98,7 +98,7 @@ impl<'a> EvmContext<'a> {
 
     /// Finishes state owned by the JIT context after compiled execution.
     #[inline]
-    pub fn finish_interpreter_run(&mut self) {
+    pub const fn finish_interpreter_run(&mut self) {
         let gas = self.gas;
         self.interpreter_mut().set_gas(gas);
     }
@@ -117,13 +117,13 @@ impl<'a> EvmContext<'a> {
 
     /// Returns the current linear memory.
     #[inline]
-    pub fn memory(&self) -> &Memory {
+    pub const fn memory(&self) -> &Memory {
         self.interpreter().memory_ref()
     }
 
     /// Returns the current linear memory.
     #[inline]
-    pub fn memory_mut(&mut self) -> &mut Memory {
+    pub const fn memory_mut(&mut self) -> &mut Memory {
         self.interpreter_mut().memory_mut()
     }
 
@@ -146,7 +146,7 @@ impl<'a> EvmContext<'a> {
 
     /// Returns calldata bytes.
     #[inline]
-    pub fn input(&self) -> &Bytes {
+    pub const fn input(&self) -> &Bytes {
         &self.message().input
     }
 
@@ -158,50 +158,50 @@ impl<'a> EvmContext<'a> {
 
     /// Returns the transaction-global environment.
     #[inline]
-    pub fn tx_env(&self) -> &'a TxEnv<BaseEvmTypes> {
+    pub const fn tx_env(&self) -> &'a TxEnv<BaseEvmTypes> {
         self.interpreter().tx_env()
     }
 
     /// Returns active runtime version data.
     #[inline]
-    pub fn version(&self) -> &evm2::Version {
+    pub const fn version(&self) -> &evm2::Version {
         self.interpreter().version()
     }
 
     /// Returns active runtime gas parameters.
     #[inline]
-    pub fn gas_params(&self) -> &GasParams {
+    pub const fn gas_params(&self) -> &GasParams {
         &self.version().gas_params
     }
 
     /// Returns the active base specification ID.
     #[inline]
-    pub fn spec_id(&self) -> SpecId {
+    pub const fn spec_id(&self) -> SpecId {
         self.interpreter().spec()
     }
 
     /// Returns whether the active runtime version enables `feature`.
     #[inline]
-    pub fn enables(&self, feature: EvmFeatures) -> bool {
+    pub const fn enables(&self, feature: EvmFeatures) -> bool {
         self.version().feature(feature)
     }
 
     /// Returns the active frame-local call/create message.
     #[inline]
-    pub fn message(&self) -> &'a Message<BaseEvmTypes> {
+    pub const fn message(&self) -> &'a Message<BaseEvmTypes> {
         self.interpreter().message()
     }
 
     /// Returns whether the active frame forbids state-changing operations.
     #[inline]
-    pub fn is_static(&self) -> bool {
+    pub const fn is_static(&self) -> bool {
         self.interpreter().is_static()
     }
 
     /// Sets the static-call flag for JIT test setup.
     #[inline]
     #[doc(hidden)]
-    pub fn set_static_for_jit(&mut self, is_static: bool) {
+    pub const fn set_static_for_jit(&mut self, is_static: bool) {
         self.interpreter_mut().set_static_for_jit(is_static);
     }
 
@@ -228,7 +228,7 @@ impl<'a> EvmContext<'a> {
     ///
     /// Must be called after any operation that may resize memory.
     #[inline]
-    pub fn refresh_memory_cache(&mut self) {
+    pub const fn refresh_memory_cache(&mut self) {
         let mem_len = self.memory().len();
         let mem_base = self.memory_mut().as_mut_ptr();
         self.mem_base = mem_base;
@@ -392,7 +392,7 @@ impl EvmStack {
     ///
     /// Use [`EvmStack::new_heap`] to create a stack on the heap.
     #[inline]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self(unsafe { MaybeUninit::uninit().assume_init() })
     }
 
@@ -454,7 +454,7 @@ impl EvmStack {
 
     /// Returns a mutable pointer to the stack.
     #[inline]
-    pub fn as_mut_ptr(&mut self) -> *mut EvmWord {
+    pub const fn as_mut_ptr(&mut self) -> *mut EvmWord {
         self.0.as_mut_ptr().cast()
     }
 
@@ -486,7 +486,7 @@ impl EvmStack {
     ///
     /// Panics if the index is out of bounds.
     #[inline]
-    pub fn set(&mut self, index: usize, value: EvmWord) {
+    pub const fn set(&mut self, index: usize, value: EvmWord) {
         self.0[index] = MaybeUninit::new(value);
     }
 

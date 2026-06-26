@@ -142,7 +142,7 @@ impl Bytecode<'_> {
 /// environment reads that are pure in EVM semantics. Excludes opcodes with dynamic gas
 /// (EXP), memory access (MLOAD, KECCAK256), storage/host reads (SLOAD, TLOAD, BALANCE,
 /// etc.), and MSIZE/GAS (position-dependent).
-fn can_skip_when_dead(opcode: u8) -> bool {
+const fn can_skip_when_dead(opcode: u8) -> bool {
     matches!(
         opcode,
         // Arithmetic (inline).

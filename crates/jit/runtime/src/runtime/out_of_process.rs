@@ -801,7 +801,7 @@ where
     wincode::deserialize_from(r).map_err(|e| std::io::Error::new(read_error_kind(&e), e))
 }
 
-fn read_error_kind(err: &wincode::ReadError) -> std::io::ErrorKind {
+const fn read_error_kind(err: &wincode::ReadError) -> std::io::ErrorKind {
     match err {
         wincode::ReadError::Io(wincode::io::ReadError::ReadSizeLimit(_)) => {
             std::io::ErrorKind::UnexpectedEof
@@ -815,7 +815,7 @@ fn is_unexpected_eof(err: &eyre::Report) -> bool {
         .is_some_and(|err| err.kind() == std::io::ErrorKind::UnexpectedEof)
 }
 
-fn opt_level_to_u8(level: OptimizationLevel) -> u8 {
+const fn opt_level_to_u8(level: OptimizationLevel) -> u8 {
     match level {
         OptimizationLevel::None => 0,
         OptimizationLevel::Less => 1,

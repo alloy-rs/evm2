@@ -61,13 +61,13 @@ impl<T: Copy> VStack<T> {
     }
 
     /// Returns the current top offset (one-past-top, relative to section start).
-    pub(super) fn top_offset(&self) -> i32 {
+    pub(super) const fn top_offset(&self) -> i32 {
         self.top_offset
     }
 
     /// Returns the section-relative offset for a given operand depth
     /// (0 = TOS, 1 = second from top, etc.).
-    pub(super) fn offset_at_depth(&self, depth: usize) -> i32 {
+    pub(super) const fn offset_at_depth(&self, depth: usize) -> i32 {
         self.top_offset - 1 - depth as i32
     }
 
@@ -140,7 +140,7 @@ impl<T: Copy> VStack<T> {
     }
 
     /// Returns the live range of offsets (base_offset..top_offset).
-    pub(super) fn live_range(&self) -> Range<i32> {
+    pub(super) const fn live_range(&self) -> Range<i32> {
         self.base_offset..self.top_offset
     }
 

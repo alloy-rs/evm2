@@ -85,25 +85,25 @@ impl<'a> OpcodesIter<'a> {
     /// Returns a new iterator that also yields the program counter alongside the opcode and
     /// immediate data.
     #[inline]
-    pub fn with_pc(self) -> OpcodesIterWithPc<'a> {
+    pub const fn with_pc(self) -> OpcodesIterWithPc<'a> {
         OpcodesIterWithPc { iter: self, pc: 0 }
     }
 
     /// Returns the inner iterator.
     #[inline]
-    pub fn inner(&self) -> &slice::Iter<'a, u8> {
+    pub const fn inner(&self) -> &slice::Iter<'a, u8> {
         &self.iter
     }
 
     /// Returns the inner iterator.
     #[inline]
-    pub fn inner_mut(&mut self) -> &mut slice::Iter<'a, u8> {
+    pub const fn inner_mut(&mut self) -> &mut slice::Iter<'a, u8> {
         &mut self.iter
     }
 
     /// Returns the inner iterator.
     #[inline]
-    pub fn into_inner(self) -> slice::Iter<'a, u8> {
+    pub const fn into_inner(self) -> slice::Iter<'a, u8> {
         self.iter
     }
 
@@ -217,7 +217,7 @@ pub(crate) fn compute_stack_io(op: u8, immediate: Option<&[u8]>) -> (u8, u8) {
 /// Decodes a DUPN/SWAPN immediate byte into a stack index.
 ///
 /// Returns `None` if the immediate is in the invalid range `[91, 127]`.
-pub fn decode_single(x: u8) -> Option<u8> {
+pub const fn decode_single(x: u8) -> Option<u8> {
     if x <= 90 || x >= 128 { Some(x.wrapping_add(145)) } else { None }
 }
 
@@ -232,7 +232,7 @@ pub fn encode_single(n: u8) -> Option<u8> {
 /// Decodes an EXCHANGE immediate byte into a pair of stack indices `(n, m)`.
 ///
 /// Returns `None` if the value is outside the valid range.
-pub fn decode_pair(x: u8) -> Option<(u8, u8)> {
+pub const fn decode_pair(x: u8) -> Option<(u8, u8)> {
     if x > 81 && x < 128 {
         return None;
     }

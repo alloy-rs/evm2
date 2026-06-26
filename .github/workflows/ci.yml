@@ -282,6 +282,8 @@ jobs:
           cache-on-failure: true
           cache-bin: false
       - run: cargo clippy --workspace --all-targets --all-features
+        env:
+          RUSTFLAGS: -Dwarnings
 
   docs:
     runs-on: depot-ubuntu-latest

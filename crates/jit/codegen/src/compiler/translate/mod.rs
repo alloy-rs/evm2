@@ -1837,7 +1837,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.current_block().expect("no blocks")
     }
 
-    fn little_endian(&self) -> bool {
+    const fn little_endian(&self) -> bool {
         true
     }
 

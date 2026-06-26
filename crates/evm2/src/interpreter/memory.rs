@@ -49,14 +49,14 @@ impl Memory {
 
     /// Returns all initialized memory bytes.
     #[inline]
-    pub fn as_slice(&self) -> &[u8] {
+    pub const fn as_slice(&self) -> &[u8] {
         self.data.as_slice()
     }
 
     /// Returns a raw pointer to memory bytes.
     #[inline]
     #[doc(hidden)]
-    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+    pub const fn as_mut_ptr(&mut self) -> *mut u8 {
         self.data.as_mut_ptr()
     }
 

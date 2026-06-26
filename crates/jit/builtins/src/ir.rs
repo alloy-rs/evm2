@@ -19,12 +19,12 @@ impl<B: Backend> Default for Builtins<B> {
 
 impl<B: Backend> Builtins<B> {
     /// Create a new cache.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self([None; Builtin::COUNT])
     }
 
     /// Clear the cache.
-    pub fn clear(&mut self) {
+    pub const fn clear(&mut self) {
         *self = Self::new();
     }
 
@@ -156,7 +156,7 @@ macro_rules! builtins {
                 }
             }
 
-            pub fn attrs(self) -> &'static [Attribute] {
+            pub const fn attrs(self) -> &'static [Attribute] {
                 #[allow(unused_imports)]
                 use Attribute::*;
                 match self {
@@ -176,7 +176,7 @@ macro_rules! builtins {
                 }
             }
 
-            fn op(self) -> u8 {
+            const fn op(self) -> u8 {
                 use evm2::interpreter::op::*;
 
                 // _in_out

@@ -159,14 +159,14 @@ impl<B: Backend> EvmCompiler<B> {
     /// Returns a reference to the underlying compiler backend.
     #[doc(hidden)]
     #[inline]
-    pub fn backend(&self) -> &B {
+    pub const fn backend(&self) -> &B {
         &self.backend
     }
 
     /// Returns a mutable reference to the underlying compiler backend.
     #[doc(hidden)]
     #[inline]
-    pub fn backend_mut(&mut self) -> &mut B {
+    pub const fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
     }
 
@@ -216,7 +216,7 @@ impl<B: Backend> EvmCompiler<B> {
     /// This can be quite slow.
     ///
     /// Defaults to `true`.
-    pub fn dump_assembly(&mut self, yes: bool) {
+    pub const fn dump_assembly(&mut self, yes: bool) {
         self.dump_assembly = yes;
     }
 
@@ -225,7 +225,7 @@ impl<B: Backend> EvmCompiler<B> {
     /// This can be quite slow.
     ///
     /// Defaults to `false`.
-    pub fn dump_unopt_assembly(&mut self, yes: bool) {
+    pub const fn dump_unopt_assembly(&mut self, yes: bool) {
         self.dump_unopt_assembly = yes;
     }
 
@@ -257,14 +257,14 @@ impl<B: Backend> EvmCompiler<B> {
     /// Enables the block deduplication pass.
     ///
     /// Defaults to `true`.
-    pub fn set_dedup(&mut self, yes: bool) {
+    pub const fn set_dedup(&mut self, yes: bool) {
         self.dedup = yes;
     }
 
     /// Enables the dead store elimination pass.
     ///
     /// Defaults to `true`.
-    pub fn set_dse(&mut self, yes: bool) {
+    pub const fn set_dse(&mut self, yes: bool) {
         self.dse = yes;
     }
 
@@ -344,7 +344,7 @@ impl<B: Backend> EvmCompiler<B> {
     /// Automatically enabled by [`set_dump_to`](Self::set_dump_to).
     ///
     /// Defaults to `false`.
-    pub fn set_debug_info(&mut self, yes: bool) {
+    pub const fn set_debug_info(&mut self, yes: bool) {
         self.config.debug = yes;
     }
 
@@ -354,7 +354,7 @@ impl<B: Backend> EvmCompiler<B> {
     ///
     /// Enabled by default in debug builds, when `-Cforce-frame-pointers` is set, or when
     /// [`set_dump_to`](Self::set_dump_to) is called with a directory.
-    pub fn frame_pointers(&mut self, yes: bool) {
+    pub const fn frame_pointers(&mut self, yes: bool) {
         self.config.frame_pointers = yes;
     }
 
@@ -366,14 +366,14 @@ impl<B: Backend> EvmCompiler<B> {
     /// incur a performance penalty as the stack will be stored at all return sites.
     ///
     /// Defaults to `false`.
-    pub fn inspect_stack(&mut self, yes: bool) {
+    pub const fn inspect_stack(&mut self, yes: bool) {
         self.config.inspect_stack = yes;
     }
 
     /// Sets whether to copy the stack into a local alloca while executing.
     ///
     /// Defaults to `false`.
-    pub fn local_stack(&mut self, yes: bool) {
+    pub const fn local_stack(&mut self, yes: bool) {
         self.config.local_stack = yes;
     }
 
@@ -389,7 +389,7 @@ impl<B: Backend> EvmCompiler<B> {
     ///
     /// [`StackUnderflow`]: evm2::interpreter::InstrStop::StackUnderflow
     /// [`StackOverflow`]: evm2::interpreter::InstrStop::StackOverflow
-    pub unsafe fn stack_bound_checks(&mut self, yes: bool) {
+    pub const unsafe fn stack_bound_checks(&mut self, yes: bool) {
         self.config.stack_bound_checks = yes;
     }
 
@@ -403,7 +403,7 @@ impl<B: Backend> EvmCompiler<B> {
     ///
     /// Defaults to 100k gas. Set to `0` to disable compile-time evaluation entirely, or
     /// `u64::MAX` to disable the limit.
-    pub fn set_compiler_gas_limit(&mut self, limit: u64) {
+    pub const fn set_compiler_gas_limit(&mut self, limit: u64) {
         self.compiler_gas_limit = limit;
     }
 
@@ -418,7 +418,7 @@ impl<B: Backend> EvmCompiler<B> {
     /// Use with care, as executing a function with gas disabled may result in an infinite loop.
     ///
     /// Defaults to `true`.
-    pub fn gas_metering(&mut self, yes: bool) {
+    pub const fn gas_metering(&mut self, yes: bool) {
         self.config.gas_metering = yes;
     }
 
@@ -433,7 +433,7 @@ impl<B: Backend> EvmCompiler<B> {
     /// Useful for benchmarking the cost of failure-result materialization.
     ///
     /// Defaults to `true`.
-    pub fn single_error(&mut self, yes: bool) {
+    pub const fn single_error(&mut self, yes: bool) {
         self.config.single_error = yes;
     }
 
@@ -443,7 +443,7 @@ impl<B: Backend> EvmCompiler<B> {
     /// Useful for custom chains or hardforks with non-standard gas costs.
     ///
     /// Defaults to the evm2 spec gas schedule.
-    pub fn set_gas_params(&mut self, gas_params: GasParams) {
+    pub const fn set_gas_params(&mut self, gas_params: GasParams) {
         self.gas_params = Some(gas_params);
     }
 
@@ -680,7 +680,7 @@ impl<B: Backend> EvmCompiler<B> {
         name: &str,
         linkage: Linkage,
     ) -> Result<(B::Builder<'a>, B::FuncId)> {
-        fn size_align<T>(i: usize) -> (usize, usize, usize) {
+        const fn size_align<T>(i: usize) -> (usize, usize, usize) {
             (i, mem::size_of::<T>(), mem::align_of::<T>())
         }
 
@@ -1036,7 +1036,7 @@ mod default_attrs {
         for_sized_ref(size_align::<T>())
     }
 
-    pub(crate) fn size_align<T>() -> (usize, usize) {
+    pub(crate) const fn size_align<T>() -> (usize, usize) {
         (std::mem::size_of::<T>(), std::mem::align_of::<T>())
     }
 }

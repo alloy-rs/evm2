@@ -254,7 +254,7 @@ fn opcode_color(name: &str) -> &'static str {
     opcode_color_by_byte(byte)
 }
 
-fn opcode_color_by_byte(byte: u8) -> &'static str {
+const fn opcode_color_by_byte(byte: u8) -> &'static str {
     use op::*;
     match byte {
         // Terminating.
@@ -477,7 +477,7 @@ impl<'a> Bytecode<'a> {
     }
 }
 
-fn decimal_width(n: u32) -> usize {
+const fn decimal_width(n: u32) -> usize {
     if n == 0 { 1 } else { n.ilog10() as usize + 1 }
 }
 

@@ -88,13 +88,13 @@ impl Default for GasSectionAnalysis {
 impl GasSectionAnalysis {
     /// Accumulates a base gas cost.
     #[inline]
-    pub(crate) fn process(&mut self, base_gas: u16) {
+    pub(crate) const fn process(&mut self, base_gas: u16) {
         self.gas_cost += base_gas as u64;
     }
 
     /// Accumulates extra gas (e.g. pre-computed dynamic gas for folded instructions).
     #[inline]
-    pub(crate) fn process_extra(&mut self, gas: u64) {
+    pub(crate) const fn process_extra(&mut self, gas: u64) {
         self.gas_cost += gas;
     }
 
@@ -152,7 +152,7 @@ impl Default for StackSectionAnalysis {
 impl StackSectionAnalysis {
     /// Returns the cumulative stack delta so far.
     #[inline]
-    pub(crate) fn diff(&self) -> i32 {
+    pub(crate) const fn diff(&self) -> i32 {
         self.diff
     }
 

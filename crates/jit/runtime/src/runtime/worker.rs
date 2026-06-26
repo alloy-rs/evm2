@@ -50,11 +50,11 @@ type OutOfProcessHelper = ();
 pub(crate) struct SyncNotifier(Option<chan::Sender<()>>);
 
 impl SyncNotifier {
-    pub(crate) fn none() -> Self {
+    pub(crate) const fn none() -> Self {
         Self(None)
     }
 
-    pub(crate) fn new(tx: chan::Sender<()>) -> Self {
+    pub(crate) const fn new(tx: chan::Sender<()>) -> Self {
         Self(Some(tx))
     }
 
@@ -165,7 +165,7 @@ pub(crate) struct JitCodeBacking {
 
 impl JitCodeBacking {
     #[cfg(feature = "llvm")]
-    pub(crate) fn new(tracker: ResourceTracker, jd_guard: Arc<JitDylibGuard>) -> Self {
+    pub(crate) const fn new(tracker: ResourceTracker, jd_guard: Arc<JitDylibGuard>) -> Self {
         Self { tracker: Some(tracker), _jd_guard: jd_guard }
     }
 }

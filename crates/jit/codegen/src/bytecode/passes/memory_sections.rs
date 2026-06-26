@@ -307,7 +307,7 @@ fn exact_memory_size_for_access(offset: Option<u64>, len: Option<u64>) -> Option
     Some(round_memory_size(size))
 }
 
-fn min_memory_size_for_access(offset: Option<u64>, len: Option<u64>) -> u64 {
+const fn min_memory_size_for_access(offset: Option<u64>, len: Option<u64>) -> u64 {
     match (offset, len) {
         (_, Some(0) | None) => 0,
         (Some(offset), Some(len)) => round_memory_size(offset.saturating_add(len)),
@@ -316,7 +316,7 @@ fn min_memory_size_for_access(offset: Option<u64>, len: Option<u64>) -> u64 {
 }
 
 #[inline]
-fn round_memory_size(size: u64) -> u64 {
+const fn round_memory_size(size: u64) -> u64 {
     size.saturating_add(31) / 32 * 32
 }
 

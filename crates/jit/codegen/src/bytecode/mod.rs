@@ -74,13 +74,13 @@ impl U256Imm {
 
     /// Decodes a handle previously produced by [`Self::to_raw`].
     #[inline]
-    pub(crate) fn from_raw(raw: u32) -> Self {
+    pub(crate) const fn from_raw(raw: u32) -> Self {
         Self(raw)
     }
 
     /// Encodes this handle as a `u32` for storage in [`InstData::data`].
     #[inline]
-    pub(crate) fn to_raw(self) -> u32 {
+    pub(crate) const fn to_raw(self) -> u32 {
         self.0
     }
 
@@ -621,12 +621,12 @@ impl<'a> Bytecode<'a> {
     }
 
     /// Returns `true` if the bytecode has dynamic jumps.
-    pub(crate) fn has_dynamic_jumps(&self) -> bool {
+    pub(crate) const fn has_dynamic_jumps(&self) -> bool {
         self.has_dynamic_jumps
     }
 
     /// Returns `true` if the stack argument's contents are observed by the caller.
-    pub(crate) fn stack_observed(&self) -> bool {
+    pub(crate) const fn stack_observed(&self) -> bool {
         self.config.contains(AnalysisConfig::INSPECT_STACK)
     }
 
@@ -971,7 +971,7 @@ impl InstData {
 
     /// Returns the number of input and output stack elements of this instruction.
     #[inline]
-    pub(crate) fn stack_io(&self) -> (u8, u8) {
+    pub(crate) const fn stack_io(&self) -> (u8, u8) {
         self.stack_io
     }
 
@@ -983,20 +983,20 @@ impl InstData {
 
     /// Returns `true` if this instruction is a jump instruction (`JUMP`/`JUMPI`).
     #[inline]
-    pub(crate) fn is_jump(&self) -> bool {
+    pub(crate) const fn is_jump(&self) -> bool {
         matches!(self.opcode, op::JUMP | op::JUMPI)
     }
 
     /// Returns `true` if this instruction is a jump instruction (`JUMP`/`JUMPI`), and the
     /// target known statically.
     #[inline]
-    pub(crate) fn is_static_jump(&self) -> bool {
+    pub(crate) const fn is_static_jump(&self) -> bool {
         self.is_jump() && self.flags.contains(InstFlags::STATIC_JUMP)
     }
 
     /// Returns `true` if this instruction is a `JUMPI` whose condition is known statically.
     #[inline]
-    pub(crate) fn has_const_jumpi_condition(&self) -> bool {
+    pub(crate) const fn has_const_jumpi_condition(&self) -> bool {
         self.opcode == op::JUMPI && self.flags.contains(InstFlags::CONST_JUMP_CONDITION)
     }
 
@@ -1083,18 +1083,18 @@ impl InstData {
 
     /// Returns `true` if this instruction starts a new stack section.
     #[inline]
-    pub(crate) fn is_stack_section_head(&self) -> bool {
+    pub(crate) const fn is_stack_section_head(&self) -> bool {
         self.flags.contains(InstFlags::STACK_SECTION_HEAD)
     }
 
     /// Returns `true` if this instruction is dead code.
-    pub(crate) fn is_dead_code(&self) -> bool {
+    pub(crate) const fn is_dead_code(&self) -> bool {
         self.flags.contains(InstFlags::DEAD_CODE)
     }
 
     /// Returns `true` if this instruction requires to know `gasleft()`.
     #[inline]
-    pub(crate) fn requires_gasleft(&self, spec_id: SpecId) -> bool {
+    pub(crate) const fn requires_gasleft(&self, spec_id: SpecId) -> bool {
         matches!(
             self.opcode,
             op::GAS
@@ -1109,19 +1109,19 @@ impl InstData {
 
     /// Returns `true` if execution can fall through to the next sequential instruction.
     #[inline]
-    pub(crate) fn can_fall_through(&self) -> bool {
+    pub(crate) const fn can_fall_through(&self) -> bool {
         !self.is_diverging() && self.opcode != op::JUMP && !self.has_const_jumpi_condition()
     }
 
     /// Returns `true` if we know that this instruction will branch or stop execution.
     #[inline]
-    pub(crate) fn is_branching(&self) -> bool {
+    pub(crate) const fn is_branching(&self) -> bool {
         self.is_jump() || self.is_diverging()
     }
 
     /// Returns `true` if we know that this instruction will stop execution.
     #[inline]
-    pub(crate) fn is_diverging(&self) -> bool {
+    pub(crate) const fn is_diverging(&self) -> bool {
         (self.opcode == op::JUMP && self.flags.contains(InstFlags::INVALID_JUMP))
             || self.flags.contains(InstFlags::DISABLED)
             || self.flags.contains(InstFlags::UNKNOWN)
@@ -1169,7 +1169,7 @@ fn bitvec_as_bytes<T: bitvec::store::BitStore, O: bitvec::order::BitOrder>(
     slice_as_bytes(bitvec.as_raw_slice())
 }
 
-fn slice_as_bytes<T>(a: &[T]) -> &[u8] {
+const fn slice_as_bytes<T>(a: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(a.as_ptr().cast(), std::mem::size_of_val(a)) }
 }
 

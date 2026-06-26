@@ -335,7 +335,7 @@ pub struct RuntimeTuning {
 impl RuntimeTuning {
     /// Returns whether `bytecode` is eligible for JIT/AOT compilation.
     #[inline]
-    pub fn should_compile(&self, bytecode: &[u8]) -> bool {
+    pub const fn should_compile(&self, bytecode: &[u8]) -> bool {
         if bytecode.is_empty() {
             return false;
         }

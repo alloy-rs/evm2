@@ -26,22 +26,22 @@ impl<B: Builder> Pointer<B> {
     }
 
     /// Creates a new address pointer.
-    pub fn new_address(ty: B::Type, value: B::Value) -> Self {
+    pub const fn new_address(ty: B::Type, value: B::Value) -> Self {
         Self { ty, base: PointerBase::Address(value) }
     }
 
     /// Returns `true` if the pointer is an address.
-    pub fn is_address(&self) -> bool {
+    pub const fn is_address(&self) -> bool {
         matches!(self.base, PointerBase::Address(_))
     }
 
     /// Returns `true` if the pointer is a stack slot.
-    pub fn is_stack_slot(&self) -> bool {
+    pub const fn is_stack_slot(&self) -> bool {
         matches!(self.base, PointerBase::StackSlot(_))
     }
 
     /// Converts the pointer to an address.
-    pub fn into_address(self) -> Option<B::Value> {
+    pub const fn into_address(self) -> Option<B::Value> {
         match self.base {
             PointerBase::Address(ptr) => Some(ptr),
             PointerBase::StackSlot(_) => None,
@@ -49,7 +49,7 @@ impl<B: Builder> Pointer<B> {
     }
 
     /// Converts the pointer to a stack slot.
-    pub fn into_stack_slot(self) -> Option<B::StackSlot> {
+    pub const fn into_stack_slot(self) -> Option<B::StackSlot> {
         match self.base {
             PointerBase::Address(_) => None,
             PointerBase::StackSlot(slot) => Some(slot),

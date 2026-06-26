@@ -74,7 +74,7 @@ pub struct JitMemoryUsage {
 
 impl JitMemoryUsage {
     /// Total bytes (code + data).
-    pub fn total_bytes(&self) -> usize {
+    pub const fn total_bytes(&self) -> usize {
         self.code_bytes + self.data_bytes
     }
 }
@@ -601,12 +601,12 @@ impl EvmLlvmBackend {
 
     /// Returns the LLVM context.
     #[inline]
-    pub fn cx(&self) -> &Context {
+    pub const fn cx(&self) -> &Context {
         self.cx
     }
 
     #[inline]
-    fn module(&self) -> &Module<'static> {
+    const fn module(&self) -> &Module<'static> {
         &self.module
     }
 
@@ -637,7 +637,7 @@ impl EvmLlvmBackend {
     /// LLVM skips internal name processing for empty names, avoiding overhead when names
     /// are not needed for readability.
     #[inline]
-    fn name<'a>(&self, name: &'a str) -> &'a str {
+    const fn name<'a>(&self, name: &'a str) -> &'a str {
         if self.backend_config.is_dumping { name } else { "" }
     }
 
@@ -2107,7 +2107,7 @@ fn create_module<'ctx>(
     Ok(module)
 }
 
-fn convert_intcc(cond: IntCC) -> IntPredicate {
+const fn convert_intcc(cond: IntCC) -> IntPredicate {
     match cond {
         IntCC::Equal => IntPredicate::EQ,
         IntCC::NotEqual => IntPredicate::NE,
@@ -2122,7 +2122,7 @@ fn convert_intcc(cond: IntCC) -> IntPredicate {
     }
 }
 
-fn convert_opt_level(level: OptimizationLevel) -> inkwell::OptimizationLevel {
+const fn convert_opt_level(level: OptimizationLevel) -> inkwell::OptimizationLevel {
     match level {
         OptimizationLevel::None => inkwell::OptimizationLevel::None,
         OptimizationLevel::Less => inkwell::OptimizationLevel::Less,
@@ -2200,7 +2200,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
     }
 }
 
-fn convert_attribute_loc(loc: evm2_jit_backend::FunctionAttributeLocation) -> AttributeLoc {
+const fn convert_attribute_loc(loc: evm2_jit_backend::FunctionAttributeLocation) -> AttributeLoc {
     match loc {
         evm2_jit_backend::FunctionAttributeLocation::Return => AttributeLoc::Return,
         evm2_jit_backend::FunctionAttributeLocation::Param(i) => AttributeLoc::Param(i),
@@ -2221,14 +2221,14 @@ fn set_function_call_conv(function: FunctionValue<'_>, call_conv: CallConv) {
     }
 }
 
-fn convert_call_conv(call_conv: CallConv) -> Option<inkwell::llvm_sys::LLVMCallConv> {
+const fn convert_call_conv(call_conv: CallConv) -> Option<inkwell::llvm_sys::LLVMCallConv> {
     match call_conv {
         CallConv::Default => None,
         CallConv::Cold => Some(inkwell::llvm_sys::LLVMCallConv::LLVMPreserveMostCallConv),
     }
 }
 
-fn convert_linkage(linkage: evm2_jit_backend::Linkage) -> inkwell::module::Linkage {
+const fn convert_linkage(linkage: evm2_jit_backend::Linkage) -> inkwell::module::Linkage {
     match linkage {
         evm2_jit_backend::Linkage::Public => inkwell::module::Linkage::External,
         evm2_jit_backend::Linkage::Import => inkwell::module::Linkage::External,
@@ -2236,7 +2236,7 @@ fn convert_linkage(linkage: evm2_jit_backend::Linkage) -> inkwell::module::Linka
     }
 }
 
-fn convert_tail_call_kind(kind: TailCallKind) -> inkwell::llvm_sys::LLVMTailCallKind {
+const fn convert_tail_call_kind(kind: TailCallKind) -> inkwell::llvm_sys::LLVMTailCallKind {
     match kind {
         TailCallKind::None => inkwell::llvm_sys::LLVMTailCallKind::LLVMTailCallKindNone,
         TailCallKind::Tail => inkwell::llvm_sys::LLVMTailCallKind::LLVMTailCallKindTail,

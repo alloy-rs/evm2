@@ -63,7 +63,7 @@ impl std::fmt::Debug for CompiledProgram {
 
 impl CompiledProgram {
     /// Creates a new compiled program backed by a loaded shared library.
-    pub(crate) fn new_aot(
+    pub(crate) const fn new_aot(
         key: RuntimeCacheKey,
         func: EvmCompilerFn,
         library: Arc<LoadedLibrary>,
@@ -73,7 +73,7 @@ impl CompiledProgram {
 
     /// Creates a new compiled program backed by a JIT module's
     /// [`ResourceTracker`](crate::llvm::orc::ResourceTracker).
-    pub(crate) fn new_jit(
+    pub(crate) const fn new_jit(
         key: RuntimeCacheKey,
         func: EvmCompilerFn,
         backing: Arc<JitCodeBacking>,
@@ -122,7 +122,7 @@ pub(crate) struct LoadedLibrary {
 
 impl LoadedLibrary {
     /// Creates a new loaded library wrapper.
-    pub(crate) fn new(library: libloading::Library) -> Self {
+    pub(crate) const fn new(library: libloading::Library) -> Self {
         Self { _library: library }
     }
 }
