@@ -5,6 +5,8 @@
 mod additional;
 mod binary;
 pub mod blockchaintest;
+#[cfg(feature = "jit")]
+mod compiled;
 mod discover;
 mod env;
 mod error;

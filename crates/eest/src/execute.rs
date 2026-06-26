@@ -1,3 +1,5 @@
+#[cfg(feature = "jit")]
+use crate::compiled::{self, FileSummary};
 use crate::{
     error::{TestError, TestErrorKind},
     execution::ExecutionResources,
@@ -86,29 +88,30 @@ pub(crate) fn execute_test_suites(
     let error_path = paths.first().map_or_else(|| Path::new("state tests"), PathBuf::as_path);
     let resources = ExecutionResources::new(config.mode)
         .map_err(|err| TestError::unknown(error_path, err.into()))?;
-    let mut summary = ExecuteSummary::default();
-    let mut db_stats_counts = DbStatsCounts::default();
-
-    for path in paths {
-        let input =
-            fixture_io::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
+    let summary = compiled::run_files(paths.to_vec(), resources, move |path, resources| {
+        let input = fixture_io::read_to_string(&path)
+            .map_err(|err| TestError::unknown(path.as_path(), err.into()))?;
+        let mut db_stats_counts = DbStatsCounts::default();
         let file_summary = execute_str_with_resources(
-            path,
+            &path,
             &input,
             config,
             &EntryPoint::default(),
             &resources,
             &mut db_stats_counts,
         )?;
-        summary.executed += file_summary.executed;
-        summary.skipped += file_summary.skipped;
-    }
+        Ok(FileSummary {
+            executed: file_summary.executed,
+            skipped: file_summary.skipped,
+            db_stats_counts,
+        })
+    })?;
 
     if config.db_stats {
-        print_db_stats(db_stats_counts);
+        print_db_stats(summary.db_stats_counts);
     }
 
-    Ok(summary)
+    Ok(ExecuteSummary { executed: summary.executed, skipped: summary.skipped })
 }
 
 /// Executes a loaded state test JSON file using explicit execution options.

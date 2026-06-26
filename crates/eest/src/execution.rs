@@ -87,9 +87,25 @@ impl ExecutionResources {
         }
     }
 
+    #[cfg(feature = "jit")]
+    pub(crate) fn print_runtime_stats(&self) {
+        if let Some(backend) = &self.backend {
+            let stats = backend.stats();
+            println!(
+                "Runtime backend: {} hits, {} misses, {} resident",
+                stats.lookup_hits, stats.lookup_misses, stats.resident_entries,
+            );
+        }
+    }
+
     #[cfg(not(feature = "jit"))]
     #[inline]
     pub(crate) const fn configure_evm(&self, _evm: &mut Evm<BaseEvmTypes>) {
+        let _ = self;
+    }
+
+    #[cfg(not(feature = "jit"))]
+    pub(crate) const fn print_runtime_stats(&self) {
         let _ = self;
     }
 }

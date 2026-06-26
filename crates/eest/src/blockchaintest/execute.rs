@@ -9,6 +9,8 @@ use super::{
         Withdrawal,
     },
 };
+#[cfg(feature = "jit")]
+use crate::compiled::{self, FileSummary};
 use crate::{
     execution::ExecutionResources,
     filter::EntryPoint,
@@ -89,20 +91,27 @@ pub(crate) fn execute_test_suites(
     let error_path = paths.first().map_or_else(|| Path::new("blockchain tests"), PathBuf::as_path);
     let resources = ExecutionResources::new(config.mode)
         .map_err(|err| TestError::unknown(error_path, err.into()))?;
-    let entrypoint = EntryPoint::default();
-    let mut hook = NoopHook;
-    let mut summary = ExecuteSummary::default();
+    let summary = compiled::run_files(paths.to_vec(), resources, move |path, resources| {
+        let suite = fixture_io::read_blockchain(&path)
+            .map_err(|err| TestError::unknown(path.as_path(), err.into()))?;
+        let entrypoint = EntryPoint::default();
+        let mut hook = NoopHook;
+        let file_summary = execute_suite_with_resources(
+            &path,
+            &suite,
+            config,
+            &entrypoint,
+            &mut hook,
+            &resources,
+        )?;
+        Ok(FileSummary {
+            executed: file_summary.executed,
+            skipped: file_summary.skipped,
+            db_stats_counts: DbStatsCounts::default(),
+        })
+    })?;
 
-    for path in paths {
-        let suite = fixture_io::read_blockchain(path)
-            .map_err(|err| TestError::unknown(path, err.into()))?;
-        let file_summary =
-            execute_suite_with_resources(path, &suite, config, &entrypoint, &mut hook, &resources)?;
-        summary.executed += file_summary.executed;
-        summary.skipped += file_summary.skipped;
-    }
-
-    Ok(summary)
+    Ok(ExecuteSummary { executed: summary.executed, skipped: summary.skipped })
 }
 
 /// Executes a loaded blockchain test JSON file.
