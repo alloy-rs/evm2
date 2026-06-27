@@ -36,6 +36,6 @@ jobs:
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@v4
         with:
-          run: cargo codspeed run -p evm2-cli --features jit --bench evm
+          run: cargo codspeed run -p evm2-cli --bench evm
           mode: instrumentation
           token: ${{ secrets.CODSPEED_TOKEN }}
