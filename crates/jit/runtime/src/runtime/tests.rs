@@ -102,38 +102,21 @@ impl TestBackend {
     /// Polls until the given bytecode is compiled and available in the resident map.
     #[cfg(feature = "llvm")]
     fn wait_compiled(&self, bytecode: &[u8], spec_id: SpecId) -> Arc<CompiledProgram> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            if let LookupDecision::Compiled(program) =
-                self.backend.lookup(Self::req(bytecode, spec_id))
-            {
-                return program;
+        poll_until(std::time::Duration::from_secs(30), || {
+            match self.backend.lookup(Self::req(bytecode, spec_id)) {
+                LookupDecision::Compiled(p) => Some(p),
+                _ => None,
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for compiled program; stats: {:?}",
-                self.stats(),
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        })
     }
 
     /// Polls the resident map without enqueueing lookup observations.
     #[cfg(feature = "llvm")]
     fn wait_resident_compiled(&self, bytecode: &[u8], spec_id: SpecId) -> Arc<CompiledProgram> {
         let code_hash = alloy_primitives::keccak256(bytecode);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            if let Some(program) = self.backend.get_compiled(code_hash, spec_id) {
-                return program;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for resident compiled program; stats: {:?}",
-                self.stats(),
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        poll_until(std::time::Duration::from_secs(30), || {
+            self.backend.get_compiled(code_hash, spec_id)
+        })
     }
 
     /// Polls until the resident map reaches the expected entry count.
