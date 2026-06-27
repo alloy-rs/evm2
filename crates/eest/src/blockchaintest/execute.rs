@@ -999,6 +999,7 @@ mod tests {
                         hash: block_hash,
                         number: U256::ONE,
                         gas_limit: U256::from(30_000_000),
+                        gas_used: U256::from(43_105),
                         base_fee_per_gas: Some(U256::ZERO),
                         timestamp: U256::ONE,
                         ..BlockHeader::default()
