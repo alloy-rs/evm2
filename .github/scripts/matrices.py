@@ -7,6 +7,8 @@ import json
 class Target:
     # Human-readable target name.
     name: str
+    # Operating system.
+    os: str
     # GHA runner.
     runner_label: str
     # Rust target triple.
@@ -30,6 +32,7 @@ class Target:
         self,
         name: str,
         runner_label: str,
+        os: str = "ubuntu",
         target: str = "",
         tier: int = 2,
         command: str = "nextest",
@@ -40,6 +43,7 @@ class Target:
         cxx: str = "",
     ):
         self.name = name
+        self.os = os
         self.runner_label = runner_label
         self.target = target
         self.tier = tier
@@ -69,6 +73,7 @@ class Case:
 # GHA matrix entry.
 class Expanded:
     name: str
+    os: str
     runner_label: str
     kind: str
     rust: str
@@ -82,6 +87,7 @@ class Expanded:
     def __init__(
         self,
         name: str,
+        os: str,
         runner_label: str,
         kind: str,
         rust: str,
@@ -93,6 +99,7 @@ class Expanded:
         cxx: str,
     ):
         self.name = name
+        self.os = os
         self.runner_label = runner_label
         self.kind = kind
         self.rust = rust
@@ -109,9 +116,11 @@ feature_sets = ["--no-default-features", "", "--all-features"]
 kinds = ["test", "eest"]
 
 t_linux_x86 = Target("ubuntu", "depot-ubuntu-latest-4", tier=1)
-t_macos_arm = Target("macos", "depot-macos-latest", tier=1)
+t_macos_arm = Target("macos", "depot-macos-latest", os="macos", tier=1)
 t_linux_arm = Target("ubuntu arm", "depot-ubuntu-latest-arm-4", cxx="clang++")
-t_windows = Target("windows", "depot-windows-latest-4", flags="--no-default-features")
+t_windows = Target(
+    "windows", "depot-windows-latest-4", os="windows", flags="--no-default-features"
+)
 t_wasm_unknown = Target(
     "wasm",
     "depot-ubuntu-latest-4",
@@ -183,6 +192,7 @@ def main():
             flags = target.flags if target.tier == 2 else case.flags
             obj = Expanded(
                 name=name(target, case, flags),
+                os=target.os,
                 runner_label=target.runner_label,
                 kind=case.kind,
                 rust=case.rust,

@@ -335,9 +335,9 @@ fn create_inner<T: EvmTypes>(
     gas.record_refund(result.refund_propagated_to_parent());
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
     if result.stop == InstrStop::Revert {
-        state.set_return_data(result.output);
+        *state.return_data_mut() = result.output;
     } else {
-        state.set_return_data(Bytes::new());
+        state.return_data_mut().clear();
     }
     let address = result
         .created_address

@@ -424,7 +424,7 @@ impl TracingInspector {
             {
                 return memory.clone();
             }
-            RecordedMemory::new(interp.memory_ref().slice(0, interp.memory_ref().len()))
+            RecordedMemory::new(interp.memory().slice(0, interp.memory().len()))
         });
 
         let stack = if self.config.record_stack_snapshots.is_all()

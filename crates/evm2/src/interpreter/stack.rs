@@ -201,6 +201,12 @@ impl<'a> StackMut<'a> {
         StackMut { stack: self.stack, len: self.len }
     }
 
+    /// Consumes this borrowed stack and returns its raw word pointer and length.
+    #[inline]
+    pub const fn into_raw_parts(self) -> (*mut Word, &'a mut usize) {
+        (self.stack.as_mut_ptr().cast(), self.len)
+    }
+
     #[inline]
     const fn as_word_ptr(&self) -> *const Word {
         self.stack.as_ptr().cast()

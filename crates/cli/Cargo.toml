@@ -44,6 +44,28 @@ thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 zstd.workspace = true
 
+# jit
+evm2-jit-context = { workspace = true, optional = true }
+evm2-jit-llvm = { workspace = true, optional = true }
+evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
+libloading = { version = "0.9", optional = true }
+open = { version = "5", optional = true }
+
+[build-dependencies]
+evm2-jit-build = { workspace = true, optional = true }
+
+[features]
+default = []
+jit = [
+    "evm2-eest/jit",
+    "dep:evm2-jit-context",
+    "dep:evm2-jit-llvm",
+    "dep:evm2-jit-runtime",
+    "dep:evm2-jit-build",
+    "dep:libloading",
+    "dep:open",
+]
+
 [dev-dependencies]
 criterion.workspace = true
 revm = { workspace = true, features = ["test-types"] }
