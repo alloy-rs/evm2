@@ -49,7 +49,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Check commenter permission
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ github.token }}
           script: |
@@ -71,7 +71,7 @@ jobs:
 
       - name: Parse arguments
         id: args
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ github.token }}
           script: |
@@ -211,7 +211,7 @@ jobs:
 
       - name: Acknowledge request
         id: ack
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           ACTOR: ${{ steps.args.outputs.actor }}
           SUMMARY: ${{ steps.args.outputs.summary }}
@@ -259,7 +259,7 @@ jobs:
 
       - name: Update status
         if: ${{ always() && steps.ack.outcome == 'success' && steps.ack.outputs['comment-id'] != '' }}
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           COMMENT_ID: ${{ steps.ack.outputs['comment-id'] }}
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
