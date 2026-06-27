@@ -661,6 +661,9 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         version.gas_params.get(GasId::Create).into()
     };
     ecx.gas.spend(create_cost)?;
+    if ecx.enables(EvmFeatures::EIP8037) {
+        ecx.gas.spend_state(version.gas_params.create_state_gas())?;
+    }
 
     let mut gas_limit = ecx.gas.remaining();
     if ecx.enables(EvmFeatures::EIP150) {
@@ -764,7 +767,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         usize::MAX
     };
 
-    let (gas_limit, loaded_code, resolved_code_address, disable_precompiles) =
+    let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address, disable_precompiles) =
         load_acc_and_calc_gas(ecx, to, transfers_value, call_kind == CallKind::Call, local_gas_limit)?;
 
     let current = ecx.message();
@@ -798,6 +801,9 @@ pub unsafe extern "C" fn __revmc_builtin_call(
     let tx_env = ecx.tx_env();
     let mut result = ecx.host().execute_message(tx_env, loaded_code, &mut message);
     ecx.gas.merge_child_gas(result.gas, result.stop);
+    if new_account_state_gas != 0 && !result.stop.is_success() {
+        ecx.gas.refill_reservoir(new_account_state_gas);
+    }
 
     let copy_len = min(out_len, result.output.len());
     if copy_len != 0 {
@@ -825,7 +831,7 @@ fn load_acc_and_calc_gas(
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
-) -> Result<(u64, Bytecode, Address, bool), BuiltinError> {
+) -> Result<(u64, u64, Bytecode, Address, bool), BuiltinError> {
     let version = *ecx.version();
     if transfers_value {
         ecx.gas.spend(version.gas_params.get(GasId::TransferValueCost).into())?;
@@ -843,6 +849,7 @@ fn load_acc_and_calc_gas(
     if account.is_cold {
         cost += additional_cold_cost;
     }
+    let mut new_account_state_gas = 0;
     let mut code = account.code;
     let mut code_address = to;
     if ecx.enables(EvmFeatures::EIP7702)
@@ -872,8 +879,12 @@ fn load_acc_and_calc_gas(
         )
     {
         cost += u64::from(version.gas_params.get(GasId::NewAccountCost));
+        if features.contains(EvmFeatures::EIP8037) && transfers_value {
+            new_account_state_gas = version.gas_params.new_account_state_gas();
+        }
     }
     ecx.gas.spend(cost)?;
+    ecx.gas.spend_state(new_account_state_gas)?;
 
     let mut gas_limit = if ecx.enables(EvmFeatures::EIP150) {
         min(version.gas_params.call_stipend_reduction(ecx.gas.remaining()), stack_gas_limit)
@@ -887,7 +898,7 @@ fn load_acc_and_calc_gas(
     }
 
     let disable_precompiles = code_address != to;
-    Ok((gas_limit, code, code_address, disable_precompiles))
+    Ok((gas_limit, new_account_state_gas, code, code_address, disable_precompiles))
 }
 
 #[unsafe(no_mangle)]
