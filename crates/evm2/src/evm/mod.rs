@@ -1333,10 +1333,10 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
     fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,
-        spec_id: SpecId,
+        features: EvmFeatures,
     ) -> Result<bool, InstrStop> {
         self.state
-            .target_is_empty_for_new_account_gas(address, spec_id)
+            .target_is_empty_for_new_account_gas(address, features)
             .map_err(|code| self.db_error_stop(code))
     }
 
@@ -1432,7 +1432,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             return Err(InstrStop::OutOfGas);
         }
         let target_is_empty_for_new_account_gas =
-            self.target_is_empty_for_new_account_gas(target, self.spec_id())?;
+            self.target_is_empty_for_new_account_gas(target, self.features)?;
         let previously_destroyed = match self.state.account(contract, false) {
             Ok(account) => account.is_destructed(),
             Err(code) => return Err(db_error_stop!(self, code)),

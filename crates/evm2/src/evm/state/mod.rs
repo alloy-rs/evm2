@@ -25,7 +25,7 @@ use super::{
     db::{CacheDB, DbErrorCode, DbResult, DynDatabase},
 };
 use crate::{
-    EvmFeatures, SpecId, Version,
+    EvmFeatures, Version,
     bytecode::Bytecode,
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap},
@@ -334,9 +334,8 @@ impl State {
     pub(crate) fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,
-        spec_id: SpecId,
+        features: EvmFeatures,
     ) -> DbResult<bool> {
-        let features = Version::base(spec_id).features;
         Ok(self.account(address, false)?.is_empty_for_new_account_gas(features))
     }
 

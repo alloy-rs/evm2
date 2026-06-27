@@ -859,12 +859,12 @@ fn load_acc_and_calc_gas(
         code = delegated_account.code;
         code_address = delegated_address;
     }
-    let spec_id = ecx.spec_id();
+    let features = ecx.version().features;
     if create_empty_account
         && should_charge_new_account_gas(
-            ecx.enables(EvmFeatures::EIP161),
+            features.contains(EvmFeatures::EIP161),
             transfers_value,
-            ecx.host().target_is_empty_for_new_account_gas(&to, spec_id)?,
+            ecx.host().target_is_empty_for_new_account_gas(&to, features)?,
         )
     {
         cost += u64::from(version.gas_params.get(GasId::NewAccountCost));

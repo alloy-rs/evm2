@@ -110,12 +110,11 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         code_address = delegated_address;
     }
     let features = state.version().features;
-    let spec = state.spec();
     if create_empty_account
         && should_charge_new_account_gas(
             features.contains(EvmFeatures::EIP161),
             transfers_value,
-            state.host().target_is_empty_for_new_account_gas(&to, spec)?,
+            state.host().target_is_empty_for_new_account_gas(&to, features)?,
         )
     {
         cost += u64::from(state.gas_params().get(GasId::NewAccountCost));
