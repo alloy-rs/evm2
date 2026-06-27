@@ -1,9 +1,0 @@
---- upstream/crates/revmc-llvm/src/utils.rs
-+++ evm2/crates/jit/llvm/src/utils.rs
-@@ -3,5 +3,5 @@
-
- pub(crate) unsafe fn llvm_string(ptr: *const c_char) -> LLVMString {
-     // `LLVMString::new` is private
--    std::mem::transmute(ptr)
-+    unsafe { std::mem::transmute(ptr) }
- }

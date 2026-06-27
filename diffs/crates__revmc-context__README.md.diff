@@ -1,7 +1,0 @@
---- upstream/crates/revmc-context/README.md
-+++ evm2/crates/jit/context/README.md
-@@ -1,3 +1,3 @@
--# revmc-context
-+# evm2-jit-context
-
- EVM bytecode compiler runtime context.

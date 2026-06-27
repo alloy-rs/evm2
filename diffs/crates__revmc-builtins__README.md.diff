@@ -1,7 +1,0 @@
---- upstream/crates/revmc-builtins/README.md
-+++ evm2/crates/jit/builtins/README.md
-@@ -1,3 +1,3 @@
--# revmc-builtins
-+# evm2-jit-builtins
-
- EVM bytecode compiler builtins.

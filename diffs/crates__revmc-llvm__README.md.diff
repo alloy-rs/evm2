@@ -1,7 +1,0 @@
---- upstream/crates/revmc-llvm/README.md
-+++ evm2/crates/jit/llvm/README.md
-@@ -1,4 +1,4 @@
--# revmc-llvm
-+# evm2-jit-llvm
-
- EVM bytecode compiler [LLVM] backend.
