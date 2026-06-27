@@ -7,15 +7,17 @@ use crate::{
 use alloy_primitives::U256;
 use evm2_eest::{
     BlockchainTestBlockFailed, BlockchainTestBlockFinished, BlockchainTestBlockStarted,
-    BlockchainTestCaseStarted, BlockchainTestExecuteConfig, BlockchainTestHook,
-    BlockchainTestTransactionFailed, BlockchainTestTransactionFinished,
-    BlockchainTestTransactionStarted, EntryPoint, StateTestExecuteConfig,
+    BlockchainTestCaseStarted, BlockchainTestExecuteConfig, BlockchainTestExecutionMode,
+    BlockchainTestHook, BlockchainTestTransactionFailed, BlockchainTestTransactionFinished,
+    BlockchainTestTransactionStarted, EntryPoint, StateTestExecuteConfig, StateTestExecutionMode,
     execute_blockchain_tests_str, execute_blockchain_tests_suite,
     execute_state_tests_str_with_filter,
 };
 use std::time::Instant;
 
 pub(crate) fn run(command: Replay) -> Result<()> {
+    let state_mode = replay_state_execution_mode(&command);
+    let blockchain_mode = replay_blockchain_execution_mode(&command);
     let entrypoint = EntryPoint::new(command.entrypoint);
     if fixture::is_binary_path(&command.path) {
         let suite = fixture::read_blockchain(&command.path)?;
@@ -23,7 +25,11 @@ pub(crate) fn run(command: Replay) -> Result<()> {
         let summary = execute_blockchain_tests_suite(
             &command.path,
             &suite,
-            BlockchainTestExecuteConfig { db_stats: command.db_stats, ..Default::default() },
+            BlockchainTestExecuteConfig {
+                mode: blockchain_mode,
+                db_stats: command.db_stats,
+                ..Default::default()
+            },
             &entrypoint,
             &mut hook,
         )
@@ -44,7 +50,11 @@ pub(crate) fn run(command: Replay) -> Result<()> {
             let summary = execute_state_tests_str_with_filter(
                 &command.path,
                 &input,
-                StateTestExecuteConfig { db_stats: command.db_stats, ..Default::default() },
+                StateTestExecuteConfig {
+                    mode: state_mode,
+                    db_stats: command.db_stats,
+                    ..Default::default()
+                },
                 &entrypoint,
             )
             .map_err(|source| Error::StateTest { source })?;
@@ -62,7 +72,11 @@ pub(crate) fn run(command: Replay) -> Result<()> {
             let summary = execute_blockchain_tests_str(
                 &command.path,
                 &input,
-                BlockchainTestExecuteConfig { db_stats: command.db_stats, ..Default::default() },
+                BlockchainTestExecuteConfig {
+                    mode: blockchain_mode,
+                    db_stats: command.db_stats,
+                    ..Default::default()
+                },
                 &entrypoint,
                 &mut hook,
             )
@@ -78,6 +92,32 @@ pub(crate) fn run(command: Replay) -> Result<()> {
         }
         None => Err(Error::UnknownFixtureKind { path: command.path }),
     }
+}
+
+const fn replay_state_execution_mode(_command: &Replay) -> StateTestExecutionMode {
+    #[cfg(feature = "jit")]
+    {
+        if _command.jit {
+            return StateTestExecutionMode::Jit;
+        }
+        if _command.aot {
+            return StateTestExecutionMode::Aot;
+        }
+    }
+    StateTestExecutionMode::Interpreter
+}
+
+const fn replay_blockchain_execution_mode(_command: &Replay) -> BlockchainTestExecutionMode {
+    #[cfg(feature = "jit")]
+    {
+        if _command.jit {
+            return BlockchainTestExecutionMode::Jit;
+        }
+        if _command.aot {
+            return BlockchainTestExecutionMode::Aot;
+        }
+    }
+    BlockchainTestExecutionMode::Interpreter
 }
 
 #[derive(Default)]
@@ -266,4 +306,44 @@ fn ggas_per_second_from_gas(gas_used: u128, elapsed: f64) -> Option<f64> {
 
 fn ggas(gas_used: u128) -> f64 {
     gas_used as f64 / 1_000_000_000.0
+}
+
+#[cfg(all(test, feature = "jit"))]
+mod tests {
+    use super::{
+        BlockchainTestExecutionMode, Replay, StateTestExecutionMode,
+        replay_blockchain_execution_mode, replay_state_execution_mode,
+    };
+    use std::path::PathBuf;
+
+    fn replay(jit: bool, aot: bool) -> Replay {
+        Replay { entrypoint: None, jit, aot, db_stats: false, path: PathBuf::from("fixture.json") }
+    }
+
+    #[test]
+    fn replay_execution_mode_defaults_to_interpreter() {
+        let command = replay(false, false);
+
+        assert_eq!(replay_state_execution_mode(&command), StateTestExecutionMode::Interpreter);
+        assert_eq!(
+            replay_blockchain_execution_mode(&command),
+            BlockchainTestExecutionMode::Interpreter
+        );
+    }
+
+    #[test]
+    fn replay_execution_mode_selects_jit() {
+        let command = replay(true, false);
+
+        assert_eq!(replay_state_execution_mode(&command), StateTestExecutionMode::Jit);
+        assert_eq!(replay_blockchain_execution_mode(&command), BlockchainTestExecutionMode::Jit);
+    }
+
+    #[test]
+    fn replay_execution_mode_selects_aot() {
+        let command = replay(false, true);
+
+        assert_eq!(replay_state_execution_mode(&command), StateTestExecutionMode::Aot);
+        assert_eq!(replay_blockchain_execution_mode(&command), BlockchainTestExecutionMode::Aot);
+    }
 }

@@ -1,5 +1,5 @@
-use crate::cases::BenchCase;
 use criterion::{BenchmarkGroup, black_box, measurement::WallTime};
+use evm2_cli::evm_bench::BenchCase;
 use evm2_eest::{
     BlockchainTestExecuteConfig, BlockchainTestNoopHook, EntryPoint,
     blockchaintest::BlockchainTest, execute_blockchain_tests_suite,

@@ -1,13 +1,11 @@
-use super::tests::{RunConfig, TestHost, TestInterpreter, TestTypes, push};
 use crate::{
     BaseEvmConfig, EvmConfig, ExecutionConfig, SpecId,
-    bytecode::Bytecode,
     env::BlockEnv,
     interpreter::{Host, InstrStop, Interpreter, Word, op},
+    test_utils::{RunConfig, TestHost, TestInterpreter, TestTypes, legacy_bytecode, push},
     version::OpcodeConfig,
 };
 use alloc::vec::Vec;
-use alloy_primitives::Bytes;
 use evm2_macros::instruction;
 
 const ADD_OPCODE: u8 = 0x0c;
@@ -81,10 +79,10 @@ const fn macro_opcode_config() -> OpcodeConfig<TestTypes> {
 fn run(config: RunConfig<'_>) -> TestInterpreter {
     let execution_config = ExecutionConfig::<TestTypes>::for_config::<MacroConfig>();
     let RunConfig { code, host, spec_id, tx_env, mut message, gas_limit, return_data } = config;
-    let bytecode = Bytecode::new_legacy(Bytes::from(code));
+    let bytecode = legacy_bytecode(code);
     message.gas_limit = gas_limit;
     let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
-    inner.set_return_data(return_data);
+    *inner.return_data_mut() = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
     host.spec_id = spec_id;

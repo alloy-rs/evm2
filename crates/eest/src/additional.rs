@@ -18,11 +18,12 @@ use std::path::PathBuf;
 pub(crate) fn suite(path: PathBuf) -> TestSuite {
     TestSuite {
         name: "additional",
-        roots: vec![TestRoot { name: "additional", label: "additional tests", path }],
+        roots: vec![TestRoot { name: "additional".to_string(), label: "additional tests", path }],
         // Descend into every directory so all JSON files under the path run.
         should_descend: descend_all,
         should_ignore,
         run_file,
+        run_files: None,
     }
 }
 

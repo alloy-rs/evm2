@@ -472,22 +472,6 @@ mod tests {
     use alloy_primitives::{Bytes, address};
     use core::assert_matches;
 
-    fn test_run_a(
-        _evm: &mut Evm<'_, BaseEvmTypes>,
-        _message: &Message,
-        _gas: &mut GasTracker,
-    ) -> PrecompileResult {
-        Ok(PrecompileOutput::new(Bytes::from_static(b"a")))
-    }
-
-    fn test_run_b(
-        _evm: &mut Evm<'_, BaseEvmTypes>,
-        _message: &Message,
-        _gas: &mut GasTracker,
-    ) -> PrecompileResult {
-        Ok(PrecompileOutput::new(Bytes::from_static(b"b")))
-    }
-
     #[test]
     fn map_precompile_updates_data_at_target_address() {
         let identity = IDENTITY::<BaseEvmTypes>();
@@ -495,7 +479,9 @@ mod tests {
         let mut map = PrecompileMap::from_precompiles([identity]);
 
         map.map_precompile(&address, |precompile| {
-            precompile.with_id(PrecompileId::Sha256).with_run(test_run_a)
+            precompile
+                .with_id(PrecompileId::Sha256)
+                .with_run(|_, _, _| Ok(PrecompileOutput::new(Bytes::from_static(b"a"))))
         });
 
         let precompile = map.get(&address).unwrap();
@@ -506,10 +492,15 @@ mod tests {
     #[test]
     fn apply_precompile_inserts_and_removes_at_target_address() {
         let address = address!("0x0000000000000000000000000000000000000101");
-        let mut map = PrecompileMap::new();
+        let mut map = PrecompileMap::<BaseEvmTypes>::new();
 
         map.apply_precompile(&address, |_| {
-            Some(PrecompileData::new(PrecompileId::Identity, test_run_a))
+            Some(
+                Precompile::new(address, PrecompileId::Identity, |_, _, _| {
+                    Ok(PrecompileOutput::new(Bytes::from_static(b"a")))
+                })
+                .into_data(),
+            )
         });
 
         assert!(map.contains(&address));
@@ -527,7 +518,9 @@ mod tests {
 
         map.map_precompiles(|_, precompile| {
             assert_matches!(precompile.id(), PrecompileId::Identity | PrecompileId::Sha256);
-            precompile.with_id(PrecompileId::Ripemd160).with_run(test_run_b)
+            precompile
+                .with_id(PrecompileId::Ripemd160)
+                .with_run(|_, _, _| Ok(PrecompileOutput::new(Bytes::from_static(b"b"))))
         });
 
         assert_eq!(map.get(&identity.address()).unwrap().id(), &PrecompileId::Ripemd160);

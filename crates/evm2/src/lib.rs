@@ -15,8 +15,8 @@ pub mod utils;
 
 pub mod evm;
 pub use evm::{
-    AccountInfo, BlockStateAccumulator, Evm, ExecutedTx, JournalEntry, TxResult, TxResultWithState,
-    config,
+    AccountInfo, BlockStateAccumulator, Evm, ExecutedTx, InterpreterRunner, JournalEntry, TxResult,
+    TxResultWithState, config,
     config::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector,
         EvmHostTypes, EvmTypes, ExecutionConfig,
@@ -31,6 +31,9 @@ pub use precompiles::{
 };
 
 pub(crate) mod trustme;
+
+#[cfg(test)]
+pub(crate) mod test_utils;
 
 pub mod version;
 pub use version::{EvmFeatures, OpcodeConfig, Version};

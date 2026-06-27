@@ -1,0 +1,32 @@
+[package]
+name = "evm2-jit-builtins"
+description = "EVM bytecode compiler builtins"
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+evm2.workspace = true
+evm2-jit-context.workspace = true
+
+alloy-primitives.workspace = true
+paste.workspace = true
+
+evm2-jit-backend = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+
+[features]
+default = ["std", "ir"]
+std = ["evm2/std", "evm2-jit-context/std", "alloy-primitives/std"]
+ir = ["std", "dep:tracing", "dep:evm2-jit-backend"]
