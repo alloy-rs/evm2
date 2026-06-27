@@ -1,4 +1,4 @@
-use crate::{cases::BenchCase, fixture::Suites};
+use crate::fixture::Suites;
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
@@ -6,6 +6,7 @@ use evm2::{
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::InMemoryDB,
 };
+use evm2_cli::evm_bench::BenchCase;
 use std::borrow::Cow;
 
 type BenchEvm = Evm<BaseEvmTypes>;

@@ -9,7 +9,10 @@ use super::{
         Withdrawal,
     },
 };
+#[cfg(feature = "jit")]
+use crate::compiled::{self, FileSummary};
 use crate::{
+    execution::ExecutionResources,
     filter::EntryPoint,
     fixture_io,
     forks::is_fork_skipped,
@@ -31,7 +34,11 @@ use evm2::{
     },
     registry::HandlerError,
 };
+#[cfg(feature = "jit")]
+use std::path::PathBuf;
 use std::{mem, path::Path};
+
+pub use crate::execution::ExecutionMode;
 
 const ONE_GWEI: u64 = 1_000_000_000;
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
@@ -41,13 +48,15 @@ const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
 pub struct ExecuteConfig {
     /// Whether to validate final post-state when fixtures contain it.
     pub validate_post_state: bool,
+    /// Execution backend.
+    pub mode: ExecutionMode,
     /// Whether to print database method call counts.
     pub db_stats: bool,
 }
 
 impl Default for ExecuteConfig {
     fn default() -> Self {
-        Self { validate_post_state: true, db_stats: false }
+        Self { validate_post_state: true, mode: ExecutionMode::Interpreter, db_stats: false }
     }
 }
 
@@ -72,6 +81,38 @@ pub(crate) fn execute_test_suite(
     execute_suite(path, &suite, config, &entrypoint, &mut hook)
 }
 
+/// Executes multiple blockchain test JSON files using one shared execution resource set.
+#[cfg(feature = "jit")]
+pub(crate) fn execute_test_suites(
+    paths: &[PathBuf],
+    config: ExecuteConfig,
+) -> Result<ExecuteSummary, TestError> {
+    let error_path = paths.first().map_or_else(|| Path::new("blockchain tests"), PathBuf::as_path);
+    let resources = ExecutionResources::new(config.mode)
+        .map_err(|err| TestError::unknown(error_path, err.into()))?;
+    let summary = compiled::run_files(paths.to_vec(), resources, move |path, resources| {
+        let suite = fixture_io::read_blockchain(&path)
+            .map_err(|err| TestError::unknown(path.as_path(), err.into()))?;
+        let entrypoint = EntryPoint::default();
+        let mut hook = NoopHook;
+        let file_summary = execute_suite_with_resources(
+            &path,
+            &suite,
+            config,
+            &entrypoint,
+            &mut hook,
+            &resources,
+        )?;
+        Ok(FileSummary {
+            executed: file_summary.executed,
+            skipped: file_summary.skipped,
+            db_stats_counts: DbStatsCounts::default(),
+        })
+    })?;
+
+    Ok(ExecuteSummary { executed: summary.executed, skipped: summary.skipped })
+}
+
 /// Executes a loaded blockchain test JSON file.
 pub fn execute_str(
     path: &Path,
@@ -93,6 +134,19 @@ pub fn execute_suite(
     entrypoint: &EntryPoint,
     hook: &mut dyn Hook,
 ) -> Result<ExecuteSummary, TestError> {
+    let resources =
+        ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
+    execute_suite_with_resources(path, suite, config, entrypoint, hook, &resources)
+}
+
+fn execute_suite_with_resources(
+    path: &Path,
+    suite: &BlockchainTest,
+    config: ExecuteConfig,
+    entrypoint: &EntryPoint,
+    hook: &mut dyn Hook,
+    resources: &ExecutionResources,
+) -> Result<ExecuteSummary, TestError> {
     let mut summary = ExecuteSummary::default();
     for (name, test_case) in &suite.0 {
         if !entrypoint.matches(name)
@@ -102,7 +156,7 @@ pub fn execute_suite(
             summary.skipped += 1;
             continue;
         }
-        execute_case(path, name, test_case, config, hook)?;
+        execute_case(path, name, test_case, config, hook, resources)?;
         summary.executed += 1;
     }
     Ok(summary)
@@ -114,6 +168,7 @@ fn execute_case(
     test_case: &BlockchainTestCase,
     config: ExecuteConfig,
     hook: &mut dyn Hook,
+    resources: &ExecutionResources,
 ) -> Result<(), TestError> {
     let mut database =
         parse_state(&test_case.pre.0).map_err(|err| TestError::case(path, name, err))?;
@@ -155,6 +210,7 @@ fn execute_case(
             &mut parent_block_hash,
             &mut parent_excess_blob_gas,
             hook,
+            resources,
             if config.db_stats { Some(&mut db_stats_counts) } else { None },
         ) {
             Ok(()) => hook.block_finished(BlockFinished {
@@ -218,6 +274,7 @@ fn execute_block(
     parent_block_hash: &mut Option<B256>,
     parent_excess_blob_gas: &mut u64,
     hook: &mut dyn Hook,
+    resources: &ExecutionResources,
     db_stats_counts: Option<&mut DbStatsCounts>,
 ) -> Result<(), TestError> {
     let db_stats = db_stats_counts.is_some();
@@ -252,6 +309,7 @@ fn execute_block(
             Precompiles::base(spec),
         )
     };
+    resources.configure_evm(&mut evm);
     let mut block_state = BlockStateAccumulator::new();
 
     let result = (|| -> Result<BlockResolution, TestError> {
@@ -859,5 +917,146 @@ fn fork_to_spec_id(fork: ForkSpec) -> SpecId {
         | ForkSpec::BPO2ToBPO3AtTime15k
         | ForkSpec::BPO3ToBPO4AtTime15k
         | ForkSpec::BPO2ToAmsterdamAtTime15k => unreachable!("transition forks are skipped"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "jit")]
+    use super::super::types::{SealEngine, State};
+    #[cfg(feature = "jit")]
+    use super::*;
+    #[cfg(feature = "jit")]
+    use evm2::interpreter::op;
+    #[cfg(feature = "jit")]
+    use std::collections::BTreeMap;
+
+    #[cfg(feature = "jit")]
+    const BYTECODE_STORE42: &[u8] = &[op::PUSH1, 0x42, op::PUSH0, op::SSTORE, op::STOP];
+
+    #[cfg(feature = "jit")]
+    fn execute_simple_storage_block(mode: ExecutionMode) -> ExecuteSummary {
+        let caller = Address::from([0x11; 20]);
+        let target = Address::from([0x22; 20]);
+        let genesis_hash = B256::with_last_byte(1);
+        let block_hash = B256::with_last_byte(2);
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            caller,
+            Account {
+                balance: U256::from(1_000_000_000),
+                code: Bytes::new(),
+                nonce: U256::ZERO,
+                storage: BTreeMap::new(),
+            },
+        );
+        pre.insert(
+            target,
+            Account {
+                balance: U256::ZERO,
+                code: Bytes::copy_from_slice(BYTECODE_STORE42),
+                nonce: U256::ZERO,
+                storage: BTreeMap::new(),
+            },
+        );
+
+        let mut target_storage = BTreeMap::new();
+        target_storage.insert(U256::ZERO, U256::from(0x42));
+        let mut post_state = BTreeMap::new();
+        post_state.insert(
+            caller,
+            Account {
+                balance: U256::from(1_000_000_000),
+                code: Bytes::new(),
+                nonce: U256::ONE,
+                storage: BTreeMap::new(),
+            },
+        );
+        post_state.insert(
+            target,
+            Account {
+                balance: U256::ZERO,
+                code: Bytes::copy_from_slice(BYTECODE_STORE42),
+                nonce: U256::ZERO,
+                storage: target_storage,
+            },
+        );
+
+        let suite = BlockchainTest(BTreeMap::from([(
+            "simple-storage".to_string(),
+            BlockchainTestCase {
+                genesis_block_header: BlockHeader {
+                    hash: genesis_hash,
+                    number: U256::ZERO,
+                    gas_limit: U256::from(30_000_000),
+                    base_fee_per_gas: Some(U256::ZERO),
+                    ..BlockHeader::default()
+                },
+                genesis_rlp: None,
+                blocks: vec![Block {
+                    block_header: Some(BlockHeader {
+                        parent_hash: genesis_hash,
+                        hash: block_hash,
+                        number: U256::ONE,
+                        gas_limit: U256::from(30_000_000),
+                        base_fee_per_gas: Some(U256::ZERO),
+                        timestamp: U256::ONE,
+                        ..BlockHeader::default()
+                    }),
+                    transactions: Some(vec![Transaction {
+                        transaction_type: None,
+                        sender: Some(caller),
+                        data: Bytes::new(),
+                        gas_limit: U256::from(100_000),
+                        gas_price: Some(U256::ZERO),
+                        nonce: U256::ZERO,
+                        r: U256::ZERO,
+                        s: U256::ZERO,
+                        v: U256::ZERO,
+                        value: U256::ZERO,
+                        to: Some(target),
+                        chain_id: Some(U256::ONE),
+                        access_list: None,
+                        max_fee_per_gas: None,
+                        max_priority_fee_per_gas: None,
+                        blob_versioned_hashes: Vec::new(),
+                        max_fee_per_blob_gas: None,
+                        authorization_list: None,
+                        hash: None,
+                    }]),
+                    ..Block::default()
+                }],
+                post_state: Some(post_state),
+                pre: State(pre),
+                block_hashes: Vec::new(),
+                lastblockhash: block_hash,
+                network: ForkSpec::Cancun,
+                seal_engine: SealEngine::NoProof,
+            },
+        )]));
+        let input = serde_json::to_string(&suite).unwrap();
+        let mut hook = NoopHook;
+        execute_str(
+            Path::new("simple-storage.json"),
+            &input,
+            ExecuteConfig { validate_post_state: true, mode, ..ExecuteConfig::default() },
+            &EntryPoint::default(),
+            &mut hook,
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_and_aot_modes_match_interpreter_for_simple_block() {
+        let interpreter = execute_simple_storage_block(ExecutionMode::Interpreter);
+        let jit = execute_simple_storage_block(ExecutionMode::Jit);
+        let aot = execute_simple_storage_block(ExecutionMode::Aot);
+
+        assert_eq!(interpreter.executed, 1);
+        assert_eq!(jit.executed, interpreter.executed);
+        assert_eq!(jit.skipped, interpreter.skipped);
+        assert_eq!(aot.executed, interpreter.executed);
+        assert_eq!(aot.skipped, interpreter.skipped);
     }
 }

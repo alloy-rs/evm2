@@ -15,8 +15,8 @@ pub mod utils;
 
 pub mod evm;
 pub use evm::{
-    AccountInfo, BlockStateAccumulator, Evm, ExecutedTx, JournalEntry, TxResult, TxResultWithState,
-    config,
+    AccountInfo, BlockStateAccumulator, Evm, ExecutedTx, InterpreterRunner, JournalEntry, TxResult,
+    TxResultWithState, config,
     config::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
         ExecutionConfig,

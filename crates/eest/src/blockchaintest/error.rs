@@ -1,4 +1,4 @@
-use crate::tx::TxBuildError;
+use crate::{execution::ExecutionResourceError, tx::TxBuildError};
 use evm2::registry::HandlerError;
 use std::{io, path::PathBuf};
 use thiserror::Error;
@@ -72,6 +72,9 @@ pub(crate) enum TestErrorKind {
         /// Gas used computed from executing the block's transactions.
         actual: u64,
     },
+    /// Execution resource initialization failed.
+    #[error(transparent)]
+    ExecutionResource(#[from] ExecutionResourceError),
 }
 
 impl From<TxBuildError> for TestErrorKind {

@@ -1,51 +1,47 @@
-use crate::fixture::Suites;
 use evm2::SpecId;
 use std::borrow::Cow;
 
-pub(crate) struct Bench {
-    pub(crate) name: &'static str,
-    pub(crate) fixture_path: &'static str,
-    pub(crate) kind: BenchKind,
+#[derive(Clone, Copy, Debug)]
+pub struct Bench {
+    pub name: &'static str,
+    pub fixture_path: &'static str,
+    pub kind: BenchKind,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct BenchCase {
-    pub(crate) name: Cow<'static, str>,
-    pub(crate) fixture_path: &'static str,
-    pub(crate) kind: BenchCaseKind,
+pub struct BenchCase {
+    pub name: Cow<'static, str>,
+    pub fixture_path: &'static str,
+    pub kind: BenchCaseKind,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum BenchKind {
+#[derive(Clone, Copy, Debug)]
+pub enum BenchKind {
     Transaction { spec: SpecId },
     TransactionSuite { spec: SpecId },
     BlockchainReplay,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum BenchCaseKind {
+pub enum BenchCaseKind {
     Transaction { spec: SpecId },
     BlockchainReplay,
 }
 
 impl Bench {
-    pub(crate) const fn transaction(
-        name: &'static str,
-        spec: SpecId,
-        fixture_path: &'static str,
-    ) -> Self {
+    pub const fn transaction(name: &'static str, spec: SpecId, fixture_path: &'static str) -> Self {
         Self { name, fixture_path, kind: BenchKind::Transaction { spec } }
     }
 
-    pub(crate) const fn transaction_suite(spec: SpecId, fixture_path: &'static str) -> Self {
+    pub const fn transaction_suite(spec: SpecId, fixture_path: &'static str) -> Self {
         Self { name: "", fixture_path, kind: BenchKind::TransactionSuite { spec } }
     }
 
-    pub(crate) const fn blockchain_replay(name: &'static str, fixture_path: &'static str) -> Self {
+    pub const fn blockchain_replay(name: &'static str, fixture_path: &'static str) -> Self {
         Self { name, fixture_path, kind: BenchKind::BlockchainReplay }
     }
 
-    pub(crate) const fn transaction_fixture_path(&self) -> Option<&'static str> {
+    pub const fn transaction_fixture_path(&self) -> Option<&'static str> {
         match self.kind {
             BenchKind::Transaction { .. } | BenchKind::TransactionSuite { .. } => {
                 Some(self.fixture_path)
@@ -56,7 +52,7 @@ impl Bench {
 }
 
 impl BenchCase {
-    fn transaction(
+    pub fn transaction(
         name: impl Into<Cow<'static, str>>,
         spec: SpecId,
         fixture_path: &'static str,
@@ -64,11 +60,11 @@ impl BenchCase {
         Self { name: name.into(), fixture_path, kind: BenchCaseKind::Transaction { spec } }
     }
 
-    fn blockchain_replay(name: &'static str, fixture_path: &'static str) -> Self {
-        Self { name: name.into(), fixture_path, kind: BenchCaseKind::BlockchainReplay }
+    pub const fn blockchain_replay(name: &'static str, fixture_path: &'static str) -> Self {
+        Self { name: Cow::Borrowed(name), fixture_path, kind: BenchCaseKind::BlockchainReplay }
     }
 
-    pub(crate) const fn transaction_spec(&self) -> Option<SpecId> {
+    pub const fn transaction_spec(&self) -> Option<SpecId> {
         match self.kind {
             BenchCaseKind::Transaction { spec } => Some(spec),
             BenchCaseKind::BlockchainReplay => None,
@@ -76,34 +72,7 @@ impl BenchCase {
     }
 }
 
-pub(crate) const fn all() -> &'static [Bench] {
-    BENCHES
-}
-
-pub(crate) fn expand(suites: &Suites) -> Vec<BenchCase> {
-    let mut cases = Vec::new();
-    for bench in BENCHES {
-        match bench.kind {
-            BenchKind::Transaction { spec } => {
-                cases.push(BenchCase::transaction(bench.name, spec, bench.fixture_path));
-            }
-            BenchKind::TransactionSuite { spec } => {
-                let suite = suites.get(bench.fixture_path);
-                cases.extend(
-                    suite.case_names().map(|name| {
-                        BenchCase::transaction(name.to_owned(), spec, bench.fixture_path)
-                    }),
-                );
-            }
-            BenchKind::BlockchainReplay => {
-                cases.push(BenchCase::blockchain_replay(bench.name, bench.fixture_path));
-            }
-        }
-    }
-    cases
-}
-
-static BENCHES: &[Bench] = &[
+pub static BENCHES: &[Bench] = &[
     Bench::transaction("fibonacci-calldata", SpecId::OSAKA, "data/fibonacci-calldata.json"),
     Bench::transaction("factorial", SpecId::OSAKA, "data/factorial.json"),
     Bench::transaction("counter", SpecId::OSAKA, "data/counter.json"),

@@ -123,7 +123,6 @@ fn log_common<T: EvmTypes>(
         // SAFETY: `log` is only dispatched for LOG0 through LOG4.
         data: unsafe { LogData::new(topics, data).unwrap_unchecked() },
     };
-    cx.state.inspect_log(&emitted_log);
     cx.state.host().log(emitted_log);
     Ok(())
 }

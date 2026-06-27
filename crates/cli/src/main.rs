@@ -8,6 +8,8 @@ mod fixture;
 mod fuzzer;
 mod list;
 mod replay;
+#[cfg(feature = "jit")]
+mod run;
 mod style;
 
 use crate::{args::Args, error::Result};
@@ -30,10 +32,19 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
+    #[cfg(feature = "jit")]
+    if let std::ops::ControlFlow::Break(()) = evm2_jit_runtime::runtime::maybe_run_jit_helper()
+        .map_err(|source| error::Error::JitHelper { source })?
+    {
+        return Ok(());
+    }
+
     match Args::parse().command {
         args::Command::Capture(command) => capture::run(command),
         args::Command::Fuzzer(command) => fuzzer::run(command).map_err(error::Error::Fuzzer),
         args::Command::List(command) => list::run(command),
         args::Command::Replay(command) => replay::run(command),
+        #[cfg(feature = "jit")]
+        args::Command::Run(command) => command.run().map_err(|source| error::Error::Run { source }),
     }
 }

@@ -318,7 +318,7 @@ pub(crate) fn run(config: RunConfig<'_>) -> TestInterpreter {
     let bytecode = legacy_bytecode(code);
     message.gas_limit = gas_limit;
     let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
-    inner.set_return_data(return_data);
+    *inner.return_data_mut() = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
     host.spec_id = spec_id;

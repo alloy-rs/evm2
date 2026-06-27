@@ -109,7 +109,7 @@ mod tests {
         let err = interp.run(&config, &mut host);
 
         assert_matches!(err, InstrStop::MemoryLimitOOG);
-        assert_eq!(interp.memory_len(), 0);
+        assert_eq!(interp.memory().len(), 0);
     }
 
     #[test]
@@ -131,7 +131,7 @@ mod tests {
         let err = interp.run(&config, &mut host);
 
         assert_matches!(err, InstrStop::MemoryOOG);
-        assert_eq!(interp.memory_len(), 0);
+        assert_eq!(interp.memory().len(), 0);
     }
 
     #[test]

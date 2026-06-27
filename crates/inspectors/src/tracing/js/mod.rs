@@ -463,7 +463,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         // This avoids an expensive Vec<u8> clone on every single step.
         let should_update_memory = self.prev_op.is_none_or(|prev| prev.modifies_memory());
         if should_update_memory {
-            self.cached_memory = MemorySnapshot::new(interp.memory_ref());
+            self.cached_memory = MemorySnapshot::new(interp.memory());
         }
 
         let op = interp.opcode();

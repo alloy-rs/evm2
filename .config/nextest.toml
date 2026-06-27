@@ -1,10 +1,11 @@
-[experimental]
-benchmarks = true
-
 [profile.default]
 default-filter = "not package(evm2-eest)"
 slow-timeout = { period = "60s", terminate-after = 1 }
 status-level = "leak"
+
+[profile.ci]
+fail-fast = false
+status-level = "all"
 
 # Run known-slow statetest groups first so they do not hold up the end of a run.
 [[profile.default.overrides]]
@@ -14,3 +15,8 @@ priority = 2
 [[profile.default.overrides]]
 filter = 'test(blockchain_tests::)'
 priority = 1
+
+[[profile.default.overrides]]
+filter = 'test(/::(?:jit|aot)(?:$|::)/)'
+slow-timeout = { period = "60m", terminate-after = 1 }
+threads-required = "num-cpus"
