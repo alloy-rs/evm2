@@ -447,8 +447,7 @@ impl<'a> StackMut<'a> {
 
             let mut i = 0;
 
-            let words = slice.chunks_exact(32);
-            let partial_last_word = words.remainder();
+            let (words, partial_last_word) = slice.as_chunks::<32>();
             for word in words {
                 for l in word.rchunks_exact(8) {
                     dst.add(i).write(u64::from_be_bytes(l.try_into().unwrap()));
