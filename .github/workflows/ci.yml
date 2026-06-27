@@ -1,8 +1,5 @@
 name: CI
 
-permissions:
-  contents: read
-
 on:
   push:
     branches: [main]
@@ -26,10 +23,8 @@ jobs:
     outputs:
       test-matrix: ${{ steps.gen.outputs.test-matrix }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
       - name: Generate matrices
@@ -52,38 +47,36 @@ jobs:
       matrix: ${{ fromJson(needs.matrices.outputs.test-matrix) }}
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
+      - uses: actions/checkout@v6
       - name: Install LLVM
         if: ${{ matrix.os == 'ubuntu' }}
         run: .github/scripts/install_llvm.sh ubuntu
       - name: Install LLVM
         if: ${{ matrix.os == 'macos' }}
         run: .github/scripts/install_llvm.sh macos
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+      - uses: dtolnay/rust-toolchain@master
         if: ${{ !matrix.target }}
         with:
           toolchain: ${{ matrix.rust }}
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+      - uses: dtolnay/rust-toolchain@master
         if: ${{ matrix.target }}
         with:
           toolchain: ${{ matrix.rust }}
           targets: ${{ matrix.target }}
-      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
+      - uses: rui314/setup-mold@v1
         if: runner.os == 'Linux'
       - uses: mozilla-actions/sccache-action@v0.0.10
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
           cache-bin: false
-      - uses: taiki-e/install-action@16a76bb73558798e4218983c40c25fee9f2f99a8 # nextest
+      - uses: taiki-e/install-action@nextest
         if: ${{ !matrix.command || matrix.command == 'nextest' }}
-      - uses: taiki-e/install-action@867989a7645cb8230b1c87a12c07c4bfaf9a7d8c # cross
+      - uses: taiki-e/install-action@cross
         if: ${{ matrix.command == 'cross-test' }}
-      - uses: taiki-e/install-action@f8f9a96a3ddf6d0f5787449860fc7d72ae41f4b4 # wasmtime
+      - uses: taiki-e/install-action@wasmtime
         if: ${{ matrix.command == 'wasm-test' }}
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - uses: astral-sh/setup-uv@v7
         if: ${{ matrix.kind == 'eest' }}
       - name: Download EEST fixtures
         if: ${{ matrix.kind == 'eest' }}
@@ -202,21 +195,17 @@ jobs:
     name: no_std ${{ matrix.target }}
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
     strategy:
       fail-fast: false
       matrix:
         target: ["riscv32imac-unknown-none-elf", "riscv64imac-unknown-none-elf"]
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: mozilla-actions/sccache-action@v0.0.10
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
           cache-bin: false
@@ -227,23 +216,19 @@ jobs:
     name: features ${{ matrix.flags }}
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
     strategy:
       fail-fast: false
       matrix:
         flags: ["", "--all-targets"]
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
+      - uses: actions/checkout@v6
       - name: Install LLVM
         run: .github/scripts/install_llvm.sh ubuntu
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
-      - uses: taiki-e/install-action@dbb49279d79bb6825e754b75c8278b7619be13d2 # cargo-hack
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+      - uses: taiki-e/install-action@cargo-hack
       - uses: mozilla-actions/sccache-action@v0.0.10
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
           cache-bin: false
@@ -253,16 +238,12 @@ jobs:
   feature-propagation:
     runs-on: depot-ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.10
-      - uses: taiki-e/cache-cargo-install-action@417450f3c33ee20393705369577571770643d4c7 # v3.0.7
+      - uses: taiki-e/cache-cargo-install-action@v3
         with:
           tool: zepter
       - name: Eagerly pull dependencies
@@ -272,15 +253,11 @@ jobs:
   examples:
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.10
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
           cache-bin: false
@@ -290,31 +267,23 @@ jobs:
   typos:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - uses: crate-ci/typos@37bb98842b0d8c4ffebdb75301a13db0267cef89 # v1.47.2
+      - uses: actions/checkout@v5
+      - uses: crate-ci/typos@v1
 
   clippy:
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
+      - uses: actions/checkout@v6
       - name: Install LLVM
         run: .github/scripts/install_llvm.sh ubuntu
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy
-      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
+      - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.10
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
           cache-bin: false
@@ -325,18 +294,14 @@ jobs:
   docs:
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
+      - uses: actions/checkout@v6
       - name: Install LLVM
         run: .github/scripts/install_llvm.sh ubuntu
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
-      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.10
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
           cache-bin: false
@@ -346,28 +311,20 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
       - run: cargo fmt --all --check
 
   deny:
-    permissions:
-      contents: read
-    uses: tempoxyz/ci/.github/workflows/deny.yml@934b6a6317ac26272eaecf0d265472f4105c99d6 # main
+    uses: tempoxyz/ci/.github/workflows/deny.yml@main
 
   ci-success:
     name: ci success
     runs-on: ubuntu-latest
     if: always()
-    permissions:
-      contents: read
     needs:
       - matrices
       - test
@@ -383,6 +340,6 @@ jobs:
       - deny
     steps:
       - name: Decide whether the needed jobs succeeded or failed
-        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # release/v1
+        uses: re-actors/alls-green@release/v1
         with:
           jobs: ${{ toJSON(needs) }}

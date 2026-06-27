@@ -1,8 +1,5 @@
 name: Differential Fuzzer
 
-permissions:
-  contents: read
-
 on:
   pull_request:
     paths:
@@ -32,13 +29,11 @@ jobs:
       matrix:
         dispatch_backend: [tco, packed, single_return, unpacked]
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
-      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.10
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
           cache-bin: false
@@ -52,7 +47,7 @@ jobs:
         run: cargo run -q -p evm2-cli -- fuzzer --duration 3m -j 0
       - name: Upload failing fuzzer cases
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: fuzzer-failures-${{ matrix.dispatch_backend }}
           path: crates/cli/fuzzer/corpus/failures/*.json
@@ -66,6 +61,6 @@ jobs:
       - smoke
     steps:
       - name: Decide whether the needed jobs succeeded or failed
-        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # release/v1
+        uses: re-actors/alls-green@release/v1
         with:
           jobs: ${{ toJSON(needs) }}
