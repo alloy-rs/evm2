@@ -1,0 +1,17 @@
+[package]
+name = "evm2-jit-build"
+description = "EVM bytecode compiler build script support"
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+exclude = ["build.rs"]
+
+[lints]
+workspace = true

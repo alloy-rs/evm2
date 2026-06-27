@@ -21,12 +21,15 @@ evm2-macros.workspace = true
 alloy-consensus.workspace = true
 alloy-eips = { workspace = true, features = ["k256"] }
 alloy-primitives.workspace = true
+bitvec = { workspace = true, features = ["alloc"] }
 derive-where.workspace = true
 thiserror.workspace = true
 cfg-if.workspace = true
 
 # no_std
 once_cell = { workspace = true, features = ["alloc"] }
+paste = { workspace = true, optional = true }
+phf = { workspace = true, features = ["macros"], optional = true }
 
 # "serde"
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
@@ -80,20 +83,12 @@ aws-lc-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["serde", "std"] }
-criterion = { package = "codspeed-criterion-compat", version = "4", default-features = false, features = ["cargo_bench_support"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
 rand = { workspace = true, features = ["std"] }
 ark-std = { workspace = true }
 rstest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-
-[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
-revm = { version = "38", default-features = true, features = ["test-types"] }
-
-[[bench]]
-name = "evm"
-harness = false
 
 [[example]]
 name = "custom_evm"
@@ -103,20 +98,22 @@ doc-scrape-examples = true
 [features]
 default = [
     "std",
+    "map-foldhash",
+    "parse",
+    "asm-keccak",
+    # Precompiles
+    "gmp",
     "secp256k1",
     "blst",
-    # c-kzg doesn't play well with nextest.
-    # "c-kzg",
     "portable",
     "bn254-mcl",
-    # TODO: probably shouldn't enable these library-wide.
-    "asm-keccak",
-    "map-foldhash",
+    "p256-aws-lc-rs",
 ]
 std = [
     "alloy-consensus/std",
     "alloy-eips/std",
     "alloy-primitives/std",
+    "bitvec/std",
     "ark-bls12-381/std",
     "ark-bn254/std",
     "ark-ec/std",
@@ -127,6 +124,7 @@ std = [
     "k256/std",
     "once_cell/std",
     "p256/std",
+    "phf?/std",
     "thiserror/std",
     "c-kzg?/std",
     "secp256k1?/std",
@@ -141,9 +139,11 @@ serde = [
     "alloy-eips/serde",
     "alloy-primitives/serde",
     "ark-serialize/serde",
+    "bitvec/serde",
     "derive-where/serde",
     "k256/serde",
     "p256/serde",
+    "phf?/serde",
     "blst?/serde",
     "c-kzg?/serde",
     "secp256k1?/serde",
@@ -167,6 +167,7 @@ blst = ["dep:blst"]
 bn254-mcl = ["std", "dep:mcl_rust"]
 portable = ["c-kzg?/portable", "blst?/portable"]
 p256-aws-lc-rs = ["dep:aws-lc-rs"]
+parse = ["dep:paste", "dep:phf"]
 
 nightly = []
 no-tco = []

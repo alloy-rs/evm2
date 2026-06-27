@@ -30,6 +30,45 @@ cargo nextest run -p evm2-eest --test eest --ignore-default-filter
 
 Discovered tests are named under `statetests`, `blockchain_tests`, and `legacy`.
 
+## JIT and AOT
+
+Enable the `jit` feature to add compiled-backend variants for every discovered
+state and blockchain fixture:
+
+```sh
+cargo st
+```
+
+This is equivalent to:
+
+```sh
+cargo nextest run -p evm2-eest --all-features --test eest --ignore-default-filter
+```
+
+With `jit` enabled, the same fixture tree is discovered three ways:
+
+```text
+statetests::...
+statetests::jit::...
+statetests::aot::...
+blockchain_tests::...
+blockchain_tests::jit::...
+blockchain_tests::aot::...
+legacy::cancun::...
+legacy::cancun::jit::...
+legacy::cancun::aot::...
+```
+
+Filter those prefixes directly when checking one backend mode:
+
+```sh
+cargo nextest run -p evm2-eest --features jit --test eest \
+  --ignore-default-filter statetests::jit
+
+cargo nextest run -p evm2-eest --features jit --test eest \
+  --ignore-default-filter blockchain_tests::aot
+```
+
 ## State tests
 
 Run all discovered state tests with nextest:
@@ -99,5 +138,9 @@ cargo nextest list -p evm2-eest --test eest --ignore-default-filter
 
 For local experiments, `EVM2_STATETEST_ROOT`, `EVM2_BLOCKCHAINTEST_ROOT`,
 `EVM2_STATETEST_STABLE`, `EVM2_BLOCKCHAINTEST_STABLE`, `EVM2_EEST_STABLE`,
-`ETHEREUM_TESTS`, `ETHTESTS`, `EVM2_TEST_FIXTURES`, `REVMC_TEST_FIXTURES`, and
-`SUBDIR` are supported as optional filters.
+`EVM2_TEST_FIXTURES`, and `SUBDIR` are supported as optional filters.
+
+Test cases for unsupported hardforks (currently Amsterdam) are skipped
+automatically. Set `EVM2_SKIP_FORKS` to a comma-separated list of hardfork
+names (for example `EVM2_SKIP_FORKS=osaka,prague`) to skip additional full
+hardforks.

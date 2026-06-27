@@ -1,0 +1,71 @@
+name: Differential Fuzzer
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/fuzzer.yml"
+      - "Cargo.toml"
+      - "crates/cli/**"
+      - "crates/evm2/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: "sccache"
+
+jobs:
+  smoke:
+    name: smoke (${{ matrix.dispatch_backend }})
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        dispatch_backend: [tco, packed, single_return, unpacked]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
+      - uses: mozilla-actions/sccache-action@v0.0.10
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+          cache-bin: false
+      - name: Replay regression corpus
+        env:
+          EVM2_DISPATCH_BACKEND: ${{ matrix.dispatch_backend }}
+        run: cargo run -q -p evm2-cli -- fuzzer corpus crates/cli/fuzzer/corpus/failures
+      - name: Run random fuzz smoke test
+        env:
+          EVM2_DISPATCH_BACKEND: ${{ matrix.dispatch_backend }}
+        run: cargo run -q -p evm2-cli -- fuzzer --duration 3m -j 0
+      - name: Upload failing fuzzer cases
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzzer-failures-${{ matrix.dispatch_backend }}
+          path: crates/cli/fuzzer/corpus/failures/*.json
+          if-no-files-found: ignore
+
+  ci-success:
+    name: fuzzer success
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - smoke
+    steps:
+      - name: Decide whether the needed jobs succeeded or failed
+        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # release/v1
+        with:
+          jobs: ${{ toJSON(needs) }}

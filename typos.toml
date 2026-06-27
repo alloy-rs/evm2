@@ -1,0 +1,6 @@
+[files]
+extend-exclude = ["*.zst", "diffs"]
+
+[default.extend-words]
+ba = "ba"
+OLL = "OLL"

@@ -1,0 +1,68 @@
+[package]
+name = "evm2-jit-codegen"
+description = "EVM bytecode compiler code generation"
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[package.metadata.docs.rs]
+no-default-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true
+
+[dependencies]
+evm2 = { workspace = true, features = ["parse"] }
+evm2-jit-backend.workspace = true
+evm2-jit-builtins = { workspace = true, features = ["ir"] }
+evm2-jit-context.workspace = true
+evm2-jit-llvm = { workspace = true, optional = true }
+
+alloy-primitives = { workspace = true, features = ["std", "map-fxhash"] }
+
+bitflags = "2.5"
+derive_more = { version = "2", default-features = false, features = ["debug"] }
+bitvec = "1.0"
+either = "1.13"
+tempfile = "3.10"
+tracing.workspace = true
+
+smallvec = "1.15.1"
+oxc_index = { version = "5.0.0", features = ["nonmax"] }
+indexmap = "2.13.0"
+
+[build-dependencies]
+evm2-jit-build.workspace = true
+
+[dev-dependencies]
+evm2-jit-context.workspace = true
+
+paste.workspace = true
+similar-asserts = "2.0"
+snapbox = "1.1"
+serde_json = "1.0"
+tester = "0.9"
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+walkdir.workspace = true
+
+[features]
+default = ["llvm"]
+llvm = ["dep:evm2-jit-llvm"]
+
+asm-keccak = ["alloy-primitives/asm-keccak"]
+
+[[test]]
+name = "codegen"
+path = "tests.rs"
+required-features = ["llvm"]
+harness = false
+doc = false

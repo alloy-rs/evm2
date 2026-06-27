@@ -1,0 +1,56 @@
+use alloy_primitives::{Address, B256, U256};
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CaptureError {
+    #[error("invalid block range: from {from} is greater than to {to}")]
+    InvalidRange { from: u64, to: u64 },
+    #[error("invalid RPC URL: {0}")]
+    InvalidRpcUrl(String),
+    #[error("RPC transport request failed")]
+    Transport(#[from] alloy_provider::transport::TransportError),
+    #[error("RPC did not return block header {0}")]
+    MissingBlockHeader(u64),
+    #[error("RPC did not return block {0}")]
+    MissingBlock(u64),
+    #[error("failed to create Tokio runtime for capture")]
+    Runtime(#[source] std::io::Error),
+    #[error("failed to encode fixture")]
+    EncodeFixture(#[source] evm2_eest::FixtureWriteError),
+    #[error("failed to decode RPC trace response")]
+    DecodeTrace(#[source] serde_json::Error),
+    #[error("failed to join blocking capture block preparation")]
+    JoinBlockPreparation(#[source] tokio::task::JoinError),
+    #[error(
+        "block {block_number} trace transaction count mismatch: expected {expected}, prestate {prestate}, diff {diff}"
+    )]
+    TraceTransactionCountMismatch {
+        block_number: u64,
+        expected: usize,
+        prestate: usize,
+        diff: usize,
+    },
+    #[error("invalid trace result: {0}")]
+    InvalidTraceResult(&'static str),
+    #[error("invalid hex value {0}")]
+    InvalidHex(String),
+    #[error("invalid integer value {0}")]
+    InvalidNumber(String),
+    #[error("failed to recover transaction signer")]
+    RecoverSigner(#[source] alloy_consensus::crypto::RecoveryError),
+    #[error("capture contains too many distinct execution versions")]
+    TooManyCapturedVersions,
+    #[error("capture contains no execution versions")]
+    EmptyCapturedVersions,
+    #[error("capture contains no blocks")]
+    EmptyCapture,
+    #[error("capture spans multiple specs, which one EEST network cannot represent yet")]
+    MultipleSpecs,
+    #[error("capture uses unsupported spec id {0}")]
+    UnsupportedSpec(u32),
+    #[error("capture has conflicting bytecode for code hash {code_hash}")]
+    CodeHashCollision { code_hash: B256 },
+    #[error(
+        "withdrawal balance for {address} exceeds traced balance: traced {traced_balance}, withdrawals {withdrawal_balance}"
+    )]
+    WithdrawalBalanceUnderflow { address: Address, traced_balance: U256, withdrawal_balance: U256 },
+}

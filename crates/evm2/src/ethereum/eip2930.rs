@@ -8,6 +8,7 @@ use super::{
 use crate::{
     Evm, EvmTypes, TxResult,
     env::TxEnv,
+    evm::db_error_handler,
     interpreter::Host,
     registry::{HandlerResult, TxRequest},
 };
@@ -15,7 +16,7 @@ use alloy_consensus::{TxEip2930, transaction::Recovered};
 use alloy_primitives::U256;
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
-    req: TxRequest<'_, Recovered<TxEip2930>, Evm<T>>,
+    req: TxRequest<'_, T, Recovered<TxEip2930>>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
@@ -48,7 +49,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     warm_access_list(req.host, &tx.access_list);
 
     charge_upfront(req.host, caller, max_gas_cost)?;
-    req.host.state.increment_nonce(&caller).map_err(|code| req.host.db_error_handler(code))?;
+    req.host.state.account(&caller, false).map_err(db_error_handler!(req.host))?.bump_nonce();
     let execution_checkpoint = req.host.state.checkpoint();
 
     let gas_limit = tx.gas_limit - intrinsic;
@@ -60,7 +61,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     };
     let (bytecode, mut message) =
         initial_message(req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, gas_limit)?;
-    let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
+    let mut result = req.host.execute_message(&tx_env, bytecode, &mut message);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
     settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)

@@ -6,7 +6,7 @@ use crate::{
         BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE, MAX_CODE_SIZE,
         MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
     },
-    interpreter::{instructions as instr, opcode::op},
+    interpreter::{instructions as instr, op},
 };
 use alloy_eips::{eip4844::MAX_BLOBS_PER_BLOCK_DENCUN, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 
@@ -22,13 +22,10 @@ pub use opcode_config::OpcodeConfig;
 /// Runtime configuration data.
 ///
 /// The name is a bit misleading: this is a catch-all runtime configuration object. It stores fork
-/// configuration such as the active base `SpecId` and EVM features, and also stores regular runtime
-/// configuration values such as chain ID, memory limits, code size limits, gas caps, and gas
-/// parameters.
+/// configuration such as active EVM features, and also stores regular runtime configuration values
+/// such as chain ID, memory limits, code size limits, gas caps, and gas parameters.
 #[derive(Clone, Copy, Debug)]
 pub struct Version {
-    /// Active base specification ID.
-    pub spec_id: SpecId,
     /// Dynamic gas parameter table.
     // Gas params are data on the active version so changes automatically affect every
     // instruction that reads them. Tracking instruction dependencies on opcode config is not
@@ -111,7 +108,6 @@ const DEFAULT_CHAIN_ID: u64 = 1;
 static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     let mut versions = [const {
         Version {
-            spec_id: SpecId::FRONTIER,
             gas_params: GasParams::empty(),
             features: EvmFeatures::empty(),
             chain_id: DEFAULT_CHAIN_ID,
@@ -128,7 +124,6 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     while i < SpecId::COUNT {
         let spec_id = SpecId::try_from_u32(i as u32).unwrap();
         versions[i] = Version {
-            spec_id,
             gas_params: base_gas_params(spec_id),
             features: base_features(spec_id),
             chain_id: DEFAULT_CHAIN_ID,
@@ -248,25 +243,33 @@ mod tests {
     }
 
     #[test]
-    fn base_versions_set_revm_cfg_env_defaults() {
+    fn base_versions_set_cfg_env_defaults() {
         let osaka = Version::base(SpecId::OSAKA);
         assert!(osaka.feature(EvmFeatures::TX_CHAIN_ID_CHECK));
         assert!(osaka.feature(EvmFeatures::NONCE_CHECK));
         assert!(osaka.feature(EvmFeatures::BALANCE_CHECK));
         assert!(osaka.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
+        assert!(osaka.feature(EvmFeatures::CODE_SIZE_CHECK));
         assert!(osaka.feature(EvmFeatures::EIP2));
+        assert!(osaka.feature(EvmFeatures::EIP150));
+        assert!(osaka.feature(EvmFeatures::EIP161));
         assert!(osaka.feature(EvmFeatures::EIP2028));
+        assert!(osaka.feature(EvmFeatures::EIP2200));
+        assert!(osaka.feature(EvmFeatures::EIP2929));
         assert!(osaka.feature(EvmFeatures::EIP3529));
         assert!(osaka.feature(EvmFeatures::EIP3651));
         assert!(osaka.feature(EvmFeatures::EIP3860));
+        assert!(osaka.feature(EvmFeatures::EIP4399));
+        assert!(osaka.feature(EvmFeatures::EIP6780));
         assert!(osaka.feature(EvmFeatures::EIP3541));
         assert!(osaka.feature(EvmFeatures::EIP3607));
         assert!(osaka.feature(EvmFeatures::EIP7623));
+        assert!(osaka.feature(EvmFeatures::EIP7702));
         assert!(osaka.feature(EvmFeatures::BASE_FEE_CHECK));
         assert!(osaka.feature(EvmFeatures::PRIORITY_FEE_CHECK));
         assert!(osaka.feature(EvmFeatures::FEE_CHARGE));
         assert!(!osaka.feature(EvmFeatures::EIP7708));
-        assert!(!osaka.feature(EvmFeatures::EIP7708_DELAYED_BURN));
+        assert!(!osaka.feature(EvmFeatures::EIP8246));
         assert!(!osaka.feature(EvmFeatures::EIP8037));
         assert_eq!(osaka.chain_id, DEFAULT_CHAIN_ID);
         assert_eq!(osaka.tx_gas_limit_cap, MAX_TX_GAS_LIMIT_OSAKA);
@@ -280,7 +283,7 @@ mod tests {
         assert!(amsterdam.feature(EvmFeatures::TX_CHAIN_ID_CHECK));
         assert!(amsterdam.feature(EvmFeatures::EIP8037));
         assert!(amsterdam.feature(EvmFeatures::EIP7708));
-        assert!(amsterdam.feature(EvmFeatures::EIP7708_DELAYED_BURN));
+        assert!(amsterdam.feature(EvmFeatures::EIP8246));
         assert_eq!(amsterdam.chain_id, DEFAULT_CHAIN_ID);
         assert_eq!(amsterdam.tx_gas_limit_cap, MAX_TX_GAS_LIMIT_OSAKA);
         assert_eq!(amsterdam.memory_limit, DEFAULT_MEMORY_LIMIT);
@@ -299,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn default_gas_table_matches_revm_static_costs() {
+    fn default_gas_table_static_costs() {
         let default_gas_table = opcode_config(SpecId::FRONTIER);
         assert_eq!(default_gas_table.static_gas(op::STOP), 0);
         assert_eq!(default_gas_table.static_gas(op::ADD), 3);
@@ -514,6 +517,9 @@ evm_versions! {
     }
 
     TANGERINE {
+        features: [
+            EIP150,
+        ],
         static_gas: [
             SLOAD: 200,
             BALANCE: 400,
@@ -531,6 +537,10 @@ evm_versions! {
     }
 
     SPURIOUS_DRAGON {
+        features: [
+            EIP161,
+            CODE_SIZE_CHECK,
+        ],
         static_gas: [
             EXP: EXP,
         ],
@@ -561,6 +571,7 @@ evm_versions! {
     ISTANBUL {
         features: [
             EIP2028,
+            EIP2200,
         ],
         ops: [
             CHAINID: BASE,
@@ -583,6 +594,9 @@ evm_versions! {
     }
 
     BERLIN {
+        features: [
+            EIP2929,
+        ],
         static_gas: [
             SLOAD: WARM_STORAGE_READ_COST,
             BALANCE: WARM_STORAGE_READ_COST,
@@ -606,8 +620,8 @@ evm_versions! {
             SstoreSetWithoutLoadCost: SSTORE_SET - WARM_STORAGE_READ_COST,
             SstoreSetRefund: SSTORE_SET - WARM_STORAGE_READ_COST,
             SstoreResetRefund: WARM_SSTORE_RESET - WARM_STORAGE_READ_COST,
-            TxAccessListAddressCost: ACCESS_LIST_ADDRESS,
-            TxAccessListStorageKeyCost: ACCESS_LIST_STORAGE_KEY,
+            TxAccessListAddressCost: EIP2930_ACCESS_LIST_ADDRESS,
+            TxAccessListStorageKeyCost: EIP2930_ACCESS_LIST_STORAGE_KEY,
         ],
     }
 
@@ -625,12 +639,16 @@ evm_versions! {
             SELFDESTRUCT: 5000,
         ],
         dynamic_gas: [
-            SstoreClearingSlotRefund: WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY,
+            SstoreClearingSlotRefund: WARM_SSTORE_RESET + EIP2930_ACCESS_LIST_STORAGE_KEY,
             SelfdestructRefund: 0,
         ],
     }
 
-    MERGE {}
+    MERGE {
+        features: [
+            EIP4399,
+        ],
+    }
 
     SHANGHAI {
         features: [
@@ -650,6 +668,9 @@ evm_versions! {
     }
 
     CANCUN {
+        features: [
+            EIP6780,
+        ],
         ops: [
             BLOBHASH: VERYLOW,
             BLOBBASEFEE: BASE,
@@ -662,6 +683,7 @@ evm_versions! {
     PRAGUE {
         features: [
             EIP7623,
+            EIP7702,
         ],
         dynamic_gas: [
             TxEip7702PerEmptyAccountCost: EIP7702_PER_EMPTY_ACCOUNT_COST,
@@ -679,10 +701,9 @@ evm_versions! {
 
     AMSTERDAM {
         features: [
-            EIP7981,
             EIP8037,
             EIP7708,
-            EIP7708_DELAYED_BURN,
+            EIP8246,
         ],
         ops: [
             DUPN: VERYLOW,
@@ -713,6 +734,12 @@ evm_versions! {
             CreateState: 112 * AMSTERDAM_CPSB,
             SstoreSetRefund: 32 * AMSTERDAM_CPSB + 2800,
             TxFloorCostPerToken: TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM,
+            // EIP-7981: charge access-list data at 64 gas per byte (20 bytes per
+            // address, 32 per storage key), baked into the per-item cost. Each
+            // access-list byte also contributes 4 floor tokens (16 * 4 = 64 gas).
+            TxAccessListAddressCost: EIP2930_ACCESS_LIST_ADDRESS + 20 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
+            TxAccessListStorageKeyCost: EIP2930_ACCESS_LIST_STORAGE_KEY + 32 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
+            TxAccessListFloorByteMultiplier: EIP7981_ACCESS_LIST_FLOOR_BYTE_MULTIPLIER,
             TxEip7702PerEmptyAccountCost: 7500 + (112 + 23) * AMSTERDAM_CPSB,
             TxEip7702AuthRefund: 112 * AMSTERDAM_CPSB,
             TxEip7702PerAuthState: (112 + 23) * AMSTERDAM_CPSB,

@@ -1,6 +1,10 @@
 //! Precompile dispatch interface.
 
-use crate::{PrecompileError, interpreter::GasTracker};
+use super::Evm;
+use crate::{
+    EvmTypes, PrecompileError,
+    interpreter::{GasTracker, Message},
+};
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes};
 use core::any::Any;
@@ -33,9 +37,9 @@ impl PrecompileOutput {
 }
 
 /// Precompile execution hook.
-pub trait PrecompileProvider: Any + Send {
-    /// Returns precompile addresses that should be warm at transaction start.
-    fn warm_addresses(&self) -> Vec<Address> {
+pub trait PrecompileProvider<T: EvmTypes>: Any {
+    /// Returns precompile addresses.
+    fn addresses(&self) -> Vec<Address> {
         Vec::new()
     }
 
@@ -45,16 +49,16 @@ pub trait PrecompileProvider: Any + Send {
     /// Executes the precompile at `address`, if one is registered.
     fn execute(
         &mut self,
-        address: Address,
-        input: &[u8],
+        evm: &mut Evm<T>,
+        message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
 }
 
-impl PrecompileProvider for Box<dyn PrecompileProvider> {
+impl<T: EvmTypes, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for Box<P> {
     #[inline]
-    fn warm_addresses(&self) -> Vec<Address> {
-        self.as_ref().warm_addresses()
+    fn addresses(&self) -> Vec<Address> {
+        self.as_ref().addresses()
     }
 
     #[inline]
@@ -65,22 +69,22 @@ impl PrecompileProvider for Box<dyn PrecompileProvider> {
     #[inline]
     fn execute(
         &mut self,
-        address: Address,
-        input: &[u8],
+        evm: &mut Evm<T>,
+        message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-        self.as_mut().execute(address, input, gas)
+        self.as_mut().execute(evm, message, gas)
     }
 }
 
 /// Empty precompile provider.
-#[allow(missing_debug_implementations, missing_copy_implementations)]
-#[derive(Default)]
+#[allow(missing_copy_implementations)]
+#[derive(Clone, Debug, Default)]
 pub struct NoPrecompiles(());
 
-impl PrecompileProvider for NoPrecompiles {
+impl<T: EvmTypes> PrecompileProvider<T> for NoPrecompiles {
     #[inline]
-    fn warm_addresses(&self) -> Vec<Address> {
+    fn addresses(&self) -> Vec<Address> {
         Vec::new()
     }
 
@@ -92,8 +96,8 @@ impl PrecompileProvider for NoPrecompiles {
     #[inline]
     fn execute(
         &mut self,
-        _address: Address,
-        _input: &[u8],
+        _evm: &mut Evm<T>,
+        _message: &Message<T>,
         _gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
         None

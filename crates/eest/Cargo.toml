@@ -15,7 +15,8 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-evm2 = { workspace = true, features = ["std"] }
+evm2.workspace = true
+evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
 
 alloy-consensus = { workspace = true, features = ["std"] }
 alloy-eip7928 = { workspace = true, features = ["std", "serde", "rlp"] }
@@ -24,14 +25,27 @@ alloy-primitives = { workspace = true, features = ["std", "serde", "rlp"] }
 alloy-rlp = { workspace = true, features = ["std"] }
 alloy-rpc-types-eth = { workspace = true, features = ["std"] }
 alloy-trie = { workspace = true, features = ["ethereum"] }
+anstyle.workspace = true
 k256 = { workspace = true, features = ["ecdsa", "std"] }
 libtest-mimic.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["preserve_order", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 walkdir.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+evm2 = { workspace = true, default-features = true }
+
+[build-dependencies]
+evm2-jit-build = { workspace = true, optional = true }
 
 [[test]]
 name = "eest"
 path = "tests/eest.rs"
 harness = false
+
+[features]
+default = []
+jit = ["dep:evm2-jit-runtime", "dep:evm2-jit-build"]

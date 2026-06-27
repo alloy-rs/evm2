@@ -3,59 +3,16 @@
 //! Handlers are written against concrete transaction types. The registry stores
 //! them behind an object-safe boundary and dispatches by transaction type byte.
 //!
-//! The registry is generic over the envelope type, handler output, and mutable
-//! host type, so it does not force a particular transaction, receipt, or host
-//! representation onto the rest of the crate.
-//!
-//! # Example
-//!
-//! ```
-//! use evm2::registry::{HandlerError, HandlerResult, TxRegistry, TxRequest};
-//!
-//! const TRANSFER: u8 = 0x01;
-//!
-//! struct TransferTx {
-//!     amount: u64,
-//! }
-//!
-//! enum Envelope {
-//!     Transfer(TransferTx),
-//! }
-//!
-//! impl Envelope {
-//!     fn as_transfer(&self) -> Option<&TransferTx> {
-//!         match self {
-//!             Self::Transfer(tx) => Some(tx),
-//!         }
-//!     }
-//! }
-//!
-//! #[derive(Debug, PartialEq, Eq)]
-//! struct Receipt {
-//!     gas_used: u64,
-//! }
-//!
-//! fn handle_transfer(req: TxRequest<'_, TransferTx>) -> HandlerResult<Receipt> {
-//!     Ok(Receipt { gas_used: 21_000 + req.tx.amount })
-//! }
-//!
-//! let registry = TxRegistry::<Envelope, Receipt>::new().with_handler(
-//!     TRANSFER,
-//!     Envelope::as_transfer,
-//!     handle_transfer,
-//! );
-//!
-//! let tx = Envelope::Transfer(TransferTx { amount: 7 });
-//! let receipt = registry.try_get_by_type(TRANSFER)?.call(&tx, &mut ())?;
-//!
-//! assert_eq!(receipt, Receipt { gas_used: 21_007 });
-//! # Ok::<(), HandlerError>(())
-//! ```
+//! The registry is generic over an [`EvmTypes`] family and handler output, so
+//! it does not force a particular transaction or receipt representation onto
+//! the rest of the crate.
 
 use alloc::sync::Arc;
 use alloy_primitives::{Address, U256, map::HashMap};
 use core::{fmt, marker::PhantomData};
 use thiserror::Error;
+
+use crate::EvmTypes;
 
 /// Convenience result type used by the registry and handlers.
 pub type HandlerResult<T> = core::result::Result<T, HandlerError>;
@@ -186,11 +143,11 @@ pub enum HandlerError {
 
 /// Request passed to a typed transaction handler.
 #[derive(Debug)]
-pub struct TxRequest<'a, Tx, Host = ()> {
+pub struct TxRequest<'a, T: EvmTypes, Tx> {
     /// Concrete transaction extracted from the envelope.
     pub tx: &'a Tx,
     /// Mutable host used by this handler.
-    pub host: &'a mut Host,
+    pub host: &'a mut T::Host,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -199,41 +156,41 @@ pub struct TxRequest<'a, Tx, Host = ()> {
 ///
 /// `Tx` remains concrete. This is what gives handlers strong type guarantees
 /// even though the registry itself is type-erased.
-pub trait TxHandler<Tx, Output, Host = ()> {
+pub trait TxHandler<T: EvmTypes, Tx, Output> {
     /// Executes the handler.
-    fn call(&self, req: TxRequest<'_, Tx, Host>) -> HandlerResult<Output>;
+    fn call(&self, req: TxRequest<'_, T, Tx>) -> HandlerResult<Output>;
 }
 
-impl<Tx, Output, Host, F> TxHandler<Tx, Output, Host> for F
+impl<T: EvmTypes, Tx, Output, F> TxHandler<T, Tx, Output> for F
 where
-    F: for<'a> Fn(TxRequest<'a, Tx, Host>) -> HandlerResult<Output>,
+    F: for<'a> Fn(TxRequest<'a, T, Tx>) -> HandlerResult<Output>,
 {
-    fn call(&self, req: TxRequest<'_, Tx, Host>) -> HandlerResult<Output> {
+    fn call(&self, req: TxRequest<'_, T, Tx>) -> HandlerResult<Output> {
         self(req)
     }
 }
 
 /// An erased transaction handler returned by [`TxRegistry`].
 #[derive(Clone)]
-pub struct AnyTxHandler<Env, Output, Host = ()> {
-    inner: Arc<dyn ErasedTxHandler<Env, Output, Host>>,
+pub struct AnyTxHandler<T: EvmTypes, Output> {
+    inner: Arc<dyn ErasedTxHandler<T, Output>>,
 }
 
-impl<Env, Output, Host> fmt::Debug for AnyTxHandler<Env, Output, Host> {
+impl<T: EvmTypes, Output> fmt::Debug for AnyTxHandler<T, Output> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AnyTxHandler").finish_non_exhaustive()
     }
 }
 
-impl<Env, Output, Host> AnyTxHandler<Env, Output, Host> {
+impl<T: EvmTypes, Output> AnyTxHandler<T, Output> {
     /// Executes the erased handler against an envelope and host.
-    pub fn call(&self, env: &Env, host: &mut Host) -> HandlerResult<Output> {
+    pub fn call(&self, env: &T::Tx, host: &mut T::Host) -> HandlerResult<Output> {
         self.inner.call(env, host)
     }
 }
 
-trait ErasedTxHandler<Env, Output, Host>: Send + Sync {
-    fn call(&self, env: &Env, host: &mut Host) -> HandlerResult<Output>;
+trait ErasedTxHandler<T: EvmTypes, Output>: Send + Sync {
+    fn call(&self, env: &T::Tx, host: &mut T::Host) -> HandlerResult<Output>;
 }
 
 struct HandlerAdapter<Tx, H, F> {
@@ -249,12 +206,13 @@ impl<Tx, H, F> HandlerAdapter<Tx, H, F> {
     }
 }
 
-impl<Env, Tx, Output, Host, H, F> ErasedTxHandler<Env, Output, Host> for HandlerAdapter<Tx, H, F>
+impl<T, Tx, Output, H, F> ErasedTxHandler<T, Output> for HandlerAdapter<Tx, H, F>
 where
-    H: TxHandler<Tx, Output, Host> + Send + Sync,
-    F: for<'a> Fn(&'a Env) -> Option<&'a Tx> + Send + Sync,
+    T: EvmTypes,
+    H: TxHandler<T, Tx, Output> + Send + Sync,
+    F: for<'a> Fn(&'a T::Tx) -> Option<&'a Tx> + Send + Sync,
 {
-    fn call(&self, env: &Env, host: &mut Host) -> HandlerResult<Output> {
+    fn call(&self, env: &T::Tx, host: &mut T::Host) -> HandlerResult<Output> {
         let tx = (self.extract)(env)
             .ok_or(HandlerError::WrongTransactionType { expected: self.type_id })?;
         self.handler.call(TxRequest { tx, host, _non_exhaustive: () })
@@ -262,23 +220,23 @@ where
 }
 
 /// A type-erased transaction handler registry keyed by transaction type byte.
-pub struct TxRegistry<Env, Output = (), Host = ()> {
-    handlers: HashMap<u8, Arc<dyn ErasedTxHandler<Env, Output, Host>>>,
+pub struct TxRegistry<T: EvmTypes, Output = ()> {
+    handlers: HashMap<u8, Arc<dyn ErasedTxHandler<T, Output>>>,
 }
 
-impl<Env, Output, Host> fmt::Debug for TxRegistry<Env, Output, Host> {
+impl<T: EvmTypes, Output> fmt::Debug for TxRegistry<T, Output> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TxRegistry").field("len", &self.handlers.len()).finish_non_exhaustive()
     }
 }
 
-impl<Env, Output, Host> Default for TxRegistry<Env, Output, Host> {
+impl<T: EvmTypes, Output> Default for TxRegistry<T, Output> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<Env, Output, Host> TxRegistry<Env, Output, Host> {
+impl<T: EvmTypes, Output> TxRegistry<T, Output> {
     /// Creates an empty registry.
     pub fn new() -> Self {
         Self { handlers: HashMap::default() }
@@ -287,12 +245,12 @@ impl<Env, Output, Host> TxRegistry<Env, Output, Host> {
     /// Registers a typed handler for a transaction type byte.
     ///
     /// `extract` projects `Tx` out of the envelope. The handler remains typed
-    /// as `TxHandler<Tx, Output, Host>`; only this registry boundary is erased.
+    /// as `TxHandler<T, Tx, Output>`; only this registry boundary is erased.
     pub fn register<Tx, H, F>(&mut self, type_id: u8, extract: F, handler: H) -> &mut Self
     where
         Tx: 'static,
-        H: TxHandler<Tx, Output, Host> + Send + Sync + 'static,
-        F: for<'a> Fn(&'a Env) -> Option<&'a Tx> + Send + Sync + 'static,
+        H: TxHandler<T, Tx, Output> + Send + Sync + 'static,
+        F: for<'a> Fn(&'a T::Tx) -> Option<&'a Tx> + Send + Sync + 'static,
     {
         self.handlers.insert(type_id, Arc::new(HandlerAdapter::new(type_id, extract, handler)));
         self
@@ -303,8 +261,8 @@ impl<Env, Output, Host> TxRegistry<Env, Output, Host> {
     pub fn with_handler<Tx, H, F>(mut self, type_id: u8, extract: F, handler: H) -> Self
     where
         Tx: 'static,
-        H: TxHandler<Tx, Output, Host> + Send + Sync + 'static,
-        F: for<'a> Fn(&'a Env) -> Option<&'a Tx> + Send + Sync + 'static,
+        H: TxHandler<T, Tx, Output> + Send + Sync + 'static,
+        F: for<'a> Fn(&'a T::Tx) -> Option<&'a Tx> + Send + Sync + 'static,
     {
         self.register(type_id, extract, handler);
         self
@@ -316,12 +274,12 @@ impl<Env, Output, Host> TxRegistry<Env, Output, Host> {
     }
 
     /// Returns the erased handler registered for `type_id`, if any.
-    pub fn get_by_type(&self, type_id: u8) -> Option<AnyTxHandler<Env, Output, Host>> {
+    pub fn get_by_type(&self, type_id: u8) -> Option<AnyTxHandler<T, Output>> {
         self.handlers.get(&type_id).map(|inner| AnyTxHandler { inner: Arc::clone(inner) })
     }
 
     /// Returns the erased handler registered for `type_id`.
-    pub fn try_get_by_type(&self, type_id: u8) -> HandlerResult<AnyTxHandler<Env, Output, Host>> {
+    pub fn try_get_by_type(&self, type_id: u8) -> HandlerResult<AnyTxHandler<T, Output>> {
         self.get_by_type(type_id).ok_or(HandlerError::UnsupportedTransactionType(type_id))
     }
 }
@@ -329,7 +287,15 @@ impl<Env, Output, Host> TxRegistry<Env, Output, Host> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        BaseEvmConfigSelector, EvmFeatures, EvmTypes, SpecId,
+        bytecode::Bytecode,
+        env::{BlockEnv, TxEnv},
+        evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+        interpreter::{Host, InstrStop, Message, MessageResult, Word},
+    };
     use alloc::vec::Vec;
+    use alloy_primitives::{Address, B256, Log};
 
     #[derive(Debug)]
     struct TransferTx {
@@ -345,6 +311,104 @@ mod tests {
     enum Envelope {
         Transfer(TransferTx),
         Create(CreateTx),
+    }
+
+    struct TestTypes;
+
+    impl EvmTypes for TestTypes {
+        type ConfigSelector = BaseEvmConfigSelector;
+        type SpecId = SpecId;
+        type Tx = Envelope;
+        type MessageExt = ();
+        type MessageResultExt = ();
+        type TxEnvExt = ();
+        type TxResultExt = ();
+        type BlockEnvExt = ();
+        type Host = TestHost;
+    }
+
+    struct TestHost {
+        block: BlockEnv<TestTypes>,
+    }
+
+    impl Host<TestTypes> for TestHost {
+        fn spec_id(&self) -> SpecId {
+            SpecId::default()
+        }
+
+        fn block_env(&mut self) -> &BlockEnv<TestTypes> {
+            &self.block
+        }
+
+        fn load_account(
+            &mut self,
+            _address: &Address,
+            _load_code: bool,
+            _skip_cold_load: bool,
+        ) -> Result<AccountLoad, InstrStop> {
+            unimplemented!()
+        }
+
+        fn target_is_empty_for_new_account_gas(
+            &mut self,
+            _address: &Address,
+            _features: EvmFeatures,
+        ) -> Result<bool, InstrStop> {
+            unimplemented!()
+        }
+
+        fn block_hash(&mut self, _number: &Word) -> Result<Option<B256>, InstrStop> {
+            unimplemented!()
+        }
+
+        fn sload(
+            &mut self,
+            _address: &Address,
+            _key: &Word,
+            _skip_cold_load: bool,
+        ) -> Result<SLoad, InstrStop> {
+            unimplemented!()
+        }
+
+        fn sstore(
+            &mut self,
+            _address: &Address,
+            _key: &Word,
+            _value: &Word,
+            _skip_cold_load: bool,
+        ) -> Result<SStore, InstrStop> {
+            unimplemented!()
+        }
+
+        fn tload(&mut self, _address: &Address, _key: &Word) -> Word {
+            unimplemented!()
+        }
+
+        fn tstore(&mut self, _address: &Address, _key: &Word, _value: &Word) {
+            unimplemented!()
+        }
+
+        fn log(&mut self, _log: Log) {
+            unimplemented!()
+        }
+
+        fn execute_message(
+            &mut self,
+            _tx_env: &TxEnv<TestTypes>,
+            _bytecode: Bytecode,
+            _message: &mut Message<TestTypes>,
+        ) -> MessageResult<TestTypes> {
+            unimplemented!()
+        }
+
+        fn selfdestruct(
+            &mut self,
+            _contract: &Address,
+            _target: &Address,
+            _skip_cold_load: bool,
+        ) -> Result<SelfDestructResult, InstrStop> {
+            unimplemented!()
+        }
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -371,27 +435,27 @@ mod tests {
         Receipt { success: true, cumulative_gas_used }
     }
 
-    fn handle_transfer(req: TxRequest<'_, TransferTx>) -> HandlerResult<Receipt> {
+    fn handle_transfer(req: TxRequest<'_, TestTypes, TransferTx>) -> HandlerResult<Receipt> {
         let gas_used = 21_000 + req.tx.amount;
         Ok(receipt(gas_used))
     }
 
-    fn handle_create(req: TxRequest<'_, CreateTx>) -> HandlerResult<Receipt> {
+    fn handle_create(req: TxRequest<'_, TestTypes, CreateTx>) -> HandlerResult<Receipt> {
         let gas_used = 53_000 + req.tx.initcode.len() as u64;
         Ok(receipt(gas_used))
     }
 
     fn call_registered(
-        registry: &TxRegistry<Envelope, Receipt>,
+        registry: &TxRegistry<TestTypes, Receipt>,
         type_id: u8,
         env: &Envelope,
     ) -> HandlerResult<Receipt> {
-        registry.try_get_by_type(type_id)?.call(env, &mut ())
+        registry.try_get_by_type(type_id)?.call(env, &mut TestHost { block: BlockEnv::default() })
     }
 
     #[test]
     fn dispatches_to_typed_handlers_from_erased_registry() {
-        let mut registry = TxRegistry::<Envelope, Receipt>::new();
+        let mut registry = TxRegistry::<TestTypes, Receipt>::new();
         registry.register(0x01, transfer, handle_transfer);
         registry.register(0x02, create, handle_create);
 
@@ -408,7 +472,7 @@ mod tests {
 
     #[test]
     fn reports_unsupported_and_mismatched_types() {
-        let mut registry = TxRegistry::<Envelope, Receipt>::new();
+        let mut registry = TxRegistry::<TestTypes, Receipt>::new();
         registry.register(0x01, transfer, handle_transfer);
 
         assert_eq!(

@@ -90,11 +90,10 @@ pub(crate) fn clz([value]: [Word]) -> out {
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{Word, instructions::tests::assert_stack};
-
-    fn neg(value: u64) -> Word {
-        Word::from(0).wrapping_sub(Word::from(value))
-    }
+    use crate::{
+        interpreter::Word,
+        test_utils::{assert_stack, neg},
+    };
 
     #[test]
     fn lt_opcode() {

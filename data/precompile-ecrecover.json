@@ -1,0 +1,96 @@
+{
+  "precompile/ecrecover": {
+    "env": {
+      "currentBaseFee": "0x0",
+      "currentCoinbase": "0x0000000000000000000000000000000000000000",
+      "currentGasLimit": "0x1000000",
+      "currentNumber": "0x1",
+      "currentTimestamp": "0x1"
+    },
+    "post": {
+      "Istanbul": [
+        {
+          "expectException": null,
+          "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "indexes": {
+            "data": 0,
+            "gas": 0,
+            "value": 0
+          },
+          "logs": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    },
+    "pre": {
+      "0x1111111111111111111111111111111111111111": {
+        "balance": "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "code": "0x",
+        "nonce": "0x0",
+        "storage": {}
+      }
+    },
+    "transaction": {
+      "data": [
+        "0xd49526f5e96ad4786bb3450d1b7c7120bf27d3a03fe04ec70b2172137cf0a37e000000000000000000000000000000000000000000000000000000000000001c48db26fab78a5ebd57b9766e05d67d7378aa3d6a21dfcb367cef8235566936713812857c1115db79778526795242044d43c16313d7550ecd3ebecda53d88d34a"
+      ],
+      "gasLimit": [
+        "0x1000000"
+      ],
+      "gasPrice": "0x0",
+      "nonce": "0x0",
+      "secretKey": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "sender": "0x1111111111111111111111111111111111111111",
+      "to": "0x0000000000000000000000000000000000000001",
+      "value": [
+        "0x0"
+      ]
+    }
+  },
+  "precompile/ecrecover/ethpandaops": {
+    "env": {
+      "currentBaseFee": "0x0",
+      "currentCoinbase": "0x0000000000000000000000000000000000000000",
+      "currentGasLimit": "0x1000000",
+      "currentNumber": "0x1",
+      "currentTimestamp": "0x1"
+    },
+    "post": {
+      "Istanbul": [
+        {
+          "expectException": null,
+          "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "indexes": {
+            "data": 0,
+            "gas": 0,
+            "value": 0
+          },
+          "logs": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    },
+    "pre": {
+      "0x1111111111111111111111111111111111111111": {
+        "balance": "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "code": "0x",
+        "nonce": "0x0",
+        "storage": {}
+      }
+    },
+    "transaction": {
+      "data": [
+        "0x38d18acb67d25c8bb9942764b62f18e17054f66a817bd4295423adf9ed98873e000000000000000000000000000000000000000000000000000000000000001b38d18acb67d25c8bb9942764b62f18e17054f66a817bd4295423adf9ed98873e789d1dd423d25f0772d2748d60f7e4b81bb14d086eba8e8e8efb6dcff8a4ae02"
+      ],
+      "gasLimit": [
+        "0x1000000"
+      ],
+      "gasPrice": "0x0",
+      "nonce": "0x0",
+      "secretKey": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "sender": "0x1111111111111111111111111111111111111111",
+      "to": "0x0000000000000000000000000000000000000001",
+      "value": [
+        "0x0"
+      ]
+    }
+  }
+}

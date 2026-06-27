@@ -3,6 +3,8 @@ version = 2
 yanked = "warn"
 ignore = [
     "RUSTSEC-2024-0436", # paste - no longer maintained
+    # `proc-macro-error2` is unmaintained - transitive dependency
+    "RUSTSEC-2026-0173",
 ]
 
 [bans]
@@ -26,6 +28,7 @@ allow = [
     "Unlicense",
     "Zlib",
     "CC0-1.0",
+    "CDLA-Permissive-2.0",
     "LGPL-3.0-or-later",
 ]
 

@@ -1,32 +1,56 @@
 //! In-memory cache database.
 
-use super::{DatabaseCommit, DbErrorCode, DbResult, DynDatabase, EmptyDB};
+use super::{DbErrorCode, DbResult, DynDatabase, EmptyDB};
 use crate::{
     bytecode::Bytecode,
-    evm::state::{AccountInfo, StateChanges},
+    evm::state::{
+        AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange,
+    },
     interpreter::Word,
-    storage_key::{StorageKey, StorageKeyMap},
 };
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
     map::{AddressMap, B256Map, U256Map, hash_map::Entry},
 };
+use core::convert::Infallible;
 
 /// A database implementation that stores initial state in memory.
 pub type InMemoryDB = CacheDB<EmptyDB>;
 
+/// Cached storage for one account.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AccountStorageCache {
+    /// Cached persistent slots for this account.
+    pub slots: U256Map<Word>,
+    /// Whether missing slots are known to be zero because storage was wiped.
+    pub wiped: bool,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
+}
+
+impl AccountStorageCache {
+    /// Marks all storage for this account as wiped.
+    #[inline]
+    pub fn wipe(&mut self) {
+        self.slots.clear();
+        self.wiped = true;
+    }
+}
+
 /// Cache used by [`CacheDB`].
 ///
-/// Accounts and code are stored separately: accounts carry the code hash, and
-/// bytecode is keyed by that hash in [`Self::contracts`].
+/// Accounts and code are stored separately: accounts carry the code hash, and bytecode is keyed by
+/// that hash in [`Self::contracts`]. Account and storage entries are authoritative for this cache
+/// layer: a cached `None` account or wiped per-account storage cache shadows the wrapped database
+/// instead of falling through to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cache {
-    /// Accounts keyed by address.
-    pub accounts: AddressMap<AccountInfo>,
+    /// Accounts keyed by address. `None` means the account is known to be absent/deleted.
+    pub accounts: AddressMap<Option<AccountInfo>>,
     /// Contracts keyed by code hash.
     pub contracts: B256Map<Bytecode>,
-    /// Persistent storage keyed by account and slot.
-    pub storage: StorageKeyMap<Word>,
+    /// Persistent storage keyed by account, then slot.
+    pub storage: AddressMap<AccountStorageCache>,
     /// Cached block hashes keyed by block number.
     pub block_hashes: U256Map<B256>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
@@ -42,7 +66,7 @@ impl Default for Cache {
         Self {
             accounts: AddressMap::default(),
             contracts,
-            storage: StorageKeyMap::default(),
+            storage: AddressMap::default(),
             block_hashes: U256Map::default(),
             _non_exhaustive: (),
         }
@@ -74,6 +98,12 @@ impl<ExtDB> CacheDB<ExtDB> {
         Self { cache: Cache::default(), db, _non_exhaustive: () }
     }
 
+    /// Applies borrowed state changes to this cache.
+    #[inline]
+    pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
+        let Ok(()) = source.visit(self);
+    }
+
     /// Inserts account code into the contract cache.
     #[inline]
     pub fn insert_contract(&mut self, info: &mut AccountInfo) {
@@ -100,20 +130,26 @@ impl<ExtDB> CacheDB<ExtDB> {
     pub fn insert_account_info(&mut self, address: &Address, mut info: AccountInfo) {
         self.insert_contract(&mut info);
         info.code = None;
-        self.cache.accounts.insert(*address, info);
+        self.cache.accounts.insert(*address, Some(info));
     }
 
     /// Returns cached account info if the account exists in the cache.
     #[inline]
     pub fn account_info(&self, address: &Address) -> Option<&AccountInfo> {
-        self.cache.accounts.get(address)
+        self.cache.accounts.get(address).and_then(Option::as_ref)
+    }
+
+    /// Returns whether the account is known to be absent from the cache layer.
+    #[inline]
+    pub(crate) fn account_absent(&self, address: &Address) -> bool {
+        self.cache.accounts.get(address).is_some_and(Option::is_none)
     }
 
     /// Inserts persistent storage.
     #[inline]
     pub fn insert_account_storage(&mut self, address: &Address, key: &Word, value: &Word) {
-        self.cache.accounts.entry(*address).or_default();
-        self.cache.storage.insert(StorageKey::new(*address, *key), *value);
+        self.cache.accounts.entry(*address).or_insert_with(|| Some(AccountInfo::default()));
+        self.cache.storage.entry(*address).or_default().slots.insert(*key, *value);
     }
 
     /// Sets a historical block hash.
@@ -123,32 +159,42 @@ impl<ExtDB> CacheDB<ExtDB> {
     }
 }
 
-impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
-    fn commit(&mut self, changes: &StateChanges) {
-        for (&code_hash, code) in &changes.code {
-            self.cache.contracts.insert(code_hash, code.clone());
+impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
+    type Error = Infallible;
+
+    #[inline]
+    fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
+        self.cache.contracts.insert(code_hash, code.clone());
+        Ok(())
+    }
+
+    #[inline]
+    fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
+        self.cache.storage.entry(address).or_default().wipe();
+        Ok(())
+    }
+
+    #[inline]
+    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+        let storage = self.cache.storage.entry(change.address).or_default();
+        if storage.wiped && change.current.is_zero() {
+            storage.slots.remove(&change.key);
+        } else {
+            storage.slots.insert(change.key, change.current);
         }
-        for (&address, storage) in &changes.storage {
-            if storage.wipe {
-                self.cache.storage.retain(|key, _| key.address() != address);
-            }
-            for (&key, change) in &storage.slots {
-                if change.current.is_zero() {
-                    self.cache.storage.remove(&StorageKey::new(address, key));
-                } else {
-                    self.cache.storage.insert(StorageKey::new(address, key), change.current);
-                }
-            }
-        }
-        for (&address, change) in &changes.accounts {
-            match &change.current {
-                Some(info) => self.insert_account_info(&address, info.clone()),
-                None => {
-                    self.cache.accounts.remove(&address);
-                    self.cache.storage.retain(|key, _| key.address() != address);
-                }
+        Ok(())
+    }
+
+    #[inline]
+    fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+        match change.current {
+            Some(info) => self.insert_account_info(&change.address, info.to_account_info()),
+            None => {
+                self.cache.accounts.insert(change.address, None);
+                self.cache.storage.entry(change.address).or_default().wipe();
             }
         }
+        Ok(())
     }
 }
 
@@ -157,14 +203,14 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         let Cache { accounts, contracts, .. } = &mut self.cache;
         match accounts.entry(*address) {
-            Entry::Occupied(entry) => Ok(Some(entry.get().clone())),
+            Entry::Occupied(entry) => Ok(entry.get().clone()),
             Entry::Vacant(entry) => {
                 let Some(mut info) = self.db.get_account(address)? else {
-                    return Ok(None);
+                    return Ok(entry.insert(None).clone());
                 };
                 Self::insert_contract_inner(contracts, &mut info);
                 info.code = None;
-                Ok(Some(entry.insert(info).clone()))
+                Ok(entry.insert(Some(info)).clone())
             }
         }
     }
@@ -179,11 +225,30 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        match self.cache.storage.entry(StorageKey::new(*address, *key)) {
-            Entry::Occupied(entry) => Ok(*entry.get()),
+        if self.account_absent(address) {
+            return Ok(Word::ZERO);
+        }
+
+        match self.cache.storage.entry(*address) {
+            Entry::Occupied(mut entry) => {
+                let storage = entry.get_mut();
+                match storage.slots.entry(*key) {
+                    Entry::Occupied(slot) => Ok(*slot.get()),
+                    Entry::Vacant(slot) => {
+                        if storage.wiped {
+                            return Ok(Word::ZERO);
+                        }
+                        let value = self.db.get_storage(address, key)?;
+                        Ok(*slot.insert(value))
+                    }
+                }
+            }
             Entry::Vacant(entry) => {
                 let value = self.db.get_storage(address, key)?;
-                Ok(*entry.insert(value))
+                let mut storage = AccountStorageCache::default();
+                storage.slots.insert(*key, value);
+                entry.insert(storage);
+                Ok(value)
             }
         }
     }
@@ -202,7 +267,7 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> alloc::boxed::Box<dyn core::error::Error + Send> {
+    fn error(&mut self, code: DbErrorCode) -> alloc::boxed::Box<dyn core::error::Error> {
         self.db.error(code)
     }
 }

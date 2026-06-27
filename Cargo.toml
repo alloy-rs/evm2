@@ -1,5 +1,19 @@
 [workspace]
-members = ["crates/evm2", "crates/macros", "crates/eest"]
+members = [
+    "crates/cli",
+    "crates/evm2",
+    "crates/macros",
+    "crates/eest",
+    "crates/inspectors",
+    "crates/jit",
+    "crates/jit/backend",
+    "crates/jit/build",
+    "crates/jit/builtins",
+    "crates/jit/codegen",
+    "crates/jit/context",
+    "crates/jit/llvm",
+    "crates/jit/runtime",
+]
 resolver = "3"
 
 [workspace.package]
@@ -12,6 +26,7 @@ homepage = "https://github.com/danipopes/evm2"
 repository = "https://github.com/danipopes/evm2"
 categories = ["cryptography::cryptocurrencies", "development-tools", "no-std"]
 keywords = ["bytecode", "ethereum", "evm", "execution", "interpreter"]
+exclude = [".github/", "benches/", "fuzz/", "tests/"]
 
 [workspace.lints.clippy]
 dbg-macro = "warn"
@@ -37,30 +52,78 @@ all = "warn"
 [workspace.dependencies]
 evm2 = { path = "crates/evm2", version = "0.1.0", default-features = false }
 evm2-macros = { path = "crates/macros", version = "0.1.0" }
+evm2-inspectors = { path = "crates/inspectors", version = "0.1.0" }
+evm2-jit = { path = "crates/jit", version = "0.1.0", default-features = false }
+evm2-jit-backend = { path = "crates/jit/backend", version = "0.1.0", default-features = false }
+evm2-jit-build = { path = "crates/jit/build", version = "0.1.0", default-features = false }
+evm2-jit-builtins = { path = "crates/jit/builtins", version = "0.1.0", default-features = false }
+evm2-jit-codegen = { path = "crates/jit/codegen", version = "0.1.0", default-features = false }
+evm2-jit-context = { path = "crates/jit/context", version = "0.1.0", default-features = false }
+evm2-jit-llvm = { path = "crates/jit/llvm", version = "0.1.0", default-features = false }
+evm2-jit-runtime = { path = "crates/jit/runtime", version = "0.1.0", default-features = false }
 
 alloy-consensus = { version = "2.0.4", default-features = false }
+alloy-chains = { version = "0.2.34", default-features = false }
 alloy-eip7928 = { version = "0.4.0", default-features = false }
 alloy-eips = { version = "2.0.4", default-features = false }
+alloy-hardforks = { version = "0.4", default-features = false }
 alloy-primitives = { version = "1.5.7", default-features = false }
+alloy-provider = { version = "2.0.4", default-features = false }
 alloy-rlp = { version = "0.3", default-features = false }
+alloy-rpc-client = { version = "2.0.4", default-features = false }
 alloy-rpc-types-eth = { version = "2.0.4", default-features = false }
+alloy-rpc-types-trace = { version = "2.0.4", default-features = false }
+alloy-sol-types = { version = "1.5.7", default-features = false }
 alloy-trie = { version = "0.9", default-features = false }
-derive-where = { version = "1.6", default-features = false }
 
+anstyle = { version = "1.0", default-features = false }
+bitvec = { version = "1", default-features = false }
+boa_engine = { version = "0.21", default-features = false }
+boa_gc = { version = "0.21", default-features = false }
 cfg-if = { version = "1.0", default-features = false }
+derive-where = { version = "1.6", default-features = false }
+colorchoice = { version = "1.0", default-features = false }
+clap = { version = "4.5", default-features = false, features = [
+    "derive",
+    "error-context",
+    "help",
+    "std",
+    "suggestions",
+    "usage",
+] }
 corosensei = { version = "0.3.4", default-features = false, features = [
     "default-stack",
     "unwind",
 ] }
+crossbeam-channel = "0.5"
+crossbeam-queue = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+color-eyre = "0.6"
+eyre = "0.6"
+libc = "0.2"
 libtest-mimic = "0.8"
 once_cell = { version = "1.21", default-features = false }
+paste = { version = "1.0", default-features = false }
+phf = { version = "0.13", default-features = false }
+quanta = "0.12"
+postcard = { version = "1.1.3", default-features = false }
 rand = "0.10"
+rayon = "1.10"
+revm = { version = "38", default-features = true, features = ["asm-keccak"] }
 rstest = "0.26.0"
+ruint = { version = "1.18", default-features = false }
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false }
+snapbox = "0.6"
 thiserror = { version = "2.0", default-features = false }
 tokio = { version = "1", default-features = false }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tracing-tracy = "0.11"
 walkdir = { version = "2.5", default-features = false }
+wait-timeout = "0.2"
+wincode = { version = "0.5.4", features = ["derive"] }
+zstd = "0.13"
 
 # Precompiles
 ark-bls12-381 = { version = "0.6.0", default-features = false }
@@ -86,12 +149,24 @@ proc-macro2 = "1.0"
 quote = "1.0"
 syn = "2.0"
 
+# testing
+criterion = { package = "codspeed-criterion-compat", version = "4", default-features = false, features = [
+    "cargo_bench_support",
+] }
+
 [profile.dev]
 opt-level = 3
 
 [profile.release]
 opt-level = 3
 panic = "abort"
+
+# Use the `--profile profiling` flag to show symbols in release mode.
+# e.g. `cargo build --profile profiling`
+[profile.profiling]
+inherits = "release"
+debug = "full"
+strip = "none"
 
 [profile.bench]
 inherits = "release"
@@ -100,7 +175,7 @@ codegen-units = 1
 
 [patch.crates-io]
 # less memcpys, allocas etc.: https://github.com/tokio-rs/bytes/pull/826
-bytes = { git = "https://github.com/tokio-rs/bytes", branch = "master" }
+bytes = { git = "https://github.com/tokio-rs/bytes", rev = "91402cee605b21bf530ac07ede463599182b5d32" }
 
 # faster compile times: https://github.com/arkworks-rs/algebra/issues/1104
 ark-ec = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }

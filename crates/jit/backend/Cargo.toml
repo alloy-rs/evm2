@@ -1,0 +1,21 @@
+[package]
+name = "evm2-jit-backend"
+description = "EVM bytecode compiler backend abstraction"
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ruint = { workspace = true, features = ["std"] }
+eyre.workspace = true

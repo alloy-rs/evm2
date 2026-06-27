@@ -1,19 +1,20 @@
 //! EVM interpreter.
 
-pub(crate) mod gas;
+pub mod gas;
 pub use gas::{Gas, GasTracker, MemoryGas};
 
 #[macro_use]
 mod utils;
 
 pub(crate) mod instructions;
+pub use instructions::i256;
 
 pub(crate) mod dispatch;
 
 #[doc(hidden)] // For macro only. Not public API.
 pub mod private;
 
-pub(crate) mod opcode;
+pub mod opcode;
 pub use opcode::op;
 
 mod ctrl;
@@ -21,7 +22,7 @@ pub use ctrl::{BytecodeRef, Pc};
 
 mod stack;
 pub(crate) use stack::StackBacking;
-pub use stack::{Stack, StackMut, Word};
+pub use stack::{Stack, StackMut, StackRef, Word};
 
 mod memory;
 pub use memory::Memory;
@@ -42,6 +43,7 @@ pub type Result<T = (), E = InstrStop> = core::result::Result<T, E>;
 /// Result of executing an EVM instruction.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum InstrStop {
     /// Encountered a `STOP` opcode

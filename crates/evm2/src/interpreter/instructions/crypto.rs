@@ -1,8 +1,5 @@
-use crate::{
-    interpreter::memory::resize_memory,
-    utils::{b256_to_word, word_to_usize},
-};
-use alloy_primitives::keccak256 as keccak256_hash;
+use crate::utils::{b256_to_word, word_to_usize};
+use alloy_primitives::{KECCAK256_EMPTY, keccak256 as keccak256_hash};
 use evm2_macros::instruction;
 
 #[instruction(dynamic_gas)]
@@ -10,10 +7,10 @@ pub(crate) fn keccak256(cx: _, [offset, len]: [Word]) -> Result<out> {
     let len = word_to_usize(*len)?;
     cx.gas.spend(cx.state.gas_params().keccak256_word_cost(len))?;
     let hash = if len == 0 {
-        keccak256_hash([])
+        KECCAK256_EMPTY
     } else {
         let offset = word_to_usize(*offset)?;
-        resize_memory(cx.gas, cx.state.memory(), offset, len)?;
+        cx.state.resize_memory(cx.gas, offset, len)?;
         keccak256_hash(cx.state.memory().slice(offset, len))
     };
     *out = b256_to_word(hash);
@@ -22,11 +19,8 @@ pub(crate) fn keccak256(cx: _, [offset, len]: [Word]) -> Result<out> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        interpreter::{
-            InstrStop, Word,
-            instructions::tests::{RunConfig, push, run, run_stack},
-            op,
-        },
+        interpreter::{InstrStop, Word, op},
+        test_utils::{RunConfig, push, run, run_stack},
         utils::b256_to_word,
     };
     use alloc::vec::Vec;
@@ -40,9 +34,9 @@ mod tests {
         push(&mut code, 0);
         code.push(op::KECCAK256);
         code.push(op::STOP);
-        let interpreter = run(RunConfig::new(code));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [b256_to_word(keccak256([]))]);
+        let interp = run(RunConfig::new(code));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [b256_to_word(keccak256([]))]);
 
         let mut code = Vec::new();
         push(&mut code, Word::from(0x80));
@@ -52,15 +46,15 @@ mod tests {
         push(&mut code, 0);
         code.push(op::KECCAK256);
         code.push(op::STOP);
-        let interpreter = run(RunConfig::new(code));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [b256_to_word(keccak256([0x80]))]);
+        let interp = run(RunConfig::new(code));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [b256_to_word(keccak256([0x80]))]);
 
-        let interpreter = run_stack([Word::MAX, Word::from(0)], op::KECCAK256);
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [b256_to_word(keccak256([]))]);
+        let interp = run_stack([Word::MAX, Word::from(0)], op::KECCAK256);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [b256_to_word(keccak256([]))]);
 
-        let interpreter = run_stack([Word::MAX, Word::from(1)], op::KECCAK256);
-        assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+        let interp = run_stack([Word::MAX, Word::from(1)], op::KECCAK256);
+        assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
     }
 }
