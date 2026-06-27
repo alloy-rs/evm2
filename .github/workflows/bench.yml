@@ -12,7 +12,6 @@ env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
   RUSTFLAGS: -Csymbol-mangling-version=v0
-  "INPUT_CACHE-BIN": "false"
 
 jobs:
   codspeed:
@@ -31,6 +30,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
+          cache-bin: false
       - name: Install cargo-codspeed
         uses: taiki-e/install-action@b8cecb83565409bcc297b2df6e77f030b2a468d5 # v2.82.0
         with:
