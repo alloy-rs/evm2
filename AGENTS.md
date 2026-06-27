@@ -46,10 +46,9 @@ skip main/legacy fixtures. Use `EVM2_STATETEST_ROOT` or `EVM2_BLOCKCHAINTEST_ROO
 for a single explicit root.
 
 Compiled EEST runs use a default subset when the full corpus is too expensive:
-AOT defaults to the `ci-aot` subset, and macOS JIT defaults to the `ci-smoke`
-subset. Linux JIT defaults to the full compiled state corpus. Set
-`EVM2_COMPILED_EEST_SUBSET=all` to force full coverage, or set it to `ci-aot`
-or `ci-smoke` to run those subsets explicitly.
+AOT defaults to the `ci-aot` subset, and JIT defaults to the `ci-smoke` subset.
+Set `EVM2_COMPILED_EEST_SUBSET=all` to force full coverage, or set it to
+`ci-aot` or `ci-smoke` to run those subsets explicitly.
 
 To run additional tests from an arbitrary folder (or single file) without a
 test-name filter, use `./scripts/eest.sh <path>`. Every JSON file found anywhere
