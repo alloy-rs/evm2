@@ -545,6 +545,8 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
     if ecx.enables(EvmFeatures::EIP8037) {
         let state_gas = ecx.gas_params().sstore_state_gas(&state_load);
         ecx.gas.spend_state(state_gas)?;
+        let refill = ecx.gas_params().sstore_state_gas_refill(&state_load);
+        ecx.gas.refill_reservoir(refill);
     }
 
     let refund = ecx.gas_params().sstore_refund(is_eip2200, &state_load);

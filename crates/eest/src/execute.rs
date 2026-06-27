@@ -585,6 +585,22 @@ mod tests {
         Bytes::from_static(&[op::PUSH0, op::PUSH0, op::PUSH1, 1, op::CREATE, op::STOP])
     }
 
+    #[cfg(feature = "jit")]
+    fn sstore_restore() -> Bytes {
+        Bytes::from_static(&[
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            1,
+            op::SSTORE,
+            op::PUSH0,
+            op::PUSH1,
+            1,
+            op::SSTORE,
+            op::STOP,
+        ])
+    }
+
     #[test]
     fn logs_hash_matches_empty_logs() {
         assert_eq!(logs_hash(&[]), keccak256([alloy_rlp::EMPTY_LIST_CODE]));
@@ -826,6 +842,11 @@ mod tests {
     }
 
     #[cfg(feature = "jit")]
+    fn execute_amsterdam_sstore_restore(mode: ExecutionMode) -> SpecOutcome {
+        execute_amsterdam_target(mode, sstore_restore())
+    }
+
+    #[cfg(feature = "jit")]
     #[test]
     fn jit_and_aot_modes_match_interpreter_for_simple_call() {
         let interpreter = execute_simple_call(ExecutionMode::Interpreter);
@@ -870,6 +891,25 @@ mod tests {
         let interpreter = execute_amsterdam_value_create(ExecutionMode::Interpreter);
         let jit = execute_amsterdam_value_create(ExecutionMode::Jit);
         let aot = execute_amsterdam_value_create(ExecutionMode::Aot);
+
+        assert_eq!(jit.output, interpreter.output);
+        assert_eq!(aot.output, interpreter.output);
+        assert_eq!(jit.state_root, interpreter.state_root);
+        assert_eq!(aot.state_root, interpreter.state_root);
+        assert_eq!(jit.logs_root, interpreter.logs_root);
+        assert_eq!(aot.logs_root, interpreter.logs_root);
+        assert_eq!(jit.gas_used, interpreter.gas_used);
+        assert_eq!(aot.gas_used, interpreter.gas_used);
+        assert_eq!(jit.evm_result, interpreter.evm_result);
+        assert_eq!(aot.evm_result, interpreter.evm_result);
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_and_aot_modes_match_interpreter_for_amsterdam_sstore_restore() {
+        let interpreter = execute_amsterdam_sstore_restore(ExecutionMode::Interpreter);
+        let jit = execute_amsterdam_sstore_restore(ExecutionMode::Jit);
+        let aot = execute_amsterdam_sstore_restore(ExecutionMode::Aot);
 
         assert_eq!(jit.output, interpreter.output);
         assert_eq!(aot.output, interpreter.output);
