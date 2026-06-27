@@ -134,7 +134,7 @@ fn batched_trial(suite: &TestSuite) -> Result<Option<Trial>, String> {
         return Ok(None);
     };
 
-    let subset = compiled_eest_subset()?;
+    let subset = explicit_compiled_eest_subset()?;
     let mut paths = Vec::new();
     for root in &suite.roots {
         let files = find_json_tests(std::slice::from_ref(&root.path), suite.should_descend)?;
@@ -147,26 +147,37 @@ fn batched_trial(suite: &TestSuite) -> Result<Option<Trial>, String> {
     Ok((!paths.is_empty()).then(|| Trial::test(suite.name.to_string(), move || run_files(paths))))
 }
 
-fn compiled_eest_subset() -> Result<CompiledEestSubset, String> {
+fn explicit_compiled_eest_subset() -> Result<Option<CompiledEestSubset>, String> {
     let Some(value) = env::var_os(COMPILED_EEST_SUBSET_ENV) else {
-        return Ok(CompiledEestSubset::All);
+        return Ok(None);
     };
     let value = value.to_string_lossy();
     match value.as_ref() {
-        "" | "all" => Ok(CompiledEestSubset::All),
-        "ci-aot" => Ok(CompiledEestSubset::CiAot),
-        "ci-smoke" => Ok(CompiledEestSubset::CiSmoke),
+        "" | "all" => Ok(Some(CompiledEestSubset::All)),
+        "ci-aot" => Ok(Some(CompiledEestSubset::CiAot)),
+        "ci-smoke" => Ok(Some(CompiledEestSubset::CiSmoke)),
         _ => Err(format!(
             "unsupported {COMPILED_EEST_SUBSET_ENV}={value}; expected all, ci-aot, or ci-smoke"
         )),
     }
 }
 
-fn compiled_eest_subset_allows(subset: CompiledEestSubset, name: &str) -> bool {
+fn compiled_eest_subset_allows(subset: Option<CompiledEestSubset>, name: &str) -> bool {
+    let subset = subset.unwrap_or_else(|| default_compiled_eest_subset(name));
     match subset {
         CompiledEestSubset::All => true,
         CompiledEestSubset::CiAot => CI_AOT_STATE_DIRS.iter().any(|path| name.contains(path)),
         CompiledEestSubset::CiSmoke => CI_SMOKE_STATE_FILES.iter().any(|path| name.ends_with(path)),
+    }
+}
+
+fn default_compiled_eest_subset(name: &str) -> CompiledEestSubset {
+    if name.contains("::aot") {
+        CompiledEestSubset::CiAot
+    } else if cfg!(target_os = "macos") && name.contains("::jit") {
+        CompiledEestSubset::CiSmoke
+    } else {
+        CompiledEestSubset::All
     }
 }
 
