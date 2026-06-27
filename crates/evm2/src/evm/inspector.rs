@@ -1036,7 +1036,7 @@ mod tests {
         assert_eq!(state.exits, 2);
         assert_eq!(state.logs.len(), 1);
         assert_eq!(state.logs[0].address, contract);
-        assert_eq!(state.calls, 1);
+        assert_eq!(state.calls, 2);
         assert_eq!(state.creates, 0);
     }
 
