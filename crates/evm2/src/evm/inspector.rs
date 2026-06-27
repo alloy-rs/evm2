@@ -5,6 +5,7 @@ use crate::{
     evm::NonStaticAny,
     interpreter::{Interpreter, Message, MessageResult},
 };
+use alloc::boxed::Box;
 use alloy_primitives::{Address, Log, U256};
 
 /// EVM execution inspector.
