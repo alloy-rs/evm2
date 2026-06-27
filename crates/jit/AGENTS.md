@@ -13,12 +13,6 @@ cargo st "statetests::devnet::jit"                                              
 cargo st "blockchain_tests::devnet::jit"                                         # EEST JIT blockchain tests
 ```
 
-Compiled EEST runs use a default subset when the full corpus is too expensive:
-AOT defaults to the `ci-aot` subset, and macOS JIT defaults to the `ci-smoke`
-subset. Linux JIT defaults to the full compiled state corpus. Set
-`EVM2_COMPILED_EEST_SUBSET=all` to force full coverage, or set it to `ci-aot`
-or `ci-smoke` to run those subsets explicitly.
-
 ## Architecture
 
 - `evm2-jit` — thin umbrella crate that re-exports codegen and runtime APIs.
