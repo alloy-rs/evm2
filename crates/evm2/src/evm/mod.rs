@@ -1335,9 +1335,10 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         address: &Address,
         features: EvmFeatures,
     ) -> Result<bool, InstrStop> {
-        self.state
-            .target_is_empty_for_new_account_gas(address, features)
-            .map_err(|code| self.db_error_stop(code))
+        match self.state.account(address, false) {
+            Ok(account) => Ok(account.is_empty_for_new_account_gas(features)),
+            Err(code) => Err(db_error_stop!(self, code)),
+        }
     }
 
     fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop> {

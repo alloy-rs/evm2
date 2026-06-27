@@ -330,15 +330,6 @@ impl State {
             .map(|tracked| AccountHandle::new(*address, tracked, &mut self.inner))
     }
 
-    /// Returns whether an account is empty/non-existent for EIP-150 new-account gas checks.
-    pub(crate) fn target_is_empty_for_new_account_gas(
-        &mut self,
-        address: &Address,
-        features: EvmFeatures,
-    ) -> DbResult<bool> {
-        Ok(self.account(address, false)?.is_empty_for_new_account_gas(features))
-    }
-
     /// Returns a journaled mutation handle to `address`'s persistent storage overlay.
     ///
     /// The returned [`StorageHandle`] ties the account's storage slots to the revert journal, so
