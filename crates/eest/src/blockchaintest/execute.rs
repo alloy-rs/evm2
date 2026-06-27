@@ -34,10 +34,9 @@ use evm2::{
     },
     registry::HandlerError,
 };
-use std::{
-    mem,
-    path::{Path, PathBuf},
-};
+#[cfg(feature = "jit")]
+use std::path::PathBuf;
+use std::{mem, path::Path};
 
 pub use crate::execution::ExecutionMode;
 

@@ -18,5 +18,5 @@ priority = 1
 
 [[profile.default.overrides]]
 filter = 'test(/::(?:jit|aot)(?:$|::)/)'
-slow-timeout = { period = "3600s", terminate-after = 1 }
+slow-timeout = { period = "60m", terminate-after = 1 }
 threads-required = "num-cpus"

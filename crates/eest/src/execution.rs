@@ -103,9 +103,4 @@ impl ExecutionResources {
     pub(crate) const fn configure_evm(&self, _evm: &mut Evm<BaseEvmTypes>) {
         let _ = self;
     }
-
-    #[cfg(not(feature = "jit"))]
-    pub(crate) const fn print_runtime_stats(&self) {
-        let _ = self;
-    }
 }
