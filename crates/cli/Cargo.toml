@@ -23,13 +23,6 @@ workspace = true
 evm2-eest = { path = "../eest", version = "0.1.0" }
 evm2 = { workspace = true, default-features = true }
 
-# jit
-evm2-jit-context = { workspace = true, optional = true }
-evm2-jit-llvm = { workspace = true, optional = true }
-evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
-libloading = { version = "0.9", optional = true }
-open = { version = "5", optional = true }
-
 alloy-consensus = { workspace = true, features = ["k256", "secp256k1", "std"] }
 alloy-chains.workspace = true
 alloy-eips = { workspace = true, features = ["serde", "std"] }
@@ -50,6 +43,13 @@ serde_json = { workspace = true, features = ["raw_value", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 zstd.workspace = true
+
+# jit
+evm2-jit-context = { workspace = true, optional = true }
+evm2-jit-llvm = { workspace = true, optional = true }
+evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
+libloading = { version = "0.9", optional = true }
+open = { version = "5", optional = true }
 
 [build-dependencies]
 evm2-jit-build = { workspace = true, optional = true }

@@ -174,7 +174,7 @@ fn compiled_eest_subset_allows(subset: Option<CompiledEestSubset>, name: &str) -
 fn default_compiled_eest_subset(name: &str) -> CompiledEestSubset {
     if name.contains("::aot") {
         CompiledEestSubset::CiAot
-    } else if cfg!(target_os = "macos") && name.contains("::jit") {
+    } else if name.contains("::jit") {
         CompiledEestSubset::CiSmoke
     } else {
         CompiledEestSubset::All
@@ -254,5 +254,27 @@ mod tests {
             "statetests::custom::jit"
         );
         assert_eq!(compiled_roots(roots, CompiledMode::Aot)[0].name, "statetests::custom::aot");
+    }
+
+    #[test]
+    fn default_compiled_subset_smokes_jit_on_all_targets() {
+        assert_eq!(
+            default_compiled_eest_subset(
+                "statetests::custom::jit::frontier/create/test_create_suicide_store.json",
+            ),
+            CompiledEestSubset::CiSmoke
+        );
+        assert_eq!(
+            default_compiled_eest_subset(
+                "statetests::custom::aot::frontier/create/test_create_suicide_store.json",
+            ),
+            CompiledEestSubset::CiAot
+        );
+        assert_eq!(
+            default_compiled_eest_subset(
+                "statetests::custom::frontier/create/test_create_suicide_store.json",
+            ),
+            CompiledEestSubset::All
+        );
     }
 }
