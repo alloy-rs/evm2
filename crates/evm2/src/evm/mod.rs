@@ -1594,11 +1594,11 @@ mod tests {
         env::TxEnv,
         ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, MessageKind, op},
-        precompiles::{Precompile, PrecompileId, PrecompileResult},
+        precompiles::{Precompile, PrecompileId, PrecompileMap},
         registry::{HandlerError, TxRequest},
         test_utils::{legacy_bytecode, push as push_word, push_address},
     };
-    use alloc::{string::ToString, sync::Arc, vec, vec::Vec};
+    use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, TxKind, U256};
     use core::{
@@ -1608,6 +1608,8 @@ mod tests {
     };
 
     const TEST_TX_TYPE: u8 = 0x00;
+    const TEST_PRECOMPILE: Address = Address::with_last_byte(0x42);
+    const INNER_TEST_PRECOMPILE: Address = Address::with_last_byte(0x43);
 
     fn test_tx(value: u64) -> RecoveredTxEnvelope {
         RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
@@ -1625,6 +1627,55 @@ mod tests {
 
     const LIFECYCLE_ACCOUNT: Address = Address::with_last_byte(0x7a);
     const LIFECYCLE_STORAGE_KEY: Word = Word::from_limbs([1, 0, 0, 0]);
+
+    fn empty_precompiles() -> Precompiles<BaseEvmTypes> {
+        Precompiles::new(Cow::Owned(PrecompileMap::new()))
+    }
+
+    fn test_precompile(
+        address: Address,
+        f: crate::precompiles::PrecompileFn<BaseEvmTypes>,
+    ) -> Precompile<BaseEvmTypes> {
+        Precompile::new(address, PrecompileId::custom("test"), f)
+    }
+
+    fn precompiles_with(
+        precompiles: impl IntoIterator<Item = Precompile<BaseEvmTypes>>,
+    ) -> Precompiles<BaseEvmTypes> {
+        let mut map = PrecompileMap::new();
+        for precompile in precompiles {
+            map.insert(precompile);
+        }
+        Precompiles::new(Cow::Owned(map))
+    }
+
+    fn base_precompiles_with(
+        precompiles: impl IntoIterator<Item = Precompile<BaseEvmTypes>>,
+    ) -> Precompiles<BaseEvmTypes> {
+        let mut registry = Precompiles::base(SpecId::OSAKA);
+        for precompile in precompiles {
+            registry.as_map_mut().insert(precompile);
+        }
+        registry
+    }
+
+    fn precompile_message(address: Address) -> Message {
+        Message {
+            kind: MessageKind::Call,
+            depth: 0,
+            gas_limit: 30_000,
+            destination: address,
+            caller: Address::ZERO,
+            input: Bytes::new(),
+            value: U256::ZERO,
+            code_address: address,
+            disable_precompiles: false,
+            caller_is_static: false,
+            salt: B256::ZERO,
+            ext: (),
+            _non_exhaustive: (),
+        }
+    }
 
     fn lifecycle_evm() -> Evm<BaseEvmTypes> {
         fn handle_lifecycle_tx(
@@ -1667,42 +1718,20 @@ mod tests {
     const FATAL_PRECOMPILE_ADDRESS: Address = Address::with_last_byte(0x43);
     const OOG_PRECOMPILE_ADDRESS: Address = Address::with_last_byte(0x44);
 
-    fn precompiles_with(precompile: Precompile<BaseEvmTypes>) -> Precompiles<BaseEvmTypes> {
-        let mut precompiles = Precompiles::base(SpecId::OSAKA);
-        precompiles.as_map_mut().insert(precompile);
-        precompiles
-    }
-
     fn fatal_precompiles() -> Precompiles<BaseEvmTypes> {
-        precompiles_with(Precompile::new(
+        base_precompiles_with([Precompile::new(
             FATAL_PRECOMPILE_ADDRESS,
             PrecompileId::custom("fatal-test"),
-            fatal_precompile,
-        ))
-    }
-
-    fn fatal_precompile(
-        _evm: &mut Evm<BaseEvmTypes>,
-        _message: &Message,
-        _gas: &mut GasTracker,
-    ) -> PrecompileResult {
-        Err("fatal precompile".into())
+            |_, _, _| Err("fatal precompile".into()),
+        )])
     }
 
     fn oog_precompiles() -> Precompiles<BaseEvmTypes> {
-        precompiles_with(Precompile::new(
+        base_precompiles_with([Precompile::new(
             OOG_PRECOMPILE_ADDRESS,
             PrecompileId::custom("oog-test"),
-            oog_precompile,
-        ))
-    }
-
-    fn oog_precompile(
-        _evm: &mut Evm<BaseEvmTypes>,
-        _message: &Message,
-        _gas: &mut GasTracker,
-    ) -> PrecompileResult {
-        Err(PrecompileHalt::OutOfGas.into())
+            |_, _, _| Err(PrecompileHalt::OutOfGas.into()),
+        )])
     }
 
     fn call_precompile_then_store_code(address: Address) -> Vec<u8> {
@@ -1827,117 +1856,50 @@ mod tests {
         Set,
     }
 
-    struct AccessingPrecompile {
-        access: PrecompileAccess,
-    }
-
-    impl AccessingPrecompile {
-        const ADDRESS: Address = Address::with_last_byte(0x42);
-    }
-
-    impl PrecompileProvider<BaseEvmTypes> for AccessingPrecompile {
-        fn addresses(&self) -> Vec<Address> {
-            vec![Self::ADDRESS]
-        }
-
-        fn contains(&self, address: &Address) -> bool {
-            *address == Self::ADDRESS
-        }
-
-        fn execute(
-            &mut self,
-            evm: &mut Evm<BaseEvmTypes>,
-            message: &Message,
-            _gas: &mut GasTracker,
-        ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-            if message.code_address != Self::ADDRESS {
-                return None;
-            }
-            match self.access {
-                PrecompileAccess::Mut => {
-                    let _ = evm.precompiles_mut();
-                }
-                PrecompileAccess::AsMut => {
-                    let _ = evm.precompiles_as_mut::<Self>();
-                }
-                PrecompileAccess::Set => evm.set_precompiles(Precompiles::base(SpecId::OSAKA)),
-            }
-            Some(Ok(PrecompileOutput::new(Bytes::new())))
-        }
-    }
-
     fn run_precompile_access(access: PrecompileAccess) {
+        let precompiles = precompiles_with([test_precompile(
+            TEST_PRECOMPILE,
+            match access {
+                PrecompileAccess::Mut => |evm, _, _| {
+                    let _ = evm.precompiles_mut();
+                    Ok(PrecompileOutput::new(Bytes::new()))
+                },
+                PrecompileAccess::AsMut => |evm, _, _| {
+                    let _ = evm.precompiles_as_mut::<Precompiles<BaseEvmTypes>>();
+                    Ok(PrecompileOutput::new(Bytes::new()))
+                },
+                PrecompileAccess::Set => |evm, _, _| {
+                    evm.set_precompiles(empty_precompiles());
+                    Ok(PrecompileOutput::new(Bytes::new()))
+                },
+            },
+        )]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
-            AccessingPrecompile { access },
+            precompiles,
         );
-        let message = Message {
-            kind: MessageKind::Call,
-            depth: 0,
-            gas_limit: 30_000,
-            destination: AccessingPrecompile::ADDRESS,
-            caller: Address::ZERO,
-            input: Bytes::new(),
-            value: U256::ZERO,
-            code_address: AccessingPrecompile::ADDRESS,
-            disable_precompiles: false,
-            caller_is_static: false,
-            salt: B256::ZERO,
-            ext: (),
-            _non_exhaustive: (),
-        };
+        let message = precompile_message(TEST_PRECOMPILE);
         let _ = evm.execute_precompile(&message, &mut GasTracker::new(30_000));
     }
 
     #[test]
     fn immutable_precompile_access_is_allowed_during_execution() {
-        struct ReadingPrecompile;
-
-        impl PrecompileProvider<BaseEvmTypes> for ReadingPrecompile {
-            fn contains(&self, address: &Address) -> bool {
-                *address == AccessingPrecompile::ADDRESS
-            }
-
-            fn execute(
-                &mut self,
-                evm: &mut Evm<BaseEvmTypes>,
-                message: &Message,
-                _gas: &mut GasTracker,
-            ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-                if !self.contains(&message.code_address) {
-                    return None;
-                }
-                let _ = evm.precompiles();
-                let _ = evm.precompiles_as::<Self>();
-                Some(Ok(PrecompileOutput::new(Bytes::new())))
-            }
-        }
-
+        let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
+            let _ = evm.precompiles();
+            let _ = evm.precompiles_as::<Precompiles<BaseEvmTypes>>();
+            Ok(PrecompileOutput::new(Bytes::new()))
+        })]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
-            ReadingPrecompile,
+            precompiles,
         );
-        let message = Message {
-            kind: MessageKind::Call,
-            depth: 0,
-            gas_limit: 30_000,
-            destination: AccessingPrecompile::ADDRESS,
-            caller: Address::ZERO,
-            input: Bytes::new(),
-            value: U256::ZERO,
-            code_address: AccessingPrecompile::ADDRESS,
-            disable_precompiles: false,
-            caller_is_static: false,
-            salt: B256::ZERO,
-            ext: (),
-            _non_exhaustive: (),
-        };
+        let message = precompile_message(TEST_PRECOMPILE);
 
         evm.execute_precompile(&message, &mut GasTracker::new(30_000)).unwrap();
     }
@@ -2056,40 +2018,25 @@ mod tests {
 
     #[test]
     fn passes_evm_to_precompile_provider() {
-        #[derive(Default)]
-        struct HostObservingPrecompile {
-            seen_block_number: Option<U256>,
-            seen_message: Option<Message>,
-        }
-
-        impl PrecompileProvider<BaseEvmTypes> for HostObservingPrecompile {
-            fn contains(&self, address: &Address) -> bool {
-                *address == Address::with_last_byte(0x42)
-            }
-
-            fn execute(
-                &mut self,
-                evm: &mut Evm<BaseEvmTypes>,
-                message: &Message,
-                _gas: &mut GasTracker,
-            ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-                if !self.contains(&message.code_address) {
-                    return None;
-                }
-                self.seen_block_number = Some(evm.block.number);
-                self.seen_message = Some(message.clone());
-                Some(Ok(PrecompileOutput::new(Bytes::copy_from_slice(&[0x42]))))
-            }
-        }
-
-        let address = Address::with_last_byte(0x42);
+        let address = TEST_PRECOMPILE;
         let block = BlockEnv { number: U256::from(17), ..BlockEnv::default() };
+        let precompiles = precompiles_with([test_precompile(address, |evm, message, _| {
+            assert_eq!(message.kind, MessageKind::Call);
+            assert_eq!(message.depth, 67);
+            assert_eq!(message.destination, TEST_PRECOMPILE);
+            assert_eq!(message.caller, Address::with_last_byte(0x7a));
+            assert_eq!(message.input, Bytes::from_static(b"message input"));
+            assert_eq!(message.value, U256::from(99));
+            assert_eq!(message.code_address, TEST_PRECOMPILE);
+            assert!(!message.disable_precompiles);
+            Ok(PrecompileOutput::new(Bytes::copy_from_slice(&evm.block.number.to_be_bytes::<32>())))
+        })]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             block,
             TxRegistry::new(),
             InMemoryDB::default(),
-            HostObservingPrecompile::default(),
+            precompiles,
         );
         let message = Message {
             kind: MessageKind::Call,
@@ -2110,99 +2057,34 @@ mod tests {
             .execute_precompile(&message, &mut GasTracker::new(30_000))
             .expect("precompile succeeds");
 
-        assert_eq!(output.bytes(), &[0x42]);
-        assert_eq!(
-            evm.precompiles_as::<HostObservingPrecompile>().unwrap().seen_block_number,
-            Some(U256::from(17))
-        );
-        assert_eq!(
-            evm.precompiles_as::<HostObservingPrecompile>().unwrap().seen_message,
-            Some(message)
-        );
+        assert_eq!(U256::from_be_slice(output.bytes()), U256::from(17));
     }
 
     #[test]
     fn precompile_can_call_another_precompile() {
-        #[derive(Default)]
-        struct NestedPrecompile {
-            outer_called: bool,
-            inner_called: bool,
-        }
-
-        impl NestedPrecompile {
-            const OUTER: Address = Address::with_last_byte(0x42);
-            const INNER: Address = Address::with_last_byte(0x43);
-        }
-
-        impl PrecompileProvider<BaseEvmTypes> for NestedPrecompile {
-            fn contains(&self, address: &Address) -> bool {
-                *address == Self::OUTER || *address == Self::INNER
-            }
-
-            fn execute(
-                &mut self,
-                evm: &mut Evm<BaseEvmTypes>,
-                message: &Message,
-                gas: &mut GasTracker,
-            ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-                if message.code_address == Self::INNER {
-                    self.inner_called = true;
-                    return Some(Ok(PrecompileOutput::new(Bytes::from_static(b"inner"))));
-                }
-                if message.code_address != Self::OUTER {
-                    return None;
-                }
-                self.outer_called = true;
-                let message = Message {
-                    kind: MessageKind::Call,
-                    depth: 0,
-                    gas_limit: 30_000,
-                    destination: Self::INNER,
-                    caller: Address::ZERO,
-                    input: Bytes::new(),
-                    value: U256::ZERO,
-                    code_address: Self::INNER,
-                    disable_precompiles: false,
-                    caller_is_static: false,
-                    salt: B256::ZERO,
-                    ext: (),
-                    _non_exhaustive: (),
-                };
-                Some(evm.execute_precompile(&message, gas))
-            }
-        }
-
+        let precompiles = precompiles_with([
+            test_precompile(TEST_PRECOMPILE, |evm, _, gas| {
+                let message = precompile_message(INNER_TEST_PRECOMPILE);
+                evm.execute_precompile(&message, gas)
+            }),
+            test_precompile(INNER_TEST_PRECOMPILE, |_, _, _| {
+                Ok(PrecompileOutput::new(Bytes::from_static(b"inner")))
+            }),
+        ]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
-            NestedPrecompile::default(),
+            precompiles,
         );
-        let message = Message {
-            kind: MessageKind::Call,
-            depth: 0,
-            gas_limit: 30_000,
-            destination: NestedPrecompile::OUTER,
-            caller: Address::ZERO,
-            input: Bytes::new(),
-            value: U256::ZERO,
-            code_address: NestedPrecompile::OUTER,
-            disable_precompiles: false,
-            caller_is_static: false,
-            salt: B256::ZERO,
-            ext: (),
-            _non_exhaustive: (),
-        };
+        let message = precompile_message(TEST_PRECOMPILE);
 
         let output = evm
             .execute_precompile(&message, &mut GasTracker::new(30_000))
             .expect("precompile succeeds");
 
-        let precompile = evm.precompiles_as::<NestedPrecompile>().unwrap();
         assert_eq!(output.bytes(), b"inner");
-        assert!(precompile.outer_called);
-        assert!(precompile.inner_called);
     }
 
     #[test]
