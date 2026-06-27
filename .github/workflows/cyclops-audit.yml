@@ -1,9 +1,9 @@
 name: Cyclops audit
 
 on:
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] Cyclops needs privileged PR-label triggers and does not check out PR code.
     types: [labeled]
-  issue_comment:
+  issue_comment: # zizmor: ignore[dangerous-triggers] Cyclops gates comment callers before using secrets.
     types: [created]
 
 permissions: {}

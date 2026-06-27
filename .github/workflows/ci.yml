@@ -173,13 +173,15 @@ jobs:
             filter: test(statetests::jit)
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - name: Install LLVM
         if: ${{ matrix.os == 'ubuntu' }}
         run: .github/scripts/install_llvm.sh ubuntu
       - name: Install LLVM
         if: ${{ matrix.os == 'macos' }}
         run: .github/scripts/install_llvm.sh macos
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@stable # zizmor: ignore[unpinned-uses] Keep the toolchain branch ref for this matrix job.
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
         if: runner.os == 'Linux'
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
@@ -187,7 +189,7 @@ jobs:
         with:
           cache-on-failure: true
           cache-bin: false
-      - uses: taiki-e/install-action@16a76bb73558798e4218983c40c25fee9f2f99a8 # nextest
+      - uses: taiki-e/install-action@nextest # zizmor: ignore[unpinned-uses] Keep the tool-specific install-action ref.
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - name: Download EEST fixtures
         run: ./scripts/setup_test_fixtures.py
@@ -360,7 +362,7 @@ jobs:
   deny:
     permissions:
       contents: read
-    uses: tempoxyz/ci/.github/workflows/deny.yml@934b6a6317ac26272eaecf0d265472f4105c99d6 # main
+    uses: tempoxyz/ci/.github/workflows/deny.yml@934b6a6317ac26272eaecf0d265472f4105c99d6 # 2026.05.09
 
   ci-success:
     name: ci success
