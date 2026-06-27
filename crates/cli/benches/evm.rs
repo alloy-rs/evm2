@@ -1,4 +1,4 @@
-#![allow(missing_docs, clippy::missing_const_for_fn)]
+#![allow(missing_docs, unexpected_cfgs, clippy::missing_const_for_fn)]
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use evm2_cli::evm_bench::{self, BenchCase, BenchCaseKind, BenchKind};
@@ -6,6 +6,9 @@ use std::{env, time::Duration};
 
 #[path = "evm/fixture.rs"]
 mod fixture;
+#[cfg(feature = "jit")]
+#[path = "evm/jit.rs"]
+mod jit;
 #[path = "evm/mainnet.rs"]
 mod mainnet;
 #[path = "evm/revm.rs"]
@@ -23,23 +26,45 @@ fn evm(c: &mut Criterion) {
     let suites =
         fixture::Suites::load(benches.iter().filter_map(|bench| bench.transaction_fixture_path()));
     let cases = expand_cases(benches, &suites);
+
+    let is_listing = env::args_os().any(|arg| arg == "--list");
+
     let bench_revm = env::var_os("EVM2_BENCH_REVM").is_some();
+
+    #[cfg(feature = "jit")]
+    let mut jit_compiler = jit::Compiler::new();
+
     for bench in &cases {
         match bench.kind {
             BenchCaseKind::Transaction { .. } => {
                 let prepared = support::PreparedBench::load(bench, &suites);
-                prepared.sanity_check();
+                if !is_listing {
+                    prepared.sanity_check();
+                }
                 prepared.bench(&mut group);
+
+                #[cfg(feature = "jit")]
+                if let Some(prepared) = jit::PreparedBench::load(bench, &suites, &mut jit_compiler)
+                {
+                    if !is_listing {
+                        prepared.sanity_check();
+                    }
+                    prepared.bench(&mut group);
+                }
 
                 if bench_revm {
                     let prepared = revm::PreparedBench::load(bench, &suites);
-                    prepared.sanity_check();
+                    if !is_listing {
+                        prepared.sanity_check();
+                    }
                     prepared.bench(&mut group);
                 }
             }
             BenchCaseKind::BlockchainReplay => {
                 let prepared = mainnet::PreparedBench::load(bench);
-                prepared.sanity_check();
+                if !is_listing {
+                    prepared.sanity_check();
+                }
                 prepared.bench(&mut group);
             }
         }

@@ -172,8 +172,6 @@ jobs:
       - name: Install LLVM
         if: ${{ matrix.os == 'macos' }}
         run: .github/scripts/install_llvm.sh macos
-      - name: llvm-config
-        run: llvm-config --version --bindir --libdir
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@v1
         if: runner.os == 'Linux'

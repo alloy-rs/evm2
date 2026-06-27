@@ -29,4 +29,4 @@ for bin in "${bins[@]}"; do
 done
 
 echo "LLVM $v installed:"
-llvm-config --version
+llvm-config --version --bindir --libdir
