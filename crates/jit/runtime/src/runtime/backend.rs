@@ -161,6 +161,8 @@ pub(crate) struct PrepareAotRequest {
     pub(crate) key: RuntimeCacheKey,
     /// The raw bytecode.
     pub(crate) bytecode: Bytes,
+    /// Optional notifier for synchronous callers.
+    pub(crate) sync_notifier: SyncNotifier,
 }
 
 /// Per-key state tracked by the backend.
@@ -281,7 +283,7 @@ impl BackendState {
                 CompilationKind::Aot,
                 req.key,
                 req.bytecode,
-                SyncNotifier::none(),
+                req.sync_notifier,
                 AdmitMode::Explicit,
             );
         }
