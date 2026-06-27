@@ -534,13 +534,6 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
-    pub(crate) fn inspect_log(&mut self, log: &Log) {
-        if let Some(inspector) = self.inspector() {
-            inspector.log(log);
-        }
-    }
-
-    #[inline]
     pub(crate) fn inspect_selfdestruct(
         &mut self,
         contract: &Address,

@@ -160,23 +160,13 @@ mod tests {
         selfdestruct: Option<(Address, Address, Word)>,
     }
 
-    impl Inspector<TestTypes> for StopOnStepEndInspector {
-
-        fn step_end(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
-            self.step_ends += 1;
-            if self.last_opcode == Some(self.opcode) {
-                interp.set_stop(InstrStop::Revert);
-            }
-        }
-    }
-
     #[derive(Default)]
     struct ExitInspector {
         exits: usize,
     }
 
-    impl Inspector<TestTypes> for ExitInspector {
-        fn exit(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+    impl Inspector<BaseEvmTypes> for ExitInspector {
+        fn exit(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
             self.exits += 1;
         }
     }
@@ -466,35 +456,27 @@ mod tests {
 
     #[test]
     fn exit_is_called_when_frame_stops() {
-        let mut host = TestHost::default();
-        let mut inspector = ExitInspector::default();
-
-        let (stop, _) = run_with_inspector(
+        let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::STOP]),
-            &mut host,
             &Message::default(),
             10_000,
-            &mut inspector,
+            ExitInspector::default(),
         );
 
-        assert_eq!(stop, InstrStop::Stop);
+        assert_eq!(result.stop, InstrStop::Stop);
         assert_eq!(inspector.exits, 1);
     }
 
     #[test]
     fn exit_is_called_when_frame_halts() {
-        let mut host = TestHost::default();
-        let mut inspector = ExitInspector::default();
-
-        let (stop, _) = run_with_inspector(
+        let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::ADD]),
-            &mut host,
             &Message::default(),
             0,
-            &mut inspector,
+            ExitInspector::default(),
         );
 
-        assert_eq!(stop, InstrStop::OutOfGas);
+        assert_eq!(result.stop, InstrStop::OutOfGas);
         assert_eq!(inspector.exits, 1);
     }
 
