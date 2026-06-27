@@ -1,0 +1,9 @@
+    CALLVALUE
+    DUP1
+    AND
+    RET_WORD
+
+; CHECK: load i256
+; CHECK-NOT: and
+; CHECK: bswap
+; CHECK: store i256

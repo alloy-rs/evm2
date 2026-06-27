@@ -1,3 +1,5 @@
+//! Signed 256-bit arithmetic helpers.
+
 use crate::interpreter::Word;
 use core::cmp::Ordering;
 
@@ -62,8 +64,9 @@ pub(super) const fn two_compl(op: Word) -> Word {
     op.wrapping_neg()
 }
 
+/// Compares two EVM words as signed 256-bit integers.
 #[inline]
-pub(super) fn i256_cmp(first: &Word, second: &Word) -> Ordering {
+pub fn i256_cmp(first: &Word, second: &Word) -> Ordering {
     let first_sign = i256_sign(first);
     let second_sign = i256_sign(second);
     match first_sign.cmp(&second_sign) {
@@ -72,8 +75,9 @@ pub(super) fn i256_cmp(first: &Word, second: &Word) -> Ordering {
     }
 }
 
+/// Divides two EVM words as signed 256-bit integers.
 #[inline]
-pub(super) fn i256_div(mut first: Word, mut second: Word) -> Word {
+pub fn i256_div(mut first: Word, mut second: Word) -> Word {
     let second_sign = i256_sign_compl(&mut second);
     if second_sign == Sign::Zero {
         return Word::ZERO;
@@ -96,8 +100,9 @@ pub(super) fn i256_div(mut first: Word, mut second: Word) -> Word {
     }
 }
 
+/// Computes signed 256-bit remainder.
 #[inline]
-pub(super) fn i256_mod(mut first: Word, mut second: Word) -> Word {
+pub fn i256_mod(mut first: Word, mut second: Word) -> Word {
     let first_sign = i256_sign_compl(&mut first);
     if first_sign == Sign::Zero {
         return Word::ZERO;

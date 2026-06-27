@@ -206,7 +206,7 @@ impl State {
 
     /// Returns the pre-warmed set (precompiles, coinbase, access list).
     ///
-    /// This is not the complete EIP-2929 initial warm set — sender and recipient are warmed per
+    /// This is not the complete EIP-2929 initial warm set -- sender and recipient are warmed per
     /// account instead. See [`PrewarmSet`].
     #[inline]
     #[must_use]

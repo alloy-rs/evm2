@@ -20,6 +20,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v6
+      - name: Install LLVM
+        run: .github/scripts/install_llvm.sh ubuntu
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
@@ -30,10 +32,10 @@ jobs:
         with:
           tool: cargo-codspeed
       - name: Build the benchmark target
-        run: cargo codspeed build --profile profiling -p evm2-cli --bench evm
+        run: cargo codspeed build --profile profiling -p evm2-cli --features jit --bench evm
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@v4
         with:
-          run: cargo codspeed run -p evm2-cli evm
+          run: cargo codspeed run -p evm2-cli --bench evm
           mode: instrumentation
           token: ${{ secrets.CODSPEED_TOKEN }}

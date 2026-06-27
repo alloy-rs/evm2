@@ -1,12 +1,13 @@
 //! EVM interpreter.
 
-pub(crate) mod gas;
+pub mod gas;
 pub use gas::{Gas, GasTracker, MemoryGas};
 
 #[macro_use]
 mod utils;
 
 pub(crate) mod instructions;
+pub use instructions::i256;
 
 pub(crate) mod dispatch;
 

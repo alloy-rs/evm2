@@ -1,0 +1,30 @@
+[package]
+name = "evm2-jit-context"
+description = "EVM bytecode compiler runtime context"
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+evm2.workspace = true
+ruint.workspace = true
+
+[features]
+default = ["std"]
+std = [
+    "alloy-primitives/std",
+    "evm2/std",
+    "ruint/std",
+]
