@@ -1,0 +1,96 @@
+{
+  "precompile/p256verify": {
+    "env": {
+      "currentBaseFee": "0x0",
+      "currentCoinbase": "0x0000000000000000000000000000000000000000",
+      "currentGasLimit": "0x1000000",
+      "currentNumber": "0x1",
+      "currentTimestamp": "0x1"
+    },
+    "post": {
+      "Osaka": [
+        {
+          "expectException": null,
+          "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "indexes": {
+            "data": 0,
+            "gas": 0,
+            "value": 0
+          },
+          "logs": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    },
+    "pre": {
+      "0x1111111111111111111111111111111111111111": {
+        "balance": "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "code": "0x",
+        "nonce": "0x0",
+        "storage": {}
+      }
+    },
+    "transaction": {
+      "data": [
+        "0xabababababababababababababababababababababababababababababababab474d0fa27e13db8e3cc654c6de6ebc97b812b63cefe3ca02debd8c8d3db5e2ad4fce5d4578e723626b5007cc54a2cafa2161ff123ab7af2a25c29c9c7405b3896ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca163c4f753a55bf01dc53f6c0b0c7eee78b40c6ff7d25a96e2282b989cef71c144a"
+      ],
+      "gasLimit": [
+        "0x1000000"
+      ],
+      "gasPrice": "0x0",
+      "nonce": "0x0",
+      "secretKey": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "sender": "0x1111111111111111111111111111111111111111",
+      "to": "0x0000000000000000000000000000000000000100",
+      "value": [
+        "0x0"
+      ]
+    }
+  },
+  "precompile/p256verify/ethpandaops": {
+    "env": {
+      "currentBaseFee": "0x0",
+      "currentCoinbase": "0x0000000000000000000000000000000000000000",
+      "currentGasLimit": "0x1000000",
+      "currentNumber": "0x1",
+      "currentTimestamp": "0x1"
+    },
+    "post": {
+      "Osaka": [
+        {
+          "expectException": null,
+          "hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "indexes": {
+            "data": 0,
+            "gas": 0,
+            "value": 0
+          },
+          "logs": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    },
+    "pre": {
+      "0x1111111111111111111111111111111111111111": {
+        "balance": "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "code": "0x",
+        "nonce": "0x0",
+        "storage": {}
+      }
+    },
+    "transaction": {
+      "data": [
+        "0xbb5a52f42f9c9261ed4361f59422a1e30036e7c32b270c8807a419feca6050232ba3a8be6b94d5ec80a6d9d1190a436effe50d85a1eee859b8cc6af9bd5c2e184cd60b855d442f5b3c7b11eb6c4e0ae7525fe710fab9aa7c77a67f79e6fadd762927b10512bae3eddcfe467828128bad2903269919f7086069c8c4df6c732838c7787964eaac00e5921fb1498a60f4606766b3d9685001558d1a974e7341513e"
+      ],
+      "gasLimit": [
+        "0x1000000"
+      ],
+      "gasPrice": "0x0",
+      "nonce": "0x0",
+      "secretKey": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "sender": "0x1111111111111111111111111111111111111111",
+      "to": "0x0000000000000000000000000000000000000100",
+      "value": [
+        "0x0"
+      ]
+    }
+  }
+}

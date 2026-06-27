@@ -1,4 +1,4 @@
-use crate::tx::TxBuildError;
+use crate::{execution::ExecutionResourceError, tx::TxBuildError};
 use alloy_primitives::{B256, Bytes};
 use evm2::registry::HandlerError;
 use std::{io, path::PathBuf};
@@ -7,7 +7,7 @@ use thiserror::Error;
 /// State test runner error.
 #[derive(Debug, Error)]
 #[error("Path: {path}\nName: {name}\nError: {kind}")]
-pub(crate) struct TestError {
+pub struct TestError {
     /// Test path.
     pub(crate) path: String,
     /// Test name.
@@ -88,6 +88,9 @@ pub(crate) enum TestErrorKind {
     /// EVM execution failed.
     #[error(transparent)]
     Evm(#[from] HandlerError),
+    /// Execution resource initialization failed.
+    #[error(transparent)]
+    ExecutionResource(#[from] ExecutionResourceError),
 }
 
 impl From<TxBuildError> for TestErrorKind {

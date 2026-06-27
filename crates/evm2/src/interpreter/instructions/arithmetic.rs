@@ -64,21 +64,13 @@ pub(crate) fn signextend([ext, value]: [Word]) -> out {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
-    use core::assert_matches;
-
     use crate::{
         SpecId,
-        interpreter::{
-            InstrStop, Word,
-            instructions::tests::{RunConfig, assert_stack, push, run},
-            op,
-        },
+        interpreter::{InstrStop, Word, op},
+        test_utils::{RunConfig, assert_stack, neg, push, run},
     };
-
-    fn neg(value: u64) -> Word {
-        Word::from(0).wrapping_sub(Word::from(value))
-    }
+    use alloc::vec::Vec;
+    use core::assert_matches;
 
     #[test]
     fn add_opcode() {
@@ -157,9 +149,9 @@ mod tests {
         push(&mut code, 2);
         code.extend([op::EXP, op::STOP]);
 
-        let interpreter = run(RunConfig::new(code).spec(SpecId::FRONTIER).gas_limit(25));
+        let interp = run(RunConfig::new(code).spec(SpecId::FRONTIER).gas_limit(25));
 
-        assert_matches!(interpreter.err, InstrStop::OutOfGas);
+        assert_matches!(interp.err, InstrStop::OutOfGas);
     }
 
     #[test]

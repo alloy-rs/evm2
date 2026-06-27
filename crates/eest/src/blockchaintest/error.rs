@@ -1,4 +1,4 @@
-use crate::tx::TxBuildError;
+use crate::{execution::ExecutionResourceError, tx::TxBuildError};
 use evm2::registry::HandlerError;
 use std::{io, path::PathBuf};
 use thiserror::Error;
@@ -6,7 +6,7 @@ use thiserror::Error;
 /// Blockchain test runner error.
 #[derive(Debug, Error)]
 #[error("Path: {path}\nName: {name}\nError: {kind}")]
-pub(crate) struct TestError {
+pub struct TestError {
     /// Test path.
     pub(crate) path: String,
     /// Test name.
@@ -40,6 +40,9 @@ pub(crate) enum TestErrorKind {
     /// JSON decoding failed.
     #[error(transparent)]
     SerdeDeserialize(#[from] serde_json::Error),
+    /// Fixture decoding failed.
+    #[error(transparent)]
+    FixtureRead(#[from] crate::fixture_io::FixtureReadError),
     /// Numeric value overflowed the target type.
     #[error("value overflows {0}")]
     Overflow(&'static str),
@@ -61,6 +64,9 @@ pub(crate) enum TestErrorKind {
     /// A system call failed.
     #[error("system call failed: {0}")]
     SystemCall(&'static str),
+    /// Execution resource initialization failed.
+    #[error(transparent)]
+    ExecutionResource(#[from] ExecutionResourceError),
 }
 
 impl From<TxBuildError> for TestErrorKind {

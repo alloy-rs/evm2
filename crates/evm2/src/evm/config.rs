@@ -122,6 +122,7 @@ pub struct ExecutionConfig<T: EvmTypes> {
 }
 
 struct ExecutionConfigInner<T: EvmTypes> {
+    base_spec_id: SpecId,
     version: Version,
     instructions: &'static InstrTable<T>,
     inspect_instructions: InstrTable<T>,
@@ -148,6 +149,7 @@ impl<T: EvmTypes> Clone for ExecutionConfigInner<T> {
     #[inline]
     fn clone(&self) -> Self {
         Self {
+            base_spec_id: self.base_spec_id,
             version: self.version,
             instructions: self.instructions,
             inspect_instructions: self.inspect_instructions,
@@ -174,6 +176,7 @@ impl<T: EvmTypes> ExecutionConfig<T> {
             &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSPECT_INSTRUCTIONS[i];
         Self {
             inner: Box::new(ExecutionConfigInner {
+                base_spec_id,
                 version: Version::new(base_spec_id),
                 instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
                 inspect_instructions: *inspect_instruction_source,
@@ -188,6 +191,7 @@ impl<T: EvmTypes> ExecutionConfig<T> {
         let inspect_instruction_source = ConfigInstrTables::<T, C>::INSPECT_INSTRUCTIONS;
         Self {
             inner: Box::new(ExecutionConfigInner {
+                base_spec_id,
                 version: Version::new(base_spec_id),
                 instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
                 inspect_instructions: *inspect_instruction_source,
@@ -199,19 +203,21 @@ impl<T: EvmTypes> ExecutionConfig<T> {
     /// Creates an execution config for `spec_id` with dynamic runtime version data.
     pub fn for_spec_and_version(spec_id: T::SpecId, version: Version) -> Self {
         let config = <T::ConfigSelector as EvmConfigSelector<T>>::execution_config(spec_id);
-        assert_eq!(spec_id.into(), version.spec_id, "execution config version spec mismatch");
+        assert_eq!(spec_id.into(), config.base_spec_id(), "execution config spec mismatch");
         config.with_version(version)
     }
 
     /// Replaces the runtime version data while keeping the same dispatch table.
     #[inline]
     pub fn with_version(mut self, version: Version) -> Self {
-        assert_eq!(
-            self.inner.version.spec_id, version.spec_id,
-            "execution config version spec mismatch"
-        );
         self.inner.version = version;
         self
+    }
+
+    /// Returns the active base specification ID.
+    #[inline]
+    pub const fn base_spec_id(&self) -> SpecId {
+        self.inner.base_spec_id
     }
 
     /// Returns the active EVM version.

@@ -12,19 +12,13 @@ use std::{
 /// Environment variable for the state test root.
 pub(crate) const STATE_TEST_ROOT_ENV: &str = "EVM2_STATETEST_ROOT";
 
-/// Fallback environment variable for the state test root.
-pub(crate) const ETHEREUM_TESTS_ENV: &str = "ETHEREUM_TESTS";
-
-/// revmc-compatible environment variable for ethereum/tests.
-pub(crate) const ETHTESTS_ENV: &str = "ETHTESTS";
-
 /// Environment variable for selecting stable EEST fixtures instead of develop.
 pub(crate) const STATETEST_STABLE_ENV: &str = "EVM2_STATETEST_STABLE";
 
 /// Optional environment variable for selecting a subdirectory under the test root.
 pub(crate) const STATE_TEST_SUBDIR_ENV: &str = "SUBDIR";
 
-/// Repo-relative ethereum/tests checkout path supported for compatibility.
+/// Optional repo-relative ethereum/tests checkout path.
 pub(crate) const DEFAULT_ETHEREUM_TESTS_PATH: &str = "tests/ethereum-tests";
 
 /// A named state-test root.
@@ -32,22 +26,17 @@ pub(crate) type StateTestRoot = TestRoot;
 
 /// Returns the explicit state-test root configured through environment variables.
 pub(crate) fn explicit_state_test_root_from_env() -> Option<PathBuf> {
-    env::var_os(STATE_TEST_ROOT_ENV)
-        .or_else(|| env::var_os(ETHEREUM_TESTS_ENV))
-        .or_else(|| env::var_os(ETHTESTS_ENV))
-        .map(PathBuf::from)
-        .map(workspace_relative)
-        .map(|mut x| {
-            apply_subdir(&mut x, STATE_TEST_SUBDIR_ENV);
-            x
-        })
+    env::var_os(STATE_TEST_ROOT_ENV).map(PathBuf::from).map(workspace_relative).map(|mut x| {
+        apply_subdir(&mut x, STATE_TEST_SUBDIR_ENV);
+        x
+    })
 }
 
 /// Returns the state-test roots to run by default.
 pub(crate) fn state_test_roots() -> Vec<StateTestRoot> {
     if let Some(path) = explicit_state_test_root_from_env() {
         return vec![StateTestRoot {
-            name: "statetests::custom",
+            name: "statetests::custom".to_string(),
             label: "custom state tests",
             path,
         }];
@@ -66,19 +55,23 @@ pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
         fixtures.join("main/develop/state_tests")
     };
     let mut roots = vec![
-        StateTestRoot { name: "statetests", label: "execution-spec-tests", path: eest_path },
         StateTestRoot {
-            name: "statetests::devnet",
+            name: "statetests".to_string(),
+            label: "execution-spec-tests",
+            path: eest_path,
+        },
+        StateTestRoot {
+            name: "statetests::devnet".to_string(),
             label: "execution-spec-tests devnet",
             path: fixtures.join("devnet/state_tests"),
         },
         StateTestRoot {
-            name: "legacy::cancun",
+            name: "legacy::cancun".to_string(),
             label: "legacy Cancun",
             path: fixtures.join("legacytests/Cancun/GeneralStateTests"),
         },
         StateTestRoot {
-            name: "legacy::constantinople",
+            name: "legacy::constantinople".to_string(),
             label: "legacy Constantinople",
             path: fixtures.join("legacytests/Constantinople/GeneralStateTests"),
         },
@@ -86,7 +79,7 @@ pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
 
     if let Some(path) = general_state_tests_path(&ethereum_tests) {
         roots.push(StateTestRoot {
-            name: "legacy::ethereum_tests",
+            name: "legacy::ethereum_tests".to_string(),
             label: "ethereum/tests GeneralStateTests",
             path,
         });

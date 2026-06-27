@@ -1,0 +1,54 @@
+[package]
+name = "evm2-jit-runtime"
+description = "Runtime JIT backend for evm2-jit"
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[package.metadata.docs.rs]
+no-default-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true
+
+[dependencies]
+evm2 = { workspace = true, features = ["std"] }
+evm2-jit-backend.workspace = true
+evm2-jit-codegen.workspace = true
+evm2-jit-context.workspace = true
+evm2-jit-llvm = { workspace = true, optional = true }
+evm2-jit-builtins = { workspace = true, features = ["ir"] }
+
+alloy-primitives = { workspace = true, features = ["std", "map-fxhash"] }
+
+crossbeam-channel.workspace = true
+crossbeam-queue.workspace = true
+dashmap = "6"
+derive_more = { version = "2", default-features = false, features = ["debug"] }
+eyre.workspace = true
+libc.workspace = true
+libloading = "0.9"
+tempfile = "3.10"
+quanta.workspace = true
+rayon.workspace = true
+tracing.workspace = true
+wait-timeout.workspace = true
+wincode.workspace = true
+
+[dev-dependencies]
+paste.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+
+[features]
+default = ["llvm"]
+llvm = ["evm2-jit-codegen/llvm", "dep:evm2-jit-llvm"]
+asm-keccak = ["evm2-jit-codegen/asm-keccak", "alloy-primitives/asm-keccak"]

@@ -138,6 +138,8 @@ gas_ids! {
     TxAccessListAddressCost;
     /// Transaction access-list storage-key cost.
     TxAccessListStorageKeyCost;
+    /// Floor tokens charged per access-list byte (EIP-7981).
+    TxAccessListFloorByteMultiplier;
     /// Transaction base stipend.
     TxBaseStipend;
     /// Transaction create cost.
@@ -301,8 +303,8 @@ impl GasParams {
 
     /// Calculates dynamic `SSTORE` gas.
     #[inline]
-    pub fn sstore_dynamic_gas(&self, is_istanbul: bool, vals: &SStore) -> u64 {
-        if !is_istanbul {
+    pub fn sstore_dynamic_gas(&self, is_eip2200: bool, vals: &SStore) -> u64 {
+        if !is_eip2200 {
             if vals.present_is_zero() && !vals.new_is_zero() {
                 return self.get(GasId::SstoreSetWithoutLoadCost) as u64;
             }
@@ -326,10 +328,10 @@ impl GasParams {
 
     /// Calculates `SSTORE` refund.
     #[inline]
-    pub fn sstore_refund(&self, is_istanbul: bool, vals: &SStore) -> i64 {
+    pub fn sstore_refund(&self, is_eip2200: bool, vals: &SStore) -> i64 {
         let clearing_slot_refund = self.get(GasId::SstoreClearingSlotRefund) as i64;
 
-        if !is_istanbul {
+        if !is_eip2200 {
             if !vals.present_is_zero() && vals.new_is_zero() {
                 return clearing_slot_refund;
             }
@@ -467,6 +469,9 @@ mod tests {
         assert_eq!(amsterdam.get(GasId::Create), 9000);
         assert_eq!(amsterdam.get(GasId::SstoreSetState), 37568);
         assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthState), 158490);
+        assert_eq!(amsterdam.get(GasId::TxAccessListAddressCost), 2400 + 20 * 64);
+        assert_eq!(amsterdam.get(GasId::TxAccessListStorageKeyCost), 1900 + 32 * 64);
+        assert_eq!(amsterdam.get(GasId::TxAccessListFloorByteMultiplier), 4);
     }
 
     #[test]

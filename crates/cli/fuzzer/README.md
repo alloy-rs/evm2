@@ -1,0 +1,86 @@
+# evm2 fuzzer
+
+Differential fuzzer for evm2 against revm.
+
+The fuzzer generates structured EVM cases, runs them against revm first as the
+oracle, then runs evm2 and compares normalized receipts, logs, errors, gas, and
+state changes.
+
+Run generated cases:
+
+```sh
+cargo run -q -p evm2-cli -- fuzzer --seed 1 --cases 100000 -j 0
+```
+
+Run by duration with a random seed:
+
+```sh
+cargo run -q -p evm2-cli -- fuzzer --duration 5m -j 0
+```
+
+`-j`/`--threads` controls worker threads. `0` uses logical cores. The fuzzer
+prints the seed for replayability.
+
+Force an evm2 dispatch backend with `EVM2_DISPATCH_BACKEND`:
+
+```sh
+EVM2_DISPATCH_BACKEND=packed cargo run -q -p evm2-cli -- fuzzer --duration 1m -j 0
+```
+
+Accepted backends are `auto`, `tco`, `packed`, `single_return`, and `unpacked`.
+
+## Corpus and replay
+
+Failing generated cases are written to:
+
+```text
+crates/cli/fuzzer/corpus/failures/
+```
+
+Replay one saved case:
+
+```sh
+cargo run -q -p evm2-cli -- fuzzer replay crates/cli/fuzzer/corpus/failures/case-....json
+```
+
+Replay every JSON case in a corpus directory:
+
+```sh
+cargo run -q -p evm2-cli -- fuzzer corpus crates/cli/fuzzer/corpus/failures
+```
+
+Minimize a reproducing case:
+
+```sh
+cargo run -q -p evm2-cli -- fuzzer minimize crates/cli/fuzzer/corpus/failures/case-....json
+```
+
+Import the `evm-protobuf-fuzzer` corpus as replayable JSON cases:
+
+```sh
+./scripts/import_evm_protobuf_corpus.py \
+  /path/to/corp-evm-protobuf-fuzzer.tar.xz \
+  --output tmp/evm-protobuf-import --clean
+cargo run -q -p evm2-cli -- fuzzer corpus tmp/evm-protobuf-import
+```
+
+The import is intentionally lossy where the fuzzer case format has no field for
+the original data, such as block coinbase, difficulty, and excess blob gas. Such
+cases are tagged in `features`.
+
+## Coverage report
+
+Generate an HTML coverage report from fuzzer execution, excluding the fuzzer
+module itself:
+
+```sh
+./scripts/fuzzer_coverage.py --duration 3m -j 0 --open
+```
+
+For a smaller report:
+
+```sh
+./scripts/fuzzer_coverage.py --cases 1000 --backend packed --open
+```
+
+Use `--all-backends` to merge coverage from all explicit dispatch backends.

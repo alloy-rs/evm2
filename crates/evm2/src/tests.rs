@@ -1,13 +1,13 @@
 use crate::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
-    bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountInfo, InMemoryDB},
-    interpreter::{Host, InstrStop, Message, Word, instructions::tests::push, op},
+    interpreter::{Host, InstrStop, Message, Word, op},
     registry::TxRegistry,
+    test_utils::{legacy_bytecode, push},
 };
 use alloc::vec::Vec;
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::Address;
 
 type TestEvm = Evm<BaseEvmTypes>;
 
@@ -18,13 +18,7 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
         gas_limit: 100_000,
         ..Default::default()
     };
-    let result = Host::execute_message(
-        evm,
-        &TxEnv::default(),
-        Bytecode::new_legacy(Bytes::from(code.into())),
-        &mut message,
-        false,
-    );
+    let result = Host::execute_message(evm, &TxEnv::default(), legacy_bytecode(code), &mut message);
     assert!(result.stop.is_success());
 }
 
@@ -49,8 +43,8 @@ fn evm_executes_storage_transaction() {
     run_tx(&mut evm, contract, [op::PUSH1, 0x2a, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
     assert_eq!(
-        evm.state().storage_ref(&contract, &Word::from(1)).map(|slot| slot.current),
-        Some(Word::from(0x2a))
+        evm.state.storage_slot(&contract, Word::from(1), false).unwrap().current(),
+        Word::from(0x2a)
     );
 }
 
@@ -86,14 +80,13 @@ fn evm_runs_transactions_against_initial_state() {
     );
     run_tx(&mut evm, contract, [op::PUSH1, 0x07, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
-    assert!(evm.state().account_ref(&contract).is_some());
     assert_eq!(
-        evm.state().storage_ref(&contract, &Word::from(1)).map(|slot| slot.current),
-        Some(Word::from(7))
+        evm.state.storage_slot(&contract, Word::from(1), false).unwrap().current(),
+        Word::from(7)
     );
     assert_eq!(
-        evm.state().storage_ref(&contract, &Word::from(2)).map(|slot| slot.current),
-        Some(Word::from(42))
+        evm.state.storage_slot(&contract, Word::from(2), false).unwrap().current(),
+        Word::from(42)
     );
 }
 
@@ -108,11 +101,7 @@ fn evm_propagates_child_sstore_negative_refund() {
     let mut database = InMemoryDB::default();
     database.insert_account_info(
         &contract,
-        AccountInfo {
-            nonce: 1,
-            code: Some(Bytecode::new_legacy(Bytes::from(child_code))),
-            ..Default::default()
-        },
+        AccountInfo { nonce: 1, code: Some(legacy_bytecode(child_code)), ..Default::default() },
     );
     database.insert_account_storage(&contract, &Word::from(0), &Word::from(5));
     let mut evm = TestEvm::new(
@@ -145,9 +134,8 @@ fn evm_propagates_child_sstore_negative_refund() {
     let result = Host::execute_message(
         &mut evm,
         &TxEnv::default(),
-        Bytecode::new_legacy(Bytes::from(parent_code)),
+        legacy_bytecode(parent_code),
         &mut message,
-        false,
     );
 
     assert!(result.stop.is_success());
@@ -173,9 +161,8 @@ fn evm_reports_invalid_transaction_execution() {
     let result = Host::execute_message(
         &mut evm,
         &TxEnv::default(),
-        Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0x01, op::SSTORE])),
+        legacy_bytecode([op::PUSH1, 0x01, op::SSTORE]),
         &mut message,
-        false,
     );
 
     assert_eq!(result.stop, InstrStop::StackUnderflow);

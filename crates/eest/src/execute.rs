@@ -1,8 +1,13 @@
+#[cfg(feature = "jit")]
+use crate::compiled::{self, FileSummary};
 use crate::{
     error::{TestError, TestErrorKind},
+    execution::ExecutionResources,
+    filter::EntryPoint,
+    fixture_io,
+    forks::is_fork_skipped,
     state::{
-        apply_state_changes, insert_account_with_storage, parse_bytecode, storage_for_root,
-        system_contract_has_code,
+        insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
     },
     tx::{TxFields, build_recovered_tx, recover_address, rpc_access_list, signed_authorizations},
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
@@ -14,18 +19,23 @@ use alloy_trie::{
     TrieAccount,
     root::{state_root_unhashed, storage_root_unhashed},
 };
+use anstyle::{AnsiColor, Color, Style};
 use evm2::{
     BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
-        AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, HISTORY_STORAGE_ADDRESS, InMemoryDB,
-        StateChanges,
+        AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, DbStats, DbStatsCounts,
+        HISTORY_STORAGE_ADDRESS, InMemoryDB,
     },
     registry::HandlerError,
 };
 use serde_json::json;
-use std::{collections::BTreeMap, fs, path::Path};
+#[cfg(feature = "jit")]
+use std::path::PathBuf;
+use std::{collections::BTreeMap, path::Path};
+
+pub use crate::execution::ExecutionMode;
 
 /// Per-spec execution outcome.
 #[derive(Clone, Debug)]
@@ -44,29 +54,119 @@ pub(crate) struct SpecOutcome {
 
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ExecuteConfig {
-    /// Whether to print revm-style JSON outcome records.
-    pub(crate) print_json_outcome: bool,
+pub struct ExecuteConfig {
+    /// Whether to print JSON outcome records.
+    pub print_json_outcome: bool,
+    /// Execution backend.
+    pub mode: ExecutionMode,
+    /// Whether to print database method call counts.
+    pub db_stats: bool,
+}
+
+/// Per-file execution summary.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ExecuteSummary {
+    /// Number of executed test units.
+    pub executed: usize,
+    /// Number of test units skipped by the entrypoint filter.
+    pub skipped: usize,
 }
 
 /// Executes a single state test JSON file using explicit execution options.
 pub(crate) fn execute_test_suite(path: &Path, config: ExecuteConfig) -> Result<(), TestError> {
-    let input = fs::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
-    execute_str_with_config(path, &input, config)
+    let input =
+        fixture_io::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
+    execute_str_with_config(path, &input, config).map(|_| ())
+}
+
+/// Executes multiple state test JSON files using one shared execution resource set.
+#[cfg(feature = "jit")]
+pub(crate) fn execute_test_suites(
+    paths: &[PathBuf],
+    config: ExecuteConfig,
+) -> Result<ExecuteSummary, TestError> {
+    let error_path = paths.first().map_or_else(|| Path::new("state tests"), PathBuf::as_path);
+    let resources = ExecutionResources::new(config.mode)
+        .map_err(|err| TestError::unknown(error_path, err.into()))?;
+    let summary = compiled::run_files(paths.to_vec(), resources, move |path, resources| {
+        let input = fixture_io::read_to_string(&path)
+            .map_err(|err| TestError::unknown(path.as_path(), err.into()))?;
+        let mut db_stats_counts = DbStatsCounts::default();
+        let file_summary = execute_str_with_resources(
+            &path,
+            &input,
+            config,
+            &EntryPoint::default(),
+            &resources,
+            &mut db_stats_counts,
+        )?;
+        Ok(FileSummary {
+            executed: file_summary.executed,
+            skipped: file_summary.skipped,
+            db_stats_counts,
+        })
+    })?;
+
+    if config.db_stats {
+        print_db_stats(summary.db_stats_counts);
+    }
+
+    Ok(ExecuteSummary { executed: summary.executed, skipped: summary.skipped })
 }
 
 /// Executes a loaded state test JSON file using explicit execution options.
-pub(crate) fn execute_str_with_config(
+pub fn execute_str_with_config(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
-) -> Result<(), TestError> {
+) -> Result<ExecuteSummary, TestError> {
+    execute_str_with_filter(path, input, config, &EntryPoint::default())
+}
+
+/// Executes a loaded state test JSON file, selecting test units by entrypoint.
+pub fn execute_str_with_filter(
+    path: &Path,
+    input: &str,
+    config: ExecuteConfig,
+    entrypoint: &EntryPoint,
+) -> Result<ExecuteSummary, TestError> {
+    let resources =
+        ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
+    let mut db_stats_counts = DbStatsCounts::default();
+    let summary = execute_str_with_resources(
+        path,
+        input,
+        config,
+        entrypoint,
+        &resources,
+        &mut db_stats_counts,
+    )?;
+    if config.db_stats {
+        print_db_stats(db_stats_counts);
+    }
+    Ok(summary)
+}
+
+fn execute_str_with_resources(
+    path: &Path,
+    input: &str,
+    config: ExecuteConfig,
+    entrypoint: &EntryPoint,
+    resources: &ExecutionResources,
+    db_stats_counts: &mut DbStatsCounts,
+) -> Result<ExecuteSummary, TestError> {
     let suite: TestSuite =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
+    let mut summary = ExecuteSummary::default();
     for (name, unit) in suite.0 {
-        execute_unit(path, &name, unit, config)?;
+        if !entrypoint.matches(&name) {
+            summary.skipped += 1;
+            continue;
+        }
+        execute_unit(path, &name, unit, config, resources, db_stats_counts)?;
+        summary.executed += 1;
     }
-    Ok(())
+    Ok(summary)
 }
 
 fn execute_unit(
@@ -74,12 +174,17 @@ fn execute_unit(
     name: &str,
     unit: TestUnit,
     config: ExecuteConfig,
+    resources: &ExecutionResources,
+    db_stats_counts: &mut DbStatsCounts,
 ) -> Result<(), TestError> {
     let state = parse_state(&unit.pre).map_err(|err| TestError::case(path, name, err))?;
     for (spec_name, posts) in &unit.post {
         let Some(spec) = spec_name.to_spec_id() else {
             continue;
         };
+        if is_fork_skipped(spec) {
+            continue;
+        }
         let block = parse_block(&unit.env, spec);
         for post in posts {
             let tx = match build_tx(&unit.transaction, &post.indexes, unit.env.current_chain_id) {
@@ -89,7 +194,15 @@ fn execute_unit(
                 }
                 Err(err) => return Err(TestError::case(path, name, err)),
             };
-            let result = execute_spec(spec, block, state.clone(), &tx, &unit.env);
+            let result = execute_spec(
+                spec,
+                block,
+                state.clone(),
+                &tx,
+                &unit.env,
+                resources,
+                if config.db_stats { Some(&mut *db_stats_counts) } else { None },
+            );
             validate_result(path, name, &unit, post, result, spec, config)?;
         }
     }
@@ -209,33 +322,65 @@ fn execute_spec(
     database: InMemoryDB,
     tx: &RecoveredTxEnvelope,
     env: &Env,
+    resources: &ExecutionResources,
+    db_stats_counts: Option<&mut DbStatsCounts>,
 ) -> Result<SpecOutcome, HandlerError> {
-    let mut evm = Evm::<BaseEvmTypes>::new(
-        spec,
-        block,
-        ethereum_tx_registry(spec),
-        database.clone(),
-        Precompiles::base(spec),
-    );
-    let system_changes = pre_block_system_calls(&mut evm, spec, env, &database);
-    let result = evm.transact(tx)?;
-    Ok(spec_outcome(database, result, &system_changes))
+    let db_stats = db_stats_counts.is_some();
+    let mut evm = if db_stats {
+        Evm::<BaseEvmTypes>::new(
+            spec,
+            block,
+            ethereum_tx_registry(spec),
+            DbStats::new(database.clone()),
+            Precompiles::base(spec),
+        )
+    } else {
+        Evm::<BaseEvmTypes>::new(
+            spec,
+            block,
+            ethereum_tx_registry(spec),
+            database.clone(),
+            Precompiles::base(spec),
+        )
+    };
+    resources.configure_evm(&mut evm);
+    let mut post = database;
+    pre_block_system_calls(&mut evm, &mut post, spec, env);
+    let Ok(result) = evm.transact(tx)?.commit_with(&mut post);
+    if let Some(counts) = db_stats_counts
+        && let Some(stats) = evm.database_as::<DbStats<InMemoryDB>>()
+    {
+        *counts += stats.counts();
+    }
+    Ok(spec_outcome(post, result))
 }
 
-fn spec_outcome(
-    database: InMemoryDB,
-    result: TxResult,
-    system_changes: &[StateChanges],
-) -> SpecOutcome {
-    let mut post = database;
-    for changes in system_changes {
-        post = apply_state_changes(&post, changes);
-    }
-    post = apply_state_changes(&post, &result.state_changes);
+fn print_db_stats(counts: DbStatsCounts) {
+    let style = db_stats_style();
+    eprintln!("{style}db stats{style:#}: get_account={}", counts.get_account);
+    eprintln!("{style}db stats{style:#}: get_code_by_hash={}", counts.get_code_by_hash);
+    eprintln!("{style}db stats{style:#}: get_storage={}", counts.get_storage);
+    eprintln!(
+        "{style}db stats{style:#}: get_storage_same_address_repeats={}",
+        counts.get_storage_same_address_repeats
+    );
+    eprintln!(
+        "{style}db stats{style:#}: get_storage_same_address_longest_streak={}",
+        counts.get_storage_same_address_longest_streak
+    );
+    eprintln!("{style}db stats{style:#}: get_block_hash={}", counts.get_block_hash);
+    eprintln!("{style}db stats{style:#}: error={}", counts.error);
+}
 
+#[inline]
+const fn db_stats_style() -> Style {
+    Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightCyan))).bold()
+}
+
+fn spec_outcome(post: InMemoryDB, result: TxResult) -> SpecOutcome {
     SpecOutcome {
         state_root: state_root_from_database(&post),
-        logs_root: logs_hash(&result.state_changes.logs),
+        logs_root: logs_hash(&result.logs),
         output: result.output,
         gas_used: result.gas_used,
         evm_result: format!("{:?}", result.stop),
@@ -244,49 +389,47 @@ fn spec_outcome(
 
 fn pre_block_system_calls<T: EvmTypes<Host = Evm<T>>>(
     evm: &mut Evm<T>,
+    post: &mut InMemoryDB,
     spec: SpecId,
     env: &Env,
-    database: &InMemoryDB,
-) -> Vec<StateChanges> {
+) {
     if env.current_number.is_zero() {
-        return Vec::new();
+        return;
     }
 
-    let mut changes = Vec::new();
     if spec.enables(SpecId::PRAGUE)
         && let Some(previous_hash) = env.previous_hash
-        && system_contract_has_code(database, HISTORY_STORAGE_ADDRESS)
+        && system_contract_has_code(post, HISTORY_STORAGE_ADDRESS)
     {
-        push_system_call_changes(
+        commit_system_call(
             evm,
-            &mut changes,
+            post,
             HISTORY_STORAGE_ADDRESS,
             Bytes::copy_from_slice(previous_hash.as_slice()),
         );
     }
     if spec.enables(SpecId::CANCUN)
         && let Some(beacon_root) = env.current_beacon_root
-        && system_contract_has_code(database, BEACON_ROOTS_ADDRESS)
+        && system_contract_has_code(post, BEACON_ROOTS_ADDRESS)
     {
-        push_system_call_changes(
+        commit_system_call(
             evm,
-            &mut changes,
+            post,
             BEACON_ROOTS_ADDRESS,
             Bytes::copy_from_slice(beacon_root.as_slice()),
         );
     }
-    changes
 }
 
-fn push_system_call_changes<T: EvmTypes<Host = Evm<T>>>(
+fn commit_system_call<T: EvmTypes<Host = Evm<T>>>(
     evm: &mut Evm<T>,
-    changes: &mut Vec<StateChanges>,
+    post: &mut InMemoryDB,
     address: Address,
     data: Bytes,
 ) {
-    let result = evm.system_call(address, data);
-    assert!(result.status, "pre-block system call failed: {address}");
-    changes.push(result.state_changes);
+    let executed = evm.system_call(address, data);
+    assert!(executed.result().status, "pre-block system call failed: {address}");
+    let Ok(_) = executed.commit_with(post);
 }
 
 fn logs_hash(logs: &[Log]) -> B256 {
@@ -296,9 +439,10 @@ fn logs_hash(logs: &[Log]) -> B256 {
 }
 
 fn state_root_from_database(state: &InMemoryDB) -> B256 {
-    let accounts = state.cache.accounts.iter().map(|(&address, info)| {
+    let accounts = state.cache.accounts.iter().filter_map(|(&address, info)| {
+        let info = info.as_ref()?;
         let storage = storage_for_root(state, address);
-        (
+        Some((
             address,
             TrieAccount {
                 nonce: info.nonce,
@@ -306,7 +450,7 @@ fn state_root_from_database(state: &InMemoryDB) -> B256 {
                 storage_root: storage_root_unhashed(storage),
                 code_hash: info.code_hash,
             },
-        )
+        ))
     });
 
     state_root_unhashed(accounts)
@@ -419,6 +563,12 @@ fn access_list(
 mod tests {
     use super::*;
     use alloy_primitives::LogData;
+    #[cfg(feature = "jit")]
+    use evm2::interpreter::op;
+
+    #[cfg(feature = "jit")]
+    const BYTECODE_RET42: &[u8] =
+        &[op::PUSH1, 0x42, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH0, op::RETURN];
 
     #[test]
     fn logs_hash_matches_empty_logs() {
@@ -517,5 +667,89 @@ mod tests {
             panic!("expected EIP-2930 transaction");
         };
         assert_eq!(tx.inner().access_list[0].address, second_address);
+    }
+
+    #[cfg(feature = "jit")]
+    fn execute_simple_call(mode: ExecutionMode) -> SpecOutcome {
+        let caller = Address::from([0x11; 20]);
+        let target = Address::from([0x22; 20]);
+        let env = Env {
+            current_chain_id: Some(U256::ONE),
+            current_coinbase: Address::ZERO,
+            current_difficulty: U256::ZERO,
+            current_gas_limit: U256::from(30_000_000),
+            current_number: U256::ZERO,
+            current_timestamp: U256::ZERO,
+            current_base_fee: Some(U256::ZERO),
+            previous_hash: None,
+            current_random: None,
+            current_beacon_root: None,
+            current_withdrawals_root: None,
+            current_excess_blob_gas: None,
+            slot_number: None,
+        };
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            caller,
+            AccountInfo {
+                balance: U256::from(1_000_000_000),
+                code: Bytes::new(),
+                nonce: 0,
+                storage: BTreeMap::new(),
+            },
+        );
+        pre.insert(
+            target,
+            AccountInfo {
+                balance: U256::ZERO,
+                code: Bytes::copy_from_slice(BYTECODE_RET42),
+                nonce: 0,
+                storage: BTreeMap::new(),
+            },
+        );
+        let tx = build_tx(
+            &TransactionParts {
+                data: vec![Bytes::new()],
+                gas_limit: vec![U256::from(100_000)],
+                gas_price: Some(U256::ZERO),
+                sender: Some(caller),
+                to: Some(target),
+                value: vec![U256::ZERO],
+                ..TransactionParts::default()
+            },
+            &TxPartIndices { data: 0, gas: 0, value: 0 },
+            env.current_chain_id,
+        )
+        .unwrap();
+        let resources = ExecutionResources::new(mode).unwrap();
+        execute_spec(
+            SpecId::CANCUN,
+            parse_block(&env, SpecId::CANCUN),
+            parse_state(&pre).unwrap(),
+            &tx,
+            &env,
+            &resources,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_and_aot_modes_match_interpreter_for_simple_call() {
+        let interpreter = execute_simple_call(ExecutionMode::Interpreter);
+        let jit = execute_simple_call(ExecutionMode::Jit);
+        let aot = execute_simple_call(ExecutionMode::Aot);
+
+        assert_eq!(jit.output, interpreter.output);
+        assert_eq!(aot.output, interpreter.output);
+        assert_eq!(jit.state_root, interpreter.state_root);
+        assert_eq!(aot.state_root, interpreter.state_root);
+        assert_eq!(jit.logs_root, interpreter.logs_root);
+        assert_eq!(aot.logs_root, interpreter.logs_root);
+        assert_eq!(jit.gas_used, interpreter.gas_used);
+        assert_eq!(aot.gas_used, interpreter.gas_used);
+        assert_eq!(interpreter.output.len(), 32);
+        assert_eq!(interpreter.output[31], 0x42);
     }
 }

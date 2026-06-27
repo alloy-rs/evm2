@@ -1,27 +1,24 @@
-use crate::{
-    interpreter::{Word, memory::resize_memory},
-    utils::word_to_usize,
-};
+use crate::{interpreter::Word, utils::word_to_usize};
 use evm2_macros::instruction;
 
 #[instruction(dynamic_gas)]
 pub(crate) fn mload(cx: _, [offset]: [Word]) -> Result<out> {
     let offset = word_to_usize(*offset)?;
-    resize_memory(cx.gas, cx.state.memory(), offset, 32)?;
+    cx.state.resize_memory(cx.gas, offset, 32)?;
     *out = cx.state.memory().get_word(offset);
 }
 
 #[instruction(dynamic_gas)]
 pub(crate) fn mstore(cx: _, [offset, value]: [Word]) -> Result {
     let offset = word_to_usize(*offset)?;
-    resize_memory(cx.gas, cx.state.memory(), offset, 32)?;
+    cx.state.resize_memory(cx.gas, offset, 32)?;
     cx.state.memory().set(offset, &value.to_be_bytes::<32>());
 }
 
 #[instruction(dynamic_gas)]
 pub(crate) fn mstore8(cx: _, [offset, value]: [Word]) -> Result {
     let offset = word_to_usize(*offset)?;
-    resize_memory(cx.gas, cx.state.memory(), offset, 1)?;
+    cx.state.resize_memory(cx.gas, offset, 1)?;
     cx.state.memory().set(offset, &[value.byte(0)]);
 }
 
@@ -37,7 +34,7 @@ pub(crate) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
     if len != 0 {
         let dst = word_to_usize(*dst)?;
         let src = word_to_usize(*src)?;
-        resize_memory(cx.gas, cx.state.memory(), dst.max(src), len)?;
+        cx.state.resize_memory(cx.gas, dst.max(src), len)?;
         cx.state.memory().copy(dst, src, len);
     };
 }
@@ -46,16 +43,12 @@ pub(crate) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
 mod tests {
     use crate::{
         ExecutionConfig, SpecId, Version,
-        bytecode::Bytecode,
         env::TxEnv,
-        interpreter::{
-            InstrStop, Interpreter, Message, Word,
-            instructions::tests::{RunConfig, TestHost, TestTypes, push, run, run_stack},
-            op,
-        },
+        interpreter::{InstrStop, Interpreter, Message, Word, op},
+        test_utils::{RunConfig, TestHost, TestTypes, legacy_bytecode, push, run, run_stack},
+        version::GasId,
     };
     use alloc::vec::Vec;
-    use alloy_primitives::Bytes;
     use core::assert_matches;
 
     #[test]
@@ -69,13 +62,13 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
 
-        let mut interpreter = run(RunConfig::new(code));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [value]);
-        assert_eq!(interpreter.memory(30, 2), [0xfe, 0xed]);
+        let mut interp = run(RunConfig::new(code));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [value]);
+        assert_eq!(interp.memory(30, 2), [0xfe, 0xed]);
 
-        let interpreter = run_stack([Word::MAX], op::MLOAD);
-        assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+        let interp = run_stack([Word::MAX], op::MLOAD);
+        assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
     }
 
     #[test]
@@ -88,13 +81,13 @@ mod tests {
         code.push(op::MSIZE);
         code.push(op::STOP);
 
-        let mut interpreter = run(RunConfig::new(code));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(64)]);
-        assert_eq!(interpreter.memory(38, 2), [0xfe, 0xed]);
+        let mut interp = run(RunConfig::new(code));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(64)]);
+        assert_eq!(interp.memory(38, 2), [0xfe, 0xed]);
 
-        let interpreter = run_stack([Word::MAX, Word::from(0)], op::MSTORE);
-        assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+        let interp = run_stack([Word::MAX, Word::from(0)], op::MSTORE);
+        assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
     }
 
     #[test]
@@ -110,13 +103,35 @@ mod tests {
 
         let tx_env = TxEnv::default();
         let message = Message { gas_limit: 10_000, ..Message::default() };
-        let bytecode = Bytecode::new_legacy(Bytes::from(code));
-        let mut interpreter = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
+        let bytecode = legacy_bytecode(code);
+        let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
         let mut host = TestHost::default();
-        let err = interpreter.run(&config, &mut host);
+        let err = interp.run(&config, &mut host);
 
         assert_matches!(err, InstrStop::MemoryLimitOOG);
-        assert_eq!(interpreter.memory_len(), 0);
+        assert_eq!(interp.memory().len(), 0);
+    }
+
+    #[test]
+    fn mstore_respects_version_memory_gas_params() {
+        let mut version = Version::new(SpecId::OSAKA);
+        version.gas_params[GasId::MemoryLinearCost] = 9;
+        let config = ExecutionConfig::<TestTypes>::for_spec_and_version(SpecId::OSAKA, version);
+        let mut code = Vec::new();
+        push(&mut code, Word::ZERO);
+        push(&mut code, Word::ZERO);
+        code.push(op::MSTORE);
+        code.push(op::STOP);
+
+        let tx_env = TxEnv::default();
+        let message = Message { gas_limit: 17, ..Message::default() };
+        let bytecode = legacy_bytecode(code);
+        let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
+        let mut host = TestHost::default();
+        let err = interp.run(&config, &mut host);
+
+        assert_matches!(err, InstrStop::MemoryOOG);
+        assert_eq!(interp.memory().len(), 0);
     }
 
     #[test]
@@ -129,20 +144,20 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
 
-        let mut interpreter = run(RunConfig::new(code));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.memory(4, 1), [0xab]);
-        assert_eq!(interpreter.stack()[0] >> 248, Word::from(0xab));
+        let mut interp = run(RunConfig::new(code));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.memory(4, 1), [0xab]);
+        assert_eq!(interp.stack()[0] >> 248, Word::from(0xab));
 
-        let interpreter = run_stack([Word::MAX, Word::from(0)], op::MSTORE8);
-        assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+        let interp = run_stack([Word::MAX, Word::from(0)], op::MSTORE8);
+        assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
     }
 
     #[test]
     fn msize_opcode() {
-        let interpreter = run(RunConfig::new([op::MSIZE, op::STOP]));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [0]);
+        let interp = run(RunConfig::new([op::MSIZE, op::STOP]));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [0]);
 
         let mut code = Vec::new();
         push(&mut code, 0);
@@ -150,9 +165,9 @@ mod tests {
         code.push(op::MSTORE);
         code.push(op::MSIZE);
         code.push(op::STOP);
-        let interpreter = run(RunConfig::new(code));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(96)]);
+        let interp = run(RunConfig::new(code));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(96)]);
     }
 
     #[test]
@@ -170,9 +185,9 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
 
-        let interpreter = run(RunConfig::new(code));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [value]);
+        let interp = run(RunConfig::new(code));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [value]);
 
         let mut code = Vec::new();
         push(&mut code, 0);
@@ -181,15 +196,15 @@ mod tests {
         code.push(op::MCOPY);
         code.push(op::MSIZE);
         code.push(op::STOP);
-        let interpreter = run(RunConfig::new(code));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [0]);
+        let interp = run(RunConfig::new(code));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [0]);
 
-        let interpreter = run_stack([Word::MAX, Word::MAX, Word::from(0)], op::MCOPY);
-        assert_matches!(interpreter.err, InstrStop::Stop);
+        let interp = run_stack([Word::MAX, Word::MAX, Word::from(0)], op::MCOPY);
+        assert_matches!(interp.err, InstrStop::Stop);
 
-        let interpreter = run_stack([Word::MAX, Word::from(0), Word::from(1)], op::MCOPY);
-        assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+        let interp = run_stack([Word::MAX, Word::from(0), Word::from(1)], op::MCOPY);
+        assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
     }
 
     #[test]
@@ -203,8 +218,8 @@ mod tests {
         push(&mut code, 0);
         code.extend([op::MCOPY, op::STOP]);
 
-        let interpreter = run(RunConfig::new(code).spec(SpecId::CANCUN).gas_limit(26));
+        let interp = run(RunConfig::new(code).spec(SpecId::CANCUN).gas_limit(26));
 
-        assert_matches!(interpreter.err, InstrStop::OutOfGas);
+        assert_matches!(interp.err, InstrStop::OutOfGas);
     }
 }

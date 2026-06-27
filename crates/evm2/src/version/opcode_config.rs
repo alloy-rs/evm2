@@ -1,8 +1,7 @@
 use crate::{
     EvmConfig, EvmTypes,
     interpreter::{
-        instructions as instr,
-        opcode::op,
+        instructions as instr, op,
         private::{Instruction, InstructionImplFn},
     },
 };

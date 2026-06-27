@@ -13,20 +13,17 @@ pub mod ethereum;
 pub mod interpreter;
 pub mod utils;
 
-#[cfg(feature = "async")]
-mod async_;
-#[cfg(feature = "async")]
-pub use async_::{AsyncDatabase, AsyncDb, AsyncError, AsyncResult};
-
 pub mod evm;
 pub use evm::{
-    Evm, TxResult, config,
+    AccountInfo, BlockStateAccumulator, Evm, ExecutedTx, InterpreterRunner, JournalEntry, TxResult,
+    TxResultWithState, config,
     config::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
         ExecutionConfig,
     },
     env, inspector, precompile, registry,
 };
+pub use inspector::{Inspector, NoopInspector};
 
 pub mod precompiles;
 pub use precompiles::{
@@ -34,6 +31,9 @@ pub use precompiles::{
 };
 
 pub(crate) mod trustme;
+
+#[cfg(test)]
+pub(crate) mod test_utils;
 
 pub mod version;
 pub use version::{EvmFeatures, OpcodeConfig, Version};

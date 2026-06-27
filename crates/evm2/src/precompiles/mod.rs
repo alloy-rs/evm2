@@ -1,10 +1,18 @@
 //! EVM precompiled contracts.
 
 use crate::{
-    SpecId, evm::precompile::PrecompileProvider, interpreter::GasTracker, once_lock::OnceLock,
+    Evm, EvmTypes, SpecId,
+    evm::precompile::PrecompileProvider,
+    interpreter::{GasTracker, Message},
 };
+#[cfg(feature = "std")]
+use alloc::boxed::Box;
 use alloc::{borrow::Cow, vec::Vec};
 use alloy_primitives::Address;
+#[cfg(feature = "std")]
+use core::any::{Any, TypeId};
+#[cfg(feature = "std")]
+use std::{collections::HashMap, sync::RwLock};
 
 pub mod blake2;
 pub mod bls12_381;
@@ -38,6 +46,7 @@ pub use result::{AnyError, PrecompileError, PrecompileHalt, PrecompileResult};
 
 pub(crate) use crate::{
     evm::precompile::PrecompileOutput,
+    once_lock::OnceLock,
     utils::{calc_linear_cost, u64_to_address},
 };
 
@@ -74,33 +83,53 @@ use p256 as _;
 
 /// Default precompile provider.
 #[derive(Clone, Debug)]
-pub struct Precompiles {
-    map: Cow<'static, PrecompileMap>,
+pub struct Precompiles<T: EvmTypes = crate::BaseEvmTypes> {
+    map: Cow<'static, PrecompileMap<T>>,
 }
 
-impl Precompiles {
+impl<T: EvmTypes> Precompiles<T> {
     /// Creates a precompile provider from a static precompile map.
     #[inline]
-    pub const fn new(map: Cow<'static, PrecompileMap>) -> Self {
+    pub const fn new(map: Cow<'static, PrecompileMap<T>>) -> Self {
         Self { map }
     }
 
     /// Creates a precompile provider for a base EVM specification.
     #[inline]
     pub fn base(spec_id: SpecId) -> Self {
-        Self::new(Cow::Borrowed(base_precompiles(spec_id)))
+        #[cfg(feature = "std")]
+        {
+            Self::new(Cow::Borrowed(cached_base_precompiles(spec_id)))
+        }
+
+        #[cfg(not(feature = "std"))]
+        {
+            Self::new(Cow::Owned(base_precompiles(spec_id)))
+        }
     }
 
     /// Creates a precompile map from precompile descriptors.
     #[inline]
-    pub fn map(precompiles: impl IntoIterator<Item = Precompile>) -> PrecompileMap {
+    pub fn map(precompiles: impl IntoIterator<Item = Precompile<T>>) -> PrecompileMap<T> {
         PrecompileMap::from_precompiles(precompiles)
+    }
+
+    /// Returns the underlying precompile map.
+    #[inline]
+    pub fn as_map(&self) -> &PrecompileMap<T> {
+        self.map.as_ref()
+    }
+
+    /// Returns the underlying precompile map mutably.
+    #[inline]
+    pub fn as_map_mut(&mut self) -> &mut PrecompileMap<T> {
+        self.map.to_mut()
     }
 }
 
-impl PrecompileProvider for Precompiles {
+impl<T: EvmTypes> PrecompileProvider<T> for Precompiles<T> {
     #[inline]
-    fn warm_addresses(&self) -> Vec<Address> {
+    fn addresses(&self) -> Vec<Address> {
         self.map.as_ref().addresses().collect()
     }
 
@@ -112,18 +141,25 @@ impl PrecompileProvider for Precompiles {
     #[inline]
     fn execute(
         &mut self,
-        address: Address,
-        input: &[u8],
+        evm: &mut Evm<T>,
+        message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
-        let precompile = self.map.as_ref().get_data(&address)?;
-        Some(precompile.run()(input, gas))
+        let precompile = self.map.as_ref().get_data(&message.code_address)?;
+        Some(precompile.execute(evm, message, gas))
     }
 }
 
-fn base_precompiles(spec: SpecId) -> &'static PrecompileMap {
-    static CACHE: [OnceLock<PrecompileMap>; 7] = [const { OnceLock::new() }; 7];
+#[cfg(feature = "std")]
+type BasePrecompileCache<T> = [OnceLock<PrecompileMap<T>>; 7];
 
+#[cfg(feature = "std")]
+static BASE_PRECOMPILES: RwLock<Option<HashMap<TypeId, &'static (dyn Any + Send + Sync)>>> =
+    RwLock::new(None);
+
+#[cfg(feature = "std")]
+fn cached_base_precompiles<T: EvmTypes>(spec: SpecId) -> &'static PrecompileMap<T> {
+    let type_id = TypeId::of::<T>();
     let index = match spec {
         SpecId::FRONTIER | SpecId::HOMESTEAD | SpecId::TANGERINE | SpecId::SPURIOUS_DRAGON => 0,
         SpecId::BYZANTIUM | SpecId::PETERSBURG => 1,
@@ -133,57 +169,103 @@ fn base_precompiles(spec: SpecId) -> &'static PrecompileMap {
         SpecId::PRAGUE => 5,
         SpecId::OSAKA | SpecId::AMSTERDAM => 6,
     };
-    CACHE[index].get_or_init(|| {
-        let mut precompiles = PrecompileMap::new();
 
-        {
-            precompiles.extend([SECP256K1_ECRECOVER, SHA256, RIPEMD160, IDENTITY]);
+    {
+        let cache = BASE_PRECOMPILES.read().expect("base precompile cache poisoned");
+        if let Some(precompiles) = cache.as_ref().and_then(|cache| cache.get(&type_id)) {
+            return precompiles
+                .downcast_ref::<BasePrecompileCache<T>>()
+                .expect("base precompile cache type mismatch")[index]
+                .get_or_init(|| base_precompiles::<T>(spec));
         }
+    }
 
-        if spec.enables(SpecId::BYZANTIUM) {
-            precompiles.extend([
-                MODEXP_BYZANTIUM,
-                BN254_ADD_BYZANTIUM,
-                BN254_MUL_BYZANTIUM,
-                BN254_PAIR_BYZANTIUM,
-            ]);
-        }
+    let mut cache = BASE_PRECOMPILES.write().expect("base precompile cache poisoned");
+    let cache = cache.get_or_insert_with(HashMap::new);
 
-        if spec.enables(SpecId::ISTANBUL) {
-            precompiles.extend([
-                BN254_ADD_ISTANBUL,
-                BN254_MUL_ISTANBUL,
-                BN254_PAIR_ISTANBUL,
-                BLAKE2F,
-            ]);
-        }
+    if let Some(precompiles) = cache.get(&type_id) {
+        return precompiles
+            .downcast_ref::<BasePrecompileCache<T>>()
+            .expect("base precompile cache type mismatch")[index]
+            .get_or_init(|| base_precompiles::<T>(spec));
+    }
 
-        if spec.enables(SpecId::BERLIN) {
-            precompiles.extend([MODEXP_BERLIN]);
-        }
+    let precompiles = Box::leak(Box::new([const { OnceLock::new() }; 7]));
+    cache.insert(type_id, precompiles);
+    precompiles[index].get_or_init(|| base_precompiles::<T>(spec))
+}
 
-        if spec.enables(SpecId::CANCUN) {
-            precompiles.extend([KZG_POINT_EVALUATION]);
-        }
+fn base_precompiles<T: EvmTypes>(spec: SpecId) -> PrecompileMap<T> {
+    let mut precompiles = PrecompileMap::with_capacity(32);
 
-        if spec.enables(SpecId::PRAGUE) {
-            precompiles.extend([
-                BLS12_381_G1_ADD,
-                BLS12_381_G1_MSM,
-                BLS12_381_G2_ADD,
-                BLS12_381_G2_MSM,
-                BLS12_381_PAIRING,
-                BLS12_381_MAP_FP_TO_G1,
-                BLS12_381_MAP_FP2_TO_G2,
-            ]);
-        }
+    {
+        precompiles.extend([SECP256K1_ECRECOVER(), SHA256(), RIPEMD160(), IDENTITY()]);
+    }
 
-        if spec.enables(SpecId::OSAKA) {
-            precompiles.extend([MODEXP_OSAKA, P256VERIFY_OSAKA]);
-        }
+    if spec.enables(SpecId::BYZANTIUM) {
+        precompiles.extend([
+            MODEXP_BYZANTIUM(),
+            BN254_ADD_BYZANTIUM(),
+            BN254_MUL_BYZANTIUM(),
+            BN254_PAIR_BYZANTIUM(),
+        ]);
+    }
 
-        precompiles.shrink_to_fit();
+    if spec.enables(SpecId::ISTANBUL) {
+        precompiles.extend([
+            BN254_ADD_ISTANBUL(),
+            BN254_MUL_ISTANBUL(),
+            BN254_PAIR_ISTANBUL(),
+            BLAKE2F(),
+        ]);
+    }
 
-        precompiles
-    })
+    if spec.enables(SpecId::BERLIN) {
+        precompiles.extend([MODEXP_BERLIN()]);
+    }
+
+    if spec.enables(SpecId::CANCUN) {
+        precompiles.extend([KZG_POINT_EVALUATION()]);
+    }
+
+    if spec.enables(SpecId::PRAGUE) {
+        precompiles.extend([
+            BLS12_381_G1_ADD(),
+            BLS12_381_G1_MSM(),
+            BLS12_381_G2_ADD(),
+            BLS12_381_G2_MSM(),
+            BLS12_381_PAIRING(),
+            BLS12_381_MAP_FP_TO_G1(),
+            BLS12_381_MAP_FP2_TO_G2(),
+        ]);
+    }
+
+    if spec.enables(SpecId::OSAKA) {
+        precompiles.extend([MODEXP_OSAKA(), P256VERIFY_OSAKA()]);
+    }
+
+    precompiles.shrink_to_fit();
+
+    precompiles
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::address;
+
+    #[test]
+    fn provider_helpers_mutate_base_map() {
+        let identity = IDENTITY::<crate::BaseEvmTypes>().address();
+        let moved = address!("0x0000000000000000000000000000000000001000");
+        let mut precompiles = Precompiles::<crate::BaseEvmTypes>::base(SpecId::BERLIN);
+
+        precompiles.as_map_mut().move_precompiles([(identity, moved)]).unwrap();
+
+        assert!(!precompiles.as_map().contains(&identity));
+        assert!(precompiles.as_map().contains(&moved));
+        assert!(
+            Precompiles::<crate::BaseEvmTypes>::base(SpecId::BERLIN).as_map().contains(&identity)
+        );
+    }
 }

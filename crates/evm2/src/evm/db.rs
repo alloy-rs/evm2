@@ -1,25 +1,23 @@
 //! Database helpers for the EVM state overlay.
 
-use super::state::{AccountInfo, StateChanges};
+use super::state::AccountInfo;
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloc::{boxed::Box, string::ToString};
 use alloy_primitives::{Address, B256, keccak256};
 use core::{any::Any, error::Error, fmt, num::NonZeroUsize};
 
 mod cache;
-pub use cache::{Cache, CacheDB, InMemoryDB};
-
-/// Commits accepted state changes to a database.
-pub trait DatabaseCommit {
-    /// Commits state changes to the database.
-    fn commit(&mut self, changes: &StateChanges);
-}
+pub use cache::{AccountStorageCache, Cache, CacheDB, InMemoryDB};
 
 /// Lightweight handle for a database error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DbErrorCode(NonZeroUsize);
 
 impl DbErrorCode {
+    /// Reserved code signalling that a cold database load was skipped because the caller could not
+    /// afford the cold access (see `skip_cold_load`). No backing-database error occurred.
+    pub const COLD_LOAD_SKIPPED: Self = Self::new(2).unwrap();
+
     /// Creates a database error code.
     #[inline]
     pub const fn new(code: usize) -> Option<Self> {
@@ -48,9 +46,9 @@ impl DbErrorCode {
 pub type DbResult<T> = Result<T, DbErrorCode>;
 
 /// Backing database implementation with a concrete error type.
-pub trait Database: Any + Send {
+pub trait Database: Any {
     /// Database error type.
-    type Error: Error + Send + 'static;
+    type Error: Error + 'static;
 
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
@@ -116,19 +114,9 @@ impl<T: Database> Db<T> {
     }
 }
 
-impl<T: Database + DatabaseCommit> DatabaseCommit for Db<T> {
-    #[inline]
-    fn commit(&mut self, changes: &StateChanges) {
-        self.db.commit(changes);
-    }
-}
-
 #[inline]
-pub(crate) fn stored_error_code() -> DbErrorCode {
-    match DbErrorCode::new(1) {
-        Some(code) => code,
-        None => unreachable!("stored database error code is non-zero"),
-    }
+pub(crate) const fn stored_error_code() -> DbErrorCode {
+    DbErrorCode::new(1).unwrap()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,7 +131,7 @@ impl fmt::Display for DbErrorUnavailable {
 impl Error for DbErrorUnavailable {}
 
 #[inline]
-pub(crate) fn db_error_unavailable(code: DbErrorCode) -> Box<dyn Error + Send> {
+pub(crate) fn db_error_unavailable(code: DbErrorCode) -> Box<dyn Error> {
     Box::new(DbErrorUnavailable(code))
 }
 
@@ -169,7 +157,7 @@ impl<T: Database> DynDatabase for Db<T> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
         if code == stored_error_code()
             && let Some(err) = self.result.take()
         {
@@ -180,7 +168,7 @@ impl<T: Database> DynDatabase for Db<T> {
 }
 
 /// Backing database view used to initialize mutable [`super::State`].
-pub trait DynDatabase: Any + Send {
+pub trait DynDatabase: Any {
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
 
@@ -194,8 +182,142 @@ pub trait DynDatabase: Any + Send {
     fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>>;
 
     /// Retrieves the full error for a previously returned error code.
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
         db_error_unavailable(code)
+    }
+}
+
+/// Counts calls made through a [`DynDatabase`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DbStatsCounts {
+    /// Number of account loads.
+    pub get_account: u64,
+    /// Number of bytecode loads by hash.
+    pub get_code_by_hash: u64,
+    /// Number of storage slot loads.
+    pub get_storage: u64,
+    /// Number of storage loads whose address matched the previous storage load.
+    pub get_storage_same_address_repeats: u64,
+    /// Longest run of storage loads for the same address.
+    pub get_storage_same_address_longest_streak: u64,
+    /// Number of block hash loads.
+    pub get_block_hash: u64,
+    /// Number of error lookups.
+    pub error: u64,
+}
+
+impl core::ops::AddAssign for DbStatsCounts {
+    #[inline]
+    fn add_assign(&mut self, rhs: Self) {
+        self.get_account += rhs.get_account;
+        self.get_code_by_hash += rhs.get_code_by_hash;
+        self.get_storage += rhs.get_storage;
+        self.get_storage_same_address_repeats += rhs.get_storage_same_address_repeats;
+        self.get_storage_same_address_longest_streak = self
+            .get_storage_same_address_longest_streak
+            .max(rhs.get_storage_same_address_longest_streak);
+        self.get_block_hash += rhs.get_block_hash;
+        self.error += rhs.error;
+    }
+}
+
+/// Database wrapper that records method call counts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DbStats<D> {
+    db: D,
+    counts: DbStatsCounts,
+    last_storage_address: Option<Address>,
+    storage_address_streak: u64,
+}
+
+impl<D> DbStats<D> {
+    /// Creates a stats wrapper around `db`.
+    #[inline]
+    pub const fn new(db: D) -> Self {
+        Self {
+            db,
+            counts: DbStatsCounts {
+                get_account: 0,
+                get_code_by_hash: 0,
+                get_storage: 0,
+                get_storage_same_address_repeats: 0,
+                get_storage_same_address_longest_streak: 0,
+                get_block_hash: 0,
+                error: 0,
+            },
+            last_storage_address: None,
+            storage_address_streak: 0,
+        }
+    }
+
+    /// Returns the wrapped database.
+    #[inline]
+    pub const fn inner(&self) -> &D {
+        &self.db
+    }
+
+    /// Returns the wrapped database mutably.
+    #[inline]
+    pub const fn inner_mut(&mut self) -> &mut D {
+        &mut self.db
+    }
+
+    /// Consumes the wrapper and returns the wrapped database.
+    #[inline]
+    pub fn into_inner(self) -> D {
+        self.db
+    }
+
+    /// Returns recorded method call counts.
+    #[inline]
+    pub const fn counts(&self) -> DbStatsCounts {
+        self.counts
+    }
+
+    #[inline]
+    fn record_storage_load(&mut self, address: &Address) {
+        self.counts.get_storage += 1;
+        if self.last_storage_address.as_ref() == Some(address) {
+            self.counts.get_storage_same_address_repeats += 1;
+            self.storage_address_streak += 1;
+        } else {
+            self.last_storage_address = Some(*address);
+            self.storage_address_streak = 1;
+        }
+        self.counts.get_storage_same_address_longest_streak =
+            self.counts.get_storage_same_address_longest_streak.max(self.storage_address_streak);
+    }
+}
+
+impl<D: DynDatabase> DynDatabase for DbStats<D> {
+    #[inline]
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        self.counts.get_account += 1;
+        self.db.get_account(address)
+    }
+
+    #[inline]
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+        self.counts.get_code_by_hash += 1;
+        self.db.get_code_by_hash(code_hash)
+    }
+
+    #[inline]
+    fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        self.record_storage_load(address);
+        self.db.get_storage(address, key)
+    }
+
+    #[inline]
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+        self.counts.get_block_hash += 1;
+        self.db.get_block_hash(number)
+    }
+
+    #[inline]
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
+        self.counts.error += 1;
+        self.db.error(code)
     }
 }
 
@@ -215,7 +337,7 @@ impl core::ops::DerefMut for dyn DynDatabase + '_ {
     }
 }
 
-impl DynDatabase for Box<dyn DynDatabase> {
+impl<T: DynDatabase + ?Sized> DynDatabase for Box<T> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         self.as_mut().get_account(address)
@@ -237,7 +359,7 @@ impl DynDatabase for Box<dyn DynDatabase> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
         self.as_mut().error(code)
     }
 }

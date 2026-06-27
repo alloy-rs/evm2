@@ -6,14 +6,24 @@ use std::{
 /// Environment variable for the downloaded fixture root.
 pub(crate) const TEST_FIXTURES_ENV: &str = "EVM2_TEST_FIXTURES";
 
-/// revmc-compatible environment variable for the downloaded fixture root.
-pub(crate) const REVMC_TEST_FIXTURES_ENV: &str = "REVMC_TEST_FIXTURES";
-
 /// Generic EEST stable selector.
 pub(crate) const EEST_STABLE_ENV: &str = "EVM2_EEST_STABLE";
 
 /// Repo-relative fixture root used by the setup script and CI.
 pub(crate) const DEFAULT_FIXTURES_PATH: &str = "test-fixtures";
+
+/// Environment variable pointing at additional tests to run: a folder (or file)
+/// whose fixtures execute as state or blockchain tests by per-file field
+/// detection.
+pub(crate) const ADDITIONAL_TESTS_ENV: &str = "EVM2_ADDITIONAL_TESTS";
+
+/// Returns the additional-tests path configured through the environment.
+pub(crate) fn additional_tests_path() -> Option<PathBuf> {
+    env::var_os(ADDITIONAL_TESTS_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(workspace_relative)
+}
 
 /// Resolves the workspace root by walking up from this crate.
 pub(crate) fn workspace_root() -> PathBuf {
@@ -27,7 +37,6 @@ pub(crate) fn workspace_root() -> PathBuf {
 /// Returns the root of downloaded test fixtures.
 pub(crate) fn fixtures_root() -> PathBuf {
     env::var_os(TEST_FIXTURES_ENV)
-        .or_else(|| env::var_os(REVMC_TEST_FIXTURES_ENV))
         .map(PathBuf::from)
         .map(workspace_relative)
         .unwrap_or_else(|| workspace_root().join(DEFAULT_FIXTURES_PATH))

@@ -1,7 +1,6 @@
+use crate::{BaseEvmTypes, EvmTypes};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use derive_where::derive_where;
-
-use crate::{BaseEvmTypes, EvmTypes};
 
 /// EVM message kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -53,6 +52,9 @@ pub struct Message<T: EvmTypes = BaseEvmTypes> {
     /// Whether native precompile dispatch is disabled for this frame because its bytecode was
     /// loaded through an EIP-7702 delegation designation.
     pub disable_precompiles: bool,
+    /// Whether the immediate caller frame is executing in a static context. Combined with a
+    /// `STATICCALL` kind, this determines whether the new frame is static.
+    pub caller_is_static: bool,
     /// CREATE2 salt. Ignored for other message kinds.
     pub salt: B256,
     /// EVM type-specific extension data.

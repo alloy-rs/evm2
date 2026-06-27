@@ -1,13 +1,11 @@
 use crate::{
     EvmTypes,
     evm::AccountLoad,
-    interpreter::{
-        Gas, Host, InstrStop, Memory, Result, Word, memory::resize_memory,
-        private::GasInstructionCx,
-    },
+    interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{
         address_to_word, b256_to_word, word_to_address, word_to_usize, word_to_usize_saturated,
     },
+    version::GasParams,
 };
 use alloy_primitives::B256;
 use evm2_macros::instruction;
@@ -31,6 +29,7 @@ fn load_account<T: EvmTypes>(
 fn copy_data(
     gas: &mut Gas,
     memory: &mut Memory,
+    gas_params: &GasParams,
     memory_offset: &Word,
     data_offset: &Word,
     len: usize,
@@ -38,7 +37,7 @@ fn copy_data(
 ) -> Result {
     if len != 0 {
         let memory_offset = word_to_usize(*memory_offset)?;
-        resize_memory(gas, memory, memory_offset, len)?;
+        memory.resize_evm(gas, gas_params, memory_offset, len)?;
         memory.set_data(memory_offset, word_to_usize_saturated(*data_offset), len, data);
     }
     Ok(())
@@ -91,7 +90,8 @@ pub(crate) fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> 
     let len = word_to_usize(*len)?;
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
     let input = cx.state.message().input.as_ref();
-    copy_data(cx.gas, &mut cx.state.0.memory, memory_offset, data_offset, len, input)
+    let gas_params = cx.state.gas_params();
+    copy_data(cx.gas, &mut cx.state.0.memory, gas_params, memory_offset, data_offset, len, input)
 }
 
 #[instruction]
@@ -104,7 +104,8 @@ pub(crate) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Resu
     let len = word_to_usize(*len)?;
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
     let data = cx.state.0.bytecode.original_byte_slice();
-    copy_data(cx.gas, &mut cx.state.0.memory, memory_offset, code_offset, len, data)
+    let gas_params = cx.state.gas_params();
+    copy_data(cx.gas, &mut cx.state.0.memory, gas_params, memory_offset, code_offset, len, data)
 }
 
 #[instruction]
@@ -129,7 +130,7 @@ pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]
     cx.gas.spend(cx.state.gas_params().extcodecopy_cost(len))?;
     let memory_offset = if len != 0 {
         let memory_offset = word_to_usize(*memory_offset)?;
-        resize_memory(cx.gas, &mut cx.state.0.memory, memory_offset, len)?;
+        cx.state.resize_memory(cx.gas, memory_offset, len)?;
         memory_offset
     } else {
         0
@@ -160,7 +161,8 @@ pub(crate) fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
     let data = &cx.state.0.return_data;
     let data_offset = Word::from(data_offset);
-    copy_data(cx.gas, &mut cx.state.0.memory, memory_offset, &data_offset, len, data)
+    let gas_params = cx.state.gas_params();
+    copy_data(cx.gas, &mut cx.state.0.memory, gas_params, memory_offset, &data_offset, len, data)
 }
 
 #[cfg(test)]
@@ -168,12 +170,9 @@ mod tests {
     use crate::{
         SpecId,
         env::TxEnv,
-        interpreter::{
-            InstrStop, Message, Word,
-            instructions::tests::{
-                RunConfig, TestHost, TestTypes, assert_stack, push, run, run_stack,
-            },
-            op,
+        interpreter::{InstrStop, Message, Word, op},
+        test_utils::{
+            RunConfig, TestHost, TestTypes, assert_stack, neg, push, run, run_stack, stack_code,
         },
         utils::{address_to_word, b256_to_word},
     };
@@ -181,21 +180,8 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes};
     use core::assert_matches;
 
-    fn neg(value: u64) -> Word {
-        Word::from(0).wrapping_sub(Word::from(value))
-    }
-
     fn test_message() -> Message<TestTypes> {
         Message { gas_limit: 10_000, ..Message::default() }
-    }
-
-    fn stack_code<const N: usize>(inputs: [Word; N], opcode: u8) -> Vec<u8> {
-        let mut code = Vec::new();
-        for input in inputs.into_iter().rev() {
-            push(&mut code, input);
-        }
-        code.extend([opcode, op::STOP]);
-        code
     }
 
     #[test]
@@ -203,10 +189,9 @@ mod tests {
         let address = Address::from([0x11; 20]);
         let mut host = TestHost::default();
         let message = Message { destination: address, ..test_message() };
-        let interpreter =
-            run(RunConfig::new([op::ADDRESS, op::STOP]).host(&mut host).message(message));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [address_to_word(&address)]);
+        let interp = run(RunConfig::new([op::ADDRESS, op::STOP]).host(&mut host).message(message));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [address_to_word(&address)]);
     }
 
     #[test]
@@ -219,22 +204,22 @@ mod tests {
     #[test]
     fn balance_cold_account_cost() {
         let mut host = TestHost { is_cold: true, ..TestHost::default() };
-        let interpreter = run(RunConfig::new([op::PUSH1, 0xbe, op::BALANCE, op::STOP])
+        let interp = run(RunConfig::new([op::PUSH1, 0xbe, op::BALANCE, op::STOP])
             .host(&mut host)
             .spec(SpecId::BERLIN));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(0xbe)]);
-        assert_eq!(interpreter.gas_remaining(), 7_397);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(0xbe)]);
+        assert_eq!(interp.gas_remaining(), 7_397);
     }
 
     #[test]
     fn balance_cold_account_skip_oog() {
         let mut host = TestHost { is_cold: true, ..TestHost::default() };
-        let interpreter = run(RunConfig::new([op::PUSH1, 0xbe, op::BALANCE, op::STOP])
+        let interp = run(RunConfig::new([op::PUSH1, 0xbe, op::BALANCE, op::STOP])
             .host(&mut host)
             .spec(SpecId::BERLIN)
             .gas_limit(103));
-        assert_matches!(interpreter.err, InstrStop::OutOfGas);
+        assert_matches!(interp.err, InstrStop::OutOfGas);
     }
 
     #[test]
@@ -242,10 +227,9 @@ mod tests {
         let origin = Address::from([0x22; 20]);
         let mut host = TestHost::default();
         let tx_env = TxEnv { origin, ..TxEnv::default() };
-        let interpreter =
-            run(RunConfig::new([op::ORIGIN, op::STOP]).host(&mut host).tx_env(tx_env));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [address_to_word(&origin)]);
+        let interp = run(RunConfig::new([op::ORIGIN, op::STOP]).host(&mut host).tx_env(tx_env));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [address_to_word(&origin)]);
     }
 
     #[test]
@@ -253,20 +237,19 @@ mod tests {
         let caller = Address::from([0x33; 20]);
         let mut host = TestHost::default();
         let message = Message { caller, ..test_message() };
-        let interpreter =
-            run(RunConfig::new([op::CALLER, op::STOP]).host(&mut host).message(message));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [address_to_word(&caller)]);
+        let interp = run(RunConfig::new([op::CALLER, op::STOP]).host(&mut host).message(message));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [address_to_word(&caller)]);
     }
 
     #[test]
     fn callvalue_opcode() {
         let mut host = TestHost::default();
         let message = Message { value: Word::from(0xbeef), ..test_message() };
-        let interpreter =
+        let interp =
             run(RunConfig::new([op::CALLVALUE, op::STOP]).host(&mut host).message(message));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(0xbeef)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(0xbeef)]);
     }
 
     #[test]
@@ -275,19 +258,19 @@ mod tests {
         let mut host = TestHost::default();
         let message = Message { input, ..test_message() };
 
-        let interpreter = run(RunConfig::new([op::PUSH0, op::CALLDATALOAD, op::STOP])
+        let interp = run(RunConfig::new([op::PUSH0, op::CALLDATALOAD, op::STOP])
             .host(&mut host)
             .message(message.clone()));
         let mut expected = [0_u8; 32];
         expected[..3].copy_from_slice(&[1, 2, 3]);
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from_be_bytes(expected)]);
 
-        let interpreter = run(RunConfig::new([op::PUSH1, 0x20, op::CALLDATALOAD, op::STOP])
+        let interp = run(RunConfig::new([op::PUSH1, 0x20, op::CALLDATALOAD, op::STOP])
             .host(&mut host)
             .message(message));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [0]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [0]);
     }
 
     #[test]
@@ -295,10 +278,10 @@ mod tests {
         let input = Bytes::from(Vec::from([1_u8, 2, 3, 4]));
         let mut host = TestHost::default();
         let message = Message { input, ..test_message() };
-        let interpreter =
+        let interp =
             run(RunConfig::new([op::CALLDATASIZE, op::STOP]).host(&mut host).message(message));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(4)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(4)]);
     }
 
     #[test]
@@ -315,30 +298,30 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
 
-        let interpreter = run(RunConfig::new(code).host(&mut host).message(message.clone()));
+        let interp = run(RunConfig::new(code).host(&mut host).message(message.clone()));
         let mut expected = [0_u8; 32];
         expected[..2].copy_from_slice(&[0xbb, 0xcc]);
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from_be_bytes(expected)]);
 
-        let interpreter = run(RunConfig::new(stack_code(
+        let interp = run(RunConfig::new(stack_code(
             [Word::MAX, Word::MAX, Word::from(0)],
             op::CALLDATACOPY,
         ))
         .host(&mut host)
         .message(message));
-        assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_matches!(interp.err, InstrStop::Stop);
     }
 
     #[test]
     fn codesize_opcode() {
-        let interpreter = run(RunConfig::new([op::CODESIZE, op::STOP]));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(2)]);
+        let interp = run(RunConfig::new([op::CODESIZE, op::STOP]));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(2)]);
 
-        let interpreter = run(RunConfig::new([op::PUSH1, 0x00, op::CODESIZE, op::STOP]));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(0), Word::from(4)]);
+        let interp = run(RunConfig::new([op::PUSH1, 0x00, op::CODESIZE, op::STOP]));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(0), Word::from(4)]);
     }
 
     #[test]
@@ -352,11 +335,11 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
 
-        let interpreter = run(RunConfig::new(code));
+        let interp = run(RunConfig::new(code));
         let mut expected = [0u8; 32];
         expected[..2].copy_from_slice(&[0, op::CODECOPY]);
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from_be_bytes(expected)]);
 
         let mut code = Vec::new();
         push(&mut code, Word::from(1));
@@ -366,34 +349,33 @@ mod tests {
         push(&mut code, 0);
         code.push(op::MLOAD);
         code.push(op::STOP);
-        let interpreter = run(RunConfig::new(code));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [0]);
+        let interp = run(RunConfig::new(code));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [0]);
 
-        let interpreter = run_stack([Word::MAX, Word::MAX, Word::from(0)], op::CODECOPY);
-        assert_matches!(interpreter.err, InstrStop::Stop);
+        let interp = run_stack([Word::MAX, Word::MAX, Word::from(0)], op::CODECOPY);
+        assert_matches!(interp.err, InstrStop::Stop);
 
-        let interpreter = run_stack([Word::MAX, Word::from(0), Word::from(1)], op::CODECOPY);
-        assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+        let interp = run_stack([Word::MAX, Word::from(0), Word::from(1)], op::CODECOPY);
+        assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
     }
 
     #[test]
     fn gasprice_opcode() {
         let mut host = TestHost::default();
         let tx_env = TxEnv { gas_price: Word::from(0x1234), ..TxEnv::default() };
-        let interpreter =
-            run(RunConfig::new([op::GASPRICE, op::STOP]).host(&mut host).tx_env(tx_env));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(0x1234)]);
+        let interp = run(RunConfig::new([op::GASPRICE, op::STOP]).host(&mut host).tx_env(tx_env));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(0x1234)]);
     }
 
     #[test]
     fn extcodesize_opcode() {
         let mut host = TestHost { code: Bytes::from(vec![0; 0x42]), ..TestHost::default() };
-        let interpreter =
+        let interp =
             run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODESIZE, op::STOP]).host(&mut host));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(0x42)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(0x42)]);
     }
 
     #[test]
@@ -410,11 +392,11 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
 
-        let interpreter = run(RunConfig::new(code).host(&mut host));
+        let interp = run(RunConfig::new(code).host(&mut host));
         let mut expected = [0_u8; 32];
         expected[..2].copy_from_slice(&[0xbb, 0xcc]);
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from_be_bytes(expected)]);
 
         let mut code = Vec::new();
         push(&mut code, 4);
@@ -425,37 +407,37 @@ mod tests {
         push(&mut code, 0);
         code.push(op::MLOAD);
         code.push(op::STOP);
-        let interpreter = run(RunConfig::new(code).host(&mut host));
+        let interp = run(RunConfig::new(code).host(&mut host));
         let mut expected = [0_u8; 32];
         expected[..1].copy_from_slice(&[0xcc]);
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from_be_bytes(expected)]);
 
-        let interpreter = run(RunConfig::new(stack_code(
+        let interp = run(RunConfig::new(stack_code(
             [Word::from(0xbeef), Word::MAX, Word::MAX, Word::from(0)],
             op::EXTCODECOPY,
         ))
         .host(&mut host));
-        assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_matches!(interp.err, InstrStop::Stop);
 
-        let interpreter = run(RunConfig::new(stack_code(
+        let interp = run(RunConfig::new(stack_code(
             [Word::from(0xbeef), Word::MAX, Word::from(0), Word::from(1)],
             op::EXTCODECOPY,
         ))
         .host(&mut host));
-        assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+        assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
     }
 
     #[test]
     fn returndatasize_opcode() {
-        let interpreter = run(RunConfig::new([op::RETURNDATASIZE, op::STOP])
+        let interp = run(RunConfig::new([op::RETURNDATASIZE, op::STOP])
             .spec(SpecId::BYZANTIUM)
             .return_data(Bytes::from_static(&[0xaa, 0xbb, 0xcc])));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(3)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(3)]);
 
-        let interpreter = run(RunConfig::new([op::RETURNDATASIZE]).spec(SpecId::FRONTIER));
-        assert_matches!(interpreter.err, InstrStop::InvalidOpcode);
+        let interp = run(RunConfig::new([op::RETURNDATASIZE]).spec(SpecId::FRONTIER));
+        assert_matches!(interp.err, InstrStop::InvalidOpcode);
     }
 
     #[test]
@@ -469,58 +451,57 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
 
-        let interpreter =
-            run(RunConfig::new(code).return_data(Bytes::from_static(&[0xaa, 0xbb, 0xcc])));
+        let interp = run(RunConfig::new(code).return_data(Bytes::from_static(&[0xaa, 0xbb, 0xcc])));
         let mut expected = [0_u8; 32];
         expected[..2].copy_from_slice(&[0xbb, 0xcc]);
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from_be_bytes(expected)]);
 
-        let interpreter = run(RunConfig::new(stack_code(
+        let interp = run(RunConfig::new(stack_code(
             [Word::from(0), Word::from(3), Word::from(0)],
             op::RETURNDATACOPY,
         ))
         .spec(SpecId::BYZANTIUM)
         .return_data(Bytes::from_static(&[0xaa, 0xbb, 0xcc])));
-        assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_matches!(interp.err, InstrStop::Stop);
 
-        let interpreter = run(RunConfig::new(stack_code(
+        let interp = run(RunConfig::new(stack_code(
             [Word::from(0), Word::from(4), Word::from(0)],
             op::RETURNDATACOPY,
         ))
         .spec(SpecId::BYZANTIUM)
         .return_data(Bytes::from_static(&[0xaa, 0xbb, 0xcc])));
-        assert_matches!(interpreter.err, InstrStop::OutOfOffset);
+        assert_matches!(interp.err, InstrStop::OutOfOffset);
 
-        let interpreter = run(RunConfig::new(stack_code(
+        let interp = run(RunConfig::new(stack_code(
             [Word::MAX, Word::from(0), Word::from(1)],
             op::RETURNDATACOPY,
         ))
         .spec(SpecId::BYZANTIUM)
         .return_data(Bytes::from_static(&[0xaa])));
-        assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+        assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
 
-        let interpreter = run(RunConfig::new(stack_code(
+        let interp = run(RunConfig::new(stack_code(
             [Word::from(0), Word::from(0), Word::from(0)],
             op::RETURNDATACOPY,
         ))
         .spec(SpecId::FRONTIER));
-        assert_matches!(interpreter.err, InstrStop::InvalidOpcode);
+        assert_matches!(interp.err, InstrStop::InvalidOpcode);
     }
 
     #[test]
     fn extcodehash_opcode() {
         let hash = B256::with_last_byte(0x77);
         let mut host = TestHost { code_hash: hash, ..TestHost::default() };
-        let interpreter = run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP])
+        let interp = run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP])
             .host(&mut host)
             .spec(SpecId::PETERSBURG));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [b256_to_word(hash)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [b256_to_word(hash)]);
 
-        let interpreter = run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP])
+        let interp = run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP])
             .host(&mut host)
             .spec(SpecId::BYZANTIUM));
-        assert_matches!(interpreter.err, InstrStop::InvalidOpcode);
+        assert_matches!(interp.err, InstrStop::InvalidOpcode);
     }
 }
