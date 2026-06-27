@@ -141,6 +141,11 @@ impl<B: Backend> EvmCompiler<B> {
         }
     }
 
+    /// Returns the module name.
+    pub fn module_name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
     /// Sets the name of the module.
     pub fn set_module_name(&mut self, name: impl Into<String>) {
         let name = name.into();
@@ -157,14 +162,12 @@ impl<B: Backend> EvmCompiler<B> {
     }
 
     /// Returns a reference to the underlying compiler backend.
-    #[doc(hidden)]
     #[inline]
     pub const fn backend(&self) -> &B {
         &self.backend
     }
 
     /// Returns a mutable reference to the underlying compiler backend.
-    #[doc(hidden)]
     #[inline]
     pub const fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
@@ -216,7 +219,12 @@ impl<B: Backend> EvmCompiler<B> {
     /// This can be quite slow.
     ///
     /// Defaults to `true`.
-    pub const fn dump_assembly(&mut self, yes: bool) {
+    pub const fn dump_assembly(&self) -> bool {
+        self.dump_assembly
+    }
+
+    /// Sets whether to dump assembly to the output directory.
+    pub const fn set_dump_assembly(&mut self, yes: bool) {
         self.dump_assembly = yes;
     }
 
@@ -225,7 +233,12 @@ impl<B: Backend> EvmCompiler<B> {
     /// This can be quite slow.
     ///
     /// Defaults to `false`.
-    pub const fn dump_unopt_assembly(&mut self, yes: bool) {
+    pub const fn dump_unopt_assembly(&self) -> bool {
+        self.dump_unopt_assembly
+    }
+
+    /// Sets whether to dump the unoptimized assembly to the output directory.
+    pub const fn set_dump_unopt_assembly(&mut self, yes: bool) {
         self.dump_unopt_assembly = yes;
     }
 
@@ -243,25 +256,40 @@ impl<B: Backend> EvmCompiler<B> {
         self.update_backend_config(|c| c.opt_level = level);
     }
 
+    /// Returns whether debug assertions are enabled.
+    pub const fn debug_assertions(&self) -> bool {
+        self.config.debug_assertions
+    }
+
     /// Sets whether to enable debug assertions.
     ///
     /// These are useful for debugging, but they do a moderate performance penalty due to the
     /// insertion of extra checks and removal of certain assumptions.
     ///
     /// Defaults to `cfg!(debug_assertions)`.
-    pub fn debug_assertions(&mut self, yes: bool) {
+    pub fn set_debug_assertions(&mut self, yes: bool) {
         self.update_backend_config(|c| c.debug_assertions = yes);
         self.config.debug_assertions = yes;
     }
 
-    /// Enables the block deduplication pass.
+    /// Returns whether the block deduplication pass is enabled.
+    pub const fn dedup(&self) -> bool {
+        self.dedup
+    }
+
+    /// Sets whether to enable the block deduplication pass.
     ///
     /// Defaults to `true`.
     pub const fn set_dedup(&mut self, yes: bool) {
         self.dedup = yes;
     }
 
-    /// Enables the dead store elimination pass.
+    /// Returns whether the dead store elimination pass is enabled.
+    pub const fn dse(&self) -> bool {
+        self.dse
+    }
+
+    /// Sets whether to enable the dead store elimination pass.
     ///
     /// Defaults to `true`.
     pub const fn set_dse(&mut self, yes: bool) {
@@ -336,6 +364,11 @@ impl<B: Backend> EvmCompiler<B> {
         self.update_backend_config(|c| c.simple_perf = yes);
     }
 
+    /// Returns whether debug info emission is enabled.
+    pub const fn debug_info(&self) -> bool {
+        self.config.debug
+    }
+
     /// Sets whether to enable debug info emission.
     ///
     /// Debug info embeds DWARF metadata and annotates IR/assembly dumps with source locations
@@ -348,14 +381,24 @@ impl<B: Backend> EvmCompiler<B> {
         self.config.debug = yes;
     }
 
+    /// Returns whether frame pointers are enabled.
+    pub const fn frame_pointers(&self) -> bool {
+        self.config.frame_pointers
+    }
+
     /// Sets whether to enable frame pointers.
     ///
     /// This is useful for profiling and debugging, but it incurs a very slight performance penalty.
     ///
     /// Enabled by default in debug builds, when `-Cforce-frame-pointers` is set, or when
     /// [`set_dump_to`](Self::set_dump_to) is called with a directory.
-    pub const fn frame_pointers(&mut self, yes: bool) {
+    pub const fn set_frame_pointers(&mut self, yes: bool) {
         self.config.frame_pointers = yes;
+    }
+
+    /// Returns whether the stack is observable outside the function.
+    pub const fn inspect_stack(&self) -> bool {
+        self.config.inspect_stack
     }
 
     /// Sets whether to treat the stack as observable outside the function.
@@ -366,15 +409,25 @@ impl<B: Backend> EvmCompiler<B> {
     /// incur a performance penalty as the stack will be stored at all return sites.
     ///
     /// Defaults to `false`.
-    pub const fn inspect_stack(&mut self, yes: bool) {
+    pub const fn set_inspect_stack(&mut self, yes: bool) {
         self.config.inspect_stack = yes;
+    }
+
+    /// Returns whether the stack is copied into a local alloca while executing.
+    pub const fn local_stack(&self) -> bool {
+        self.config.local_stack
     }
 
     /// Sets whether to copy the stack into a local alloca while executing.
     ///
     /// Defaults to `false`.
-    pub const fn local_stack(&mut self, yes: bool) {
+    pub const fn set_local_stack(&mut self, yes: bool) {
         self.config.local_stack = yes;
+    }
+
+    /// Returns whether stack bound checks are enabled.
+    pub const fn stack_bound_checks(&self) -> bool {
+        self.config.stack_bound_checks
     }
 
     /// Sets whether to enable stack bound checks.
@@ -389,8 +442,13 @@ impl<B: Backend> EvmCompiler<B> {
     ///
     /// [`StackUnderflow`]: evm2::interpreter::InstrStop::StackUnderflow
     /// [`StackOverflow`]: evm2::interpreter::InstrStop::StackOverflow
-    pub const unsafe fn stack_bound_checks(&mut self, yes: bool) {
+    pub const unsafe fn set_stack_bound_checks(&mut self, yes: bool) {
         self.config.stack_bound_checks = yes;
+    }
+
+    /// Returns the gas budget for compile-time evaluation of user-supplied bytecode.
+    pub const fn compiler_gas_limit(&self) -> u64 {
+        self.compiler_gas_limit
     }
 
     /// Sets the gas budget for compile-time evaluation of user-supplied bytecode.
@@ -407,6 +465,11 @@ impl<B: Backend> EvmCompiler<B> {
         self.compiler_gas_limit = limit;
     }
 
+    /// Returns whether gas costs are tracked.
+    pub const fn gas_metering(&self) -> bool {
+        self.config.gas_metering
+    }
+
     /// Sets whether to track gas costs.
     ///
     /// Disabling this will greatly improves compilation speed and performance, at the cost of not
@@ -418,8 +481,13 @@ impl<B: Backend> EvmCompiler<B> {
     /// Use with care, as executing a function with gas disabled may result in an infinite loop.
     ///
     /// Defaults to `true`.
-    pub const fn gas_metering(&mut self, yes: bool) {
+    pub const fn set_gas_metering(&mut self, yes: bool) {
         self.config.gas_metering = yes;
+    }
+
+    /// Returns whether every JIT failure path collapses to a single error.
+    pub const fn single_error(&self) -> bool {
+        self.config.single_error
     }
 
     /// Sets whether to collapse every JIT failure path to a single
@@ -433,8 +501,13 @@ impl<B: Backend> EvmCompiler<B> {
     /// Useful for benchmarking the cost of failure-result materialization.
     ///
     /// Defaults to `true`.
-    pub const fn single_error(&mut self, yes: bool) {
+    pub const fn set_single_error(&mut self, yes: bool) {
         self.config.single_error = yes;
+    }
+
+    /// Returns custom gas parameters, if set.
+    pub const fn gas_params(&self) -> Option<GasParams> {
+        self.gas_params
     }
 
     /// Sets custom gas parameters.

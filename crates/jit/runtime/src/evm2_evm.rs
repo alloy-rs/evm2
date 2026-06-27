@@ -61,7 +61,7 @@ pub fn run_interpreter(
         LookupDecision::Unavailable(_) => return None,
     };
 
-    interpreter.prepare_jit_run(config, host);
+    interpreter.prepare_run(config.base_spec_id(), config.version(), host);
     Some(unsafe { program.func.call_with_interpreter(interpreter) })
 }
 

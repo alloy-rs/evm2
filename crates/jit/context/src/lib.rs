@@ -118,7 +118,7 @@ impl<'a> EvmContext<'a> {
     /// Returns the current linear memory.
     #[inline]
     pub const fn memory(&self) -> &Memory {
-        self.interpreter().memory_ref()
+        self.interpreter().memory()
     }
 
     /// Returns the current linear memory.
@@ -198,11 +198,10 @@ impl<'a> EvmContext<'a> {
         self.interpreter().is_static()
     }
 
-    /// Sets the static-call flag for JIT test setup.
+    /// Sets the static-call flag.
     #[inline]
-    #[doc(hidden)]
-    pub const fn set_static_for_jit(&mut self, is_static: bool) {
-        self.interpreter_mut().set_static_for_jit(is_static);
+    pub const fn set_static(&mut self, is_static: bool) {
+        self.interpreter_mut().set_static(is_static);
     }
 
     /// Returns active original bytecode.
@@ -213,15 +212,15 @@ impl<'a> EvmContext<'a> {
 
     /// Returns return data from the last call-like operation.
     #[inline]
-    pub fn return_data(&self) -> &[u8] {
-        self.interpreter().return_data().as_ref()
+    pub const fn return_data(&self) -> &Bytes {
+        self.interpreter().return_data()
     }
 
     /// Sets return data from the last call-like operation.
     #[inline]
-    pub fn set_return_data(&mut self, data: Bytes) {
-        self.return_data_len = data.len();
-        self.interpreter_mut().set_return_data(data);
+    pub fn set_return_data(&mut self, return_data: Bytes) {
+        self.return_data_len = return_data.len();
+        *self.interpreter_mut().return_data_mut() = return_data;
     }
 
     /// Refreshes the cached memory base pointer and length.

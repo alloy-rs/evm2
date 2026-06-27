@@ -934,7 +934,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 // not replace or mutate, so the pointee remains valid for the lifetime of the
                 // frame.
                 let version = unsafe { trustme::decouple_lt(self.execution_config.version()) };
-                frame.set_inspection_context(self.spec_id(), version, self);
+                frame.prepare_run(self.spec_id(), version, self);
                 frame
             }
         };
@@ -1282,7 +1282,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             // SAFETY: `execution_config` points to a private field that host execution does not
             // replace or mutate, so the pointee remains valid here.
             let version = unsafe { trustme::decouple_lt(self.execution_config.version()) };
-            interp.set_inspection_context(self.spec_id(), version, self);
+            interp.prepare_run(self.spec_id(), version, self);
             inspector.initialize_interp(interp);
         }
     }

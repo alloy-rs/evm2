@@ -112,11 +112,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     }
 
     #[cfg(test)]
-    pub(crate) const fn memory_len(&self) -> usize {
-        self.memory.len()
-    }
-
-    #[cfg(test)]
     pub(crate) fn into_parts(self) -> (Box<StackBacking>, usize, Gas, Memory, Range<u32>) {
         (self.stack, self.stack_len, self.gas, self.memory, self.output)
     }
@@ -128,23 +123,41 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.memory.slice(start, self.output.len())
     }
 
+    /// Returns the current frame output memory range.
+    #[inline]
+    pub const fn output_range(&self) -> &Range<u32> {
+        &self.output
+    }
+
+    /// Sets the current frame output memory range.
+    #[inline]
+    pub const fn set_output(&mut self, output: Range<u32>) {
+        self.output = output;
+    }
+
     /// Returns the current bytecode-relative program counter.
     #[inline]
     pub fn pc(&self) -> usize {
+        // SAFETY: `pc` is always in bounds of `bytecode`.
         unsafe { self.pc.offset_from(self.bytecode.original_byte_slice().as_ptr()) as usize }
     }
 
     /// Sets the current bytecode-relative program counter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `pc` is greater than the active bytecode length.
     #[inline]
-    #[doc(hidden)]
     pub fn set_pc(&mut self, pc: usize) {
-        debug_assert!(pc <= self.bytecode.bytes_slice().len());
-        self.pc = unsafe { self.bytecode.bytes_slice().as_ptr().add(pc) };
+        let bytecode = self.bytecode.bytes_slice();
+        assert!(pc <= bytecode.len());
+        self.pc = unsafe { bytecode.as_ptr().add(pc) };
     }
 
     /// Returns the current opcode.
     #[inline]
     pub const fn opcode(&self) -> u8 {
+        // SAFETY: `pc` is always in bounds of `bytecode`.
         unsafe { *self.pc }
     }
 
@@ -172,48 +185,52 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         StackMut { stack: &mut self.stack, len: &mut self.stack_len }
     }
 
-    /// Stops the interpreter with `stop`.
-    #[inline]
-    pub const fn set_stop(&mut self, stop: InstrStop) {
-        self.result = Err(stop);
-    }
-
-    /// Sets the current interpreter gas state.
-    #[inline]
-    #[doc(hidden)]
-    pub const fn set_gas(&mut self, gas: Gas) {
-        self.gas = gas;
-    }
-
-    /// Returns the current linear memory.
-    #[inline]
-    pub const fn memory_ref(&self) -> &Memory {
-        &self.memory
-    }
-
-    /// Returns the current mutable linear memory.
-    #[inline]
-    #[doc(hidden)]
-    pub const fn memory_mut(&mut self) -> &mut Memory {
-        &mut self.memory
-    }
-
     /// Returns the current gas state.
     #[inline]
     pub const fn gas(&self) -> Gas {
         self.gas
     }
 
-    /// Returns the current instruction result.
+    /// Returns a reference to the current gas state.
+    #[inline]
+    pub const fn gas_mut(&mut self) -> &mut Gas {
+        &mut self.gas
+    }
+
+    /// Sets the current interpreter gas state.
+    #[inline]
+    pub const fn set_gas(&mut self, gas: Gas) {
+        self.gas = gas;
+    }
+
+    /// Returns the current linear memory.
+    #[inline]
+    pub const fn memory(&self) -> &Memory {
+        &self.memory
+    }
+
+    /// Returns the current mutable linear memory.
+    #[inline]
+    pub const fn memory_mut(&mut self) -> &mut Memory {
+        &mut self.memory
+    }
+
+    /// Returns the current interpreter result.
     #[inline]
     pub const fn result(&self) -> Result {
         self.result
     }
 
-    /// Returns a reference to the current gas state.
+    /// Sets the interpreter result.
     #[inline]
-    pub const fn gas_mut(&mut self) -> &mut Gas {
-        &mut self.gas
+    pub const fn set_result(&mut self, result: Result) {
+        self.result = result;
+    }
+
+    /// Sets the current instruction result to `stop`.
+    #[inline]
+    pub const fn set_stop(&mut self, stop: InstrStop) {
+        self.set_result(Err(stop));
     }
 
     /// Returns the active frame-local call/create message.
@@ -231,7 +248,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     /// Returns the cached transaction-global environment.
     #[inline]
-    #[doc(hidden)]
     pub const fn tx_env(&self) -> &'frame TxEnv<T> {
         // SAFETY: `tx_env` is initialized before execution starts.
         unsafe { self.tx_env.unwrap_unchecked() }
@@ -243,22 +259,8 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         &self.return_data
     }
 
-    /// Sets return data from the last call-like operation.
-    #[inline]
-    #[doc(hidden)]
-    pub fn set_return_data(&mut self, return_data: Bytes) {
-        self.return_data = return_data;
-    }
-
-    /// Sets the current frame output memory range.
-    #[inline]
-    pub const fn set_output(&mut self, output: Range<u32>) {
-        self.output = output;
-    }
-
     /// Returns a mutable reference to return data from the last call-like operation.
     #[inline]
-    #[doc(hidden)]
     pub const fn return_data_mut(&mut self) -> &mut Bytes {
         &mut self.return_data
     }
@@ -278,7 +280,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     /// Returns the active runtime version data.
     #[inline]
-    #[doc(hidden)]
     pub const fn version(&self) -> &Version {
         // SAFETY: `version` is initialized before execution starts.
         unsafe { self.version.unwrap_unchecked() }
@@ -292,8 +293,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     /// Sets the static-call flag for external execution adapters.
     #[inline]
-    #[doc(hidden)]
-    pub const fn set_static_for_jit(&mut self, is_static: bool) {
+    pub const fn set_static(&mut self, is_static: bool) {
         self.is_static = is_static;
     }
 
@@ -320,17 +320,17 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         )
     }
 
-    /// Prepares this interpreter for external JIT execution.
+    /// Prepares this interpreter for external execution.
     #[inline]
     #[doc(hidden)]
-    pub fn prepare_jit_run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) {
-        self.memory.set_memory_limit(config.version().memory_limit);
+    pub fn prepare_run(&mut self, spec: SpecId, version: &Version, host: &mut T::Host) {
+        self.memory.set_memory_limit(version.memory_limit);
         // SAFETY: `version` remains alive for the duration of this interpreter run.
-        let version = unsafe { trustme::decouple_lt(config.version()) };
+        let version = unsafe { trustme::decouple_lt(version) };
         self.host = Some(NonNull::from(host));
         self.inspector = None;
         self.version = Some(version);
-        self.spec = config.base_spec_id();
+        self.spec = spec;
         self.features = version.features;
     }
 
@@ -343,33 +343,10 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         inspector: Option<NonNull<dyn Inspector<T>>>,
         instructions: &InstrTable<T>,
     ) -> InstrStop {
-        self.memory.set_memory_limit(version.memory_limit);
-        // SAFETY: `version` remains alive for the duration of this interpreter run.
-        let version = unsafe { trustme::decouple_lt(version) };
-
-        self.host = Some(NonNull::from(host));
+        self.prepare_run(spec, version, host);
         self.inspector = inspector;
-        self.version = Some(version);
-        self.spec = spec;
-        self.features = version.features;
 
         dispatch::run(self, instructions)
-    }
-
-    #[inline]
-    pub(crate) fn set_inspection_context(
-        &mut self,
-        spec: SpecId,
-        version: &Version,
-        host: &mut T::Host,
-    ) {
-        // SAFETY: `version` remains alive for the duration of the inspection hook or run that
-        // installed it.
-        let version = unsafe { trustme::decouple_lt(version) };
-        self.host = Some(NonNull::from(host));
-        self.version = Some(version);
-        self.spec = spec;
-        self.features = version.features;
     }
 }
 
@@ -505,10 +482,10 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         &self.0.return_data
     }
 
-    /// Sets return data from the last call-like operation.
+    /// Returns a mutable reference to return data from the last call-like operation.
     #[inline]
-    pub fn set_return_data(&mut self, return_data: Bytes) {
-        self.0.return_data = return_data;
+    pub const fn return_data_mut(&mut self) -> &mut Bytes {
+        &mut self.0.return_data
     }
 
     /// Swaps return data from the last call-like operation.
@@ -517,7 +494,13 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         core::mem::swap(&mut self.0.return_data, return_data);
     }
 
-    /// Sets the current frame output.
+    /// Returns the current frame output memory range.
+    #[inline]
+    pub const fn output_range(&self) -> &Range<u32> {
+        &self.0.output
+    }
+
+    /// Sets the current frame output memory range.
     #[inline]
     pub const fn set_output(&mut self, output: Range<u32>) {
         self.0.output = output;

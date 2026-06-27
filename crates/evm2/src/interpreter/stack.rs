@@ -449,8 +449,10 @@ impl<'a> StackMut<'a> {
 
             let (words, partial_last_word) = slice.as_chunks::<32>();
             for word in words {
-                for l in word.rchunks_exact(8) {
-                    dst.add(i).write(u64::from_be_bytes(l.try_into().unwrap()));
+                let (remainder, limbs) = word.as_rchunks::<8>();
+                debug_assert!(remainder.is_empty());
+                for l in limbs {
+                    dst.add(i).write(u64::from_be_bytes(*l));
                     i += 1;
                 }
             }
@@ -459,10 +461,9 @@ impl<'a> StackMut<'a> {
                 return Ok(());
             }
 
-            let limbs = partial_last_word.rchunks_exact(8);
-            let partial_last_limb = limbs.remainder();
+            let (partial_last_limb, limbs) = partial_last_word.as_rchunks::<8>();
             for l in limbs {
-                dst.add(i).write(u64::from_be_bytes(l.try_into().unwrap()));
+                dst.add(i).write(u64::from_be_bytes(*l));
                 i += 1;
             }
 

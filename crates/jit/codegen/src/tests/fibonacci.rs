@@ -19,7 +19,7 @@ fn run_fibonacci_test<B: Backend>(compiler: &mut EvmCompiler<B>, input: u16, dyn
     let code = mk_fibonacci_code(input, dynamic);
 
     unsafe { compiler.clear() }.unwrap();
-    compiler.inspect_stack(true);
+    compiler.set_inspect_stack(true);
     let f = unsafe { compiler.jit("fib", &code, DEF_SPEC) }.unwrap();
 
     with_evm_context(&code, DEF_SPEC, |ecx, stack, stack_len| {

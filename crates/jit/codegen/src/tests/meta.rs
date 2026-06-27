@@ -11,9 +11,9 @@ matrix_tests!(
     translate_then_compile = |compiler| {
         let bytecode: &[u8] = &[];
         let spec_id = SpecId::CANCUN;
-        compiler.gas_metering(false);
+        compiler.set_gas_metering(false);
         let gas_id = compiler.translate("test1", bytecode, spec_id).unwrap();
-        compiler.gas_metering(true);
+        compiler.set_gas_metering(true);
         let no_gas_id = compiler.translate("test2", bytecode, spec_id).unwrap();
         let gas_fn = unsafe { compiler.jit_function(gas_id) }.unwrap();
         let no_gas_fn = unsafe { compiler.jit_function(no_gas_id) }.unwrap();
@@ -31,7 +31,7 @@ matrix_tests!(
 matrix_tests!(
     clear_ir_between_compiles = |compiler| {
         let spec_id = SpecId::CANCUN;
-        compiler.inspect_stack(true);
+        compiler.set_inspect_stack(true);
 
         // First function: PUSH1 42, STOP.
         let bytecode1: &[u8] = &[op::PUSH1, 42];
@@ -75,7 +75,7 @@ fn jit_and_verify<B: Backend>(
     code: &[u8],
     expected: U256,
 ) -> B::FuncId {
-    compiler.inspect_stack(true);
+    compiler.set_inspect_stack(true);
     let id = compiler.translate(name, code, super::DEF_SPEC).unwrap();
     let f = unsafe { compiler.jit_function(id) }.unwrap();
 

@@ -1077,7 +1077,7 @@ mod tests {
             SpecId::CANCUN,
         );
         let config = Box::leak(Box::new(config));
-        interpreter.prepare_jit_run(config, host);
+        interpreter.prepare_run(config.base_spec_id(), config.version(), host);
         let (ecx, stack, _stack_len) = EvmContext::from_interpreter_with_stack(interpreter);
         PreparedJitFrame { ecx, stack }
     }

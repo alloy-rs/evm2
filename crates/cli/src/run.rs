@@ -184,19 +184,19 @@ impl RunArgs {
                 None
             };
             compiler.set_dump_to(out_dir);
-            compiler.gas_metering(!self.no_gas);
-            unsafe { compiler.stack_bound_checks(!self.no_len_checks) };
-            compiler.debug_assertions(self.debug_assertions);
-            compiler.single_error(!self.no_single_error);
+            compiler.set_gas_metering(!self.no_gas);
+            unsafe { compiler.set_stack_bound_checks(!self.no_len_checks) };
+            compiler.set_debug_assertions(self.debug_assertions);
+            compiler.set_single_error(!self.no_single_error);
 
             compiler.set_module_name(name);
             if let Some(dump_dir) = compiler.dump_dir() {
                 eprintln!("Dump directory: {}", dump_dir.display());
             }
 
-            compiler.inspect_stack(self.inspect_stack);
+            compiler.set_inspect_stack(self.inspect_stack);
             if self.no_frame_pointers {
-                compiler.frame_pointers(false);
+                compiler.set_frame_pointers(false);
             }
 
             let parsed = compiler.parse(bytecode.as_slice().into(), compile_spec_id)?;
@@ -646,7 +646,7 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
     ) -> Option<InstrStop> {
         let code = interpreter.original_bytecode();
         let func = *self.functions.get(&keccak256(&code))?;
-        interpreter.prepare_jit_run(config, host);
+        interpreter.prepare_run(config.base_spec_id(), config.version(), host);
         Some(unsafe { func.call_with_interpreter(interpreter) })
     }
 }

@@ -395,7 +395,7 @@ fn with_evm_context_and_host_mut<
         &tx_env,
         &message,
     );
-    interpreter.prepare_jit_run(&config, host);
+    interpreter.prepare_run(config.base_spec_id(), config.version(), host);
 
     let (mut ecx, stack, stack_len) = EvmContext::from_interpreter_with_stack(&mut interpreter);
     f(&mut ecx, stack, stack_len)
@@ -441,8 +441,8 @@ pub fn set_test_dump<B: Backend>(compiler: &mut EvmCompiler<B>, module_path: &st
 
 pub fn run_test_case<B: Backend>(test_case: &TestCase<'_>, compiler: &mut EvmCompiler<B>) {
     let TestCase { bytecode, spec_id, .. } = *test_case;
-    compiler.inspect_stack(test_case.inspect_stack.unwrap_or(true));
-    // compiler.debug_assertions(false);
+    compiler.set_inspect_stack(test_case.inspect_stack.unwrap_or(true));
+    // compiler.set_debug_assertions(false);
     let f = unsafe { compiler.jit("test", bytecode, spec_id) }.unwrap();
     run_compiled_test_case(test_case, f);
 }
@@ -489,7 +489,7 @@ fn run_compiled_test_case_with_context(
     } = *test_case;
 
     if is_static {
-        ecx.set_static_for_jit(true);
+        ecx.set_static(true);
     }
     if gas_limit != DEF_GAS_LIMIT {
         ecx.gas = Gas::new(gas_limit);
@@ -548,7 +548,7 @@ fn run_compiled_test_case_with_context(
         assert_eq!(interpreter_stack.unwrap(), expected_stack, "interpreter stack mismatch");
     }
 
-    let interpreter_memory = interpreter.memory_ref().as_slice();
+    let interpreter_memory = interpreter.memory().as_slice();
     let mut expected_memory = expected_memory;
     if expected_memory == MEMORY_WHAT_INTERPRETER_SAYS {
         if skip_interpreter_checks {
