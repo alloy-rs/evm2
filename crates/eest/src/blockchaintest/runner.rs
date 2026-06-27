@@ -199,8 +199,4 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
 
     // This fixture has a block gas limit below the transaction intrinsic gas and belongs to block validation.
     "static/state_tests/stEIP1559/lowGasLimit.json",
-
-    // This bundled Frontier scenarios file exceeds the compiled-backend per-test budget.
-    "blockchain_tests::jit::frontier/scenarios/test_scenarios.json",
-    "blockchain_tests::aot::frontier/scenarios/test_scenarios.json",
 ];
