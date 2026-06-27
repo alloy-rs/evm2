@@ -1,5 +1,8 @@
+#[cfg(feature = "jit")]
+use crate::compiled::{self, FileSummary};
 use crate::{
     error::{TestError, TestErrorKind},
+    execution::ExecutionResources,
     filter::EntryPoint,
     fixture_io,
     forks::is_fork_skipped,
@@ -28,7 +31,11 @@ use evm2::{
     registry::HandlerError,
 };
 use serde_json::json;
+#[cfg(feature = "jit")]
+use std::path::PathBuf;
 use std::{collections::BTreeMap, path::Path};
+
+pub use crate::execution::ExecutionMode;
 
 /// Per-spec execution outcome.
 #[derive(Clone, Debug)]
@@ -48,8 +55,10 @@ pub(crate) struct SpecOutcome {
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ExecuteConfig {
-    /// Whether to print revm-style JSON outcome records.
+    /// Whether to print JSON outcome records.
     pub print_json_outcome: bool,
+    /// Execution backend.
+    pub mode: ExecutionMode,
     /// Whether to print database method call counts.
     pub db_stats: bool,
 }
@@ -70,6 +79,41 @@ pub(crate) fn execute_test_suite(path: &Path, config: ExecuteConfig) -> Result<(
     execute_str_with_config(path, &input, config).map(|_| ())
 }
 
+/// Executes multiple state test JSON files using one shared execution resource set.
+#[cfg(feature = "jit")]
+pub(crate) fn execute_test_suites(
+    paths: &[PathBuf],
+    config: ExecuteConfig,
+) -> Result<ExecuteSummary, TestError> {
+    let error_path = paths.first().map_or_else(|| Path::new("state tests"), PathBuf::as_path);
+    let resources = ExecutionResources::new(config.mode)
+        .map_err(|err| TestError::unknown(error_path, err.into()))?;
+    let summary = compiled::run_files(paths.to_vec(), resources, move |path, resources| {
+        let input = fixture_io::read_to_string(&path)
+            .map_err(|err| TestError::unknown(path.as_path(), err.into()))?;
+        let mut db_stats_counts = DbStatsCounts::default();
+        let file_summary = execute_str_with_resources(
+            &path,
+            &input,
+            config,
+            &EntryPoint::default(),
+            &resources,
+            &mut db_stats_counts,
+        )?;
+        Ok(FileSummary {
+            executed: file_summary.executed,
+            skipped: file_summary.skipped,
+            db_stats_counts,
+        })
+    })?;
+
+    if config.db_stats {
+        print_db_stats(summary.db_stats_counts);
+    }
+
+    Ok(ExecuteSummary { executed: summary.executed, skipped: summary.skipped })
+}
+
 /// Executes a loaded state test JSON file using explicit execution options.
 pub fn execute_str_with_config(
     path: &Path,
@@ -86,20 +130,41 @@ pub fn execute_str_with_filter(
     config: ExecuteConfig,
     entrypoint: &EntryPoint,
 ) -> Result<ExecuteSummary, TestError> {
+    let resources =
+        ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
+    let mut db_stats_counts = DbStatsCounts::default();
+    let summary = execute_str_with_resources(
+        path,
+        input,
+        config,
+        entrypoint,
+        &resources,
+        &mut db_stats_counts,
+    )?;
+    if config.db_stats {
+        print_db_stats(db_stats_counts);
+    }
+    Ok(summary)
+}
+
+fn execute_str_with_resources(
+    path: &Path,
+    input: &str,
+    config: ExecuteConfig,
+    entrypoint: &EntryPoint,
+    resources: &ExecutionResources,
+    db_stats_counts: &mut DbStatsCounts,
+) -> Result<ExecuteSummary, TestError> {
     let suite: TestSuite =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
-    let mut db_stats_counts = DbStatsCounts::default();
     for (name, unit) in suite.0 {
         if !entrypoint.matches(&name) {
             summary.skipped += 1;
             continue;
         }
-        execute_unit(path, &name, unit, config, &mut db_stats_counts)?;
+        execute_unit(path, &name, unit, config, resources, db_stats_counts)?;
         summary.executed += 1;
-    }
-    if config.db_stats {
-        print_db_stats(db_stats_counts);
     }
     Ok(summary)
 }
@@ -109,6 +174,7 @@ fn execute_unit(
     name: &str,
     unit: TestUnit,
     config: ExecuteConfig,
+    resources: &ExecutionResources,
     db_stats_counts: &mut DbStatsCounts,
 ) -> Result<(), TestError> {
     let state = parse_state(&unit.pre).map_err(|err| TestError::case(path, name, err))?;
@@ -134,6 +200,7 @@ fn execute_unit(
                 state.clone(),
                 &tx,
                 &unit.env,
+                resources,
                 if config.db_stats { Some(&mut *db_stats_counts) } else { None },
             );
             validate_result(path, name, &unit, post, result, spec, config)?;
@@ -255,6 +322,7 @@ fn execute_spec(
     database: InMemoryDB,
     tx: &RecoveredTxEnvelope,
     env: &Env,
+    resources: &ExecutionResources,
     db_stats_counts: Option<&mut DbStatsCounts>,
 ) -> Result<SpecOutcome, HandlerError> {
     let db_stats = db_stats_counts.is_some();
@@ -275,6 +343,7 @@ fn execute_spec(
             Precompiles::base(spec),
         )
     };
+    resources.configure_evm(&mut evm);
     let mut post = database;
     pre_block_system_calls(&mut evm, &mut post, spec, env);
     let Ok(result) = evm.transact(tx)?.commit_with(&mut post);
@@ -494,6 +563,12 @@ fn access_list(
 mod tests {
     use super::*;
     use alloy_primitives::LogData;
+    #[cfg(feature = "jit")]
+    use evm2::interpreter::op;
+
+    #[cfg(feature = "jit")]
+    const BYTECODE_RET42: &[u8] =
+        &[op::PUSH1, 0x42, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH0, op::RETURN];
 
     #[test]
     fn logs_hash_matches_empty_logs() {
@@ -592,5 +667,89 @@ mod tests {
             panic!("expected EIP-2930 transaction");
         };
         assert_eq!(tx.inner().access_list[0].address, second_address);
+    }
+
+    #[cfg(feature = "jit")]
+    fn execute_simple_call(mode: ExecutionMode) -> SpecOutcome {
+        let caller = Address::from([0x11; 20]);
+        let target = Address::from([0x22; 20]);
+        let env = Env {
+            current_chain_id: Some(U256::ONE),
+            current_coinbase: Address::ZERO,
+            current_difficulty: U256::ZERO,
+            current_gas_limit: U256::from(30_000_000),
+            current_number: U256::ZERO,
+            current_timestamp: U256::ZERO,
+            current_base_fee: Some(U256::ZERO),
+            previous_hash: None,
+            current_random: None,
+            current_beacon_root: None,
+            current_withdrawals_root: None,
+            current_excess_blob_gas: None,
+            slot_number: None,
+        };
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            caller,
+            AccountInfo {
+                balance: U256::from(1_000_000_000),
+                code: Bytes::new(),
+                nonce: 0,
+                storage: BTreeMap::new(),
+            },
+        );
+        pre.insert(
+            target,
+            AccountInfo {
+                balance: U256::ZERO,
+                code: Bytes::copy_from_slice(BYTECODE_RET42),
+                nonce: 0,
+                storage: BTreeMap::new(),
+            },
+        );
+        let tx = build_tx(
+            &TransactionParts {
+                data: vec![Bytes::new()],
+                gas_limit: vec![U256::from(100_000)],
+                gas_price: Some(U256::ZERO),
+                sender: Some(caller),
+                to: Some(target),
+                value: vec![U256::ZERO],
+                ..TransactionParts::default()
+            },
+            &TxPartIndices { data: 0, gas: 0, value: 0 },
+            env.current_chain_id,
+        )
+        .unwrap();
+        let resources = ExecutionResources::new(mode).unwrap();
+        execute_spec(
+            SpecId::CANCUN,
+            parse_block(&env, SpecId::CANCUN),
+            parse_state(&pre).unwrap(),
+            &tx,
+            &env,
+            &resources,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_and_aot_modes_match_interpreter_for_simple_call() {
+        let interpreter = execute_simple_call(ExecutionMode::Interpreter);
+        let jit = execute_simple_call(ExecutionMode::Jit);
+        let aot = execute_simple_call(ExecutionMode::Aot);
+
+        assert_eq!(jit.output, interpreter.output);
+        assert_eq!(aot.output, interpreter.output);
+        assert_eq!(jit.state_root, interpreter.state_root);
+        assert_eq!(aot.state_root, interpreter.state_root);
+        assert_eq!(jit.logs_root, interpreter.logs_root);
+        assert_eq!(aot.logs_root, interpreter.logs_root);
+        assert_eq!(jit.gas_used, interpreter.gas_used);
+        assert_eq!(aot.gas_used, interpreter.gas_used);
+        assert_eq!(interpreter.output.len(), 32);
+        assert_eq!(interpreter.output[31], 0x42);
     }
 }

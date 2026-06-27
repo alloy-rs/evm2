@@ -28,10 +28,7 @@ pub(crate) use stack::*;
 mod system;
 pub(crate) use system::*;
 
-mod i256;
+pub mod i256;
 
 #[cfg(test)]
 mod macro_tests;
-
-#[cfg(test)]
-pub(crate) mod tests;

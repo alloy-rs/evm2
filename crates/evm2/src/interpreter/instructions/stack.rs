@@ -62,11 +62,8 @@ const fn decode_pair(x: u8) -> Option<(usize, usize)> {
 mod tests {
     use crate::{
         SpecId,
-        interpreter::{
-            InstrStop, StackMut, Word,
-            instructions::tests::{RunConfig, push, run, run_stack},
-            op,
-        },
+        interpreter::{InstrStop, StackMut, Word, op},
+        test_utils::{RunConfig, push, run, run_stack},
     };
     use alloc::{vec, vec::Vec};
     use core::assert_matches;

@@ -1,0 +1,13 @@
+    ORIGIN
+    PUSH20 0xffffffffffffffffffffffffffffffffffffffff
+    AND
+    RET_WORD
+
+; CHECK: call void @__revmc_builtin_origin(
+; CHECK-NOT: and
+; CHECK: load i160
+; CHECK-NOT: and
+; CHECK: [[ADDR:%.*]] = zext i160 {{.*}} to i256
+; CHECK-NOT: and
+; CHECK: bswap
+; CHECK: store i256

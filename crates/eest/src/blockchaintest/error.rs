@@ -1,4 +1,4 @@
-use crate::tx::TxBuildError;
+use crate::{execution::ExecutionResourceError, tx::TxBuildError};
 use evm2::registry::HandlerError;
 use std::{io, path::PathBuf};
 use thiserror::Error;
@@ -64,6 +64,9 @@ pub(crate) enum TestErrorKind {
     /// A system call failed.
     #[error("system call failed: {0}")]
     SystemCall(&'static str),
+    /// Execution resource initialization failed.
+    #[error(transparent)]
+    ExecutionResource(#[from] ExecutionResourceError),
 }
 
 impl From<TxBuildError> for TestErrorKind {

@@ -30,7 +30,7 @@ pub(crate) fn explicit_blockchain_test_root_from_env() -> Option<PathBuf> {
 pub(crate) fn blockchain_test_roots() -> Vec<BlockchainTestRoot> {
     if let Some(path) = explicit_blockchain_test_root_from_env() {
         return vec![BlockchainTestRoot {
-            name: "blockchain_tests::custom",
+            name: "blockchain_tests::custom".to_string(),
             label: "custom blockchain tests",
             path,
         }];
@@ -50,12 +50,12 @@ pub(crate) fn default_blockchain_test_roots() -> Vec<BlockchainTestRoot> {
 
     let mut roots = vec![
         BlockchainTestRoot {
-            name: "blockchain_tests",
+            name: "blockchain_tests".to_string(),
             label: "execution-spec-tests",
             path: main_path,
         },
         BlockchainTestRoot {
-            name: "blockchain_tests::devnet",
+            name: "blockchain_tests::devnet".to_string(),
             label: "execution-spec-tests devnet",
             path: fixtures.join("devnet/blockchain_tests"),
         },

@@ -1,4 +1,6 @@
 use alloy_consensus::{TxLegacy, transaction::Recovered};
+#[cfg(feature = "jit")]
+use alloy_primitives::Bytes;
 use alloy_primitives::{B256, TxKind, U256};
 use evm2::{
     SpecId, Version,
@@ -147,10 +149,41 @@ impl Case<'_> {
             raw.sender.expect("benchmark transaction sender is required"),
         ))
     }
+
+    #[cfg(feature = "jit")]
+    pub(crate) fn entry_bytecode(&self) -> Option<Bytes> {
+        let target = self.unit.transaction.to?;
+        let account = self.unit.pre.get(&target)?;
+        (!account.code.is_empty()).then(|| account.code.clone())
+    }
+
+    #[cfg(feature = "jit")]
+    pub(crate) fn compiled_accounts(&self) -> Vec<CompiledAccount> {
+        self.unit
+            .pre
+            .values()
+            .filter_map(|account| {
+                if account.code.is_empty() {
+                    return None;
+                }
+                let bytecode = Bytecode::new_legacy(account.code.clone());
+                Some(CompiledAccount {
+                    code_hash: bytecode.hash_slow(),
+                    bytecode: account.code.clone(),
+                })
+            })
+            .collect()
+    }
 }
 
 fn b256_to_u256(value: B256) -> U256 {
     U256::from_be_bytes(value.0)
+}
+
+#[cfg(feature = "jit")]
+pub(crate) struct CompiledAccount {
+    pub(crate) code_hash: B256,
+    pub(crate) bytecode: Bytes,
 }
 
 fn u128_value(value: U256) -> u128 {
