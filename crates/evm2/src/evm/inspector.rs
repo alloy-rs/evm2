@@ -520,7 +520,7 @@ mod tests {
     struct HookInspector {
         call_depths: Vec<u16>,
         call_opcode: Option<u8>,
-        call_end_opcode: Option<u8>,
+        call_end_opcodes: Vec<u8>,
         call_end_stops: Vec<InstrStop>,
         create_depths: Vec<u16>,
         create_opcode: Option<u8>,
@@ -546,7 +546,7 @@ mod tests {
             _message: &Message<BaseEvmTypes>,
             result: &mut MessageResult<BaseEvmTypes>,
         ) {
-            self.call_end_opcode = Some(interp.opcode());
+            self.call_end_opcodes.push(interp.opcode());
             self.call_end_stops.push(result.stop);
         }
 
@@ -751,7 +751,7 @@ mod tests {
         assert_matches!(result.stop, InstrStop::Stop);
         assert_eq!(inspector.call_depths, [CALL_DEPTH_LIMIT, CALL_DEPTH_LIMIT + 1]);
         assert_eq!(inspector.call_opcode, Some(op::CALL));
-        assert_eq!(inspector.call_end_opcode, Some(op::CALL));
+        assert_eq!(inspector.call_end_opcodes, [op::CALL, op::PUSH1]);
         assert_eq!(inspector.call_end_stops, [InstrStop::CallTooDeep, InstrStop::Stop]);
     }
 
@@ -1072,43 +1072,40 @@ mod tests {
             logs: Vec<Log>,
         }
 
-        impl Inspector<TestTypes> for EmptySetLogInspector {
+        impl Inspector<BaseEvmTypes> for EmptySetLogInspector {
             fn config(&self) -> InspectorConfig {
                 InspectorConfig::new().with_opcode_set(OpcodeSet::EMPTY)
             }
 
-            fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+            fn step(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
                 self.steps += 1;
             }
 
-            fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+            fn step_end(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
                 self.step_ends += 1;
             }
 
-            fn log(&mut self, log: &Log, _host: &mut TestHost) {
+            fn log(&mut self, log: &Log, _host: &mut Evm<BaseEvmTypes>) {
                 self.logs.push(log.clone());
             }
         }
 
         let contract = Address::from([0x11; 20]);
-        let mut host = TestHost::default();
-        let mut inspector = EmptySetLogInspector::default();
         let code = Vec::from([op::PUSH1, 0, op::PUSH1, 0, op::LOG0, op::STOP]);
 
-        let (stop, _) = run_with_inspector(
+        let (result, inspector, evm) = run_evm_with_inspector(
             code,
-            &mut host,
             &Message { destination: contract, ..Default::default() },
             10_000,
-            &mut inspector,
+            EmptySetLogInspector::default(),
         );
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert!(matches!(result.stop, InstrStop::Stop));
         assert_eq!(inspector.steps, 0);
         assert_eq!(inspector.step_ends, 0);
         assert_eq!(inspector.logs.len(), 1);
         assert_eq!(inspector.logs[0].address, contract);
-        assert_eq!(host.logs, inspector.logs);
+        assert_eq!(evm.logs(), inspector.logs);
     }
 
     #[test]
