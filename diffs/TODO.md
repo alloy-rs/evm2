@@ -12,7 +12,7 @@ Only the user, a real human, may edit this checklist, or explicitly tell an agen
 
 Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_diffs.sh --write-todo`.
 
-- [ ] README.md.diff
+- [x] README.md.diff
 - [x] crates__revmc-backend__Cargo.toml.diff
 - [x] crates__revmc-backend__README.md.diff
 - [x] crates__revmc-backend__src__traits.rs.diff
@@ -52,15 +52,15 @@ Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_di
 - [x] crates__revmc-codegen__src__tests__fibonacci.rs.diff
 - [x] crates__revmc-codegen__src__tests__macros.rs.diff
 - [x] crates__revmc-codegen__src__tests__meta.rs.diff
-- [ ] crates__revmc-codegen__src__tests__mod.rs.diff
+- [x] crates__revmc-codegen__src__tests__mod.rs.diff
   - tests removed?
-- [ ] crates__revmc-codegen__src__tests__runner.rs.diff
+- [x] crates__revmc-codegen__src__tests__runner.rs.diff
 - [x] crates__revmc-context__Cargo.toml.diff
 - [x] crates__revmc-context__README.md.diff
 - [x] crates__revmc-context__src__arch__aarch64.rs.diff
 - [x] crates__revmc-context__src__arch__mod.rs.diff
 - [x] crates__revmc-context__src__arch__x86_64.rs.diff
-- [ ] crates__revmc-context__src__lib.rs.diff
+- [x] crates__revmc-context__src__lib.rs.diff
 - [x] crates__revmc-llvm__Cargo.toml.diff
 - [x] crates__revmc-llvm__README.md.diff
 - [x] crates__revmc-llvm__build.rs.diff
