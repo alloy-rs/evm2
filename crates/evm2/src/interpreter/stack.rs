@@ -451,7 +451,7 @@ impl<'a> StackMut<'a> {
             for word in words {
                 let (remainder, limbs) = word.as_rchunks::<8>();
                 debug_assert!(remainder.is_empty());
-                for l in limbs {
+                for l in limbs.iter().rev() {
                     dst.add(i).write(u64::from_be_bytes(*l));
                     i += 1;
                 }
@@ -462,7 +462,7 @@ impl<'a> StackMut<'a> {
             }
 
             let (partial_last_limb, limbs) = partial_last_word.as_rchunks::<8>();
-            for l in limbs {
+            for l in limbs.iter().rev() {
                 dst.add(i).write(u64::from_be_bytes(*l));
                 i += 1;
             }

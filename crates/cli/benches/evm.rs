@@ -27,8 +27,6 @@ fn evm(c: &mut Criterion) {
         fixture::Suites::load(benches.iter().filter_map(|bench| bench.transaction_fixture_path()));
     let cases = expand_cases(benches, &suites);
 
-    let is_listing = env::args_os().any(|arg| arg == "--list");
-
     let bench_revm = env::var_os("EVM2_BENCH_REVM").is_some();
 
     #[cfg(feature = "jit")]
@@ -38,33 +36,25 @@ fn evm(c: &mut Criterion) {
         match bench.kind {
             BenchCaseKind::Transaction { .. } => {
                 let prepared = support::PreparedBench::load(bench, &suites);
-                if !is_listing {
-                    prepared.sanity_check();
-                }
+                prepared.sanity_check();
                 prepared.bench(&mut group);
 
                 #[cfg(feature = "jit")]
                 if let Some(prepared) = jit::PreparedBench::load(bench, &suites, &mut jit_compiler)
                 {
-                    if !is_listing {
-                        prepared.sanity_check();
-                    }
+                    prepared.sanity_check();
                     prepared.bench(&mut group);
                 }
 
                 if bench_revm {
                     let prepared = revm::PreparedBench::load(bench, &suites);
-                    if !is_listing {
-                        prepared.sanity_check();
-                    }
+                    prepared.sanity_check();
                     prepared.bench(&mut group);
                 }
             }
             BenchCaseKind::BlockchainReplay => {
                 let prepared = mainnet::PreparedBench::load(bench);
-                if !is_listing {
-                    prepared.sanity_check();
-                }
+                prepared.sanity_check();
                 prepared.bench(&mut group);
             }
         }

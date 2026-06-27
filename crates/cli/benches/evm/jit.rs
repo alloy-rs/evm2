@@ -26,8 +26,7 @@ const SKIP_COMPILE_JIT: &[&str] = &[
     "airdrop",
     "usdc_proxy",
 ];
-const SKIP_ALL: &[&str] =
-    &["bswap64", "bswap64_opt", "counter", "hash_10k", "onchain_lm_v2", "seaport", "snailtracer"];
+const SKIP_ALL: &[&str] = &["seaport", "snailtracer"];
 
 #[derive(Debug)]
 pub(crate) struct Compiler {
