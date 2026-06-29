@@ -40,7 +40,7 @@ If fixtures are already available in another worktree, symlink `test-fixtures`
 to that directory instead of re-downloading them.
 By default it downloads the glamsterdam (Amsterdam) devnet fixtures plus legacy
 Cancun/Constantinople state tests. The devnet release defaults to
-`tests-glamsterdam-devnet@v6.0.1` / `fixtures_glamsterdam-devnet.tar.gz`
+`tests-glamsterdam-devnet@v6.1.0` / `fixtures_glamsterdam-devnet.tar.gz`
 (from the `ethereum/execution-specs` repo, base overridable via `DEVNET_BASE_URL`);
 override `DEVNET_VERSION` and `DEVNET_TAR` to select a different devnet release, or
 clear either to disable devnet. The glamsterdam devnet fixtures cover

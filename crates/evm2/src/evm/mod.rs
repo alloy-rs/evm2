@@ -1011,7 +1011,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message.disable_precompiles = false;
         let input = core::mem::take(&mut message.input);
 
-        let stop = self.run_interpreter(bytecode, tx_env, message, (0, 0));
+        // Creates pay their NEW_ACCOUNT-equivalent state gas upfront via the tx-level
+        // `initial_state_gas`, so the create frame starts from the inherited gas as-is.
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let stop = self.run_interpreter(bytecode, tx_env, message, frame_gas);
         message.input = input;
 
         self.finish_create_message_run(
@@ -1203,10 +1207,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
         let checkpoint = self.state.checkpoint();
         // EIP-2780 top-level execution charges, computed from the recipient's
-        // pre-call state (before the value transfer below). Applied to the frame's
-        // gas tracker after interpreter init in `run_interpreter`. Computed inside
-        // the checkpoint so the delegated-target warming it performs is unwound if
-        // the frame later rolls back.
+        // pre-call state (before the value transfer below) and applied to the frame
+        // gas before the precompile/interpreter split. Computed inside the checkpoint
+        // so the delegated-target warming it performs is unwound if the frame later
+        // rolls back.
         let eip2780_charges = self.eip2780_call_charges(message);
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
         let transfers_balance = matches!(
@@ -1235,11 +1239,33 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         }
 
-        if self.contains_precompile(message) {
-            return self.execute_call_precompile(checkpoint, message);
+        // EIP-2780: apply the depth-0 execution charges to the frame gas here, before the
+        // precompile/interpreter split, so both paths share one charge site (mirroring
+        // execution-specs `process_message`, where the top-frame charge precedes the
+        // code-vs-precompile dispatch). The charge is frame-level state gas: it is recorded
+        // on the tracker for EIP-8037 block accounting and refilled on failure by
+        // `settle_gas`. A frame that cannot afford it halts before running; the rollback
+        // unwinds the value transfer and its EIP-7708 log. Off the depth-0 path the charges
+        // are zero, so this is a no-op spend.
+        let mut frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let (eip2780_regular, eip2780_state) = eip2780_charges;
+        if frame_gas.spend(eip2780_regular).is_err()
+            || frame_gas.spend_state(eip2780_state).is_err()
+        {
+            self.state.rollback(checkpoint, self.features);
+            return Self::error_message_result(
+                InstrStop::OutOfGas,
+                message.gas_limit,
+                message.reservoir,
+            );
         }
 
-        let stop = self.run_interpreter(bytecode, tx_env, message, eip2780_charges);
+        if self.contains_precompile(message) {
+            return self.execute_call_precompile(checkpoint, message, frame_gas);
+        }
+
+        let stop = self.run_interpreter(bytecode, tx_env, message, frame_gas);
 
         self.finish_call_message_run(checkpoint, stop)
     }
@@ -1296,13 +1322,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &mut self,
         checkpoint: StateCheckpoint,
         message: &Message<T>,
+        mut gas: GasTracker,
     ) -> MessageResult<T> {
-        // Preserve the inherited reservoir so it propagates back to the parent
-        // frame unchanged (precompiles charge only regular gas).
-        let mut gas =
-            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
-        let result = self.execute_precompile(message, &mut gas);
-        let (stop, output) = match result {
+        // `gas` is the frame tracker built by the caller with the inherited reservoir and
+        // any EIP-2780 depth-0 charge already applied; the precompile only adds regular gas.
+        let (stop, output) = match self.execute_precompile(message, &mut gas) {
             Ok(output) => (InstrStop::Return, output.into_bytes()),
             Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
             Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
@@ -1369,27 +1393,18 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: Bytecode,
         tx_env: &'frame TxEnv<T>,
         message: &'frame Message<T>,
-        eip2780_charges: (u64, u64),
+        frame_gas: GasTracker,
     ) -> InstrStop {
         let mut interp = self.interpreter_pool.pop();
         let _guard = self.enter_execution();
         let interp_ref = interp.as_mut();
         interp_ref.init(bytecode, tx_env, message);
-        // EIP-2780: apply the depth-0 execution charges (delegated-recipient cold
-        // access as regular gas, empty-recipient-with-value as state gas) to the
-        // freshly-initialized frame gas. A revert/halt unwinds the state charge
-        // via the existing `rollback_state_gas` reconciliation, just like any other
-        // in-frame state gas. On OOG the frame halts before executing any opcode.
-        let (eip2780_regular, eip2780_state) = eip2780_charges;
-        if eip2780_regular != 0 || eip2780_state != 0 {
-            let tracker = interp_ref.gas_mut().tracker_mut();
-            if tracker.spend(eip2780_regular).is_err()
-                || tracker.spend_state(eip2780_state).is_err()
-            {
-                self.interpreter_pool.push(interp);
-                return InstrStop::OutOfGas;
-            }
-        }
+        // Adopt the caller's frame tracker, which carries the EIP-2780 depth-0 charges
+        // already applied; it is otherwise identical to the one `init` derived (same
+        // regular limit and inherited reservoir). A later revert/halt unwinds the state
+        // charge via the existing `rollback_state_gas` reconciliation, like any in-frame
+        // state gas.
+        *interp_ref.gas_mut().tracker_mut() = frame_gas;
         // SAFETY: `execution_config` points to a private field that host execution does not
         // replace or mutate, so the pointee remains valid here.
         let execution_config = unsafe { trustme::decouple_lt(&self.execution_config) };
@@ -1822,11 +1837,13 @@ mod tests {
         let tx_env = TxEnv::default();
         let message = Message { gas_limit: 30_000, ..Default::default() };
 
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
         let stop = evm.run_interpreter(
             Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
             &tx_env,
             &message,
-            (0, 0),
+            frame_gas,
         );
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -2029,7 +2046,9 @@ mod tests {
         let message = Message::default();
         let tx_env = TxEnv::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
-        let _ = evm.run_interpreter(bytecode, &tx_env, &message, (0, 0));
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message, frame_gas);
     }
 
     #[test]
@@ -2054,7 +2073,9 @@ mod tests {
         let tx_env = TxEnv::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
 
-        let _ = evm.run_interpreter(bytecode, &tx_env, &message, (0, 0));
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message, frame_gas);
     }
 
     #[test]
