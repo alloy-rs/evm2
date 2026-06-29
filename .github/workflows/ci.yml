@@ -72,16 +72,16 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
         if: runner.os == 'Linux'
-      - uses: mozilla-actions/sccache-action@v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
           cache-bin: false
-      - uses: taiki-e/install-action@16a76bb73558798e4218983c40c25fee9f2f99a8 # nextest
+      - uses: taiki-e/install-action@96c7780c1d8a2b8723e12031def873a434d39d8d # nextest
         if: ${{ !matrix.command || matrix.command == 'nextest' }}
-      - uses: taiki-e/install-action@867989a7645cb8230b1c87a12c07c4bfaf9a7d8c # cross
+      - uses: taiki-e/install-action@019ff5fd0f8eae341c18fae38f5dcf1ad6dced0b # cross
         if: ${{ matrix.command == 'cross-test' }}
-      - uses: taiki-e/install-action@f8f9a96a3ddf6d0f5787449860fc7d72ae41f4b4 # wasmtime
+      - uses: taiki-e/install-action@55b64938ebc43fea1373a940406514e0937f1471 # wasmtime
         if: ${{ matrix.command == 'wasm-test' }}
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         if: ${{ matrix.kind == 'eest' }}
@@ -172,23 +172,25 @@ jobs:
             subset: ci-smoke
             filter: test(statetests::jit)
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - name: Install LLVM
         if: ${{ matrix.os == 'ubuntu' }}
         run: .github/scripts/install_llvm.sh ubuntu
       - name: Install LLVM
         if: ${{ matrix.os == 'macos' }}
         run: .github/scripts/install_llvm.sh macos
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: rui314/setup-mold@v1
+      - uses: dtolnay/rust-toolchain@stable # zizmor: ignore[unpinned-uses] Keep the toolchain branch ref for this matrix job.
+      - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
         if: runner.os == 'Linux'
-      - uses: mozilla-actions/sccache-action@v0.0.10
-      - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-on-failure: true
           cache-bin: false
-      - uses: taiki-e/install-action@nextest
-      - uses: astral-sh/setup-uv@v7
+      - uses: taiki-e/install-action@nextest # zizmor: ignore[unpinned-uses] Keep the tool-specific install-action ref.
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
       - name: Download EEST fixtures
         run: ./scripts/setup_test_fixtures.py
       - name: eest ${{ matrix.mode }}
@@ -215,7 +217,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: mozilla-actions/sccache-action@v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
@@ -241,8 +243,8 @@ jobs:
         run: .github/scripts/install_llvm.sh ubuntu
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
-      - uses: taiki-e/install-action@dbb49279d79bb6825e754b75c8278b7619be13d2 # cargo-hack
-      - uses: mozilla-actions/sccache-action@v0.0.10
+      - uses: taiki-e/install-action@c8fac77ad14033d073e5c8e4f5a25fffd79d4e75 # cargo-hack
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
@@ -261,7 +263,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
-      - uses: mozilla-actions/sccache-action@v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: taiki-e/cache-cargo-install-action@417450f3c33ee20393705369577571770643d4c7 # v3.0.7
         with:
           tool: zepter
@@ -279,7 +281,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: mozilla-actions/sccache-action@v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
@@ -313,7 +315,7 @@ jobs:
         with:
           components: clippy
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
-      - uses: mozilla-actions/sccache-action@v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
@@ -335,7 +337,7 @@ jobs:
         run: .github/scripts/install_llvm.sh ubuntu
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
-      - uses: mozilla-actions/sccache-action@v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
@@ -360,7 +362,7 @@ jobs:
   deny:
     permissions:
       contents: read
-    uses: tempoxyz/ci/.github/workflows/deny.yml@934b6a6317ac26272eaecf0d265472f4105c99d6 # main
+    uses: tempoxyz/ci/.github/workflows/deny.yml@934b6a6317ac26272eaecf0d265472f4105c99d6 # 2026.05.09
 
   ci-success:
     name: ci success
@@ -383,6 +385,6 @@ jobs:
       - deny
     steps:
       - name: Decide whether the needed jobs succeeded or failed
-        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # release/v1
+        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
           jobs: ${{ toJSON(needs) }}

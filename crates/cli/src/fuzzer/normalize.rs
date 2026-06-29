@@ -160,9 +160,9 @@ pub(crate) fn state_from_revm(
         let original = original_accounts.get(&address);
         let account_changed = original.map_or_else(
             || {
-                account.info.balance != account.original_info.balance
-                    || account.info.nonce != account.original_info.nonce
-                    || account.info.code_hash != account.original_info.code_hash
+                account.info.balance != account.original_info().balance
+                    || account.info.nonce != account.original_info().nonce
+                    || account.info.code_hash != account.original_info().code_hash
             },
             |original| {
                 account.info.balance != original.balance
@@ -171,7 +171,7 @@ pub(crate) fn state_from_revm(
             },
         );
         if account.is_selfdestructed() {
-            if original.is_some() || !account.original_info.is_empty() {
+            if original.is_some() || !account.original_info().is_empty() {
                 canonical.accounts.insert(address, None);
             }
             continue;
