@@ -17,12 +17,9 @@ use crate::{
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::U256;
 
-pub(super) fn handle<T>(
+pub(super) fn handle<T: EvmHostTypes>(
     req: TxRequest<'_, '_, T, Recovered<super::LazyTxEip7702>>,
-) -> HandlerResult<TxResult<T>>
-where
-    T: EvmHostTypes,
-{
+) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     if tx.authorization_list.is_empty() {
@@ -85,22 +82,16 @@ where
     settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)
 }
 
-fn eip7702_authorization_gas<'a, T>(host: &Evm<'a, T>, authorizations: usize) -> u64
-where
-    T: EvmHostTypes,
-{
+fn eip7702_authorization_gas<'a, T: EvmHostTypes>(host: &Evm<'a, T>, authorizations: usize) -> u64 {
     let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
     u64::try_from(authorizations).unwrap_or(u64::MAX).saturating_mul(per_auth)
 }
 
-fn apply_auth_list<'a, T>(
+fn apply_auth_list<'a, T: EvmHostTypes>(
     host: &mut Evm<'a, T>,
     chain_id: u64,
     authorizations: &[super::LazyAuthorization],
-) -> HandlerResult<u64>
-where
-    T: EvmHostTypes,
-{
+) -> HandlerResult<u64> {
     let mut refunded_accounts = 0u64;
     for authorization in authorizations {
         if !authorization.chain_id().is_zero() && authorization.chain_id() != &U256::from(chain_id)

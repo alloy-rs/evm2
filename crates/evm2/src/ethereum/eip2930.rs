@@ -15,12 +15,9 @@ use crate::{
 use alloy_consensus::{TxEip2930, transaction::Recovered};
 use alloy_primitives::U256;
 
-pub(super) fn handle<T>(
+pub(super) fn handle<T: EvmHostTypes>(
     req: TxRequest<'_, '_, T, Recovered<TxEip2930>>,
-) -> HandlerResult<TxResult<T>>
-where
-    T: EvmHostTypes,
-{
+) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let gas_price = U256::from(tx.gas_price);

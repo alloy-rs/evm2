@@ -257,10 +257,7 @@ pub struct Evm<'a, T: EvmTypes> {
     pub(crate) db_error_code: Option<DbErrorCode>,
 }
 
-impl<'a, T> Evm<'a, T>
-where
-    T: EvmHostTypes,
-{
+impl<'a, T: EvmHostTypes> Evm<'a, T> {
     /// Creates an EVM for `spec_id` with the provided transaction registry, database, and
     /// precompile provider.
     #[inline]
@@ -772,20 +769,14 @@ impl<'a, 'evm, T: EvmTypes> SendEvmRef<'a, 'evm, T> {
 }
 
 #[cfg(feature = "async")]
-impl<'evm, T> SendEvmRef<'_, 'evm, T>
-where
-    T: EvmHostTypes<Tx: Typed2718>,
-{
+impl<'evm, T: EvmHostTypes<Tx: Typed2718>> SendEvmRef<'_, 'evm, T> {
     #[inline]
     fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
         self.evm.transact(tx).map(ExecutedTx::commit)
     }
 }
 
-impl<'a, T> Evm<'a, T>
-where
-    T: EvmHostTypes<Tx: Typed2718>,
-{
+impl<'a, T: EvmHostTypes<Tx: Typed2718>> Evm<'a, T> {
     /// Dispatches the transaction to its handler and returns an executed transaction handle.
     ///
     /// The returned [`ExecutedTx`] keeps post-finalization writes in the transaction scratch layer.
@@ -880,10 +871,7 @@ where
     }
 }
 
-impl<'a, T> Evm<'a, T>
-where
-    T: EvmHostTypes,
-{
+impl<'a, T: EvmHostTypes> Evm<'a, T> {
     #[inline]
     fn execute_message_impl(
         &mut self,
@@ -1311,10 +1299,7 @@ where
     }
 }
 
-impl<'a, T> Host<T> for Evm<'a, T>
-where
-    T: EvmHostTypes,
-{
+impl<'a, T: EvmHostTypes> Host<T> for Evm<'a, T> {
     fn spec_id(&self) -> SpecId {
         self.spec_id()
     }

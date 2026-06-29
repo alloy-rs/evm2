@@ -18,12 +18,9 @@ use alloy_consensus::transaction::{Recovered, TxEip4844Variant};
 use alloy_eips::eip4844::{DATA_GAS_PER_BLOB, VERSIONED_HASH_VERSION_KZG};
 use alloy_primitives::U256;
 
-pub(super) fn handle<T>(
+pub(super) fn handle<T: EvmHostTypes>(
     req: TxRequest<'_, '_, T, Recovered<TxEip4844Variant>>,
-) -> HandlerResult<TxResult<T>>
-where
-    T: EvmHostTypes,
-{
+) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner().tx();
     let max_fee_per_gas = U256::from(tx.max_fee_per_gas);
