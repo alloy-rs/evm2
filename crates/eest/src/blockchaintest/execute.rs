@@ -359,9 +359,9 @@ fn execute_block(
                     cumulative_tx_gas_used =
                         cumulative_tx_gas_used.saturating_add(result.tx_gas_used());
                     block_regular_gas_used =
-                        block_regular_gas_used.saturating_add(result.block_regular_gas_used());
+                        block_regular_gas_used.saturating_add(result.regular_gas_spent());
                     block_state_gas_used =
-                        block_state_gas_used.saturating_add(result.block_state_gas_used());
+                        block_state_gas_used.saturating_add(result.state_gas_spent());
                     hook.transaction_finished(TransactionFinished {
                         block_index,
                         total_blocks,

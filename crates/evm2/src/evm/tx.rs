@@ -55,16 +55,21 @@ impl<T: EvmTypes> TxResult<T> {
         if spent_sub_refunded > self.floor_gas { spent_sub_refunded } else { self.floor_gas }
     }
 
-    /// Returns the block-level regular gas (EIP-8037 + EIP-7778): `total_gas_spent -
-    /// state_gas_spent` (pre-refund; refund and floor only affect [`Self::tx_gas_used`]).
+    /// Returns this transaction's regular (non-state) gas: `total_gas_spent - state_gas_spent`,
+    /// pre-refund (refund and floor only affect [`Self::tx_gas_used`]).
+    ///
+    /// Together with [`Self::state_gas_spent()`] this is the per-transaction split that callers add
+    /// to the block's separate regular- and state-gas counters (EIP-8037 + EIP-7778).
     #[inline]
-    pub const fn block_regular_gas_used(&self) -> u64 {
+    pub const fn regular_gas_spent(&self) -> u64 {
         self.total_gas_spent.saturating_sub(self.state_gas_spent)
     }
 
-    /// Returns the block-level state gas, equal to [`Self::state_gas_spent`].
+    /// Returns this transaction's state gas (EIP-8037) — the stored `state_gas_spent` field,
+    /// exposed as the counterpart to [`Self::regular_gas_spent`] for the per-transaction block-gas
+    /// split.
     #[inline]
-    pub const fn block_state_gas_used(&self) -> u64 {
+    pub const fn state_gas_spent(&self) -> u64 {
         self.state_gas_spent
     }
 }
@@ -285,10 +290,10 @@ mod tests {
         // Floor inactive: tx_gas_used = total_gas_spent - refunded, refund is effective.
         let r = result(100_000, 30_000, 8_000, 21_000);
         assert_eq!(r.tx_gas_used(), 92_000);
-        // Block split: regular + state == total.
-        assert_eq!(r.block_regular_gas_used(), 70_000);
-        assert_eq!(r.block_state_gas_used(), 30_000);
-        assert_eq!(r.block_regular_gas_used() + r.block_state_gas_used(), r.total_gas_spent);
+        // Per-tx split: regular + state == total.
+        assert_eq!(r.regular_gas_spent(), 70_000);
+        assert_eq!(r.state_gas_spent(), 30_000);
+        assert_eq!(r.regular_gas_spent() + r.state_gas_spent(), r.total_gas_spent);
     }
 
     #[test]
