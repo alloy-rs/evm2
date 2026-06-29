@@ -16,7 +16,7 @@ pub use evm2::interpreter::{Gas, InstrStop, Memory};
 use evm2::{
     BaseEvmTypes, SpecId,
     env::{BlockEnv, TxEnv},
-    interpreter::{Host as Evm2Host, Interpreter, Message},
+    interpreter::{Host, Interpreter, Message},
     version::{EvmFeatures, GasParams},
 };
 
@@ -141,7 +141,7 @@ impl<'a> EvmContext<'a> {
 
     /// Returns host state consumed by host-touching builtins.
     #[inline]
-    pub fn host(&mut self) -> &mut (impl Evm2Host<BaseEvmTypes> + '_) {
+    pub fn host(&mut self) -> &mut (impl Host<BaseEvmTypes> + '_) {
         self.interpreter_mut().host()
     }
 
