@@ -235,8 +235,8 @@ fn call_inner<T: EvmTypes>(
 
     let tx_env = state.tx();
     let mut result = state.host().execute_message(tx_env, code, &mut message);
-    if result.stop == InstrStop::FatalExternalError {
-        return Err(InstrStop::FatalExternalError);
+    if result.stop.is_fatal() {
+        return Err(result.stop);
     }
     gas.erase_cost(result.gas_returned_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());
@@ -328,8 +328,8 @@ fn create_inner<T: EvmTypes>(
     let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
     let tx_env = state.tx();
     let result = state.host().execute_message(tx_env, bytecode, &mut message);
-    if result.stop == InstrStop::FatalExternalError {
-        return Err(InstrStop::FatalExternalError);
+    if result.stop.is_fatal() {
+        return Err(result.stop);
     }
     gas.erase_cost(result.gas_returned_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());

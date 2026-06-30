@@ -144,4 +144,23 @@ impl InstrStop {
     pub const fn is_halt(self) -> bool {
         !self.is_success() && !self.is_revert()
     }
+
+    /// Returns whether execution stopped with an unrecoverable fatal error.
+    #[inline]
+    pub const fn is_fatal(self) -> bool {
+        matches!(self, Self::FatalExternalError)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InstrStop;
+
+    #[test]
+    fn instr_stop_classifies_fatal_errors() {
+        assert!(InstrStop::FatalExternalError.is_fatal());
+        assert!(!InstrStop::OutOfGas.is_fatal());
+        assert!(!InstrStop::Revert.is_fatal());
+        assert!(!InstrStop::Return.is_fatal());
+    }
 }
