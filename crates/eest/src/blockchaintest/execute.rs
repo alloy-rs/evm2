@@ -30,7 +30,7 @@ use evm2::{
     evm::{
         AccountChangeRef, AccountInfo as EvmAccountInfo, AccountInfoRef, BEACON_ROOTS_ADDRESS,
         BlockStateAccumulator, DbErrorCode, DbStats, DbStatsCounts, HISTORY_STORAGE_ADDRESS,
-        InMemoryDB, StateChangeSink, StateChangeSource, Tee, WITHDRAWAL_REQUEST_ADDRESS,
+        InMemoryDB, StateChangeSink, StateChangeSource, SystemTx, Tee, WITHDRAWAL_REQUEST_ADDRESS,
     },
     registry::HandlerError,
 };
@@ -579,7 +579,7 @@ fn run_system_call(
     data: Bytes,
     label: &'static str,
 ) -> Result<(), TestErrorKind> {
-    let executed = evm.system_call(address, data);
+    let executed = evm.system_call(SystemTx::new(address, data));
     if !executed.result().status {
         let _ = executed.discard();
         let has_code = match evm.account_code(&address) {
