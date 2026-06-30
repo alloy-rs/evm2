@@ -1,8 +1,8 @@
 //! Database helpers for the EVM state overlay.
 
 use super::state::AccountInfo;
-use crate::{ErrorCode, bytecode::Bytecode, error::error_unavailable, interpreter::Word};
-use alloc::boxed::Box;
+use crate::{AnyError, ErrorCode, bytecode::Bytecode, error::error_unavailable, interpreter::Word};
+use alloc::{boxed::Box, string::ToString};
 use alloy_primitives::{Address, B256, keccak256};
 use core::{any::Any, error::Error};
 
@@ -15,7 +15,7 @@ pub type DbResult<T> = Result<T, ErrorCode>;
 /// Backing database implementation with a concrete error type.
 pub trait Database: Any {
     /// Database error type.
-    type Error: Error + 'static;
+    type Error: Error + Send + Sync + 'static;
 
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
@@ -31,17 +31,24 @@ pub trait Database: Any {
 }
 
 /// Object-safe database adapter for typed database implementations.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Db<T: Database> {
     db: T,
-    result: Option<T::Error>,
+    result: Result<(), AnyError>,
+}
+
+impl<T: Database + Default> Default for Db<T> {
+    #[inline]
+    fn default() -> Self {
+        Self::new(T::default())
+    }
 }
 
 impl<T: Database> Db<T> {
     /// Creates a new database adapter.
     #[inline]
     pub const fn new(db: T) -> Self {
-        Self { db, result: None }
+        Self { db, result: Ok(()) }
     }
 
     /// Returns the wrapped database.
@@ -62,21 +69,21 @@ impl<T: Database> Db<T> {
         self.db
     }
 
-    /// Returns the stored database error.
+    /// Returns the stored database result.
     #[inline]
-    pub const fn result(&self) -> Option<&T::Error> {
-        self.result.as_ref()
+    pub const fn result(&self) -> Result<(), &AnyError> {
+        self.result.as_ref().copied()
     }
 
-    /// Takes the stored database error.
+    /// Takes the stored database result.
     #[inline]
-    pub const fn take_result(&mut self) -> Option<T::Error> {
-        self.result.take()
+    pub const fn take_result(&mut self) -> Result<(), AnyError> {
+        core::mem::replace(&mut self.result, Ok(()))
     }
 
     #[inline]
     fn store_error(&mut self, err: T::Error) -> ErrorCode {
-        self.result = Some(err);
+        self.result = Err(AnyError::new(err));
         ErrorCode::STORED_ERROR
     }
 }
@@ -103,11 +110,11 @@ impl<T: Database> DynDatabase for Db<T> {
     }
 
     #[inline]
-    fn error(&mut self, code: ErrorCode) -> Box<dyn Error> {
+    fn error(&mut self, code: ErrorCode) -> AnyError {
         if code == ErrorCode::STORED_ERROR
-            && let Some(err) = self.result.take()
+            && let Err(err) = self.result.clone()
         {
-            return Box::new(err);
+            return err;
         }
         error_unavailable(code)
     }
@@ -128,7 +135,7 @@ pub trait DynDatabase: Any {
     fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>>;
 
     /// Retrieves the full error for a previously returned error code.
-    fn error(&mut self, code: ErrorCode) -> Box<dyn Error> {
+    fn error(&mut self, code: ErrorCode) -> AnyError {
         error_unavailable(code)
     }
 }
@@ -261,7 +268,7 @@ impl<D: DynDatabase> DynDatabase for DbStats<D> {
     }
 
     #[inline]
-    fn error(&mut self, code: ErrorCode) -> Box<dyn Error> {
+    fn error(&mut self, code: ErrorCode) -> AnyError {
         self.counts.error += 1;
         self.db.error(code)
     }
@@ -305,7 +312,7 @@ impl<T: DynDatabase + ?Sized> DynDatabase for Box<T> {
     }
 
     #[inline]
-    fn error(&mut self, code: ErrorCode) -> Box<dyn Error> {
+    fn error(&mut self, code: ErrorCode) -> AnyError {
         self.as_mut().error(code)
     }
 }

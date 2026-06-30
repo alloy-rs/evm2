@@ -117,8 +117,8 @@ use self::{
     precompile::{PrecompileOutput, PrecompileProvider},
 };
 use crate::{
-    ErrorCode, EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt,
-    SpecId,
+    AnyError, ErrorCode, EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError,
+    PrecompileHalt, SpecId,
     bytecode::Bytecode,
     constants::{CALL_DEPTH_LIMIT, EIP7708_TRANSFER_TOPIC},
     env::{BlockEnv, TxEnv},
@@ -127,7 +127,6 @@ use crate::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
         MessageResult, Word,
     },
-    precompiles::AnyError,
     registry::{HandlerError, HandlerResult, TxRegistry},
     trustme,
     version::{EvmFeatures, GasId},
@@ -427,11 +426,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     /// Retrieves the full error for a previously returned error code.
-    #[inline]
-    pub fn error(&mut self, code: ErrorCode) -> Box<dyn core::error::Error> {
+    pub fn error(&mut self, code: ErrorCode) -> AnyError {
         if code == ErrorCode::FATAL_PRECOMPILE {
-            if let Some(error) = self.error.take() {
-                return Box::new(error);
+            if let Some(error) = self.error.clone() {
+                return error;
             }
             return error_unavailable(code);
         }
@@ -1930,7 +1928,7 @@ mod tests {
     }
 
     #[test]
-    fn fatal_custom_precompile_tx_returns_custom_error() {
+    fn fatal_custom_precompile_tx_error_can_be_recovered_multiple_times() {
         const FATAL_PRECOMPILE_ADDRESS: Address = Address::with_last_byte(0x43);
 
         #[derive(Debug)]
@@ -1973,6 +1971,7 @@ mod tests {
         );
         let code = evm.error_code().unwrap();
         assert_eq!(code, ErrorCode::FATAL_PRECOMPILE);
+        assert_eq!(evm.error(code).to_string(), "test precompile error");
         assert_eq!(evm.error(code).to_string(), "test precompile error");
     }
 
@@ -2540,6 +2539,7 @@ mod tests {
 
         assert_eq!(result.stop, InstrStop::FatalExternalError);
         let error_code = evm.error_code().unwrap();
+        assert_eq!(evm.database_mut().error(error_code).to_string(), "storage read failed");
         assert_eq!(evm.database_mut().error(error_code).to_string(), "storage read failed");
     }
 

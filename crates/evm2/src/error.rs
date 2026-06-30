@@ -1,7 +1,59 @@
 //! Error code handles for host errors.
 
-use alloc::boxed::Box;
+use alloc::{string::String, sync::Arc};
 use core::{error::Error, fmt, num::NonZeroUsize};
+
+/// Type-erased host error.
+#[derive(Clone, Debug)]
+pub struct AnyError(Arc<dyn Error + Send + Sync>);
+
+impl fmt::Display for AnyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl Error for AnyError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.0.source()
+    }
+}
+
+impl AnyError {
+    /// Creates a new [`AnyError`] from any error type.
+    pub fn new(err: impl Error + Send + Sync + 'static) -> Self {
+        Self(Arc::new(err))
+    }
+}
+
+struct StringError(String);
+
+impl Error for StringError {}
+
+impl fmt::Display for StringError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+// Purposefully skip printing "StringError(..)"
+impl fmt::Debug for StringError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl From<String> for AnyError {
+    fn from(value: String) -> Self {
+        Self::new(StringError(value))
+    }
+}
+
+impl From<&str> for AnyError {
+    fn from(value: &str) -> Self {
+        Self::new(StringError(value.into()))
+    }
+}
 
 /// Lightweight handle for a host error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -50,20 +102,19 @@ impl ErrorCode {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ErrorUnavailable(ErrorCode);
+pub(crate) fn error_unavailable(code: ErrorCode) -> AnyError {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct ErrorUnavailable(ErrorCode);
 
-impl fmt::Display for ErrorUnavailable {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "error code {:?} is unavailable", self.0)
+    impl fmt::Display for ErrorUnavailable {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "error code {:?} is unavailable", self.0)
+        }
     }
-}
 
-impl Error for ErrorUnavailable {}
+    impl Error for ErrorUnavailable {}
 
-#[inline]
-pub(crate) fn error_unavailable(code: ErrorCode) -> Box<dyn Error> {
-    Box::new(ErrorUnavailable(code))
+    AnyError::new(ErrorUnavailable(code))
 }
 
 #[cfg(test)]

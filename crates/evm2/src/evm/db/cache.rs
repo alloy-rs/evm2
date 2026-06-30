@@ -268,7 +268,7 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     }
 
     #[inline]
-    fn error(&mut self, code: ErrorCode) -> alloc::boxed::Box<dyn core::error::Error> {
+    fn error(&mut self, code: ErrorCode) -> crate::AnyError {
         self.db.error(code)
     }
 }

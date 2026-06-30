@@ -1,68 +1,7 @@
-use crate::evm::precompile::PrecompileOutput;
-use alloc::{borrow::Cow, string::String, sync::Arc};
+use crate::{AnyError, evm::precompile::PrecompileOutput};
+use alloc::{borrow::Cow, string::String};
 use alloy_primitives::Bytes;
-use core::fmt;
 use thiserror::Error;
-
-/// Type-erased error type.
-#[derive(Clone, Debug)]
-pub struct AnyError(Arc<dyn core::error::Error + Send + Sync>);
-
-impl AnyError {
-    /// Creates a new [`AnyError`] from any error type.
-    pub fn new(err: impl core::error::Error + Send + Sync + 'static) -> Self {
-        Self(Arc::new(err))
-    }
-}
-
-impl PartialEq for AnyError {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for AnyError {}
-
-impl core::hash::Hash for AnyError {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        (Arc::as_ptr(&self.0) as *const ()).hash(state);
-    }
-}
-
-impl fmt::Display for AnyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl core::error::Error for AnyError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        self.0.source()
-    }
-}
-
-#[derive(Debug)]
-struct StringError(String);
-
-impl fmt::Display for StringError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl core::error::Error for StringError {}
-
-impl From<String> for AnyError {
-    fn from(value: String) -> Self {
-        Self::new(StringError(value))
-    }
-}
-
-impl From<&'static str> for AnyError {
-    fn from(value: &'static str) -> Self {
-        Self::new(StringError(value.into()))
-    }
-}
 
 /// A precompile operation result type for individual precompile functions.
 pub type PrecompileResult = Result<PrecompileOutput, PrecompileError>;
@@ -196,7 +135,7 @@ impl From<crate::interpreter::InstrStop> for PrecompileError {
 }
 
 /// Precompile error type.
-#[derive(Clone, Debug, Error, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Error)]
 pub enum PrecompileError {
     /// Precompile reverted.
     #[error("revert")]
@@ -271,7 +210,7 @@ mod tests {
 
     #[test]
     fn non_fatal_instr_stop_remains_oog_precompile_halt() {
-        assert_eq!(
+        core::assert_matches!(
             PrecompileError::from(InstrStop::OutOfGas),
             PrecompileError::Halt(PrecompileHalt::OutOfGas)
         );
