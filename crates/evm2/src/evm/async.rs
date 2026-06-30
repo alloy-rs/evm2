@@ -529,7 +529,7 @@ mod tests {
         BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult,
         bytecode::Bytecode,
         env::BlockEnv,
-        evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider},
+        evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider, SystemTx},
         interpreter::{GasTracker, Message, Word, op},
         precompile::PrecompileOutput,
         registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
@@ -827,7 +827,13 @@ mod tests {
         );
         evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
 
-        let result = poll_ready(evm.system_call_async(contract, Bytes::new())).unwrap().discard();
+        let result = poll_ready(evm.system_call_async(SystemTx {
+            system_contract_address: contract,
+            data: Bytes::new(),
+            ..Default::default()
+        }))
+        .unwrap()
+        .discard();
 
         assert!(result.status);
         assert_eq!(result.gas_used, 0);
@@ -852,7 +858,13 @@ mod tests {
         assert_matches!(evm.transact(&tx), Err(HandlerError::Database(_)));
         assert!(evm.db_error_code().is_some());
 
-        let result = poll_ready(evm.system_call_async(contract, Bytes::new())).unwrap().discard();
+        let result = poll_ready(evm.system_call_async(SystemTx {
+            system_contract_address: contract,
+            data: Bytes::new(),
+            ..Default::default()
+        }))
+        .unwrap()
+        .discard();
 
         assert!(result.status);
         assert_eq!(result.db_error_code, None);
