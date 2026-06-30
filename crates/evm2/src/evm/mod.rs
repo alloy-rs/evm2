@@ -1111,7 +1111,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     fn account_is_alive(&mut self, address: &Address) -> Result<bool, InstrStop> {
         match self.state.account(address, false) {
             Ok(account) => Ok(account.get().is_some_and(|info| !info.is_empty())),
-            Err(code) => Err(db_error_stop!(self, code)),
+            Err(code) => Err(store_error!(self, code)),
         }
     }
 

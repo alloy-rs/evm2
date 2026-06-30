@@ -176,8 +176,7 @@ fn apply_one_auth<T: EvmTypes<Host = Evm<T>>>(
     if authorization.nonce() != authority_nonce {
         return Ok(None);
     }
-    let delegated_before_tx =
-        account.original_code().map_err(db_error_handler!(host))?.is_eip7702();
+    let delegated_before_tx = account.original_code().map_err(error_handler!(host))?.is_eip7702();
     let clearing = authorization.address().is_zero();
     account.set_delegation(*authorization.address());
     Ok(Some(AppliedAuth { existed, delegated_before_tx, delegated_now, clearing }))
