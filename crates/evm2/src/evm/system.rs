@@ -13,12 +13,13 @@ use crate::{
     EvmTypes,
     env::TxEnv,
     ethereum::initial_message,
-    interpreter::{Host, InstrStop},
+    interpreter::Host,
+    registry::{HandlerError, HandlerResult},
 };
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, TxKind, U256, address};
 #[cfg(feature = "async")]
-use core::{convert::Infallible, future::Future};
+use core::future::Future;
 
 /// Caller address used by execution-layer system calls.
 pub const SYSTEM_ADDRESS: Address = address!("0xfffffffffffffffffffffffffffffffffffffffe");
@@ -89,9 +90,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ///
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
-    pub fn system_call(&mut self, tx: SystemTx) -> ExecutedTx<'_, T> {
+    pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, T>> {
         let SystemTx { caller, system_contract_address, data, .. } = tx;
-        self.db_error_code = None;
+        self.clear_top_level_error_state();
         self.state.prewarm(&system_contract_address);
         let tx_env = TxEnv {
             origin: caller,
@@ -101,7 +102,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             ext: T::TxEnvExt::default(),
             _non_exhaustive: (),
         };
-        let Ok((bytecode, mut message)) = initial_message(
+        let (bytecode, mut message) = match initial_message(
             self,
             caller,
             0,
@@ -110,24 +111,28 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             U256::ZERO,
             SYSTEM_CALL_GAS_LIMIT,
             0,
-        ) else {
-            self.state.clear_transaction_state();
-            let stop = InstrStop::FatalExternalError;
-            let outcome =
-                TxResult { stop, db_error_code: self.db_error_code(), ..TxResult::default() };
-            return ExecutedTx::from_result(self, outcome, false);
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                self.state.clear_transaction_state();
+                return Err(error);
+            }
         };
         // System calls are not inspected.
         let inspector = self.inspector.take();
         let result = Host::execute_message(self, &tx_env, bytecode, &mut message);
         self.inspector = inspector;
+        if let Some(code) = self.error_code {
+            self.state.clear_transaction_state();
+            return Err(HandlerError::Fatal(code));
+        }
         let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());
         let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
             result.gas.refunded() as u64
         } else {
             0
         };
-        let mut outcome = TxResult {
+        let outcome = TxResult {
             status: result.stop.is_success(),
             total_gas_spent: gas_spent,
             state_gas_spent: result.gas.state_gas_spent().max(0) as u64,
@@ -138,19 +143,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             ..TxResult::default()
         };
 
-        let has_pending_state = if let Err(stop) = self.finalize_transaction() {
-            outcome.status = false;
-            outcome.stop = stop;
-            outcome.output = Bytes::new();
-            outcome.logs.clear();
-            self.state.clear_transaction_state();
-            false
-        } else {
-            outcome.logs = self.state.take_logs();
-            true
-        };
-        outcome.db_error_code = self.db_error_code();
-        ExecutedTx::from_result(self, outcome, has_pending_state)
+        Ok(self.finish_executed_tx(outcome))
     }
 
     /// Executes a system call on an async fiber.
@@ -168,11 +161,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     pub fn system_call_async(
         &mut self,
         tx: SystemTx,
-    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, Infallible>> + '_ {
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, HandlerError>> + '_ {
         let stack = self.async_stack();
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
         // access the EVM stack slot until that future is dropped.
-        unsafe { r#async::on_local_fiber_with_stack(stack, move || self.system_call(tx)) }
+        unsafe { r#async::on_local_fiber_result_with_stack(stack, move || self.system_call(tx)) }
     }
 
     /// Executes a system call on an async fiber and returns a `Send` future.
@@ -184,7 +177,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     pub fn system_call_async_send(
         &mut self,
         tx: SystemTx,
-    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, Infallible>> + Send + '_ {
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, HandlerError>> + Send + '_
+    {
         self.assert_erased_send();
         let stack = self.async_stack();
         let evm = SendEvmRef { evm: self };
@@ -192,7 +186,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         // access the EVM stack slot until that future is dropped. The send marker checked above
         // requires all erased EVM fields to have been verified by `Evm::evm_is_send`.
         unsafe {
-            r#async::on_fiber_with_stack(stack, move || {
+            r#async::on_fiber_result_with_stack(stack, move || {
                 let SendEvmRef { evm } = evm;
                 evm.system_call(tx)
             })
@@ -204,12 +198,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmTypes, Precompiles, SpecId,
+        BaseEvmTypes, ErrorCode, Precompiles, SpecId,
         bytecode::Bytecode,
         env::BlockEnv,
         evm::{AccountInfo, InMemoryDB},
-        interpreter::{InstrStop, op},
-        registry::TxRegistry,
+        interpreter::{GasTracker, InstrStop, Message, op},
+        precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileResult},
+        registry::{HandlerError, TxRegistry},
     };
 
     type TestEvm = Evm<BaseEvmTypes>;
@@ -240,7 +235,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).detach();
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
 
         assert!(result.result.status);
         assert!(result.result.tx_gas_used() < SYSTEM_CALL_GAS_LIMIT);
@@ -281,8 +276,10 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result =
-            evm.system_call(SystemTx::new(contract, Bytes::new()).with_caller(caller)).detach();
+        let result = evm
+            .system_call(SystemTx::new(contract, Bytes::new()).with_caller(caller))
+            .unwrap()
+            .detach();
 
         assert!(result.result.status);
         let storage =
@@ -307,7 +304,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let outcome = evm.system_call(SystemTx::new(contract, Bytes::new())).discard();
+        let outcome = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().discard();
 
         assert!(outcome.status);
         assert!(
@@ -328,7 +325,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).detach();
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
 
         assert!(result.result.status);
         assert_eq!(result.result.tx_gas_used(), 0);
@@ -360,10 +357,57 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).detach();
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
 
         assert!(!result.result.status);
         assert_eq!(result.result.stop, InstrStop::Revert);
         assert!(!result.state_changes.is_changed());
+    }
+
+    #[test]
+    fn system_call_reports_fatal_precompile_error() {
+        const FATAL_PRECOMPILE_ADDRESS: Address = Address::with_last_byte(0x43);
+
+        #[derive(Debug)]
+        struct TestPrecompileError;
+
+        impl core::fmt::Display for TestPrecompileError {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("test precompile error")
+            }
+        }
+
+        impl core::error::Error for TestPrecompileError {}
+
+        fn fatal_precompile(
+            _evm: &mut Evm<BaseEvmTypes>,
+            _message: &Message,
+            _gas: &mut GasTracker,
+        ) -> PrecompileResult {
+            Err(PrecompileError::fatal(TestPrecompileError))
+        }
+
+        let mut precompiles = Precompiles::base(SpecId::OSAKA);
+        precompiles.as_map_mut().insert(Precompile::new(
+            FATAL_PRECOMPILE_ADDRESS,
+            PrecompileId::custom("fatal-test"),
+            fatal_precompile,
+        ));
+
+        let mut evm = TestEvm::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+
+        let result = evm.system_call(SystemTx::new(FATAL_PRECOMPILE_ADDRESS, Bytes::new()));
+
+        assert_eq!(
+            result.map(ExecutedTx::discard),
+            Err(HandlerError::Fatal(ErrorCode::FATAL_PRECOMPILE))
+        );
+        assert_eq!(evm.error_code(), Some(ErrorCode::FATAL_PRECOMPILE));
     }
 }

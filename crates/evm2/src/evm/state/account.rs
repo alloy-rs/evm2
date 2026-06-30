@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn journaled_account_skip_cold_load_signals_skip() {
-        use crate::evm::DbErrorCode;
+        use crate::ErrorCode;
 
         let address = Address::from([0x8a; 20]);
         let mut database = CacheDB::default();
@@ -631,12 +631,12 @@ mod tests {
         let mut state = State::new(database);
 
         // A cold, not-yet-loaded account signals the skip instead of reading the database.
-        assert!(matches!(state.account(&address, true), Err(DbErrorCode::COLD_LOAD_SKIPPED)));
+        assert!(matches!(state.account(&address, true), Err(ErrorCode::COLD_LOAD_SKIPPED)));
         // Skipping leaves the overlay untouched, so a later non-skipped load still works.
         assert_eq!(state.account(&address, false).unwrap().balance(), Word::from(5));
         // Residency alone does not make a cold access affordable: a loaded-but-cold account still
         // signals the skip, since warmth — not overlay residency — decides the cold surcharge.
-        assert!(matches!(state.account(&address, true), Err(DbErrorCode::COLD_LOAD_SKIPPED)));
+        assert!(matches!(state.account(&address, true), Err(ErrorCode::COLD_LOAD_SKIPPED)));
         // Once warmed, the affordable warm access yields a handle even when skipping is requested.
         state.account(&address, false).unwrap().warm();
         assert!(state.account(&address, true).is_ok());

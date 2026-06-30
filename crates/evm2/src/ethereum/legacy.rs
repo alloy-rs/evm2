@@ -8,7 +8,7 @@ use super::{
 use crate::{
     Evm, EvmTypes, TxResult,
     env::TxEnv,
-    evm::db_error_handler,
+    evm::error_handler,
     interpreter::Host,
     registry::{HandlerResult, TxRequest},
 };
@@ -41,7 +41,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     warm_base_accounts(req.host, caller, tx.to);
 
     charge_upfront(req.host, caller, max_gas_cost)?;
-    req.host.state.account(&caller, false).map_err(db_error_handler!(req.host))?.bump_nonce();
+    req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
     let execution_checkpoint = req.host.state.checkpoint();
 
     let (gas_limit, reservoir) = initial_gas_and_reservoir(

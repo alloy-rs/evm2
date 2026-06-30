@@ -9,7 +9,7 @@ use super::{
 use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult,
     env::TxEnv,
-    evm::db_error_handler,
+    evm::error_handler,
     interpreter::Host,
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
@@ -64,7 +64,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     charge_upfront(req.host, caller, effective_gas_cost)?;
-    req.host.state.account(&caller, false).map_err(db_error_handler!(req.host))?.bump_nonce();
+    req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
     let chain_id = req.host.version().chain_id;
     let (state_refund, regular_refund) =
         apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
@@ -162,11 +162,11 @@ fn apply_one_auth<T: EvmTypes<Host = Evm<T>>>(
     let Some(authority) = authorization.authority() else {
         return Ok(None);
     };
-    let mut account = host.state.account(&authority, false).map_err(db_error_handler!(host))?;
+    let mut account = host.state.account(&authority, false).map_err(error_handler!(host))?;
     account.warm();
     let existed = account.exists();
     let authority_nonce = account.nonce();
-    let code = account.load_code().map_err(db_error_handler!(host))?;
+    let code = account.load_code().map_err(error_handler!(host))?;
     // Reject an authority that already carries non-delegation code; otherwise non-empty code is
     // necessarily a valid delegation.
     let delegated_now = !code.is_empty();

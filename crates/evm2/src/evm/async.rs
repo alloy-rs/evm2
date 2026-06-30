@@ -5,13 +5,12 @@
 //! suspended and the outer async task returns `Poll::Pending`.
 
 use crate::{
+    AnyError, ErrorCode,
     bytecode::Bytecode,
-    evm::{
-        AccountInfo, DbErrorCode, DbResult, DynDatabase, db_error_unavailable, stored_error_code,
-    },
+    error::error_unavailable,
+    evm::{AccountInfo, DbResult, DynDatabase},
     interpreter::Word,
 };
-use alloc::boxed::Box;
 use alloy_primitives::{Address, B256};
 use core::{
     any::Any, fmt, future::Future, marker::PhantomData, pin::Pin, ptr::NonNull, task::Poll,
@@ -186,38 +185,6 @@ where
     R: 'a,
 {
     on_fiber_result(move || Ok::<_, core::convert::Infallible>(func()))
-}
-
-/// Runs `func` on a native fiber backed by a reusable EVM stack slot, returning a local future.
-///
-/// # Safety
-///
-/// See [`on_local_fiber_result_with_stack`].
-pub(crate) unsafe fn on_local_fiber_with_stack<'a, R>(
-    stack: NonNull<FiberStack>,
-    func: impl FnOnce() -> R + 'a,
-) -> impl Future<Output = AsyncResult<R>> + 'a
-where
-    R: 'a,
-{
-    unsafe {
-        on_local_fiber_result_with_stack(stack, move || Ok::<_, core::convert::Infallible>(func()))
-    }
-}
-
-/// Runs `func` on a native fiber backed by a reusable EVM stack slot.
-///
-/// # Safety
-///
-/// See [`on_fiber_result_with_stack`].
-pub(crate) unsafe fn on_fiber_with_stack<'a, R>(
-    stack: NonNull<FiberStack>,
-    func: impl FnOnce() -> R + 'a,
-) -> impl Future<Output = AsyncResult<R>> + Send + 'a
-where
-    R: 'a,
-{
-    unsafe { on_fiber_result_with_stack(stack, move || Ok::<_, core::convert::Infallible>(func())) }
 }
 
 struct LocalOnFiber<F> {
@@ -440,7 +407,7 @@ unsafe fn restore_context_lifetime<'a>(cx: &'a mut Context<'static>) -> &'a mut 
 /// async EVM fiber.
 pub trait AsyncDatabase: Any {
     /// Database error type.
-    type Error: Error + Send + 'static;
+    type Error: Error + Send + Sync + 'static;
 
     /// Loads account information.
     fn get_account(
@@ -471,13 +438,13 @@ pub trait AsyncDatabase: Any {
 /// Adapter that exposes an [`AsyncDatabase`] through the synchronous [`DynDatabase`] interface.
 pub struct AsyncDb<D: AsyncDatabase> {
     db: D,
-    error: Option<Box<dyn Error + Send>>,
+    error: Option<AnyError>,
 }
 
 impl<D: AsyncDatabase> AsyncDb<D> {
     /// Creates a new async database adapter.
     #[inline]
-    pub fn new(db: D) -> Self {
+    pub const fn new(db: D) -> Self {
         Self { db, error: None }
     }
 
@@ -501,14 +468,14 @@ impl<D: AsyncDatabase> AsyncDb<D> {
 
     /// Takes the stored database or async execution error.
     #[inline]
-    pub fn take_error(&mut self) -> Option<Box<dyn Error + Send>> {
+    pub const fn take_error(&mut self) -> Option<AnyError> {
         self.error.take()
     }
 
     #[inline]
-    fn store_error(&mut self, error: impl Error + Send + 'static) -> DbErrorCode {
-        self.error = Some(Box::new(error));
-        stored_error_code()
+    fn store_error(&mut self, error: impl Error + Send + Sync + 'static) -> ErrorCode {
+        self.error = Some(AnyError::new(error));
+        ErrorCode::STORED_ERROR
     }
 
     #[inline]
@@ -558,13 +525,13 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
-        if code == stored_error_code()
-            && let Some(error) = self.error.take()
+    fn error(&mut self, code: ErrorCode) -> AnyError {
+        if code == ErrorCode::STORED_ERROR
+            && let Some(error) = self.error.clone()
         {
             return error;
         }
-        db_error_unavailable(code)
+        error_unavailable(code)
     }
 }
 
@@ -695,6 +662,7 @@ mod tests {
         let code = on_fiber(|| DynDatabase::get_storage(&mut db, &address, &key).unwrap_err());
         let code = poll_ready(code).unwrap();
 
+        assert_eq!(db.error(code).to_string(), "storage read failed");
         assert_eq!(db.error(code).to_string(), "storage read failed");
     }
 
@@ -889,6 +857,10 @@ mod tests {
             db.error(code).to_string(),
             "async host operation requires EVM async fiber execution"
         );
+        assert_eq!(
+            db.error(code).to_string(),
+            "async host operation requires EVM async fiber execution"
+        );
     }
 
     #[test]
@@ -933,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn system_call_async_clears_stale_database_error_code() {
+    fn system_call_async_clears_stale_error_code() {
         let contract = Address::from([0x42; 20]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
@@ -947,15 +919,15 @@ mod tests {
             Address::ZERO,
         ));
 
-        assert_matches!(evm.transact(&tx), Err(HandlerError::Database(_)));
-        assert!(evm.db_error_code().is_some());
+        assert_matches!(evm.transact(&tx), Err(HandlerError::Fatal(_)));
+        assert!(evm.error_code().is_some());
 
         let result = poll_ready(evm.system_call_async(SystemTx::new(contract, Bytes::new())))
             .unwrap()
             .discard();
 
         assert!(result.status);
-        assert_eq!(result.db_error_code, None);
+        assert_eq!(result.error_code, None);
     }
 
     #[test]

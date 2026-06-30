@@ -243,6 +243,9 @@ fn call_inner<T: EvmTypes>(
 
     let tx_env = state.tx();
     let mut result = state.host().execute_message(tx_env, code, &mut message);
+    if result.stop.is_fatal() {
+        return Err(result.stop);
+    }
     gas.merge_child_gas(result.gas, result.stop);
     // EIP-8037: a value-bearing CALL that creates the target charges NEW_ACCOUNT state
     // gas upfront on this frame. If the call does not succeed (depth/balance failure,
@@ -346,6 +349,9 @@ fn create_inner<T: EvmTypes>(
     let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
     let tx_env = state.tx();
     let mut result = state.host().execute_message(tx_env, bytecode, &mut message);
+    if result.stop.is_fatal() {
+        return Err(result.stop);
+    }
     gas.merge_child_gas(result.gas, result.stop);
 
     // EIP-8037: the CREATE/CREATE2 opcode charged `create_state_gas` upfront on
@@ -437,6 +443,37 @@ mod tests {
         assert_eq!(host.calls[0].kind, MessageKind::Call);
         assert_eq!(host.calls[0].destination, target);
         assert_eq!(host.calls[0].caller, caller);
+    }
+
+    #[test]
+    fn call_propagates_fatal_child_result() {
+        let target = Address::from([0x22; 20]);
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::FatalPrecompileError,
+                ..MessageResult::default()
+            },
+            ..Default::default()
+        };
+        let mut code = Vec::new();
+        push_all(
+            &mut code,
+            [
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(&target),
+                Word::from(1000),
+            ],
+        );
+        code.extend([op::CALL, op::STOP]);
+
+        let interp = run(RunConfig::new(code).host(&mut host));
+
+        assert_matches!(interp.err, InstrStop::FatalPrecompileError);
+        assert!(interp.stack().is_empty());
     }
 
     #[test]
@@ -762,6 +799,25 @@ mod tests {
         assert_eq!(interp.stack(), [address_to_word(&created)]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Create);
+    }
+
+    #[test]
+    fn create_propagates_fatal_child_result() {
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::FatalPrecompileError,
+                ..MessageResult::default()
+            },
+            ..Default::default()
+        };
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        code.extend([op::CREATE, op::STOP]);
+
+        let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
+
+        assert_matches!(interp.err, InstrStop::FatalPrecompileError);
+        assert!(interp.stack().is_empty());
     }
 
     #[test]
