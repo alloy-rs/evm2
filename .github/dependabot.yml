@@ -1,17 +1,5 @@
 version: 2
 updates:
-  - package-ecosystem: "cargo"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 2
-    cooldown:
-      default-days: 7
-    groups:
-      cargo-dependencies:
-        patterns:
-          - "*"
-
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -19,6 +7,11 @@ updates:
     open-pull-requests-limit: 2
     cooldown:
       default-days: 7
+    ignore:
+      # These refs intentionally point at tool-specific tags or toolchain branches.
+      # Dependabot rewrites them to generic release refs and breaks CI.
+      - dependency-name: "dtolnay/rust-toolchain"
+      - dependency-name: "taiki-e/install-action"
     groups:
       github-actions:
         patterns:

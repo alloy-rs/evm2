@@ -11,10 +11,10 @@ use alloy_rpc_types_trace::geth::{
     erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    Evm, EvmTypes, Inspector, NoopInspector, TxResultWithState,
+    ErrorCode, Evm, EvmTypes, Inspector, NoopInspector, TxResultWithState,
     env::BlockEnv,
     ethereum::RecoveredTxEnvelope,
-    evm::{DbErrorCode, DynDatabase},
+    evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
 };
 use thiserror::Error;
@@ -371,5 +371,5 @@ pub enum DebugInspectorError {
     JsInspector(#[from] crate::tracing::js::JsInspectorError),
     /// Database operation failed
     #[error("database error {0:?}")]
-    Database(DbErrorCode),
+    Database(ErrorCode),
 }
