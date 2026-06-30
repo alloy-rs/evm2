@@ -733,6 +733,27 @@ impl Drop for ExecutionGuard {
     }
 }
 
+#[cfg(feature = "async")]
+struct SendEvmRef<'a, T: EvmTypes> {
+    evm: &'a mut Evm<T>,
+}
+
+#[cfg(feature = "async")]
+// SAFETY: `SendEvmRef` is only constructed by async entrypoints after `Evm::evm_is_send` has
+// verified the concrete erased field types as `Send`.
+unsafe impl<T> Send for SendEvmRef<'_, T>
+where
+    T: EvmTypes,
+    T::SpecId: Send,
+    T::Tx: Send,
+    T::MessageExt: Send,
+    T::MessageResultExt: Send,
+    T::TxEnvExt: Send,
+    T::TxResultExt: Send,
+    T::BlockEnvExt: Send,
+{
+}
+
 impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// Dispatches the transaction to its handler and returns an executed transaction handle.
     ///
@@ -799,10 +820,16 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     {
         self.assert_erased_send();
         let stack = self.async_stack();
+        let evm = SendEvmRef { evm: self };
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
-        // access the EVM stack slot until that future is dropped. The assertion above requires all
-        // erased EVM fields to have been verified by `Evm::evm_is_send`.
-        unsafe { r#async::on_fiber_result_with_stack(stack, move || self.transact(tx)) }
+        // access the EVM stack slot until that future is dropped. The send marker checked above
+        // requires all erased EVM fields to have been verified by `Evm::evm_is_send`.
+        unsafe {
+            r#async::on_fiber_result_with_stack(stack, move || {
+                let SendEvmRef { evm } = evm;
+                evm.transact(tx)
+            })
+        }
     }
 
     /// Dispatches each transaction to its registered EIP-2718 handler and commits it.

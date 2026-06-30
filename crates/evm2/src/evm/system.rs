@@ -6,9 +6,9 @@
 //! before calling [`Evm::system_call`]. Calling an address without code succeeds as an empty call
 //! and produces no state changes.
 
-#[cfg(feature = "async")]
-use super::r#async;
 use super::{Evm, ExecutedTx, TxResult};
+#[cfg(feature = "async")]
+use super::{SendEvmRef, r#async};
 use crate::{
     EvmTypes,
     env::TxEnv,
@@ -71,12 +71,14 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, Infallible>> + Send + '_ {
         self.assert_erased_send();
         let stack = self.async_stack();
+        let evm = SendEvmRef { evm: self };
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
-        // access the EVM stack slot until that future is dropped. The assertion above requires all
-        // erased EVM fields to have been verified by `Evm::evm_is_send`.
+        // access the EVM stack slot until that future is dropped. The send marker checked above
+        // requires all erased EVM fields to have been verified by `Evm::evm_is_send`.
         unsafe {
             r#async::on_fiber_with_stack(stack, move || {
-                self.system_call(system_contract_address, data)
+                let SendEvmRef { evm } = evm;
+                evm.system_call(system_contract_address, data)
             })
         }
     }
@@ -174,12 +176,14 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, Infallible>> + Send + '_ {
         self.assert_erased_send();
         let stack = self.async_stack();
+        let evm = SendEvmRef { evm: self };
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
-        // access the EVM stack slot until that future is dropped. The assertion above requires all
-        // erased EVM fields to have been verified by `Evm::evm_is_send`.
+        // access the EVM stack slot until that future is dropped. The send marker checked above
+        // requires all erased EVM fields to have been verified by `Evm::evm_is_send`.
         unsafe {
             r#async::on_fiber_with_stack(stack, move || {
-                self.system_call_with_caller(caller, system_contract_address, data)
+                let SendEvmRef { evm } = evm;
+                evm.system_call_with_caller(caller, system_contract_address, data)
             })
         }
     }
