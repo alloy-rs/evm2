@@ -18,7 +18,6 @@ use core::{
 };
 use corosensei::{Coroutine, CoroutineResult, Yielder, stack::DefaultStack};
 use std::{cell::Cell, error::Error, io, task::Context};
-use tokio::{runtime::Handle, task};
 
 type Resume = AsyncResult<NonNull<Context<'static>>>;
 type Yield = ();
@@ -66,12 +65,6 @@ pub enum AsyncError<E = core::convert::Infallible> {
     /// An async host operation was called outside an async EVM fiber.
     #[error("async host operation requires EVM async fiber execution")]
     NotOnFiber,
-    /// Blocking async I/O was requested outside a supported Tokio runtime.
-    #[error("async host operation requires a Tokio multi-thread runtime")]
-    Runtime,
-    /// Blocking async I/O was requested from a Tokio current-thread runtime.
-    #[error("async host operation cannot block on a Tokio current-thread runtime")]
-    CurrentThreadRuntime,
     /// Async fiber stack setup failed.
     #[error(transparent)]
     Io(io::Error),
@@ -85,8 +78,6 @@ impl AsyncError {
         match self {
             Self::Cancelled => AsyncError::Cancelled,
             Self::NotOnFiber => AsyncError::NotOnFiber,
-            Self::Runtime => AsyncError::Runtime,
-            Self::CurrentThreadRuntime => AsyncError::CurrentThreadRuntime,
             Self::Io(error) => AsyncError::Io(error),
             Self::Inner(error) => match error {},
         }
@@ -365,51 +356,11 @@ pub(crate) fn block_on_current<F: Future>(future: F) -> AsyncResult<F::Output> {
     }
 }
 
-fn current_tokio_handle() -> Option<Handle> {
-    match Handle::try_current() {
-        Ok(handle) => match handle.runtime_flavor() {
-            tokio::runtime::RuntimeFlavor::CurrentThread => None,
-            _ => Some(handle),
-        },
-        Err(_) => None,
-    }
-}
-
-fn block_on_handle<F>(handle: &Handle, future: F) -> AsyncResult<F::Output>
-where
-    F: Future,
-{
-    match Handle::try_current() {
-        Ok(current)
-            if matches!(current.runtime_flavor(), tokio::runtime::RuntimeFlavor::CurrentThread) =>
-        {
-            Err(AsyncError::CurrentThreadRuntime)
-        }
-        Ok(_) => Ok(task::block_in_place(move || handle.block_on(future))),
-        Err(_) => Ok(handle.block_on(future)),
-    }
-}
-
-fn block_on_runtime<F>(runtime: Option<&Handle>, future: F) -> AsyncResult<F::Output>
-where
-    F: Future,
-{
-    if CURRENT.get().is_some() {
-        return block_on_current(future);
-    }
-
-    if let Some(runtime) = runtime {
-        return block_on_handle(runtime, future);
-    }
-
-    Err(AsyncError::Runtime)
-}
-
-fn block_on_runtime_result<F, T, E>(runtime: Option<&Handle>, future: F) -> AsyncResult<T, E>
+fn block_on_current_result<F, T, E>(future: F) -> AsyncResult<T, E>
 where
     F: Future<Output = Result<T, E>>,
 {
-    match block_on_runtime(runtime, future).map_err(AsyncError::with_inner_error)? {
+    match block_on_current(future).map_err(AsyncError::with_inner_error)? {
         Ok(value) => Ok(value),
         Err(error) => Err(AsyncError::Inner(error)),
     }
@@ -432,8 +383,8 @@ unsafe fn restore_context_lifetime<'a>(cx: &'a mut Context<'static>) -> &'a mut 
 ///
 /// To take advantage of yielding host I/O, this must be wrapped in [`AsyncDb`] and used with
 /// async EVM entrypoints such as [`crate::Evm::transact_async`]. Calling synchronous EVM
-/// entrypoints with an [`AsyncDb`] can still execute the futures by blocking on Tokio, but it
-/// cannot suspend the EVM fiber and yield back to the caller.
+/// entrypoints with an [`AsyncDb`] fails because the adapter can only poll futures from inside an
+/// async EVM fiber.
 pub trait AsyncDatabase: Any {
     /// Database error type.
     type Error: Error + Send + 'static;
@@ -468,30 +419,13 @@ pub trait AsyncDatabase: Any {
 pub struct AsyncDb<D: AsyncDatabase> {
     db: D,
     error: Option<Box<dyn Error + Send>>,
-    runtime: Option<Handle>,
 }
 
 impl<D: AsyncDatabase> AsyncDb<D> {
     /// Creates a new async database adapter.
-    ///
-    /// This captures the current Tokio runtime handle when one is available.
     #[inline]
     pub fn new(db: D) -> Self {
-        Self { db, error: None, runtime: current_tokio_handle() }
-    }
-
-    /// Creates a new async database adapter using the current Tokio runtime handle.
-    ///
-    /// Returns `None` if no Tokio runtime is available or the current runtime is current-threaded.
-    #[inline]
-    pub fn blocking(db: D) -> Option<Self> {
-        Some(Self { db, error: None, runtime: Some(current_tokio_handle()?) })
-    }
-
-    /// Creates a new async database adapter with a Tokio runtime handle.
-    #[inline]
-    pub fn with_tokio_handle(db: D, handle: Handle) -> Self {
-        Self { db, error: None, runtime: Some(handle) }
+        Self { db, error: None }
     }
 
     /// Returns the wrapped database.
@@ -537,8 +471,8 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         let result = {
-            let Self { db, runtime, .. } = self;
-            block_on_runtime_result(runtime.as_ref(), db.get_account(*address))
+            let Self { db, .. } = self;
+            block_on_current_result(db.get_account(*address))
         };
         self.database_result(result)
     }
@@ -546,8 +480,8 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         let result = {
-            let Self { db, runtime, .. } = self;
-            block_on_runtime_result(runtime.as_ref(), db.get_code_by_hash(*code_hash))
+            let Self { db, .. } = self;
+            block_on_current_result(db.get_code_by_hash(*code_hash))
         };
         self.database_result(result)
     }
@@ -555,8 +489,8 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         let result = {
-            let Self { db, runtime, .. } = self;
-            block_on_runtime_result(runtime.as_ref(), db.get_storage(*address, *key))
+            let Self { db, .. } = self;
+            block_on_current_result(db.get_storage(*address, *key))
         };
         self.database_result(result)
     }
@@ -564,8 +498,8 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
         let result = {
-            let Self { db, runtime, .. } = self;
-            block_on_runtime_result(runtime.as_ref(), db.get_block_hash(*number))
+            let Self { db, .. } = self;
+            block_on_current_result(db.get_block_hash(*number))
         };
         self.database_result(result)
     }
@@ -869,60 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn synchronous_database_blocks_with_current_tokio_runtime() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let _guard = runtime.enter();
-        let mut db = AsyncDb::new(TokioDb);
-        let address = Address::ZERO;
-        let key = Word::from(7);
-
-        let value = DynDatabase::get_storage(&mut db, &address, &key).unwrap();
-
-        assert_eq!(value, Word::from(9));
-    }
-
-    #[test]
-    fn blocking_constructor_uses_current_tokio_runtime() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let _guard = runtime.enter();
-        let mut db = AsyncDb::blocking(TokioDb).unwrap();
-        let address = Address::ZERO;
-        let key = Word::from(7);
-
-        let value = DynDatabase::get_storage(&mut db, &address, &key).unwrap();
-
-        assert_eq!(value, Word::from(9));
-    }
-
-    #[test]
-    fn synchronous_database_blocks_with_stored_tokio_handle() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let mut db = AsyncDb::with_tokio_handle(TokioDb, runtime.handle().clone());
-        let address = Address::ZERO;
-        let key = Word::from(7);
-
-        let value = DynDatabase::get_storage(&mut db, &address, &key).unwrap();
-
-        assert_eq!(value, Word::from(9));
-    }
-
-    #[test]
-    fn current_thread_tokio_handle_does_not_panic_in_sync_adapter() {
-        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let handle = runtime.handle().clone();
-        let result = runtime.block_on(async move {
-            let mut db = AsyncDb::with_tokio_handle(TokioDb, handle);
-            let address = Address::ZERO;
-            let key = Word::from(7);
-            let code = DynDatabase::get_storage(&mut db, &address, &key).unwrap_err();
-            db.error(code).to_string()
-        });
-
-        assert_eq!(result, "async host operation cannot block on a Tokio current-thread runtime");
-    }
-
-    #[test]
-    fn synchronous_database_requires_runtime_handle() {
+    fn synchronous_database_requires_fiber() {
         let mut db = AsyncDb::new(TestDb);
         let address = Address::ZERO;
         let key = Word::from(7);
@@ -930,28 +811,8 @@ mod tests {
 
         assert_eq!(
             db.error(code).to_string(),
-            "async host operation requires a Tokio multi-thread runtime"
+            "async host operation requires EVM async fiber execution"
         );
-    }
-
-    #[test]
-    fn synchronous_evm_database_blocks_with_current_tokio_runtime() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let _guard = runtime.enter();
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnv::default(),
-            TxRegistry::new(),
-            AsyncDb::new(TokioDb),
-            Precompiles::base(SpecId::OSAKA),
-        );
-        evm.evm_is_send::<AsyncDb<TokioDb>, Precompiles<BaseEvmTypes>>();
-        let address = Address::ZERO;
-        let key = Word::from(7);
-
-        let value = evm.database_mut().get_storage(&address, &key).unwrap();
-
-        assert_eq!(value, Word::from(9));
     }
 
     #[test]
@@ -1333,39 +1194,6 @@ mod tests {
         }
 
         async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
-        }
-    }
-
-    struct TokioDb;
-
-    impl AsyncDatabase for TokioDb {
-        type Error = Infallible;
-
-        async fn get_account(
-            &mut self,
-            _address: Address,
-        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
-            tokio::task::yield_now().await;
-            Ok(None)
-        }
-
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
-            tokio::task::yield_now().await;
-            Ok(Bytecode::default())
-        }
-
-        async fn get_storage(
-            &mut self,
-            _address: Address,
-            _key: Word,
-        ) -> Result<Word, Self::Error> {
-            tokio::task::yield_now().await;
-            Ok(Word::from(9))
-        }
-
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            tokio::task::yield_now().await;
             Ok(None)
         }
     }

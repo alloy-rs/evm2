@@ -35,7 +35,6 @@ phf = { workspace = true, features = ["macros"], optional = true }
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
 # "async"
-tokio = { workspace = true, features = ["rt-multi-thread"], optional = true }
 corosensei = { workspace = true, optional = true }
 
 # ecrecover
@@ -88,7 +87,6 @@ serde_json = { workspace = true, features = ["std"] }
 rand = { workspace = true, features = ["std"] }
 ark-std = { workspace = true }
 rstest.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [[example]]
 name = "custom_evm"
@@ -131,7 +129,7 @@ std = [
     "serde?/std",
 ]
 
-async = ["std", "dep:tokio", "dep:corosensei"]
+async = ["std", "dep:corosensei"]
 
 serde = [
     "dep:serde",
