@@ -9,7 +9,7 @@ use super::{
 use crate::{
     Evm, EvmTypes, TxResult,
     env::TxEnv,
-    evm::db_error_handler,
+    evm::error_handler,
     interpreter::Host,
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
@@ -59,7 +59,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     charge_upfront(req.host, caller, effective_gas_cost)?;
-    req.host.state.account(&caller, false).map_err(db_error_handler!(req.host))?.bump_nonce();
+    req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
     let chain_id = req.host.version().chain_id;
     let eip7702_refund = apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
     let execution_checkpoint = req.host.state.checkpoint();
@@ -108,11 +108,11 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         let Some(authority) = authorization.authority() else {
             continue;
         };
-        let mut account = host.state.account(&authority, false).map_err(db_error_handler!(host))?;
+        let mut account = host.state.account(&authority, false).map_err(error_handler!(host))?;
         account.warm();
         let existed = account.exists();
         let authority_nonce = account.nonce();
-        let code = account.load_code().map_err(db_error_handler!(host))?;
+        let code = account.load_code().map_err(error_handler!(host))?;
         if !code.is_empty() && !code.is_eip7702() {
             continue;
         }

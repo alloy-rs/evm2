@@ -1,68 +1,7 @@
-use crate::evm::precompile::PrecompileOutput;
-use alloc::{borrow::Cow, string::String, sync::Arc};
+use crate::{AnyError, evm::precompile::PrecompileOutput};
+use alloc::{borrow::Cow, string::String};
 use alloy_primitives::Bytes;
-use core::fmt;
 use thiserror::Error;
-
-/// Type-erased error type.
-#[derive(Clone, Debug)]
-pub struct AnyError(Arc<dyn core::error::Error + Send + Sync>);
-
-impl AnyError {
-    /// Creates a new [`AnyError`] from any error type.
-    pub fn new(err: impl core::error::Error + Send + Sync + 'static) -> Self {
-        Self(Arc::new(err))
-    }
-}
-
-impl PartialEq for AnyError {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for AnyError {}
-
-impl core::hash::Hash for AnyError {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        (Arc::as_ptr(&self.0) as *const ()).hash(state);
-    }
-}
-
-impl fmt::Display for AnyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl core::error::Error for AnyError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        self.0.source()
-    }
-}
-
-#[derive(Debug)]
-struct StringError(String);
-
-impl fmt::Display for StringError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl core::error::Error for StringError {}
-
-impl From<String> for AnyError {
-    fn from(value: String) -> Self {
-        Self::new(StringError(value))
-    }
-}
-
-impl From<&'static str> for AnyError {
-    fn from(value: &'static str) -> Self {
-        Self::new(StringError(value.into()))
-    }
-}
 
 /// A precompile operation result type for individual precompile functions.
 pub type PrecompileResult = Result<PrecompileOutput, PrecompileError>;
@@ -188,12 +127,15 @@ impl From<crate::interpreter::InstrStop> for PrecompileError {
     #[inline]
     fn from(x: crate::interpreter::InstrStop) -> Self {
         debug_assert!(x.is_halt());
+        if x.is_fatal() {
+            return Self::Fatal("fatal external error".into());
+        }
         Self::Halt(PrecompileHalt::OutOfGas)
     }
 }
 
 /// Precompile error type.
-#[derive(Clone, Debug, Error, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Error)]
 pub enum PrecompileError {
     /// Precompile reverted.
     #[error("revert")]
@@ -207,7 +149,7 @@ pub enum PrecompileError {
 }
 
 impl PrecompileError {
-    /// Creates a fatal precompile error.
+    /// Creates a fatal error.
     #[inline]
     pub fn fatal(err: impl core::error::Error + Send + Sync + 'static) -> Self {
         Self::Fatal(AnyError::new(err))
@@ -252,5 +194,25 @@ impl From<&'static str> for PrecompileError {
     #[inline]
     fn from(err: &'static str) -> Self {
         Self::Fatal(err.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interpreter::InstrStop;
+
+    #[test]
+    fn fatal_instr_stop_becomes_fatal_error() {
+        assert!(PrecompileError::from(InstrStop::FatalExternalError).is_fatal());
+        assert!(PrecompileError::from(InstrStop::FatalPrecompileError).is_fatal());
+    }
+
+    #[test]
+    fn non_fatal_instr_stop_remains_oog_precompile_halt() {
+        core::assert_matches!(
+            PrecompileError::from(InstrStop::OutOfGas),
+            PrecompileError::Halt(PrecompileHalt::OutOfGas)
+        );
     }
 }

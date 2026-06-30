@@ -123,6 +123,19 @@ mod tests {
     }
 
     #[test]
+    fn missing_blockhash_is_fatal() {
+        let mut host = test_host(BlockEnv { number: Word::from(10), ..BlockEnv::default() });
+        host.missing_block_hash = true;
+        let mut code = Vec::new();
+        push(&mut code, 9);
+        code.push(op::BLOCKHASH);
+        code.push(op::STOP);
+
+        let interp = run(RunConfig::new(code).host(&mut host));
+        assert_matches!(interp.err, InstrStop::FatalExternalError);
+    }
+
+    #[test]
     fn coinbase_opcode() {
         let beneficiary = Address::from([0x44; 20]);
         let mut host = test_host(BlockEnv { beneficiary, ..BlockEnv::default() });
