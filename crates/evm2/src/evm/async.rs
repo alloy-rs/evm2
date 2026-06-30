@@ -143,8 +143,8 @@ pub(crate) fn on_fiber_result<'a, R, E>(
     func: impl FnOnce() -> Result<R, E> + 'a,
 ) -> impl Future<Output = AsyncResult<R, E>> + Send + 'a
 where
-    R: Send + 'a,
-    E: Send + 'a,
+    R: 'a,
+    E: 'a,
 {
     OnFiber::new(func)
 }
@@ -160,8 +160,8 @@ pub(crate) unsafe fn on_fiber_result_with_stack<'a, R, E>(
     func: impl FnOnce() -> Result<R, E> + 'a,
 ) -> impl Future<Output = AsyncResult<R, E>> + Send + 'a
 where
-    R: Send + 'a,
-    E: Send + 'a,
+    R: 'a,
+    E: 'a,
 {
     OnFiber::with_stack(stack, func)
 }
@@ -171,7 +171,7 @@ pub(crate) fn on_fiber<'a, R>(
     func: impl FnOnce() -> R + 'a,
 ) -> impl Future<Output = AsyncResult<R>> + Send + 'a
 where
-    R: Send + 'a,
+    R: 'a,
 {
     on_fiber_result(move || Ok::<_, core::convert::Infallible>(func()))
 }
@@ -186,7 +186,7 @@ pub(crate) unsafe fn on_fiber_with_stack<'a, R>(
     func: impl FnOnce() -> R + 'a,
 ) -> impl Future<Output = AsyncResult<R>> + Send + 'a
 where
-    R: Send + 'a,
+    R: 'a,
 {
     unsafe { on_fiber_result_with_stack(stack, move || Ok::<_, core::convert::Infallible>(func())) }
 }
@@ -257,7 +257,7 @@ struct FiberFuture<'a, R> {
 // SAFETY: The future may move between polls, but the coroutine stack itself is heap allocated and
 // is only resumed through `poll` with a fresh task context. Values that can remain on the coroutine
 // stack across suspension are required to be `Send` by the blocking boundary.
-unsafe impl<R: Send> Send for FiberFuture<'_, R> {}
+unsafe impl<R> Send for FiberFuture<'_, R> {}
 
 impl<'a, R> FiberFuture<'a, R> {
     fn new(
@@ -736,7 +736,7 @@ mod tests {
 
         let result = poll_ready(evm.transact_async(&tx)).unwrap();
 
-        assert_eq!(result.gas_used(), 42);
+        assert_eq!(result.result().gas_used(), 42);
     }
 
     #[test]
@@ -758,7 +758,7 @@ mod tests {
 
         let result = poll_ready(assert_send(evm.transact_async(&tx))).unwrap();
 
-        assert_eq!(result.gas_used(), 42);
+        assert_eq!(result.result().gas_used(), 42);
     }
 
     #[test]
@@ -781,7 +781,7 @@ mod tests {
 
         let result = poll_ready(assert_send(evm.transact_async(&tx))).unwrap();
 
-        assert_eq!(result.gas_used(), 42);
+        assert_eq!(result.result().gas_used(), 42);
     }
 
     #[test]
@@ -906,20 +906,15 @@ mod tests {
     fn current_thread_tokio_handle_does_not_panic_in_sync_adapter() {
         let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let handle = runtime.handle().clone();
-        let result = std::panic::catch_unwind(move || {
-            runtime.block_on(async move {
-                let mut db = AsyncDb::with_tokio_handle(TokioDb, handle);
-                let address = Address::ZERO;
-                let key = Word::from(7);
-                let code = DynDatabase::get_storage(&mut db, &address, &key).unwrap_err();
-                db.error(code).to_string()
-            })
+        let result = runtime.block_on(async move {
+            let mut db = AsyncDb::with_tokio_handle(TokioDb, handle);
+            let address = Address::ZERO;
+            let key = Word::from(7);
+            let code = DynDatabase::get_storage(&mut db, &address, &key).unwrap_err();
+            db.error(code).to_string()
         });
 
-        assert_matches!(
-            result.as_deref(),
-            Ok("async host operation requires a Tokio multi-thread runtime")
-        );
+        assert_eq!(result, "async host operation requires a Tokio multi-thread runtime");
     }
 
     #[test]
@@ -967,7 +962,7 @@ mod tests {
         );
         evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
 
-        let result = poll_ready(evm.system_call_async(contract, Bytes::new())).unwrap();
+        let result = poll_ready(evm.system_call_async(contract, Bytes::new())).unwrap().discard();
 
         assert!(result.status);
         assert_eq!(result.gas_used, 0);
@@ -992,7 +987,7 @@ mod tests {
         assert_matches!(evm.transact(&tx), Err(HandlerError::Database(_)));
         assert!(evm.db_error_code().is_some());
 
-        let result = poll_ready(evm.system_call_async(contract, Bytes::new())).unwrap();
+        let result = poll_ready(evm.system_call_async(contract, Bytes::new())).unwrap().discard();
 
         assert!(result.status);
         assert_eq!(result.db_error_code, None);

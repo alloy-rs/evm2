@@ -152,12 +152,6 @@ impl<'evm, T: EvmTypes> ExecutedTx<'evm, T> {
         self.take_result()
     }
 
-    #[cfg(feature = "async")]
-    #[inline]
-    pub(crate) fn commit_or_discard_database_error(self) -> TxResult<T> {
-        if self.result().db_error_code.is_some() { self.discard() } else { self.commit() }
-    }
-
     /// Accepts the transaction state and records its changes in a block accumulator.
     ///
     /// This streams transaction changes into `block_state`, commits them to the accepted overlay,
