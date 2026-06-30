@@ -1,7 +1,7 @@
 use crate::{
     EvmFeatures,
     constants::BLOCK_HASH_HISTORY,
-    interpreter::{Host, InstrStop, Word},
+    interpreter::{Host, Word},
     utils::{address_to_word, b256_to_word, word_to_usize_saturated},
 };
 use evm2_macros::instruction;
@@ -12,11 +12,7 @@ pub(crate) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
         } else {
-            cx.state
-                .host()
-                .block_hash(number)?
-                .map(b256_to_word)
-                .ok_or(InstrStop::FatalExternalError)?
+            cx.state.host().block_hash(number)?.map(b256_to_word).unwrap_or_default()
         }
     } else {
         Word::ZERO
@@ -117,6 +113,20 @@ mod tests {
         push(&mut code, 10);
         code.push(op::BLOCKHASH);
         code.push(op::STOP);
+        let interp = run(RunConfig::new(code).host(&mut host));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [0]);
+    }
+
+    #[test]
+    fn missing_blockhash_is_zero() {
+        let mut host = test_host(BlockEnv { number: Word::from(10), ..BlockEnv::default() });
+        host.missing_block_hash = true;
+        let mut code = Vec::new();
+        push(&mut code, 9);
+        code.push(op::BLOCKHASH);
+        code.push(op::STOP);
+
         let interp = run(RunConfig::new(code).host(&mut host));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [0]);

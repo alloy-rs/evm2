@@ -130,7 +130,7 @@ use crate::{
     trustme,
     version::{EvmFeatures, GasId},
 };
-use alloc::{boxed::Box, sync::Arc, vec};
+use alloc::{boxed::Box, string::ToString, sync::Arc, vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 #[cfg(feature = "async")]
@@ -1178,9 +1178,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
                 (InstrStop::PrecompileOOG, Bytes::new())
             }
-            Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
-                (InstrStop::PrecompileError, Bytes::new())
+            Err(PrecompileError::Halt(halt)) => {
+                let output = if message.depth == 0 {
+                    Bytes::from(halt.to_string().into_bytes())
+                } else {
+                    Bytes::new()
+                };
+                (InstrStop::PrecompileError, output)
             }
+            Err(PrecompileError::Fatal(_)) => (InstrStop::FatalExternalError, Bytes::new()),
         };
         if !stop.is_success() {
             self.state.rollback(checkpoint, self.features);
@@ -1613,7 +1619,7 @@ mod tests {
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         env::TxEnv,
-        ethereum::RecoveredTxEnvelope,
+        ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, MessageKind, op},
         precompiles::{Precompile, PrecompileId, PrecompileMap},
         registry::TxRequest,
@@ -1621,7 +1627,7 @@ mod tests {
     };
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
+    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, TxKind, U256};
     use core::{
         error::Error,
         fmt,
@@ -2003,6 +2009,84 @@ mod tests {
             .expect("precompile succeeds");
 
         assert_eq!(output.bytes(), b"inner");
+    }
+
+    #[test]
+    fn precompile_fatal_error_stops_frame_fatally() {
+        let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |_, _, _| {
+            Err(PrecompileError::from("fatal precompile failure"))
+        })]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+        let mut message = precompile_message(TEST_PRECOMPILE);
+
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
+
+        assert_eq!(result.stop, InstrStop::FatalExternalError);
+        assert!(result.output.is_empty());
+    }
+
+    #[test]
+    fn top_level_precompile_halt_preserves_context() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000u64)),
+        );
+        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy {
+                nonce: 0,
+                gas_price: 0,
+                gas_limit: 50_000,
+                to: TxKind::Call(Address::with_last_byte(0x09)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+                chain_id: Some(1),
+            },
+            caller,
+        ));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::BERLIN,
+            BlockEnv { gas_limit: U256::from(30_000_000u64), ..BlockEnv::default() },
+            ethereum_tx_registry(SpecId::BERLIN),
+            database,
+            Precompiles::base(SpecId::BERLIN),
+        );
+
+        let result = evm.transact(&tx).expect("transaction is valid").discard();
+
+        assert!(!result.status);
+        assert_eq!(result.stop, InstrStop::PrecompileError);
+        assert_eq!(result.output, Bytes::from_static(b"wrong input length for blake2"));
+    }
+
+    #[test]
+    fn nested_precompile_halt_keeps_empty_output() {
+        let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |_, _, _| {
+            Err(PrecompileHalt::Blake2WrongLength.into())
+        })]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+        let mut message = precompile_message(TEST_PRECOMPILE);
+        message.depth = 1;
+
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
+
+        assert_eq!(result.stop, InstrStop::PrecompileError);
+        assert!(result.output.is_empty());
     }
 
     #[test]
