@@ -39,6 +39,7 @@ pub(crate) struct TestHost {
     pub(crate) is_empty: bool,
     pub(crate) is_cold: bool,
     pub(crate) is_touched: bool,
+    pub(crate) missing_block_hash: bool,
     pub(crate) storage: StorageKeyMap<Word>,
     pub(crate) original_storage: StorageKeyMap<Word>,
     pub(crate) transient_storage: StorageKeyMap<Word>,
@@ -62,6 +63,7 @@ impl Default for TestHost {
             is_empty: false,
             is_cold: false,
             is_touched: false,
+            missing_block_hash: false,
             storage: StorageKeyMap::default(),
             original_storage: StorageKeyMap::default(),
             transient_storage: StorageKeyMap::default(),
@@ -121,6 +123,9 @@ impl Host<TestTypes> for TestHost {
     }
 
     fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop> {
+        if self.missing_block_hash {
+            return Ok(None);
+        }
         Ok(Some(B256::with_last_byte(number.wrapping_to::<u8>())))
     }
 

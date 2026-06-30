@@ -26,7 +26,7 @@ use evm2::{
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
         AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, DbStats, DbStatsCounts,
-        HISTORY_STORAGE_ADDRESS, InMemoryDB,
+        HISTORY_STORAGE_ADDRESS, InMemoryDB, SystemTx,
     },
     registry::HandlerError,
 };
@@ -427,7 +427,7 @@ fn commit_system_call<T: EvmTypes<Host = Evm<T>>>(
     address: Address,
     data: Bytes,
 ) {
-    let executed = evm.system_call(address, data);
+    let executed = evm.system_call(SystemTx::new(address, data)).expect("system call errored");
     assert!(executed.result().status, "pre-block system call failed: {address}");
     let Ok(_) = executed.commit_with(post);
 }

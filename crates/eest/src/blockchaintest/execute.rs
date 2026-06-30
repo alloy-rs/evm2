@@ -24,13 +24,13 @@ use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
-    BaseEvmTypes, Evm, Precompiles, SpecId, TxResult,
+    BaseEvmTypes, ErrorCode, Evm, Precompiles, SpecId, TxResult,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
         AccountChangeRef, AccountInfo as EvmAccountInfo, AccountInfoRef, BEACON_ROOTS_ADDRESS,
-        BlockStateAccumulator, DbErrorCode, DbStats, DbStatsCounts, HISTORY_STORAGE_ADDRESS,
-        InMemoryDB, StateChangeSink, StateChangeSource, Tee, WITHDRAWAL_REQUEST_ADDRESS,
+        BlockStateAccumulator, DbStats, DbStatsCounts, HISTORY_STORAGE_ADDRESS, InMemoryDB,
+        StateChangeSink, StateChangeSource, SystemTx, Tee, WITHDRAWAL_REQUEST_ADDRESS,
     },
     registry::HandlerError,
 };
@@ -579,7 +579,7 @@ fn run_system_call(
     data: Bytes,
     label: &'static str,
 ) -> Result<(), TestErrorKind> {
-    let executed = evm.system_call(address, data);
+    let executed = evm.system_call(SystemTx::new(address, data))?;
     if !executed.result().status {
         let _ = executed.discard();
         let has_code = match evm.account_code(&address) {
@@ -637,7 +637,7 @@ const fn account_info_ref(info: &EvmAccountInfo) -> AccountInfoRef<'_> {
     }
 }
 
-fn database_error(evm: &mut Evm<BaseEvmTypes>, code: DbErrorCode) -> TestErrorKind {
+fn database_error(evm: &mut Evm<BaseEvmTypes>, code: ErrorCode) -> TestErrorKind {
     TestErrorKind::UnexpectedFailure(evm.database_mut().error(code).to_string())
 }
 
