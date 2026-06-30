@@ -22,10 +22,10 @@ pub use tracked::Tracked;
 
 use super::{
     PrewarmSet,
-    db::{CacheDB, DbErrorCode, DbResult, DynDatabase},
+    db::{CacheDB, DbResult, DynDatabase},
 };
 use crate::{
-    EvmFeatures, Version,
+    ErrorCode, EvmFeatures, Version,
     bytecode::Bytecode,
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap},
@@ -268,7 +268,7 @@ impl State {
     /// database when it has not been loaded yet.
     ///
     /// When `skip_cold` is true and the account is not already in the overlay, the cold database
-    /// read is skipped and [`DbErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving the overlay
+    /// read is skipped and [`ErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving the overlay
     /// untouched. This mirrors revm's `skip_cold_load`/`ColdLoadSkipped` so callers can detect a
     /// cold access without paying for the load. With `skip_cold` false (or when the account is
     /// already in the overlay) the entry is always returned.
@@ -293,14 +293,14 @@ impl State {
                 // execution is a cheap warm access and must not be forced out of gas.
                 let account = entry.into_mut();
                 if skip_cold && !account.is_warm && !inner.prewarm_set.is_warm(address) {
-                    return Err(DbErrorCode::COLD_LOAD_SKIPPED);
+                    return Err(ErrorCode::COLD_LOAD_SKIPPED);
                 }
                 Ok(account)
             }
             hash_map::Entry::Vacant(entry) => {
                 let is_warm = inner.prewarm_set.is_warm(address);
                 if skip_cold && !is_warm {
-                    return Err(DbErrorCode::COLD_LOAD_SKIPPED);
+                    return Err(ErrorCode::COLD_LOAD_SKIPPED);
                 }
                 let original = inner.database.get_account(address)?;
                 let present = original.clone();
@@ -318,7 +318,7 @@ impl State {
     /// only when it is first mutated while absent. This mirrors revm's `AccountHandle`.
     ///
     /// When `skip_cold_load` is true and the account has not been loaded into the overlay yet, the
-    /// cold database read is skipped and [`DbErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving
+    /// cold database read is skipped and [`ErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving
     /// the overlay untouched. Callers that cannot afford a cold access use this to detect it
     /// without paying for the load. An already-loaded account always yields a handle.
     pub fn account(

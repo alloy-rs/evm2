@@ -1,7 +1,7 @@
 //! Transaction-scoped persistent storage overlay.
 
-use super::{DbErrorCode, DbResult, DynDatabase, JournalEntry, StateInner, Tracked};
-use crate::interpreter::Word;
+use super::{DbResult, DynDatabase, JournalEntry, StateInner, Tracked};
+use crate::{ErrorCode, interpreter::Word};
 use alloy_primitives::{
     Address,
     map::{U256Map, hash_map},
@@ -118,7 +118,7 @@ impl<'a> StorageHandle<'a> {
     /// returns a journaled handle to it.
     ///
     /// When `skip_cold_load` is true and the slot is not already in the overlay, the cold database
-    /// read is skipped and [`DbErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving the overlay
+    /// read is skipped and [`ErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving the overlay
     /// untouched. This mirrors [`State::account`](super::State::account)'s
     /// `skip_cold_load`/`ColdLoadSkipped` so callers can detect a cold access without paying for
     /// the load. An already-loaded slot is always returned.
@@ -144,14 +144,14 @@ impl<'a> StorageHandle<'a> {
                     && !slot.is_warm
                     && !inner.prewarm_set.is_storage_warm(&address, &key)
                 {
-                    return Err(DbErrorCode::COLD_LOAD_SKIPPED);
+                    return Err(ErrorCode::COLD_LOAD_SKIPPED);
                 }
                 slot
             }
             hash_map::Entry::Vacant(entry) => {
                 let is_warm = inner.prewarm_set.is_storage_warm(&address, &key);
                 if skip_cold_load && !is_warm {
-                    return Err(DbErrorCode::COLD_LOAD_SKIPPED);
+                    return Err(ErrorCode::COLD_LOAD_SKIPPED);
                 }
                 let value = if storage.wiped {
                     Word::ZERO

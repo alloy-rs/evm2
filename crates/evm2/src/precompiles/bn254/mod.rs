@@ -351,15 +351,12 @@ mod tests {
         let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
         assert_matches!(
             res,
-            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate),
+            Err(PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)),
         );
 
         // Short input is right-padded. This makes the first field element non-canonical.
         let res = run_add(&[0x40], BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
-        assert_matches!(
-            res,
-            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember),
-        );
+        assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)),);
 
         let input = hex::decode(
             "\
@@ -456,15 +453,12 @@ mod tests {
         let res = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000));
         assert_matches!(
             res,
-            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate),
+            Err(PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)),
         );
 
         // Short input is right-padded. This makes the point x-coordinate non-canonical.
         let res = run_mul(&[0x40], BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000));
-        assert_matches!(
-            res,
-            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember),
-        );
+        assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)),);
 
         let input = hex::decode(
             "\
@@ -577,7 +571,7 @@ mod tests {
         );
         assert_matches!(
             res,
-            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate),
+            Err(PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)),
         );
 
         let mut input = [0u8; PAIR_ELEMENT_LEN];
@@ -588,10 +582,7 @@ mod tests {
             BYZANTIUM_PAIR_BASE,
             &mut GasTracker::new(180_000),
         );
-        assert_matches!(
-            res,
-            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember),
-        );
+        assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)));
 
         // Invalid input length
         let input = hex::decode(

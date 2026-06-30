@@ -111,6 +111,8 @@ pub enum InstrStop {
     CreateContractStartingWithEF,
     /// Exceeded init code size limit (EIP-3860:  Limit and meter initcode).
     CreateInitCodeSizeLimit,
+    /// Fatal precompile error.
+    FatalPrecompileError,
     /// Fatal external error. Returned by database.
     FatalExternalError,
     /// Invalid encoding of an instruction's immediate operand.
@@ -143,5 +145,11 @@ impl InstrStop {
     #[inline]
     pub const fn is_halt(self) -> bool {
         !self.is_success() && !self.is_revert()
+    }
+
+    /// Returns whether execution hit a fatal host/extension boundary error.
+    #[inline]
+    pub const fn is_fatal(self) -> bool {
+        matches!(self, Self::FatalPrecompileError | Self::FatalExternalError)
     }
 }
