@@ -144,6 +144,23 @@ where
     OnFiber::new(func)
 }
 
+/// Runs `func` on a native fiber backed by a reusable EVM stack slot, returning a local future.
+///
+/// # Safety
+///
+/// `stack` must point to valid stack storage for the lifetime of the returned future. That storage
+/// must not be accessed by anything else until the returned future is dropped.
+pub(crate) unsafe fn on_local_fiber_result_with_stack<'a, R, E>(
+    stack: NonNull<FiberStack>,
+    func: impl FnOnce() -> Result<R, E> + 'a,
+) -> impl Future<Output = AsyncResult<R, E>> + 'a
+where
+    R: 'a,
+    E: 'a,
+{
+    LocalOnFiber::new(OnFiber::with_stack(stack, func))
+}
+
 /// Runs `func` on a native fiber backed by a reusable EVM stack slot.
 ///
 /// # Safety
@@ -171,6 +188,23 @@ where
     on_fiber_result(move || Ok::<_, core::convert::Infallible>(func()))
 }
 
+/// Runs `func` on a native fiber backed by a reusable EVM stack slot, returning a local future.
+///
+/// # Safety
+///
+/// See [`on_local_fiber_result_with_stack`].
+pub(crate) unsafe fn on_local_fiber_with_stack<'a, R>(
+    stack: NonNull<FiberStack>,
+    func: impl FnOnce() -> R + 'a,
+) -> impl Future<Output = AsyncResult<R>> + 'a
+where
+    R: 'a,
+{
+    unsafe {
+        on_local_fiber_result_with_stack(stack, move || Ok::<_, core::convert::Infallible>(func()))
+    }
+}
+
 /// Runs `func` on a native fiber backed by a reusable EVM stack slot.
 ///
 /// # Safety
@@ -184,6 +218,25 @@ where
     R: 'a,
 {
     unsafe { on_fiber_result_with_stack(stack, move || Ok::<_, core::convert::Infallible>(func())) }
+}
+
+struct LocalOnFiber<F> {
+    inner: F,
+    _not_send: PhantomData<*mut ()>,
+}
+
+impl<F> LocalOnFiber<F> {
+    const fn new(inner: F) -> Self {
+        Self { inner, _not_send: PhantomData }
+    }
+}
+
+impl<F: Future + Unpin> Future for LocalOnFiber<F> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.get_mut().inner).poll(cx)
+    }
 }
 
 enum OnFiber<'a, R, E> {
@@ -669,7 +722,6 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
         let tx = test_tx(41);
 
         let result = poll_ready(evm.transact_async(&tx)).unwrap();
@@ -678,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn transaction_async_future_is_send_with_send_erased_fields() {
+    fn transaction_async_send_future_is_send_with_send_erased_fields() {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             crate::ethereum::RecoveredTxEnvelope::as_legacy,
@@ -694,13 +746,13 @@ mod tests {
         evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
         let tx = test_tx(41);
 
-        let result = poll_ready(assert_send(evm.transact_async(&tx))).unwrap();
+        let result = poll_ready(assert_send(evm.transact_async_send(&tx))).unwrap();
 
         assert_eq!(result.result().gas_used(), 42);
     }
 
     #[test]
-    fn transaction_async_future_is_send_after_type_check() {
+    fn transaction_async_send_future_is_send_after_type_check() {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             crate::ethereum::RecoveredTxEnvelope::as_legacy,
@@ -717,14 +769,14 @@ mod tests {
         evm.evm_is_send_with_inspector::<InMemoryDB, Precompiles<BaseEvmTypes>, SendInspector>();
         let tx = test_tx(41);
 
-        let result = poll_ready(assert_send(evm.transact_async(&tx))).unwrap();
+        let result = poll_ready(assert_send(evm.transact_async_send(&tx))).unwrap();
 
         assert_eq!(result.result().gas_used(), 42);
     }
 
     #[test]
     #[should_panic = "async EVM execution requires EVM erased fields to be verified as Send with Evm::evm_is_send"]
-    fn transaction_async_panics_with_non_send_erased_fields() {
+    fn transaction_async_send_panics_with_non_send_erased_fields() {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -734,12 +786,12 @@ mod tests {
         );
         let tx = test_tx(41);
 
-        drop(evm.transact_async(&tx));
+        drop(evm.transact_async_send(&tx));
     }
 
     #[test]
     #[should_panic = "async EVM execution requires EVM erased fields to be verified as Send with Evm::evm_is_send"]
-    fn transaction_async_panics_after_non_send_setter() {
+    fn transaction_async_send_panics_after_non_send_setter() {
         let marker = Rc::new(());
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
@@ -757,7 +809,32 @@ mod tests {
         evm.set_inspector(NonSendInspector { marker });
         let tx = test_tx(41);
 
-        drop(evm.transact_async(&tx));
+        drop(evm.transact_async_send(&tx));
+    }
+
+    #[test]
+    fn transaction_async_accepts_non_send_erased_fields() {
+        let marker = Rc::new(());
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            handle_test_tx,
+        );
+        let database = Db::new(NonSendDb { marker: Rc::clone(&marker) });
+        let precompiles = NonSendPrecompiles { marker: Rc::clone(&marker) };
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            registry,
+            database,
+            precompiles,
+        );
+        evm.set_inspector(NonSendInspector { marker });
+        let tx = test_tx(41);
+
+        let result = poll_ready(evm.transact_async(&tx)).unwrap();
+
+        assert_eq!(result.result().gas_used(), 42);
     }
 
     #[test]
@@ -791,7 +868,6 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
         let tx = test_tx(41);
 
         let result = poll_ready(evm.transact_async(&tx));
@@ -825,11 +901,32 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
 
         let result = poll_ready(evm.system_call_async(SystemTx::new(contract, Bytes::new())))
             .unwrap()
             .discard();
+
+        assert!(result.status);
+        assert_eq!(result.gas_used, 0);
+    }
+
+    #[test]
+    fn system_call_async_send_future_is_send() {
+        let contract = Address::from([0x42; 20]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
+
+        let result = poll_ready(assert_send(
+            evm.system_call_async_send(SystemTx::new(contract, Bytes::new())),
+        ))
+        .unwrap()
+        .discard();
 
         assert!(result.status);
         assert_eq!(result.gas_used, 0);
@@ -845,7 +942,6 @@ mod tests {
             Db::new(FailOnceAccountDb { fail_next_account: true }),
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.evm_is_send::<Db<FailOnceAccountDb>, Precompiles<BaseEvmTypes>>();
         let tx = crate::ethereum::RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
             TxLegacy { gas_limit: 100_000, ..TxLegacy::default() },
             Address::ZERO,
@@ -923,7 +1019,7 @@ mod tests {
         Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
     }
 
-    fn poll_ready<F: Future + Send>(future: F) -> F::Output {
+    fn poll_ready<F: Future>(future: F) -> F::Output {
         let mut future = core::pin::pin!(future);
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
