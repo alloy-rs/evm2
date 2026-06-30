@@ -1,7 +1,8 @@
 //! In-memory cache database.
 
-use super::{DbErrorCode, DbResult, DynDatabase, EmptyDB};
+use super::{DbResult, DynDatabase, EmptyDB};
 use crate::{
+    ErrorCode,
     bytecode::Bytecode,
     evm::state::{
         AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange,
@@ -267,7 +268,7 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> alloc::boxed::Box<dyn core::error::Error> {
+    fn error(&mut self, code: ErrorCode) -> crate::AnyError {
         self.db.error(code)
     }
 }

@@ -1,7 +1,7 @@
 //! Transaction execution lifecycle and result types.
 
-use super::{BlockStateAccumulator, DbErrorCode, Evm, StateChangeSink, StateChanges};
-use crate::{EvmTypes, interpreter::InstrStop};
+use super::{BlockStateAccumulator, Evm, StateChangeSink, StateChanges};
+use crate::{ErrorCode, EvmTypes, interpreter::InstrStop};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, Log};
 use core::fmt;
@@ -10,7 +10,7 @@ use derive_where::derive_where;
 /// Transaction execution result without an owned state diff.
 ///
 /// This is the result-only half of transaction execution: status, gas used, output, stop reason,
-/// logs, database error handle, and extension data. Logs live here because they are execution
+/// logs, host error code, and extension data. Logs live here because they are execution
 /// output, not database state. Use [`ExecutedTx::detach`] only when an owned [`StateChanges`] value
 /// is required.
 #[must_use = "transaction results contain execution status, gas, logs, and errors"]
@@ -28,8 +28,8 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     pub created_address: Option<Address>,
     /// Logs emitted by the transaction.
     pub logs: Vec<Log>,
-    /// Database error handle, if execution stopped on a database error.
-    pub db_error_code: Option<DbErrorCode>,
+    /// Host error code raised during execution, if any.
+    pub error_code: Option<ErrorCode>,
     /// EVM type-specific extension data.
     pub ext: T::TxResultExt,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
