@@ -235,6 +235,9 @@ fn call_inner<T: EvmTypes>(
 
     let tx_env = state.tx();
     let mut result = state.host().execute_message(tx_env, code, &mut message);
+    if result.stop == InstrStop::FatalExternalError {
+        return Err(InstrStop::FatalExternalError);
+    }
     gas.erase_cost(result.gas_returned_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());
     let copy_len = min(return_memory_range.len(), result.output.len());
@@ -325,6 +328,9 @@ fn create_inner<T: EvmTypes>(
     let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
     let tx_env = state.tx();
     let result = state.host().execute_message(tx_env, bytecode, &mut message);
+    if result.stop == InstrStop::FatalExternalError {
+        return Err(InstrStop::FatalExternalError);
+    }
     gas.erase_cost(result.gas_returned_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.

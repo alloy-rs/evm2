@@ -1617,7 +1617,7 @@ mod tests {
         interpreter::{GasTracker, Interpreter, MessageKind, op},
         precompiles::{Precompile, PrecompileId, PrecompileMap},
         registry::TxRequest,
-        test_utils::{legacy_bytecode, push_address},
+        test_utils::{legacy_bytecode, push, push_address},
     };
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
@@ -1726,6 +1726,40 @@ mod tests {
             salt: B256::ZERO,
             ext: (),
             _non_exhaustive: (),
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingDbError;
+
+    impl fmt::Display for FailingDbError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("storage read failed")
+        }
+    }
+
+    impl Error for FailingDbError {}
+
+    #[derive(Debug, Default)]
+    struct FailingStorageDb;
+
+    impl Database for FailingStorageDb {
+        type Error = FailingDbError;
+
+        fn get_account(&mut self, _address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+            Ok(Some(AccountInfo::default()))
+        }
+
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
+        }
+
+        fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
+            Err(FailingDbError)
+        }
+
+        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
         }
     }
 
@@ -2269,47 +2303,6 @@ mod tests {
 
     #[test]
     fn host_records_database_error_code() {
-        #[derive(Debug)]
-        struct FailingDbError;
-
-        impl fmt::Display for FailingDbError {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("storage read failed")
-            }
-        }
-
-        impl Error for FailingDbError {}
-
-        #[derive(Debug, Default)]
-        struct FailingStorageDb;
-
-        impl Database for FailingStorageDb {
-            type Error = FailingDbError;
-
-            fn get_account(
-                &mut self,
-                _address: &Address,
-            ) -> Result<Option<AccountInfo>, Self::Error> {
-                Ok(Some(AccountInfo::default()))
-            }
-
-            fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
-                Ok(Bytecode::default())
-            }
-
-            fn get_storage(
-                &mut self,
-                _address: &Address,
-                _key: &Word,
-            ) -> Result<Word, Self::Error> {
-                Err(FailingDbError)
-            }
-
-            fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
-                Ok(None)
-            }
-        }
-
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -2330,6 +2323,161 @@ mod tests {
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::FatalExternalError);
+        let error_code = evm.db_error_code().unwrap();
+        assert_eq!(evm.database_mut().error(error_code).to_string(), "storage read failed");
+    }
+
+    #[test]
+    fn nested_call_database_error_is_fatal_to_parent() {
+        #[derive(Debug)]
+        struct NestedFailingStorageDb {
+            target: Address,
+            code: Bytecode,
+        }
+
+        impl Database for NestedFailingStorageDb {
+            type Error = FailingDbError;
+
+            fn get_account(
+                &mut self,
+                address: &Address,
+            ) -> Result<Option<AccountInfo>, Self::Error> {
+                let info = if *address == self.target {
+                    AccountInfo::default().with_code(self.code.clone())
+                } else {
+                    AccountInfo::default()
+                };
+                Ok(Some(info))
+            }
+
+            fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+                Ok(self.code.clone())
+            }
+
+            fn get_storage(
+                &mut self,
+                _address: &Address,
+                _key: &Word,
+            ) -> Result<Word, Self::Error> {
+                Err(FailingDbError)
+            }
+
+            fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
+                Ok(None)
+            }
+        }
+
+        let target = Address::from([0x22; 20]);
+        let child_code =
+            Bytecode::new_legacy(Bytes::from_static(&[op::PUSH0, op::SLOAD, op::STOP]));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            Db::new(NestedFailingStorageDb { target, code: child_code }),
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let mut parent = vec![op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0];
+        push_address(&mut parent, &target);
+        parent.extend([op::PUSH2, 0x30, 0x00, op::CALL]);
+        parent.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
+        let bytecode = Bytecode::new_legacy(Bytes::from(parent));
+        let mut message =
+            Message { kind: MessageKind::Call, gas_limit: 100_000, ..Message::default() };
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+
+        assert_eq!(result.stop, InstrStop::FatalExternalError);
+        let error_code = evm.db_error_code().unwrap();
+        assert_eq!(evm.database_mut().error(error_code).to_string(), "storage read failed");
+    }
+
+    #[test]
+    fn nested_create_database_error_is_fatal_to_parent() {
+        #[derive(Debug)]
+        struct NestedCreateFailingAccountDb {
+            fail_target: Address,
+        }
+
+        impl Database for NestedCreateFailingAccountDb {
+            type Error = FailingDbError;
+
+            fn get_account(
+                &mut self,
+                address: &Address,
+            ) -> Result<Option<AccountInfo>, Self::Error> {
+                if *address == self.fail_target {
+                    return Err(FailingDbError);
+                }
+                Ok(Some(AccountInfo::default()))
+            }
+
+            fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+                Ok(Bytecode::default())
+            }
+
+            fn get_storage(
+                &mut self,
+                _address: &Address,
+                _key: &Word,
+            ) -> Result<Word, Self::Error> {
+                Ok(Word::ZERO)
+            }
+
+            fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
+                Ok(None)
+            }
+        }
+
+        fn create_failing_balance_code(initcode: &[u8]) -> Bytecode {
+            fn build_parent(init_offset: usize, init_len: usize) -> Vec<u8> {
+                let mut code = Vec::new();
+                push(&mut code, init_len);
+                push(&mut code, init_offset);
+                push(&mut code, 0);
+                code.push(op::CODECOPY);
+                push(&mut code, init_len);
+                push(&mut code, 0);
+                push(&mut code, 0);
+                code.push(op::CREATE);
+                code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
+                code
+            }
+
+            let mut parent = build_parent(0, initcode.len());
+            let init_offset = parent.len();
+            parent = build_parent(init_offset, initcode.len());
+            parent.extend_from_slice(initcode);
+            legacy_bytecode(parent)
+        }
+
+        let fail_target = Address::from([0xbb; 20]);
+        let mut initcode = Vec::new();
+        push_address(&mut initcode, &fail_target);
+        initcode.extend([op::BALANCE, op::STOP]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            Db::new(NestedCreateFailingAccountDb { fail_target }),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let caller = Address::from([0xaa; 20]);
+        let bytecode = create_failing_balance_code(&initcode);
+        let mut message = Message {
+            kind: MessageKind::Call,
+            destination: caller,
+            caller,
+            code_address: caller,
+            gas_limit: 100_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+
+        assert_eq!(result.stop, InstrStop::FatalExternalError);
+        assert!(result.output.is_empty());
         let error_code = evm.db_error_code().unwrap();
         assert_eq!(evm.database_mut().error(error_code).to_string(), "storage read failed");
     }
