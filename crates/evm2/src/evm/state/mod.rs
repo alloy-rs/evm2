@@ -393,37 +393,46 @@ impl State {
     }
 
     /// Transfers value between accounts.
-    pub fn transfer(&mut self, from: &Address, to: &Address, value: &Word) -> DbResult<bool> {
+    pub fn transfer(
+        &mut self,
+        from: &Address,
+        to: &Address,
+        value: &Word,
+    ) -> DbResult<Result<(), InstrStop>> {
         if value.is_zero() {
             self.account(to, false)?.touch();
-            return Ok(true);
+            return Ok(Ok(()));
         }
 
         if from == to {
             let mut account = self.account(from, false)?;
             if account.balance() < *value {
-                return Ok(false);
+                return Ok(Err(InstrStop::OutOfFunds));
             }
             account.touch();
-            return Ok(true);
+            return Ok(Ok(()));
         }
 
+        let from_balance = self.account(from, false)?.balance();
+        let Some(new_from_balance) = from_balance.checked_sub(*value) else {
+            return Ok(Err(InstrStop::OutOfFunds));
+        };
+        let to_balance = self.account(to, false)?.balance();
+        let Some(new_to_balance) = to_balance.checked_add(*value) else {
+            return Ok(Err(InstrStop::OverflowPayment));
+        };
         {
             let mut from_account = self.account(from, false)?;
-            let Some(new_from_balance) = from_account.balance().checked_sub(*value) else {
-                return Ok(false);
-            };
             // `set_balance` touches the account, matching the touch the prior `transfer` performed.
             from_account.set_balance(new_from_balance);
             from_account.touch();
         }
         {
             let mut to_account = self.account(to, false)?;
-            let new_to_balance = to_account.balance().saturating_add(*value);
             to_account.set_balance(new_to_balance);
             to_account.touch();
         }
-        Ok(true)
+        Ok(Ok(()))
     }
 
     /// Creates a contract account and transfers endowment from the caller.
