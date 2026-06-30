@@ -60,13 +60,22 @@ jobs:
               return;
             }
 
+            const trustedPermissions = new Set(['admin', 'maintain', 'write']);
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
             if (!allowed.has(pr.author_association)) {
-              core.setFailed(`PR author @${pr.user.login} is not allowed to trigger Cyclops audits (${pr.author_association})`);
+              const { data: authorPermission } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: pr.user.login,
+              });
+              if (!trustedPermissions.has(authorPermission.permission)) {
+                core.setFailed(`PR author @${pr.user.login} is not allowed to trigger Cyclops audits (${pr.author_association}, ${authorPermission.permission})`);
+                return;
+              }
             }
 
       - name: Parse arguments
