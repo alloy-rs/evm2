@@ -148,7 +148,7 @@ pub mod registry;
 mod system;
 pub use system::{
     BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, SYSTEM_ADDRESS,
-    SYSTEM_CALL_GAS_LIMIT, WITHDRAWAL_REQUEST_ADDRESS,
+    SYSTEM_CALL_GAS_LIMIT, SystemTx, WITHDRAWAL_REQUEST_ADDRESS,
 };
 
 mod db;
@@ -754,22 +754,6 @@ where
 {
 }
 
-#[cfg(feature = "async")]
-impl<'a, T: EvmTypes> SendEvmRef<'a, T> {
-    #[inline]
-    const fn new(evm: &'a mut Evm<T>) -> Self {
-        Self { evm }
-    }
-}
-
-#[cfg(feature = "async")]
-impl<T: EvmTypes<Tx: Typed2718, Host = Evm<T>>> SendEvmRef<'_, T> {
-    #[inline]
-    fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
-        self.evm.transact(tx).map(ExecutedTx::commit)
-    }
-}
-
 impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// Dispatches the transaction to its handler and returns an executed transaction handle.
     ///
@@ -823,28 +807,48 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
     /// running the synchronous transaction on a fiber.
     ///
-    /// This commits the executed transaction on the fiber and returns the result-only
-    /// [`TxResult`].
-    ///
-    /// This returns a `Send` future. Before calling it, the current erased database, precompile
-    /// provider, and optional inspector must be verified with [`Self::evm_is_send`] or
-    /// [`Self::evm_is_send_with_inspector`].
+    /// This returns a local future and does not require the erased database, precompile provider,
+    /// or optional inspector to be `Send`. Use [`Self::transact_async_send`] when the returned
+    /// future must be `Send`.
     #[cfg(feature = "async")]
     pub fn transact_async<'a>(
         &'a mut self,
         tx: &'a T::Tx,
-    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, registry::HandlerError>> + Send + 'a
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'a, T>, registry::HandlerError>> + 'a
     where
         T::Tx: Sync,
-        T::TxResultExt: Send,
+    {
+        let stack = self.async_stack();
+        // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
+        // access the EVM stack slot until that future is dropped.
+        unsafe { r#async::on_local_fiber_result_with_stack(stack, move || self.transact(tx)) }
+    }
+
+    /// Dispatches the transaction to the handler registered for its EIP-2718 type byte on an async
+    /// fiber and returns a `Send` future.
+    ///
+    /// Before calling it, the current erased database, precompile provider, and optional inspector
+    /// must be verified with [`Self::evm_is_send`] or [`Self::evm_is_send_with_inspector`].
+    #[cfg(feature = "async")]
+    pub fn transact_async_send<'a>(
+        &'a mut self,
+        tx: &'a T::Tx,
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'a, T>, registry::HandlerError>> + Send + 'a
+    where
+        T::Tx: Sync,
     {
         self.assert_erased_send();
         let stack = self.async_stack();
-        let mut evm = SendEvmRef::new(self);
+        let evm = SendEvmRef { evm: self };
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
         // access the EVM stack slot until that future is dropped. The send marker checked above
         // requires all erased EVM fields to have been verified by `Evm::evm_is_send`.
-        unsafe { r#async::on_fiber_result_with_stack(stack, move || evm.transact(tx)) }
+        unsafe {
+            r#async::on_fiber_result_with_stack(stack, move || {
+                let SendEvmRef { evm } = evm;
+                evm.transact(tx)
+            })
+        }
     }
 
     /// Dispatches each transaction to its registered EIP-2718 handler and commits it.

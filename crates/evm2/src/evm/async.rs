@@ -18,7 +18,6 @@ use core::{
 };
 use corosensei::{Coroutine, CoroutineResult, Yielder, stack::DefaultStack};
 use std::{cell::Cell, error::Error, io, task::Context};
-use tokio::{runtime::Handle, task};
 
 type Resume = AsyncResult<NonNull<Context<'static>>>;
 type Yield = ();
@@ -66,9 +65,6 @@ pub enum AsyncError<E = core::convert::Infallible> {
     /// An async host operation was called outside an async EVM fiber.
     #[error("async host operation requires EVM async fiber execution")]
     NotOnFiber,
-    /// Blocking async I/O was requested outside a supported Tokio runtime.
-    #[error("async host operation requires a Tokio multi-thread runtime")]
-    Runtime,
     /// Async fiber stack setup failed.
     #[error(transparent)]
     Io(io::Error),
@@ -82,7 +78,6 @@ impl AsyncError {
         match self {
             Self::Cancelled => AsyncError::Cancelled,
             Self::NotOnFiber => AsyncError::NotOnFiber,
-            Self::Runtime => AsyncError::Runtime,
             Self::Io(error) => AsyncError::Io(error),
             Self::Inner(error) => match error {},
         }
@@ -92,6 +87,7 @@ impl AsyncError {
 struct CurrentFiber {
     suspend: NonNull<Yielder<Resume, Yield>>,
     future_cx: NonNull<Context<'static>>,
+    previous: Option<NonNull<Self>>,
     cancelled: bool,
 }
 
@@ -103,12 +99,16 @@ impl CurrentFiber {
 
     #[inline]
     fn suspend(&mut self) -> AsyncResult<()> {
+        let current = NonNull::from(&mut *self);
+        CURRENT.set(self.previous);
         match unsafe { self.suspend.as_ref() }.suspend(()) {
             Ok(cx) => {
+                CURRENT.set(Some(current));
                 self.future_cx = cx;
                 Ok(())
             }
             Err(error) => {
+                CURRENT.set(Some(current));
                 self.cancelled = true;
                 Err(error)
             }
@@ -138,10 +138,27 @@ pub(crate) fn on_fiber_result<'a, R, E>(
     func: impl FnOnce() -> Result<R, E> + 'a,
 ) -> impl Future<Output = AsyncResult<R, E>> + Send + 'a
 where
-    R: Send + 'a,
-    E: Send + 'a,
+    R: 'a,
+    E: 'a,
 {
     OnFiber::new(func)
+}
+
+/// Runs `func` on a native fiber backed by a reusable EVM stack slot, returning a local future.
+///
+/// # Safety
+///
+/// `stack` must point to valid stack storage for the lifetime of the returned future. That storage
+/// must not be accessed by anything else until the returned future is dropped.
+pub(crate) unsafe fn on_local_fiber_result_with_stack<'a, R, E>(
+    stack: NonNull<FiberStack>,
+    func: impl FnOnce() -> Result<R, E> + 'a,
+) -> impl Future<Output = AsyncResult<R, E>> + 'a
+where
+    R: 'a,
+    E: 'a,
+{
+    LocalOnFiber::new(OnFiber::with_stack(stack, func))
 }
 
 /// Runs `func` on a native fiber backed by a reusable EVM stack slot.
@@ -155,8 +172,8 @@ pub(crate) unsafe fn on_fiber_result_with_stack<'a, R, E>(
     func: impl FnOnce() -> Result<R, E> + 'a,
 ) -> impl Future<Output = AsyncResult<R, E>> + Send + 'a
 where
-    R: Send + 'a,
-    E: Send + 'a,
+    R: 'a,
+    E: 'a,
 {
     OnFiber::with_stack(stack, func)
 }
@@ -166,9 +183,26 @@ pub(crate) fn on_fiber<'a, R>(
     func: impl FnOnce() -> R + 'a,
 ) -> impl Future<Output = AsyncResult<R>> + Send + 'a
 where
-    R: Send + 'a,
+    R: 'a,
 {
     on_fiber_result(move || Ok::<_, core::convert::Infallible>(func()))
+}
+
+/// Runs `func` on a native fiber backed by a reusable EVM stack slot, returning a local future.
+///
+/// # Safety
+///
+/// See [`on_local_fiber_result_with_stack`].
+pub(crate) unsafe fn on_local_fiber_with_stack<'a, R>(
+    stack: NonNull<FiberStack>,
+    func: impl FnOnce() -> R + 'a,
+) -> impl Future<Output = AsyncResult<R>> + 'a
+where
+    R: 'a,
+{
+    unsafe {
+        on_local_fiber_result_with_stack(stack, move || Ok::<_, core::convert::Infallible>(func()))
+    }
 }
 
 /// Runs `func` on a native fiber backed by a reusable EVM stack slot.
@@ -181,9 +215,28 @@ pub(crate) unsafe fn on_fiber_with_stack<'a, R>(
     func: impl FnOnce() -> R + 'a,
 ) -> impl Future<Output = AsyncResult<R>> + Send + 'a
 where
-    R: Send + 'a,
+    R: 'a,
 {
     unsafe { on_fiber_result_with_stack(stack, move || Ok::<_, core::convert::Infallible>(func())) }
+}
+
+struct LocalOnFiber<F> {
+    inner: F,
+    _not_send: PhantomData<*mut ()>,
+}
+
+impl<F> LocalOnFiber<F> {
+    const fn new(inner: F) -> Self {
+        Self { inner, _not_send: PhantomData }
+    }
+}
+
+impl<F: Future + Unpin> Future for LocalOnFiber<F> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.get_mut().inner).poll(cx)
+    }
 }
 
 enum OnFiber<'a, R, E> {
@@ -252,7 +305,7 @@ struct FiberFuture<'a, R> {
 // SAFETY: The future may move between polls, but the coroutine stack itself is heap allocated and
 // is only resumed through `poll` with a fresh task context. Values that can remain on the coroutine
 // stack across suspension are required to be `Send` by the blocking boundary.
-unsafe impl<R: Send> Send for FiberFuture<'_, R> {}
+unsafe impl<R> Send for FiberFuture<'_, R> {}
 
 impl<'a, R> FiberFuture<'a, R> {
     fn new(
@@ -265,10 +318,15 @@ impl<'a, R> FiberFuture<'a, R> {
         };
         let body = move |suspend: &Yielder<Resume, Yield>, resume| {
             let future_cx = resume?;
-            let mut current =
-                CurrentFiber { suspend: NonNull::from(suspend), future_cx, cancelled: false };
+            let previous = CURRENT.get();
+            let mut current = CurrentFiber {
+                suspend: NonNull::from(suspend),
+                future_cx,
+                previous,
+                cancelled: false,
+            };
             let current = NonNull::from(&mut current);
-            let previous = CURRENT.replace(Some(current));
+            CURRENT.set(Some(current));
             let _reset = ResetCurrentFiber(previous);
             Ok(func())
         };
@@ -351,54 +409,11 @@ pub(crate) fn block_on_current<F: Future>(future: F) -> AsyncResult<F::Output> {
     }
 }
 
-fn current_tokio_handle() -> Option<Handle> {
-    match Handle::try_current() {
-        Ok(handle) => match handle.runtime_flavor() {
-            tokio::runtime::RuntimeFlavor::CurrentThread => None,
-            _ => Some(handle),
-        },
-        Err(_) => None,
-    }
-}
-
-fn block_on_handle<F>(handle: &Handle, future: F) -> F::Output
-where
-    F: Future,
-{
-    let should_use_block_in_place = Handle::try_current()
-        .ok()
-        .map(|current| {
-            !matches!(current.runtime_flavor(), tokio::runtime::RuntimeFlavor::CurrentThread)
-        })
-        .unwrap_or(false);
-
-    if should_use_block_in_place {
-        task::block_in_place(move || handle.block_on(future))
-    } else {
-        handle.block_on(future)
-    }
-}
-
-fn block_on_runtime<F>(runtime: Option<&Handle>, future: F) -> AsyncResult<F::Output>
-where
-    F: Future,
-{
-    if CURRENT.get().is_some() {
-        return block_on_current(future);
-    }
-
-    if let Some(runtime) = runtime {
-        return Ok(block_on_handle(runtime, future));
-    }
-
-    Err(AsyncError::Runtime)
-}
-
-fn block_on_runtime_result<F, T, E>(runtime: Option<&Handle>, future: F) -> AsyncResult<T, E>
+fn block_on_current_result<F, T, E>(future: F) -> AsyncResult<T, E>
 where
     F: Future<Output = Result<T, E>>,
 {
-    match block_on_runtime(runtime, future).map_err(AsyncError::with_inner_error)? {
+    match block_on_current(future).map_err(AsyncError::with_inner_error)? {
         Ok(value) => Ok(value),
         Err(error) => Err(AsyncError::Inner(error)),
     }
@@ -421,8 +436,8 @@ unsafe fn restore_context_lifetime<'a>(cx: &'a mut Context<'static>) -> &'a mut 
 ///
 /// To take advantage of yielding host I/O, this must be wrapped in [`AsyncDb`] and used with
 /// async EVM entrypoints such as [`crate::Evm::transact_async`]. Calling synchronous EVM
-/// entrypoints with an [`AsyncDb`] can still execute the futures by blocking on Tokio, but it
-/// cannot suspend the EVM fiber and yield back to the caller.
+/// entrypoints with an [`AsyncDb`] fails because the adapter can only poll futures from inside an
+/// async EVM fiber.
 pub trait AsyncDatabase: Any {
     /// Database error type.
     type Error: Error + Send + 'static;
@@ -457,30 +472,13 @@ pub trait AsyncDatabase: Any {
 pub struct AsyncDb<D: AsyncDatabase> {
     db: D,
     error: Option<Box<dyn Error + Send>>,
-    runtime: Option<Handle>,
 }
 
 impl<D: AsyncDatabase> AsyncDb<D> {
     /// Creates a new async database adapter.
-    ///
-    /// This captures the current Tokio runtime handle when one is available.
     #[inline]
     pub fn new(db: D) -> Self {
-        Self { db, error: None, runtime: current_tokio_handle() }
-    }
-
-    /// Creates a new async database adapter using the current Tokio runtime handle.
-    ///
-    /// Returns `None` if no Tokio runtime is available or the current runtime is current-threaded.
-    #[inline]
-    pub fn blocking(db: D) -> Option<Self> {
-        Some(Self { db, error: None, runtime: Some(current_tokio_handle()?) })
-    }
-
-    /// Creates a new async database adapter with a Tokio runtime handle.
-    #[inline]
-    pub fn with_tokio_handle(db: D, handle: Handle) -> Self {
-        Self { db, error: None, runtime: Some(handle) }
+        Self { db, error: None }
     }
 
     /// Returns the wrapped database.
@@ -526,8 +524,8 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         let result = {
-            let Self { db, runtime, .. } = self;
-            block_on_runtime_result(runtime.as_ref(), db.get_account(*address))
+            let Self { db, .. } = self;
+            block_on_current_result(db.get_account(*address))
         };
         self.database_result(result)
     }
@@ -535,8 +533,8 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         let result = {
-            let Self { db, runtime, .. } = self;
-            block_on_runtime_result(runtime.as_ref(), db.get_code_by_hash(*code_hash))
+            let Self { db, .. } = self;
+            block_on_current_result(db.get_code_by_hash(*code_hash))
         };
         self.database_result(result)
     }
@@ -544,8 +542,8 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         let result = {
-            let Self { db, runtime, .. } = self;
-            block_on_runtime_result(runtime.as_ref(), db.get_storage(*address, *key))
+            let Self { db, .. } = self;
+            block_on_current_result(db.get_storage(*address, *key))
         };
         self.database_result(result)
     }
@@ -553,8 +551,8 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
         let result = {
-            let Self { db, runtime, .. } = self;
-            block_on_runtime_result(runtime.as_ref(), db.get_block_hash(*number))
+            let Self { db, .. } = self;
+            block_on_current_result(db.get_block_hash(*number))
         };
         self.database_result(result)
     }
@@ -584,13 +582,13 @@ mod tests {
         BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult,
         bytecode::Bytecode,
         env::BlockEnv,
-        evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider},
-        interpreter::{GasTracker, Message, Word},
+        evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider, SystemTx},
+        interpreter::{GasTracker, Message, Word, op},
         precompile::PrecompileOutput,
         registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
     };
     use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, B256, Bytes, TxKind};
     use core::{
         assert_matches, convert::Infallible, fmt, future::Future, pin::Pin, ptr::NonNull,
         task::Poll,
@@ -619,6 +617,18 @@ mod tests {
 
         assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
         assert_matches!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(3)));
+    }
+
+    #[test]
+    fn current_tls_is_cleared_while_fiber_is_pending() {
+        let mut future = core::pin::pin!(on_fiber(|| {
+            let _ = block_on_current(PendingForever);
+        }));
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
+        assert_matches!(block_on_current(core::future::ready(())), Err(AsyncError::NotOnFiber));
     }
 
     #[test]
@@ -712,16 +722,15 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
         let tx = test_tx(41);
 
         let result = poll_ready(evm.transact_async(&tx)).unwrap();
 
-        assert_eq!(result.tx_gas_used(), 42);
+        assert_eq!(result.result().tx_gas_used(), 42);
     }
 
     #[test]
-    fn transaction_async_future_is_send_with_send_erased_fields() {
+    fn transaction_async_send_future_is_send_with_send_erased_fields() {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             crate::ethereum::RecoveredTxEnvelope::as_legacy,
@@ -737,13 +746,13 @@ mod tests {
         evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
         let tx = test_tx(41);
 
-        let result = poll_ready(assert_send(evm.transact_async(&tx))).unwrap();
+        let result = poll_ready(assert_send(evm.transact_async_send(&tx))).unwrap();
 
-        assert_eq!(result.tx_gas_used(), 42);
+        assert_eq!(result.result().tx_gas_used(), 42);
     }
 
     #[test]
-    fn transaction_async_future_is_send_after_type_check() {
+    fn transaction_async_send_future_is_send_after_type_check() {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             crate::ethereum::RecoveredTxEnvelope::as_legacy,
@@ -760,14 +769,14 @@ mod tests {
         evm.evm_is_send_with_inspector::<InMemoryDB, Precompiles<BaseEvmTypes>, SendInspector>();
         let tx = test_tx(41);
 
-        let result = poll_ready(assert_send(evm.transact_async(&tx))).unwrap();
+        let result = poll_ready(assert_send(evm.transact_async_send(&tx))).unwrap();
 
-        assert_eq!(result.tx_gas_used(), 42);
+        assert_eq!(result.result().tx_gas_used(), 42);
     }
 
     #[test]
     #[should_panic = "async EVM execution requires EVM erased fields to be verified as Send with Evm::evm_is_send"]
-    fn transaction_async_panics_with_non_send_erased_fields() {
+    fn transaction_async_send_panics_with_non_send_erased_fields() {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -777,12 +786,12 @@ mod tests {
         );
         let tx = test_tx(41);
 
-        drop(evm.transact_async(&tx));
+        drop(evm.transact_async_send(&tx));
     }
 
     #[test]
     #[should_panic = "async EVM execution requires EVM erased fields to be verified as Send with Evm::evm_is_send"]
-    fn transaction_async_panics_after_non_send_setter() {
+    fn transaction_async_send_panics_after_non_send_setter() {
         let marker = Rc::new(());
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
@@ -800,7 +809,32 @@ mod tests {
         evm.set_inspector(NonSendInspector { marker });
         let tx = test_tx(41);
 
-        drop(evm.transact_async(&tx));
+        drop(evm.transact_async_send(&tx));
+    }
+
+    #[test]
+    fn transaction_async_accepts_non_send_erased_fields() {
+        let marker = Rc::new(());
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            handle_test_tx,
+        );
+        let database = Db::new(NonSendDb { marker: Rc::clone(&marker) });
+        let precompiles = NonSendPrecompiles { marker: Rc::clone(&marker) };
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            registry,
+            database,
+            precompiles,
+        );
+        evm.set_inspector(NonSendInspector { marker });
+        let tx = test_tx(41);
+
+        let result = poll_ready(evm.transact_async(&tx)).unwrap();
+
+        assert_eq!(result.result().tx_gas_used(), 42);
     }
 
     #[test]
@@ -834,7 +868,6 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
         let tx = test_tx(41);
 
         let result = poll_ready(evm.transact_async(&tx));
@@ -846,45 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn synchronous_database_blocks_with_current_tokio_runtime() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let _guard = runtime.enter();
-        let mut db = AsyncDb::new(TokioDb);
-        let address = Address::ZERO;
-        let key = Word::from(7);
-
-        let value = DynDatabase::get_storage(&mut db, &address, &key).unwrap();
-
-        assert_eq!(value, Word::from(9));
-    }
-
-    #[test]
-    fn blocking_constructor_uses_current_tokio_runtime() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let _guard = runtime.enter();
-        let mut db = AsyncDb::blocking(TokioDb).unwrap();
-        let address = Address::ZERO;
-        let key = Word::from(7);
-
-        let value = DynDatabase::get_storage(&mut db, &address, &key).unwrap();
-
-        assert_eq!(value, Word::from(9));
-    }
-
-    #[test]
-    fn synchronous_database_blocks_with_stored_tokio_handle() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let mut db = AsyncDb::with_tokio_handle(TokioDb, runtime.handle().clone());
-        let address = Address::ZERO;
-        let key = Word::from(7);
-
-        let value = DynDatabase::get_storage(&mut db, &address, &key).unwrap();
-
-        assert_eq!(value, Word::from(9));
-    }
-
-    #[test]
-    fn synchronous_database_requires_runtime_handle() {
+    fn synchronous_database_requires_fiber() {
         let mut db = AsyncDb::new(TestDb);
         let address = Address::ZERO;
         let key = Word::from(7);
@@ -892,28 +887,8 @@ mod tests {
 
         assert_eq!(
             db.error(code).to_string(),
-            "async host operation requires a Tokio multi-thread runtime"
+            "async host operation requires EVM async fiber execution"
         );
-    }
-
-    #[test]
-    fn synchronous_evm_database_blocks_with_current_tokio_runtime() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let _guard = runtime.enter();
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnv::default(),
-            TxRegistry::new(),
-            AsyncDb::new(TokioDb),
-            Precompiles::base(SpecId::OSAKA),
-        );
-        evm.evm_is_send::<AsyncDb<TokioDb>, Precompiles<BaseEvmTypes>>();
-        let address = Address::ZERO;
-        let key = Word::from(7);
-
-        let value = evm.database_mut().get_storage(&address, &key).unwrap();
-
-        assert_eq!(value, Word::from(9));
     }
 
     #[test]
@@ -926,12 +901,91 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
 
-        let result = poll_ready(evm.system_call_async(contract, Bytes::new())).unwrap();
+        let result = poll_ready(evm.system_call_async(SystemTx::new(contract, Bytes::new())))
+            .unwrap()
+            .discard();
 
         assert!(result.status);
         assert_eq!(result.tx_gas_used(), 0);
+    }
+
+    #[test]
+    fn system_call_async_send_future_is_send() {
+        let contract = Address::from([0x42; 20]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
+
+        let result = poll_ready(assert_send(
+            evm.system_call_async_send(SystemTx::new(contract, Bytes::new())),
+        ))
+        .unwrap()
+        .discard();
+
+        assert!(result.status);
+        assert_eq!(result.tx_gas_used(), 0);
+    }
+
+    #[test]
+    fn system_call_async_clears_stale_database_error_code() {
+        let contract = Address::from([0x42; 20]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            crate::ethereum::ethereum_tx_registry(SpecId::OSAKA),
+            Db::new(FailOnceAccountDb { fail_next_account: true }),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let tx = crate::ethereum::RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy { gas_limit: 100_000, ..TxLegacy::default() },
+            Address::ZERO,
+        ));
+
+        assert_matches!(evm.transact(&tx), Err(HandlerError::Database(_)));
+        assert!(evm.db_error_code().is_some());
+
+        let result = poll_ready(evm.system_call_async(SystemTx::new(contract, Bytes::new())))
+            .unwrap()
+            .discard();
+
+        assert!(result.status);
+        assert_eq!(result.db_error_code, None);
+    }
+
+    #[test]
+    fn dropping_transact_async_discards_nonce_after_cancelled_db_future() {
+        let caller = Address::ZERO;
+        let contract = Address::from([0x42; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            crate::ethereum::ethereum_tx_registry(SpecId::OSAKA),
+            AsyncDb::new(CancellingDb { contract, code }),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.evm_is_send::<AsyncDb<CancellingDb>, Precompiles<BaseEvmTypes>>();
+        let tx = crate::ethereum::RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy { to: TxKind::Call(contract), gas_limit: 100_000, ..TxLegacy::default() },
+            caller,
+        ));
+        {
+            let mut future = core::pin::pin!(evm.transact_async(&tx));
+            let waker = Waker::noop();
+            let mut cx = Context::from_waker(waker);
+
+            assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
+        }
+
+        let nonce = evm.read_account_info(&caller).unwrap().map_or(0, |info| info.nonce);
+
+        assert_eq!(nonce, 0);
     }
 
     #[test]
@@ -965,7 +1019,7 @@ mod tests {
         Ok(TxResult { status: true, total_gas_spent: req.tx.nonce + 1, ..TxResult::default() })
     }
 
-    fn poll_ready<F: Future + Send>(future: F) -> F::Output {
+    fn poll_ready<F: Future>(future: F) -> F::Output {
         let mut future = core::pin::pin!(future);
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
@@ -1002,6 +1056,37 @@ mod tests {
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
             let _ = Rc::strong_count(&self.marker);
             Ok(Word::from(9))
+        }
+
+        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
+        }
+    }
+
+    struct FailOnceAccountDb {
+        fail_next_account: bool,
+    }
+
+    impl Database for FailOnceAccountDb {
+        type Error = TestError;
+
+        fn get_account(
+            &mut self,
+            _address: &Address,
+        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
+            if self.fail_next_account {
+                self.fail_next_account = false;
+                return Err(TestError);
+            }
+            Ok(None)
+        }
+
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
+        }
+
+        fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
+            Ok(Word::ZERO)
         }
 
         fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
@@ -1131,6 +1216,42 @@ mod tests {
         }
     }
 
+    struct CancellingDb {
+        contract: Address,
+        code: Bytecode,
+    }
+
+    impl AsyncDatabase for CancellingDb {
+        type Error = Infallible;
+
+        async fn get_account(
+            &mut self,
+            address: Address,
+        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
+            if address == self.contract {
+                return Ok(Some(crate::evm::AccountInfo::default().with_code(self.code.clone())));
+            }
+            Ok(Some(crate::evm::AccountInfo::default()))
+        }
+
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(self.code.clone())
+        }
+
+        async fn get_storage(
+            &mut self,
+            _address: Address,
+            _key: Word,
+        ) -> Result<Word, Self::Error> {
+            PendingForever.await;
+            Ok(Word::ZERO)
+        }
+
+        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
+        }
+    }
+
     struct PendingStorage<'a> {
         pending: &'a mut bool,
     }
@@ -1173,39 +1294,6 @@ mod tests {
         }
 
         async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
-        }
-    }
-
-    struct TokioDb;
-
-    impl AsyncDatabase for TokioDb {
-        type Error = Infallible;
-
-        async fn get_account(
-            &mut self,
-            _address: Address,
-        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
-            tokio::task::yield_now().await;
-            Ok(None)
-        }
-
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
-            tokio::task::yield_now().await;
-            Ok(Bytecode::default())
-        }
-
-        async fn get_storage(
-            &mut self,
-            _address: Address,
-            _key: Word,
-        ) -> Result<Word, Self::Error> {
-            tokio::task::yield_now().await;
-            Ok(Word::from(9))
-        }
-
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            tokio::task::yield_now().await;
             Ok(None)
         }
     }

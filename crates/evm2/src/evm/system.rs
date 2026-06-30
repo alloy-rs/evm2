@@ -6,11 +6,9 @@
 //! before calling [`Evm::system_call`]. Calling an address without code succeeds as an empty call
 //! and produces no state changes.
 
-#[cfg(feature = "async")]
-use super::SendEvmRef;
-#[cfg(feature = "async")]
-use super::r#async;
 use super::{Evm, ExecutedTx, TxResult};
+#[cfg(feature = "async")]
+use super::{SendEvmRef, r#async};
 use crate::{
     EvmTypes,
     env::TxEnv,
@@ -42,52 +40,48 @@ pub const WITHDRAWAL_REQUEST_ADDRESS: Address =
 pub const CONSOLIDATION_REQUEST_ADDRESS: Address =
     address!("0x0000BBdDc7CE488642fb579F8B00f3a590007251");
 
-impl<T: EvmTypes<Host = Self>> Evm<T> {
-    /// Executes a system call from [`SYSTEM_ADDRESS`] to `system_contract_address`.
-    #[inline]
-    pub fn system_call(
-        &mut self,
-        system_contract_address: Address,
-        data: Bytes,
-    ) -> ExecutedTx<'_, T> {
-        self.system_call_with_caller(SYSTEM_ADDRESS, system_contract_address, data)
-    }
+/// System transaction input for [`Evm::system_call`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemTx {
+    /// Caller address.
+    pub caller: Address,
+    /// Target system contract address.
+    pub system_contract_address: Address,
+    /// Calldata.
+    pub data: Bytes,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
+}
 
-    /// Executes a system call from [`SYSTEM_ADDRESS`] to `system_contract_address` on an async
-    /// fiber.
-    ///
-    /// This must be used with an async database adapter such as
-    /// [`evm::async::AsyncDb`](crate::evm::async::AsyncDb) to take
-    /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
-    /// running the synchronous system call on a fiber.
-    ///
-    /// This returns a `Send` future. Before calling it, the current erased database, precompile
-    /// provider, and optional inspector must be verified with [`Evm::evm_is_send`] or
-    /// [`Evm::evm_is_send_with_inspector`].
-    #[cfg(feature = "async")]
+impl Default for SystemTx {
     #[inline]
-    pub fn system_call_async(
-        &mut self,
-        system_contract_address: Address,
-        data: Bytes,
-    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, Infallible>> + Send + '_
-    where
-        T::TxResultExt: Send,
-    {
-        self.assert_erased_send();
-        let stack = self.async_stack();
-        let mut evm = SendEvmRef::new(self);
-        // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
-        // access the EVM stack slot until that future is dropped. The send marker checked above
-        // requires all erased EVM fields to have been verified by `Evm::evm_is_send`.
-        unsafe {
-            r#async::on_fiber_with_stack(stack, move || {
-                evm.system_call(system_contract_address, data)
-            })
+    fn default() -> Self {
+        Self {
+            caller: SYSTEM_ADDRESS,
+            system_contract_address: Address::ZERO,
+            data: Bytes::new(),
+            _non_exhaustive: (),
         }
     }
+}
 
-    /// Executes a system call from `caller` to `system_contract_address`.
+impl SystemTx {
+    /// Creates a new system transaction from [`SYSTEM_ADDRESS`].
+    #[inline]
+    pub fn new(system_contract_address: Address, data: Bytes) -> Self {
+        Self { system_contract_address, data, ..Default::default() }
+    }
+
+    /// Sets the caller address.
+    #[inline]
+    pub const fn with_caller(mut self, caller: Address) -> Self {
+        self.caller = caller;
+        self
+    }
+}
+
+impl<T: EvmTypes<Host = Self>> Evm<T> {
+    /// Executes a system call.
     ///
     /// System calls bypass normal transaction validation, nonce updates, fee charging, gas refunds,
     /// and beneficiary rewards. They execute a top-level `CALL` with zero value and
@@ -95,12 +89,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ///
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
-    pub fn system_call_with_caller(
-        &mut self,
-        caller: Address,
-        system_contract_address: Address,
-        data: Bytes,
-    ) -> ExecutedTx<'_, T> {
+    pub fn system_call(&mut self, tx: SystemTx) -> ExecutedTx<'_, T> {
+        let SystemTx { caller, system_contract_address, data, .. } = tx;
+        self.db_error_code = None;
         self.state.prewarm(&system_contract_address);
         let tx_env = TxEnv {
             origin: caller,
@@ -162,56 +153,50 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         ExecutedTx::from_result(self, outcome, has_pending_state)
     }
 
-    /// Executes a system call from `caller` to `system_contract_address` on an async fiber.
+    /// Executes a system call on an async fiber.
     ///
     /// This must be used with an async database adapter such as
     /// [`evm::async::AsyncDb`](crate::evm::async::AsyncDb) to take
     /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
     /// running the synchronous system call on a fiber.
     ///
-    /// This returns a `Send` future. Before calling it, the current erased database, precompile
-    /// provider, and optional inspector must be verified with [`Evm::evm_is_send`] or
-    /// [`Evm::evm_is_send_with_inspector`].
+    /// This returns a local future and does not require the erased database, precompile provider,
+    /// or optional inspector to be `Send`. Use [`Evm::system_call_async_send`] when the returned
+    /// future must be `Send`.
     #[cfg(feature = "async")]
     #[inline]
-    pub fn system_call_with_caller_async(
+    pub fn system_call_async(
         &mut self,
-        caller: Address,
-        system_contract_address: Address,
-        data: Bytes,
-    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, Infallible>> + Send + '_
-    where
-        T::TxResultExt: Send,
-    {
+        tx: SystemTx,
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, Infallible>> + '_ {
+        let stack = self.async_stack();
+        // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
+        // access the EVM stack slot until that future is dropped.
+        unsafe { r#async::on_local_fiber_with_stack(stack, move || self.system_call(tx)) }
+    }
+
+    /// Executes a system call on an async fiber and returns a `Send` future.
+    ///
+    /// Before calling it, the current erased database, precompile provider, and optional inspector
+    /// must be verified with [`Evm::evm_is_send`] or [`Evm::evm_is_send_with_inspector`].
+    #[cfg(feature = "async")]
+    #[inline]
+    pub fn system_call_async_send(
+        &mut self,
+        tx: SystemTx,
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, Infallible>> + Send + '_ {
         self.assert_erased_send();
         let stack = self.async_stack();
-        let mut evm = SendEvmRef::new(self);
+        let evm = SendEvmRef { evm: self };
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
         // access the EVM stack slot until that future is dropped. The send marker checked above
         // requires all erased EVM fields to have been verified by `Evm::evm_is_send`.
         unsafe {
             r#async::on_fiber_with_stack(stack, move || {
-                evm.system_call_with_caller(caller, system_contract_address, data)
+                let SendEvmRef { evm } = evm;
+                evm.system_call(tx)
             })
         }
-    }
-}
-
-#[cfg(feature = "async")]
-impl<T: EvmTypes<Host = Evm<T>>> SendEvmRef<'_, T> {
-    #[inline]
-    fn system_call(&mut self, system_contract_address: Address, data: Bytes) -> TxResult<T> {
-        self.evm.system_call(system_contract_address, data).commit()
-    }
-
-    #[inline]
-    fn system_call_with_caller(
-        &mut self,
-        caller: Address,
-        system_contract_address: Address,
-        data: Bytes,
-    ) -> TxResult<T> {
-        self.evm.system_call_with_caller(caller, system_contract_address, data).commit()
     }
 }
 
@@ -255,7 +240,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm.system_call(contract, Bytes::new()).detach();
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).detach();
 
         assert!(result.result.status);
         assert!(result.result.tx_gas_used() < SYSTEM_CALL_GAS_LIMIT);
@@ -269,6 +254,42 @@ mod tests {
         let system_address = U256::from_be_slice(SYSTEM_ADDRESS.as_slice());
         assert_eq!(storage.get(&U256::ZERO).map(|slot| slot.current), Some(system_address));
         assert_eq!(storage.get(&U256::ONE).map(|slot| slot.current), Some(system_address));
+    }
+
+    #[test]
+    fn system_call_uses_custom_caller() {
+        let caller = Address::from([0x11; 20]);
+        let contract = Address::from([0x42; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::CALLER,
+            op::PUSH1,
+            0,
+            op::SSTORE,
+            op::ORIGIN,
+            op::PUSH1,
+            1,
+            op::SSTORE,
+            op::STOP,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut evm = TestEvm::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let result =
+            evm.system_call(SystemTx::new(contract, Bytes::new()).with_caller(caller)).detach();
+
+        assert!(result.result.status);
+        let storage =
+            &result.state_changes.accounts.get(&contract).expect("storage changed").storage;
+        let caller = U256::from_be_slice(caller.as_slice());
+        assert_eq!(storage.get(&U256::ZERO).map(|slot| slot.current), Some(caller));
+        assert_eq!(storage.get(&U256::ONE).map(|slot| slot.current), Some(caller));
     }
 
     #[test]
@@ -286,7 +307,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let outcome = evm.system_call(contract, Bytes::new()).discard();
+        let outcome = evm.system_call(SystemTx::new(contract, Bytes::new())).discard();
 
         assert!(outcome.status);
         assert!(
@@ -307,7 +328,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm.system_call(contract, Bytes::new()).detach();
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).detach();
 
         assert!(result.result.status);
         assert_eq!(result.result.tx_gas_used(), 0);
@@ -339,7 +360,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm.system_call(contract, Bytes::new()).detach();
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).detach();
 
         assert!(!result.result.status);
         assert_eq!(result.result.stop, InstrStop::Revert);
