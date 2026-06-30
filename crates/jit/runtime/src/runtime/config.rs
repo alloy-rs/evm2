@@ -247,6 +247,15 @@ pub struct RuntimeTuning {
     /// Defaults to `5s`.
     pub shutdown_timeout: Duration,
 
+    /// Timeout for synchronous compilation waits.
+    ///
+    /// Applies to [`JitBackend::compile_jit_sync`](super::JitBackend::compile_jit_sync),
+    /// [`JitBackend::prepare_aot_sync`](super::JitBackend::prepare_aot_sync), and blocking
+    /// lookup mode.
+    ///
+    /// Defaults to `30s`.
+    pub sync_compile_timeout: Duration,
+
     /// Number of observed misses before a key is promoted to JIT compilation.
     ///
     /// Defaults to `8`.
@@ -356,6 +365,7 @@ impl Default for RuntimeTuning {
             max_events_per_drain: 4096,
             event_drain_interval: Duration::from_millis(100),
             shutdown_timeout: Duration::from_secs(5),
+            sync_compile_timeout: Duration::from_secs(30),
             jit_hot_threshold: 8,
             jit_max_bytecode_len: DEFAULT_JIT_MAX_BYTECODE_LEN,
             jit_max_pending_jobs: 2048,

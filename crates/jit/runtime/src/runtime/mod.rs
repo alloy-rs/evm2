@@ -314,7 +314,19 @@ impl JitBackend {
             sync_notifier: SyncNotifier::new(tx),
         });
         self.inner.tx.send(cmd).map_err(|_| eyre::eyre!("backend channel closed"))?;
-        rx.recv().map_err(|_| eyre::eyre!("backend shut down before compilation completed"))
+        self.recv_compile_completion(rx)
+    }
+
+    fn recv_compile_completion(&self, rx: chan::Receiver<()>) -> eyre::Result<()> {
+        match rx.recv_timeout(self.inner.tuning.sync_compile_timeout) {
+            Ok(()) => Ok(()),
+            Err(chan::RecvTimeoutError::Timeout) => {
+                eyre::bail!("timed out waiting for compilation to complete")
+            }
+            Err(chan::RecvTimeoutError::Disconnected) => {
+                eyre::bail!("backend shut down before compilation completed")
+            }
+        }
     }
 
     /// Enqueues a single AOT preparation request.
@@ -324,6 +336,15 @@ impl JitBackend {
     /// via [`ArtifactStore::store`] and loaded into the resident map.
     pub fn prepare_aot(&self, req: AotRequest) {
         self.prepare_aot_batch(vec![req]);
+    }
+
+    /// Enqueues a single AOT preparation request and blocks until it completes.
+    ///
+    /// Returns `Ok(())` when the preparation attempt completed, whether it
+    /// succeeded or failed. Use [`get_compiled`](Self::get_compiled) to retrieve
+    /// the result after this returns.
+    pub fn prepare_aot_sync(&self, req: AotRequest) -> eyre::Result<()> {
+        self.prepare_aot_batch_sync(vec![req])
     }
 
     /// Enqueues a batch of AOT preparation requests.
@@ -336,10 +357,40 @@ impl JitBackend {
             .map(|r| PrepareAotRequest {
                 key: RuntimeCacheKey { code_hash: r.code_hash, spec_id: r.spec_id },
                 bytecode: r.code,
+                sync_notifier: SyncNotifier::none(),
             })
             .collect();
         let cmd = Command::PrepareAot(owned);
         let _ = self.inner.tx.send(cmd);
+    }
+
+    /// Enqueues a batch of AOT preparation requests and blocks until they complete.
+    ///
+    /// Returns `Ok(())` when all preparation attempts completed, whether they
+    /// succeeded or failed. Use [`get_compiled`](Self::get_compiled) to retrieve
+    /// the results after this returns.
+    pub fn prepare_aot_batch_sync(&self, reqs: Vec<AotRequest>) -> eyre::Result<()> {
+        self.ensure_started()?;
+        if reqs.is_empty() {
+            return Ok(());
+        }
+
+        let (tx, rx) = chan::bounded(reqs.len());
+        let owned: Vec<PrepareAotRequest> = reqs
+            .into_iter()
+            .map(|r| PrepareAotRequest {
+                key: RuntimeCacheKey { code_hash: r.code_hash, spec_id: r.spec_id },
+                bytecode: r.code,
+                sync_notifier: SyncNotifier::new(tx.clone()),
+            })
+            .collect();
+        let completions = owned.len();
+        let cmd = Command::PrepareAot(owned);
+        self.inner.tx.send(cmd).map_err(|_| eyre::eyre!("backend channel closed"))?;
+        for _ in 0..completions {
+            self.recv_compile_completion(rx.clone())?;
+        }
+        Ok(())
     }
 
     /// Clears the in-memory resident compiled map.
