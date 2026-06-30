@@ -12,7 +12,7 @@ pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 use crate::{
     Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
-    evm::{AccountInfo, StateCheckpoint, db_error_handler},
+    evm::{AccountInfo, StateCheckpoint, error_handler},
     interpreter::{Message, MessageKind, MessageResult, Word},
     registry::{HandlerError, HandlerResult, TxRegistry},
     utils::num_words,
@@ -348,9 +348,9 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
     let has_balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
 
-    let mut sender = host.state.account(&caller, false).map_err(db_error_handler!(host))?;
+    let mut sender = host.state.account(&caller, false).map_err(error_handler!(host))?;
     if has_eip3607 && sender.code_hash() != KECCAK256_EMPTY {
-        let code = sender.load_code().map_err(db_error_handler!(host))?;
+        let code = sender.load_code().map_err(error_handler!(host))?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
         }
@@ -404,7 +404,7 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
     }
     host.state
         .account(&caller, false)
-        .map_err(db_error_handler!(host))?
+        .map_err(error_handler!(host))?
         .add_balance(Word::ZERO.wrapping_sub(max_gas_cost));
     Ok(())
 }
@@ -475,16 +475,16 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     let code = host
         .state
         .account(&to, false)
-        .map_err(db_error_handler!(host))?
+        .map_err(error_handler!(host))?
         .load_code()
-        .map_err(db_error_handler!(host))?;
+        .map_err(error_handler!(host))?;
     if host.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
         let mut account =
-            host.state.account(&delegated_address, false).map_err(db_error_handler!(host))?;
+            host.state.account(&delegated_address, false).map_err(error_handler!(host))?;
         account.warm();
-        let delegated_code = account.load_code().map_err(db_error_handler!(host))?;
+        let delegated_code = account.load_code().map_err(error_handler!(host))?;
         return Ok(InitialCallCode {
             code: delegated_code,
             code_address: delegated_address,
@@ -516,13 +516,17 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     floor_gas: u64,
     result: MessageResult<T>,
 ) -> HandlerResult<TxResult<T>> {
+    if let Some(code) = host.error_code {
+        return Err(HandlerError::Fatal(code));
+    }
+
     let (gas_remaining, gas_used) =
         final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {
         let caller_refund = U256::from(gas_remaining) * gas_price;
         host.state
             .account(&caller, false)
-            .map_err(db_error_handler!(host))?
+            .map_err(error_handler!(host))?
             .add_balance(caller_refund);
         let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
             gas_price.saturating_sub(host.block.basefee)
@@ -533,7 +537,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         let beneficiary_reward = U256::from(gas_used) * beneficiary_gas_price;
         host.state
             .account(&beneficiary, false)
-            .map_err(db_error_handler!(host))?
+            .map_err(error_handler!(host))?
             .add_balance(beneficiary_reward);
     }
     Ok(TxResult {

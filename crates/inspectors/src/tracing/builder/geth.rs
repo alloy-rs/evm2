@@ -571,18 +571,18 @@ mod tests {
     use super::*;
     use alloy_primitives::{B256, U256, address};
     use evm2::{
-        AccountInfo,
+        AccountInfo, ErrorCode,
         bytecode::Bytecode,
-        evm::{AccountChange, CacheDB, DbErrorCode, DbResult, DynDatabase, EmptyDB},
+        evm::{AccountChange, CacheDB, DbResult, DynDatabase, EmptyDB},
         interpreter::Word,
     };
 
     struct FailingDb {
-        error: DbErrorCode,
+        error: ErrorCode,
     }
 
     impl FailingDb {
-        fn new(error: DbErrorCode) -> Self {
+        fn new(error: ErrorCode) -> Self {
             Self { error }
         }
     }
@@ -685,7 +685,7 @@ mod tests {
         change.current = Some(AccountInfo::default().with_nonce(1));
         state.accounts.insert(address, change);
 
-        let error = DbErrorCode::new(7).unwrap();
+        let error = ErrorCode::new_custom(7).unwrap();
         let mut db = FailingDb::new(error);
         let builder = GethTraceBuilder::new(Vec::new());
 
