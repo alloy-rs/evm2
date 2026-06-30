@@ -192,6 +192,18 @@ impl State {
         self.inner.database.get_storage(address, key)
     }
 
+    /// Reads account bytecode from the committed state, ignoring the transaction overlay.
+    #[inline]
+    pub fn read_committed_code(&mut self, address: &Address) -> DbResult<Bytecode> {
+        let Some(info) = self.inner.database.get_account(address)? else {
+            return Ok(Bytecode::default());
+        };
+        if info.code_hash == KECCAK256_EMPTY || info.code_hash.is_zero() {
+            return Ok(Bytecode::default());
+        }
+        self.inner.database.get_code_by_hash(&info.code_hash)
+    }
+
     /// Takes logs emitted by the current in-flight transaction.
     #[inline]
     pub(crate) fn take_logs(&mut self) -> Vec<Log> {
@@ -694,6 +706,11 @@ impl State {
         slot.is_changed() && (!storage_wiped || !slot.current.is_zero())
     }
 
+    #[inline]
+    fn is_ephemeral_deleted_account(entry: Option<&Account>) -> bool {
+        entry.is_some_and(|entry| entry.original.is_none() && entry.present.is_none())
+    }
+
     /// Visits transaction state changes in database application order.
     ///
     /// This borrows changes directly from the transaction layer. It does not materialize
@@ -711,6 +728,9 @@ impl State {
         }
 
         for (&address, storage) in &self.storage {
+            if Self::is_ephemeral_deleted_account(self.accounts.get(&address)) {
+                continue;
+            }
             if storage.wiped {
                 sink.storage_wipe(address)?;
             }
@@ -771,12 +791,22 @@ impl State {
 
         // Fold per-account storage in, materializing an entry for any storage-only account whose
         // info is unchanged by resolving it from the backing database.
-        let database = &self.inner.database;
         for (&address, storage) in &self.storage {
-            let entry = changes.accounts.entry(address).or_insert_with(|| {
-                let info = database.account_info(&address).cloned();
-                AccountChange { original: info.clone(), current: info, ..AccountChange::default() }
-            });
+            if Self::is_ephemeral_deleted_account(self.accounts.get(&address)) {
+                continue;
+            }
+            if !changes.accounts.contains_key(&address) {
+                let info = self.inner.database.get_account(&address).ok().flatten();
+                changes.accounts.insert(
+                    address,
+                    AccountChange {
+                        original: info.clone(),
+                        current: info,
+                        ..AccountChange::default()
+                    },
+                );
+            }
+            let entry = changes.accounts.get_mut(&address).expect("account change inserted above");
             entry.wipe_storage = storage.wiped;
             entry.storage = storage.slots.iter().map(|(&key, slot)| (key, slot.value)).collect();
         }

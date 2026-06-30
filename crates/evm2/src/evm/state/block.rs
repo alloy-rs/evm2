@@ -21,6 +21,7 @@ use core::convert::Infallible;
 pub struct BlockStateAccumulator {
     accounts: AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: AddressSet,
+    deleted_accounts: AddressSet,
     storage: StorageKeyMap<Tracked<Word>>,
     code: B256Map<Bytecode>,
 }
@@ -88,6 +89,14 @@ impl BlockStateAccumulator {
         storage.sort_by_key(|(key, _)| (key.address(), key.key()));
         storage
     }
+
+    fn prune_unreachable_code(&mut self) {
+        self.code.retain(|code_hash, _| {
+            self.accounts.values().any(|delta| {
+                delta.current.as_ref().is_some_and(|info| info.code_hash == *code_hash)
+            })
+        });
+    }
 }
 
 impl StateChangeSink for BlockStateAccumulator {
@@ -103,6 +112,7 @@ impl StateChangeSink for BlockStateAccumulator {
         let original = change.original.map(AccountInfoRef::to_account_info_without_code);
         let current = change.current.map(AccountInfoRef::to_account_info_without_code);
         let deletes_account = current.is_none();
+        let deleted_existing_account = deletes_account && original.is_some();
 
         match self.accounts.entry(change.address) {
             hash_map::Entry::Occupied(mut entry) => {
@@ -122,9 +132,17 @@ impl StateChangeSink for BlockStateAccumulator {
         if deletes_account {
             self.storage_wipes.remove(&change.address);
             self.storage.retain(|key, _| key.address() != change.address);
+            if deleted_existing_account {
+                self.deleted_accounts.insert(change.address);
+            } else {
+                self.deleted_accounts.remove(&change.address);
+            }
+        } else if self.deleted_accounts.remove(&change.address) {
+            self.storage_wipes.insert(change.address);
         } else if self.accounts.get(&change.address).is_some_and(|delta| delta.original.is_none()) {
             self.storage_wipes.remove(&change.address);
         }
+        self.prune_unreachable_code();
         Ok(())
     }
 
@@ -218,8 +236,12 @@ mod tests {
         super::{AccountChange, AccountInfo, StateChangeSource, StateChanges, Tracked},
         BlockStateAccumulator,
     };
-    use crate::interpreter::Word;
-    use alloy_primitives::{Address, map::U256Map};
+    use crate::{
+        bytecode::Bytecode,
+        evm::{CacheDB, DynDatabase},
+        interpreter::Word,
+    };
+    use alloy_primitives::{Address, Bytes, map::U256Map};
 
     fn changes(address: Address, change: AccountChange) -> StateChanges {
         let mut changes = StateChanges::default();
@@ -265,6 +287,28 @@ mod tests {
     }
 
     #[test]
+    fn block_accumulator_drops_code_for_create_then_delete() {
+        let address = Address::from([0x57; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[0x00]));
+        let created = AccountInfo::default().with_nonce(1).with_code(code.clone());
+        let mut accumulator = BlockStateAccumulator::new();
+
+        let mut create = changes(
+            address,
+            AccountChange { current: Some(created.clone()), ..AccountChange::default() },
+        );
+        create.code.insert(code.hash_slow(), code);
+        create.visit(&mut accumulator).expect("block accumulator is infallible");
+
+        let delete =
+            changes(address, AccountChange { original: Some(created), ..AccountChange::default() });
+        delete.visit(&mut accumulator).expect("block accumulator is infallible");
+
+        assert!(accumulator.accounts_sorted().is_empty());
+        assert_eq!(accumulator.code().count(), 0);
+    }
+
+    #[test]
     fn block_accumulator_preserves_original_for_delete_then_recreate() {
         let address = Address::from([0x51; 20]);
         let key = Word::from(1);
@@ -303,6 +347,44 @@ mod tests {
         assert_eq!(storage.len(), 1);
         assert_eq!(storage[0].0.key(), key);
         assert_eq!(storage[0].1.current, Word::from(7));
+    }
+
+    #[test]
+    fn block_accumulator_preserves_storage_wipe_for_delete_then_balance_recreate() {
+        let address = Address::from([0x55; 20]);
+        let key = Word::from(1);
+        let original = AccountInfo::default().with_balance(Word::from(3));
+        let recreated = AccountInfo::default().with_balance(Word::from(9));
+        let mut accumulator = BlockStateAccumulator::new();
+
+        let delete = changes(
+            address,
+            AccountChange {
+                original: Some(original.clone()),
+                wipe_storage: true,
+                ..AccountChange::default()
+            },
+        );
+        delete.visit(&mut accumulator).expect("block accumulator is infallible");
+
+        let balance_recreate = changes(
+            address,
+            AccountChange { current: Some(recreated.clone()), ..AccountChange::default() },
+        );
+        balance_recreate.visit(&mut accumulator).expect("block accumulator is infallible");
+
+        let accounts = accumulator.accounts_sorted();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].1.original.as_ref(), Some(&original));
+        assert_eq!(accounts[0].1.current.as_ref(), Some(&recreated));
+        assert_eq!(accumulator.storage_wipes_sorted(), [address]);
+
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, original);
+        db.insert_account_storage(&address, &key, &Word::from(7));
+        db.commit_source(&accumulator);
+
+        assert_eq!(db.get_storage(&address, &key).unwrap(), Word::ZERO);
     }
 
     #[test]

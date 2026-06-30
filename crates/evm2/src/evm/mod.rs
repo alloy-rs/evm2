@@ -426,7 +426,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// Returns account bytecode visible through the accepted state overlay.
     #[inline]
     pub fn account_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        self.state.account(address, false)?.load_code()
+        self.state.read_committed_code(address)
     }
 
     /// Applies borrowed changes to the accepted state overlay.
@@ -1613,7 +1613,7 @@ mod tests {
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         env::TxEnv,
-        ethereum::RecoveredTxEnvelope,
+        ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, MessageKind, op},
         precompiles::{Precompile, PrecompileId, PrecompileMap},
         registry::TxRequest,
@@ -1621,7 +1621,7 @@ mod tests {
     };
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
+    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, TxKind, U256};
     use core::{
         error::Error,
         fmt,
@@ -2234,6 +2234,45 @@ mod tests {
     }
 
     #[test]
+    fn create_tx_selfdestruct_does_not_stream_ephemeral_storage_wipe() {
+        let caller = Address::with_last_byte(0xaa);
+        let beneficiary = Address::with_last_byte(0xbb);
+        let created = caller.create(0);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(Word::from(1_000_000_000_u64)),
+        );
+        let mut initcode = vec![op::PUSH20];
+        initcode.extend_from_slice(beneficiary.as_slice());
+        initcode.push(op::SELFDESTRUCT);
+        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy {
+                gas_limit: 100_000,
+                to: TxKind::Create,
+                input: Bytes::from(initcode),
+                ..TxLegacy::default()
+            },
+            caller,
+        ));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::SPURIOUS_DRAGON,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::SPURIOUS_DRAGON),
+            database,
+            Precompiles::base(SpecId::SPURIOUS_DRAGON),
+        );
+        let mut block_state = BlockStateAccumulator::new();
+
+        let result =
+            evm.transact(&tx).expect("transaction should execute").commit_to(&mut block_state);
+
+        assert!(result.status, "{result:#?}");
+        assert_eq!(result.created_address, Some(created));
+        assert!(!block_state.storage_wipes_sorted().contains(&created), "{block_state:#?}");
+    }
+
+    #[test]
     fn dropped_executed_transaction_discards_state() {
         let mut evm = lifecycle_evm();
         drop(evm.transact(&test_tx(7)).expect("lifecycle transaction should execute"));
@@ -2265,6 +2304,57 @@ mod tests {
 
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
         assert!(result.stop.is_success());
+    }
+
+    #[test]
+    fn account_code_read_does_not_shadow_later_committed_overlay_update() {
+        let account = Address::with_last_byte(0x55);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let original = AccountInfo::default().with_balance(Word::from(1)).with_code(code.clone());
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&account, original.clone());
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        assert_eq!(evm.account_code(&account).unwrap(), code);
+
+        let current = original.clone().with_balance(Word::from(2));
+        let mut changes = StateChanges::default();
+        changes.accounts.insert(
+            account,
+            AccountChange {
+                original: Some(original),
+                current: Some(current),
+                ..AccountChange::default()
+            },
+        );
+        evm.commit_source(&changes);
+
+        let visible = evm.read_account_info(&account).unwrap().unwrap();
+        assert_eq!(visible.balance, Word::from(2));
+    }
+
+    #[test]
+    fn build_state_changes_resolves_backing_account_for_storage_only_change() {
+        let contract = Address::from([0x33; 20]);
+        let mut database = InMemoryDB::default();
+        let info = AccountInfo::default()
+            .with_balance(Word::from(7))
+            .with_code(Bytecode::new_legacy(Bytes::from_static(&[op::STOP])));
+        database.insert_account_info(&contract, info);
+        let mut state = State::new(database);
+        state.storage_slot(&contract, Word::ZERO, false).unwrap().write(Word::from(1));
+        let changes = state.build_state_changes();
+        let change = changes.accounts.get(&contract).expect("storage change recorded");
+
+        assert_eq!(change.original.as_ref().map(|info| info.balance), Some(Word::from(7)));
+        assert_eq!(change.current.as_ref().map(|info| info.balance), Some(Word::from(7)));
+        assert_eq!(change.storage.get(&Word::ZERO).unwrap().current, Word::from(1));
     }
 
     #[test]
