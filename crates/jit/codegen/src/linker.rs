@@ -52,22 +52,19 @@ impl Linker {
         out: &Path,
         objects: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
     ) -> std::io::Result<()> {
-        let storage;
-        let cc = match &self.cc {
-            Some(cc) => cc,
-            None => {
-                let str = match std::env::var_os("CC") {
-                    Some(cc) => {
-                        storage = cc;
-                        storage.as_os_str()
-                    }
-                    None => "cc".as_ref(),
-                };
-                Path::new(str)
-            }
+        let mut cmd = match &self.cc {
+            Some(cc) => std::process::Command::new(cc),
+            None => match std::env::var_os("CC") {
+                Some(cc) => {
+                    let (program, args) = cc_command_parts(cc);
+                    let mut cmd = std::process::Command::new(program);
+                    cmd.args(args);
+                    cmd
+                }
+                None => std::process::Command::new("cc"),
+            },
         };
 
-        let mut cmd = std::process::Command::new(cc);
         cmd.arg("-o").arg(out);
         cmd.arg("-shared");
         cmd.arg("-O3");
@@ -93,6 +90,13 @@ impl Linker {
     }
 }
 
+fn cc_command_parts(cc: OsString) -> (OsString, Vec<OsString>) {
+    let Some(cc_str) = cc.to_str() else { return (cc, Vec::new()) };
+    let mut parts = cc_str.split_whitespace();
+    let Some(program) = parts.next() else { return ("cc".into(), Vec::new()) };
+    (program.into(), parts.map(OsString::from).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +108,14 @@ mod tests {
         let expected = format!("out{}", std::env::consts::DLL_SUFFIX);
 
         assert_eq!(path, dir.join(expected));
+    }
+
+    #[test]
+    fn cc_command_parts_splits_env_wrapper() {
+        let (program, args) = cc_command_parts("kache cc".into());
+
+        assert_eq!(program, std::ffi::OsStr::new("kache"));
+        assert_eq!(args, [OsString::from("cc")]);
     }
 
     #[cfg(feature = "llvm")]

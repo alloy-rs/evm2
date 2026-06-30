@@ -67,6 +67,7 @@ impl SyncNotifier {
 
 /// A compilation job sent from the backend to a worker.
 #[derive(derive_more::Debug)]
+#[cfg_attr(not(feature = "llvm"), allow(dead_code))]
 pub(crate) struct CompileJob {
     /// Whether this job compiles JIT or AOT output.
     pub(crate) kind: CompilationKind,
@@ -104,6 +105,7 @@ pub(crate) struct WorkerResult {
 }
 
 /// Successful compilation output.
+#[cfg_attr(not(feature = "llvm"), allow(dead_code))]
 pub(crate) enum WorkerSuccess {
     /// JIT compilation produced an in-memory function pointer.
     Jit(JitSuccess),
@@ -123,6 +125,7 @@ pub(crate) struct JitSuccess {
 }
 
 /// Successful AOT compilation output.
+#[cfg_attr(not(feature = "llvm"), allow(dead_code))]
 pub(crate) struct JitObjectSuccess {
     /// The symbol name in the object file.
     pub(crate) symbol_name: String,
@@ -653,12 +656,22 @@ fn compile_job(
     _config: &RuntimeConfig,
     _helper: OutOfProcessHelper,
 ) -> WorkerResult {
+    let CompileJob {
+        kind,
+        key,
+        bytecode: _,
+        symbol_name: _,
+        opt_level: _,
+        sync_notifier,
+        generation,
+    } = job;
+
     WorkerResult {
-        key: job.key,
+        key,
         outcome: Err("LLVM backend not available".into()),
-        kind: job.kind,
-        sync_notifier: job.sync_notifier,
-        generation: job.generation,
+        kind,
+        sync_notifier,
+        generation,
         compile_duration: Duration::ZERO,
         timings: CompileTimings::default(),
     }
