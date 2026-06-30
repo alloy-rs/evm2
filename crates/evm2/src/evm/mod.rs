@@ -1141,18 +1141,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             message.kind,
             MessageKind::Call | MessageKind::CallCode | MessageKind::StaticCall
         );
-        let transfer_result = if transfers_balance {
-            match self.state.transfer(&message.caller, &message.destination, &message.value) {
+        let transfer_succeeded = !transfers_balance
+            || match self.state.transfer(&message.caller, &message.destination, &message.value) {
                 Ok(result) => result,
                 Err(code) => {
                     return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
                 }
-            }
-        } else {
-            Ok(())
-        };
-        if let Err(stop) = transfer_result {
-            return Self::error_message_result(stop, message.gas_limit);
+            };
+        if transfers_balance && !transfer_succeeded {
+            return Self::error_message_result(InstrStop::OutOfFunds, message.gas_limit);
         }
         if transfers_balance {
             self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
@@ -1456,10 +1453,12 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         };
 
         if contract != target {
-            match self.state.transfer(contract, target, &balance) {
-                Ok(Ok(())) => self.log_eip7708_transfer(contract, target, &balance),
-                Ok(Err(stop)) => return Err(stop),
-                Err(code) => return Err(self.db_error_stop(code)),
+            let transferred = self
+                .state
+                .transfer(contract, target, &balance)
+                .map_err(|code| self.db_error_stop(code))?;
+            if transferred {
+                self.log_eip7708_transfer(contract, target, &balance);
             }
         } else if should_destroy && !balance.is_zero() && !self.feature(EvmFeatures::EIP8246) {
             // Pre-EIP-8246: SELFDESTRUCT to self burns the contract's balance. EIP-8246 removes
@@ -2594,7 +2593,7 @@ mod tests {
         let mut state = State::new(InMemoryDB::default());
         state.account(&from, false).unwrap().add_balance(U256::from(10));
 
-        assert_eq!(state.transfer(&from, &to, &U256::from(7)).unwrap(), Ok(()));
+        assert!(state.transfer(&from, &to, &U256::from(7)).unwrap());
         assert_eq!(
             state
                 .account_info_untracked(&from)

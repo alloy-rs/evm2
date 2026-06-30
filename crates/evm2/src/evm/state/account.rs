@@ -503,10 +503,7 @@ impl<'a> AccountHandle<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        evm::{CacheDB, state::State},
-        interpreter::InstrStop,
-    };
+    use crate::evm::{CacheDB, state::State};
     use alloy_primitives::Address;
 
     #[test]
@@ -516,11 +513,8 @@ mod tests {
         database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(3)));
         let mut state = State::new(database);
 
-        assert_eq!(
-            state.transfer(&address, &address, &Word::from(4)).unwrap(),
-            Err(InstrStop::OutOfFunds)
-        );
-        assert_eq!(state.transfer(&address, &address, &Word::from(3)).unwrap(), Ok(()));
+        assert!(!state.transfer(&address, &address, &Word::from(4)).unwrap());
+        assert!(state.transfer(&address, &address, &Word::from(3)).unwrap());
     }
 
     #[test]
