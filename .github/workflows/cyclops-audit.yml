@@ -239,13 +239,17 @@ jobs:
             }
 
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const { data: comment } = await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `cc @${process.env.ACTOR}\n\nCyclops audit event queued. [View workflow run](${runUrl})\n\n${process.env.SUMMARY}`,
-            });
-            core.setOutput('comment-id', String(comment.id));
+            try {
+              const { data: comment } = await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `cc @${process.env.ACTOR}\n\nCyclops audit event queued. [View workflow run](${runUrl})\n\n${process.env.SUMMARY}`,
+              });
+              core.setOutput('comment-id', String(comment.id));
+            } catch (error) {
+              core.warning(`Could not create acknowledgement comment: ${error.message}`);
+            }
 
       - name: Publish event
         id: publish
