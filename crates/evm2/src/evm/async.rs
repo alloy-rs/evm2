@@ -92,6 +92,7 @@ impl AsyncError {
 struct CurrentFiber {
     suspend: NonNull<Yielder<Resume, Yield>>,
     future_cx: NonNull<Context<'static>>,
+    previous: Option<NonNull<Self>>,
     cancelled: bool,
 }
 
@@ -103,12 +104,16 @@ impl CurrentFiber {
 
     #[inline]
     fn suspend(&mut self) -> AsyncResult<()> {
+        let current = NonNull::from(&mut *self);
+        CURRENT.set(self.previous);
         match unsafe { self.suspend.as_ref() }.suspend(()) {
             Ok(cx) => {
+                CURRENT.set(Some(current));
                 self.future_cx = cx;
                 Ok(())
             }
             Err(error) => {
+                CURRENT.set(Some(current));
                 self.cancelled = true;
                 Err(error)
             }
@@ -265,10 +270,15 @@ impl<'a, R> FiberFuture<'a, R> {
         };
         let body = move |suspend: &Yielder<Resume, Yield>, resume| {
             let future_cx = resume?;
-            let mut current =
-                CurrentFiber { suspend: NonNull::from(suspend), future_cx, cancelled: false };
+            let previous = CURRENT.get();
+            let mut current = CurrentFiber {
+                suspend: NonNull::from(suspend),
+                future_cx,
+                previous,
+                cancelled: false,
+            };
             let current = NonNull::from(&mut current);
-            let previous = CURRENT.replace(Some(current));
+            CURRENT.set(Some(current));
             let _reset = ResetCurrentFiber(previous);
             Ok(func())
         };
@@ -361,21 +371,18 @@ fn current_tokio_handle() -> Option<Handle> {
     }
 }
 
-fn block_on_handle<F>(handle: &Handle, future: F) -> F::Output
+fn block_on_handle<F>(handle: &Handle, future: F) -> AsyncResult<F::Output>
 where
     F: Future,
 {
-    let should_use_block_in_place = Handle::try_current()
-        .ok()
-        .map(|current| {
-            !matches!(current.runtime_flavor(), tokio::runtime::RuntimeFlavor::CurrentThread)
-        })
-        .unwrap_or(false);
-
-    if should_use_block_in_place {
-        task::block_in_place(move || handle.block_on(future))
-    } else {
-        handle.block_on(future)
+    match Handle::try_current() {
+        Ok(current)
+            if matches!(current.runtime_flavor(), tokio::runtime::RuntimeFlavor::CurrentThread) =>
+        {
+            Err(AsyncError::Runtime)
+        }
+        Ok(_) => Ok(task::block_in_place(move || handle.block_on(future))),
+        Err(_) => Ok(handle.block_on(future)),
     }
 }
 
@@ -388,7 +395,7 @@ where
     }
 
     if let Some(runtime) = runtime {
-        return Ok(block_on_handle(runtime, future));
+        return block_on_handle(runtime, future);
     }
 
     Err(AsyncError::Runtime)
@@ -585,12 +592,12 @@ mod tests {
         bytecode::Bytecode,
         env::BlockEnv,
         evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider},
-        interpreter::{GasTracker, Message, Word},
+        interpreter::{GasTracker, Message, Word, op},
         precompile::PrecompileOutput,
         registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
     };
     use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, B256, Bytes, TxKind};
     use core::{
         assert_matches, convert::Infallible, fmt, future::Future, pin::Pin, ptr::NonNull,
         task::Poll,
@@ -619,6 +626,18 @@ mod tests {
 
         assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
         assert_matches!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(3)));
+    }
+
+    #[test]
+    fn current_tls_is_cleared_while_fiber_is_pending() {
+        let mut future = core::pin::pin!(on_fiber(|| {
+            let _ = block_on_current(PendingForever);
+        }));
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
+        assert_matches!(block_on_current(core::future::ready(())), Err(AsyncError::NotOnFiber));
     }
 
     #[test]
@@ -884,6 +903,26 @@ mod tests {
     }
 
     #[test]
+    fn current_thread_tokio_handle_does_not_panic_in_sync_adapter() {
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let handle = runtime.handle().clone();
+        let result = std::panic::catch_unwind(move || {
+            runtime.block_on(async move {
+                let mut db = AsyncDb::with_tokio_handle(TokioDb, handle);
+                let address = Address::ZERO;
+                let key = Word::from(7);
+                let code = DynDatabase::get_storage(&mut db, &address, &key).unwrap_err();
+                db.error(code).to_string()
+            })
+        });
+
+        assert_matches!(
+            result.as_deref(),
+            Ok("async host operation requires a Tokio multi-thread runtime")
+        );
+    }
+
+    #[test]
     fn synchronous_database_requires_runtime_handle() {
         let mut db = AsyncDb::new(TestDb);
         let address = Address::ZERO;
@@ -932,6 +971,61 @@ mod tests {
 
         assert!(result.status);
         assert_eq!(result.gas_used, 0);
+    }
+
+    #[test]
+    fn system_call_async_clears_stale_database_error_code() {
+        let contract = Address::from([0x42; 20]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            crate::ethereum::ethereum_tx_registry(SpecId::OSAKA),
+            Db::new(FailOnceAccountDb { fail_next_account: true }),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.evm_is_send::<Db<FailOnceAccountDb>, Precompiles<BaseEvmTypes>>();
+        let tx = crate::ethereum::RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy { gas_limit: 100_000, ..TxLegacy::default() },
+            Address::ZERO,
+        ));
+
+        assert_matches!(evm.transact(&tx), Err(HandlerError::Database(_)));
+        assert!(evm.db_error_code().is_some());
+
+        let result = poll_ready(evm.system_call_async(contract, Bytes::new())).unwrap();
+
+        assert!(result.status);
+        assert_eq!(result.db_error_code, None);
+    }
+
+    #[test]
+    fn dropping_transact_async_discards_nonce_after_cancelled_db_future() {
+        let caller = Address::ZERO;
+        let contract = Address::from([0x42; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            crate::ethereum::ethereum_tx_registry(SpecId::OSAKA),
+            AsyncDb::new(CancellingDb { contract, code }),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.evm_is_send::<AsyncDb<CancellingDb>, Precompiles<BaseEvmTypes>>();
+        let tx = crate::ethereum::RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy { to: TxKind::Call(contract), gas_limit: 100_000, ..TxLegacy::default() },
+            caller,
+        ));
+        {
+            let mut future = core::pin::pin!(evm.transact_async(&tx));
+            let waker = Waker::noop();
+            let mut cx = Context::from_waker(waker);
+
+            assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
+        }
+
+        let nonce = evm.read_account_info(&caller).unwrap().map_or(0, |info| info.nonce);
+
+        assert_eq!(nonce, 0);
     }
 
     #[test]
@@ -1002,6 +1096,37 @@ mod tests {
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
             let _ = Rc::strong_count(&self.marker);
             Ok(Word::from(9))
+        }
+
+        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
+        }
+    }
+
+    struct FailOnceAccountDb {
+        fail_next_account: bool,
+    }
+
+    impl Database for FailOnceAccountDb {
+        type Error = TestError;
+
+        fn get_account(
+            &mut self,
+            _address: &Address,
+        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
+            if self.fail_next_account {
+                self.fail_next_account = false;
+                return Err(TestError);
+            }
+            Ok(None)
+        }
+
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
+        }
+
+        fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
+            Ok(Word::ZERO)
         }
 
         fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
@@ -1124,6 +1249,42 @@ mod tests {
         ) -> Result<Word, Self::Error> {
             PendingStorage { pending: &mut self.pending }.await;
             Ok(Word::from(9))
+        }
+
+        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
+        }
+    }
+
+    struct CancellingDb {
+        contract: Address,
+        code: Bytecode,
+    }
+
+    impl AsyncDatabase for CancellingDb {
+        type Error = Infallible;
+
+        async fn get_account(
+            &mut self,
+            address: Address,
+        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
+            if address == self.contract {
+                return Ok(Some(crate::evm::AccountInfo::default().with_code(self.code.clone())));
+            }
+            Ok(Some(crate::evm::AccountInfo::default()))
+        }
+
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(self.code.clone())
+        }
+
+        async fn get_storage(
+            &mut self,
+            _address: Address,
+            _key: Word,
+        ) -> Result<Word, Self::Error> {
+            PendingForever.await;
+            Ok(Word::ZERO)
         }
 
         async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {

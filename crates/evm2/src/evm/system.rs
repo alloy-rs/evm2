@@ -101,6 +101,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> ExecutedTx<'_, T> {
+        self.db_error_code = None;
         self.state.prewarm(&system_contract_address);
         let tx_env = TxEnv {
             origin: caller,
@@ -198,7 +199,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 impl<T: EvmTypes<Host = Evm<T>>> SendEvmRef<'_, T> {
     #[inline]
     fn system_call(&mut self, system_contract_address: Address, data: Bytes) -> TxResult<T> {
-        self.evm.system_call(system_contract_address, data).commit()
+        self.evm.system_call(system_contract_address, data).commit_or_discard_database_error()
     }
 
     #[inline]
@@ -208,7 +209,9 @@ impl<T: EvmTypes<Host = Evm<T>>> SendEvmRef<'_, T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> TxResult<T> {
-        self.evm.system_call_with_caller(caller, system_contract_address, data).commit()
+        self.evm
+            .system_call_with_caller(caller, system_contract_address, data)
+            .commit_or_discard_database_error()
     }
 }
 

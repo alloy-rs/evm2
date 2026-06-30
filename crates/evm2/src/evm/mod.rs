@@ -766,7 +766,7 @@ impl<'a, T: EvmTypes> SendEvmRef<'a, T> {
 impl<T: EvmTypes<Tx: Typed2718, Host = Evm<T>>> SendEvmRef<'_, T> {
     #[inline]
     fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
-        self.evm.transact(tx).map(ExecutedTx::commit)
+        self.evm.transact(tx).map(ExecutedTx::commit_or_discard_database_error)
     }
 }
 
