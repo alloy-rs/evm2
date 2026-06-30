@@ -1,9 +1,9 @@
 use super::{
-    access_list_counts, charge_upfront, floor_gas, initial_message, intrinsic_gas,
-    rollback_failed_execution, settle_gas, validate_block_gas_limit, validate_chain_id,
-    validate_create_initcode, validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
-    validate_nonce_not_overflow, validate_regular_gas_limit_cap, validate_sender,
-    validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
+    access_list_counts, charge_upfront, checked_payment_add, floor_gas, initial_message,
+    intrinsic_gas, rollback_failed_execution, settle_gas, validate_block_gas_limit,
+    validate_chain_id, validate_create_initcode, validate_floor_gas, validate_gas_price,
+    validate_intrinsic_gas, validate_nonce_not_overflow, validate_regular_gas_limit_cap,
+    validate_sender, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
     Evm, EvmTypes, TxResult,
@@ -43,7 +43,8 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    validate_sender(req.host, caller, tx.nonce, max_gas_cost.saturating_add(tx.value))?;
+    let max_upfront = checked_payment_add(max_gas_cost, tx.value)?;
+    validate_sender(req.host, caller, tx.nonce, max_upfront)?;
 
     warm_base_accounts(req.host, caller, tx.to);
     warm_access_list(req.host, &tx.access_list);

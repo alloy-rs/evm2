@@ -234,6 +234,10 @@ pub(super) fn effective_gas_price(
     max_fee_per_gas.min(basefee.saturating_add(max_priority_fee_per_gas))
 }
 
+pub(super) fn checked_payment_add(lhs: U256, rhs: U256) -> HandlerResult<U256> {
+    lhs.checked_add(rhs).ok_or(HandlerError::OverflowPayment)
+}
+
 pub(super) fn validate_block_gas_limit(
     version: &Version,
     tx_gas_limit: u64,
@@ -520,10 +524,11 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {
         let caller_refund = U256::from(gas_remaining) * gas_price;
-        host.state
+        let _ = host
+            .state
             .account(&caller, false)
             .map_err(db_error_handler!(host))?
-            .add_balance(caller_refund);
+            .increment_balance(caller_refund);
         let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
             gas_price.saturating_sub(host.block.basefee)
         } else {
@@ -531,10 +536,11 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         };
         let beneficiary = host.block.beneficiary;
         let beneficiary_reward = U256::from(gas_used) * beneficiary_gas_price;
-        host.state
+        let _ = host
+            .state
             .account(&beneficiary, false)
             .map_err(db_error_handler!(host))?
-            .add_balance(beneficiary_reward);
+            .increment_balance(beneficiary_reward);
     }
     Ok(TxResult {
         status: result.stop.is_success(),
@@ -631,7 +637,7 @@ mod tests {
         registry::TxRegistry,
     };
     use alloc::vec;
-    use alloy_consensus::{TxEip2930, transaction::Recovered};
+    use alloy_consensus::{TxEip2930, TxLegacy, transaction::Recovered};
     use alloy_eips::eip2930::AccessList;
 
     #[test]
@@ -700,6 +706,79 @@ mod tests {
         assert_eq!(
             evm.transact(&tx).map(|executed| executed.discard()),
             Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
+        );
+    }
+
+    #[test]
+    fn legacy_rejects_upfront_payment_overflow() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::MAX));
+        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy {
+                nonce: 0,
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
+                value: U256::MAX,
+                input: Bytes::new(),
+                chain_id: None,
+            },
+            caller,
+        ));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::LONDON,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::LONDON),
+            database,
+            Precompiles::base(SpecId::LONDON),
+        );
+
+        assert_eq!(
+            evm.transact(&tx).map(|executed| executed.discard()),
+            Err(HandlerError::OverflowPayment)
+        );
+    }
+
+    #[test]
+    fn settlement_ignores_overflowing_beneficiary_reward() {
+        let caller = Address::with_last_byte(0xaa);
+        let target = Address::with_last_byte(0xbb);
+        let beneficiary = Address::with_last_byte(0xcc);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000u64)),
+        );
+        database.insert_account_info(&beneficiary, AccountInfo::default().with_balance(U256::MAX));
+        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy {
+                nonce: 0,
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(target),
+                value: U256::ZERO,
+                input: Bytes::new(),
+                chain_id: None,
+            },
+            caller,
+        ));
+        let block =
+            BlockEnv { beneficiary, gas_limit: U256::from(30_000_000u64), ..BlockEnv::default() };
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::LONDON,
+            block,
+            ethereum_tx_registry(SpecId::LONDON),
+            database,
+            Precompiles::base(SpecId::LONDON),
+        );
+
+        let result = evm.transact(&tx).unwrap().commit();
+
+        assert!(result.status);
+        assert_eq!(
+            evm.state.account_info_untracked(&beneficiary).unwrap().unwrap().balance,
+            U256::MAX
         );
     }
 

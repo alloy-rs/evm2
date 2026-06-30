@@ -1,8 +1,8 @@
 use super::{
-    access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_message,
-    intrinsic_gas, rollback_failed_execution, settle_gas, validate_block_gas_limit,
-    validate_chain_id, validate_create_initcode, validate_floor_gas, validate_gas_price,
-    validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
+    access_list_counts, charge_upfront, checked_payment_add, effective_gas_price, floor_gas,
+    initial_message, intrinsic_gas, rollback_failed_execution, settle_gas,
+    validate_block_gas_limit, validate_chain_id, validate_create_initcode, validate_floor_gas,
+    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
     validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
     warm_base_accounts,
 };
@@ -55,12 +55,9 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let blob_gas_cost = U256::from(DATA_GAS_PER_BLOB) * U256::from(tx.blob_versioned_hashes.len());
     let max_blob_gas_cost = blob_gas_cost * max_fee_per_blob_gas;
     let max_gas_cost = U256::from(tx.gas_limit) * max_fee_per_gas;
-    validate_sender(
-        req.host,
-        caller,
-        tx.nonce,
-        max_gas_cost.saturating_add(max_blob_gas_cost).saturating_add(tx.value),
-    )?;
+    let max_upfront =
+        checked_payment_add(checked_payment_add(max_gas_cost, max_blob_gas_cost)?, tx.value)?;
+    validate_sender(req.host, caller, tx.nonce, max_upfront)?;
 
     warm_base_accounts(req.host, caller, tx.to.into());
     warm_access_list(req.host, &tx.access_list);

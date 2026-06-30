@@ -2,9 +2,9 @@ use crate::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     env::{BlockEnv, TxEnv},
     evm::{AccountInfo, InMemoryDB},
-    interpreter::{Host, InstrStop, Message, Word, op},
+    interpreter::{Host, InstrStop, Message, MessageKind, Word, op},
     registry::TxRegistry,
-    test_utils::{legacy_bytecode, push},
+    test_utils::{legacy_bytecode, push, push_address},
 };
 use alloc::vec::Vec;
 use alloy_primitives::Address;
@@ -20,6 +20,10 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
     };
     let result = Host::execute_message(evm, &TxEnv::default(), legacy_bytecode(code), &mut message);
     assert!(result.stop.is_success());
+}
+
+fn return_top_word(code: &mut Vec<u8>) {
+    code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
 }
 
 #[test]
@@ -88,6 +92,88 @@ fn evm_runs_transactions_against_initial_state() {
         evm.state.storage_slot(&contract, Word::from(2), false).unwrap().current(),
         Word::from(42)
     );
+}
+
+#[test]
+fn call_value_transfer_recipient_balance_overflow_fails() {
+    let contract = Address::from([0x11; 20]);
+    let target = Address::from([0x22; 20]);
+
+    let mut database = InMemoryDB::default();
+    database.insert_account_info(&contract, AccountInfo::default().with_balance(Word::from(1)));
+    database.insert_account_info(&target, AccountInfo::default().with_balance(Word::MAX));
+    let mut evm = TestEvm::new(
+        SpecId::OSAKA,
+        BlockEnv::default(),
+        TxRegistry::new(),
+        database,
+        Precompiles::base(SpecId::OSAKA),
+    );
+
+    let mut code = Vec::new();
+    push(&mut code, 0);
+    push(&mut code, 0);
+    push(&mut code, 0);
+    push(&mut code, 0);
+    push(&mut code, 1);
+    push_address(&mut code, &target);
+    push(&mut code, 50_000);
+    code.push(op::CALL);
+    return_top_word(&mut code);
+
+    let mut message = Message {
+        destination: contract,
+        code_address: contract,
+        gas_limit: 100_000,
+        ..Default::default()
+    };
+    let result =
+        Host::execute_message(&mut evm, &TxEnv::default(), legacy_bytecode(code), &mut message);
+
+    assert_eq!(result.stop, InstrStop::Return);
+    assert_eq!(Word::from_be_slice(&result.output), Word::ZERO);
+    assert_eq!(
+        evm.state.account_info_untracked(&contract).unwrap().unwrap().balance,
+        Word::from(1)
+    );
+    assert_eq!(evm.state.account_info_untracked(&target).unwrap().unwrap().balance, Word::MAX);
+}
+
+#[test]
+fn create_endowment_existing_balance_overflow_fails() {
+    let caller = Address::from([0x33; 20]);
+    let created = Address::from([0x44; 20]);
+
+    let mut database = InMemoryDB::default();
+    database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
+    database.insert_account_info(&created, AccountInfo::default().with_balance(Word::MAX));
+    let mut evm = TestEvm::new(
+        SpecId::OSAKA,
+        BlockEnv::default(),
+        TxRegistry::new(),
+        database,
+        Precompiles::base(SpecId::OSAKA),
+    );
+
+    let mut message = Message {
+        kind: MessageKind::Create,
+        caller,
+        destination: created,
+        value: Word::from(1),
+        gas_limit: 100_000,
+        ..Default::default()
+    };
+    let result = Host::execute_message(
+        &mut evm,
+        &TxEnv::default(),
+        legacy_bytecode([op::STOP]),
+        &mut message,
+    );
+
+    assert_eq!(result.stop, InstrStop::OverflowPayment);
+    assert_eq!(result.created_address, None);
+    assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().balance, Word::from(1));
+    assert_eq!(evm.state.account_info_untracked(&created).unwrap().unwrap().balance, Word::MAX);
 }
 
 #[test]
