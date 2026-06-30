@@ -1,7 +1,7 @@
 //! EVM configuration.
 
 use crate::{
-    OpcodeConfig, SpecId,
+    Evm, OpcodeConfig, SpecId,
     ethereum::RecoveredTxEnvelope,
     interpreter::{
         Host,
@@ -9,6 +9,7 @@ use crate::{
     },
     version::Version,
 };
+use core::fmt::Debug;
 use derive_where::derive_where;
 
 /// Runtime EVM type family.
@@ -29,28 +30,30 @@ pub trait EvmTypes: Sized + 'static {
     type Tx;
 
     /// Extra data stored in frame messages.
-    type MessageExt: Clone + core::fmt::Debug + Default;
+    type MessageExt: Clone + Debug + Default;
 
     /// Extra data stored in message execution results.
-    type MessageResultExt: Clone + core::fmt::Debug + Default;
+    type MessageResultExt: Clone + Debug + Default;
 
     /// Extra data stored in transaction environments.
-    type TxEnvExt: Clone + core::fmt::Debug + Default;
+    type TxEnvExt: Clone + Debug + Default;
 
     /// Extra data stored in transaction execution results.
-    type TxResultExt: Clone + core::fmt::Debug + Default;
+    type TxResultExt: Clone + Debug + Default;
 
     /// Extra data stored in block environments.
-    type BlockEnvExt: Copy + core::fmt::Debug + Default;
+    type BlockEnvExt: Copy + Debug + Default;
 
     /// Host type used by this EVM.
     type Host<'a>: Host<Self> + ?Sized;
 }
 
-/// EVM type family whose host is [`crate::Evm`] for every stored-object lifetime.
-pub trait EvmHostTypes: for<'a> EvmTypes<Host<'a> = crate::Evm<'a, Self>> {}
+/// EVM type family whose host is [`Evm`] for every stored-object lifetime.
+///
+/// See [`EvmTypes`].
+pub trait EvmHostTypes: for<'a> EvmTypes<Host<'a> = Evm<'a, Self>> {}
 
-impl<T> EvmHostTypes for T where for<'a> T: EvmTypes<Host<'a> = crate::Evm<'a, T>> {}
+impl<T> EvmHostTypes for T where for<'a> T: EvmTypes<Host<'a> = Evm<'a, T>> {}
 
 /// Compile-time EVM table configuration.
 ///
@@ -217,7 +220,7 @@ impl EvmTypes for BaseEvmTypes {
     type TxEnvExt = ();
     type TxResultExt = ();
     type BlockEnvExt = ();
-    type Host<'a> = crate::evm::Evm<'a, Self>;
+    type Host<'a> = Evm<'a, Self>;
 }
 
 /// Base EVM configuration for an inherited base specification ID.
