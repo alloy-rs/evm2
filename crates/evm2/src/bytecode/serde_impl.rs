@@ -76,4 +76,36 @@ mod tests {
         assert_eq!(deserialized.kind(), BytecodeKind::Eip7702);
         assert_eq!(deserialized.eip7702_address(), Some(delegated_address));
     }
+
+    #[test]
+    fn serde_revm_json_cases() {
+        let cases = [
+            (
+                r#"{"LegacyAnalyzed":{"bytecode":"0x1234","original_len":2,"jump_table":{"order":"bitvec::order::Lsb0","head":{"width":8,"index":0},"bits":0,"data":[]}}}"#,
+                &hex!("1234")[..],
+                BytecodeKind::Legacy,
+                None,
+            ),
+            (
+                r#"{"Eip7702":{"delegated_address":"0x0000000000000000000000000000000000000042"}}"#,
+                &hex!("ef01000000000000000000000000000000000000000042")[..],
+                BytecodeKind::Eip7702,
+                Some(Address::with_last_byte(0x42)),
+            ),
+        ];
+
+        for (json, bytes, kind, delegated_address) in cases {
+            let bytecode: Bytecode = serde_json::from_str(json).unwrap();
+
+            assert_eq!(bytecode.kind(), kind);
+            assert_eq!(bytecode.eip7702_address(), delegated_address);
+            assert_eq!(bytecode.original_byte_slice(), bytes);
+
+            let bytecode_json = serde_json::to_string(&bytecode).unwrap();
+            let bytecode_roundtrip: Bytecode = serde_json::from_str(&bytecode_json).unwrap();
+            assert_eq!(bytecode_roundtrip.kind(), kind);
+            assert_eq!(bytecode_roundtrip.eip7702_address(), delegated_address);
+            assert_eq!(bytecode_roundtrip.original_byte_slice(), bytes);
+        }
+    }
 }
