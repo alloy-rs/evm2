@@ -579,8 +579,7 @@ fn run_system_call(
     data: Bytes,
     label: &'static str,
 ) -> Result<(), TestErrorKind> {
-    let executed =
-        evm.system_call(SystemTx { system_contract_address: address, data, ..Default::default() });
+    let executed = evm.system_call(SystemTx::new(address, data));
     if !executed.result().status {
         let _ = executed.discard();
         let has_code = match evm.account_code(&address) {

@@ -49,12 +49,34 @@ pub struct SystemTx {
     pub system_contract_address: Address,
     /// Calldata.
     pub data: Bytes,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 impl Default for SystemTx {
     #[inline]
     fn default() -> Self {
-        Self { caller: SYSTEM_ADDRESS, system_contract_address: Address::ZERO, data: Bytes::new() }
+        Self {
+            caller: SYSTEM_ADDRESS,
+            system_contract_address: Address::ZERO,
+            data: Bytes::new(),
+            _non_exhaustive: (),
+        }
+    }
+}
+
+impl SystemTx {
+    /// Creates a new system transaction from [`SYSTEM_ADDRESS`].
+    #[inline]
+    pub fn new(system_contract_address: Address, data: Bytes) -> Self {
+        Self { system_contract_address, data, ..Default::default() }
+    }
+
+    /// Sets the caller address.
+    #[inline]
+    pub const fn with_caller(mut self, caller: Address) -> Self {
+        self.caller = caller;
+        self
     }
 }
 
@@ -68,7 +90,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
     pub fn system_call(&mut self, tx: SystemTx) -> ExecutedTx<'_, T> {
-        let SystemTx { caller, system_contract_address, data } = tx;
+        let SystemTx { caller, system_contract_address, data, .. } = tx;
         self.db_error_code = None;
         self.state.prewarm(&system_contract_address);
         let tx_env = TxEnv {
@@ -199,13 +221,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm
-            .system_call(SystemTx {
-                system_contract_address: contract,
-                data: Bytes::new(),
-                ..Default::default()
-            })
-            .detach();
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).detach();
 
         assert!(result.result.status);
         assert!(result.result.gas_used < SYSTEM_CALL_GAS_LIMIT);
@@ -246,9 +262,8 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm
-            .system_call(SystemTx { caller, system_contract_address: contract, data: Bytes::new() })
-            .detach();
+        let result =
+            evm.system_call(SystemTx::new(contract, Bytes::new()).with_caller(caller)).detach();
 
         assert!(result.result.status);
         let storage =
@@ -273,13 +288,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let outcome = evm
-            .system_call(SystemTx {
-                system_contract_address: contract,
-                data: Bytes::new(),
-                ..Default::default()
-            })
-            .discard();
+        let outcome = evm.system_call(SystemTx::new(contract, Bytes::new())).discard();
 
         assert!(outcome.status);
         assert!(
@@ -300,13 +309,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm
-            .system_call(SystemTx {
-                system_contract_address: contract,
-                data: Bytes::new(),
-                ..Default::default()
-            })
-            .detach();
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).detach();
 
         assert!(result.result.status);
         assert_eq!(result.result.gas_used, 0);
@@ -338,13 +341,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm
-            .system_call(SystemTx {
-                system_contract_address: contract,
-                data: Bytes::new(),
-                ..Default::default()
-            })
-            .detach();
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).detach();
 
         assert!(!result.result.status);
         assert_eq!(result.result.stop, InstrStop::Revert);

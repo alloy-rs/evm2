@@ -827,13 +827,9 @@ mod tests {
         );
         evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
 
-        let result = poll_ready(evm.system_call_async(SystemTx {
-            system_contract_address: contract,
-            data: Bytes::new(),
-            ..Default::default()
-        }))
-        .unwrap()
-        .discard();
+        let result = poll_ready(evm.system_call_async(SystemTx::new(contract, Bytes::new())))
+            .unwrap()
+            .discard();
 
         assert!(result.status);
         assert_eq!(result.gas_used, 0);
@@ -858,13 +854,9 @@ mod tests {
         assert_matches!(evm.transact(&tx), Err(HandlerError::Database(_)));
         assert!(evm.db_error_code().is_some());
 
-        let result = poll_ready(evm.system_call_async(SystemTx {
-            system_contract_address: contract,
-            data: Bytes::new(),
-            ..Default::default()
-        }))
-        .unwrap()
-        .discard();
+        let result = poll_ready(evm.system_call_async(SystemTx::new(contract, Bytes::new())))
+            .unwrap()
+            .discard();
 
         assert!(result.status);
         assert_eq!(result.db_error_code, None);

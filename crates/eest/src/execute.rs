@@ -427,8 +427,7 @@ fn commit_system_call<T: EvmTypes<Host = Evm<T>>>(
     address: Address,
     data: Bytes,
 ) {
-    let executed =
-        evm.system_call(SystemTx { system_contract_address: address, data, ..Default::default() });
+    let executed = evm.system_call(SystemTx::new(address, data));
     assert!(executed.result().status, "pre-block system call failed: {address}");
     let Ok(_) = executed.commit_with(post);
 }
