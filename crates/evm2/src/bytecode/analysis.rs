@@ -26,8 +26,9 @@ pub(super) fn analyze_legacy(bytecode: Bytes) -> (JumpTable, Bytes) {
         } else {
             let push_offset = last_byte.wrapping_sub(op::PUSH1);
             if push_offset < 32 {
-                // SAFETY: Iterator access range is checked in the while loop.
-                iterator = unsafe { iterator.add(push_offset as usize + 2) };
+                // A trailing PUSH can advance past the bytecode allocation.
+                // `wrapping_add` keeps that offset computation defined.
+                iterator = iterator.wrapping_add(push_offset as usize + 2);
             } else {
                 // SAFETY: Iterator access range is checked in the while loop.
                 iterator = unsafe { iterator.add(1) };
@@ -126,6 +127,16 @@ mod tests {
         let bytecode = vec![op::PUSH32];
         let (_, padded_bytecode) = analyze_legacy(bytecode.clone().into());
         assert_eq!(padded_bytecode.len(), bytecode.len() + 33); // PUSH32 + 32 bytes + STOP
+    }
+
+    #[test]
+    fn test_truncated_pushes_are_padded_without_inbounds_pointer_advance() {
+        for push in op::PUSH1..=op::PUSH32 {
+            let bytecode = vec![push];
+            let (_, padded_bytecode) = analyze_legacy(bytecode.clone().into());
+            let push_immediate_len = (push - op::PUSH1 + 1) as usize;
+            assert_eq!(padded_bytecode.len(), bytecode.len() + push_immediate_len + 1);
+        }
     }
 
     #[test]
