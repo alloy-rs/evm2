@@ -69,6 +69,9 @@ pub enum AsyncError<E = core::convert::Infallible> {
     /// Blocking async I/O was requested outside a supported Tokio runtime.
     #[error("async host operation requires a Tokio multi-thread runtime")]
     Runtime,
+    /// Blocking async I/O was requested from a Tokio current-thread runtime.
+    #[error("async host operation cannot block on a Tokio current-thread runtime")]
+    CurrentThreadRuntime,
     /// Async fiber stack setup failed.
     #[error(transparent)]
     Io(io::Error),
@@ -83,6 +86,7 @@ impl AsyncError {
             Self::Cancelled => AsyncError::Cancelled,
             Self::NotOnFiber => AsyncError::NotOnFiber,
             Self::Runtime => AsyncError::Runtime,
+            Self::CurrentThreadRuntime => AsyncError::CurrentThreadRuntime,
             Self::Io(error) => AsyncError::Io(error),
             Self::Inner(error) => match error {},
         }
@@ -379,7 +383,7 @@ where
         Ok(current)
             if matches!(current.runtime_flavor(), tokio::runtime::RuntimeFlavor::CurrentThread) =>
         {
-            Err(AsyncError::Runtime)
+            Err(AsyncError::CurrentThreadRuntime)
         }
         Ok(_) => Ok(task::block_in_place(move || handle.block_on(future))),
         Err(_) => Ok(handle.block_on(future)),
@@ -914,7 +918,7 @@ mod tests {
             db.error(code).to_string()
         });
 
-        assert_eq!(result, "async host operation requires a Tokio multi-thread runtime");
+        assert_eq!(result, "async host operation cannot block on a Tokio current-thread runtime");
     }
 
     #[test]
