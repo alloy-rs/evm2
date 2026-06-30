@@ -157,12 +157,28 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
     /// running the synchronous system call on a fiber.
     ///
-    /// This returns a `Send` future. Before calling it, the current erased database, precompile
-    /// provider, and optional inspector must be verified with [`Evm::evm_is_send`] or
-    /// [`Evm::evm_is_send_with_inspector`].
+    /// This returns a local future and does not require the erased database, precompile provider,
+    /// or optional inspector to be `Send`. Use [`Evm::system_call_async_send`] when the returned
+    /// future must be `Send`.
     #[cfg(feature = "async")]
     #[inline]
     pub fn system_call_async(
+        &mut self,
+        tx: SystemTx,
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, Infallible>> + '_ {
+        let stack = self.async_stack();
+        // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
+        // access the EVM stack slot until that future is dropped.
+        unsafe { r#async::on_local_fiber_with_stack(stack, move || self.system_call(tx)) }
+    }
+
+    /// Executes a system call on an async fiber and returns a `Send` future.
+    ///
+    /// Before calling it, the current erased database, precompile provider, and optional inspector
+    /// must be verified with [`Evm::evm_is_send`] or [`Evm::evm_is_send_with_inspector`].
+    #[cfg(feature = "async")]
+    #[inline]
+    pub fn system_call_async_send(
         &mut self,
         tx: SystemTx,
     ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, Infallible>> + Send + '_ {
