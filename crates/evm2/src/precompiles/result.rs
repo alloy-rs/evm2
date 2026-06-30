@@ -188,11 +188,8 @@ impl From<crate::interpreter::InstrStop> for PrecompileError {
     #[inline]
     fn from(x: crate::interpreter::InstrStop) -> Self {
         debug_assert!(x.is_halt());
-        if x == crate::interpreter::InstrStop::FatalExternalError {
+        if x.is_fatal() {
             return Self::Fatal("fatal external error".into());
-        }
-        if x == crate::interpreter::InstrStop::FatalPrecompileError {
-            return Self::Fatal("fatal precompile error".into());
         }
         Self::Halt(PrecompileHalt::OutOfGas)
     }
@@ -213,7 +210,7 @@ pub enum PrecompileError {
 }
 
 impl PrecompileError {
-    /// Creates a fatal precompile error.
+    /// Creates a fatal error.
     #[inline]
     pub fn fatal(err: impl core::error::Error + Send + Sync + 'static) -> Self {
         Self::Fatal(AnyError::new(err))
@@ -267,7 +264,7 @@ mod tests {
     use crate::interpreter::InstrStop;
 
     #[test]
-    fn fatal_instr_stop_becomes_fatal_precompile_error() {
+    fn fatal_instr_stop_becomes_fatal_error() {
         assert!(PrecompileError::from(InstrStop::FatalExternalError).is_fatal());
         assert!(PrecompileError::from(InstrStop::FatalPrecompileError).is_fatal());
     }

@@ -122,8 +122,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         ) else {
             self.state.clear_transaction_state();
             let stop = InstrStop::FatalExternalError;
-            let outcome =
-                TxResult { stop, db_error_code: self.db_error_code(), ..TxResult::default() };
+            let outcome = TxResult { stop, error_code: self.error_code(), ..TxResult::default() };
             return ExecutedTx::from_result(self, outcome, false);
         };
         // System calls are not inspected.
@@ -205,12 +204,12 @@ impl<T: EvmTypes<Host = Evm<T>>> SendEvmRef<'_, T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmTypes, Precompiles, SpecId,
+        BaseEvmTypes, ErrorCode, Precompiles, SpecId,
         bytecode::Bytecode,
         env::BlockEnv,
         evm::{AccountInfo, InMemoryDB},
         interpreter::{GasTracker, InstrStop, Message, op},
-        precompiles::{Precompile, PrecompileId, PrecompileResult},
+        precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileResult},
         registry::TxRegistry,
     };
 
@@ -334,15 +333,26 @@ mod tests {
     }
 
     #[test]
-    fn system_call_consumes_fatal_precompile_error() {
+    fn system_call_reports_fatal_precompile_code() {
         const FATAL_PRECOMPILE_ADDRESS: Address = Address::with_last_byte(0x43);
+
+        #[derive(Debug)]
+        struct TestPrecompileError;
+
+        impl core::fmt::Display for TestPrecompileError {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("test precompile error")
+            }
+        }
+
+        impl core::error::Error for TestPrecompileError {}
 
         fn fatal_precompile(
             _evm: &mut Evm<BaseEvmTypes>,
             _message: &Message,
             _gas: &mut GasTracker,
         ) -> PrecompileResult {
-            Err("fatal precompile".into())
+            Err(PrecompileError::fatal(TestPrecompileError))
         }
 
         let mut precompiles = Precompiles::base(SpecId::OSAKA);
@@ -364,6 +374,6 @@ mod tests {
 
         assert!(!outcome.status);
         assert_eq!(outcome.stop, InstrStop::FatalPrecompileError);
-        assert!(evm.take_fatal_precompile_error().is_none());
+        assert_eq!(outcome.error_code, Some(ErrorCode::FATAL_PRECOMPILE));
     }
 }

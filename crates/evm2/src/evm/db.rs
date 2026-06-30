@@ -1,49 +1,16 @@
 //! Database helpers for the EVM state overlay.
 
 use super::state::AccountInfo;
-use crate::{bytecode::Bytecode, interpreter::Word};
-use alloc::{boxed::Box, string::ToString};
+use crate::{ErrorCode, bytecode::Bytecode, error::error_unavailable, interpreter::Word};
+use alloc::boxed::Box;
 use alloy_primitives::{Address, B256, keccak256};
-use core::{any::Any, error::Error, fmt, num::NonZeroUsize};
+use core::{any::Any, error::Error};
 
 mod cache;
 pub use cache::{AccountStorageCache, Cache, CacheDB, InMemoryDB};
 
-/// Lightweight handle for a database error.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DbErrorCode(NonZeroUsize);
-
-impl DbErrorCode {
-    /// Reserved code signalling that a cold database load was skipped because the caller could not
-    /// afford the cold access (see `skip_cold_load`). No backing-database error occurred.
-    pub const COLD_LOAD_SKIPPED: Self = Self::new(2).unwrap();
-
-    /// Creates a database error code.
-    #[inline]
-    pub const fn new(code: usize) -> Option<Self> {
-        let Some(code) = NonZeroUsize::new(code) else {
-            return None;
-        };
-        Some(Self(code))
-    }
-
-    /// Returns the raw database error code.
-    #[inline]
-    pub const fn get(self) -> usize {
-        self.0.get()
-    }
-
-    /// Updates the raw database error code.
-    #[inline]
-    pub fn set(&mut self, code: usize) -> Option<()> {
-        let code = NonZeroUsize::new(code)?;
-        self.0 = code;
-        Some(())
-    }
-}
-
 /// Result of a database operation.
-pub type DbResult<T> = Result<T, DbErrorCode>;
+pub type DbResult<T> = Result<T, ErrorCode>;
 
 /// Backing database implementation with a concrete error type.
 pub trait Database: Any {
@@ -108,31 +75,10 @@ impl<T: Database> Db<T> {
     }
 
     #[inline]
-    fn store_error(&mut self, err: T::Error) -> DbErrorCode {
+    fn store_error(&mut self, err: T::Error) -> ErrorCode {
         self.result = Some(err);
-        stored_error_code()
+        ErrorCode::STORED_ERROR
     }
-}
-
-#[inline]
-pub(crate) const fn stored_error_code() -> DbErrorCode {
-    DbErrorCode::new(1).unwrap()
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DbErrorUnavailable(DbErrorCode);
-
-impl fmt::Display for DbErrorUnavailable {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "database error {:?} is unavailable", self.0)
-    }
-}
-
-impl Error for DbErrorUnavailable {}
-
-#[inline]
-pub(crate) fn db_error_unavailable(code: DbErrorCode) -> Box<dyn Error> {
-    Box::new(DbErrorUnavailable(code))
 }
 
 impl<T: Database> DynDatabase for Db<T> {
@@ -157,13 +103,13 @@ impl<T: Database> DynDatabase for Db<T> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
-        if code == stored_error_code()
+    fn error(&mut self, code: ErrorCode) -> Box<dyn Error> {
+        if code == ErrorCode::STORED_ERROR
             && let Some(err) = self.result.take()
         {
             return Box::new(err);
         }
-        db_error_unavailable(code)
+        error_unavailable(code)
     }
 }
 
@@ -182,8 +128,8 @@ pub trait DynDatabase: Any {
     fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>>;
 
     /// Retrieves the full error for a previously returned error code.
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
-        db_error_unavailable(code)
+    fn error(&mut self, code: ErrorCode) -> Box<dyn Error> {
+        error_unavailable(code)
     }
 }
 
@@ -315,7 +261,7 @@ impl<D: DynDatabase> DynDatabase for DbStats<D> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
+    fn error(&mut self, code: ErrorCode) -> Box<dyn Error> {
         self.counts.error += 1;
         self.db.error(code)
     }
@@ -359,7 +305,7 @@ impl<T: DynDatabase + ?Sized> DynDatabase for Box<T> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
+    fn error(&mut self, code: ErrorCode) -> Box<dyn Error> {
         self.as_mut().error(code)
     }
 }

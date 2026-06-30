@@ -7,12 +7,11 @@
 //! it does not force a particular transaction or receipt representation onto
 //! the rest of the crate.
 
+use crate::{ErrorCode, EvmTypes};
 use alloc::{string::String, sync::Arc};
 use alloy_primitives::{Address, U256, map::HashMap};
 use core::{fmt, marker::PhantomData};
 use thiserror::Error;
-
-use crate::EvmTypes;
 
 /// Convenience result type used by the registry and handlers.
 pub type HandlerResult<T> = core::result::Result<T, HandlerError>;
@@ -20,9 +19,9 @@ pub type HandlerResult<T> = core::result::Result<T, HandlerError>;
 /// Registry, transaction validation, and transaction handler errors.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum HandlerError {
-    /// Database operation failed.
-    #[error("database error {0:?}")]
-    Database(super::DbErrorCode),
+    /// Host error propagated as a transaction handler failure.
+    #[error("fatal error {0:?}")]
+    Fatal(ErrorCode),
     /// Custom error from a handler or fatal extension boundary.
     #[error("{0}")]
     Custom(String),

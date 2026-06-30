@@ -5,10 +5,10 @@
 //! suspended and the outer async task returns `Poll::Pending`.
 
 use crate::{
+    ErrorCode,
     bytecode::Bytecode,
-    evm::{
-        AccountInfo, DbErrorCode, DbResult, DynDatabase, db_error_unavailable, stored_error_code,
-    },
+    error::error_unavailable,
+    evm::{AccountInfo, DbResult, DynDatabase},
     interpreter::Word,
 };
 use alloc::boxed::Box;
@@ -508,9 +508,9 @@ impl<D: AsyncDatabase> AsyncDb<D> {
     }
 
     #[inline]
-    fn store_error(&mut self, error: impl Error + Send + 'static) -> DbErrorCode {
+    fn store_error(&mut self, error: impl Error + Send + 'static) -> ErrorCode {
         self.error = Some(Box::new(error));
-        stored_error_code()
+        ErrorCode::STORED_ERROR
     }
 
     #[inline]
@@ -560,13 +560,13 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
-        if code == stored_error_code()
+    fn error(&mut self, code: ErrorCode) -> Box<dyn Error> {
+        if code == ErrorCode::STORED_ERROR
             && let Some(error) = self.error.take()
         {
             return error;
         }
-        db_error_unavailable(code)
+        error_unavailable(code)
     }
 }
 
