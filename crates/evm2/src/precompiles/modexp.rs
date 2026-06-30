@@ -560,7 +560,7 @@ mod tests {
             base_len: U256,
             exp_len: U256,
             mod_len: U256,
-            expected: Option<PrecompileError>,
+            expected: Option<PrecompileHalt>,
         }
 
         impl TestInput {
@@ -578,31 +578,31 @@ mod tests {
                 base_len: U256::from(1025),
                 exp_len: U256::from(1024),
                 mod_len: U256::from(1024),
-                expected: Some(PrecompileError::Halt(PrecompileHalt::ModexpEip7823LimitSize)),
+                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
             },
             TestInput {
                 base_len: U256::from(1024),
                 exp_len: U256::from(1025),
                 mod_len: U256::from(1024),
-                expected: Some(PrecompileError::Halt(PrecompileHalt::ModexpEip7823LimitSize)),
+                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
             },
             TestInput {
                 base_len: U256::from(1024),
                 exp_len: U256::from(1024),
                 mod_len: U256::from(1025),
-                expected: Some(PrecompileError::Halt(PrecompileHalt::ModexpEip7823LimitSize)),
+                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
             },
             TestInput {
                 base_len: U256::from(0),
                 exp_len: U256::from(0),
                 mod_len: U256::from(1025),
-                expected: Some(PrecompileError::Halt(PrecompileHalt::ModexpEip7823LimitSize)),
+                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
             },
             TestInput {
                 base_len: U256::from(1024),
                 exp_len: U256::from(1024),
                 mod_len: U256::from(1024),
-                expected: Some(PrecompileError::Halt(PrecompileHalt::OutOfGas)),
+                expected: Some(PrecompileHalt::OutOfGas),
             },
             TestInput {
                 base_len: U256::from(0),
@@ -614,7 +614,12 @@ mod tests {
         for test in test_inputs {
             let input = test.input();
             let res = run_osaka(&input, &mut GasTracker::new(100_000_000)).err();
-            if res != test.expected {
+            let halt = match &res {
+                Some(PrecompileError::Halt(halt)) => Some(halt),
+                None => None,
+                Some(_) => panic!("test failed: {test:?} result: {res:?}"),
+            };
+            if halt != test.expected.as_ref() {
                 panic!("test failed: {test:?} result: {res:?}");
             }
         }

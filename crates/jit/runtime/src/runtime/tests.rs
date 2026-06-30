@@ -1,9 +1,13 @@
 //! Tests for the runtime module.
 
 use super::*;
-use alloy_primitives::{B256, Bytes};
+#[cfg(feature = "llvm")]
+use alloy_primitives::B256;
+use alloy_primitives::Bytes;
 use evm2::SpecId;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(feature = "llvm")]
+use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // Test bytecodes.
@@ -16,6 +20,7 @@ const BYTECODE_RET42: &[u8] = &[0x60, 0x42, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3];
 const BYTECODE_ADD: &[u8] = &[0x60, 0x01, 0x60, 0x01, 0x01, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3];
 
 /// Returns a simple bytecode that varies by index (for generating distinct code hashes).
+#[cfg(feature = "llvm")]
 fn indexed_bytecode(i: u8) -> Vec<u8> {
     vec![0x60, i, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3]
 }
@@ -60,6 +65,7 @@ impl TestBackend {
     }
 
     /// Creates a backend with `enabled: true`, 1 worker, and default tuning.
+    #[cfg(feature = "llvm")]
     fn default_1w() -> Self {
         Self::with_tuning_1w(RuntimeTuning::default())
     }
@@ -79,6 +85,7 @@ impl TestBackend {
 
     /// Sends lookups until JIT promotion triggers and the program appears in the resident map.
     /// Returns the compiled program.
+    #[cfg(feature = "llvm")]
     fn trigger_jit(&self, bytecode: &[u8], spec_id: SpecId) -> Arc<CompiledProgram> {
         for _ in 0..10 {
             let _ = self.backend.lookup(Self::req(bytecode, spec_id));
@@ -87,11 +94,13 @@ impl TestBackend {
     }
 
     /// Like [`trigger_jit`](Self::trigger_jit) but with [`SpecId::CANCUN`].
+    #[cfg(feature = "llvm")]
     fn trigger_jit_cancun(&self, bytecode: &[u8]) -> Arc<CompiledProgram> {
         self.trigger_jit(bytecode, SpecId::CANCUN)
     }
 
     /// Polls until the given bytecode is compiled and available in the resident map.
+    #[cfg(feature = "llvm")]
     fn wait_compiled(&self, bytecode: &[u8], spec_id: SpecId) -> Arc<CompiledProgram> {
         poll_until(std::time::Duration::from_secs(30), || {
             match self.backend.lookup(Self::req(bytecode, spec_id)) {
@@ -102,6 +111,7 @@ impl TestBackend {
     }
 
     /// Polls until the resident map reaches the expected entry count.
+    #[cfg(feature = "llvm")]
     fn wait_resident_count(&self, expected: u64) {
         poll_until(std::time::Duration::from_secs(5), || {
             let n = self.backend.stats().resident_entries;
@@ -614,6 +624,21 @@ fn compile_jit_sync_blocks() {
 }
 
 #[test]
+fn sync_compile_wait_times_out() {
+    let tb = TestBackend::new(RuntimeConfig {
+        tuning: RuntimeTuning {
+            sync_compile_timeout: std::time::Duration::from_millis(1),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let (_tx, rx) = chan::bounded(1);
+
+    let err = tb.recv_compile_completion(rx).unwrap_err();
+    assert!(err.to_string().contains("timed out waiting for compilation"));
+}
+
+#[test]
 #[cfg(feature = "llvm")]
 fn compile_jit_sync_deduplicates() {
     let compiled_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -977,40 +1002,33 @@ fn prepare_aot_persist_and_load() {
     });
 
     let code_hash = alloy_primitives::keccak256(BYTECODE_RET42);
-    tb.prepare_aot(AotRequest {
+    tb.prepare_aot_sync(AotRequest {
         code_hash,
         code: Bytes::copy_from_slice(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
-    });
+    })
+    .unwrap();
 
-    let p = tb.wait_compiled(BYTECODE_RET42, SpecId::CANCUN);
+    let p = tb.get_compiled(code_hash, SpecId::CANCUN).unwrap();
     assert_eq!(p.kind, ProgramKind::Aot);
     assert_eq!(store.len(), 1);
 }
 
 #[test]
 #[cfg(feature = "llvm")]
-fn aot_mode_promotes_misses_to_aot() {
+fn blocking_aot_mode_compiles_miss_to_aot() {
     let store = Arc::new(RuntimeArtifactStore::new().unwrap());
     let tb = TestBackend::new(RuntimeConfig {
         enabled: true,
         aot: true,
+        blocking: true,
         store: Some(store.clone()),
-        tuning: RuntimeTuning { jit_hot_threshold: 2, jit_worker_count: 1, ..Default::default() },
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
         ..Default::default()
     });
 
-    assert!(matches!(
-        tb.lookup(TestBackend::req_cancun(BYTECODE_RET42)),
-        LookupDecision::Unavailable(_)
-    ));
-    assert!(matches!(
-        tb.lookup(TestBackend::req_cancun(BYTECODE_RET42)),
-        LookupDecision::Unavailable(_)
-    ));
-
-    let p = tb.wait_compiled(BYTECODE_RET42, SpecId::CANCUN);
-    assert_eq!(p.kind, ProgramKind::Aot);
+    let decision = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+    assert!(matches!(&decision, LookupDecision::Compiled(p) if p.kind == ProgramKind::Aot));
     assert_eq!(store.len(), 1);
 }
 
@@ -1037,10 +1055,13 @@ fn prepare_aot_batch_persist_and_load() {
             spec_id: SpecId::CANCUN,
         })
         .collect();
-    tb.prepare_aot_batch(reqs);
+    tb.prepare_aot_batch_sync(reqs).unwrap();
 
-    for bc in bytecodes {
-        tb.wait_compiled(bc, SpecId::CANCUN);
+    for (bc, hash) in bytecodes.iter().zip(&hashes) {
+        let p = tb.get_compiled(*hash, SpecId::CANCUN).unwrap_or_else(|| {
+            panic!("missing AOT program for bytecode {bc:?}");
+        });
+        assert_eq!(p.kind, ProgramKind::Aot);
     }
     assert_eq!(store.len(), 2);
 }
@@ -1060,12 +1081,12 @@ fn aot_artifacts_survive_restart() {
             ..Default::default()
         });
 
-        tb.prepare_aot(AotRequest {
+        tb.prepare_aot_sync(AotRequest {
             code_hash,
             code: Bytes::copy_from_slice(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
-        });
-        tb.wait_compiled(BYTECODE_RET42, SpecId::CANCUN);
+        })
+        .unwrap();
     }
 
     assert_eq!(store.len(), 1);
@@ -1102,12 +1123,12 @@ fn preload_aot_seeds_resident() {
             ..Default::default()
         });
 
-        tb.prepare_aot(AotRequest {
+        tb.prepare_aot_sync(AotRequest {
             code_hash,
             code: Bytes::copy_from_slice(BYTECODE_RET42),
             spec_id: SpecId::CANCUN,
-        });
-        tb.wait_compiled(BYTECODE_RET42, SpecId::CANCUN);
+        })
+        .unwrap();
     }
 
     // Second backend: preloaded AOT should be available immediately.
@@ -1137,12 +1158,12 @@ fn prepare_aot_already_persisted_not_resident() {
     });
 
     // Compile and persist an AOT artifact.
-    tb.prepare_aot(AotRequest {
+    tb.prepare_aot_sync(AotRequest {
         code_hash,
         code: Bytes::copy_from_slice(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
-    });
-    tb.wait_compiled(BYTECODE_RET42, SpecId::CANCUN);
+    })
+    .unwrap();
     assert_eq!(store.len(), 1);
 
     let dispatched_before = tb.stats().compilations_dispatched;
@@ -1152,13 +1173,14 @@ fn prepare_aot_already_persisted_not_resident() {
     tb.wait_resident_count(0);
 
     // Requesting prepare_aot again should load from store without recompiling.
-    tb.prepare_aot(AotRequest {
+    tb.prepare_aot_sync(AotRequest {
         code_hash,
         code: Bytes::copy_from_slice(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
-    });
+    })
+    .unwrap();
 
-    let p = tb.wait_compiled(BYTECODE_RET42, SpecId::CANCUN);
+    let p = tb.get_compiled(code_hash, SpecId::CANCUN).unwrap();
     assert_eq!(p.kind, ProgramKind::Aot);
 
     // No new compilation should have been dispatched — loaded from store.
