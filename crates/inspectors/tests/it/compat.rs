@@ -3,7 +3,7 @@
 use alloy_consensus::{TxEip4844, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, Inspector, NoopInspector, Precompiles, TxResult,
+    BaseEvmTypes, Evm, EvmTypesHost, Inspector, NoopInspector, Precompiles, TxResult,
     TxResultWithState, env as evm_env,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::StateChanges,
@@ -542,7 +542,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
     fn log(
         &mut self,
         log: &alloy_primitives::Log,
-        host: &mut <BaseEvmTypes as EvmTypes>::Host<'_>,
+        host: &mut <BaseEvmTypes as EvmTypesHost>::Host<'_>,
     ) {
         self.inner().log(log, host);
     }
@@ -586,7 +586,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
         contract: &Address,
         target: &Address,
         value: &U256,
-        host: &mut <BaseEvmTypes as EvmTypes>::Host<'_>,
+        host: &mut <BaseEvmTypes as EvmTypesHost>::Host<'_>,
     ) {
         self.inner().selfdestruct(contract, target, value, host);
     }

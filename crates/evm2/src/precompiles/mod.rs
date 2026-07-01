@@ -1,7 +1,7 @@
 //! EVM precompiled contracts.
 
 use crate::{
-    Evm, EvmTypes, SpecId,
+    Evm, EvmTypesHost, SpecId,
     evm::precompile::PrecompileProvider,
     interpreter::{GasTracker, Message},
 };
@@ -83,11 +83,11 @@ use p256 as _;
 
 /// Default precompile provider.
 #[derive(Clone, Debug)]
-pub struct Precompiles<T: EvmTypes = crate::BaseEvmTypes> {
+pub struct Precompiles<T: EvmTypesHost = crate::BaseEvmTypes> {
     map: Cow<'static, PrecompileMap<T>>,
 }
 
-impl<T: EvmTypes> Precompiles<T> {
+impl<T: EvmTypesHost> Precompiles<T> {
     /// Creates a precompile provider from a static precompile map.
     #[inline]
     pub const fn new(map: Cow<'static, PrecompileMap<T>>) -> Self {
@@ -127,7 +127,7 @@ impl<T: EvmTypes> Precompiles<T> {
     }
 }
 
-impl<T: EvmTypes> PrecompileProvider<T> for Precompiles<T> {
+impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
     #[inline]
     fn addresses(&self) -> Vec<Address> {
         self.map.as_ref().addresses().collect()
@@ -158,7 +158,7 @@ static BASE_PRECOMPILES: RwLock<Option<HashMap<TypeId, &'static (dyn Any + Send 
     RwLock::new(None);
 
 #[cfg(feature = "std")]
-fn cached_base_precompiles<T: EvmTypes>(spec: SpecId) -> &'static PrecompileMap<T> {
+fn cached_base_precompiles<T: EvmTypesHost>(spec: SpecId) -> &'static PrecompileMap<T> {
     let type_id = TypeId::of::<T>();
     let index = match spec {
         SpecId::FRONTIER | SpecId::HOMESTEAD | SpecId::TANGERINE | SpecId::SPURIOUS_DRAGON => 0,
@@ -195,7 +195,7 @@ fn cached_base_precompiles<T: EvmTypes>(spec: SpecId) -> &'static PrecompileMap<
     precompiles[index].get_or_init(|| base_precompiles::<T>(spec))
 }
 
-fn base_precompiles<T: EvmTypes>(spec: SpecId) -> PrecompileMap<T> {
+fn base_precompiles<T: EvmTypesHost>(spec: SpecId) -> PrecompileMap<T> {
     let mut precompiles = PrecompileMap::with_capacity(32);
 
     {

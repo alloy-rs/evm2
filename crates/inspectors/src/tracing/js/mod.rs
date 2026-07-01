@@ -23,7 +23,7 @@ use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
 pub use boa_engine::vm::RuntimeLimits;
 use boa_engine::{Context, JsError, JsObject, JsResult, JsValue, Source, js_string};
 use evm2::{
-    Evm, EvmHostTypes, EvmTypes, Inspector, TxResultWithState,
+    Evm, EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
     env::BlockEnv,
     ethereum::RecoveredTxEnvelope,
     evm::DynDatabase,
@@ -273,7 +273,7 @@ impl JsInspector {
     /// Calls the result function and returns the result as [serde_json::Value].
     ///
     /// Note: This is supposed to be called after the inspection has finished.
-    pub fn json_result<T: EvmTypes>(
+    pub fn json_result<T: EvmTypesHost>(
         &mut self,
         res: &TxResultWithState<T>,
         tx: &RecoveredTxEnvelope,
@@ -285,7 +285,7 @@ impl JsInspector {
     }
 
     /// Calls the result function and returns the result.
-    pub fn result<T: EvmTypes>(
+    pub fn result<T: EvmTypesHost>(
         &mut self,
         res: &TxResultWithState<T>,
         tx: &RecoveredTxEnvelope,
@@ -441,7 +441,7 @@ impl JsInspector {
     }
 
     /// Registers the precompiles in the JS context
-    fn register_precompiles<T: EvmHostTypes>(&mut self, host: &Evm<'_, T>) {
+    fn register_precompiles<T: EvmTypes>(&mut self, host: &Evm<'_, T>) {
         if self.precompiles_registered {
             return;
         }
@@ -453,7 +453,7 @@ impl JsInspector {
     }
 }
 
-impl<T: EvmHostTypes> Inspector<T> for JsInspector {
+impl<T: EvmTypes> Inspector<T> for JsInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if self.step_fn.is_none() {
             return;
@@ -722,7 +722,7 @@ pub enum JsInspectorError {
 
 /// Converts a JavaScript error into a [InstrStop::Revert] [MessageResult].
 #[inline]
-fn js_error_to_revert<T: EvmTypes>(err: JsError) -> MessageResult<T> {
+fn js_error_to_revert<T: EvmTypesHost>(err: JsError) -> MessageResult<T> {
     let output = err.to_string().as_bytes().to_vec();
     MessageResult {
         stop: InstrStop::Revert,

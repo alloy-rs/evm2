@@ -1,5 +1,5 @@
 use crate::{
-    EvmFeatures, EvmTypes,
+    EvmFeatures, EvmTypesHost,
     interpreter::{Host, InstrStop, InterpreterState, Result, StackMut, private::GasInstructionCx},
     utils::word_to_usize,
     version::GasId,
@@ -8,7 +8,7 @@ use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
 #[inline]
-const fn require_non_staticcall<T: EvmTypes>(state: &InterpreterState<'_, '_, T>) -> Result {
+const fn require_non_staticcall<T: EvmTypesHost>(state: &InterpreterState<'_, '_, T>) -> Result {
     if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -92,7 +92,7 @@ pub(crate) fn log<const N: usize>(cx: _) -> Result {
 }
 
 #[inline(never)]
-fn log_common<T: EvmTypes>(
+fn log_common<T: EvmTypesHost>(
     cx: GasInstructionCx<'_, '_, '_, T>,
     mut stack: StackMut<'_>,
     n: usize,

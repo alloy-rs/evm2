@@ -12,7 +12,7 @@ use super::SendEvmRef;
 use super::r#async;
 use super::{Evm, ExecutedTx, TxResult};
 use crate::{
-    EvmHostTypes,
+    EvmTypes,
     env::TxEnv,
     ethereum::initial_message,
     interpreter::{Host, InstrStop},
@@ -42,7 +42,7 @@ pub const WITHDRAWAL_REQUEST_ADDRESS: Address =
 pub const CONSOLIDATION_REQUEST_ADDRESS: Address =
     address!("0x0000BBdDc7CE488642fb579F8B00f3a590007251");
 
-impl<'a, T: EvmHostTypes> Evm<'a, T> {
+impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Executes a system call from [`SYSTEM_ADDRESS`] to `system_contract_address`.
     #[inline]
     pub fn system_call(
@@ -195,7 +195,7 @@ impl<'a, T: EvmHostTypes> Evm<'a, T> {
 }
 
 #[cfg(feature = "async")]
-impl<'evm, T: EvmHostTypes> SendEvmRef<'_, 'evm, T> {
+impl<'evm, T: EvmTypes> SendEvmRef<'_, 'evm, T> {
     #[inline]
     fn system_call(&mut self, system_contract_address: Address, data: Bytes) -> TxResult<T> {
         self.evm.system_call(system_contract_address, data).commit()

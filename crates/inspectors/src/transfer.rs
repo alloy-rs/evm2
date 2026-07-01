@@ -4,7 +4,7 @@ use alloc::{vec, vec::Vec};
 use alloy_primitives::{Address, B256, Log, LogData, U256, address, b256};
 use alloy_sol_types::SolValue;
 use evm2::{
-    EvmTypes, Inspector,
+    EvmTypesHost, Inspector,
     interpreter::{Host, Interpreter, Message, MessageKind, MessageResult},
 };
 
@@ -66,7 +66,7 @@ impl TransferInspector {
         self.transfers.iter()
     }
 
-    fn on_transfer<T: EvmTypes>(&mut self, message: &Message<T>, host: &mut T::Host<'_>) {
+    fn on_transfer<T: EvmTypesHost>(&mut self, message: &Message<T>, host: &mut T::Host<'_>) {
         let kind = match message.kind {
             MessageKind::Call | MessageKind::CallCode => TransferKind::Call,
             MessageKind::Create => TransferKind::Create,
@@ -102,7 +102,7 @@ impl TransferInspector {
     }
 }
 
-impl<T: EvmTypes> Inspector<T> for TransferInspector {
+impl<T: EvmTypesHost> Inspector<T> for TransferInspector {
     fn call(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,

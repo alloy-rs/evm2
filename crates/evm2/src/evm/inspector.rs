@@ -1,7 +1,7 @@
 //! EVM execution inspection hooks.
 
 use crate::{
-    EvmTypes,
+    EvmTypesHost,
     evm::NonStaticAny,
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -9,7 +9,7 @@ use alloc::boxed::Box;
 use alloy_primitives::{Address, Log, U256};
 
 /// EVM execution inspector.
-pub trait Inspector<T: EvmTypes>: NonStaticAny {
+pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Called after a frame interpreter has been initialized.
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
@@ -108,7 +108,7 @@ pub trait Inspector<T: EvmTypes>: NonStaticAny {
 }
 
 #[inline]
-pub(crate) fn boxed_inspector<'a, T: EvmTypes>(
+pub(crate) fn boxed_inspector<'a, T: EvmTypesHost>(
     inspector: impl Inspector<T> + 'a,
 ) -> Box<dyn Inspector<T> + 'a> {
     Box::new(inspector)
@@ -119,9 +119,9 @@ pub(crate) fn boxed_inspector<'a, T: EvmTypes>(
 #[derive(Clone, Debug, Default)]
 pub struct NoopInspector(());
 
-impl<T: EvmTypes> Inspector<T> for NoopInspector {}
+impl<T: EvmTypesHost> Inspector<T> for NoopInspector {}
 
-impl<'a, T: EvmTypes> core::ops::Deref for dyn Inspector<T> + 'a {
+impl<'a, T: EvmTypesHost> core::ops::Deref for dyn Inspector<T> + 'a {
     type Target = dyn NonStaticAny + 'a;
 
     #[inline]
@@ -130,7 +130,7 @@ impl<'a, T: EvmTypes> core::ops::Deref for dyn Inspector<T> + 'a {
     }
 }
 
-impl<'a, T: EvmTypes> core::ops::DerefMut for dyn Inspector<T> + 'a {
+impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn Inspector<T> + 'a {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self
@@ -141,7 +141,8 @@ impl<'a, T: EvmTypes> core::ops::DerefMut for dyn Inspector<T> + 'a {
 mod tests {
     use super::Inspector;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmTypes, ExecutionConfig, Precompiles, SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmTypesHost, ExecutionConfig, Precompiles,
+        SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnv, TxEnv},
@@ -162,7 +163,7 @@ mod tests {
         selfdestruct: Option<(Address, Address, Word)>,
     }
 
-    impl<T: EvmTypes> Inspector<T> for SelfdestructInspector {
+    impl<T: EvmTypesHost> Inspector<T> for SelfdestructInspector {
         fn selfdestruct(
             &mut self,
             contract: &Address,
@@ -292,7 +293,7 @@ mod tests {
         logs: Vec<Log>,
     }
 
-    impl<T: EvmTypes> Inspector<T> for LogInspector {
+    impl<T: EvmTypesHost> Inspector<T> for LogInspector {
         fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
             self.logs.push(log.clone());
         }
@@ -418,7 +419,7 @@ mod tests {
             step_ends: usize,
         }
 
-        impl<T: EvmTypes> Inspector<T> for StepInspector {
+        impl<T: EvmTypesHost> Inspector<T> for StepInspector {
             fn step(&mut self, _interp: &mut Interpreter<'_, '_, T>) {
                 self.steps += 1;
             }
@@ -450,7 +451,7 @@ mod tests {
             stack: Vec<Word>,
         }
 
-        impl<T: EvmTypes> Inspector<T> for StopOnStepInspector {
+        impl<T: EvmTypesHost> Inspector<T> for StopOnStepInspector {
             fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
                 self.steps += 1;
                 if interp.opcode() == self.opcode {
@@ -488,7 +489,7 @@ mod tests {
             stack: Vec<Word>,
         }
 
-        impl<T: EvmTypes> Inspector<T> for StopOnStepEndInspector {
+        impl<T: EvmTypesHost> Inspector<T> for StopOnStepEndInspector {
             fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
                 self.steps += 1;
                 self.last_opcode = Some(interp.opcode());
@@ -860,7 +861,7 @@ mod tests {
             step_ends: usize,
         }
 
-        impl<T: EvmTypes> Inspector<T> for FailingStepInspector {
+        impl<T: EvmTypesHost> Inspector<T> for FailingStepInspector {
             fn step(&mut self, _interp: &mut Interpreter<'_, '_, T>) {
                 self.steps += 1;
             }

@@ -1,7 +1,7 @@
 //! Instruction dispatch tables.
 
 use crate::{
-    BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, OpcodeConfig,
+    BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypesHost, OpcodeConfig,
     evm::config::SelectorOpcodeConfig,
     interpreter::{Interpreter, InterpreterState, Pc, Stack, op},
     trustme,
@@ -20,7 +20,7 @@ cfg_if::cfg_if! {
 pub(in crate::interpreter) use imp::run;
 
 #[inline(always)]
-fn run_state<'a, 'frame, 'host, T: EvmTypes>(
+fn run_state<'a, 'frame, 'host, T: EvmTypesHost>(
     interpreter: &'a mut Interpreter<'frame, 'host, T>,
 ) -> (&'a mut InterpreterState<'frame, 'host, T>, Pc, Stack<'a>) {
     // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
@@ -58,7 +58,7 @@ const fn make_table<T, C, M>(
     previous_opcode_config: Option<&OpcodeConfig<T>>,
 ) -> InstrTable<T>
 where
-    T: EvmTypes,
+    T: EvmTypesHost,
     C: EvmConfig<T>,
     M: InspectMode<T>,
 {
@@ -124,7 +124,7 @@ where
 const fn make_selector_tables<T, F, M, const CUSTOM_SPEC_ID: u32>()
 -> [InstrTable<T>; crate::SpecId::COUNT]
 where
-    T: EvmTypes,
+    T: EvmTypesHost,
     F: EvmConfigSelector<T>,
     M: InspectMode<T>,
 {
@@ -164,7 +164,7 @@ pub(crate) struct ConfigInstrTables<T, C>(core::marker::PhantomData<fn() -> (T, 
 
 impl<T, C> ConfigInstrTables<T, C>
 where
-    T: EvmTypes,
+    T: EvmTypesHost,
     C: EvmConfig<T>,
 {
     pub(crate) const INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, NoInspector>(
@@ -195,7 +195,7 @@ pub(crate) struct SelectorInstrTables<T, F, const CUSTOM_SPEC_ID: u32>(
 
 impl<T, F, const CUSTOM_SPEC_ID: u32> SelectorInstrTables<T, F, CUSTOM_SPEC_ID>
 where
-    T: EvmTypes,
+    T: EvmTypesHost,
     F: EvmConfigSelector<T>,
 {
     pub(crate) const INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
@@ -204,7 +204,7 @@ where
         &make_selector_tables::<T, F, DynInspector, CUSTOM_SPEC_ID>();
 }
 
-const fn instruction_changed<T: EvmTypes>(
+const fn instruction_changed<T: EvmTypesHost>(
     opcode_config: &OpcodeConfig<T>,
     previous_opcode_config: Option<&OpcodeConfig<T>>,
     op: u8,
@@ -215,7 +215,7 @@ const fn instruction_changed<T: EvmTypes>(
     opcode_config.revision(op) != previous_opcode_config.revision(op)
 }
 
-trait InspectMode<T: EvmTypes> {
+trait InspectMode<T: EvmTypesHost> {
     const INSPECT: bool;
 
     fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
@@ -225,7 +225,7 @@ trait InspectMode<T: EvmTypes> {
 
 struct NoInspector;
 
-impl<T: EvmTypes> InspectMode<T> for NoInspector {
+impl<T: EvmTypesHost> InspectMode<T> for NoInspector {
     const INSPECT: bool = false;
 
     #[inline(always)]
@@ -237,7 +237,7 @@ impl<T: EvmTypes> InspectMode<T> for NoInspector {
 
 struct DynInspector;
 
-impl<T: EvmTypes> InspectMode<T> for DynInspector {
+impl<T: EvmTypesHost> InspectMode<T> for DynInspector {
     const INSPECT: bool = true;
 
     #[inline(always)]

@@ -1,6 +1,6 @@
 use super::{InspectMode, run_state};
 use crate::{
-    EvmConfig, EvmTypes,
+    EvmConfig, EvmTypesHost,
     interpreter::{
         InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, gas::RemainingGas,
         private::InstructionImplFn,
@@ -27,7 +27,7 @@ pub(super) type RawInstrFn<T> = TailInstrFn<T>;
 pub(super) type RawInstrTable<T> = TailInstrTable<T>;
 
 #[inline(always)]
-pub(in crate::interpreter) fn run<T: EvmTypes>(
+pub(in crate::interpreter) fn run<T: EvmTypesHost>(
     interpreter: &mut Interpreter<'_, '_, T>,
     instructions: &RawInstrTable<T>,
 ) -> InstrStop {
@@ -41,7 +41,7 @@ pub(in crate::interpreter) fn run<T: EvmTypes>(
 
 extern_table! {
     pub(super) fn dispatch<
-        T: EvmTypes,
+        T: EvmTypesHost,
         C: EvmConfig<T>,
         M: InspectMode<T>,
         const OP: u8,
@@ -104,7 +104,7 @@ extern_table! {
 extern_table! {
     #[inline(never)]
     #[cold]
-    fn tail_call_restore<T: EvmTypes>(
+    fn tail_call_restore<T: EvmTypesHost>(
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
@@ -119,7 +119,7 @@ extern_table! {
 }
 
 #[inline(always)]
-const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
+const fn pre_step<T: EvmTypesHost, C: EvmConfig<T>>(
     remaining_gas: &mut RemainingGas,
     opcode: u8,
 ) -> Result {

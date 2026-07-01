@@ -15,7 +15,7 @@ use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use core::mem;
 use evm2::{
-    Evm, EvmHostTypes, EvmTypes, Inspector, SpecId,
+    Evm, EvmTypes, EvmTypesHost, Inspector, SpecId,
     evm::JournalEntry,
     interpreter::{
         Interpreter, Message, MessageKind, MessageResult,
@@ -265,7 +265,7 @@ impl TracingInspector {
     ///
     /// Returns true if the `to` address is a precompile contract and the value is zero.
     #[inline]
-    fn is_precompile_call<T: EvmHostTypes>(
+    fn is_precompile_call<T: EvmTypes>(
         &self,
         host: &Evm<'_, T>,
         to: &Address,
@@ -371,7 +371,7 @@ impl TracingInspector {
     /// # Panics
     ///
     /// This expects an existing trace [Self::start_trace_on_call]
-    fn fill_trace_on_call_end<T: EvmTypes>(&mut self, result: &MessageResult<T>) {
+    fn fill_trace_on_call_end<T: EvmTypesHost>(&mut self, result: &MessageResult<T>) {
         let trace_idx = self.pop_trace_idx();
         let trace = &mut self.traces.arena[trace_idx].trace;
 
@@ -397,7 +397,7 @@ impl TracingInspector {
     /// This expects an existing [CallTrace], in other words, this panics if not within the context
     /// of a call.
     #[cold]
-    fn start_step<T: EvmHostTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+    fn start_step<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         // We always want an OpCode, even it is unknown because it could be an additional opcode
         // that not a known constant.
         let op = OpCode::new_or_unknown(interp.opcode());
@@ -485,7 +485,7 @@ impl TracingInspector {
     ///
     /// Invoked on [Inspector::step_end].
     #[cold]
-    fn fill_step_on_step_end<T: EvmHostTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+    fn fill_step_on_step_end<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let Some((trace_idx, step_idx)) = self.step_stack.pop() else {
             return;
         };
@@ -564,7 +564,7 @@ impl TracingInspector {
     }
 }
 
-impl<T: EvmHostTypes> Inspector<T> for TracingInspector {
+impl<T: EvmTypes> Inspector<T> for TracingInspector {
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if self.config.record_steps {

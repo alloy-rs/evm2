@@ -7,7 +7,7 @@ use super::{
     warm_base_accounts,
 };
 use crate::{
-    Evm, EvmHostTypes, TxResult,
+    Evm, EvmTypes, TxResult,
     env::TxEnv,
     evm::db_error_handler,
     interpreter::Host,
@@ -17,7 +17,7 @@ use crate::{
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::U256;
 
-pub(super) fn handle<T: EvmHostTypes>(
+pub(super) fn handle<T: EvmTypes>(
     req: TxRequest<'_, '_, T, Recovered<super::LazyTxEip7702>>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
@@ -82,12 +82,12 @@ pub(super) fn handle<T: EvmHostTypes>(
     settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)
 }
 
-fn eip7702_authorization_gas<'a, T: EvmHostTypes>(host: &Evm<'a, T>, authorizations: usize) -> u64 {
+fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations: usize) -> u64 {
     let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
     u64::try_from(authorizations).unwrap_or(u64::MAX).saturating_mul(per_auth)
 }
 
-fn apply_auth_list<'a, T: EvmHostTypes>(
+fn apply_auth_list<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     chain_id: u64,
     authorizations: &[super::LazyAuthorization],

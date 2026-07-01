@@ -17,7 +17,9 @@ use derive_where::derive_where;
 /// Defines the concrete host, transaction, runtime spec-id, and config selector types used by an
 /// EVM instance. The runtime spec-id can be a custom type, but each value must map to the base
 /// `SpecId` whose rules it inherits.
-pub trait EvmTypes: Sized + 'static {
+// TODO: Custom hosts aren't that well supported yet.
+#[doc(hidden)]
+pub trait EvmTypesHost: Sized + 'static {
     /// Configuration selector used by this EVM.
     type ConfigSelector: EvmConfigSelector<Self>;
 
@@ -48,18 +50,16 @@ pub trait EvmTypes: Sized + 'static {
     type Host<'a>: Host<Self> + ?Sized;
 }
 
-/// EVM type family whose host is [`Evm`] for every stored-object lifetime.
-///
-/// See [`EvmTypes`].
-pub trait EvmHostTypes: for<'a> EvmTypes<Host<'a> = Evm<'a, Self>> {}
+/// Runtime EVM type family whose host is [`Evm`] for every stored-object lifetime.
+pub trait EvmTypes: for<'a> EvmTypesHost<Host<'a> = Evm<'a, Self>> {}
 
-impl<T> EvmHostTypes for T where for<'a> T: EvmTypes<Host<'a> = Evm<'a, T>> {}
+impl<T> EvmTypes for T where for<'a> T: EvmTypesHost<Host<'a> = Evm<'a, T>> {}
 
 /// Compile-time EVM table configuration.
 ///
 /// Names the inherited base `SpecId` and the type-specific `OpcodeConfig` needed to build a
 /// dispatch table. Custom configs are modeled as overlays on a base spec, not as new base specs.
-pub trait EvmConfig<T: EvmTypes> {
+pub trait EvmConfig<T: EvmTypesHost> {
     /// Inherited base specification ID.
     const BASE_SPEC_ID: SpecId;
 
@@ -69,10 +69,11 @@ pub trait EvmConfig<T: EvmTypes> {
 
 /// Runtime EVM config selector.
 ///
-/// Maps a runtime spec-id value accepted by `EvmTypes` to the `ExecutionConfig` that the EVM and
-/// interpreter use. Custom selectors can choose different configs for runtime IDs that share the
-/// same inherited base `SpecId`, while base selectors use `u32::MAX` as the custom-spec sentinel.
-pub trait EvmConfigSelector<T: EvmTypes>: Sized {
+/// Maps a runtime spec-id value accepted by `EvmTypesHost` to the `ExecutionConfig` that the EVM
+/// and interpreter use. Custom selectors can choose different configs for runtime IDs that share
+/// the same inherited base `SpecId`, while base selectors use `u32::MAX` as the custom-spec
+/// sentinel.
+pub trait EvmConfigSelector<T: EvmTypesHost>: Sized {
     /// Concrete EVM configuration for a base specification ID and custom specification ID.
     ///
     /// `BASE_SPEC_ID` is always a `crate::SpecId` discriminant, even when `T::SpecId` is a custom
@@ -90,7 +91,7 @@ pub(crate) struct SelectorOpcodeConfig<T, F, const CUSTOM_SPEC_ID: u32>(
 
 impl<T, F, const CUSTOM_SPEC_ID: u32> SelectorOpcodeConfig<T, F, CUSTOM_SPEC_ID>
 where
-    T: EvmTypes,
+    T: EvmTypesHost,
     F: EvmConfigSelector<T>,
 {
     pub(crate) const OPCODE_CONFIG: &'static [&'static OpcodeConfig<T>; SpecId::COUNT] =
@@ -100,7 +101,7 @@ where
 const fn selector_opcode_config<T, F, const CUSTOM_SPEC_ID: u32>()
 -> [&'static OpcodeConfig<T>; SpecId::COUNT]
 where
-    T: EvmTypes,
+    T: EvmTypesHost,
     F: EvmConfigSelector<T>,
 {
     macro_rules! opcode_config {
@@ -124,7 +125,7 @@ where
 /// Bundles the active runtime `Version` with the finalized instruction dispatch table selected for
 /// an EVM instance. This is the data passed to the interpreter when it runs.
 #[derive_where(Debug)]
-pub struct ExecutionConfig<T: EvmTypes> {
+pub struct ExecutionConfig<T: EvmTypesHost> {
     base_spec_id: SpecId,
     pub(crate) version: Version,
     #[derive_where(skip)]
@@ -133,16 +134,16 @@ pub struct ExecutionConfig<T: EvmTypes> {
     pub(crate) inspect_instructions: &'static InstrTable<T>,
 }
 
-impl<T: EvmTypes> Clone for ExecutionConfig<T> {
+impl<T: EvmTypesHost> Clone for ExecutionConfig<T> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T: EvmTypes> Copy for ExecutionConfig<T> {}
+impl<T: EvmTypesHost> Copy for ExecutionConfig<T> {}
 
-impl<T: EvmTypes> ExecutionConfig<T> {
+impl<T: EvmTypesHost> ExecutionConfig<T> {
     /// Creates an execution config for a base `SpecId` through selector `F`.
     ///
     /// This uses the selector's base inherited tables by passing `u32::MAX` as the custom-spec
@@ -211,7 +212,7 @@ impl<T: EvmTypes> ExecutionConfig<T> {
 #[allow(missing_copy_implementations, missing_debug_implementations)]
 pub struct BaseEvmTypes(());
 
-impl EvmTypes for BaseEvmTypes {
+impl EvmTypesHost for BaseEvmTypes {
     type ConfigSelector = BaseEvmConfigSelector;
     type SpecId = SpecId;
     type Tx = RecoveredTxEnvelope;
@@ -229,7 +230,7 @@ impl EvmTypes for BaseEvmTypes {
 #[allow(missing_copy_implementations, missing_debug_implementations)]
 pub struct BaseEvmConfig<const BASE_SPEC_ID: u32>(());
 
-impl<T: EvmTypes, const BASE_SPEC_ID: u32> EvmConfig<T> for BaseEvmConfig<BASE_SPEC_ID> {
+impl<T: EvmTypesHost, const BASE_SPEC_ID: u32> EvmConfig<T> for BaseEvmConfig<BASE_SPEC_ID> {
     const BASE_SPEC_ID: SpecId = SpecId::try_from_u32(BASE_SPEC_ID).expect("invalid spec id");
     const OPCODE_CONFIG: &'static OpcodeConfig<T> = &OpcodeConfig::<T>::base::<Self>();
 }
@@ -238,7 +239,7 @@ impl<T: EvmTypes, const BASE_SPEC_ID: u32> EvmConfig<T> for BaseEvmConfig<BASE_S
 #[allow(missing_copy_implementations, missing_debug_implementations)]
 pub struct BaseEvmConfigSelector(());
 
-impl<T: EvmTypes> EvmConfigSelector<T> for BaseEvmConfigSelector {
+impl<T: EvmTypesHost> EvmConfigSelector<T> for BaseEvmConfigSelector {
     type Config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32> = BaseEvmConfig<BASE_SPEC_ID>;
 
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T> {

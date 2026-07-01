@@ -8,7 +8,7 @@ use alloy_rpc_types_trace::geth::{
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
-    EvmHostTypes, EvmTypes, Inspector, TxResultWithState,
+    EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
     evm::{DbResult, DynDatabase},
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -103,7 +103,7 @@ impl MuxInspector {
     }
 
     /// Try converting this [MuxInspector] into a [MuxFrame].
-    pub fn try_into_mux_frame<T: EvmTypes>(
+    pub fn try_into_mux_frame<T: EvmTypesHost>(
         &self,
         result: &TxResultWithState<T>,
         db: &mut dyn DynDatabase,
@@ -162,7 +162,7 @@ impl MuxInspector {
     }
 }
 
-impl<T: EvmHostTypes> Inspector<T> for MuxInspector {
+impl<T: EvmTypes> Inspector<T> for MuxInspector {
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if let Some(ref mut inspector) = self.four_byte {

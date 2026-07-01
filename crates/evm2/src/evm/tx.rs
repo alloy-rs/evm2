@@ -1,7 +1,7 @@
 //! Transaction execution lifecycle and result types.
 
 use super::{BlockStateAccumulator, DbErrorCode, Evm, StateChangeSink, StateChanges};
-use crate::{EvmTypes, interpreter::InstrStop};
+use crate::{EvmTypesHost, interpreter::InstrStop};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, Log};
 use core::fmt;
@@ -15,7 +15,7 @@ use derive_where::derive_where;
 /// is required.
 #[must_use = "transaction results contain execution status, gas, logs, and errors"]
 #[derive_where(Clone, Debug, Default, PartialEq, Eq; T::TxResultExt)]
-pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
+pub struct TxResult<T: EvmTypesHost = crate::BaseEvmTypes> {
     /// Whether execution succeeded.
     pub status: bool,
     /// Gas used by execution.
@@ -36,7 +36,7 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     pub _non_exhaustive: (),
 }
 
-impl<T: EvmTypes> TxResult<T> {
+impl<T: EvmTypesHost> TxResult<T> {
     /// Returns the transaction gas-used value.
     #[inline]
     pub const fn gas_used(&self) -> u64 {
@@ -64,13 +64,13 @@ enum PendingState {
 ///
 /// Dropping `ExecutedTx` without calling one of those methods is equivalent to [`Self::discard`].
 #[must_use = "executed transaction state must be committed, discarded, or detached"]
-pub struct ExecutedTx<'evm, 'host, T: EvmTypes = crate::BaseEvmTypes> {
+pub struct ExecutedTx<'evm, 'host, T: EvmTypesHost = crate::BaseEvmTypes> {
     evm: &'evm mut Evm<'host, T>,
     result: Option<TxResult<T>>,
     state: PendingState,
 }
 
-impl<T: EvmTypes> fmt::Debug for ExecutedTx<'_, '_, T> {
+impl<T: EvmTypesHost> fmt::Debug for ExecutedTx<'_, '_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExecutedTx")
             .field("has_pending_state", &self.has_pending_state())
@@ -78,7 +78,7 @@ impl<T: EvmTypes> fmt::Debug for ExecutedTx<'_, '_, T> {
     }
 }
 
-impl<'evm, 'host, T: EvmTypes> ExecutedTx<'evm, 'host, T> {
+impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     #[inline]
     pub(crate) const fn from_result(
         evm: &'evm mut Evm<'host, T>,
@@ -213,7 +213,7 @@ impl<'evm, 'host, T: EvmTypes> ExecutedTx<'evm, 'host, T> {
     }
 }
 
-impl<T: EvmTypes> Drop for ExecutedTx<'_, '_, T> {
+impl<T: EvmTypesHost> Drop for ExecutedTx<'_, '_, T> {
     #[inline]
     fn drop(&mut self) {
         self.clear_pending_state();
@@ -226,7 +226,7 @@ impl<T: EvmTypes> Drop for ExecutedTx<'_, '_, T> {
 /// an owned [`StateChanges`] value. Prefer resolving [`Evm::transact`] with [`ExecutedTx::commit`]
 /// or [`ExecutedTx::discard`] when an owned write-set is unnecessary.
 #[derive_where(Clone, Debug, Default, PartialEq, Eq; T::TxResultExt)]
-pub struct TxResultWithState<T: EvmTypes = crate::BaseEvmTypes> {
+pub struct TxResultWithState<T: EvmTypesHost = crate::BaseEvmTypes> {
     /// Execution result produced by the transaction.
     pub result: TxResult<T>,
     /// State transition produced by this transaction.

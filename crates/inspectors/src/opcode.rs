@@ -2,7 +2,7 @@ use alloc::string::ToString;
 use alloy_primitives::map::HashMap;
 use alloy_rpc_types_trace::opcode::OpcodeGas;
 use evm2::{
-    EvmTypes, Inspector,
+    EvmTypesHost, Inspector,
     interpreter::{
         Interpreter, Message, MessageKind, MessageResult,
         opcode::{OpCode, op},
@@ -67,7 +67,7 @@ impl OpcodeGasInspector {
     }
 }
 
-impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
+impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let opcode_value = interp.opcode();
         if let Some(opcode) = OpCode::new(opcode_value) {

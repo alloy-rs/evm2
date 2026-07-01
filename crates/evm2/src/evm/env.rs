@@ -1,13 +1,13 @@
 //! EVM environment types.
 
-use crate::{BaseEvmTypes, EvmTypes};
+use crate::{BaseEvmTypes, EvmTypesHost};
 use alloc::{vec, vec::Vec};
 use alloy_primitives::{Address, U256};
 use derive_where::derive_where;
 
 /// Transaction-global environment values visible to opcodes.
 #[derive_where(Clone, Debug, PartialEq, Eq; T::TxEnvExt)]
-pub struct TxEnv<T: EvmTypes = BaseEvmTypes> {
+pub struct TxEnv<T: EvmTypesHost = BaseEvmTypes> {
     /// Transaction origin.
     pub origin: Address,
     /// Effective gas price.
@@ -22,7 +22,7 @@ pub struct TxEnv<T: EvmTypes = BaseEvmTypes> {
     pub _non_exhaustive: (),
 }
 
-impl<T: EvmTypes> Default for TxEnv<T> {
+impl<T: EvmTypesHost> Default for TxEnv<T> {
     #[inline]
     fn default() -> Self {
         Self {
@@ -38,7 +38,7 @@ impl<T: EvmTypes> Default for TxEnv<T> {
 
 /// Block environment values visible to opcodes.
 #[derive_where(Clone, Copy, Debug, PartialEq, Eq; T::BlockEnvExt)]
-pub struct BlockEnv<T: EvmTypes = BaseEvmTypes> {
+pub struct BlockEnv<T: EvmTypesHost = BaseEvmTypes> {
     /// Block number.
     pub number: U256,
     /// Block beneficiary.
@@ -63,7 +63,7 @@ pub struct BlockEnv<T: EvmTypes = BaseEvmTypes> {
     pub _non_exhaustive: (),
 }
 
-impl<T: EvmTypes> Default for BlockEnv<T> {
+impl<T: EvmTypesHost> Default for BlockEnv<T> {
     #[inline]
     fn default() -> Self {
         Self {

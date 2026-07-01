@@ -14,12 +14,14 @@ pub mod interpreter;
 pub mod utils;
 
 pub mod evm;
+#[doc(hidden)]
+pub use evm::config::EvmTypesHost;
 pub use evm::{
     AccountInfo, BlockStateAccumulator, Evm, ExecutedTx, InterpreterRunner, JournalEntry, TxResult,
     TxResultWithState, config,
     config::{
-        BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector,
-        EvmHostTypes, EvmTypes, ExecutionConfig,
+        BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
+        ExecutionConfig,
     },
     env, inspector, precompile, registry,
 };

@@ -1,5 +1,5 @@
 use crate::{
-    EvmConfig, EvmTypes,
+    EvmConfig, EvmTypesHost,
     interpreter::{InterpreterState, Pc, Stack, gas::Gas},
 };
 
@@ -14,7 +14,7 @@ pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
 );
 
 #[inline(always)]
-pub(super) fn dispatch_loop_call<T: EvmTypes>(
+pub(super) fn dispatch_loop_call<T: EvmTypesHost>(
     instr: RawInstrFn<T>,
     pc: Pc,
     stack: Stack<'_>,
@@ -31,7 +31,7 @@ pub(super) const fn loop_state(_gas: &Gas) -> LoopState {}
 pub(super) const fn finish_loop(_gas: &mut Gas, _loop_state: LoopState) {}
 
 #[inline(always)]
-pub(super) const fn sync_loop_state<T: EvmTypes>(
+pub(super) const fn sync_loop_state<T: EvmTypesHost>(
     _state: &mut InterpreterState<'_, '_, T>,
     _loop_state: LoopState,
 ) {
@@ -39,7 +39,7 @@ pub(super) const fn sync_loop_state<T: EvmTypes>(
 
 extern_table! {
     pub(in crate::interpreter::dispatch) fn dispatch<
-        T: EvmTypes,
+        T: EvmTypesHost,
         C: EvmConfig<T>,
         M: super::InspectMode<T>,
         const OP: u8,

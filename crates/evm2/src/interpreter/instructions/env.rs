@@ -1,5 +1,5 @@
 use crate::{
-    EvmTypes,
+    EvmTypesHost,
     evm::AccountLoad,
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{
@@ -10,7 +10,7 @@ use crate::{
 use alloy_primitives::B256;
 use evm2_macros::instruction;
 
-fn load_account<T: EvmTypes>(
+fn load_account<T: EvmTypesHost>(
     cx: &mut GasInstructionCx<'_, '_, '_, T>,
     addr: Word,
     load_code: bool,

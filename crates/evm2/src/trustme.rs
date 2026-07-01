@@ -1,7 +1,7 @@
 #![allow(clippy::missing_transmute_annotations)]
 #![allow(clippy::missing_safety_doc)]
 
-use crate::{EvmTypes, interpreter::Interpreter};
+use crate::{EvmTypesHost, interpreter::Interpreter};
 
 /// Changes the lifetime of the given reference.
 pub(crate) unsafe fn decouple_lt<'a, T: ?Sized>(x: &T) -> &'a T {
@@ -24,7 +24,7 @@ pub(crate) unsafe fn decouple_lt_box<T, U>(x: alloc::boxed::Box<T>) -> alloc::bo
 }
 
 /// Changes the lifetime of an interpreter reference stored in the pool.
-pub(crate) unsafe fn decouple_interpreter_lt_mut<'pool, 'frame, 'host, T: EvmTypes>(
+pub(crate) unsafe fn decouple_interpreter_lt_mut<'pool, 'frame, 'host, T: EvmTypesHost>(
     x: &'pool mut Interpreter<'static, 'static, T>,
 ) -> &'pool mut Interpreter<'frame, 'host, T> {
     unsafe {

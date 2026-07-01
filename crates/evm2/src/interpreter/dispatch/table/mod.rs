@@ -1,6 +1,6 @@
 use super::{DynInspector, InspectMode, NoInspector, inc_pc, run_state};
 use crate::{
-    EvmConfig, EvmTypes,
+    EvmConfig, EvmTypesHost,
     interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, StackMut},
 };
 use core::hint::cold_path;
@@ -24,19 +24,19 @@ pub(super) use imp::{RawInstrFn, dispatch};
 pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
 
 trait DispatchGas: Copy {
-    fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
+    fn pre_step<T: EvmTypesHost, C: EvmConfig<T>>(
         &mut self,
         state: &mut InterpreterState<'_, '_, T>,
         op: u8,
     ) -> Result;
 
-    fn sync_before_exec<T: EvmTypes>(
+    fn sync_before_exec<T: EvmTypesHost>(
         &self,
         state: &mut InterpreterState<'_, '_, T>,
         dynamic_gas: bool,
     );
 
-    fn sync_after_exec<T: EvmTypes>(
+    fn sync_after_exec<T: EvmTypesHost>(
         &mut self,
         state: &mut InterpreterState<'_, '_, T>,
         dynamic_gas: bool,
@@ -45,7 +45,7 @@ trait DispatchGas: Copy {
 
 impl DispatchGas for () {
     #[inline(always)]
-    fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
+    fn pre_step<T: EvmTypesHost, C: EvmConfig<T>>(
         &mut self,
         state: &mut InterpreterState<'_, '_, T>,
         op: u8,
@@ -54,7 +54,7 @@ impl DispatchGas for () {
     }
 
     #[inline(always)]
-    fn sync_before_exec<T: EvmTypes>(
+    fn sync_before_exec<T: EvmTypesHost>(
         &self,
         _state: &mut InterpreterState<'_, '_, T>,
         _dynamic_gas: bool,
@@ -62,7 +62,7 @@ impl DispatchGas for () {
     }
 
     #[inline(always)]
-    fn sync_after_exec<T: EvmTypes>(
+    fn sync_after_exec<T: EvmTypesHost>(
         &mut self,
         _state: &mut InterpreterState<'_, '_, T>,
         _dynamic_gas: bool,
@@ -72,7 +72,7 @@ impl DispatchGas for () {
 
 #[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
-fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, G: DispatchGas>(
+fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: DispatchGas>(
     mut pc: Pc,
     mut stack: StackMut<'_>,
     mut gas: G,
@@ -107,7 +107,7 @@ fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, G: DispatchGa
     (pc, gas)
 }
 
-pub(in crate::interpreter) fn run<T: EvmTypes>(
+pub(in crate::interpreter) fn run<T: EvmTypesHost>(
     interpreter: &mut Interpreter<'_, '_, T>,
     instructions: &RawInstrTable<T>,
 ) -> InstrStop {
@@ -119,7 +119,7 @@ pub(in crate::interpreter) fn run<T: EvmTypes>(
 }
 
 #[allow(clippy::let_unit_value)]
-fn run_inner<T: EvmTypes, M: InspectMode<T>>(
+fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
     state: &mut InterpreterState<'_, '_, T>,
     mut pc: Pc,
     mut stack: Stack<'_>,
@@ -155,7 +155,7 @@ fn run_inner<T: EvmTypes, M: InspectMode<T>>(
 }
 
 #[inline(always)]
-fn finish_run<T: EvmTypes>(
+fn finish_run<T: EvmTypesHost>(
     state: &mut InterpreterState<'_, '_, T>,
     pc: Pc,
     stack_len: usize,

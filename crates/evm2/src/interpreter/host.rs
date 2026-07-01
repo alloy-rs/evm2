@@ -1,6 +1,6 @@
 use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
-    BaseEvmTypes, EvmFeatures, EvmTypes, SpecId,
+    BaseEvmTypes, EvmFeatures, EvmTypesHost, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
@@ -16,7 +16,7 @@ use derive_where::derive_where;
 /// result to a caller frame. Use [`Self::gas_remaining_after_final_refund`] or
 /// [`Self::gas_used_after_final_refund`] for top-level transaction accounting.
 #[derive_where(Clone, Debug, Default, PartialEq, Eq; T::MessageResultExt)]
-pub struct MessageResult<T: EvmTypes = BaseEvmTypes> {
+pub struct MessageResult<T: EvmTypesHost = BaseEvmTypes> {
     /// Interpreter stop reason.
     pub stop: InstrStop,
     /// Gas accounting for the child frame.
@@ -31,7 +31,7 @@ pub struct MessageResult<T: EvmTypes = BaseEvmTypes> {
     pub _non_exhaustive: (),
 }
 
-impl<T: EvmTypes> MessageResult<T> {
+impl<T: EvmTypesHost> MessageResult<T> {
     /// Returns whether the message committed state changes.
     #[inline]
     pub const fn is_success(&self) -> bool {
@@ -85,7 +85,7 @@ impl<T: EvmTypes> MessageResult<T> {
 }
 
 /// External host operations.
-pub trait Host<T: EvmTypes> {
+pub trait Host<T: EvmTypesHost> {
     /// Returns the active base specification ID.
     fn spec_id(&self) -> SpecId;
 

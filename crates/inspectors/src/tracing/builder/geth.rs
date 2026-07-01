@@ -19,7 +19,7 @@ use alloy_rpc_types_trace::geth::{
     erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
 };
 use evm2::{
-    EvmTypes, TxResultWithState,
+    EvmTypesHost, TxResultWithState,
     evm::{DbResult, DynDatabase, StateChanges},
     interpreter::op,
 };
@@ -229,7 +229,7 @@ impl<'a> GethTraceBuilder<'a> {
     /// * `state` - The state post-transaction execution.
     /// * `diff_mode` - if prestate is in diff or prestate mode.
     /// * `db` - The database to fetch state pre-transaction execution.
-    pub fn geth_prestate_traces<T: EvmTypes>(
+    pub fn geth_prestate_traces<T: EvmTypesHost>(
         &self,
         TxResultWithState { state_changes: state, .. }: &TxResultWithState<T>,
         prestate_config: &PreStateConfig,

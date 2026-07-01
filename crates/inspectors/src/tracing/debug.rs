@@ -11,7 +11,7 @@ use alloy_rpc_types_trace::geth::{
     erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    EvmHostTypes, EvmTypes, Inspector, NoopInspector, TxResultWithState,
+    EvmTypes, EvmTypesHost, Inspector, NoopInspector, TxResultWithState,
     env::BlockEnv,
     ethereum::RecoveredTxEnvelope,
     evm::{DbErrorCode, DynDatabase},
@@ -196,7 +196,7 @@ impl DebugInspector {
     }
 
     /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
-    pub fn get_result<T: EvmTypes>(
+    pub fn get_result<T: EvmTypesHost>(
         &mut self,
         tx_context: Option<TransactionContext>,
         tx: &RecoveredTxEnvelope,
@@ -288,7 +288,7 @@ macro_rules! delegate {
     };
 }
 
-impl<T: EvmHostTypes> Inspector<T> for DebugInspector {
+impl<T: EvmTypes> Inspector<T> for DebugInspector {
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         delegate!(self => inspector.initialize_interp(interp))
     }

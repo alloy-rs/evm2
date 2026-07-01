@@ -7,7 +7,7 @@ use super::{
     warm_base_accounts,
 };
 use crate::{
-    EvmHostTypes, TxResult,
+    EvmTypes, TxResult,
     env::TxEnv,
     evm::db_error_handler,
     interpreter::Host,
@@ -16,7 +16,7 @@ use crate::{
 use alloy_consensus::{TxEip1559, transaction::Recovered};
 use alloy_primitives::U256;
 
-pub(super) fn handle<T: EvmHostTypes>(
+pub(super) fn handle<T: EvmTypes>(
     req: TxRequest<'_, '_, T, Recovered<TxEip1559>>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();

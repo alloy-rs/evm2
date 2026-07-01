@@ -3,7 +3,7 @@ use super::{
     StackRef, Word,
 };
 use crate::{
-    EvmTypes, ExecutionConfig, SpecId, Version,
+    EvmTypesHost, ExecutionConfig, SpecId, Version,
     bytecode::Bytecode,
     env::TxEnv,
     evm::inspector::Inspector,
@@ -18,7 +18,7 @@ use derive_where::derive_where;
 
 /// EVM interpreter.
 #[derive_where(Debug)]
-pub struct Interpreter<'frame, 'host, T: EvmTypes> {
+pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     pub(in crate::interpreter) bytecode: Bytecode,
     pub(in crate::interpreter) memory: Memory,
     pub(in crate::interpreter) return_data: Bytes,
@@ -46,9 +46,9 @@ pub struct Interpreter<'frame, 'host, T: EvmTypes> {
 // SAFETY: The interpreter's internal pointers are always valid. `pc` points into owned bytecode,
 // frame-local references are cleared before pooling, and host/inspector pointers are installed for
 // execution and not used after the owning execution context is gone.
-unsafe impl<T: EvmTypes> Send for Interpreter<'_, '_, T> {}
+unsafe impl<T: EvmTypesHost> Send for Interpreter<'_, '_, T> {}
 
-impl<T: EvmTypes> Default for Interpreter<'_, '_, T> {
+impl<T: EvmTypesHost> Default for Interpreter<'_, '_, T> {
     fn default() -> Self {
         let bytecode = Bytecode::new();
         Self {
@@ -74,7 +74,7 @@ impl<T: EvmTypes> Default for Interpreter<'_, '_, T> {
     }
 }
 
-impl<'frame, 'host, T: EvmTypes> Interpreter<'frame, 'host, T> {
+impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Creates an interpreter from analyzed bytecode, a transaction-global environment, and a
     /// frame-local message.
     pub fn new(bytecode: Bytecode, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) -> Self {
@@ -352,16 +352,18 @@ impl<'frame, 'host, T: EvmTypes> Interpreter<'frame, 'host, T> {
 
 /// Interpreter state exposed to instruction implementations.
 #[repr(transparent)]
-pub struct InterpreterState<'frame, 'host, T: EvmTypes>(pub(crate) Interpreter<'frame, 'host, T>);
+pub struct InterpreterState<'frame, 'host, T: EvmTypesHost>(
+    pub(crate) Interpreter<'frame, 'host, T>,
+);
 
-impl<T: EvmTypes> fmt::Debug for InterpreterState<'_, '_, T> {
+impl<T: EvmTypesHost> fmt::Debug for InterpreterState<'_, '_, T> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
-impl<'frame, 'host, T: EvmTypes> InterpreterState<'frame, 'host, T> {
+impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[inline]
     pub(crate) const fn wrap_mut<'a>(
         interp: &'a mut Interpreter<'frame, 'host, T>,
@@ -545,11 +547,11 @@ impl<'frame, 'host, T: EvmTypes> InterpreterState<'frame, 'host, T> {
 }
 
 #[derive(Default)]
-pub(crate) struct InterpreterPool<T: EvmTypes> {
+pub(crate) struct InterpreterPool<T: EvmTypesHost> {
     frames: Vec<Box<Interpreter<'static, 'static, T>>>,
 }
 
-impl<T: EvmTypes> InterpreterPool<T> {
+impl<T: EvmTypesHost> InterpreterPool<T> {
     pub(crate) const fn new() -> Self {
         Self { frames: Vec::new() }
     }

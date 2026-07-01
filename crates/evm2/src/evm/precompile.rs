@@ -2,7 +2,7 @@
 
 use super::{Evm, NonStaticAny};
 use crate::{
-    EvmTypes, PrecompileError,
+    EvmTypesHost, PrecompileError,
     interpreter::{GasTracker, Message},
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -36,7 +36,7 @@ impl PrecompileOutput {
 }
 
 /// Precompile execution hook.
-pub trait PrecompileProvider<T: EvmTypes>: NonStaticAny {
+pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     /// Returns precompile addresses.
     fn addresses(&self) -> Vec<Address> {
         Vec::new()
@@ -55,13 +55,13 @@ pub trait PrecompileProvider<T: EvmTypes>: NonStaticAny {
 }
 
 #[inline]
-pub(crate) fn boxed_precompile_provider<'a, T: EvmTypes>(
+pub(crate) fn boxed_precompile_provider<'a, T: EvmTypesHost>(
     precompiles: impl PrecompileProvider<T> + 'a,
 ) -> Box<dyn PrecompileProvider<T> + 'a> {
     Box::new(precompiles)
 }
 
-impl<'a, T: EvmTypes> core::ops::Deref for dyn PrecompileProvider<T> + 'a {
+impl<'a, T: EvmTypesHost> core::ops::Deref for dyn PrecompileProvider<T> + 'a {
     type Target = dyn NonStaticAny + 'a;
 
     #[inline]
@@ -70,14 +70,14 @@ impl<'a, T: EvmTypes> core::ops::Deref for dyn PrecompileProvider<T> + 'a {
     }
 }
 
-impl<'a, T: EvmTypes> core::ops::DerefMut for dyn PrecompileProvider<T> + 'a {
+impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn PrecompileProvider<T> + 'a {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self
     }
 }
 
-impl<T: EvmTypes, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for Box<P> {
+impl<T: EvmTypesHost, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for Box<P> {
     #[inline]
     fn addresses(&self) -> Vec<Address> {
         self.as_ref().addresses()
@@ -104,7 +104,7 @@ impl<T: EvmTypes, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for B
 #[derive(Clone, Debug, Default)]
 pub struct NoPrecompiles(());
 
-impl<T: EvmTypes> PrecompileProvider<T> for NoPrecompiles {
+impl<T: EvmTypesHost> PrecompileProvider<T> for NoPrecompiles {
     #[inline]
     fn addresses(&self) -> Vec<Address> {
         Vec::new()

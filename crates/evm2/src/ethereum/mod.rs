@@ -10,7 +10,7 @@ mod legacy;
 pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
-    Evm, EvmFeatures, EvmHostTypes, EvmTypes, SpecId, TxResult, Version,
+    Evm, EvmFeatures, EvmTypes, EvmTypesHost, SpecId, TxResult, Version,
     bytecode::Bytecode,
     evm::{AccountInfo, StateCheckpoint, db_error_handler},
     interpreter::{Message, MessageKind, MessageResult, Word},
@@ -177,7 +177,7 @@ impl Typed2718 for RecoveredTxEnvelope {
 }
 
 /// Returns the Ethereum transaction registry for `spec_id`.
-pub fn ethereum_tx_registry<T: EvmHostTypes<Tx = RecoveredTxEnvelope>>(
+pub fn ethereum_tx_registry<T: EvmTypes<Tx = RecoveredTxEnvelope>>(
     spec_id: SpecId,
 ) -> TxRegistry<T, TxResult<T>> {
     let mut registry =
@@ -338,7 +338,7 @@ pub(super) const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> Handle
     Ok(())
 }
 
-pub(super) fn validate_sender<'a, T: EvmHostTypes>(
+pub(super) fn validate_sender<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
@@ -367,7 +367,7 @@ pub(super) fn validate_sender<'a, T: EvmHostTypes>(
     Ok(sender.get().cloned().unwrap_or_default())
 }
 
-pub(super) fn warm_base_accounts<'a, T: EvmHostTypes>(
+pub(super) fn warm_base_accounts<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     to: TxKind,
@@ -382,10 +382,7 @@ pub(super) fn warm_base_accounts<'a, T: EvmHostTypes>(
     host.warm_precompiles();
 }
 
-pub(super) fn warm_access_list<'a, T: EvmHostTypes>(
-    host: &mut Evm<'a, T>,
-    access_list: &AccessList,
-) {
+pub(super) fn warm_access_list<'a, T: EvmTypes>(host: &mut Evm<'a, T>, access_list: &AccessList) {
     for item in access_list.iter() {
         host.state.prewarm_storage(
             &item.address,
@@ -394,7 +391,7 @@ pub(super) fn warm_access_list<'a, T: EvmHostTypes>(
     }
 }
 
-pub(super) fn charge_upfront<'a, T: EvmHostTypes>(
+pub(super) fn charge_upfront<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     max_gas_cost: U256,
@@ -409,7 +406,7 @@ pub(super) fn charge_upfront<'a, T: EvmHostTypes>(
     Ok(())
 }
 
-pub(crate) fn initial_message<'a, T: EvmHostTypes>(
+pub(crate) fn initial_message<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
@@ -468,7 +465,7 @@ struct InitialCallCode {
     disable_precompiles: bool,
 }
 
-fn initial_call_code<'a, T: EvmHostTypes>(
+fn initial_call_code<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     to: Address,
 ) -> HandlerResult<InitialCallCode> {
@@ -494,7 +491,7 @@ fn initial_call_code<'a, T: EvmHostTypes>(
     Ok(InitialCallCode { code, code_address: to, disable_precompiles: false })
 }
 
-pub(super) fn rollback_failed_execution<'a, T: EvmHostTypes>(
+pub(super) fn rollback_failed_execution<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     checkpoint: StateCheckpoint,
     result: &mut MessageResult<T>,
@@ -508,7 +505,7 @@ pub(super) fn rollback_failed_execution<'a, T: EvmHostTypes>(
     }
 }
 
-pub(super) fn settle_gas<'a, T: EvmHostTypes>(
+pub(super) fn settle_gas<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     gas_price: U256,
@@ -547,7 +544,7 @@ pub(super) fn settle_gas<'a, T: EvmHostTypes>(
     })
 }
 
-const fn final_tx_gas<T: EvmTypes>(
+const fn final_tx_gas<T: EvmTypesHost>(
     result: &MessageResult<T>,
     tx_gas_limit: u64,
     is_eip3529: bool,

@@ -39,12 +39,12 @@ use syn::{
 ///   checks.
 /// - `#[instruction(dynamic_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
 ///   mutable gas state.
-/// - `#[instruction(EvmTypes = CustomTypes)]`: Implements the instruction for a concrete `EvmTypes`
-///   implementor instead of generating a generic implementation.
-/// - `#[instruction(EvmTypes: CustomTypesTrait)]`: Adds a trait bound to the generated generic
-///   `EvmTypes` type parameter.
+/// - `#[instruction(EvmTypes = CustomTypes)]`: Implements the instruction for a concrete EVM type
+///   family instead of generating a generic implementation.
+/// - `#[instruction(EvmTypes: CustomTypesTrait)]`: Adds a trait bound to the generated generic EVM
+///   types parameter.
 /// - `#[instruction(EvmTypes<Host<'static>: CustomHostTrait>)]`: Adds associated-type constraints
-///   to the generated generic `EvmTypes` implementation.
+///   to the generated generic EVM types implementation.
 ///
 /// ## Examples
 ///
@@ -225,9 +225,9 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         quote! { <#evm_types_ident #(, #type_params)*> }
     };
     let evm_types_bound = if let Some(args) = instruction_attrs.evm_types_args {
-        quote! { evm2::EvmTypes #args }
+        quote! { evm2::EvmTypesHost #args }
     } else {
-        quote! { evm2::EvmTypes }
+        quote! { evm2::EvmTypesHost }
     };
     let evm_types_bounds = instruction_attrs.evm_types_bounds;
     let where_predicates =

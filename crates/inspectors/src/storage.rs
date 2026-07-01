@@ -1,6 +1,6 @@
 use alloy_primitives::{Address, B256, map::HashMap};
 use evm2::{
-    EvmTypes, Inspector,
+    EvmTypesHost, Inspector,
     interpreter::{Interpreter, op},
 };
 
@@ -46,7 +46,7 @@ impl StorageInspector {
     }
 }
 
-impl<T: EvmTypes> Inspector<T> for StorageInspector {
+impl<T: EvmTypesHost> Inspector<T> for StorageInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if interp.opcode() == op::SLOAD
             && let Some([slot]) = interp.stack().peekn()

@@ -1,5 +1,5 @@
 use crate::{
-    EvmConfig, EvmTypes,
+    EvmConfig, EvmTypesHost,
     constants::STACK_LIMIT,
     interpreter::{
         InterpreterState, Pc, Result, Stack,
@@ -23,7 +23,7 @@ pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
 );
 
 #[inline(always)]
-pub(super) fn dispatch_loop_call<T: EvmTypes>(
+pub(super) fn dispatch_loop_call<T: EvmTypesHost>(
     instr: RawInstrFn<T>,
     pc: Pc,
     stack: Stack<'_>,
@@ -46,7 +46,7 @@ pub(super) const fn finish_loop(gas: &mut Gas, remaining_gas: LoopState) {
 }
 
 #[inline(always)]
-pub(super) const fn sync_loop_state<T: EvmTypes>(
+pub(super) const fn sync_loop_state<T: EvmTypesHost>(
     state: &mut InterpreterState<'_, '_, T>,
     loop_state: LoopState,
 ) {
@@ -55,7 +55,7 @@ pub(super) const fn sync_loop_state<T: EvmTypes>(
 
 impl super::DispatchGas for RemainingGas {
     #[inline(always)]
-    fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
+    fn pre_step<T: EvmTypesHost, C: EvmConfig<T>>(
         &mut self,
         _state: &mut InterpreterState<'_, '_, T>,
         op: u8,
@@ -64,7 +64,7 @@ impl super::DispatchGas for RemainingGas {
     }
 
     #[inline(always)]
-    fn sync_before_exec<T: EvmTypes>(
+    fn sync_before_exec<T: EvmTypesHost>(
         &self,
         state: &mut InterpreterState<'_, '_, T>,
         dynamic_gas: bool,
@@ -75,7 +75,7 @@ impl super::DispatchGas for RemainingGas {
     }
 
     #[inline(always)]
-    fn sync_after_exec<T: EvmTypes>(
+    fn sync_after_exec<T: EvmTypesHost>(
         &mut self,
         state: &mut InterpreterState<'_, '_, T>,
         dynamic_gas: bool,
@@ -88,7 +88,7 @@ impl super::DispatchGas for RemainingGas {
 
 extern_table! {
     pub(in crate::interpreter::dispatch) fn dispatch<
-        T: EvmTypes,
+        T: EvmTypesHost,
         C: EvmConfig<T>,
         M: super::InspectMode<T>,
         const OP: u8,

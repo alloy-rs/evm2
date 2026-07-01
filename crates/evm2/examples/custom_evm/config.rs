@@ -2,7 +2,7 @@
 
 use crate::opcode;
 use evm2::{
-    BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, EvmTypes, ExecutionConfig, OpcodeConfig,
+    BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, EvmTypesHost, ExecutionConfig, OpcodeConfig,
     SpecId, Version,
 };
 
@@ -52,7 +52,7 @@ impl From<CustomSpecId> for SpecId {
 #[derive(Clone, Copy, Debug)]
 pub struct CustomTypes;
 
-impl EvmTypes for CustomTypes {
+impl EvmTypesHost for CustomTypes {
     type ConfigSelector = CustomConfigSelector;
     type SpecId = CustomSpecId;
     type Tx = crate::tx::CustomEnvelope;

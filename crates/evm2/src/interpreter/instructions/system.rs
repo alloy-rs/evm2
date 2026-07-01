@@ -1,7 +1,7 @@
 //! System opcode implementations.
 
 use crate::{
-    EvmFeatures, EvmTypes,
+    EvmFeatures, EvmTypesHost,
     bytecode::Bytecode,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageKind, Result, StackMut, Word,
@@ -14,7 +14,7 @@ use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
 #[inline]
-const fn require_non_staticcall<T: EvmTypes>(state: &InterpreterState<'_, '_, T>) -> Result {
+const fn require_non_staticcall<T: EvmTypesHost>(state: &InterpreterState<'_, '_, T>) -> Result {
     if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -30,7 +30,7 @@ const fn should_charge_new_account_gas(
     target_is_empty_for_new_account_gas && (!eip161 || transfers_value)
 }
 
-fn resize_memory_range<T: EvmTypes>(
+fn resize_memory_range<T: EvmTypesHost>(
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
     offset: Word,
@@ -47,7 +47,7 @@ fn resize_memory_range<T: EvmTypes>(
     Ok(offset..offset + len)
 }
 
-fn get_memory_input_and_out_ranges<T: EvmTypes>(
+fn get_memory_input_and_out_ranges<T: EvmTypesHost>(
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
     input_offset: Word,
@@ -60,7 +60,7 @@ fn get_memory_input_and_out_ranges<T: EvmTypes>(
     Ok((input, output))
 }
 
-fn memory_range_bytes<T: EvmTypes>(
+fn memory_range_bytes<T: EvmTypesHost>(
     state: &mut InterpreterState<'_, '_, T>,
     range: Range<usize>,
 ) -> Result<Bytes> {
@@ -70,7 +70,7 @@ fn memory_range_bytes<T: EvmTypes>(
     Ok(Bytes::copy_from_slice(state.memory().slice(range.start, range.len())))
 }
 
-fn load_acc_and_calc_gas<T: EvmTypes>(
+fn load_acc_and_calc_gas<T: EvmTypesHost>(
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
     to: Address,
@@ -137,7 +137,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
 }
 
 #[inline(never)]
-fn prepare_call<T: EvmTypes>(
+fn prepare_call<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
@@ -214,7 +214,7 @@ fn prepare_call<T: EvmTypes>(
 }
 
 #[inline(never)]
-fn call_inner<T: EvmTypes>(
+fn call_inner<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,
@@ -272,7 +272,7 @@ pub(crate) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
 }
 
 #[inline(never)]
-fn create_inner<T: EvmTypes>(
+fn create_inner<T: EvmTypesHost>(
     mut stack: StackMut<'_>,
     gas: &mut Gas,
     state: &mut InterpreterState<'_, '_, T>,

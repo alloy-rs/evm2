@@ -118,7 +118,7 @@ use self::{
     precompile::{PrecompileOutput, PrecompileProvider, boxed_precompile_provider},
 };
 use crate::{
-    EvmConfigSelector, EvmHostTypes, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt,
+    EvmConfigSelector, EvmTypes, EvmTypesHost, ExecutionConfig, PrecompileError, PrecompileHalt,
     SpecId,
     bytecode::Bytecode,
     constants::{CALL_DEPTH_LIMIT, EIP7708_TRANSFER_TOPIC},
@@ -213,7 +213,7 @@ macro_rules! db_error_stop {
 ///
 /// Returning `Some(stop)` means the runner executed the frame. Returning `None` makes the EVM run
 /// the regular interpreter for the same frame.
-pub trait InterpreterRunner<T: EvmTypes>: core::fmt::Debug + Send + Sync + 'static {
+pub trait InterpreterRunner<T: EvmTypesHost>: core::fmt::Debug + Send + Sync + 'static {
     /// Attempts to execute `interpreter` with an external backend.
     fn run<'frame, 'host>(
         &self,
@@ -225,7 +225,7 @@ pub trait InterpreterRunner<T: EvmTypes>: core::fmt::Debug + Send + Sync + 'stat
 
 /// EVM host and transaction dispatcher.
 #[derive_where(Debug)]
-pub struct Evm<'a, T: EvmTypes> {
+pub struct Evm<'a, T: EvmTypesHost> {
     #[derive_where(skip)]
     spec_id: T::SpecId,
     #[derive_where(skip)]
@@ -257,7 +257,7 @@ pub struct Evm<'a, T: EvmTypes> {
     pub(crate) db_error_code: Option<DbErrorCode>,
 }
 
-impl<'a, T: EvmHostTypes> Evm<'a, T> {
+impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Creates an EVM for `spec_id` with the provided transaction registry, database, and
     /// precompile provider.
     #[inline]
@@ -740,7 +740,7 @@ impl Drop for ExecutionGuard {
 }
 
 #[cfg(feature = "async")]
-struct SendEvmRef<'a, 'evm, T: EvmTypes> {
+struct SendEvmRef<'a, 'evm, T: EvmTypesHost> {
     evm: &'a mut Evm<'evm, T>,
 }
 
@@ -749,7 +749,7 @@ struct SendEvmRef<'a, 'evm, T: EvmTypes> {
 // verified the concrete erased field types as `Send`.
 unsafe impl<T> Send for SendEvmRef<'_, '_, T>
 where
-    T: EvmTypes,
+    T: EvmTypesHost,
     T::SpecId: Send,
     T::Tx: Send,
     T::MessageExt: Send,
@@ -761,7 +761,7 @@ where
 }
 
 #[cfg(feature = "async")]
-impl<'a, 'evm, T: EvmTypes> SendEvmRef<'a, 'evm, T> {
+impl<'a, 'evm, T: EvmTypesHost> SendEvmRef<'a, 'evm, T> {
     #[inline]
     const fn new(evm: &'a mut Evm<'evm, T>) -> Self {
         Self { evm }
@@ -769,14 +769,14 @@ impl<'a, 'evm, T: EvmTypes> SendEvmRef<'a, 'evm, T> {
 }
 
 #[cfg(feature = "async")]
-impl<'evm, T: EvmHostTypes<Tx: Typed2718>> SendEvmRef<'_, 'evm, T> {
+impl<'evm, T: EvmTypes<Tx: Typed2718>> SendEvmRef<'_, 'evm, T> {
     #[inline]
     fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
         self.evm.transact(tx).map(ExecutedTx::commit)
     }
 }
 
-impl<'a, T: EvmHostTypes<Tx: Typed2718>> Evm<'a, T> {
+impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// Dispatches the transaction to its handler and returns an executed transaction handle.
     ///
     /// The returned [`ExecutedTx`] keeps post-finalization writes in the transaction scratch layer.
@@ -871,7 +871,7 @@ impl<'a, T: EvmHostTypes<Tx: Typed2718>> Evm<'a, T> {
     }
 }
 
-impl<'a, T: EvmHostTypes> Evm<'a, T> {
+impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn execute_message_impl(
         &mut self,
@@ -1299,7 +1299,7 @@ impl<'a, T: EvmHostTypes> Evm<'a, T> {
     }
 }
 
-impl<'a, T: EvmHostTypes> Host<T> for Evm<'a, T> {
+impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     fn spec_id(&self) -> SpecId {
         self.spec_id()
     }

@@ -1,12 +1,12 @@
 use super::{Gas, InterpreterState, Pc, Result, StackMut, Word};
-use crate::EvmTypes;
+use crate::EvmTypesHost;
 
 /// Function signature of an `#[instruction]`.
 pub(crate) type InstructionImplFn<T> =
     fn(pc: &mut Pc, stack: StackMut<'_>, state: &mut InterpreterState<'_, '_, T>) -> Result;
 
 /// EVM instruction implementation.
-pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
+pub trait Instruction<T: EvmTypesHost = crate::BaseEvmTypes> {
     /// Whether this instruction needs mutable gas state.
     const DYNAMIC_GAS: bool = true;
 
@@ -16,7 +16,7 @@ pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
 }
 
 /// Instruction execution context.
-pub struct InstructionCx<'a, 'state, 'host, T: EvmTypes> {
+pub struct InstructionCx<'a, 'state, 'host, T: EvmTypesHost> {
     /// Program counter state.
     pub pc: &'a mut Pc,
     /// Interpreter state.
@@ -26,7 +26,7 @@ pub struct InstructionCx<'a, 'state, 'host, T: EvmTypes> {
 }
 
 /// Instruction execution context with mutable gas state.
-pub struct GasInstructionCx<'a, 'state, 'host, T: EvmTypes> {
+pub struct GasInstructionCx<'a, 'state, 'host, T: EvmTypesHost> {
     /// Program counter state.
     pub pc: &'a mut Pc,
     /// Gas state.
@@ -37,14 +37,14 @@ pub struct GasInstructionCx<'a, 'state, 'host, T: EvmTypes> {
     pub _non_exhaustive: (),
 }
 
-impl<T: EvmTypes> core::fmt::Debug for InstructionCx<'_, '_, '_, T> {
+impl<T: EvmTypesHost> core::fmt::Debug for InstructionCx<'_, '_, '_, T> {
     #[inline]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("InstructionCx").finish_non_exhaustive()
     }
 }
 
-impl<T: EvmTypes> core::fmt::Debug for GasInstructionCx<'_, '_, '_, T> {
+impl<T: EvmTypesHost> core::fmt::Debug for GasInstructionCx<'_, '_, '_, T> {
     #[inline]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GasInstructionCx").finish_non_exhaustive()
@@ -67,7 +67,7 @@ pub fn instr_stack_setup(
 /// The returned `gas` reference must not be accessed through the returned `state` reference while
 /// both references are live.
 #[inline]
-pub unsafe fn split_gas_state<'a, 'state, 'host, T: EvmTypes>(
+pub unsafe fn split_gas_state<'a, 'state, 'host, T: EvmTypesHost>(
     state: *mut InterpreterState<'state, 'host, T>,
 ) -> (&'a mut Gas, &'a mut InterpreterState<'state, 'host, T>) {
     // SAFETY: The caller must ensure the returned `gas` reference is not used through `state`.
