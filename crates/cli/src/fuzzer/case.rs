@@ -1,4 +1,5 @@
 use crate::fuzzer::{
+    FUZZ_SPECS,
     precompile::{self, PrecompileTarget},
     program::Program,
     rng::Gen,
@@ -52,22 +53,7 @@ impl EvmCase {
     }
 
     pub(crate) fn generate(rng: &mut Gen) -> Self {
-        let spec = match rng.range(12) {
-            0 => SpecId::FRONTIER,
-            1 => SpecId::HOMESTEAD,
-            2 => SpecId::TANGERINE,
-            3 => SpecId::SPURIOUS_DRAGON,
-            4 => SpecId::BYZANTIUM,
-            5 => SpecId::ISTANBUL,
-            6 => SpecId::BERLIN,
-            7 => SpecId::LONDON,
-            8 => SpecId::SHANGHAI,
-            9 => SpecId::CANCUN,
-            10 => SpecId::PRAGUE,
-            // TODO: Re-enable Amsterdam once evm2's EIP-8037 state-gas accounting is aligned
-            // with revm. Manual Amsterdam replay remains supported through serde parsing/mapping.
-            _ => SpecId::OSAKA,
-        };
+        let spec = rng.pick(FUZZ_SPECS);
         let block = CaseBlock::generate(rng, spec);
         let mut extra_accounts = Vec::new();
         for i in 0..rng.range_inclusive(0, 4) {
@@ -160,9 +146,13 @@ impl EvmCase {
         Self { spec, block, tx, extra_txs, features, accounts }
     }
 
-    pub(crate) fn arbitrary_from_bytes(data: &[u8]) -> arbitrary::Result<Self> {
+    pub(crate) fn arbitrary_from_bytes_with_spec(
+        data: &[u8],
+        spec: SpecId,
+    ) -> arbitrary::Result<Self> {
         let mut input = arbitrary::Unstructured::new(data);
-        <ArbitraryCase as arbitrary::Arbitrary>::arbitrary(&mut input).map(Into::into)
+        <ArbitraryCase as arbitrary::Arbitrary>::arbitrary(&mut input)
+            .map(|case| case.into_evm_case(spec))
     }
 }
 
@@ -178,7 +168,6 @@ const MAX_ARBITRARY_AUTHS: usize = 3;
 
 #[derive(arbitrary::Arbitrary, Clone, Debug)]
 struct ArbitraryCase {
-    spec: ArbitrarySpec,
     block: ArbitraryBlock,
     target_code: Vec<u8>,
     target_storage: Vec<ArbitraryStorageSlot>,
@@ -188,9 +177,9 @@ struct ArbitraryCase {
     rng_seed: u64,
 }
 
-impl From<ArbitraryCase> for EvmCase {
-    fn from(case: ArbitraryCase) -> Self {
-        let spec = case.spec.into();
+impl ArbitraryCase {
+    fn into_evm_case(self, spec: SpecId) -> EvmCase {
+        let case = self;
         let mut features = vec!["arbitrary".to_string()];
         let mut accounts = vec![
             CaseAccount {
@@ -238,46 +227,7 @@ impl From<ArbitraryCase> for EvmCase {
         features.sort();
         features.dedup();
 
-        Self { spec, block: case.block.into(), tx, extra_txs, features, accounts }
-    }
-}
-
-#[derive(arbitrary::Arbitrary, Clone, Copy, Debug)]
-enum ArbitrarySpec {
-    Frontier,
-    Homestead,
-    Tangerine,
-    SpuriousDragon,
-    Byzantium,
-    Petersburg,
-    Istanbul,
-    Berlin,
-    London,
-    Merge,
-    Shanghai,
-    Cancun,
-    Prague,
-    Osaka,
-}
-
-impl From<ArbitrarySpec> for SpecId {
-    fn from(spec: ArbitrarySpec) -> Self {
-        match spec {
-            ArbitrarySpec::Frontier => Self::FRONTIER,
-            ArbitrarySpec::Homestead => Self::HOMESTEAD,
-            ArbitrarySpec::Tangerine => Self::TANGERINE,
-            ArbitrarySpec::SpuriousDragon => Self::SPURIOUS_DRAGON,
-            ArbitrarySpec::Byzantium => Self::BYZANTIUM,
-            ArbitrarySpec::Petersburg => Self::PETERSBURG,
-            ArbitrarySpec::Istanbul => Self::ISTANBUL,
-            ArbitrarySpec::Berlin => Self::BERLIN,
-            ArbitrarySpec::London => Self::LONDON,
-            ArbitrarySpec::Merge => Self::MERGE,
-            ArbitrarySpec::Shanghai => Self::SHANGHAI,
-            ArbitrarySpec::Cancun => Self::CANCUN,
-            ArbitrarySpec::Prague => Self::PRAGUE,
-            ArbitrarySpec::Osaka => Self::OSAKA,
-        }
+        EvmCase { spec, block: case.block.into(), tx, extra_txs, features, accounts }
     }
 }
 
@@ -285,17 +235,16 @@ impl From<ArbitrarySpec> for SpecId {
 struct ArbitraryBlock {
     number: [u8; 32],
     timestamp: [u8; 32],
-    gas_limit: u8,
+    gas_limit: u64,
     basefee: u8,
 }
 
 impl From<ArbitraryBlock> for CaseBlock {
     fn from(block: ArbitraryBlock) -> Self {
-        const GAS_LIMITS: &[u64] = &[60_000, 100_000, 250_000, 1_000_000, 10_000_000, 30_000_000];
         Self {
             number: word(block.number),
             timestamp: word(block.timestamp),
-            gas_limit: GAS_LIMITS[usize::from(block.gas_limit) % GAS_LIMITS.len()],
+            gas_limit: block.gas_limit,
             basefee: u64::from(block.basefee % 2),
         }
     }
@@ -535,7 +484,7 @@ struct ArbitraryTx {
     target_selector: u8,
     target: [u8; 20],
     creates: bool,
-    gas_limit: u8,
+    gas_limit: u64,
     gas_price: u16,
     value: u64,
     input: Vec<u8>,
@@ -578,7 +527,7 @@ impl ArbitraryTx {
             caller: CALLER,
             target,
             creates,
-            gas_limit: arbitrary_gas_limit(kind, creates, self.gas_limit),
+            gas_limit: self.gas_limit,
             gas_price: u128::from(1 + self.gas_price % 4),
             value: U256::from(self.value % 1_000),
             input: bounded_bytes(self.input, MAX_ARBITRARY_INPUT_LEN),
@@ -625,20 +574,6 @@ impl ArbitraryAuthorization {
             auth
         }
     }
-}
-
-fn arbitrary_gas_limit(kind: TxKindCase, creates: bool, selector: u8) -> u64 {
-    const CALL_GAS: &[u64] = &[21_000, 30_000, 60_000, 80_000, 100_000, 250_000, 1_000_000];
-    const CREATE_GAS: &[u64] = &[53_000, 80_000, 100_000, 250_000, 1_000_000];
-    const EIP7702_GAS: &[u64] = &[25_000, 60_000, 100_000, 250_000, 1_000_000];
-    let choices = if kind == TxKindCase::Eip7702 {
-        EIP7702_GAS
-    } else if creates {
-        CREATE_GAS
-    } else {
-        CALL_GAS
-    };
-    choices[usize::from(selector) % choices.len()]
 }
 
 fn arbitrary_access_list(items: Vec<ArbitraryAccessListItem>) -> AccessList {

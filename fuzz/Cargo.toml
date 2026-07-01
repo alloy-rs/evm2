@@ -8,10 +8,15 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
+arbitrary = { git = "https://github.com/0xalpharush/arbitrary", rev = "0524cf70fc9cb62e4c87972f872b9894e966f13c", features = ["derive"] }
 evm2-fuzzer = { package = "evm2-cli", path = "../crates/cli" }
 evm-smith = { git = "https://github.com/R9295/evm-smith.git", features = ["arbitrary", "rng"] }
 fastrand = "2.4.1"
 libfuzzer-sys = "0.4"
+rand = "0.10"
+
+[build-dependencies]
+arbitrary = { git = "https://github.com/0xalpharush/arbitrary", rev = "0524cf70fc9cb62e4c87972f872b9894e966f13c", features = ["derive"] }
 
 [features]
 default = []
@@ -133,56 +138,525 @@ doc = false
 bench = false
 
 [[bin]]
-name = "structured_compare"
+name = "structured_compare_frontier"
 path = "fuzz_targets/structured_compare.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "generated_compare"
-path = "fuzz_targets/generated_compare.rs"
+name = "structured_compare_homestead"
+path = "fuzz_targets/structured_compare.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "validation_compare"
-path = "fuzz_targets/validation_compare.rs"
+name = "structured_compare_tangerine"
+path = "fuzz_targets/structured_compare.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "evm_smith_compare"
+name = "structured_compare_spurious_dragon"
+path = "fuzz_targets/structured_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_compare_byzantium"
+path = "fuzz_targets/structured_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_compare_petersburg"
+path = "fuzz_targets/structured_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_compare_istanbul"
+path = "fuzz_targets/structured_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_compare_berlin"
+path = "fuzz_targets/structured_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_compare_london"
+path = "fuzz_targets/structured_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_compare_merge"
+path = "fuzz_targets/structured_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_compare_shanghai"
+path = "fuzz_targets/structured_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_compare_cancun"
+path = "fuzz_targets/structured_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_compare_prague"
+path = "fuzz_targets/structured_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_compare_osaka"
+path = "fuzz_targets/structured_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_compare_amsterdam"
+path = "fuzz_targets/structured_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_frontier"
 path = "fuzz_targets/evm_smith_compare.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "evm_smith_arbitrary_compare"
+name = "evm_smith_compare_homestead"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_tangerine"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_spurious_dragon"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_byzantium"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_petersburg"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_istanbul"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_berlin"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_london"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_merge"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_shanghai"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_cancun"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_prague"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_osaka"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare_amsterdam"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare_frontier"
 path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "jit_vs_interpreter"
-path = "fuzz_targets/jit_vs_interpreter.rs"
+name = "evm_smith_arbitrary_compare_homestead"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "precompile_compare"
+name = "evm_smith_arbitrary_compare_tangerine"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare_spurious_dragon"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare_byzantium"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare_petersburg"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare_istanbul"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare_berlin"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare_london"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare_merge"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare_shanghai"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare_cancun"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare_prague"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare_osaka"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare_amsterdam"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_frontier"
 path = "fuzz_targets/precompile_compare.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "lifecycle_compare"
+name = "precompile_compare_homestead"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_tangerine"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_spurious_dragon"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_byzantium"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_petersburg"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_istanbul"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_berlin"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_london"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_merge"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_shanghai"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_cancun"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_prague"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_osaka"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare_amsterdam"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_frontier"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_homestead"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_tangerine"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_spurious_dragon"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_byzantium"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_petersburg"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_istanbul"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_berlin"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_london"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_merge"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_shanghai"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_cancun"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_prague"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_osaka"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare_amsterdam"
 path = "fuzz_targets/lifecycle_compare.rs"
 test = false
 doc = false

@@ -1,10 +1,13 @@
 #![no_main]
 
-use evm2_fuzzer::{
-    CaseContext, Evm2Backend, EvmBackend, RevmBackend, SpecId, bytecode_case_with_spec,
-    compare_case,
-};
-use libfuzzer_sys::fuzz_target;
+mod common;
+mod precompile_case;
+
+use arbitrary::{Arbitrary, Dearbitrary, Unstructured};
+use evm2_fuzzer::bytecode_case_with_spec;
+use libfuzzer_sys::{fuzz_mutator, fuzz_target, fuzzer_mutate};
+use precompile_case::{PrecompileAddress, PrecompileCase};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 const STOP: u8 = 0x00;
 const POP: u8 = 0x50;
@@ -13,64 +16,103 @@ const RETURN: u8 = 0xf3;
 const CALL: u8 = 0xf1;
 const STATICCALL: u8 = 0xfa;
 
-const NON_AMSTERDAM_SPECS: &[SpecId] = &[
-    SpecId::FRONTIER,
-    SpecId::HOMESTEAD,
-    SpecId::TANGERINE,
-    SpecId::SPURIOUS_DRAGON,
-    SpecId::BYZANTIUM,
-    SpecId::PETERSBURG,
-    SpecId::ISTANBUL,
-    SpecId::BERLIN,
-    SpecId::LONDON,
-    SpecId::MERGE,
-    SpecId::SHANGHAI,
-    SpecId::CANCUN,
-    SpecId::PRAGUE,
-    SpecId::OSAKA,
-];
-
-const PRECOMPILE_ADDRESSES: &[u64] = &[
-    0x01, 0x02, 0x03, 0x04, // Frontier
-    0x05, 0x06, 0x07, 0x08, // Byzantium
-    0x09, // Istanbul
-    0x0a, // Cancun
-    0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11,  // Prague
-    0x100, // Osaka P256VERIFY
-];
-
-const GAS_LIMITS: &[u64] =
-    &[0, 1, 20, 60, 500, 3_000, 6_000, 10_000, 30_000, 100_000, 500_000, 2_000_000];
-
-const RETURN_LENGTHS: &[u64] = &[0, 1, 20, 31, 32, 33, 48, 64, 96, 128, 256, 512];
-
 fuzz_target!(|data: &[u8]| {
-    if data.len() < 5 {
+    let spec = common::target_spec("precompile_compare_");
+    let mut input = Unstructured::new(data);
+    let Ok(case) = PrecompileCase::arbitrary(&mut input) else {
+        return;
+    };
+
+    let bytecode = precompile_program(
+        case.address.number(),
+        case.gas,
+        &case.input,
+        u64::from(case.return_len),
+        case.is_static,
+    );
+    common::run_case(bytecode_case_with_spec(spec, &bytecode));
+});
+
+fuzz_mutator!(|data: &mut [u8], size: usize, max_size: usize, seed: u32| {
+    mutate_precompile_case(data, size, max_size, seed)
+});
+
+fn mutate_precompile_case(data: &mut [u8], size: usize, max_size: usize, seed: u32) -> usize {
+    let mut rng = StdRng::seed_from_u64(u64::from(seed));
+    let current = data.get(..size).and_then(parse_case);
+    let mut case = if one_in(&mut rng, 8) {
+        default_case(&mut rng)
+    } else {
+        current.unwrap_or_else(|| default_case(&mut rng))
+    };
+
+    match range(&mut rng, 7) {
+        0 => case.address = PrecompileAddress::from_index(random_usize(&mut rng)),
+        1 => case.gas = rng.random(),
+        2 => case.return_len = rng.random(),
+        3 => case.is_static = !case.is_static,
+        4 => replace_input(&mut case.input, &mut rng),
+        5 => mutate_input_byte(&mut case.input, &mut rng),
+        _ => truncate_or_extend_input(&mut case.input, &mut rng),
+    }
+
+    let bytes = case.to_arbitrary_bytes();
+    if bytes.len() <= max_size {
+        data[..bytes.len()].copy_from_slice(&bytes);
+        bytes.len()
+    } else {
+        fuzzer_mutate(data, size, max_size)
+    }
+}
+
+fn parse_case(data: &[u8]) -> Option<PrecompileCase> {
+    let mut input = Unstructured::new(data);
+    PrecompileCase::arbitrary(&mut input).ok()
+}
+
+fn default_case(rng: &mut StdRng) -> PrecompileCase {
+    PrecompileCase {
+        address: PrecompileAddress::from_index(random_usize(rng)),
+        gas: pick(rng, &[0, 1, 20, 60, 3_000, 30_000, 500_000, 2_000_000]),
+        return_len: pick(rng, &[0, 1, 20, 32, 64, 128, 512]),
+        is_static: !one_in(rng, 4),
+        input: Vec::new(),
+    }
+}
+
+fn replace_input(input: &mut Vec<u8>, rng: &mut StdRng) {
+    let len = range(rng, 512);
+    input.clear();
+    input.resize(len, 0);
+    for byte in input {
+        *byte = rng.random();
+    }
+}
+
+fn mutate_input_byte(input: &mut Vec<u8>, rng: &mut StdRng) {
+    if input.is_empty() {
+        input.push(rng.random());
         return;
     }
 
-    let spec = NON_AMSTERDAM_SPECS[usize::from(data[0]) % NON_AMSTERDAM_SPECS.len()];
-    let address = PRECOMPILE_ADDRESSES[usize::from(data[1]) % PRECOMPILE_ADDRESSES.len()];
-    let gas = GAS_LIMITS[usize::from(data[2]) % GAS_LIMITS.len()];
-    let return_len = RETURN_LENGTHS[usize::from(data[3]) % RETURN_LENGTHS.len()];
-    let flags = data[4];
-    let is_static = flags & 1 == 0;
-    let input_storage;
-    let input = if flags & 2 == 0 {
-        &data[5..]
-    } else {
-        input_storage = shaped_input(address, &data[5..]);
-        &input_storage
-    };
-
-    let bytecode = precompile_program(address, gas, input, return_len, is_static);
-    let backends: [&dyn EvmBackend; 2] = [&RevmBackend, &Evm2Backend];
-    if let Err(err) =
-        compare_case(&backends, &bytecode_case_with_spec(spec, &bytecode), CaseContext::Bytes)
-    {
-        panic!("{err}");
+    let index = range(rng, input.len());
+    match range(rng, 3) {
+        0 => input[index] = rng.random(),
+        1 => input[index] = input[index].wrapping_add(rng.random::<u8>() | 1),
+        _ => input[index] ^= 1 << range(rng, 8),
     }
-});
+}
+
+fn truncate_or_extend_input(input: &mut Vec<u8>, rng: &mut StdRng) {
+    if input.is_empty() || one_in(rng, 2) {
+        let extra = 1 + range(rng, 64);
+        for _ in 0..extra {
+            input.push(rng.random());
+        }
+    } else {
+        input.truncate(range(rng, input.len()));
+    }
+}
 
 fn precompile_program(
     address: u64,
@@ -129,79 +171,18 @@ fn push_bytes(code: &mut Vec<u8>, bytes: &[u8]) {
     code.extend_from_slice(bytes);
 }
 
-fn shaped_input(address: u64, data: &[u8]) -> Vec<u8> {
-    match address {
-        0x0b => {
-            let point = padded_g1_infinity();
-            [point.as_slice(), point.as_slice()].concat()
-        }
-        0x0c => {
-            let pairs = 1 + data.first().copied().unwrap_or_default() as usize % 3;
-            let mut input = Vec::with_capacity(pairs * (128 + 32));
-            for pair in 0..pairs {
-                input.extend(padded_g1_infinity());
-                input.extend(scalar(data, pair));
-            }
-            input
-        }
-        0x0d => {
-            let point = padded_g2_infinity();
-            [point.as_slice(), point.as_slice()].concat()
-        }
-        0x0e => {
-            let pairs = 1 + data.first().copied().unwrap_or_default() as usize % 2;
-            let mut input = Vec::with_capacity(pairs * (256 + 32));
-            for pair in 0..pairs {
-                input.extend(padded_g2_infinity());
-                input.extend(scalar(data, pair));
-            }
-            input
-        }
-        0x0f => {
-            let pairs = 1 + data.first().copied().unwrap_or_default() as usize % 2;
-            let mut input = Vec::with_capacity(pairs * (128 + 256));
-            for _ in 0..pairs {
-                input.extend(padded_g1_infinity());
-                input.extend(padded_g2_infinity());
-            }
-            input
-        }
-        0x10 => padded_fp(data, 0).to_vec(),
-        0x11 => {
-            let mut input = Vec::with_capacity(128);
-            input.extend(padded_fp(data, 0));
-            input.extend(padded_fp(data, 48));
-            input
-        }
-        _ => data.to_vec(),
-    }
+fn random_usize(rng: &mut StdRng) -> usize {
+    rng.random::<u64>() as usize
 }
 
-fn padded_fp(data: &[u8], offset: usize) -> [u8; 64] {
-    let mut fp = [0u8; 64];
-    fill_wrapping(&mut fp[16..], data, offset);
-    fp
+fn range(rng: &mut StdRng, upper: usize) -> usize {
+    if upper == 0 { 0 } else { rng.random_range(..upper) }
 }
 
-fn padded_g1_infinity() -> [u8; 128] {
-    [0u8; 128]
+fn one_in(rng: &mut StdRng, divisor: usize) -> bool {
+    range(rng, divisor) == 0
 }
 
-fn padded_g2_infinity() -> [u8; 256] {
-    [0u8; 256]
-}
-
-fn scalar(data: &[u8], index: usize) -> [u8; 32] {
-    let mut scalar = [0u8; 32];
-    fill_wrapping(&mut scalar, data, 1 + index * 32);
-    scalar
-}
-
-fn fill_wrapping(out: &mut [u8], data: &[u8], offset: usize) {
-    if data.is_empty() {
-        return;
-    }
-    for (index, byte) in out.iter_mut().enumerate() {
-        *byte = data[(offset + index) % data.len()];
-    }
+fn pick<T: Copy>(rng: &mut StdRng, values: &[T]) -> T {
+    values[range(rng, values.len())]
 }

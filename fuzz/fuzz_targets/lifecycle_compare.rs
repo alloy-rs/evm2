@@ -1,9 +1,9 @@
 #![no_main]
 
-use evm2_fuzzer::{
-    CaseContext, Evm2Backend, EvmBackend, RevmBackend, SpecId, bytecode_case_with_spec,
-    compare_case,
-};
+mod common;
+
+use arbitrary::{Arbitrary, Unstructured};
+use evm2_fuzzer::{SpecId, bytecode_case_with_spec};
 use libfuzzer_sys::fuzz_target;
 
 const STOP: u8 = 0x00;
@@ -14,65 +14,56 @@ const DELEGATECALL: u8 = 0xf4;
 const STATICCALL: u8 = 0xfa;
 const SELFDESTRUCT: u8 = 0xff;
 
-const NON_AMSTERDAM_SPECS: &[SpecId] = &[
-    SpecId::FRONTIER,
-    SpecId::HOMESTEAD,
-    SpecId::TANGERINE,
-    SpecId::SPURIOUS_DRAGON,
-    SpecId::BYZANTIUM,
-    SpecId::PETERSBURG,
-    SpecId::ISTANBUL,
-    SpecId::BERLIN,
-    SpecId::LONDON,
-    SpecId::MERGE,
-    SpecId::SHANGHAI,
-    SpecId::CANCUN,
-    SpecId::PRAGUE,
-    SpecId::OSAKA,
-];
+const MAX_OPS: usize = 16;
 
-const ADDRESSES: &[[u8; 20]] =
-    &[[0x00; 20], [0x10; 20], [0x20; 20], [0x30; 20], [0x40; 20], [0xff; 20]];
+#[derive(Arbitrary, Clone, Debug)]
+struct LifecycleCase {
+    ops: Vec<LifecycleOp>,
+}
 
-const GAS_LIMITS: &[u64] = &[0, 1, 2_299, 2_300, 2_301, 5_000, 25_000, 100_000, 1_000_000];
-const VALUES: &[u64] = &[0, 1, 2, 1_000_000];
+#[derive(Arbitrary, Clone, Copy, Debug)]
+struct LifecycleOp {
+    kind: LifecycleKind,
+    address: [u8; 20],
+    gas: u64,
+    value: u64,
+}
+
+#[derive(Arbitrary, Clone, Copy, Debug)]
+enum LifecycleKind {
+    Call,
+    CallCode,
+    DelegateCall,
+    StaticCall,
+    SelfDestruct,
+    Stop,
+}
 
 fuzz_target!(|data: &[u8]| {
-    let Some((&spec_byte, ops)) = data.split_first() else {
+    let spec = common::target_spec("lifecycle_compare_");
+    let mut input = Unstructured::new(data);
+    let Ok(case) = LifecycleCase::arbitrary(&mut input) else {
         return;
     };
 
-    let spec = NON_AMSTERDAM_SPECS[usize::from(spec_byte) % NON_AMSTERDAM_SPECS.len()];
-    let bytecode = lifecycle_program(ops, spec);
-    let backends: [&dyn EvmBackend; 2] = [&RevmBackend, &Evm2Backend];
-    if let Err(err) =
-        compare_case(&backends, &bytecode_case_with_spec(spec, &bytecode), CaseContext::Bytes)
-    {
-        panic!("{err}");
-    }
+    let bytecode = lifecycle_program(&case, spec);
+    common::run_case(bytecode_case_with_spec(spec, &bytecode));
 });
 
-fn lifecycle_program(data: &[u8], spec: SpecId) -> Vec<u8> {
+fn lifecycle_program(case: &LifecycleCase, spec: SpecId) -> Vec<u8> {
     let mut code = Vec::new();
-    for chunk in data.chunks(4).take(16) {
-        let selector = chunk.first().copied().unwrap_or_default();
-        let address =
-            ADDRESSES[usize::from(chunk.get(1).copied().unwrap_or_default()) % ADDRESSES.len()];
-        let gas =
-            GAS_LIMITS[usize::from(chunk.get(2).copied().unwrap_or_default()) % GAS_LIMITS.len()];
-        let value = VALUES[usize::from(chunk.get(3).copied().unwrap_or_default()) % VALUES.len()];
-
-        match selector % 6 {
-            0 => emit_call(&mut code, CALL, address, gas, value),
-            1 => emit_call(&mut code, CALLCODE, address, gas, value),
-            2 if spec.enables(SpecId::HOMESTEAD) => {
-                emit_call(&mut code, DELEGATECALL, address, gas, 0)
+    for op in case.ops.iter().take(MAX_OPS) {
+        match op.kind {
+            LifecycleKind::Call => emit_call(&mut code, CALL, op.address, op.gas, op.value),
+            LifecycleKind::CallCode => emit_call(&mut code, CALLCODE, op.address, op.gas, op.value),
+            LifecycleKind::DelegateCall if spec.enables(SpecId::HOMESTEAD) => {
+                emit_call(&mut code, DELEGATECALL, op.address, op.gas, 0)
             }
-            3 if spec.enables(SpecId::BYZANTIUM) => {
-                emit_call(&mut code, STATICCALL, address, gas, 0)
+            LifecycleKind::StaticCall if spec.enables(SpecId::BYZANTIUM) => {
+                emit_call(&mut code, STATICCALL, op.address, op.gas, 0)
             }
-            4 => {
-                push_address(&mut code, address);
+            LifecycleKind::SelfDestruct => {
+                push_address(&mut code, op.address);
                 code.push(SELFDESTRUCT);
             }
             _ => code.push(STOP),

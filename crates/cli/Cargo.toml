@@ -33,7 +33,7 @@ alloy-rpc-client = { workspace = true, features = ["reqwest"] }
 alloy-rpc-types-eth = { workspace = true, features = ["serde", "std"] }
 alloy-rpc-types-trace.workspace = true
 anstyle.workspace = true
-arbitrary = { version = "1.4.2", features = ["derive"] }
+arbitrary = { git = "https://github.com/0xalpharush/arbitrary", rev = "0524cf70fc9cb62e4c87972f872b9894e966f13c", features = ["derive"] }
 clap.workspace = true
 futures-util.workspace = true
 rand.workspace = true

@@ -1,5 +1,6 @@
 #![no_main]
 
+mod bytecode_mutator;
 mod common;
 
 use evm2_fuzzer::BYTECODE_FUZZ_SPEC;

@@ -46,7 +46,6 @@ use self::{
     case::{CALLER, CaseAccount, CaseBlock, CaseTx, TARGET, TxKindCase},
     cli::Command,
     io::write_failure_case,
-    normalize::OutcomeKind,
     rng::Gen,
 };
 use alloy_eips::eip2930::AccessList;
@@ -174,6 +173,25 @@ fn resolve_threads(threads: usize) -> usize {
 /// Hardfork used by the byte-only cargo-fuzz harness.
 pub const BYTECODE_FUZZ_SPEC: SpecId = SpecId::OSAKA;
 
+/// Hardforks used by generated fuzzer cases.
+pub const FUZZ_SPECS: &[SpecId] = &[
+    SpecId::FRONTIER,
+    SpecId::HOMESTEAD,
+    SpecId::TANGERINE,
+    SpecId::SPURIOUS_DRAGON,
+    SpecId::BYZANTIUM,
+    SpecId::PETERSBURG,
+    SpecId::ISTANBUL,
+    SpecId::BERLIN,
+    SpecId::LONDON,
+    SpecId::MERGE,
+    SpecId::SHANGHAI,
+    SpecId::CANCUN,
+    SpecId::PRAGUE,
+    SpecId::OSAKA,
+    SpecId::AMSTERDAM,
+];
+
 /// Builds a simple execution case whose target account code is exactly `bytecode`.
 pub fn bytecode_case(bytecode: &[u8]) -> EvmCase {
     bytecode_case_with_spec(BYTECODE_FUZZ_SPEC, bytecode)
@@ -245,6 +263,21 @@ pub fn jit_bytecode_supported(spec: SpecId, bytecode: &[u8]) -> bool {
     })
 }
 
+/// Returns whether every non-empty account bytecode in `case` is eligible for JIT execution.
+#[cfg(feature = "jit")]
+pub fn jit_case_supported(case: &EvmCase) -> bool {
+    let mut seen_code = false;
+    let all_supported = case.accounts.iter().all(|account| {
+        if account.code.is_empty() {
+            true
+        } else {
+            seen_code = true;
+            jit_bytecode_supported(case.spec, &account.code)
+        }
+    });
+    seen_code && all_supported
+}
+
 #[cfg(feature = "jit")]
 const fn jit_immediate_len(opcode: u8) -> usize {
     if opcode >= evm2::interpreter::op::PUSH1 && opcode <= evm2::interpreter::op::PUSH32 {
@@ -260,166 +293,14 @@ const fn jit_immediate_len(opcode: u8) -> usize {
 }
 
 /// Builds a bounded structured execution case from `arbitrary` input bytes.
-pub fn arbitrary_case(data: &[u8]) -> arbitrary::Result<EvmCase> {
-    EvmCase::arbitrary_from_bytes(data)
+pub fn arbitrary_case_with_spec(data: &[u8], spec: SpecId) -> arbitrary::Result<EvmCase> {
+    EvmCase::arbitrary_from_bytes_with_spec(data, spec)
 }
 
 /// Builds the same deterministic structured case used by the fuzzer binary.
 pub fn generate_case(seed: u64, case_index: u64) -> EvmCase {
     let mut rng = Gen::new(seed ^ case_index.wrapping_mul(0x9e37_79b9_7f4a_7c15));
     EvmCase::generate(&mut rng)
-}
-
-/// Builds a deterministic case biased toward transaction validation boundaries.
-pub fn generate_validation_case(seed: u64, case_index: u64) -> EvmCase {
-    let mut rng = Gen::new(seed ^ case_index.wrapping_mul(0xd1b5_4a32_d192_ed03));
-    let spec = match rng.range(14) {
-        0 => SpecId::FRONTIER,
-        1 => SpecId::HOMESTEAD,
-        2 => SpecId::TANGERINE,
-        3 => SpecId::SPURIOUS_DRAGON,
-        4 => SpecId::BYZANTIUM,
-        5 => SpecId::PETERSBURG,
-        6 => SpecId::ISTANBUL,
-        7 => SpecId::BERLIN,
-        8 => SpecId::LONDON,
-        9 => SpecId::MERGE,
-        10 => SpecId::SHANGHAI,
-        11 => SpecId::CANCUN,
-        12 => SpecId::PRAGUE,
-        _ => SpecId::OSAKA,
-    };
-    let gas_limit =
-        rng.pick(&[0, 20_999, 21_000, 21_001, 29_999, 30_000, 53_000, 60_000, 100_000, 1_000_000]);
-    let gas_price = u128::from(rng.pick(&[0_u16, 1, 2, 7, 255]));
-    let value = rng.pick(&[U256::ZERO, U256::ONE, U256::from(1_000), U256::from(1_000_000)]);
-    let max_cost = U256::from(gas_limit) * U256::from(gas_price);
-    let balance = match rng.range(9) {
-        0 => U256::ZERO,
-        1 => U256::ONE,
-        2 => value,
-        3 => max_cost,
-        4 => max_cost.saturating_add(value),
-        5 => max_cost.saturating_add(value).saturating_sub(U256::ONE),
-        6 => U256::from(21_000),
-        7 => U256::from_limbs([0, 0, 1, 0]),
-        _ => U256::MAX,
-    };
-    let creates = rng.one_in(4);
-    let kind = validation_tx_kind(&mut rng, spec, creates);
-    let input_len = rng.pick(&[0, 1, 4, 16, 31, 32, 33, 64, 128]);
-    let block_basefee = if spec.enables(SpecId::LONDON) { rng.pick(&[0, 1, 2, 7]) } else { 0 };
-    let tx = CaseTx {
-        kind,
-        caller: CALLER,
-        target: validation_target(&mut rng),
-        creates: creates && kind.supports_create(),
-        gas_limit,
-        gas_price,
-        value,
-        input: validation_input(&mut rng, input_len),
-        nonce: rng.pick(&[0, 1, 2, u64::MAX]),
-        access_list: validation_access_list(&mut rng),
-        blob_hashes: validation_blob_hashes(&mut rng),
-        authorization_list: (kind == TxKindCase::Eip7702 && rng.one_in(4)).then(Vec::new),
-    };
-    EvmCase {
-        spec,
-        block: CaseBlock {
-            number: rng.small_word(1_000_000),
-            timestamp: rng.small_word(2_000_000_000),
-            gas_limit: rng.pick(&[0, 20_999, 21_000, 30_000, 60_000, 100_000, 1_000_000]),
-            basefee: block_basefee,
-        },
-        tx,
-        extra_txs: Vec::new(),
-        features: vec!["validation".to_string()],
-        accounts: vec![
-            CaseAccount {
-                address: CALLER,
-                balance,
-                nonce: rng.pick(&[0, 1, 2, u64::MAX]),
-                code: Bytes::new(),
-                storage: BTreeMap::new(),
-            },
-            CaseAccount {
-                address: TARGET,
-                balance: U256::from(1_000_000),
-                nonce: 1,
-                code: Bytes::from_static(&[evm2::interpreter::op::STOP]),
-                storage: BTreeMap::new(),
-            },
-        ],
-    }
-}
-
-fn validation_tx_kind(rng: &mut Gen, spec: SpecId, creates: bool) -> TxKindCase {
-    let choices = [
-        TxKindCase::Legacy,
-        TxKindCase::Eip2930,
-        TxKindCase::Eip1559,
-        TxKindCase::Eip4844,
-        TxKindCase::Eip7702,
-    ];
-    let kind = rng.pick(&choices);
-    if creates && !kind.supports_create() {
-        return TxKindCase::Legacy;
-    }
-    if rng.one_in(2) || kind.is_enabled(spec) { kind } else { TxKindCase::Legacy }
-}
-
-fn validation_target(rng: &mut Gen) -> alloy_primitives::Address {
-    rng.pick(&[
-        TARGET,
-        CALLER,
-        alloy_primitives::Address::ZERO,
-        alloy_primitives::Address::with_last_byte(1),
-        alloy_primitives::Address::with_last_byte(9),
-        alloy_primitives::Address::with_last_byte(0x77),
-        alloy_primitives::Address::with_last_byte(6),
-    ])
-}
-
-fn validation_input(rng: &mut Gen, len: usize) -> Bytes {
-    match rng.range(5) {
-        0 => Bytes::new(),
-        1 => Bytes::from_static(&[0]),
-        2 => Bytes::from_static(&[evm2::interpreter::op::STOP]),
-        3 => Bytes::from_static(&[
-            evm2::interpreter::op::PUSH1,
-            0,
-            evm2::interpreter::op::PUSH1,
-            0,
-            evm2::interpreter::op::RETURN,
-        ]),
-        _ => rng.bytes(len).into(),
-    }
-}
-
-fn validation_access_list(rng: &mut Gen) -> AccessList {
-    let mut items = Vec::new();
-    for _ in 0..rng.range_inclusive(0, 4) {
-        let mut storage_keys = Vec::new();
-        for _ in 0..rng.range_inclusive(0, 4) {
-            storage_keys.push(alloy_primitives::B256::from(rng.biased_word().to_be_bytes::<32>()));
-        }
-        items.push(alloy_eips::eip2930::AccessListItem {
-            address: validation_target(rng),
-            storage_keys,
-        });
-    }
-    AccessList(items)
-}
-
-fn validation_blob_hashes(rng: &mut Gen) -> Vec<alloy_primitives::B256> {
-    let len = rng.range_inclusive(0, 4);
-    (0..len)
-        .map(|_| {
-            let mut hash = rng.bytes(32);
-            hash[0] = 0x01;
-            alloy_primitives::B256::from_slice(&hash)
-        })
-        .collect()
 }
 
 /// Identifies where a differential comparison case came from.
@@ -452,40 +333,6 @@ pub fn compare_case(
     let baseline = backends[0].run(case);
     for backend in &backends[1..] {
         let got = backend.run(case);
-        if got != baseline {
-            if let CaseContext::Generated { seed, case_index } = context {
-                let path = write_failure_case(seed, case_index, case)?;
-                eprintln!("wrote failing case to {}", path.display());
-                let minimized = minimize_case(backends, case.clone());
-                if minimized != *case {
-                    let path = write_minimized_case(&minimized)?;
-                    eprintln!("wrote minimized failing case to {}", path.display());
-                }
-            }
-            eprintln!("differential mismatch at {context}");
-            eprintln!("case:\n{case:#?}");
-            eprintln!("{}:\n{baseline:#?}", backends[0].name());
-            eprintln!("{}:\n{got:#?}", backend.name());
-            return Err("differential mismatch".into());
-        }
-    }
-    Ok(baseline)
-}
-
-/// Runs `case` like [`compare_case`], but treats matching transaction-validation rejections as
-/// equivalent even if the clients report different first error labels.
-pub fn compare_case_acceptance(
-    backends: &[&dyn EvmBackend],
-    case: &EvmCase,
-    context: CaseContext<'_>,
-) -> Result<Outcome, String> {
-    debug_assert!(backends.len() >= 2);
-    let baseline = backends[0].run(case);
-    for backend in &backends[1..] {
-        let got = backend.run(case);
-        if baseline.kind == OutcomeKind::Error && got.kind == OutcomeKind::Error {
-            continue;
-        }
         if got != baseline {
             if let CaseContext::Generated { seed, case_index } = context {
                 let path = write_failure_case(seed, case_index, case)?;
