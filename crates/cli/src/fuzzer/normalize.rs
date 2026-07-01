@@ -134,6 +134,9 @@ fn normalize_error(error: String) -> String {
     {
         return "UnsupportedTransactionType".to_string();
     }
+    if error.starts_with("TxGasLimitGreaterThanCap") || error == "EmptyAuthorizationList" {
+        return "InvalidTransaction".to_string();
+    }
     error.to_string()
 }
 

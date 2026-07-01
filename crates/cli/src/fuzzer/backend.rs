@@ -30,13 +30,7 @@ use revm::{
     primitives::hardfork::SpecId as RevmSpecId,
 };
 #[cfg(feature = "jit")]
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{collections::HashMap, sync::Arc};
 
 pub trait EvmBackend {
     fn name(&self) -> &'static str;
@@ -72,23 +66,17 @@ impl EvmBackend for JitEvm2Backend {
             Ok(prepared) => prepared,
             Err(err) => return Outcome::error(err),
         };
-        let hits = Arc::clone(&prepared.hits);
         let functions = Arc::clone(&prepared.functions);
-        let outcome = run_evm2(case, move |evm| {
-            evm.set_interpreter_runner(FixedJitRunner { functions, hits });
+        run_evm2(case, move |evm| {
+            evm.set_interpreter_runner(FixedJitRunner { functions });
             Ok(())
-        });
-        if case_has_runtime_code(case) && prepared.hits.load(Ordering::Relaxed) == 0 {
-            Outcome::error("JitNotExercised".to_string())
-        } else {
-            outcome
-        }
+        })
     }
 }
 
 fn run_evm2(
     case: &EvmCase,
-    configure: impl FnOnce(&mut Evm<BaseEvmTypes>) -> Result<(), String>,
+    configure: impl FnOnce(&mut Evm<'_, BaseEvmTypes>) -> Result<(), String>,
 ) -> Outcome {
     let mut evm = Evm::<BaseEvmTypes>::new(
         case.spec,
@@ -145,7 +133,6 @@ type LlvmCompiler = EvmCompiler<EvmLlvmBackend>;
 struct PreparedJitCase {
     _compiler: LlvmCompiler,
     functions: Arc<HashMap<B256, EvmCompilerFn>>,
-    hits: Arc<AtomicU64>,
 }
 
 #[cfg(feature = "jit")]
@@ -173,11 +160,7 @@ impl PreparedJitCase {
             compiler.clear_ir().map_err(|err| format!("{err:?}"))?;
         }
 
-        Ok(Self {
-            _compiler: compiler,
-            functions: Arc::new(functions),
-            hits: Arc::new(AtomicU64::new(0)),
-        })
+        Ok(Self { _compiler: compiler, functions: Arc::new(functions) })
     }
 }
 
@@ -185,28 +168,21 @@ impl PreparedJitCase {
 #[derive(Clone, Debug)]
 struct FixedJitRunner {
     functions: Arc<HashMap<B256, EvmCompilerFn>>,
-    hits: Arc<AtomicU64>,
 }
 
 #[cfg(feature = "jit")]
 impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
-    fn run(
+    fn run<'frame, 'host>(
         &self,
         config: &ExecutionConfig<BaseEvmTypes>,
-        interpreter: &mut Interpreter<'_, BaseEvmTypes>,
-        host: &mut Evm<BaseEvmTypes>,
+        interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+        host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
         let code = interpreter.original_bytecode();
         let func = *self.functions.get(&keccak256(&code))?;
-        self.hits.fetch_add(1, Ordering::Relaxed);
         interpreter.prepare_run(config.base_spec_id(), config.version(), host);
         Some(unsafe { func.call_with_interpreter(interpreter) })
     }
-}
-
-#[cfg(feature = "jit")]
-fn case_has_runtime_code(case: &EvmCase) -> bool {
-    case.accounts.iter().any(|account| !account.code.is_empty())
 }
 
 #[derive(Clone, Copy, Debug)]

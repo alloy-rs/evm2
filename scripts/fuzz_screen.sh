@@ -19,9 +19,12 @@ LOG_ROTATE_SIZE="${FUZZ_LOG_ROTATE_SIZE:-100M}"
 CRASH_LOG="${FUZZ_CRASH_LOG:-$LOG_ROOT/crashes.log}"
 CARGO_BIN="${CARGO:-cargo}"
 RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-nightly}"
-CARGO_FUZZ_RUN_ARGS="${CARGO_FUZZ_RUN_ARGS:---no-trace-compares}"
-LIBFUZZER_ARGS="${LIBFUZZER_ARGS:-}"
+CARGO_FUZZ_RUN_ARGS="${CARGO_FUZZ_RUN_ARGS:---features jit --no-trace-compares}"
+LIBFUZZER_ARGS="${LIBFUZZER_ARGS:--rss_limit_mb=8192}"
 ROTATELOGS_BIN="${ROTATELOGS_BIN:-}"
+if [[ -z "${LLVM_SYS_221_PREFIX:-}" && -x /usr/lib/llvm-22/bin/llvm-config ]]; then
+    export LLVM_SYS_221_PREFIX=/usr/lib/llvm-22
+fi
 
 usage() {
     cat <<'EOF'
@@ -43,8 +46,8 @@ Options:
   -h, --help           Show this help.
 
 Environment:
-  CARGO_FUZZ_RUN_ARGS  Extra cargo-fuzz run args. Default: --no-trace-compares
-  LIBFUZZER_ARGS       Default libFuzzer args appended after '--'.
+  CARGO_FUZZ_RUN_ARGS  Extra cargo-fuzz run args. Default: --features jit --no-trace-compares
+  LIBFUZZER_ARGS       Default libFuzzer args appended after '--'. Default: -rss_limit_mb=8192
   FUZZ_CRASH_HOOK      Optional executable called on nonzero fuzzer exit.
                        Overrides the default Slack hook.
                        Args: target status current_log artifact_dir session
@@ -58,7 +61,7 @@ Environment:
 
 Examples:
   scripts/fuzz_screen.sh
-  scripts/fuzz_screen.sh 'bytecode_compare_*' -- -rss_limit_mb=8192
+  scripts/fuzz_screen.sh 'bytecode_compare_*' -- -rss_limit_mb=4096
   SLACK_WEBHOOK_URL=<webhook-url> scripts/fuzz_screen.sh '*_amsterdam'
   FUZZ_CRASH_HOOK=./notify-crash.sh scripts/fuzz_screen.sh '*_amsterdam'
   CARGO_FUZZ_RUN_ARGS='--features jit --no-trace-compares' scripts/fuzz_screen.sh 'evm_smith_*'
@@ -325,6 +328,7 @@ launch_sessions() {
             "FUZZ_CRASH_LOG=$CRASH_LOG"
             "FUZZ_SCREEN_ENV_FILE=$ENV_FILE"
             "ROTATELOGS_BIN=$ROTATELOGS_BIN"
+            "LLVM_SYS_221_PREFIX=${LLVM_SYS_221_PREFIX:-}"
             "CARGO=$CARGO_BIN"
             "RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN"
             "CARGO_FUZZ_RUN_ARGS=$CARGO_FUZZ_RUN_ARGS"
