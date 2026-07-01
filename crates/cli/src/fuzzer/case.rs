@@ -165,6 +165,7 @@ const MAX_ARBITRARY_ACCESS_ITEMS: usize = 4;
 const MAX_ARBITRARY_ACCESS_KEYS: usize = 4;
 const MAX_ARBITRARY_BLOB_HASHES: usize = 3;
 const MAX_ARBITRARY_AUTHS: usize = 3;
+const MAX_ARBITRARY_GAS_LIMIT: u64 = 100_000_000;
 
 #[derive(arbitrary::Arbitrary, Clone, Debug)]
 struct ArbitraryCase {
@@ -244,7 +245,7 @@ impl From<ArbitraryBlock> for CaseBlock {
         Self {
             number: word(block.number),
             timestamp: word(block.timestamp),
-            gas_limit: block.gas_limit,
+            gas_limit: block.gas_limit.min(MAX_ARBITRARY_GAS_LIMIT),
             basefee: u64::from(block.basefee % 2),
         }
     }
@@ -527,7 +528,7 @@ impl ArbitraryTx {
             caller: CALLER,
             target,
             creates,
-            gas_limit: self.gas_limit,
+            gas_limit: self.gas_limit.min(MAX_ARBITRARY_GAS_LIMIT),
             gas_price: u128::from(1 + self.gas_price % 4),
             value: U256::from(self.value % 1_000),
             input: bounded_bytes(self.input, MAX_ARBITRARY_INPUT_LEN),

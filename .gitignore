@@ -11,6 +11,8 @@ Cargo.lock
 /tests/GeneralStateTests
 /tests/BlockchainTests
 /test-fixtures
+/.fuzz_screen.env
+/.fuzz_screeen.env
 /scripts/__pycache__
 
 # samply profiler output
