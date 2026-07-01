@@ -151,7 +151,7 @@ fn execute_suite_with_resources(
     for (name, test_case) in &suite.0 {
         if !entrypoint.matches(name)
             || test_case.network.is_transition()
-            || is_fork_skipped(fork_to_spec_id(test_case.network))
+            || is_blockchain_fork_skipped(fork_to_spec_id(test_case.network))
         {
             summary.skipped += 1;
             continue;
@@ -324,6 +324,10 @@ fn execute_block(
         .map_err(|err| TestError::case(path, name, err))?;
 
         let transactions = block_transactions(block);
+        // EIP-8037: track regular and state gas separately for the block-header gas check.
+        let mut cumulative_tx_gas_used = 0u64;
+        let mut block_regular_gas_used = 0u64;
+        let mut block_state_gas_used = 0u64;
         for (transaction_index, raw_tx) in transactions.iter().enumerate() {
             hook.transaction_started(TransactionStarted {
                 block_index,
@@ -351,7 +355,13 @@ fn execute_block(
             };
 
             match execute_tx(&mut evm, &mut block_state, &tx) {
-                Ok(_) => {
+                Ok(result) => {
+                    cumulative_tx_gas_used =
+                        cumulative_tx_gas_used.saturating_add(result.tx_gas_used());
+                    block_regular_gas_used =
+                        block_regular_gas_used.saturating_add(result.regular_gas_spent());
+                    block_state_gas_used =
+                        block_state_gas_used.saturating_add(result.state_gas_spent());
                     hook.transaction_finished(TransactionFinished {
                         block_index,
                         total_blocks,
@@ -381,6 +391,25 @@ fn execute_block(
         if should_fail {
             let expected = block.expect_exception.clone().unwrap_or_default();
             return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
+        }
+
+        // Validate the block header's gas used against the executed transactions. Under EIP-8037
+        // (Amsterdam+) regular and state gas are tracked separately and the header records their
+        // max; earlier forks record the cumulative per-transaction gas used (refunds included).
+        if let Some(expected) = block_gas_used(block) {
+            let expected = expected.saturating_to::<u64>();
+            let actual = if spec.enables(SpecId::AMSTERDAM) {
+                block_regular_gas_used.max(block_state_gas_used)
+            } else {
+                cumulative_tx_gas_used
+            };
+            if actual != expected {
+                return Err(TestError::case(
+                    path,
+                    name,
+                    TestErrorKind::BlockGasUsedMismatch { expected, actual },
+                ));
+            }
         }
 
         post_block_transition(
@@ -838,6 +867,20 @@ fn assert_block_access_list(_block_index: usize, _expected: &alloy_eip7928::Bloc
     todo!("evm2 does not build block access lists yet")
 }
 
+/// Whether a blockchain test targeting `spec` should be skipped.
+///
+/// In addition to the globally unsupported forks ([`is_fork_skipped`]), Amsterdam and later are
+/// skipped at the blockchain layer only. Amsterdam blocks require building and validating block
+/// access lists ([EIP-7928], see the `todo!` in [`assert_block_access_list`]) and block-level gas
+/// accounting without refunds (EIP-7778), neither of which evm2 implements yet, so every Amsterdam
+/// blockchain fixture fails on block structure/gas regardless of the EIP it targets. State tests
+/// have no block layer, so [`crate::runner`] still runs the Amsterdam state suite.
+///
+/// [EIP-7928]: https://eips.ethereum.org/EIPS/eip-7928
+fn is_blockchain_fork_skipped(spec: SpecId) -> bool {
+    is_fork_skipped(spec) || spec.enables(SpecId::AMSTERDAM)
+}
+
 fn fork_to_spec_id(fork: ForkSpec) -> SpecId {
     match fork {
         ForkSpec::Frontier => SpecId::FRONTIER,
@@ -956,6 +999,7 @@ mod tests {
                         hash: block_hash,
                         number: U256::ONE,
                         gas_limit: U256::from(30_000_000),
+                        gas_used: U256::from(43_105),
                         base_fee_per_gas: Some(U256::ZERO),
                         timestamp: U256::ONE,
                         ..BlockHeader::default()

@@ -62,7 +62,7 @@ impl EvmBackend for Evm2Backend {
                         } else {
                             OutcomeKind::RevertOrHalt
                         },
-                        gas_used: Some(tx_result.gas_used),
+                        gas_used: Some(tx_result.tx_gas_used()),
                         output,
                         logs: tx_result.logs.iter().map(canonical_log).collect(),
                         state: state_from_evm2_changes(&result.state_changes),

@@ -10,10 +10,9 @@ use derive_where::derive_where;
 
 /// Result of executing a call/create message.
 ///
-/// Gas accounting is split into unused gas and the refund counter because EVM refunds are not
-/// immediately spendable by the parent frame and are capped only at the top-level transaction. Use
-/// [`Self::gas_returned_to_parent`] and [`Self::refund_propagated_to_parent`] when applying a child
-/// result to a caller frame. Use [`Self::gas_remaining_after_final_refund`] or
+/// [`Self::gas`] is normalized for the frame's [`stop`](Self::stop) reason by the executor
+/// before it is returned, so applying a child result to its caller is just
+/// [`GasTracker::merge_child_gas`]. Use [`Self::gas_remaining_after_final_refund`] or
 /// [`Self::gas_used_after_final_refund`] for top-level transaction accounting.
 #[derive_where(Clone, Debug, Default, PartialEq, Eq; T::MessageResultExt)]
 pub struct MessageResult<T: EvmTypes = BaseEvmTypes> {
@@ -25,6 +24,11 @@ pub struct MessageResult<T: EvmTypes = BaseEvmTypes> {
     pub output: Bytes,
     /// Created address for successful create messages.
     pub created_address: Option<Address>,
+    /// EIP-8037: for a create message, whether the target address was already alive (existing and
+    /// non-empty) before creation. When a create at such an address succeeds, the upfront
+    /// `NEW_ACCOUNT` state gas is refunded because no new account leaf was created. Always `false`
+    /// for call messages and fresh-target creates.
+    pub created_target_was_alive: bool,
     /// EVM type-specific extension data.
     pub ext: T::MessageResultExt,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
@@ -38,22 +42,16 @@ impl<T: EvmTypes> MessageResult<T> {
         self.stop.is_success()
     }
 
-    /// Returns whether the message can return unused gas to its parent frame.
+    /// Returns the created address to push onto the parent frame's stack.
+    ///
+    /// Yields the created address as a stack word on success, or zero when the
+    /// create failed (revert, halt, or an early-fail path that left no address).
     #[inline]
-    pub const fn returns_unused_gas(&self) -> bool {
-        self.stop.is_success() || self.stop.is_revert()
-    }
-
-    /// Returns unused gas that should be returned to the parent frame.
-    #[inline]
-    pub const fn gas_returned_to_parent(&self) -> u64 {
-        if self.returns_unused_gas() { self.gas.remaining() } else { 0 }
-    }
-
-    /// Returns the refund counter delta that should be propagated to the parent frame.
-    #[inline]
-    pub const fn refund_propagated_to_parent(&self) -> i64 {
-        if self.stop.is_success() { self.gas.refunded() } else { 0 }
+    pub fn created_address_for_parent(&self) -> Word {
+        self.created_address
+            .filter(|_| self.stop.is_success())
+            .map(|address| Word::from_be_slice(address.as_slice()))
+            .unwrap_or_default()
     }
 
     /// Calculates the final refund amount for a top-level transaction.
@@ -63,7 +61,12 @@ impl<T: EvmTypes> MessageResult<T> {
             return 0;
         }
         let max_refund_quotient = if is_eip3529 { 5 } else { 2 };
-        let spent = gas_limit.saturating_sub(self.gas.remaining());
+        // EIP-8037: the unused state-gas reservoir is reimbursed to the caller, so it
+        // is not part of the gas actually spent. The EIP-3529 refund cap is a fraction
+        // of the gas the transaction truly consumed, so the reservoir must be excluded
+        // — otherwise a large idle reservoir inflates `spent` and disables the cap.
+        let spent =
+            gas_limit.saturating_sub(self.gas.remaining()).saturating_sub(self.gas.reservoir());
         let refund = self.gas.refunded() as u64;
         let cap = spent / max_refund_quotient;
         if refund < cap { refund } else { cap }
@@ -73,7 +76,10 @@ impl<T: EvmTypes> MessageResult<T> {
     #[inline]
     pub const fn gas_remaining_after_final_refund(&self, gas_limit: u64, is_eip3529: bool) -> u64 {
         let refunded = self.final_refund(gas_limit, is_eip3529);
-        let remaining = self.gas.remaining().saturating_add(refunded);
+        // EIP-8037: the unused reservoir (already settled to its frame-start value
+        // on failure by `rollback_state_gas`) is also reimbursed to the caller.
+        let remaining =
+            self.gas.remaining().saturating_add(self.gas.reservoir()).saturating_add(refunded);
         if remaining < gas_limit { remaining } else { gas_limit }
     }
 

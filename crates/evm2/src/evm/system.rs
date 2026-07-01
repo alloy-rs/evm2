@@ -110,6 +110,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             &data,
             U256::ZERO,
             SYSTEM_CALL_GAS_LIMIT,
+            0,
         ) {
             Ok(result) => result,
             Err(error) => {
@@ -131,10 +132,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         } else {
             0
         };
-        let gas_used = gas_spent.saturating_sub(gas_refunded);
         let outcome = TxResult {
             status: result.stop.is_success(),
-            gas_used,
+            total_gas_spent: gas_spent,
+            state_gas_spent: result.gas.state_gas_spent().max(0) as u64,
+            refunded: gas_refunded,
+            floor_gas: 0,
             stop: result.stop,
             output: result.output,
             ..TxResult::default()
@@ -235,7 +238,7 @@ mod tests {
         let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
 
         assert!(result.result.status);
-        assert!(result.result.gas_used < SYSTEM_CALL_GAS_LIMIT);
+        assert!(result.result.tx_gas_used() < SYSTEM_CALL_GAS_LIMIT);
         let unchanged = |address| {
             result.state_changes.accounts.get(address).is_none_or(|change| !change.is_changed())
         };
@@ -305,9 +308,9 @@ mod tests {
 
         assert!(outcome.status);
         assert!(
-            outcome.gas_used < 1_000,
+            outcome.tx_gas_used() < 1_000,
             "system contract should be warm before execution, got {} gas used",
-            outcome.gas_used
+            outcome.tx_gas_used()
         );
     }
 
@@ -325,7 +328,7 @@ mod tests {
         let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
 
         assert!(result.result.status);
-        assert_eq!(result.result.gas_used, 0);
+        assert_eq!(result.result.tx_gas_used(), 0);
         assert!(!result.state_changes.is_changed());
     }
 

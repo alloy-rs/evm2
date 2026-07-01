@@ -219,7 +219,7 @@ impl DebugInspector {
             Self::CallTracer(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit());
                 inspector.set_transaction_caller(tx.signer());
-                inspector.geth_builder().geth_call_traces(*config, res.result.gas_used).into()
+                inspector.geth_builder().geth_call_traces(*config, res.result.tx_gas_used()).into()
             }
             Self::PreStateTracer(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit());
@@ -248,7 +248,7 @@ impl DebugInspector {
                 inspector.set_transaction_caller(tx.signer());
                 inspector
                     .geth_builder()
-                    .geth_erc7562_traces(config.clone(), res.result.gas_used, db)
+                    .geth_erc7562_traces(config.clone(), res.result.tx_gas_used(), db)
                     .map_err(DebugInspectorError::Database)?
                     .into()
             }
@@ -257,7 +257,7 @@ impl DebugInspector {
                 inspector.set_transaction_caller(tx.signer());
                 inspector
                     .geth_builder()
-                    .geth_traces(res.result.gas_used, res.result.output.clone(), *config)
+                    .geth_traces(res.result.tx_gas_used(), res.result.output.clone(), *config)
                     .into()
             }
             #[cfg(feature = "js-tracer")]

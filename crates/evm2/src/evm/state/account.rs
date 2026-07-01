@@ -316,6 +316,29 @@ impl<'a> AccountHandle<'a> {
         self.inner.database.get_code_by_hash(&code_hash)
     }
 
+    /// Loads the account's bytecode as it stood at the start of the transaction.
+    ///
+    /// Used by EIP-7702 to tell whether an authority was already delegated before this transaction
+    /// (distinct from [`Self::load_code`], which reflects delegations applied by earlier
+    /// authorizations in the same transaction). Returns empty bytecode when the account was absent
+    /// or had empty code at the transaction boundary.
+    #[inline]
+    pub fn original_code(&mut self) -> DbResult<Bytecode> {
+        let Some(account) = self.tracked.original.as_ref() else {
+            return Ok(Bytecode::default());
+        };
+        if account.code_hash == KECCAK256_EMPTY {
+            return Ok(Bytecode::default());
+        }
+        if let Some(code) = account.code.as_ref()
+            && !code.is_empty()
+        {
+            return Ok(code.clone());
+        }
+        let code_hash = account.code_hash;
+        self.inner.database.get_code_by_hash(&code_hash)
+    }
+
     /// Touches the account, recording a revert snapshot the first time it is mutated.
     ///
     /// Touched accounts participate in EIP-158/161 empty-account cleanup at transaction

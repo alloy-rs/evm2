@@ -1,7 +1,8 @@
 use super::{
-    charge_upfront, floor_gas, initial_message, intrinsic_gas, rollback_failed_execution,
-    settle_gas, validate_block_gas_limit, validate_chain_id, validate_create_initcode,
-    validate_floor_gas, validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
+    charge_upfront, create_initial_state_gas, floor_gas, initial_gas_and_reservoir,
+    initial_message, intrinsic_gas, refund_create_state_gas, rollback_failed_execution, settle_gas,
+    validate_block_gas_limit, validate_chain_id, validate_create_initcode, validate_floor_gas,
+    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
     validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_base_accounts,
 };
 use crate::{
@@ -27,8 +28,9 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     validate_block_gas_limit(req.host.version(), tx.gas_limit, req.host.block.gas_limit)?;
     validate_create_initcode(req.host.version(), tx.to, &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
-    let intrinsic = intrinsic_gas(req.host.version(), tx.to, &tx.input, 0, 0);
-    validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
+    let intrinsic = intrinsic_gas(req.host.version(), caller, tx.to, &tx.input, 0, 0, tx.value);
+    let initial_state_gas = create_initial_state_gas(req.host.version(), tx.to.is_create());
+    validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
     let floor_gas = floor_gas(req.host.version(), &tx.input, 0, 0);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
     validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
@@ -42,17 +44,35 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
     let execution_checkpoint = req.host.state.checkpoint();
 
-    let gas_limit = tx.gas_limit - intrinsic;
+    let (gas_limit, reservoir) = initial_gas_and_reservoir(
+        req.host.version(),
+        tx.gas_limit,
+        intrinsic,
+        initial_state_gas,
+        0,
+    );
     let tx_env = TxEnv {
         origin: caller,
         gas_price,
         chain_id: U256::from(req.host.version().chain_id),
         ..TxEnv::default()
     };
-    let (bytecode, mut message) =
-        initial_message(req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, gas_limit)?;
+    let (bytecode, mut message) = initial_message(
+        req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, gas_limit, reservoir,
+    )?;
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
+    refund_create_state_gas(&mut result, initial_state_gas);
 
-    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)
+    settle_gas(
+        req.host,
+        caller,
+        gas_price,
+        tx.gas_limit,
+        floor_gas,
+        initial_state_gas,
+        0,
+        tx.to.is_create(),
+        result,
+    )
 }

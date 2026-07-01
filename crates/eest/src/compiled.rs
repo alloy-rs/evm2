@@ -11,6 +11,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct FileSummary {
     pub(crate) executed: usize,
@@ -71,6 +73,7 @@ where
 
         let handle = Builder::new()
             .name(format!("eest-runner-{i}"))
+            .stack_size(WORKER_STACK_SIZE)
             .spawn(move || {
                 let result = panic::catch_unwind(AssertUnwindSafe(|| {
                     loop {

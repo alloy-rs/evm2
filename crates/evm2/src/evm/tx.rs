@@ -18,8 +18,18 @@ use derive_where::derive_where;
 pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     /// Whether execution succeeded.
     pub status: bool,
-    /// Gas used by execution.
-    pub gas_used: u64,
+    /// Total gas spent (regular + state) before refund. The receipt gas-used value is
+    /// [`Self::tx_gas_used`].
+    pub total_gas_spent: u64,
+    /// State gas consumed by the transaction (EIP-8037): storage creation, account creation, code
+    /// deposit, the top-level create's initial state gas, and the EIP-7702 per-authorization
+    /// state gas, net of the EIP-7702 per-authorization state-gas refund. Zero when EIP-8037 is
+    /// disabled.
+    pub state_gas_spent: u64,
+    /// Gas refund (capped per EIP-3529), before the EIP-7623 floor adjustment.
+    pub refunded: u64,
+    /// EIP-7623 floor gas. Zero when not applicable.
+    pub floor_gas: u64,
     /// Interpreter stop reason.
     pub stop: InstrStop,
     /// Return or revert output.
@@ -37,10 +47,30 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
 }
 
 impl<T: EvmTypes> TxResult<T> {
-    /// Returns the transaction gas-used value.
+    /// Returns the receipt gas-used value: `max(total_gas_spent - refunded, floor_gas)`.
     #[inline]
-    pub const fn gas_used(&self) -> u64 {
-        self.gas_used
+    pub const fn tx_gas_used(&self) -> u64 {
+        // `max(spent - refunded, floor_gas)`, spelled out because `Ord::max` is not const-stable.
+        let spent_sub_refunded = self.total_gas_spent.saturating_sub(self.refunded);
+        if spent_sub_refunded > self.floor_gas { spent_sub_refunded } else { self.floor_gas }
+    }
+
+    /// Returns this transaction's regular (non-state) gas: `total_gas_spent - state_gas_spent`,
+    /// pre-refund (refund and floor only affect [`Self::tx_gas_used`]).
+    ///
+    /// Together with [`Self::state_gas_spent()`] this is the per-transaction split that callers add
+    /// to the block's separate regular- and state-gas counters (EIP-8037 + EIP-7778).
+    #[inline]
+    pub const fn regular_gas_spent(&self) -> u64 {
+        self.total_gas_spent.saturating_sub(self.state_gas_spent)
+    }
+
+    /// Returns this transaction's state gas (EIP-8037) — the stored `state_gas_spent` field,
+    /// exposed as the counterpart to [`Self::regular_gas_spent`] for the per-transaction block-gas
+    /// split.
+    #[inline]
+    pub const fn state_gas_spent(&self) -> u64 {
+        self.state_gas_spent
     }
 }
 
@@ -233,4 +263,43 @@ pub struct TxResultWithState<T: EvmTypes = crate::BaseEvmTypes> {
     pub state_changes: StateChanges,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TxResult;
+    use crate::BaseEvmTypes;
+
+    fn result(
+        total_gas_spent: u64,
+        state_gas_spent: u64,
+        refunded: u64,
+        floor_gas: u64,
+    ) -> TxResult {
+        TxResult::<BaseEvmTypes> {
+            total_gas_spent,
+            state_gas_spent,
+            refunded,
+            floor_gas,
+            ..TxResult::default()
+        }
+    }
+
+    #[test]
+    fn gas_breakdown_getters() {
+        // Floor inactive: tx_gas_used = total_gas_spent - refunded, refund is effective.
+        let r = result(100_000, 30_000, 8_000, 21_000);
+        assert_eq!(r.tx_gas_used(), 92_000);
+        // Per-tx split: regular + state == total.
+        assert_eq!(r.regular_gas_spent(), 70_000);
+        assert_eq!(r.state_gas_spent(), 30_000);
+        assert_eq!(r.regular_gas_spent() + r.state_gas_spent(), r.total_gas_spent);
+    }
+
+    #[test]
+    fn floor_gas_absorbs_refund() {
+        // Floor active: spent - refunded < floor, so floor wins.
+        let r = result(50_000, 0, 40_000, 21_000);
+        assert_eq!(r.tx_gas_used(), 21_000);
+    }
 }

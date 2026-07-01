@@ -38,6 +38,13 @@ pub struct Message<T: EvmTypes = BaseEvmTypes> {
     pub depth: u16,
     /// Gas available to this message.
     pub gas_limit: u64,
+    /// EIP-8037 state-gas reservoir inherited from the parent frame.
+    ///
+    /// The reservoir is a shared pool threaded down into child frames and
+    /// reconciled back on return by
+    /// [`GasTracker::merge_child_gas`](crate::interpreter::GasTracker::merge_child_gas).
+    /// Zero for non-Amsterdam execution.
+    pub reservoir: u64,
     /// Account whose context is being executed.
     pub destination: Address,
     /// Immediate caller.

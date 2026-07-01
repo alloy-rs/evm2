@@ -694,7 +694,7 @@ mod tests {
 
         let result = poll_ready(evm.transact_async(&tx)).unwrap();
 
-        assert_eq!(result.result().gas_used(), 42);
+        assert_eq!(result.result().tx_gas_used(), 42);
     }
 
     #[test]
@@ -716,7 +716,7 @@ mod tests {
 
         let result = poll_ready(assert_send(evm.transact_async_send(&tx))).unwrap();
 
-        assert_eq!(result.result().gas_used(), 42);
+        assert_eq!(result.result().tx_gas_used(), 42);
     }
 
     #[test]
@@ -739,7 +739,7 @@ mod tests {
 
         let result = poll_ready(assert_send(evm.transact_async_send(&tx))).unwrap();
 
-        assert_eq!(result.result().gas_used(), 42);
+        assert_eq!(result.result().tx_gas_used(), 42);
     }
 
     #[test]
@@ -802,7 +802,7 @@ mod tests {
 
         let result = poll_ready(evm.transact_async(&tx)).unwrap();
 
-        assert_eq!(result.result().gas_used(), 42);
+        assert_eq!(result.result().tx_gas_used(), 42);
     }
 
     #[test]
@@ -879,7 +879,7 @@ mod tests {
             .discard();
 
         assert!(result.status);
-        assert_eq!(result.gas_used, 0);
+        assert_eq!(result.tx_gas_used(), 0);
     }
 
     #[test]
@@ -901,7 +901,7 @@ mod tests {
         .discard();
 
         assert!(result.status);
-        assert_eq!(result.gas_used, 0);
+        assert_eq!(result.tx_gas_used(), 0);
     }
 
     #[test]
@@ -988,7 +988,7 @@ mod tests {
         req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
-        Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
+        Ok(TxResult { status: true, total_gas_spent: req.tx.nonce + 1, ..TxResult::default() })
     }
 
     fn poll_ready<F: Future>(future: F) -> F::Output {

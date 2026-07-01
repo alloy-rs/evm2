@@ -55,12 +55,12 @@ fn custom_opcode() -> HandlerResult<()> {
         tx.ty(),
         result.status,
         result.stop,
-        result.gas_used(),
+        result.tx_gas_used(),
     );
 
     assert_eq!(result.stop, InstrStop::Stop);
     assert!(result.status);
-    assert_eq!(result.gas_used(), expected_gas);
+    assert_eq!(result.tx_gas_used(), expected_gas);
     assert!(result.ext.handled_custom_tx);
     Ok(())
 }
