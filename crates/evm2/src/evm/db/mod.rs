@@ -6,7 +6,11 @@ use alloc::{boxed::Box, string::ToString};
 use alloy_primitives::{Address, B256, keccak256};
 use core::{any::Any, error::Error};
 
+pub mod bal;
 mod cache;
+pub use bal::{
+    AccountBal, AccountInfoBal, Bal, BalContext, BalError, BalWrites, BlockAccessIndex, StorageBal,
+};
 pub use cache::{AccountStorageCache, Cache, CacheDB, InMemoryDB};
 
 /// Result of a database operation.

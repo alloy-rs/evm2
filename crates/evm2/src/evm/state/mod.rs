@@ -22,7 +22,7 @@ pub use tracked::Tracked;
 
 use super::{
     PrewarmSet,
-    db::{CacheDB, DbResult, DynDatabase},
+    db::{Bal, BlockAccessIndex, CacheDB, DbResult, DynDatabase},
 };
 use crate::{
     ErrorCode, EvmFeatures, Version,
@@ -30,7 +30,7 @@ use crate::{
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap},
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
     map::{AddressMap, AddressSet, U256Map, hash_map},
@@ -154,6 +154,72 @@ impl State {
     #[inline]
     pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
         self.inner.database.commit_source(source);
+    }
+
+    /// Attaches an EIP-7928 BAL that the accepted-overlay database consults on reads.
+    ///
+    /// Once attached, account-info and storage reads are served from the BAL at the current block
+    /// access index (layered over the cache/database). Reads not covered by the BAL error unless
+    /// [`Self::set_allow_bal_db_fallback`] is enabled. Mirrors revm's `BalDatabase`.
+    #[inline]
+    pub fn set_bal(&mut self, bal: Arc<Bal>) {
+        self.inner.database.bal_context.set_bal(bal);
+    }
+
+    /// Returns the attached read BAL, or `None` when no BAL is attached.
+    #[inline]
+    pub const fn bal(&self) -> Option<&Arc<Bal>> {
+        self.inner.database.bal_context.bal()
+    }
+
+    /// Sets whether reads not covered by the attached BAL fall back to the cache/database instead
+    /// of erroring.
+    #[inline]
+    pub const fn set_allow_bal_db_fallback(&mut self, allow: bool) {
+        self.inner.database.bal_context.set_allow_db_fallback(allow);
+    }
+
+    /// Enables EIP-7928 Block Access List construction on the accepted-overlay database.
+    ///
+    /// Once enabled, every committed transaction is folded into the builder at the current block
+    /// access index. Bump the index once per transaction with [`Self::bump_bal_index`]. The BAL
+    /// state lives in the accepted-overlay [`CacheDB`]'s
+    /// [`BalContext`](crate::evm::BalContext), mirroring revm's `BalDatabase`.
+    #[inline]
+    pub fn enable_bal_builder(&mut self) {
+        self.inner.database.bal_context.enable_bal_builder();
+    }
+
+    /// Returns the in-progress BAL builder, or `None` when BAL construction is disabled.
+    #[inline]
+    pub const fn bal_builder(&self) -> Option<&Bal> {
+        self.inner.database.bal_context.bal_builder()
+    }
+
+    /// Returns the current EIP-7928 block access index.
+    #[inline]
+    pub const fn bal_index(&self) -> BlockAccessIndex {
+        self.inner.database.bal_context.bal_index()
+    }
+
+    /// Resets the BAL block access index to the pre-execution slot. Call before a block's
+    /// transactions.
+    #[inline]
+    pub const fn reset_bal_index(&mut self) {
+        self.inner.database.bal_context.reset_bal_index();
+    }
+
+    /// Bumps the BAL block access index by one. Call once per transaction.
+    #[inline]
+    pub const fn bump_bal_index(&mut self) {
+        self.inner.database.bal_context.bump_bal_index();
+    }
+
+    /// Takes the built BAL, resetting the block access index. Returns `None` when BAL construction
+    /// is disabled.
+    #[inline]
+    pub const fn take_bal_builder(&mut self) -> Option<Bal> {
+        self.inner.database.bal_context.take_bal_builder()
     }
 
     /// Loads a historical block hash.
@@ -790,6 +856,15 @@ impl State {
     /// transaction account/storage layers. It does not materialize [`StateChanges`], take logs, or
     /// write to the wrapped backing database.
     pub(crate) fn commit_transaction(&mut self) {
+        // When BAL construction is enabled, fold this transaction's full post-state -- including
+        // loaded-but-unchanged reads -- into the accepted-overlay database's builder before the
+        // overlay is advanced and cleared below. This is the evm2 analog of revm's
+        // `BalDatabase::commit`.
+        if self.inner.database.bal_context.has_builder() {
+            let changes = self.build_state_changes();
+            self.inner.database.bal_context.commit_bal(&changes);
+        }
+
         for (&address, storage) in &self.storage {
             if storage.wiped {
                 self.inner.database.cache.storage.entry(address).or_default().wipe();
