@@ -344,6 +344,8 @@ jobs:
           cache-bin: false
       - name: Build documentation
         run: cargo doc --workspace --all-features --no-deps --document-private-items
+        env:
+          RUSTFLAGS: -Dwarnings
 
   fmt:
     runs-on: ubuntu-latest

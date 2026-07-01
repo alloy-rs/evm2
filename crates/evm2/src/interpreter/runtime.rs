@@ -95,7 +95,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.pc = bytecode.original_byte_slice().as_ptr();
         self.bytecode = bytecode;
         self.stack_len = 0;
-        self.gas = Gas::new(gas_limit);
+        self.gas = Gas::new_with_regular_gas_and_reservoir(gas_limit, message.reservoir);
         self.memory.clear();
         self.result = Ok(());
         self.output = 0..0;
@@ -490,6 +490,12 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[inline]
     pub const fn return_data_mut(&mut self) -> &mut Bytes {
         &mut self.0.return_data
+    }
+
+    /// Clears return data from the last call-like operation.
+    #[inline]
+    pub fn clear_return_data(&mut self) {
+        self.0.return_data.clear();
     }
 
     /// Swaps return data from the last call-like operation.

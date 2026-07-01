@@ -26,7 +26,7 @@ use evm2::{
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
         AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, DbStats, DbStatsCounts,
-        HISTORY_STORAGE_ADDRESS, InMemoryDB,
+        HISTORY_STORAGE_ADDRESS, InMemoryDB, SystemTx,
     },
     registry::HandlerError,
 };
@@ -378,11 +378,12 @@ const fn db_stats_style() -> Style {
 }
 
 fn spec_outcome(post: InMemoryDB, result: TxResult) -> SpecOutcome {
+    let gas_used = result.tx_gas_used();
     SpecOutcome {
         state_root: state_root_from_database(&post),
         logs_root: logs_hash(&result.logs),
         output: result.output,
-        gas_used: result.gas_used,
+        gas_used,
         evm_result: format!("{:?}", result.stop),
     }
 }
@@ -427,7 +428,7 @@ fn commit_system_call<T: EvmTypes>(
     address: Address,
     data: Bytes,
 ) {
-    let executed = evm.system_call(address, data);
+    let executed = evm.system_call(SystemTx::new(address, data)).expect("system call errored");
     assert!(executed.result().status, "pre-block system call failed: {address}");
     let Ok(_) = executed.commit_with(post);
 }
@@ -569,6 +570,36 @@ mod tests {
     #[cfg(feature = "jit")]
     const BYTECODE_RET42: &[u8] =
         &[op::PUSH1, 0x42, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH0, op::RETURN];
+
+    #[cfg(feature = "jit")]
+    fn call_value_to(to: Address) -> Bytes {
+        let mut code = Vec::with_capacity(33);
+        code.extend([op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH1, 1, op::PUSH20]);
+        code.extend_from_slice(to.as_slice());
+        code.extend([op::PUSH2, 0xc3, 0x50, op::CALL, op::STOP]);
+        Bytes::from(code)
+    }
+
+    #[cfg(feature = "jit")]
+    fn create_value() -> Bytes {
+        Bytes::from_static(&[op::PUSH0, op::PUSH0, op::PUSH1, 1, op::CREATE, op::STOP])
+    }
+
+    #[cfg(feature = "jit")]
+    fn sstore_restore() -> Bytes {
+        Bytes::from_static(&[
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            1,
+            op::SSTORE,
+            op::PUSH0,
+            op::PUSH1,
+            1,
+            op::SSTORE,
+            op::STOP,
+        ])
+    }
 
     #[test]
     fn logs_hash_matches_empty_logs() {
@@ -735,6 +766,87 @@ mod tests {
     }
 
     #[cfg(feature = "jit")]
+    fn execute_amsterdam_target(mode: ExecutionMode, target_code: Bytes) -> SpecOutcome {
+        let caller = Address::from([0x11; 20]);
+        let target = Address::from([0x22; 20]);
+        let coinbase = Address::from([0xcb; 20]);
+        let env = Env {
+            current_chain_id: Some(U256::ONE),
+            current_coinbase: coinbase,
+            current_difficulty: U256::ZERO,
+            current_gas_limit: U256::from(30_000_000),
+            current_number: U256::ZERO,
+            current_timestamp: U256::ZERO,
+            current_base_fee: Some(U256::ZERO),
+            previous_hash: None,
+            current_random: None,
+            current_beacon_root: None,
+            current_withdrawals_root: None,
+            current_excess_blob_gas: None,
+            slot_number: None,
+        };
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            caller,
+            AccountInfo {
+                balance: U256::from(1_000_000_000),
+                code: Bytes::new(),
+                nonce: 0,
+                storage: BTreeMap::new(),
+            },
+        );
+        pre.insert(
+            target,
+            AccountInfo {
+                balance: U256::from(10),
+                code: target_code,
+                nonce: 0,
+                storage: BTreeMap::new(),
+            },
+        );
+        let tx = build_tx(
+            &TransactionParts {
+                data: vec![Bytes::new()],
+                gas_limit: vec![U256::from(200_000)],
+                gas_price: Some(U256::ONE),
+                sender: Some(caller),
+                to: Some(target),
+                value: vec![U256::ZERO],
+                ..TransactionParts::default()
+            },
+            &TxPartIndices { data: 0, gas: 0, value: 0 },
+            env.current_chain_id,
+        )
+        .unwrap();
+        let resources = ExecutionResources::new(mode).unwrap();
+        execute_spec(
+            SpecId::AMSTERDAM,
+            parse_block(&env, SpecId::AMSTERDAM),
+            parse_state(&pre).unwrap(),
+            &tx,
+            &env,
+            &resources,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "jit")]
+    fn execute_amsterdam_value_call_to_empty_coinbase(mode: ExecutionMode) -> SpecOutcome {
+        execute_amsterdam_target(mode, call_value_to(Address::from([0xcb; 20])))
+    }
+
+    #[cfg(feature = "jit")]
+    fn execute_amsterdam_value_create(mode: ExecutionMode) -> SpecOutcome {
+        execute_amsterdam_target(mode, create_value())
+    }
+
+    #[cfg(feature = "jit")]
+    fn execute_amsterdam_sstore_restore(mode: ExecutionMode) -> SpecOutcome {
+        execute_amsterdam_target(mode, sstore_restore())
+    }
+
+    #[cfg(feature = "jit")]
     #[test]
     fn jit_and_aot_modes_match_interpreter_for_simple_call() {
         let interpreter = execute_simple_call(ExecutionMode::Interpreter);
@@ -751,5 +863,63 @@ mod tests {
         assert_eq!(aot.gas_used, interpreter.gas_used);
         assert_eq!(interpreter.output.len(), 32);
         assert_eq!(interpreter.output[31], 0x42);
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_and_aot_modes_match_interpreter_for_amsterdam_value_call_to_empty_coinbase() {
+        let interpreter =
+            execute_amsterdam_value_call_to_empty_coinbase(ExecutionMode::Interpreter);
+        let jit = execute_amsterdam_value_call_to_empty_coinbase(ExecutionMode::Jit);
+        let aot = execute_amsterdam_value_call_to_empty_coinbase(ExecutionMode::Aot);
+
+        assert_eq!(jit.output, interpreter.output);
+        assert_eq!(aot.output, interpreter.output);
+        assert_eq!(jit.state_root, interpreter.state_root);
+        assert_eq!(aot.state_root, interpreter.state_root);
+        assert_eq!(jit.logs_root, interpreter.logs_root);
+        assert_eq!(aot.logs_root, interpreter.logs_root);
+        assert_eq!(jit.gas_used, interpreter.gas_used);
+        assert_eq!(aot.gas_used, interpreter.gas_used);
+        assert_eq!(jit.evm_result, interpreter.evm_result);
+        assert_eq!(aot.evm_result, interpreter.evm_result);
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_and_aot_modes_match_interpreter_for_amsterdam_value_create() {
+        let interpreter = execute_amsterdam_value_create(ExecutionMode::Interpreter);
+        let jit = execute_amsterdam_value_create(ExecutionMode::Jit);
+        let aot = execute_amsterdam_value_create(ExecutionMode::Aot);
+
+        assert_eq!(jit.output, interpreter.output);
+        assert_eq!(aot.output, interpreter.output);
+        assert_eq!(jit.state_root, interpreter.state_root);
+        assert_eq!(aot.state_root, interpreter.state_root);
+        assert_eq!(jit.logs_root, interpreter.logs_root);
+        assert_eq!(aot.logs_root, interpreter.logs_root);
+        assert_eq!(jit.gas_used, interpreter.gas_used);
+        assert_eq!(aot.gas_used, interpreter.gas_used);
+        assert_eq!(jit.evm_result, interpreter.evm_result);
+        assert_eq!(aot.evm_result, interpreter.evm_result);
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_and_aot_modes_match_interpreter_for_amsterdam_sstore_restore() {
+        let interpreter = execute_amsterdam_sstore_restore(ExecutionMode::Interpreter);
+        let jit = execute_amsterdam_sstore_restore(ExecutionMode::Jit);
+        let aot = execute_amsterdam_sstore_restore(ExecutionMode::Aot);
+
+        assert_eq!(jit.output, interpreter.output);
+        assert_eq!(aot.output, interpreter.output);
+        assert_eq!(jit.state_root, interpreter.state_root);
+        assert_eq!(aot.state_root, interpreter.state_root);
+        assert_eq!(jit.logs_root, interpreter.logs_root);
+        assert_eq!(aot.logs_root, interpreter.logs_root);
+        assert_eq!(jit.gas_used, interpreter.gas_used);
+        assert_eq!(aot.gas_used, interpreter.gas_used);
+        assert_eq!(jit.evm_result, interpreter.evm_result);
+        assert_eq!(aot.evm_result, interpreter.evm_result);
     }
 }

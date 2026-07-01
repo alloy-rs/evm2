@@ -9,9 +9,11 @@ extern crate alloc;
 
 pub mod bytecode;
 pub(crate) mod constants;
+mod error;
 pub mod ethereum;
 pub mod interpreter;
 pub mod utils;
+pub use error::{AnyError, ErrorCode};
 
 pub mod evm;
 #[doc(hidden)]

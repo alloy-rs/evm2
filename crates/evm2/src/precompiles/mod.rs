@@ -42,7 +42,7 @@ pub(crate) mod eip7823 {
 }
 
 mod result;
-pub use result::{AnyError, PrecompileError, PrecompileHalt, PrecompileResult};
+pub use result::{PrecompileError, PrecompileHalt, PrecompileResult};
 
 pub(crate) use crate::{
     evm::precompile::PrecompileOutput,

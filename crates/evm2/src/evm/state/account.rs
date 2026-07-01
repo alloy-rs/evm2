@@ -316,6 +316,29 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.inner.database.get_code_by_hash(&code_hash)
     }
 
+    /// Loads the account's bytecode as it stood at the start of the transaction.
+    ///
+    /// Used by EIP-7702 to tell whether an authority was already delegated before this transaction
+    /// (distinct from [`Self::load_code`], which reflects delegations applied by earlier
+    /// authorizations in the same transaction). Returns empty bytecode when the account was absent
+    /// or had empty code at the transaction boundary.
+    #[inline]
+    pub fn original_code(&mut self) -> DbResult<Bytecode> {
+        let Some(account) = self.tracked.original.as_ref() else {
+            return Ok(Bytecode::default());
+        };
+        if account.code_hash == KECCAK256_EMPTY {
+            return Ok(Bytecode::default());
+        }
+        if let Some(code) = account.code.as_ref()
+            && !code.is_empty()
+        {
+            return Ok(code.clone());
+        }
+        let code_hash = account.code_hash;
+        self.inner.database.get_code_by_hash(&code_hash)
+    }
+
     /// Touches the account, recording a revert snapshot the first time it is mutated.
     ///
     /// Touched accounts participate in EIP-158/161 empty-account cleanup at transaction
@@ -600,7 +623,7 @@ mod tests {
 
     #[test]
     fn journaled_account_skip_cold_load_signals_skip() {
-        use crate::evm::DbErrorCode;
+        use crate::ErrorCode;
 
         let address = Address::from([0x8a; 20]);
         let mut database = CacheDB::default();
@@ -608,12 +631,12 @@ mod tests {
         let mut state = State::new(database);
 
         // A cold, not-yet-loaded account signals the skip instead of reading the database.
-        assert!(matches!(state.account(&address, true), Err(DbErrorCode::COLD_LOAD_SKIPPED)));
+        assert!(matches!(state.account(&address, true), Err(ErrorCode::COLD_LOAD_SKIPPED)));
         // Skipping leaves the overlay untouched, so a later non-skipped load still works.
         assert_eq!(state.account(&address, false).unwrap().balance(), Word::from(5));
         // Residency alone does not make a cold access affordable: a loaded-but-cold account still
         // signals the skip, since warmth — not overlay residency — decides the cold surcharge.
-        assert!(matches!(state.account(&address, true), Err(DbErrorCode::COLD_LOAD_SKIPPED)));
+        assert!(matches!(state.account(&address, true), Err(ErrorCode::COLD_LOAD_SKIPPED)));
         // Once warmed, the affordable warm access yields a handle even when skipping is requested.
         state.account(&address, false).unwrap().warm();
         assert!(state.account(&address, true).is_ok());

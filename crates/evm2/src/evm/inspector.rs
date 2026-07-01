@@ -1019,7 +1019,7 @@ mod tests {
             TxLegacy {
                 to: TxKind::Call(target),
                 value: U256::from(7),
-                gas_limit: 100_000,
+                gas_limit: 300_000,
                 ..Default::default()
             },
             caller,
