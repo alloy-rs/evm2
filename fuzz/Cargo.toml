@@ -1,0 +1,189 @@
+[package]
+name = "evm2-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+evm2-fuzzer = { package = "evm2-cli", path = "../crates/cli" }
+evm-smith = { git = "https://github.com/R9295/evm-smith.git", features = ["arbitrary", "rng"] }
+fastrand = "2.4.1"
+libfuzzer-sys = "0.4"
+
+[features]
+default = []
+jit = ["evm2-fuzzer/jit"]
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "bytecode_compare"
+path = "fuzz_targets/bytecode_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_frontier"
+path = "fuzz_targets/bytecode_compare_frontier.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_homestead"
+path = "fuzz_targets/bytecode_compare_homestead.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_tangerine"
+path = "fuzz_targets/bytecode_compare_tangerine.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_spurious_dragon"
+path = "fuzz_targets/bytecode_compare_spurious_dragon.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_byzantium"
+path = "fuzz_targets/bytecode_compare_byzantium.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_petersburg"
+path = "fuzz_targets/bytecode_compare_petersburg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_istanbul"
+path = "fuzz_targets/bytecode_compare_istanbul.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_berlin"
+path = "fuzz_targets/bytecode_compare_berlin.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_london"
+path = "fuzz_targets/bytecode_compare_london.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_merge"
+path = "fuzz_targets/bytecode_compare_merge.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_shanghai"
+path = "fuzz_targets/bytecode_compare_shanghai.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_cancun"
+path = "fuzz_targets/bytecode_compare_cancun.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_prague"
+path = "fuzz_targets/bytecode_compare_prague.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_osaka"
+path = "fuzz_targets/bytecode_compare_osaka.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytecode_compare_amsterdam"
+path = "fuzz_targets/bytecode_compare_amsterdam.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_compare"
+path = "fuzz_targets/structured_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "generated_compare"
+path = "fuzz_targets/generated_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "validation_compare"
+path = "fuzz_targets/validation_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_compare"
+path = "fuzz_targets/evm_smith_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evm_smith_arbitrary_compare"
+path = "fuzz_targets/evm_smith_arbitrary_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jit_vs_interpreter"
+path = "fuzz_targets/jit_vs_interpreter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "precompile_compare"
+path = "fuzz_targets/precompile_compare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle_compare"
+path = "fuzz_targets/lifecycle_compare.rs"
+test = false
+doc = false
+bench = false

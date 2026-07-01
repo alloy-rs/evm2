@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) fn read_case(path: &Path) -> Result<EvmCase, String> {
+pub fn read_case(path: &Path) -> Result<EvmCase, String> {
     let contents = fs::read_to_string(path)
         .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
     serde_json::from_str(&contents)
@@ -24,7 +24,7 @@ pub(crate) fn write_failure_case(
     Ok(path)
 }
 
-pub(crate) fn write_minimized_case(case: &EvmCase) -> Result<PathBuf, String> {
+pub fn write_minimized_case(case: &EvmCase) -> Result<PathBuf, String> {
     write_hashed_case("minimized-case", case).map(|(path, _)| path)
 }
 
@@ -44,7 +44,7 @@ fn write_hashed_case(prefix: &str, case: &EvmCase) -> Result<(PathBuf, bool), St
     Ok((path, false))
 }
 
-pub(crate) fn case_paths(path: &Path) -> Result<Vec<PathBuf>, String> {
+pub fn case_paths(path: &Path) -> Result<Vec<PathBuf>, String> {
     let mut paths = Vec::new();
     collect_case_paths(path, &mut paths)
         .map_err(|err| format!("failed to scan {}: {err}", path.display()))?;

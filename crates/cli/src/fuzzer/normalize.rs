@@ -1,13 +1,14 @@
 use crate::fuzzer::case::EvmCase;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use core::convert::Infallible;
-use evm2::evm::{
-    AccountChangeRef, PendingState, StateChangeSink, StateChangeSource, StorageChange,
+use evm2::{
+    EvmFeatures, SpecId, Version,
+    evm::{AccountChangeRef, PendingState, StateChangeSink, StateChangeSource, StorageChange},
 };
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Outcome {
+pub struct Outcome {
     pub(crate) kind: OutcomeKind,
     pub(crate) gas_used: Option<u64>,
     pub(crate) output: Option<Vec<u8>>,
@@ -102,8 +103,19 @@ fn normalize_error(error: String) -> String {
         .strip_prefix("Transaction(")
         .and_then(|error| error.strip_suffix(')'))
         .unwrap_or(&error);
-    if error.starts_with("IntrinsicGasTooLow") || error.starts_with("CallGasCostMoreThanGasLimit") {
+    if error.starts_with("IntrinsicGasTooLow")
+        || error.starts_with("CallGasCostMoreThanGasLimit")
+        || error.starts_with("GasFloorMoreThanGasLimit")
+    {
         return "IntrinsicGasTooLow".to_string();
+    }
+    if error.starts_with("GasPriceLessThanBase") || error.starts_with("FeeCapLessThanBaseFee") {
+        return "GasPriceLessThanBaseFee".to_string();
+    }
+    if error.starts_with("CallerGasLimitMoreThanBlock")
+        || error.starts_with("GasLimitMoreThanBlock")
+    {
+        return "GasLimitMoreThanBlock".to_string();
     }
     if error.starts_with("LackOfFundForMaxFee") || error == "InsufficientFunds" {
         return "InsufficientFunds".to_string();
@@ -163,9 +175,11 @@ pub(crate) fn state_from_evm2_changes(pending: &PendingState) -> CanonicalState 
 
 pub(crate) fn state_from_revm(
     state: revm::state::EvmState,
+    spec: SpecId,
     original_accounts: &BTreeMap<Address, CanonicalAccount>,
 ) -> CanonicalState {
     let mut canonical = CanonicalState::default();
+    let state_clear = Version::base(spec).feature(EvmFeatures::EIP161);
     for (address, account) in state {
         let changed_storage_slots = account.changed_storage_slots().collect::<Vec<_>>();
         if !account.is_touched()
@@ -189,7 +203,12 @@ pub(crate) fn state_from_revm(
                     || account.info.code_hash != original.code_hash
             },
         );
-        if account.is_selfdestructed() {
+        let state_cleared = state_clear
+            && account.is_touched()
+            && account.is_empty()
+            && !account.is_created()
+            && !account.is_loaded_as_not_existing();
+        if account.is_selfdestructed() || state_cleared {
             if original.is_some() || !account.original_info().is_empty() {
                 canonical.accounts.insert(address, None);
             }

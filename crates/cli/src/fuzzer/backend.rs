@@ -5,6 +5,8 @@ use crate::fuzzer::{
         state_from_evm2_changes, state_from_revm,
     },
 };
+#[cfg(feature = "jit")]
+use alloy_primitives::{B256, hex, keccak256};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
@@ -12,6 +14,14 @@ use evm2::{
     evm::{AccountInfo as Evm2AccountInfo, InMemoryDB},
     interpreter::InstrStop,
 };
+#[cfg(feature = "jit")]
+use evm2::{ExecutionConfig, InterpreterRunner, interpreter::Interpreter};
+#[cfg(feature = "jit")]
+use evm2_jit_context::EvmCompilerFn;
+#[cfg(feature = "jit")]
+use evm2_jit_llvm::EvmLlvmBackend;
+#[cfg(feature = "jit")]
+use evm2_jit_runtime::{EvmCompiler, OptimizationLevel};
 use revm::{
     ExecuteCommitEvm, ExecuteEvm, MainBuilder, MainContext,
     context::{CfgEnv, Context},
@@ -19,14 +29,23 @@ use revm::{
     database::{EmptyDB as RevmEmptyDB, InMemoryDB as RevmInMemoryDB, State as RevmState},
     primitives::hardfork::SpecId as RevmSpecId,
 };
+#[cfg(feature = "jit")]
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
-pub(crate) trait EvmBackend {
+pub trait EvmBackend {
     fn name(&self) -> &'static str;
 
     fn run(&self, case: &EvmCase) -> Outcome;
 }
 
-pub(crate) struct Evm2Backend;
+#[derive(Clone, Copy, Debug)]
+pub struct Evm2Backend;
 
 impl EvmBackend for Evm2Backend {
     fn name(&self) -> &'static str {
@@ -34,52 +53,164 @@ impl EvmBackend for Evm2Backend {
     }
 
     fn run(&self, case: &EvmCase) -> Outcome {
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            case.spec,
-            case.block.evm2(),
-            ethereum_tx_registry(case.spec),
-            evm2_db(case),
-            Precompiles::base(case.spec),
-        );
-        let mut receipts = Vec::new();
-        for tx in case.txs() {
-            let result = evm
-                .transact(&tx.evm2())
-                .map(|executed| executed.detach())
-                .map_err(|err| format!("{err:?}"));
-            match result {
-                Ok(result) => {
-                    let tx_result = &result.result;
-                    let output = if tx_result.status || tx_result.stop == InstrStop::Revert {
-                        Some(tx_result.output.to_vec())
-                    } else {
-                        None
-                    };
-                    evm.commit_source(&result.pending_state);
-                    receipts.push(TxReceipt {
-                        kind: if tx_result.status {
-                            OutcomeKind::Success
-                        } else {
-                            OutcomeKind::RevertOrHalt
-                        },
-                        gas_used: Some(tx_result.tx_gas_used()),
-                        output,
-                        logs: tx_result.logs.iter().map(canonical_log).collect(),
-                        state: state_from_evm2_changes(&result.pending_state),
-                        error: None,
-                    });
-                }
-                Err(err) => {
-                    receipts.push(TxReceipt::error(err));
-                    break;
-                }
-            }
-        }
-        Outcome::from_receipts(receipts)
+        run_evm2(case, |_| Ok(()))
     }
 }
 
-pub(crate) struct RevmBackend;
+#[cfg(feature = "jit")]
+#[derive(Clone, Copy, Debug)]
+pub struct JitEvm2Backend;
+
+#[cfg(feature = "jit")]
+impl EvmBackend for JitEvm2Backend {
+    fn name(&self) -> &'static str {
+        "evm2-jit"
+    }
+
+    fn run(&self, case: &EvmCase) -> Outcome {
+        let prepared = match PreparedJitCase::new(case) {
+            Ok(prepared) => prepared,
+            Err(err) => return Outcome::error(err),
+        };
+        let hits = Arc::clone(&prepared.hits);
+        let functions = Arc::clone(&prepared.functions);
+        let outcome = run_evm2(case, move |evm| {
+            evm.set_interpreter_runner(FixedJitRunner { functions, hits });
+            Ok(())
+        });
+        if case_has_runtime_code(case) && prepared.hits.load(Ordering::Relaxed) == 0 {
+            Outcome::error("JitNotExercised".to_string())
+        } else {
+            outcome
+        }
+    }
+}
+
+fn run_evm2(
+    case: &EvmCase,
+    configure: impl FnOnce(&mut Evm<BaseEvmTypes>) -> Result<(), String>,
+) -> Outcome {
+    let mut evm = Evm::<BaseEvmTypes>::new(
+        case.spec,
+        case.block.evm2(),
+        ethereum_tx_registry(case.spec),
+        evm2_db(case),
+        Precompiles::base(case.spec),
+    );
+    if let Err(err) = configure(&mut evm) {
+        return Outcome::error(err);
+    }
+
+    let mut receipts = Vec::new();
+    for tx in case.txs() {
+        let result = evm
+            .transact(&tx.evm2())
+            .map(|executed| executed.detach())
+            .map_err(|err| format!("{err:?}"));
+        match result {
+            Ok(result) => {
+                let tx_result = &result.result;
+                let output = if tx_result.status || tx_result.stop == InstrStop::Revert {
+                    Some(tx_result.output.to_vec())
+                } else {
+                    None
+                };
+                evm.commit_source(&result.pending_state);
+                receipts.push(TxReceipt {
+                    kind: if tx_result.status {
+                        OutcomeKind::Success
+                    } else {
+                        OutcomeKind::RevertOrHalt
+                    },
+                    gas_used: Some(tx_result.tx_gas_used()),
+                    output,
+                    logs: tx_result.logs.iter().map(canonical_log).collect(),
+                    state: state_from_evm2_changes(&result.pending_state),
+                    error: None,
+                });
+            }
+            Err(err) => {
+                receipts.push(TxReceipt::error(err));
+                break;
+            }
+        }
+    }
+    Outcome::from_receipts(receipts)
+}
+
+#[cfg(feature = "jit")]
+type LlvmCompiler = EvmCompiler<EvmLlvmBackend>;
+
+#[cfg(feature = "jit")]
+struct PreparedJitCase {
+    _compiler: LlvmCompiler,
+    functions: Arc<HashMap<B256, EvmCompilerFn>>,
+    hits: Arc<AtomicU64>,
+}
+
+#[cfg(feature = "jit")]
+impl PreparedJitCase {
+    fn new(case: &EvmCase) -> Result<Self, String> {
+        let mut compiler = EvmCompiler::new_llvm(false).map_err(|err| format!("{err:?}"))?;
+        compiler.set_opt_level(OptimizationLevel::None);
+
+        let mut functions = HashMap::new();
+        for account in &case.accounts {
+            let bytecode = account.code.as_ref();
+            if bytecode.is_empty() {
+                continue;
+            }
+
+            let code_hash = keccak256(bytecode);
+            if functions.contains_key(&code_hash) {
+                continue;
+            }
+
+            let name = format!("fuzz_contract_{}", hex::encode(code_hash));
+            let func = unsafe { compiler.jit(&name, bytecode, case.spec) }
+                .map_err(|err| format!("JitCompilationFailed: {err:?}"))?;
+            functions.insert(code_hash, func);
+            compiler.clear_ir().map_err(|err| format!("{err:?}"))?;
+        }
+
+        Ok(Self {
+            _compiler: compiler,
+            functions: Arc::new(functions),
+            hits: Arc::new(AtomicU64::new(0)),
+        })
+    }
+}
+
+#[cfg(feature = "jit")]
+#[derive(Clone, Debug)]
+struct FixedJitRunner {
+    functions: Arc<HashMap<B256, EvmCompilerFn>>,
+    hits: Arc<AtomicU64>,
+}
+
+#[cfg(feature = "jit")]
+impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
+    fn run(
+        &self,
+        config: &ExecutionConfig<BaseEvmTypes>,
+        interpreter: &mut Interpreter<'_, BaseEvmTypes>,
+        host: &mut Evm<BaseEvmTypes>,
+    ) -> Option<InstrStop> {
+        let code = interpreter.original_bytecode();
+        let func = *self.functions.get(&keccak256(&code))?;
+        self.hits.fetch_add(1, Ordering::Relaxed);
+        interpreter.prepare_run(config.base_spec_id(), config.version(), host);
+        Some(unsafe { func.call_with_interpreter(interpreter) })
+    }
+}
+
+#[cfg(feature = "jit")]
+fn case_has_runtime_code(case: &EvmCase) -> bool {
+    case.accounts.iter().any(|account| !account.code.is_empty())
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RevmBackend;
 
 impl EvmBackend for RevmBackend {
     fn name(&self) -> &'static str {
@@ -112,7 +243,7 @@ impl EvmBackend for RevmBackend {
                         OutcomeKind::RevertOrHalt
                     };
                     let state = result.state;
-                    let canonical_state = state_from_revm(state.clone(), &accounts);
+                    let canonical_state = state_from_revm(state.clone(), case.spec, &accounts);
                     let receipt = TxReceipt {
                         kind,
                         gas_used: Some(result.result.tx_gas_used()),

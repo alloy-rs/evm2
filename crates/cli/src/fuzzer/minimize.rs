@@ -4,11 +4,12 @@ use crate::fuzzer::{
 };
 use evm2::interpreter::op;
 
-pub(crate) fn differs(backends: &[&dyn EvmBackend; 2], case: &EvmCase) -> bool {
-    backends[0].run(case) != backends[1].run(case)
+pub fn differs(backends: &[&dyn EvmBackend], case: &EvmCase) -> bool {
+    let baseline = backends[0].run(case);
+    backends[1..].iter().any(|backend| backend.run(case) != baseline)
 }
 
-pub(crate) fn minimize_case(backends: &[&dyn EvmBackend; 2], mut case: EvmCase) -> EvmCase {
+pub fn minimize_case(backends: &[&dyn EvmBackend], mut case: EvmCase) -> EvmCase {
     minimize_accounts(backends, &mut case);
     minimize_storage(backends, &mut case);
     minimize_calldata(backends, &mut case);
@@ -16,7 +17,7 @@ pub(crate) fn minimize_case(backends: &[&dyn EvmBackend; 2], mut case: EvmCase) 
     case
 }
 
-fn minimize_accounts(backends: &[&dyn EvmBackend; 2], case: &mut EvmCase) {
+fn minimize_accounts(backends: &[&dyn EvmBackend], case: &mut EvmCase) {
     let mut index = 2;
     while index < case.accounts.len() {
         let mut candidate = case.clone();
@@ -29,7 +30,7 @@ fn minimize_accounts(backends: &[&dyn EvmBackend; 2], case: &mut EvmCase) {
     }
 }
 
-fn minimize_storage(backends: &[&dyn EvmBackend; 2], case: &mut EvmCase) {
+fn minimize_storage(backends: &[&dyn EvmBackend], case: &mut EvmCase) {
     for account_index in 0..case.accounts.len() {
         while let Some(key) = case.accounts[account_index].storage.keys().next().copied() {
             let mut candidate = case.clone();
@@ -43,7 +44,7 @@ fn minimize_storage(backends: &[&dyn EvmBackend; 2], case: &mut EvmCase) {
     }
 }
 
-fn minimize_calldata(backends: &[&dyn EvmBackend; 2], case: &mut EvmCase) {
+fn minimize_calldata(backends: &[&dyn EvmBackend], case: &mut EvmCase) {
     let mut len = case.tx.input.len();
     while len > 0 {
         let next = len / 2;
@@ -58,7 +59,7 @@ fn minimize_calldata(backends: &[&dyn EvmBackend; 2], case: &mut EvmCase) {
     }
 }
 
-fn minimize_target_code(backends: &[&dyn EvmBackend; 2], case: &mut EvmCase) {
+fn minimize_target_code(backends: &[&dyn EvmBackend], case: &mut EvmCase) {
     let Some(target_index) = case.accounts.iter().position(|account| account.address == TARGET)
     else {
         return;

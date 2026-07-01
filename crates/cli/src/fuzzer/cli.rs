@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::{path::PathBuf, time::Duration};
 
 #[derive(Clone, Debug, Parser)]
-pub(crate) struct Options {
+pub struct Options {
     /// Seed used for deterministic structured generation. Random if omitted.
     #[arg(long, global = true)]
     pub(crate) seed: Option<u64>,

@@ -1,4 +1,9 @@
 /target
+/fuzz/artifacts
+/fuzz/corpus
+/fuzz/target
+fuzz-*.log
+.DS_Store
 Cargo.lock
 .vscode
 .idea

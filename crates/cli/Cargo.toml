@@ -33,6 +33,7 @@ alloy-rpc-client = { workspace = true, features = ["reqwest"] }
 alloy-rpc-types-eth = { workspace = true, features = ["serde", "std"] }
 alloy-rpc-types-trace.workspace = true
 anstyle.workspace = true
+arbitrary = { version = "1.4.2", features = ["derive"] }
 clap.workspace = true
 futures-util.workspace = true
 rand.workspace = true

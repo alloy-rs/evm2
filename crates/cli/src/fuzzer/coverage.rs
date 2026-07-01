@@ -6,7 +6,7 @@ use evm2::SpecId;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Default)]
-pub(crate) struct Coverage {
+pub struct Coverage {
     cases: u64,
     forks: BTreeMap<&'static str, u64>,
     tx_kinds: BTreeMap<&'static str, u64>,
@@ -18,7 +18,7 @@ pub(crate) struct Coverage {
 }
 
 impl Coverage {
-    pub(crate) fn record_case(&mut self, case: &EvmCase) {
+    pub fn record_case(&mut self, case: &EvmCase) {
         self.cases += 1;
         inc(&mut self.forks, spec_name(case.spec));
         let tx_count = case.txs().count();
@@ -48,7 +48,7 @@ impl Coverage {
         }
     }
 
-    pub(crate) fn record_outcome(&mut self, outcome: &Outcome) {
+    pub fn record_outcome(&mut self, outcome: &Outcome) {
         inc(&mut self.outcomes, outcome_kind_name(outcome.kind));
         for receipt in &outcome.receipts {
             inc(&mut self.receipt_outcomes, outcome_kind_name(receipt.kind));
@@ -58,7 +58,7 @@ impl Coverage {
         }
     }
 
-    pub(crate) fn merge(&mut self, other: Self) {
+    pub fn merge(&mut self, other: Self) {
         self.cases += other.cases;
         merge_counts(&mut self.forks, other.forks);
         merge_counts(&mut self.tx_kinds, other.tx_kinds);
@@ -69,7 +69,7 @@ impl Coverage {
         merge_counts(&mut self.errors, other.errors);
     }
 
-    pub(crate) fn print(&self) {
+    pub fn print(&self) {
         if self.cases == 0 {
             return;
         }

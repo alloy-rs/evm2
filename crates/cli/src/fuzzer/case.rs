@@ -34,7 +34,7 @@ const EIP7702_DELEGATED_TARGET: Address =
     Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct EvmCase {
+pub struct EvmCase {
     #[serde(with = "spec_serde")]
     pub(crate) spec: SpecId,
     pub(crate) block: CaseBlock,
@@ -159,6 +159,173 @@ impl EvmCase {
         features.dedup();
         Self { spec, block, tx, extra_txs, features, accounts }
     }
+
+    pub(crate) fn arbitrary_from_bytes(data: &[u8]) -> arbitrary::Result<Self> {
+        let mut input = arbitrary::Unstructured::new(data);
+        <ArbitraryCase as arbitrary::Arbitrary>::arbitrary(&mut input).map(Into::into)
+    }
+}
+
+const MAX_ARBITRARY_CODE_LEN: usize = 512;
+const MAX_ARBITRARY_INPUT_LEN: usize = 256;
+const MAX_ARBITRARY_EXTRA_ACCOUNTS: usize = 8;
+const MAX_ARBITRARY_STORAGE_SLOTS: usize = 8;
+const MAX_ARBITRARY_EXTRA_TXS: usize = 3;
+const MAX_ARBITRARY_ACCESS_ITEMS: usize = 4;
+const MAX_ARBITRARY_ACCESS_KEYS: usize = 4;
+const MAX_ARBITRARY_BLOB_HASHES: usize = 3;
+const MAX_ARBITRARY_AUTHS: usize = 3;
+
+#[derive(arbitrary::Arbitrary, Clone, Debug)]
+struct ArbitraryCase {
+    spec: ArbitrarySpec,
+    block: ArbitraryBlock,
+    target_code: Vec<u8>,
+    target_storage: Vec<ArbitraryStorageSlot>,
+    extra_accounts: Vec<ArbitraryAccount>,
+    tx: ArbitraryTx,
+    extra_txs: Vec<ArbitraryTx>,
+    rng_seed: u64,
+}
+
+impl From<ArbitraryCase> for EvmCase {
+    fn from(case: ArbitraryCase) -> Self {
+        let spec = case.spec.into();
+        let mut features = vec!["arbitrary".to_string()];
+        let mut accounts = vec![
+            CaseAccount {
+                address: CALLER,
+                balance: CALLER_BALANCE,
+                nonce: 0,
+                code: Bytes::new(),
+                storage: BTreeMap::new(),
+            },
+            CaseAccount {
+                address: TARGET,
+                balance: U256::from(1_000_000),
+                nonce: 1,
+                code: bounded_bytes(case.target_code, MAX_ARBITRARY_CODE_LEN),
+                storage: storage_map(case.target_storage),
+            },
+        ];
+
+        for account in case.extra_accounts.into_iter().take(MAX_ARBITRARY_EXTRA_ACCOUNTS) {
+            let account = account.into_case_account();
+            if account.address != CALLER && account.address != TARGET {
+                upsert_account(&mut accounts, account);
+            }
+        }
+
+        let tx = case.tx.into_case_tx(spec, &accounts, 0);
+        let extra_txs = case
+            .extra_txs
+            .into_iter()
+            .take(MAX_ARBITRARY_EXTRA_TXS)
+            .enumerate()
+            .map(|(index, tx)| tx.into_case_tx(spec, &accounts, index as u64 + 1))
+            .collect::<Vec<_>>();
+        if !extra_txs.is_empty() {
+            features.push("multi_tx".to_string());
+        }
+
+        let mut rng = Gen::new(case.rng_seed);
+        add_eip7702_accounts(
+            &mut rng,
+            &mut accounts,
+            core::iter::once(&tx).chain(extra_txs.iter()),
+            &mut features,
+        );
+        features.sort();
+        features.dedup();
+
+        Self { spec, block: case.block.into(), tx, extra_txs, features, accounts }
+    }
+}
+
+#[derive(arbitrary::Arbitrary, Clone, Copy, Debug)]
+enum ArbitrarySpec {
+    Frontier,
+    Homestead,
+    Tangerine,
+    SpuriousDragon,
+    Byzantium,
+    Petersburg,
+    Istanbul,
+    Berlin,
+    London,
+    Merge,
+    Shanghai,
+    Cancun,
+    Prague,
+    Osaka,
+}
+
+impl From<ArbitrarySpec> for SpecId {
+    fn from(spec: ArbitrarySpec) -> Self {
+        match spec {
+            ArbitrarySpec::Frontier => Self::FRONTIER,
+            ArbitrarySpec::Homestead => Self::HOMESTEAD,
+            ArbitrarySpec::Tangerine => Self::TANGERINE,
+            ArbitrarySpec::SpuriousDragon => Self::SPURIOUS_DRAGON,
+            ArbitrarySpec::Byzantium => Self::BYZANTIUM,
+            ArbitrarySpec::Petersburg => Self::PETERSBURG,
+            ArbitrarySpec::Istanbul => Self::ISTANBUL,
+            ArbitrarySpec::Berlin => Self::BERLIN,
+            ArbitrarySpec::London => Self::LONDON,
+            ArbitrarySpec::Merge => Self::MERGE,
+            ArbitrarySpec::Shanghai => Self::SHANGHAI,
+            ArbitrarySpec::Cancun => Self::CANCUN,
+            ArbitrarySpec::Prague => Self::PRAGUE,
+            ArbitrarySpec::Osaka => Self::OSAKA,
+        }
+    }
+}
+
+#[derive(arbitrary::Arbitrary, Clone, Copy, Debug)]
+struct ArbitraryBlock {
+    number: [u8; 32],
+    timestamp: [u8; 32],
+    gas_limit: u8,
+    basefee: u8,
+}
+
+impl From<ArbitraryBlock> for CaseBlock {
+    fn from(block: ArbitraryBlock) -> Self {
+        const GAS_LIMITS: &[u64] = &[60_000, 100_000, 250_000, 1_000_000, 10_000_000, 30_000_000];
+        Self {
+            number: word(block.number),
+            timestamp: word(block.timestamp),
+            gas_limit: GAS_LIMITS[usize::from(block.gas_limit) % GAS_LIMITS.len()],
+            basefee: u64::from(block.basefee % 2),
+        }
+    }
+}
+
+#[derive(arbitrary::Arbitrary, Clone, Debug)]
+struct ArbitraryAccount {
+    address: [u8; 20],
+    balance: u128,
+    nonce: u64,
+    code: Vec<u8>,
+    storage: Vec<ArbitraryStorageSlot>,
+}
+
+impl ArbitraryAccount {
+    fn into_case_account(self) -> CaseAccount {
+        CaseAccount {
+            address: Address::new(self.address),
+            balance: U256::from(self.balance),
+            nonce: self.nonce % 8,
+            code: bounded_bytes(self.code, MAX_ARBITRARY_CODE_LEN),
+            storage: storage_map(self.storage),
+        }
+    }
+}
+
+#[derive(arbitrary::Arbitrary, Clone, Copy, Debug)]
+struct ArbitraryStorageSlot {
+    key: [u8; 32],
+    value: [u8; 32],
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -304,7 +471,7 @@ impl TxKindCase {
         }
     }
 
-    const fn supports_create(self) -> bool {
+    pub(crate) const fn supports_create(self) -> bool {
         matches!(self, Self::Legacy | Self::Eip2930 | Self::Eip1559)
     }
 
@@ -339,6 +506,194 @@ impl TxKindCase {
         }
         (!invalid.is_empty()).then(|| rng.pick(&invalid))
     }
+}
+
+#[derive(arbitrary::Arbitrary, Clone, Copy, Debug)]
+enum ArbitraryTxKind {
+    Legacy,
+    Eip2930,
+    Eip1559,
+    Eip4844,
+    Eip7702,
+}
+
+impl From<ArbitraryTxKind> for TxKindCase {
+    fn from(kind: ArbitraryTxKind) -> Self {
+        match kind {
+            ArbitraryTxKind::Legacy => Self::Legacy,
+            ArbitraryTxKind::Eip2930 => Self::Eip2930,
+            ArbitraryTxKind::Eip1559 => Self::Eip1559,
+            ArbitraryTxKind::Eip4844 => Self::Eip4844,
+            ArbitraryTxKind::Eip7702 => Self::Eip7702,
+        }
+    }
+}
+
+#[derive(arbitrary::Arbitrary, Clone, Debug)]
+struct ArbitraryTx {
+    kind: ArbitraryTxKind,
+    target_selector: u8,
+    target: [u8; 20],
+    creates: bool,
+    gas_limit: u8,
+    gas_price: u16,
+    value: u64,
+    input: Vec<u8>,
+    access_list: Vec<ArbitraryAccessListItem>,
+    blob_hashes: Vec<[u8; 32]>,
+    authorization_list: Vec<ArbitraryAuthorization>,
+}
+
+impl ArbitraryTx {
+    fn into_case_tx(self, _spec: SpecId, accounts: &[CaseAccount], nonce: u64) -> CaseTx {
+        let kind: TxKindCase = self.kind.into();
+        let target = select_target(self.target_selector, self.target, accounts);
+        let creates = self.creates
+            && kind.supports_create()
+            && precompile::target_for_address(target).is_none();
+        let blob_hashes = if kind == TxKindCase::Eip4844 {
+            let mut hashes = self
+                .blob_hashes
+                .into_iter()
+                .take(MAX_ARBITRARY_BLOB_HASHES)
+                .map(versioned_hash_from)
+                .collect::<Vec<_>>();
+            if hashes.is_empty() {
+                hashes.push(versioned_hash_from([0; 32]));
+            }
+            hashes
+        } else {
+            Vec::new()
+        };
+        let authorization_list = (kind == TxKindCase::Eip7702).then(|| {
+            self.authorization_list
+                .into_iter()
+                .take(MAX_ARBITRARY_AUTHS)
+                .map(ArbitraryAuthorization::into_signed_authorization)
+                .collect()
+        });
+
+        CaseTx {
+            kind,
+            caller: CALLER,
+            target,
+            creates,
+            gas_limit: arbitrary_gas_limit(kind, creates, self.gas_limit),
+            gas_price: u128::from(1 + self.gas_price % 4),
+            value: U256::from(self.value % 1_000),
+            input: bounded_bytes(self.input, MAX_ARBITRARY_INPUT_LEN),
+            nonce,
+            access_list: arbitrary_access_list(self.access_list),
+            blob_hashes,
+            authorization_list,
+        }
+    }
+}
+
+#[derive(arbitrary::Arbitrary, Clone, Debug)]
+struct ArbitraryAccessListItem {
+    address: [u8; 20],
+    storage_keys: Vec<[u8; 32]>,
+}
+
+#[derive(arbitrary::Arbitrary, Clone, Copy, Debug)]
+struct ArbitraryAuthorization {
+    selector: u8,
+    chain_id: [u8; 32],
+    address: [u8; 20],
+    nonce: u64,
+    bad_y_parity: bool,
+}
+
+impl ArbitraryAuthorization {
+    fn into_signed_authorization(self) -> SignedAuthorization {
+        let chain_id = match self.selector % 4 {
+            0 => U256::ZERO,
+            1 => U256::from(1),
+            _ => word(self.chain_id),
+        };
+        let address = match self.selector % 4 {
+            0 | 1 => EIP7702_DELEGATED_TARGET,
+            2 => TARGET,
+            _ => Address::new(self.address),
+        };
+        let nonce = if self.selector.is_multiple_of(3) { 1 } else { self.nonce };
+        let auth = signed_eip7702_auth(Authorization { chain_id, address, nonce });
+        if self.bad_y_parity {
+            SignedAuthorization::new_unchecked(auth.inner().clone(), 2, auth.r(), auth.s())
+        } else {
+            auth
+        }
+    }
+}
+
+fn arbitrary_gas_limit(kind: TxKindCase, creates: bool, selector: u8) -> u64 {
+    const CALL_GAS: &[u64] = &[21_000, 30_000, 60_000, 80_000, 100_000, 250_000, 1_000_000];
+    const CREATE_GAS: &[u64] = &[53_000, 80_000, 100_000, 250_000, 1_000_000];
+    const EIP7702_GAS: &[u64] = &[25_000, 60_000, 100_000, 250_000, 1_000_000];
+    let choices = if kind == TxKindCase::Eip7702 {
+        EIP7702_GAS
+    } else if creates {
+        CREATE_GAS
+    } else {
+        CALL_GAS
+    };
+    choices[usize::from(selector) % choices.len()]
+}
+
+fn arbitrary_access_list(items: Vec<ArbitraryAccessListItem>) -> AccessList {
+    AccessList(
+        items
+            .into_iter()
+            .take(MAX_ARBITRARY_ACCESS_ITEMS)
+            .map(|item| AccessListItem {
+                address: Address::new(item.address),
+                storage_keys: item
+                    .storage_keys
+                    .into_iter()
+                    .take(MAX_ARBITRARY_ACCESS_KEYS)
+                    .map(B256::from)
+                    .collect(),
+            })
+            .collect(),
+    )
+}
+
+fn select_target(selector: u8, raw: [u8; 20], accounts: &[CaseAccount]) -> Address {
+    match selector % 8 {
+        0 => TARGET,
+        1 => CALLER,
+        2 => fixed_eip7702_authority(),
+        3 => EIP7702_DELEGATED_TARGET,
+        4 => {
+            let targets = precompile::targets();
+            targets[usize::from(raw[19]) % targets.len()].address()
+        }
+        5 if !accounts.is_empty() => accounts[usize::from(raw[0]) % accounts.len()].address,
+        _ => Address::new(raw),
+    }
+}
+
+fn versioned_hash_from(mut hash: [u8; 32]) -> B256 {
+    hash[0] = 0x01;
+    B256::from(hash)
+}
+
+fn storage_map(slots: Vec<ArbitraryStorageSlot>) -> BTreeMap<U256, U256> {
+    slots
+        .into_iter()
+        .take(MAX_ARBITRARY_STORAGE_SLOTS)
+        .map(|slot| (word(slot.key), word(slot.value)))
+        .collect()
+}
+
+fn bounded_bytes(mut bytes: Vec<u8>, max_len: usize) -> Bytes {
+    bytes.truncate(max_len);
+    bytes.into()
+}
+
+fn word(bytes: [u8; 32]) -> U256 {
+    U256::from_be_slice(&bytes)
 }
 
 fn generate_access_list(rng: &mut Gen, accounts: &[CaseAccount]) -> AccessList {
