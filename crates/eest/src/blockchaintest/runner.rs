@@ -184,10 +184,6 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     "london/validation/header/invalid_header.json",
     "shanghai/eip4895_withdrawals/withdrawals/withdrawals_root.json",
 
-    // Amsterdam and later blockchain tests are skipped wholesale by fork in `execute_suite`
-    // (`is_blockchain_fork_skipped`): evm2 does not build block access lists (EIP-7928) or block-level
-    // gas accounting (EIP-7778) yet, so no per-fixture entries are needed here.
-
     // Prague request/deposit fixtures validate EL request extraction and system-contract block processing.
     "prague/eip6110_deposits",
     "prague/eip7002_el_triggerable_withdrawals",

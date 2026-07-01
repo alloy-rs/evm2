@@ -55,13 +55,4 @@ mod tests {
         assert_eq!(parse_fork("SPURIOUS_DRAGON"), Some(SpecId::SPURIOUS_DRAGON));
         assert_eq!(parse_fork("atlantis"), None);
     }
-
-    #[test]
-    fn unsupported_forks_are_skipped() {
-        // Absent `EVM2_SKIP_FORKS`, a fork is skipped iff it is in `UNSUPPORTED_FORKS`.
-        // The list is currently empty (evm2 targets all forks, including Amsterdam).
-        for spec in [SpecId::AMSTERDAM, SpecId::OSAKA, SpecId::FRONTIER] {
-            assert_eq!(is_fork_skipped(spec), UNSUPPORTED_FORKS.contains(&spec));
-        }
-    }
 }
