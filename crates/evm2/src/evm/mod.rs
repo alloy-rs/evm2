@@ -652,9 +652,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline]
     fn inspect_log(&mut self, log: &Log) {
+        let _guard = self.enter_execution();
         if let Some(inspector) = self.inspector.as_deref_mut() {
-            // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
-            // hook.
+            // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
+            // replacement while the hook is running.
             let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
             inspector.log(log, self);
         }
@@ -971,11 +972,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         bytecode: Bytecode,
         message: &'frame mut Message<T>,
     ) -> MessageResult<T> {
+        let _guard = self.enter_execution();
         let Some(inspector) = self.inspector.as_deref_mut() else {
             return self.execute_message_impl(tx_env, bytecode, message);
         };
-        // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
-        // message execution.
+        // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
+        // replacement while the hooks are running.
         let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
 
         let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
@@ -2341,6 +2343,93 @@ mod tests {
     #[should_panic(expected = "inspector cannot be modified during EVM execution")]
     fn clear_inspector_panics_during_execution() {
         run_inspector_access(InspectorAccess::Clear);
+    }
+
+    #[derive(Clone, Copy)]
+    enum TopLevelInspectorHook {
+        Log,
+        Call,
+        Create,
+    }
+
+    fn run_top_level_inspector_clear(hook: TopLevelInspectorHook) {
+        struct ClearingInspector;
+
+        impl Inspector<BaseEvmTypes> for ClearingInspector {
+            fn log(&mut self, _log: &Log, host: &mut Evm<'_, BaseEvmTypes>) {
+                let _ = host.clear_inspector();
+            }
+
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &mut Message,
+            ) -> Option<MessageResult> {
+                let _ = interp.host().clear_inspector();
+                None
+            }
+
+            fn create(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &mut Message,
+            ) -> Option<MessageResult> {
+                let _ = interp.host().clear_inspector();
+                None
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(ClearingInspector);
+
+        match hook {
+            TopLevelInspectorHook::Log => Host::log(
+                &mut evm,
+                Log { address: Address::ZERO, data: LogData::new_unchecked(vec![], Bytes::new()) },
+            ),
+            TopLevelInspectorHook::Call => {
+                let mut message = Message { kind: MessageKind::Call, ..Default::default() };
+                let _ = Host::execute_message(
+                    &mut evm,
+                    &TxEnv::default(),
+                    Bytecode::default(),
+                    &mut message,
+                );
+            }
+            TopLevelInspectorHook::Create => {
+                let mut message = Message { kind: MessageKind::Create, ..Default::default() };
+                let _ = Host::execute_message(
+                    &mut evm,
+                    &TxEnv::default(),
+                    Bytecode::default(),
+                    &mut message,
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn top_level_log_inspector_clear_panics_during_execution() {
+        run_top_level_inspector_clear(TopLevelInspectorHook::Log);
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn top_level_call_inspector_clear_panics_during_execution() {
+        run_top_level_inspector_clear(TopLevelInspectorHook::Call);
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn top_level_create_inspector_clear_panics_during_execution() {
+        run_top_level_inspector_clear(TopLevelInspectorHook::Create);
     }
 
     #[test]
