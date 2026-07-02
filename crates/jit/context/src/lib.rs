@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, U256, ruint};
 use core::{
     fmt,
+    marker::PhantomData,
     mem::MaybeUninit,
     ptr::{self, NonNull},
 };
@@ -33,49 +34,53 @@ pub use arch::evm2_jit_exit;
 /// This struct uses `#[repr(C)]` to ensure a stable field layout since the JIT compiler
 /// generates code that accesses fields by offset using `offset_of!`.
 #[repr(C)]
-pub struct EvmContext<'a> {
+pub struct EvmContext<'ctx, 'frame, 'host> {
     /// Active interpreter frame.
-    pub interpreter: NonNull<Interpreter<'a, 'a, BaseEvmTypes>>,
+    pub interpreter: NonNull<Interpreter<'frame, 'host, BaseEvmTypes>>,
+
     /// The gas.
     pub gas: Gas,
     /// The size of return data from the last call-like operation.
     pub return_data_len: usize,
     /// The size of the call input data, cached for CALLDATASIZE.
     pub calldatasize: usize,
+
     /// The result set by a builtin before exiting via [`evm2_jit_exit`].
     pub exit_result: InstrStop,
     /// Saved RSP from the entry trampoline, used by [`evm2_jit_exit`] to unwind.
     pub exit_sp: *mut u8,
+
     /// Cached base pointer for the current memory context.
     /// Refreshed after any memory resize.
     pub mem_base: *mut u8,
     /// Cached length of the current memory context in bytes.
     /// Refreshed after any memory resize.
     pub mem_len: usize,
+
+    _marker: PhantomData<&'ctx mut Interpreter<'frame, 'host, BaseEvmTypes>>,
 }
 
-impl fmt::Debug for EvmContext<'_> {
+impl fmt::Debug for EvmContext<'_, '_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EvmContext").field("memory", &self.memory()).finish_non_exhaustive()
     }
 }
 
-impl<'a> EvmContext<'a> {
+impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
     /// Creates a new context from an interpreter.
     #[inline]
-    pub fn from_interpreter<'frame: 'a, 'host: 'a>(
-        interpreter: &'a mut Interpreter<'frame, 'host, BaseEvmTypes>,
+    pub fn from_interpreter(
+        interpreter: &'ctx mut Interpreter<'frame, 'host, BaseEvmTypes>,
     ) -> Self {
         Self::from_interpreter_with_stack(interpreter).0
     }
 
     /// Creates a new context from an interpreter and returns the borrowed stack.
     #[inline]
-    pub fn from_interpreter_with_stack<'frame: 'a, 'host: 'a>(
-        interpreter: &'a mut Interpreter<'frame, 'host, BaseEvmTypes>,
-    ) -> (Self, &'a mut EvmStack, &'a mut usize) {
-        let interpreter_ptr =
-            ptr::from_mut(interpreter).cast::<Interpreter<'a, 'a, BaseEvmTypes>>();
+    pub fn from_interpreter_with_stack(
+        interpreter: &'ctx mut Interpreter<'frame, 'host, BaseEvmTypes>,
+    ) -> (Self, &'ctx mut EvmStack, &'ctx mut usize) {
+        let interpreter_ptr = ptr::from_mut(&mut *interpreter);
         let interpreter_ptr = unsafe { NonNull::new_unchecked(interpreter_ptr) };
         let message = interpreter.message();
         let gas = interpreter.gas();
@@ -92,6 +97,7 @@ impl<'a> EvmContext<'a> {
             exit_sp: ptr::null_mut(),
             mem_base: ptr::null_mut(),
             mem_len: 0,
+            _marker: PhantomData,
         };
         this.refresh_memory_cache();
         (this, stack, stack_len)
@@ -106,13 +112,13 @@ impl<'a> EvmContext<'a> {
 
     /// Returns the active interpreter frame.
     #[inline]
-    pub const fn interpreter(&self) -> &Interpreter<'a, 'a, BaseEvmTypes> {
+    pub const fn interpreter(&self) -> &Interpreter<'frame, 'host, BaseEvmTypes> {
         unsafe { self.interpreter.as_ref() }
     }
 
     /// Returns the active interpreter frame mutably.
     #[inline]
-    pub const fn interpreter_mut(&mut self) -> &mut Interpreter<'a, 'a, BaseEvmTypes> {
+    pub const fn interpreter_mut(&mut self) -> &mut Interpreter<'frame, 'host, BaseEvmTypes> {
         unsafe { self.interpreter.as_mut() }
     }
 
@@ -159,7 +165,7 @@ impl<'a> EvmContext<'a> {
 
     /// Returns the transaction-global environment.
     #[inline]
-    pub const fn tx_env(&self) -> &'a TxEnv<BaseEvmTypes> {
+    pub const fn tx_env(&self) -> &'frame TxEnv<BaseEvmTypes> {
         self.interpreter().tx_env()
     }
 
@@ -189,7 +195,7 @@ impl<'a> EvmContext<'a> {
 
     /// Returns the active frame-local call/create message.
     #[inline]
-    pub const fn message(&self) -> &'a Message<BaseEvmTypes> {
+    pub const fn message(&self) -> &'frame Message<BaseEvmTypes> {
         self.interpreter().message()
     }
 
@@ -258,7 +264,7 @@ macro_rules! extern_evm2_jit {
             $(
                 $(#[$attr])*
                 $vis fn $name(
-                    ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
+                    ecx: ::core::ptr::NonNull<$crate::EvmContext<'_, '_, '_>>,
                     stack: ::core::ptr::NonNull<$crate::EvmStack>,
                     stack_len: ::core::ptr::NonNull<usize>,
                 ) -> $crate::InstrStop;
@@ -273,7 +279,7 @@ macro_rules! extern_evm2_jit {
 /// information.
 // When changing the signature, also update the corresponding declarations in `fn translate`.
 pub type RawEvmCompilerFn = unsafe extern "C" fn(
-    ecx: NonNull<EvmContext<'_>>,
+    ecx: NonNull<EvmContext<'_, '_, '_>>,
     stack: NonNull<EvmStack>,
     stack_len: NonNull<usize>,
 ) -> InstrStop;
@@ -315,9 +321,9 @@ impl EvmCompilerFn {
     ///
     /// The caller must ensure that the function is safe to call for this interpreter state.
     #[inline]
-    pub unsafe fn call_with_interpreter<'a, 'frame: 'a, 'host: 'a>(
+    pub unsafe fn call_with_interpreter<'ctx, 'frame, 'host>(
         self,
-        interpreter: &'a mut Interpreter<'frame, 'host, BaseEvmTypes>,
+        interpreter: &'ctx mut Interpreter<'frame, 'host, BaseEvmTypes>,
     ) -> InstrStop {
         let (mut ecx, stack, stack_len) = EvmContext::from_interpreter_with_stack(interpreter);
         let result = unsafe { self.call(&mut ecx, stack, stack_len) };
@@ -343,7 +349,7 @@ impl EvmCompilerFn {
     #[inline]
     pub unsafe fn call(
         self,
-        ecx: &mut EvmContext<'_>,
+        ecx: &mut EvmContext<'_, '_, '_>,
         stack: &mut EvmStack,
         stack_len: &mut usize,
     ) -> InstrStop {
@@ -367,7 +373,7 @@ impl EvmCompilerFn {
     #[inline(never)]
     pub unsafe fn call_noinline(
         self,
-        ecx: &mut EvmContext<'_>,
+        ecx: &mut EvmContext<'_, '_, '_>,
         stack: &mut EvmStack,
         stack_len: &mut usize,
     ) -> InstrStop {
@@ -813,7 +819,7 @@ mod tests {
 
     #[unsafe(no_mangle)]
     extern "C" fn __test_fn(
-        _ecx: NonNull<EvmContext<'_>>,
+        _ecx: NonNull<EvmContext<'_, '_, '_>>,
         _stack: NonNull<EvmStack>,
         _stack_len: NonNull<usize>,
     ) -> InstrStop {

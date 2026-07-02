@@ -763,7 +763,11 @@ impl<B: Backend> EvmCompiler<B> {
             Some(i8),
             &[ptr, ptr, ptr],
             &["arg.ecx.addr", "arg.stack.addr", "arg.stack_len.addr"],
-            &[size_align::<EvmContext<'_>>(0), size_align::<EvmStack>(1), size_align::<usize>(2)],
+            &[
+                size_align::<EvmContext<'_, '_, '_>>(0),
+                size_align::<EvmStack>(1),
+                size_align::<usize>(2),
+            ],
         );
         debug_assert_eq!(params.len(), param_names.len());
         let (mut bcx, id) = backend.build_function(name, ret, params, param_names, linkage)?;
