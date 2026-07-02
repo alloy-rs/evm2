@@ -162,6 +162,27 @@ impl BalContext {
         }
     }
 
+    /// Records an account-info-only change (no storage) into the BAL builder at the current index.
+    ///
+    /// Used for post-block balance updates -- block rewards and withdrawals -- that mutate the
+    /// accepted overlay directly instead of flowing through a transaction commit, so they are not
+    /// captured by [`Self::commit_bal`]. No-op when BAL construction is disabled.
+    #[inline]
+    pub fn commit_account_change(
+        &mut self,
+        address: Address,
+        original: Option<&AccountInfo>,
+        current: Option<&AccountInfo>,
+    ) {
+        let index = self.bal_index;
+        if let Some(bal) = self.bal_builder.as_mut() {
+            let account = bal.accounts.entry(address).or_default();
+            let original = original.cloned().unwrap_or_default();
+            let current = current.cloned().unwrap_or_default();
+            account.account_info.update(index, &original, &current);
+        }
+    }
+
     /// Takes the built BAL, resetting the block access index. Returns `None` when BAL construction
     /// is disabled.
     #[inline]

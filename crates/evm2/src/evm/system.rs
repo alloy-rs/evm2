@@ -41,6 +41,14 @@ pub const WITHDRAWAL_REQUEST_ADDRESS: Address =
 pub const CONSOLIDATION_REQUEST_ADDRESS: Address =
     address!("0x0000BBdDc7CE488642fb579F8B00f3a590007251");
 
+/// EIP-8282 builder deposit request system contract address (request type `0x03`).
+pub const BUILDER_DEPOSIT_REQUEST_ADDRESS: Address =
+    address!("0x0000884d2AA32eAa155F59A2f24eFa73D9008282");
+
+/// EIP-8282 builder exit request system contract address (request type `0x04`).
+pub const BUILDER_EXIT_REQUEST_ADDRESS: Address =
+    address!("0x000014574A74c805590AFF9499fc7A690f008282");
+
 /// System transaction input for [`Evm::system_call`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SystemTx {

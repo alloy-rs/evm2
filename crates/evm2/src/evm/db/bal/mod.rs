@@ -23,7 +23,6 @@ pub use bal_context::BalContext;
 pub use writes::BalWrites;
 
 use crate::evm::state::AccountChange;
-use alloc::vec::Vec;
 use alloy_eip7928::BlockAccessList as AlloyBal;
 use alloy_primitives::{Address, U256, map::AddressMap};
 
