@@ -121,13 +121,13 @@ impl<'a> State<'a> {
 
     /// Returns the initial database.
     #[inline]
-    pub fn initial(&self) -> &dyn DynDatabase {
+    pub fn initial(&self) -> &(dyn DynDatabase + 'a) {
         self.database.db.as_ref()
     }
 
     /// Returns the initial database mutably.
     #[inline]
-    pub fn initial_mut(&mut self) -> &mut dyn DynDatabase {
+    pub fn initial_mut(&mut self) -> &mut (dyn DynDatabase + 'a) {
         self.database.db.as_mut()
     }
 

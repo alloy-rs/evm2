@@ -363,6 +363,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     #[inline]
+    fn assert_precompiles_downcast_mutable(&self) {
+        self.assert_precompiles_mutable();
+    }
+
+    #[inline]
     fn assert_inspector_mutable(&self) {
         assert!(!self.running, "inspector cannot be modified during EVM execution");
     }
@@ -407,13 +412,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     /// Returns the backing database.
     #[inline]
-    pub fn database(&self) -> &dyn DynDatabase {
+    pub fn database(&self) -> &(dyn DynDatabase + 'a) {
         self.state.initial()
     }
 
     /// Returns the backing database mutably.
     #[inline]
-    pub fn database_mut(&mut self) -> &mut (dyn DynDatabase + '_) {
+    pub fn database_mut(&mut self) -> &mut (dyn DynDatabase + 'a) {
         self.state.initial_mut()
     }
 
@@ -488,8 +493,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn evm_is_send<D, P>(&mut self) -> &mut Self
     where
-        D: DynDatabase + Send,
-        P: PrecompileProvider<T> + Send,
+        D: DynDatabase + Send + 'static,
+        P: PrecompileProvider<T> + Send + 'static,
+        'a: 'static,
     {
         self.assert_database_type::<D>();
         self.assert_precompiles_type::<P>();
@@ -502,9 +508,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn evm_is_send_with_inspector<D, P, I>(&mut self) -> &mut Self
     where
-        D: DynDatabase + Send,
-        P: PrecompileProvider<T> + Send,
-        I: Inspector<T> + Send,
+        D: DynDatabase + Send + 'static,
+        P: PrecompileProvider<T> + Send + 'static,
+        I: Inspector<T> + Send + 'static,
+        'a: 'static,
     {
         self.assert_database_type::<D>();
         self.assert_precompiles_type::<P>();
@@ -514,12 +521,18 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     #[inline]
-    fn assert_database_type<D: DynDatabase>(&self) {
+    fn assert_database_type<D: DynDatabase + 'static>(&self)
+    where
+        'a: 'static,
+    {
         assert_eq!(self.database().type_id(), typeid::of::<D>(), "database type mismatch");
     }
 
     #[inline]
-    fn assert_precompiles_type<P: PrecompileProvider<T>>(&self) {
+    fn assert_precompiles_type<P: PrecompileProvider<T> + 'static>(&self)
+    where
+        'a: 'static,
+    {
         assert_eq!(
             self.precompiles().type_id(),
             typeid::of::<P>(),
@@ -528,20 +541,29 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     #[inline]
-    fn assert_inspector_type<I: Inspector<T>>(&self) {
+    fn assert_inspector_type<I: Inspector<T> + 'static>(&self)
+    where
+        'a: 'static,
+    {
         let inspector = self.inspector().expect("inspector type mismatch");
         assert_eq!(inspector.type_id(), typeid::of::<I>(), "inspector type mismatch");
     }
 
     /// Returns the backing database as `D` if it has that concrete type.
     #[inline]
-    pub fn database_as<D: DynDatabase>(&self) -> Option<&D> {
+    pub fn database_as<D: DynDatabase + 'static>(&self) -> Option<&D>
+    where
+        'a: 'static,
+    {
         self.database().downcast_ref()
     }
 
     /// Returns the backing database mutably as `D` if it has that concrete type.
     #[inline]
-    pub fn database_as_mut<D: DynDatabase>(&mut self) -> Option<&mut D> {
+    pub fn database_as_mut<D: DynDatabase + 'static>(&mut self) -> Option<&mut D>
+    where
+        'a: 'static,
+    {
         self.database_mut().downcast_mut()
     }
 
@@ -565,7 +587,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     /// Returns the precompile provider.
     #[inline]
-    pub fn precompiles(&self) -> &dyn PrecompileProvider<T> {
+    pub fn precompiles(&self) -> &(dyn PrecompileProvider<T> + 'a) {
         self.precompiles.as_ref()
     }
 
@@ -583,7 +605,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     /// Returns the precompile provider mutably.
     #[inline]
-    pub fn precompiles_mut(&mut self) -> &mut (dyn PrecompileProvider<T> + '_) {
+    pub fn precompiles_mut(&mut self) -> &mut (dyn PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
         self.precompiles.as_mut()
     }
@@ -598,31 +620,34 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     /// Returns the precompile provider as `P` if it has that concrete type.
     #[inline]
-    pub fn precompiles_as<P: PrecompileProvider<T>>(&self) -> Option<&P> {
+    pub fn precompiles_as<P: PrecompileProvider<T> + 'static>(&self) -> Option<&P>
+    where
+        'a: 'static,
+    {
         self.precompiles().downcast_ref()
     }
 
     /// Returns the precompile provider mutably as `P` if it has that concrete type.
     #[inline]
-    pub fn precompiles_as_mut<P: PrecompileProvider<T>>(&mut self) -> Option<&mut P> {
-        self.assert_precompiles_mutable();
-        self.precompiles_mut().downcast_mut()
+    pub fn precompiles_as_mut<P: PrecompileProvider<T> + 'static>(&mut self) -> Option<&mut P>
+    where
+        'a: 'static,
+    {
+        self.assert_precompiles_downcast_mutable();
+        self.precompiles.as_mut().downcast_mut()
     }
 
     /// Returns the active execution inspector.
     #[inline]
-    pub fn inspector(&self) -> Option<&dyn Inspector<T>> {
+    pub fn inspector(&self) -> Option<&(dyn Inspector<T> + 'a)> {
         self.inspector.as_deref()
     }
 
     /// Returns the active execution inspector mutably.
     #[inline]
-    pub fn inspector_mut(&mut self) -> Option<&mut (dyn Inspector<T> + '_)> {
+    pub fn inspector_mut(&mut self) -> Option<&mut (dyn Inspector<T> + 'a)> {
         self.assert_inspector_mutable();
-        let inspector = self.inspector.as_deref_mut()?;
-        Some(unsafe {
-            core::mem::transmute::<&mut dyn Inspector<T>, &mut (dyn Inspector<T> + '_)>(inspector)
-        })
+        self.inspector.as_deref_mut()
     }
 
     #[inline]
@@ -706,7 +731,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     /// Removes the active execution inspector if it has type `I`.
     #[inline]
-    pub fn clear_inspector_as<I: Inspector<T>>(&mut self) -> Option<Box<I>> {
+    pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>>
+    where
+        'a: 'static,
+    {
         self.assert_inspector_mutable();
         let i = self.inspector.take_if(|i| i.is::<I>())?;
         Some(unsafe { Box::from_raw(Box::into_raw(i).cast::<I>()) })
@@ -2161,7 +2189,7 @@ mod tests {
                     Ok(PrecompileOutput::new(Bytes::new()))
                 },
                 PrecompileAccess::AsMut => |evm, _, _| {
-                    let _ = evm.precompiles_as_mut::<Precompiles<BaseEvmTypes>>();
+                    evm.assert_precompiles_downcast_mutable();
                     Ok(PrecompileOutput::new(Bytes::new()))
                 },
                 PrecompileAccess::Set => |evm, _, _| {
@@ -2185,7 +2213,6 @@ mod tests {
     fn immutable_precompile_access_is_allowed_during_execution() {
         let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
             let _ = evm.precompiles();
-            let _ = evm.precompiles_as::<Precompiles<BaseEvmTypes>>();
             Ok(PrecompileOutput::new(Bytes::new()))
         })]);
         let mut evm = Evm::<BaseEvmTypes>::new(

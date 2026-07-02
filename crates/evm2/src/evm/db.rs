@@ -394,19 +394,22 @@ mod tests {
         }
 
         fn get_block_hash(&mut self, _number: &Word) -> DbResult<Option<B256>> {
-            Ok(None)
+            Ok(Some(B256::from([*self.value; 32])))
         }
     }
 
     #[test]
-    fn database_downcast_erases_lifetimes() {
+    fn borrowed_database_can_be_erased() {
         let value = 1;
-        let db = BorrowingDb { value: &value };
-        let erased = &db as &dyn DynDatabase;
+        let mut erased = boxed_dyn_database(BorrowingDb { value: &value });
 
-        let downcasted = erased.downcast_ref::<BorrowingDb<'static>>().unwrap();
-        let static_value: &'static u8 = downcasted.value;
+        assert_eq!(erased.get_block_hash(&Word::ZERO).unwrap(), Some(B256::from([value; 32])));
+    }
 
-        assert_eq!(static_value as *const u8, &value as *const u8);
+    #[test]
+    fn static_database_can_be_downcast() {
+        let erased: Box<dyn DynDatabase + 'static> = boxed_dyn_database(EmptyDB::default());
+
+        assert!(erased.downcast_ref::<EmptyDB>().is_some());
     }
 }
