@@ -533,6 +533,13 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
+    pub(crate) fn inspect_exit(&mut self) {
+        if let Some(mut inspector) = self.0.inspector {
+            unsafe { inspector.as_mut() }.exit(&mut self.0);
+        }
+    }
+
+    #[inline]
     pub(crate) fn inspect_selfdestruct(
         &mut self,
         contract: &Address,
