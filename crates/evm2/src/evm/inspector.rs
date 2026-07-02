@@ -1,35 +1,36 @@
 //! EVM execution inspection hooks.
 
 use crate::{
-    EvmTypes,
+    EvmTypesHost,
+    evm::NonStaticAny,
     interpreter::{Interpreter, Message, MessageResult},
 };
+use alloc::boxed::Box;
 use alloy_primitives::{Address, Log, U256};
-use core::any::Any;
 
 /// EVM execution inspector.
-pub trait Inspector<T: EvmTypes>: Any {
+pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Called after a frame interpreter has been initialized.
     #[inline]
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
     }
 
     /// Called before each instruction executes.
     #[inline]
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
     }
 
     /// Called after each instruction executes.
     #[inline]
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
     }
 
     /// Called when a log is emitted.
     #[inline]
-    fn log(&mut self, log: &Log, host: &mut T::Host) {
+    fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {
         let _ = log;
         let _ = host;
     }
@@ -41,7 +42,7 @@ pub trait Inspector<T: EvmTypes>: Any {
     #[inline]
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         let _ = interp;
@@ -53,7 +54,7 @@ pub trait Inspector<T: EvmTypes>: Any {
     #[inline]
     fn call_end(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -69,7 +70,7 @@ pub trait Inspector<T: EvmTypes>: Any {
     #[inline]
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         let _ = interp;
@@ -81,7 +82,7 @@ pub trait Inspector<T: EvmTypes>: Any {
     #[inline]
     fn create_end(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -97,7 +98,7 @@ pub trait Inspector<T: EvmTypes>: Any {
         contract: &Address,
         target: &Address,
         value: &U256,
-        host: &mut T::Host,
+        host: &mut T::Host<'_>,
     ) {
         let _ = contract;
         let _ = target;
@@ -106,15 +107,22 @@ pub trait Inspector<T: EvmTypes>: Any {
     }
 }
 
+#[inline]
+pub(crate) fn boxed_inspector<'a, T: EvmTypesHost>(
+    inspector: impl Inspector<T> + 'a,
+) -> Box<dyn Inspector<T> + 'a> {
+    Box::new(inspector)
+}
+
 /// Inspector that does nothing.
 #[allow(missing_copy_implementations)]
 #[derive(Clone, Debug, Default)]
 pub struct NoopInspector(());
 
-impl<T: EvmTypes> Inspector<T> for NoopInspector {}
+impl<T: EvmTypesHost> Inspector<T> for NoopInspector {}
 
-impl<T: EvmTypes> core::ops::Deref for dyn Inspector<T> + '_ {
-    type Target = dyn Any;
+impl<'a, T: EvmTypesHost> core::ops::Deref for dyn Inspector<T> + 'a {
+    type Target = dyn NonStaticAny + 'a;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -122,7 +130,7 @@ impl<T: EvmTypes> core::ops::Deref for dyn Inspector<T> + '_ {
     }
 }
 
-impl<T: EvmTypes> core::ops::DerefMut for dyn Inspector<T> + '_ {
+impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn Inspector<T> + 'a {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self
@@ -133,7 +141,8 @@ impl<T: EvmTypes> core::ops::DerefMut for dyn Inspector<T> + '_ {
 mod tests {
     use super::Inspector;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmTypes, ExecutionConfig, Precompiles, SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmTypesHost, ExecutionConfig, Precompiles,
+        SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnv, TxEnv},
@@ -154,13 +163,13 @@ mod tests {
         selfdestruct: Option<(Address, Address, Word)>,
     }
 
-    impl<T: EvmTypes> Inspector<T> for SelfdestructInspector {
+    impl<T: EvmTypesHost> Inspector<T> for SelfdestructInspector {
         fn selfdestruct(
             &mut self,
             contract: &Address,
             target: &Address,
             value: &Word,
-            _host: &mut T::Host,
+            _host: &mut T::Host<'_>,
         ) {
             self.selfdestruct = Some((*contract, *target, *value));
         }
@@ -178,7 +187,7 @@ mod tests {
     impl Inspector<BaseEvmTypes> for HookInspector {
         fn call(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.call_depths.push(message.depth);
@@ -187,7 +196,7 @@ mod tests {
 
         fn call_end(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             _message: &Message<BaseEvmTypes>,
             result: &mut MessageResult<BaseEvmTypes>,
         ) {
@@ -196,7 +205,7 @@ mod tests {
 
         fn create(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.create_depths.push(message.depth);
@@ -206,7 +215,7 @@ mod tests {
 
         fn create_end(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             _message: &Message<BaseEvmTypes>,
             result: &mut MessageResult<BaseEvmTypes>,
         ) {
@@ -224,7 +233,7 @@ mod tests {
     impl Inspector<BaseEvmTypes> for OverrideCallInspector {
         fn call(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             if message.depth < self.min_depth {
@@ -238,7 +247,7 @@ mod tests {
 
         fn call_end(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &Message<BaseEvmTypes>,
             result: &mut MessageResult<BaseEvmTypes>,
         ) {
@@ -257,7 +266,7 @@ mod tests {
     impl Inspector<BaseEvmTypes> for OverrideCreateInspector {
         fn create(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.create_depth = Some(message.depth);
@@ -271,7 +280,7 @@ mod tests {
 
         fn create_end(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             _message: &Message<BaseEvmTypes>,
             result: &mut MessageResult<BaseEvmTypes>,
         ) {
@@ -284,8 +293,8 @@ mod tests {
         logs: Vec<Log>,
     }
 
-    impl<T: EvmTypes> Inspector<T> for LogInspector {
-        fn log(&mut self, log: &Log, _host: &mut T::Host) {
+    impl<T: EvmTypesHost> Inspector<T> for LogInspector {
+        fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
             self.logs.push(log.clone());
         }
     }
@@ -306,25 +315,25 @@ mod tests {
     }
 
     impl Inspector<BaseEvmTypes> for SharedE2eInspector {
-        fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
+        fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
             self.state.initialized += 1;
         }
 
-        fn step(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
+        fn step(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
             self.state.steps += 1;
         }
 
-        fn step_end(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
+        fn step_end(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
             self.state.step_ends += 1;
         }
 
-        fn log(&mut self, log: &Log, _host: &mut Evm<BaseEvmTypes>) {
+        fn log(&mut self, log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
             self.state.logs.push(log.clone());
         }
 
         fn call(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             _message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.state.calls += 1;
@@ -333,7 +342,7 @@ mod tests {
 
         fn create(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             _message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.state.creates += 1;
@@ -346,7 +355,7 @@ mod tests {
         message: &Message<BaseEvmTypes>,
         gas_limit: u64,
         inspector: I,
-    ) -> (MessageResult<BaseEvmTypes>, Box<I>, Evm<BaseEvmTypes>) {
+    ) -> (MessageResult<BaseEvmTypes>, Box<I>, Evm<'static, BaseEvmTypes>) {
         run_evm_with_inspector_db(InMemoryDB::default(), code, message, gas_limit, inspector)
     }
 
@@ -356,7 +365,7 @@ mod tests {
         message: &Message<BaseEvmTypes>,
         gas_limit: u64,
         inspector: I,
-    ) -> (MessageResult<BaseEvmTypes>, Box<I>, Evm<BaseEvmTypes>) {
+    ) -> (MessageResult<BaseEvmTypes>, Box<I>, Evm<'static, BaseEvmTypes>) {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -410,12 +419,12 @@ mod tests {
             step_ends: usize,
         }
 
-        impl<T: EvmTypes> Inspector<T> for StepInspector {
-            fn step(&mut self, _interp: &mut Interpreter<'_, T>) {
+        impl<T: EvmTypesHost> Inspector<T> for StepInspector {
+            fn step(&mut self, _interp: &mut Interpreter<'_, '_, T>) {
                 self.steps += 1;
             }
 
-            fn step_end(&mut self, _interp: &mut Interpreter<'_, T>) {
+            fn step_end(&mut self, _interp: &mut Interpreter<'_, '_, T>) {
                 self.step_ends += 1;
             }
         }
@@ -442,8 +451,8 @@ mod tests {
             stack: Vec<Word>,
         }
 
-        impl<T: EvmTypes> Inspector<T> for StopOnStepInspector {
-            fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+        impl<T: EvmTypesHost> Inspector<T> for StopOnStepInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
                 self.steps += 1;
                 if interp.opcode() == self.opcode {
                     self.stack = interp.stack().to_vec();
@@ -451,7 +460,7 @@ mod tests {
                 }
             }
 
-            fn step_end(&mut self, _interp: &mut Interpreter<'_, T>) {
+            fn step_end(&mut self, _interp: &mut Interpreter<'_, '_, T>) {
                 self.step_ends += 1;
             }
         }
@@ -480,13 +489,13 @@ mod tests {
             stack: Vec<Word>,
         }
 
-        impl<T: EvmTypes> Inspector<T> for StopOnStepEndInspector {
-            fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+        impl<T: EvmTypesHost> Inspector<T> for StopOnStepEndInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
                 self.steps += 1;
                 self.last_opcode = Some(interp.opcode());
             }
 
-            fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+            fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
                 self.step_ends += 1;
                 if self.last_opcode == Some(self.opcode) {
                     self.stack = interp.stack().to_vec();
@@ -589,7 +598,7 @@ mod tests {
         impl Inspector<BaseEvmTypes> for MutateCallInspector {
             fn call(
                 &mut self,
-                _interp: &mut Interpreter<'_, BaseEvmTypes>,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 if message.depth > 0 {
@@ -654,7 +663,7 @@ mod tests {
         impl Inspector<BaseEvmTypes> for CallEndInspector {
             fn call(
                 &mut self,
-                _interp: &mut Interpreter<'_, BaseEvmTypes>,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 if message.depth == 0 {
@@ -669,7 +678,7 @@ mod tests {
 
             fn call_end(
                 &mut self,
-                _interp: &mut Interpreter<'_, BaseEvmTypes>,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &Message<BaseEvmTypes>,
                 result: &mut MessageResult<BaseEvmTypes>,
             ) {
@@ -777,7 +786,7 @@ mod tests {
         impl Inspector<BaseEvmTypes> for CreateEndInspector {
             fn create(
                 &mut self,
-                _interp: &mut Interpreter<'_, BaseEvmTypes>,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 Some(MessageResult {
@@ -789,7 +798,7 @@ mod tests {
 
             fn create_end(
                 &mut self,
-                _interp: &mut Interpreter<'_, BaseEvmTypes>,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 _message: &Message<BaseEvmTypes>,
                 result: &mut MessageResult<BaseEvmTypes>,
             ) {
@@ -852,12 +861,12 @@ mod tests {
             step_ends: usize,
         }
 
-        impl<T: EvmTypes> Inspector<T> for FailingStepInspector {
-            fn step(&mut self, _interp: &mut Interpreter<'_, T>) {
+        impl<T: EvmTypesHost> Inspector<T> for FailingStepInspector {
+            fn step(&mut self, _interp: &mut Interpreter<'_, '_, T>) {
                 self.steps += 1;
             }
 
-            fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+            fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
                 let _ = interp;
                 self.step_ends += 1;
             }

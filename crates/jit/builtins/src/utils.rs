@@ -43,7 +43,7 @@ impl<T> OkOrFatal<T> for Option<T> {
 }
 
 #[inline]
-pub(crate) fn require_non_staticcall(ecx: &EvmContext<'_>) -> BuiltinResult {
+pub(crate) fn require_non_staticcall(ecx: &EvmContext<'_, '_, '_>) -> BuiltinResult {
     if ecx.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall.into());
     }
@@ -59,7 +59,7 @@ pub(crate) fn word_to_u64_saturated(value: U256) -> u64 {
 ///
 /// Pre-Berlin, `cold_account_additional_cost` is 0, so the cold load logic is a no-op.
 pub(crate) fn load_account(
-    ecx: &mut EvmContext<'_>,
+    ecx: &mut EvmContext<'_, '_, '_>,
     address: &Address,
     load_code: bool,
 ) -> Result<AccountLoad, BuiltinError> {
@@ -99,13 +99,17 @@ pub(crate) unsafe fn read_words_rev<'a, const N: usize>(sp: *mut EvmWord) -> &'a
 }
 
 #[inline]
-pub(crate) fn ensure_memory(ecx: &mut EvmContext<'_>, offset: usize, len: usize) -> BuiltinResult {
+pub(crate) fn ensure_memory(
+    ecx: &mut EvmContext<'_, '_, '_>,
+    offset: usize,
+    len: usize,
+) -> BuiltinResult {
     ecx.resize_memory(offset, len)?;
     Ok(())
 }
 
 pub(crate) unsafe fn copy_operation(
-    ecx: &mut EvmContext<'_>,
+    ecx: &mut EvmContext<'_, '_, '_>,
     rev![memory_offset, data_offset, len]: &mut [EvmWord; 3],
     data: &[u8],
 ) -> BuiltinResult {

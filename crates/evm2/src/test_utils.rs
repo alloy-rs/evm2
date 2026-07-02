@@ -1,5 +1,5 @@
 use crate::{
-    BaseEvmConfigSelector, EvmFeatures, EvmTypes, ExecutionConfig, SpecId,
+    BaseEvmConfigSelector, EvmFeatures, EvmTypesHost, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, TxEnv},
@@ -17,7 +17,7 @@ use core::{assert_matches, ops::Range};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct TestTypes;
 
-impl EvmTypes for TestTypes {
+impl EvmTypesHost for TestTypes {
     type ConfigSelector = crate::BaseEvmConfigSelector;
     type SpecId = crate::SpecId;
     type Tx = ();
@@ -26,7 +26,7 @@ impl EvmTypes for TestTypes {
     type TxEnvExt = ();
     type TxResultExt = ();
     type BlockEnvExt = ();
-    type Host = TestHost;
+    type Host<'a> = TestHost;
 }
 
 #[derive(Debug)]

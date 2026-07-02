@@ -10,7 +10,7 @@ mod legacy;
 pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
-    Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
+    Evm, EvmFeatures, EvmTypes, EvmTypesHost, SpecId, TxResult, Version,
     bytecode::Bytecode,
     evm::{AccountInfo, StateCheckpoint, error_handler},
     interpreter::{
@@ -180,7 +180,7 @@ impl Typed2718 for RecoveredTxEnvelope {
 }
 
 /// Returns the Ethereum transaction registry for `spec_id`.
-pub fn ethereum_tx_registry<T: EvmTypes<Tx = RecoveredTxEnvelope, Host = Evm<T>>>(
+pub fn ethereum_tx_registry<T: EvmTypes<Tx = RecoveredTxEnvelope>>(
     spec_id: SpecId,
 ) -> TxRegistry<T, TxResult<T>> {
     let mut registry =
@@ -347,8 +347,8 @@ pub(super) const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> Handle
     Ok(())
 }
 
-pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(super) fn validate_sender<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
     max_upfront: U256,
@@ -376,8 +376,8 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
     Ok(sender.get().cloned().unwrap_or_default())
 }
 
-pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(super) fn warm_base_accounts<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     to: TxKind,
 ) {
@@ -391,10 +391,7 @@ pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
     host.warm_precompiles();
 }
 
-pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
-    access_list: &AccessList,
-) {
+pub(super) fn warm_access_list<'a, T: EvmTypes>(host: &mut Evm<'a, T>, access_list: &AccessList) {
     for item in access_list.iter() {
         host.state.prewarm_storage(
             &item.address,
@@ -403,8 +400,8 @@ pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
-pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(super) fn charge_upfront<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     max_gas_cost: U256,
 ) -> HandlerResult<()> {
@@ -476,8 +473,8 @@ pub(super) fn initial_gas_and_reservoir(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(crate) fn initial_message<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
     to: TxKind,
@@ -538,8 +535,8 @@ struct InitialCallCode {
     disable_precompiles: bool,
 }
 
-fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+fn initial_call_code<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     to: Address,
 ) -> HandlerResult<InitialCallCode> {
     let code = host
@@ -564,8 +561,8 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     Ok(InitialCallCode { code, code_address: to, disable_precompiles: false })
 }
 
-pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(super) fn rollback_failed_execution<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     checkpoint: StateCheckpoint,
     result: &mut MessageResult<T>,
 ) {
@@ -587,7 +584,7 @@ pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
 /// never actually consumed) or when it succeeded at a pre-existing alive (balance-only) target (no
 /// new leaf was created — execution-specs `created_target_alive`). No-op when `create_state_gas` is
 /// zero (non-create or pre-Amsterdam).
-pub(super) const fn refund_create_state_gas<T: EvmTypes<Host = Evm<T>>>(
+pub(super) const fn refund_create_state_gas<T: EvmTypesHost>(
     result: &mut MessageResult<T>,
     create_state_gas: u64,
 ) {
@@ -598,8 +595,8 @@ pub(super) const fn refund_create_state_gas<T: EvmTypes<Host = Evm<T>>>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(super) fn settle_gas<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     gas_price: U256,
     tx_gas_limit: u64,
@@ -683,7 +680,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     })
 }
 
-const fn final_tx_gas<T: EvmTypes>(
+const fn final_tx_gas<T: EvmTypesHost>(
     result: &MessageResult<T>,
     tx_gas_limit: u64,
     is_eip3529: bool,

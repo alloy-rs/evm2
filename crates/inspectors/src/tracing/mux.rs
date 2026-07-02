@@ -8,7 +8,7 @@ use alloy_rpc_types_trace::geth::{
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
-    Evm, EvmTypes, Inspector, TxResultWithState,
+    EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
     evm::{DbResult, DynDatabase},
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -103,7 +103,7 @@ impl MuxInspector {
     }
 
     /// Try converting this [MuxInspector] into a [MuxFrame].
-    pub fn try_into_mux_frame<T: EvmTypes>(
+    pub fn try_into_mux_frame<T: EvmTypesHost>(
         &self,
         result: &TxResultWithState<T>,
         db: &mut dyn DynDatabase,
@@ -162,9 +162,9 @@ impl MuxInspector {
     }
 }
 
-impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
+impl<T: EvmTypes> Inspector<T> for MuxInspector {
     #[inline]
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if let Some(ref mut inspector) = self.four_byte {
             inspector.initialize_interp(interp);
         }
@@ -174,7 +174,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
     }
 
     #[inline]
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if let Some(ref mut inspector) = self.four_byte {
             inspector.step(interp);
         }
@@ -184,7 +184,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
     }
 
     #[inline]
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if let Some(ref mut inspector) = self.four_byte {
             inspector.step_end(interp);
         }
@@ -194,7 +194,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
     }
 
     #[inline]
-    fn log(&mut self, log: &Log, host: &mut T::Host) {
+    fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {
         if let Some(ref mut inspector) = self.four_byte {
             <FourByteInspector as Inspector<T>>::log(inspector, log, host);
         }
@@ -206,7 +206,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
     #[inline]
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         if let Some(ref mut inspector) = self.four_byte {
@@ -221,7 +221,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
     #[inline]
     fn call_end(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -236,7 +236,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
     #[inline]
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         if let Some(ref mut inspector) = self.four_byte {
@@ -251,7 +251,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
     #[inline]
     fn create_end(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -269,7 +269,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
         contract: &Address,
         target: &Address,
         value: &U256,
-        host: &mut T::Host,
+        host: &mut T::Host<'_>,
     ) {
         if let Some(ref mut inspector) = self.four_byte {
             <FourByteInspector as Inspector<T>>::selfdestruct(

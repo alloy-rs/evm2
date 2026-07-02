@@ -9,7 +9,7 @@ use evm2::{
 use evm2_cli::evm_bench::BenchCase;
 use std::borrow::Cow;
 
-type BenchEvm = Evm<BaseEvmTypes>;
+type BenchEvm = Evm<'static, BaseEvmTypes>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedBench {

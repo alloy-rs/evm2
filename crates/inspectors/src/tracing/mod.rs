@@ -15,7 +15,7 @@ use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use core::mem;
 use evm2::{
-    Evm, EvmTypes, Inspector, SpecId,
+    Evm, EvmTypes, EvmTypesHost, Inspector, SpecId,
     evm::JournalEntry,
     interpreter::{
         Interpreter, Message, MessageKind, MessageResult,
@@ -265,9 +265,9 @@ impl TracingInspector {
     ///
     /// Returns true if the `to` address is a precompile contract and the value is zero.
     #[inline]
-    fn is_precompile_call<T: EvmTypes<Host = Evm<T>>>(
+    fn is_precompile_call<T: EvmTypes>(
         &self,
-        host: &Evm<T>,
+        host: &Evm<'_, T>,
         to: &Address,
         value: &U256,
     ) -> bool {
@@ -371,7 +371,7 @@ impl TracingInspector {
     /// # Panics
     ///
     /// This expects an existing trace [Self::start_trace_on_call]
-    fn fill_trace_on_call_end<T: EvmTypes>(&mut self, result: &MessageResult<T>) {
+    fn fill_trace_on_call_end<T: EvmTypesHost>(&mut self, result: &MessageResult<T>) {
         let trace_idx = self.pop_trace_idx();
         let trace = &mut self.traces.arena[trace_idx].trace;
 
@@ -397,7 +397,7 @@ impl TracingInspector {
     /// This expects an existing [CallTrace], in other words, this panics if not within the context
     /// of a call.
     #[cold]
-    fn start_step<T: EvmTypes<Host = Evm<T>>>(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn start_step<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         // We always want an OpCode, even it is unknown because it could be an additional opcode
         // that not a known constant.
         let op = OpCode::new_or_unknown(interp.opcode());
@@ -485,10 +485,7 @@ impl TracingInspector {
     ///
     /// Invoked on [Inspector::step_end].
     #[cold]
-    fn fill_step_on_step_end<T: EvmTypes<Host = Evm<T>>>(
-        &mut self,
-        interp: &mut Interpreter<'_, T>,
-    ) {
+    fn fill_step_on_step_end<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let Some((trace_idx, step_idx)) = self.step_stack.pop() else {
             return;
         };
@@ -567,22 +564,22 @@ impl TracingInspector {
     }
 }
 
-impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
+impl<T: EvmTypes> Inspector<T> for TracingInspector {
     #[inline]
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if self.config.record_steps {
             self.start_step(interp);
         }
     }
 
     #[inline]
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if self.config.record_steps {
             self.fill_step_on_step_end(interp);
         }
     }
 
-    fn log(&mut self, log: &Log, _host: &mut T::Host) {
+    fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
         if self.config.record_logs {
             // index starts at 0
             let log_count = self.log_count();
@@ -598,7 +595,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
 
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // determine correct `from` and `to` based on the call scheme
@@ -637,7 +634,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
 
     fn call_end(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -646,7 +643,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
 
     fn create(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         self.start_trace_on_call(
@@ -664,7 +661,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
 
     fn create_end(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -676,7 +673,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
         contract: &Address,
         target: &Address,
         value: &U256,
-        _host: &mut T::Host,
+        _host: &mut T::Host<'_>,
     ) {
         let node = self.last_trace();
         node.trace.selfdestruct_address = Some(*contract);

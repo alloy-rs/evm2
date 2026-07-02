@@ -1152,7 +1152,7 @@ impl core::fmt::Debug for EvmDbRef {
 
 impl EvmDbRef {
     /// Creates a new evm and db JS object over the in-flight state.
-    pub(crate) fn new_state(state: &mut State) -> (Self, EvmDbGuard<'_>) {
+    pub(crate) fn new_state<'a, 'db>(state: &'a mut State<'db>) -> (Self, EvmDbGuard<'a>) {
         Self::new_reader(StateDbReader { state })
     }
 
@@ -1332,11 +1332,11 @@ impl core::fmt::Debug for dyn EvmDbReader {
     }
 }
 
-struct StateDbReader<'a> {
-    state: &'a mut State,
+struct StateDbReader<'a, 'db> {
+    state: &'a mut State<'db>,
 }
 
-impl EvmDbReader for StateDbReader<'_> {
+impl EvmDbReader for StateDbReader<'_, '_> {
     fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         self.state.account_info_untracked(address)
     }

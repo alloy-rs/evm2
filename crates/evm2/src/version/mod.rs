@@ -1,7 +1,7 @@
 //! EVM version definitions.
 
 use crate::{
-    EvmConfig, EvmTypes, SpecId,
+    EvmConfig, EvmTypesHost, SpecId,
     constants::{
         BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE, MAX_CODE_SIZE,
         MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
@@ -212,7 +212,7 @@ macro_rules! evm_versions {
             gp
         }
 
-        const fn base_opcode_config<T: EvmTypes, Cfg: EvmConfig<T>>() -> OpcodeConfig<T> {
+        const fn base_opcode_config<T: EvmTypesHost, Cfg: EvmConfig<T>>() -> OpcodeConfig<T> {
             use crate::interpreter::gas::*;
 
             let spec_id = Cfg::BASE_SPEC_ID;

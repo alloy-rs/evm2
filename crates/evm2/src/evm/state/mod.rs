@@ -22,7 +22,7 @@ pub use tracked::Tracked;
 
 use super::{
     PrewarmSet,
-    db::{CacheDB, DbResult, DynDatabase},
+    db::{CacheDB, DbResult, DynDatabase, boxed_dyn_database},
 };
 use crate::{
     ErrorCode, EvmFeatures, Version,
@@ -44,7 +44,7 @@ use derive_where::derive_where;
 /// Mutable EVM state with an accepted-state cache, transaction layer, and reversible journal.
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct State {
+pub struct State<'a> {
     /// Account writes plus touch and warm-access metadata for the current transaction.
     accounts: AddressMap<Account>,
     /// Persistent storage writes plus warm slot metadata for the current transaction.
@@ -52,18 +52,18 @@ pub struct State {
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
     transient_storage: StorageKeyMap<Word>,
     /// Inner state.
-    inner: StateInner,
+    inner: StateInner<'a>,
 }
 
-impl Deref for State {
-    type Target = StateInner;
+impl<'a> Deref for State<'a> {
+    type Target = StateInner<'a>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl DerefMut for State {
+impl<'a> DerefMut for State<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
@@ -78,10 +78,10 @@ impl DerefMut for State {
 /// derefs to this type, so its fields and methods are reachable directly on a [`State`].
 #[derive_where(Debug)]
 #[non_exhaustive]
-pub struct StateInner {
+pub struct StateInner<'a> {
     /// Database plus accepted transaction-boundary state overlay.
     #[derive_where(skip)]
-    database: CacheDB<Box<dyn DynDatabase>>,
+    database: CacheDB<Box<dyn DynDatabase + 'a>>,
     /// Pre-warmed set: precompiles, coinbase, and the EIP-2930 access list.
     prewarm_set: PrewarmSet,
     /// Revert journal.
@@ -92,13 +92,13 @@ pub struct StateInner {
     selfdestructs: AddressSet,
 }
 
-impl State {
+impl<'a> State<'a> {
     /// Creates a new state over an initial database.
-    pub fn new(initial: impl DynDatabase) -> Self {
-        Self::new_mono(Box::new(initial))
+    pub fn new(initial: impl DynDatabase + 'a) -> Self {
+        Self::new_mono(boxed_dyn_database(initial))
     }
 
-    pub(crate) fn new_mono(initial: Box<dyn DynDatabase>) -> Self {
+    pub(crate) fn new_mono(initial: Box<dyn DynDatabase + 'a>) -> Self {
         Self {
             accounts: AddressMap::default(),
             storage: AddressMap::default(),
@@ -121,32 +121,32 @@ impl State {
 
     /// Returns the initial database.
     #[inline]
-    pub fn initial(&self) -> &dyn DynDatabase {
+    pub fn initial(&self) -> &(dyn DynDatabase + 'a) {
         self.database.db.as_ref()
     }
 
     /// Returns the initial database mutably.
     #[inline]
-    pub fn initial_mut(&mut self) -> &mut dyn DynDatabase {
+    pub fn initial_mut(&mut self) -> &mut (dyn DynDatabase + 'a) {
         self.database.db.as_mut()
     }
 
     /// Replaces the initial database and clears all in-memory state layers.
     #[inline]
-    pub fn set_initial(&mut self, initial: impl DynDatabase) {
-        self.database = CacheDB::new(Box::new(initial));
+    pub fn set_initial(&mut self, initial: impl DynDatabase + 'a) {
+        self.database = CacheDB::new(boxed_dyn_database(initial));
         self.clear_transaction_state();
     }
 
     /// Returns the accepted-state overlay database.
     #[inline]
-    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase>> {
+    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase + 'a>> {
         &self.inner.database
     }
 
     /// Returns the accepted-state overlay database mutably.
     #[inline]
-    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase>> {
+    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase + 'a>> {
         &mut self.inner.database
     }
 
@@ -279,12 +279,12 @@ impl State {
     /// harmless read cache that [`Self::rollback`] leaves in place. Only later warmth and value
     /// changes are journaled and reverted.
     #[inline(always)]
-    fn account_raw<'a>(
-        inner: &mut StateInner,
-        accounts: &'a mut AddressMap<Account>,
+    fn account_raw<'h>(
+        inner: &mut StateInner<'a>,
+        accounts: &'h mut AddressMap<Account>,
         address: &Address,
         skip_cold: bool,
-    ) -> DbResult<&'a mut Account> {
+    ) -> DbResult<&'h mut Account> {
         match accounts.entry(*address) {
             hash_map::Entry::Occupied(entry) => {
                 // An already-loaded account has no cold database read to skip, so the skip only
@@ -325,7 +325,7 @@ impl State {
         &mut self,
         address: &Address,
         skip_cold_load: bool,
-    ) -> DbResult<AccountHandle<'_>> {
+    ) -> DbResult<AccountHandle<'_, 'a>> {
         Self::account_raw(&mut self.inner, &mut self.accounts, address, skip_cold_load)
             .map(|tracked| AccountHandle::new(*address, tracked, &mut self.inner))
     }
@@ -339,7 +339,7 @@ impl State {
     ///
     /// This does not load or touch the owning account; callers that need the account materialized
     /// must do so separately via [`Self::account`].
-    pub fn storage(&mut self, address: &Address) -> StorageHandle<'_> {
+    pub fn storage(&mut self, address: &Address) -> StorageHandle<'_, 'a> {
         let storage = self.storage.entry(*address).or_default();
         StorageHandle::new(*address, storage, &mut self.inner)
     }
@@ -355,7 +355,7 @@ impl State {
         address: &Address,
         key: Word,
         skip_cold_load: bool,
-    ) -> DbResult<StorageSlotHandle<'_>> {
+    ) -> DbResult<StorageSlotHandle<'_, 'a>> {
         self.storage(address).into_slot(key, skip_cold_load)
     }
 

@@ -103,19 +103,15 @@ impl AccessListInspector {
     /// top-level call.
     ///
     /// Those include caller, callee and precompiles.
-    fn collect_excluded_addresses<T: EvmTypes<Host = Evm<T>>>(
-        &mut self,
-        message: &Message<T>,
-        host: &Evm<T>,
-    ) {
+    fn collect_excluded_addresses<T: EvmTypes>(&mut self, message: &Message<T>, host: &Evm<'_, T>) {
         self.excluded.extend(
             [message.caller, message.destination].into_iter().chain(host.precompiles().addresses()),
         );
     }
 }
 
-impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+impl<T: EvmTypes> Inspector<T> for AccessListInspector {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         match interp.opcode() {
             op::SLOAD | op::SSTORE => {
                 if let Some([slot]) = interp.stack().peekn() {
@@ -152,7 +148,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
 
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.
@@ -164,7 +160,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
 
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.

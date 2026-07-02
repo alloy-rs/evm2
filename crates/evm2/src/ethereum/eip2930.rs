@@ -7,7 +7,7 @@ use super::{
     validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
-    Evm, EvmTypes, TxResult,
+    EvmTypes, TxResult,
     env::TxEnv,
     evm::error_handler,
     interpreter::Host,
@@ -16,8 +16,8 @@ use crate::{
 use alloy_consensus::{TxEip2930, transaction::Recovered};
 use alloy_primitives::U256;
 
-pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
-    req: TxRequest<'_, T, Recovered<TxEip2930>>,
+pub(super) fn handle<T: EvmTypes>(
+    req: TxRequest<'_, '_, T, Recovered<TxEip2930>>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();

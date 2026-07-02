@@ -49,7 +49,7 @@ impl ExecuteCodeTx {
 }
 
 pub fn execute_code(
-    req: TxRequest<'_, CustomTypes, ExecuteCodeTx>,
+    req: TxRequest<'_, '_, CustomTypes, ExecuteCodeTx>,
 ) -> HandlerResult<evm2::TxResult<CustomTypes>> {
     // The transaction handler owns policy; the interpreter still executes a normal message.
     let mut message = Message {

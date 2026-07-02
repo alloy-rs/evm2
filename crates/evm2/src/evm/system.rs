@@ -81,7 +81,7 @@ impl SystemTx {
     }
 }
 
-impl<T: EvmTypes<Host = Self>> Evm<T> {
+impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Executes a system call.
     ///
     /// System calls bypass normal transaction validation, nonce updates, fee charging, gas refunds,
@@ -90,7 +90,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ///
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
-    pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, T>> {
+    pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         let SystemTx { caller, system_contract_address, data, .. } = tx;
         self.clear_top_level_error_state();
         self.state.prewarm(&system_contract_address);
@@ -161,7 +161,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     pub fn system_call_async(
         &mut self,
         tx: SystemTx,
-    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, HandlerError>> + '_ {
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, 'a, T>, HandlerError>> + '_ {
         let stack = self.async_stack();
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
         // access the EVM stack slot until that future is dropped.
@@ -177,7 +177,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     pub fn system_call_async_send(
         &mut self,
         tx: SystemTx,
-    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, HandlerError>> + Send + '_
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, 'a, T>, HandlerError>> + Send + '_
     {
         self.assert_erased_send();
         let stack = self.async_stack();
@@ -207,7 +207,7 @@ mod tests {
         registry::{HandlerError, TxRegistry},
     };
 
-    type TestEvm = Evm<BaseEvmTypes>;
+    type TestEvm = Evm<'static, BaseEvmTypes>;
 
     #[test]
     fn system_call_uses_system_sender_without_fee_accounting() {
@@ -380,7 +380,7 @@ mod tests {
         impl core::error::Error for TestPrecompileError {}
 
         fn fatal_precompile(
-            _evm: &mut Evm<BaseEvmTypes>,
+            _evm: &mut Evm<'_, BaseEvmTypes>,
             _message: &Message,
             _gas: &mut GasTracker,
         ) -> PrecompileResult {

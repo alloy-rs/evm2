@@ -1,4 +1,4 @@
-use crate::{BaseEvmTypes, EvmTypes};
+use crate::{BaseEvmTypes, EvmTypesHost};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use derive_where::derive_where;
 
@@ -31,7 +31,7 @@ impl MessageKind {
 
 /// Frame-local EVM call/create message executed by the interpreter.
 #[derive_where(Clone, Debug, Default, PartialEq, Eq; T::MessageExt)]
-pub struct Message<T: EvmTypes = BaseEvmTypes> {
+pub struct Message<T: EvmTypesHost = BaseEvmTypes> {
     /// Message kind.
     pub kind: MessageKind,
     /// Current call depth.

@@ -29,11 +29,11 @@ impl JitInterpreterRunner {
 
 impl InterpreterRunner<BaseEvmTypes> for JitInterpreterRunner {
     #[inline]
-    fn run(
+    fn run<'frame, 'host>(
         &self,
         config: &ExecutionConfig<BaseEvmTypes>,
-        interpreter: &mut Interpreter<'_, BaseEvmTypes>,
-        host: &mut Evm<BaseEvmTypes>,
+        interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+        host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
         run_interpreter(&self.backend, config, interpreter, host)
     }
@@ -44,11 +44,11 @@ impl InterpreterRunner<BaseEvmTypes> for JitInterpreterRunner {
 /// Returns `None` when no compiled program is available, leaving the caller to
 /// run the same frame through the evm2 interpreter.
 #[inline]
-pub fn run_interpreter(
+pub fn run_interpreter<'frame, 'host>(
     backend: &JitBackend,
     config: &ExecutionConfig<BaseEvmTypes>,
-    interpreter: &mut Interpreter<'_, BaseEvmTypes>,
-    host: &mut Evm<BaseEvmTypes>,
+    interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+    host: &mut Evm<'host, BaseEvmTypes>,
 ) -> Option<InstrStop> {
     let code = interpreter.original_bytecode();
     let decision = backend.lookup(LookupRequest {

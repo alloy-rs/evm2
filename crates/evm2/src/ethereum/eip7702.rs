@@ -17,8 +17,8 @@ use crate::{
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::U256;
 
-pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
-    req: TxRequest<'_, T, Recovered<super::LazyTxEip7702>>,
+pub(super) fn handle<T: EvmTypes>(
+    req: TxRequest<'_, '_, T, Recovered<super::LazyTxEip7702>>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
@@ -113,18 +113,15 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     )
 }
 
-fn eip7702_authorization_gas<T: EvmTypes<Host = Evm<T>>>(
-    host: &Evm<T>,
-    authorizations: usize,
-) -> u64 {
+fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations: usize) -> u64 {
     let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
     (authorizations as u64).saturating_mul(per_auth)
 }
 
 /// EIP-8037 per-authorization state gas (account + bytecode) charged before execution. Zero before
 /// Amsterdam.
-const fn eip7702_authorization_state_gas<T: EvmTypes<Host = Evm<T>>>(
-    host: &Evm<T>,
+const fn eip7702_authorization_state_gas<'a, T: EvmTypes>(
+    host: &Evm<'a, T>,
     authorizations: usize,
 ) -> u64 {
     (authorizations as u64).saturating_mul(host.version().gas_params.eip7702_auth_state_gas())
@@ -148,8 +145,8 @@ struct AppliedAuth {
 /// (setting code and bumping the nonce). Returns `Some` for an accepted authorization or `None` for
 /// a rejected one. Mirrors execution-specs `validate_authorization` + the per-auth body of
 /// `set_delegation`.
-fn apply_one_auth<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+fn apply_one_auth<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     chain_id: u64,
     authorization: &super::LazyAuthorization,
 ) -> HandlerResult<Option<AppliedAuth>> {
@@ -191,8 +188,8 @@ fn apply_one_auth<T: EvmTypes<Host = Evm<T>>>(
 ///
 /// Before EIP-8037 (Prague) there is no state gas: only the per-existing-account regular refund
 /// applies and rejected authorizations refund nothing.
-fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+fn apply_auth_list<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     chain_id: u64,
     authorizations: &[super::LazyAuthorization],
 ) -> HandlerResult<(u64, u64)> {

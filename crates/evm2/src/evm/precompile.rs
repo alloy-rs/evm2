@@ -1,13 +1,12 @@
 //! Precompile dispatch interface.
 
-use super::Evm;
+use super::{Evm, NonStaticAny};
 use crate::{
-    EvmTypes, PrecompileError,
+    EvmTypesHost, PrecompileError,
     interpreter::{GasTracker, Message},
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes};
-use core::any::Any;
 
 /// Result returned by a precompile.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -37,7 +36,7 @@ impl PrecompileOutput {
 }
 
 /// Precompile execution hook.
-pub trait PrecompileProvider<T: EvmTypes>: Any {
+pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     /// Returns precompile addresses.
     fn addresses(&self) -> Vec<Address> {
         Vec::new()
@@ -49,13 +48,36 @@ pub trait PrecompileProvider<T: EvmTypes>: Any {
     /// Executes the precompile at `address`, if one is registered.
     fn execute(
         &mut self,
-        evm: &mut Evm<T>,
+        evm: &mut Evm<'_, T>,
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
 }
 
-impl<T: EvmTypes, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for Box<P> {
+#[inline]
+pub(crate) fn boxed_precompile_provider<'a, T: EvmTypesHost>(
+    precompiles: impl PrecompileProvider<T> + 'a,
+) -> Box<dyn PrecompileProvider<T> + 'a> {
+    Box::new(precompiles)
+}
+
+impl<'a, T: EvmTypesHost> core::ops::Deref for dyn PrecompileProvider<T> + 'a {
+    type Target = dyn NonStaticAny + 'a;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self
+    }
+}
+
+impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn PrecompileProvider<T> + 'a {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self
+    }
+}
+
+impl<T: EvmTypesHost, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for Box<P> {
     #[inline]
     fn addresses(&self) -> Vec<Address> {
         self.as_ref().addresses()
@@ -69,7 +91,7 @@ impl<T: EvmTypes, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for B
     #[inline]
     fn execute(
         &mut self,
-        evm: &mut Evm<T>,
+        evm: &mut Evm<'_, T>,
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
@@ -82,7 +104,7 @@ impl<T: EvmTypes, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for B
 #[derive(Clone, Debug, Default)]
 pub struct NoPrecompiles(());
 
-impl<T: EvmTypes> PrecompileProvider<T> for NoPrecompiles {
+impl<T: EvmTypesHost> PrecompileProvider<T> for NoPrecompiles {
     #[inline]
     fn addresses(&self) -> Vec<Address> {
         Vec::new()
@@ -96,7 +118,7 @@ impl<T: EvmTypes> PrecompileProvider<T> for NoPrecompiles {
     #[inline]
     fn execute(
         &mut self,
-        _evm: &mut Evm<T>,
+        _evm: &mut Evm<'_, T>,
         _message: &Message<T>,
         _gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {

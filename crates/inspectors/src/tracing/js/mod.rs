@@ -23,7 +23,7 @@ use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
 pub use boa_engine::vm::RuntimeLimits;
 use boa_engine::{Context, JsError, JsObject, JsResult, JsValue, Source, js_string};
 use evm2::{
-    Evm, EvmTypes, Inspector, TxResultWithState,
+    Evm, EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
     env::BlockEnv,
     ethereum::RecoveredTxEnvelope,
     evm::DynDatabase,
@@ -273,7 +273,7 @@ impl JsInspector {
     /// Calls the result function and returns the result as [serde_json::Value].
     ///
     /// Note: This is supposed to be called after the inspection has finished.
-    pub fn json_result<T: EvmTypes>(
+    pub fn json_result<T: EvmTypesHost>(
         &mut self,
         res: &TxResultWithState<T>,
         tx: &RecoveredTxEnvelope,
@@ -285,7 +285,7 @@ impl JsInspector {
     }
 
     /// Calls the result function and returns the result.
-    pub fn result<T: EvmTypes>(
+    pub fn result<T: EvmTypesHost>(
         &mut self,
         res: &TxResultWithState<T>,
         tx: &RecoveredTxEnvelope,
@@ -441,7 +441,7 @@ impl JsInspector {
     }
 
     /// Registers the precompiles in the JS context
-    fn register_precompiles<T: EvmTypes<Host = Evm<T>>>(&mut self, host: &Evm<T>) {
+    fn register_precompiles<T: EvmTypes>(&mut self, host: &Evm<'_, T>) {
         if self.precompiles_registered {
             return;
         }
@@ -453,8 +453,8 @@ impl JsInspector {
     }
 }
 
-impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+impl<T: EvmTypes> Inspector<T> for JsInspector {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if self.step_fn.is_none() {
             return;
         }
@@ -488,7 +488,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         });
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if self.step_fn.is_none() {
             return;
         }
@@ -549,7 +549,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
 
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         self.register_precompiles(interp.host());
@@ -587,7 +587,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
 
     fn call_end(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -607,7 +607,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
 
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         self.register_precompiles(interp.host());
@@ -634,7 +634,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
 
     fn create_end(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -657,7 +657,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         _contract: &Address,
         _target: &Address,
         _value: &U256,
-        _host: &mut T::Host,
+        _host: &mut T::Host<'_>,
     ) {
         // This is exempt from the root call constraint, because selfdestruct is treated as a
         // new scope that is entered and immediately exited.
@@ -722,7 +722,7 @@ pub enum JsInspectorError {
 
 /// Converts a JavaScript error into a [InstrStop::Revert] [MessageResult].
 #[inline]
-fn js_error_to_revert<T: EvmTypes>(err: JsError) -> MessageResult<T> {
+fn js_error_to_revert<T: EvmTypesHost>(err: JsError) -> MessageResult<T> {
     let output = err.to_string().as_bytes().to_vec();
     MessageResult {
         stop: InstrStop::Revert,

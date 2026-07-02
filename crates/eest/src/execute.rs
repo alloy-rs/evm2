@@ -388,8 +388,8 @@ fn spec_outcome(post: InMemoryDB, result: TxResult) -> SpecOutcome {
     }
 }
 
-fn pre_block_system_calls<T: EvmTypes<Host = Evm<T>>>(
-    evm: &mut Evm<T>,
+fn pre_block_system_calls<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
     post: &mut InMemoryDB,
     spec: SpecId,
     env: &Env,
@@ -422,8 +422,8 @@ fn pre_block_system_calls<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
-fn commit_system_call<T: EvmTypes<Host = Evm<T>>>(
-    evm: &mut Evm<T>,
+fn commit_system_call<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
     post: &mut InMemoryDB,
     address: Address,
     data: Bytes,

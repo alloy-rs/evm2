@@ -621,7 +621,7 @@ impl PreparedBench {
         Ok(())
     }
 
-    fn new_evm(&self) -> Evm<BaseEvmTypes> {
+    fn new_evm(&self) -> Evm<'static, BaseEvmTypes> {
         Evm::new(
             self.spec_id,
             self.block,
@@ -638,11 +638,11 @@ struct FixedJitRunner {
 }
 
 impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
-    fn run(
+    fn run<'frame, 'host>(
         &self,
         config: &ExecutionConfig<BaseEvmTypes>,
-        interpreter: &mut Interpreter<'_, BaseEvmTypes>,
-        host: &mut Evm<BaseEvmTypes>,
+        interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+        host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
         let code = interpreter.original_bytecode();
         let func = *self.functions.get(&keccak256(&code))?;

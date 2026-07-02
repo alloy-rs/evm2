@@ -2,7 +2,7 @@ use alloc::string::ToString;
 use alloy_primitives::map::HashMap;
 use alloy_rpc_types_trace::opcode::OpcodeGas;
 use evm2::{
-    EvmTypes, Inspector,
+    EvmTypesHost, Inspector,
     interpreter::{
         Interpreter, Message, MessageKind, MessageResult,
         opcode::{OpCode, op},
@@ -67,8 +67,8 @@ impl OpcodeGasInspector {
     }
 }
 
-impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let opcode_value = interp.opcode();
         if let Some(opcode) = OpCode::new(opcode_value) {
             // keep track of opcode counts
@@ -79,7 +79,7 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
         }
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         // update gas usage for the last opcode
         if let Some((opcode, gas_remaining)) = self.last_opcode_gas_remaining.take() {
             let gas_cost = gas_remaining.saturating_sub(interp.gas().remaining());
@@ -89,7 +89,7 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
 
     fn call(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         if message.depth == 0 {
@@ -115,7 +115,7 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
 
     fn create(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         if message.depth == 0 {

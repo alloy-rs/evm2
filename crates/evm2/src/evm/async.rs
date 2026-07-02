@@ -8,13 +8,11 @@ use crate::{
     AnyError, ErrorCode,
     bytecode::Bytecode,
     error::error_unavailable,
-    evm::{AccountInfo, DbResult, DynDatabase},
+    evm::{AccountInfo, DbResult, DynDatabase, NonStaticAny},
     interpreter::Word,
 };
 use alloy_primitives::{Address, B256};
-use core::{
-    any::Any, fmt, future::Future, marker::PhantomData, pin::Pin, ptr::NonNull, task::Poll,
-};
+use core::{fmt, future::Future, marker::PhantomData, pin::Pin, ptr::NonNull, task::Poll};
 use corosensei::{Coroutine, CoroutineResult, Yielder, stack::DefaultStack};
 use std::{cell::Cell, error::Error, io, task::Context};
 
@@ -405,7 +403,7 @@ unsafe fn restore_context_lifetime<'a>(cx: &'a mut Context<'static>) -> &'a mut 
 /// async EVM entrypoints such as [`crate::Evm::transact_async`]. Calling synchronous EVM
 /// entrypoints with an [`AsyncDb`] fails because the adapter can only poll futures from inside an
 /// async EVM fiber.
-pub trait AsyncDatabase: Any {
+pub trait AsyncDatabase: NonStaticAny {
     /// Database error type.
     type Error: Error + Send + Sync + 'static;
 
@@ -985,7 +983,7 @@ mod tests {
     }
 
     fn handle_test_tx(
-        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
+        req: TxRequest<'_, '_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
         Ok(TxResult { status: true, total_gas_spent: req.tx.nonce + 1, ..TxResult::default() })
@@ -1078,7 +1076,7 @@ mod tests {
 
         fn execute(
             &mut self,
-            _evm: &mut Evm<BaseEvmTypes>,
+            _evm: &mut Evm<'_, BaseEvmTypes>,
             _message: &Message<BaseEvmTypes>,
             _gas: &mut GasTracker,
         ) -> Option<Result<PrecompileOutput, PrecompileError>> {
@@ -1091,7 +1089,7 @@ mod tests {
     }
 
     impl crate::evm::Inspector<BaseEvmTypes> for NonSendInspector {
-        fn step(&mut self, _interp: &mut crate::interpreter::Interpreter<'_, BaseEvmTypes>) {
+        fn step(&mut self, _interp: &mut crate::interpreter::Interpreter<'_, '_, BaseEvmTypes>) {
             let _ = Rc::strong_count(&self.marker);
         }
     }

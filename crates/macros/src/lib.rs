@@ -39,12 +39,12 @@ use syn::{
 ///   checks.
 /// - `#[instruction(dynamic_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
 ///   mutable gas state.
-/// - `#[instruction(EvmTypes = CustomTypes)]`: Implements the instruction for a concrete `EvmTypes`
-///   implementor instead of generating a generic implementation.
-/// - `#[instruction(EvmTypes: CustomTypesTrait)]`: Adds a trait bound to the generated generic
-///   `EvmTypes` type parameter.
-/// - `#[instruction(EvmTypes<Host: CustomHostTrait>)]`: Adds associated-type constraints to the
-///   generated generic `EvmTypes` implementation.
+/// - `#[instruction(EvmTypes = CustomTypes)]`: Implements the instruction for a concrete EVM type
+///   family instead of generating a generic implementation.
+/// - `#[instruction(EvmTypes: CustomTypesTrait)]`: Adds a trait bound to the generated generic EVM
+///   types parameter.
+/// - `#[instruction(EvmTypes<Host<'static>: CustomHostTrait>)]`: Adds associated-type constraints
+///   to the generated generic EVM types implementation.
 ///
 /// ## Examples
 ///
@@ -225,9 +225,9 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         quote! { <#evm_types_ident #(, #type_params)*> }
     };
     let evm_types_bound = if let Some(args) = instruction_attrs.evm_types_args {
-        quote! { evm2::EvmTypes #args }
+        quote! { evm2::EvmTypesHost #args }
     } else {
-        quote! { evm2::EvmTypes }
+        quote! { evm2::EvmTypesHost }
     };
     let evm_types_bounds = instruction_attrs.evm_types_bounds;
     let where_predicates =
@@ -311,7 +311,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
             fn execute(
                 __evm2_pc: &mut evm2::interpreter::Pc,
                 mut stack: evm2::interpreter::StackMut<'_>,
-                __evm2_state: &mut evm2::interpreter::InterpreterState<'_, #evm_types>,
+                __evm2_state: &mut evm2::interpreter::InterpreterState<'_, '_, #evm_types>,
             ) -> evm2::interpreter::Result {
                 evm2::asm_comment!(#asm_comment);
                 #cx_setup
