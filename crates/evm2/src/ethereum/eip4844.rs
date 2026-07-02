@@ -1,13 +1,16 @@
 use super::{
-    access_list_counts, charge_upfront, checked_payment_add, effective_gas_price, floor_gas,
-    initial_message, intrinsic_gas, rollback_failed_execution, settle_gas,
-    validate_block_gas_limit, validate_chain_id, validate_create_initcode, validate_floor_gas,
-    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
-    validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
-    warm_base_accounts,
+    access_list_counts, charge_upfront, checked_payment_add, create_initial_state_gas, effective_gas_price, floor_gas,
+    initial_gas_and_reservoir,
+    initial_message, intrinsic_gas, rollback_failed_execution,
+    settle_gas,
+    validate_block_gas_limit, validate_chain_id, validate_create_initcode,
+    validate_floor_gas,
+    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
+    validate_priority_fee, validate_regular_gas_limit_cap, validate_sender,
+    validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
-    Evm, EvmTypes, TxResult,
+    EvmTypes, TxResult,
     env::TxEnv,
     evm::error_handler,
     interpreter::Host,
@@ -18,8 +21,8 @@ use alloy_consensus::transaction::{Recovered, TxEip4844Variant};
 use alloy_eips::eip4844::{DATA_GAS_PER_BLOB, VERSIONED_HASH_VERSION_KZG};
 use alloy_primitives::U256;
 
-pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
-    req: TxRequest<'_, T, Recovered<TxEip4844Variant>>,
+pub(super) fn handle<T: EvmTypes>(
+    req: TxRequest<'_, '_, T, Recovered<TxEip4844Variant>>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner().tx();
@@ -41,12 +44,15 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let (access_list_accounts, access_list_storage_keys) = access_list_counts(&tx.access_list);
     let intrinsic = intrinsic_gas(
         req.host.version(),
+        caller,
         tx.to.into(),
         &tx.input,
         access_list_accounts,
         access_list_storage_keys,
+        tx.value,
     );
-    validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
+    let initial_state_gas = create_initial_state_gas(req.host.version(), false);
+    validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
     let floor_gas =
         floor_gas(req.host.version(), &tx.input, access_list_accounts, access_list_storage_keys);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
@@ -68,7 +74,14 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
     let execution_checkpoint = req.host.state.checkpoint();
 
-    let gas_limit = tx.gas_limit - intrinsic;
+    // Blob transactions are always calls, never creates.
+    let (gas_limit, reservoir) = initial_gas_and_reservoir(
+        req.host.version(),
+        tx.gas_limit,
+        intrinsic,
+        initial_state_gas,
+        0,
+    );
     let tx_env = TxEnv {
         origin: caller,
         gas_price,
@@ -77,12 +90,30 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         ext: T::TxEnvExt::default(),
         _non_exhaustive: (),
     };
-    let (bytecode, mut message) =
-        initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit)?;
+    let (bytecode, mut message) = initial_message(
+        req.host,
+        caller,
+        tx.nonce,
+        tx.to.into(),
+        &tx.input,
+        tx.value,
+        gas_limit,
+        reservoir,
+    )?;
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
-    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)
+    settle_gas(
+        req.host,
+        caller,
+        gas_price,
+        tx.gas_limit,
+        floor_gas,
+        initial_state_gas,
+        0,
+        false,
+        result,
+    )
 }
 
 fn validate_blob_fee(max_fee_per_blob_gas: U256, blob_basefee: U256) -> HandlerResult<()> {

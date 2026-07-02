@@ -184,13 +184,6 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     "london/validation/header/invalid_header.json",
     "shanghai/eip4895_withdrawals/withdrawals/withdrawals_root.json",
 
-    // These validate block access list format/content/hash and belong to consensus-level block validation.
-    "amsterdam/eip7928_block_level_access_lists/block_access_lists_invalid/",
-
-    // These validate block/transaction gas allowance rules, not EVM execution.
-    "amsterdam/eip8037_state_creation_gas_cost_increase/block_2d_gas_accounting/tx_rejected_when_regular_gas_exceeds_block_limit_small.json",
-    "amsterdam/eip8037_state_creation_gas_cost_increase/state_gas_reservoir/creation_tx_state_check_exceeded.json",
-
     // Prague request/deposit fixtures validate EL request extraction and system-contract block processing.
     "prague/eip6110_deposits",
     "prague/eip7002_el_triggerable_withdrawals",

@@ -81,7 +81,7 @@ impl SystemTx {
     }
 }
 
-impl<T: EvmTypes<Host = Self>> Evm<T> {
+impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Executes a system call.
     ///
     /// System calls bypass normal transaction validation, nonce updates, fee charging, gas refunds,
@@ -90,7 +90,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ///
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
-    pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, T>> {
+    pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         let SystemTx { caller, system_contract_address, data, .. } = tx;
         self.clear_top_level_error_state();
         self.state.prewarm(&system_contract_address);
@@ -110,6 +110,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             &data,
             U256::ZERO,
             SYSTEM_CALL_GAS_LIMIT,
+            0,
         ) {
             Ok(result) => result,
             Err(error) => {
@@ -131,10 +132,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         } else {
             0
         };
-        let gas_used = gas_spent.saturating_sub(gas_refunded);
         let outcome = TxResult {
             status: result.stop.is_success(),
-            gas_used,
+            total_gas_spent: gas_spent,
+            state_gas_spent: result.gas.state_gas_spent().max(0) as u64,
+            refunded: gas_refunded,
+            floor_gas: 0,
             stop: result.stop,
             output: result.output,
             ..TxResult::default()
@@ -158,7 +161,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     pub fn system_call_async(
         &mut self,
         tx: SystemTx,
-    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, HandlerError>> + '_ {
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, 'a, T>, HandlerError>> + '_ {
         let stack = self.async_stack();
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
         // access the EVM stack slot until that future is dropped.
@@ -174,7 +177,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     pub fn system_call_async_send(
         &mut self,
         tx: SystemTx,
-    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, HandlerError>> + Send + '_
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, 'a, T>, HandlerError>> + Send + '_
     {
         self.assert_erased_send();
         let stack = self.async_stack();
@@ -204,7 +207,7 @@ mod tests {
         registry::{HandlerError, TxRegistry},
     };
 
-    type TestEvm = Evm<BaseEvmTypes>;
+    type TestEvm = Evm<'static, BaseEvmTypes>;
 
     #[test]
     fn system_call_uses_system_sender_without_fee_accounting() {
@@ -235,7 +238,7 @@ mod tests {
         let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
 
         assert!(result.result.status);
-        assert!(result.result.gas_used < SYSTEM_CALL_GAS_LIMIT);
+        assert!(result.result.tx_gas_used() < SYSTEM_CALL_GAS_LIMIT);
         let unchanged = |address| {
             result.state_changes.accounts.get(address).is_none_or(|change| !change.is_changed())
         };
@@ -305,9 +308,9 @@ mod tests {
 
         assert!(outcome.status);
         assert!(
-            outcome.gas_used < 1_000,
+            outcome.tx_gas_used() < 1_000,
             "system contract should be warm before execution, got {} gas used",
-            outcome.gas_used
+            outcome.tx_gas_used()
         );
     }
 
@@ -325,7 +328,7 @@ mod tests {
         let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
 
         assert!(result.result.status);
-        assert_eq!(result.result.gas_used, 0);
+        assert_eq!(result.result.tx_gas_used(), 0);
         assert!(!result.state_changes.is_changed());
     }
 
@@ -377,7 +380,7 @@ mod tests {
         impl core::error::Error for TestPrecompileError {}
 
         fn fatal_precompile(
-            _evm: &mut Evm<BaseEvmTypes>,
+            _evm: &mut Evm<'_, BaseEvmTypes>,
             _message: &Message,
             _gas: &mut GasTracker,
         ) -> PrecompileResult {

@@ -1,5 +1,5 @@
 use crate::{
-    EvmConfig, EvmTypes,
+    EvmConfig, EvmTypesHost,
     interpreter::{
         instructions as instr, op,
         private::{Instruction, InstructionImplFn},
@@ -9,9 +9,9 @@ use core::fmt;
 
 /// Type-specific opcode configuration.
 ///
-/// Stores the static gas table and instruction implementations for a concrete `EvmTypes` family.
-/// This is a compile-time input used to build the final interpreter dispatch table.
-pub struct OpcodeConfig<T: EvmTypes> {
+/// Stores the static gas table and instruction implementations for a concrete `EvmTypesHost`
+/// family. This is a compile-time input used to build the final interpreter dispatch table.
+pub struct OpcodeConfig<T: EvmTypesHost> {
     /// Static opcode gas table.
     static_gas_table: StaticGasTable,
     /// Instruction implementations.
@@ -20,19 +20,19 @@ pub struct OpcodeConfig<T: EvmTypes> {
     revisions: [u8; 256],
 }
 
-pub(crate) struct InstructionInfo<T: EvmTypes> {
+pub(crate) struct InstructionInfo<T: EvmTypesHost> {
     pub(crate) instr: InstructionImplFn<T>,
     #[allow(dead_code)]
     pub(crate) dynamic_gas: bool,
 }
 
-impl<T: EvmTypes> fmt::Debug for OpcodeConfig<T> {
+impl<T: EvmTypesHost> fmt::Debug for OpcodeConfig<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OpcodeConfig").finish_non_exhaustive()
     }
 }
 
-impl<T: EvmTypes> OpcodeConfig<T> {
+impl<T: EvmTypesHost> OpcodeConfig<T> {
     /// Returns the base type-specific opcode config for `C`.
     pub const fn base<C: EvmConfig<T>>() -> Self {
         super::base_opcode_config::<T, C>()
@@ -130,12 +130,12 @@ impl StaticGasTable {
     }
 }
 
-struct InstructionImplTable<T: EvmTypes> {
+struct InstructionImplTable<T: EvmTypesHost> {
     instrs: [Option<InstructionImplFn<T>>; 256],
     dynamic_gas: [bool; 256],
 }
 
-impl<T: EvmTypes> InstructionImplTable<T> {
+impl<T: EvmTypesHost> InstructionImplTable<T> {
     /// Creates an empty instruction implementation table.
     #[inline]
     const fn empty() -> Self {

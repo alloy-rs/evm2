@@ -1,7 +1,7 @@
 //! EVM version definitions.
 
 use crate::{
-    EvmConfig, EvmTypes, SpecId,
+    EvmConfig, EvmTypesHost, SpecId,
     constants::{
         BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE, MAX_CODE_SIZE,
         MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
@@ -212,7 +212,7 @@ macro_rules! evm_versions {
             gp
         }
 
-        const fn base_opcode_config<T: EvmTypes, Cfg: EvmConfig<T>>() -> OpcodeConfig<T> {
+        const fn base_opcode_config<T: EvmTypesHost, Cfg: EvmConfig<T>>() -> OpcodeConfig<T> {
             use crate::interpreter::gas::*;
 
             let spec_id = Cfg::BASE_SPEC_ID;
@@ -330,9 +330,28 @@ mod tests {
         assert_eq!(berlin.static_gas(op::BALANCE), 100);
         assert_eq!(berlin.static_gas(op::CALL), 100);
     }
+
+    #[test]
+    fn amsterdam_eip8038_ext_family_second_read() {
+        let amsterdam = opcode_config(SpecId::AMSTERDAM);
+        // EIP-8038 §"EXT* family update": EXTCODESIZE / EXTCODECOPY make a second
+        // database read, charged an extra WARM_ACCESS (100) on the static base.
+        assert_eq!(amsterdam.static_gas(op::EXTCODESIZE), 200);
+        assert_eq!(amsterdam.static_gas(op::EXTCODECOPY), 200);
+        // WARM_ACCESS is unchanged by EIP-8038, so other access opcodes keep a
+        // single warm base.
+        assert_eq!(amsterdam.static_gas(op::EXTCODEHASH), 100);
+        assert_eq!(amsterdam.static_gas(op::BALANCE), 100);
+        assert_eq!(amsterdam.static_gas(op::SLOAD), 100);
+        assert_eq!(amsterdam.static_gas(op::CALL), 100);
+        // The surcharge is Amsterdam-only: pre-Amsterdam EXTCODESIZE == EXTCODEHASH.
+        let prague = opcode_config(SpecId::PRAGUE);
+        assert_eq!(prague.static_gas(op::EXTCODESIZE), prague.static_gas(op::EXTCODEHASH));
+    }
 }
 
-const AMSTERDAM_CPSB: u32 = 1174;
+/// EIP-8037 cost per state byte (CPSB) for Glamsterdam.
+const AMSTERDAM_CPSB: u32 = 1530;
 
 evm_versions! {
     FRONTIER {
@@ -690,6 +709,8 @@ evm_versions! {
             TxEip7702AuthRefund: EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST,
             TxFloorCostPerToken: TOTAL_COST_FLOOR_PER_TOKEN,
             TxFloorCostBase: 21000,
+            // EIP-7623: zero calldata bytes count as one floor token.
+            TxFloorZeroByteMultiplier: 1,
         ],
     }
 
@@ -704,6 +725,7 @@ evm_versions! {
             EIP8037,
             EIP7708,
             EIP8246,
+            EIP2780,
         ],
         ops: [
             DUPN: VERYLOW,
@@ -719,30 +741,102 @@ evm_versions! {
             CALLCODE: WARM_STORAGE_READ_COST,
             DELEGATECALL: WARM_STORAGE_READ_COST,
             STATICCALL: WARM_STORAGE_READ_COST,
+            // EIP-8038 §"EXT* family update": EXTCODESIZE and EXTCODECOPY perform
+            // two database reads (load the account, then read its code), so their
+            // per-access base is charged an extra warm access above the normal
+            // account access. The warm access cost itself is unchanged by EIP-8038
+            // (100 = `WARM_STORAGE_READ_COST`), so every other access opcode keeps
+            // its Berlin warm base; only these two change. The dynamic cold premium
+            // is still added by `load_account`.
+            EXTCODESIZE: WARM_STORAGE_READ_COST + WARM_STORAGE_READ_COST,
+            EXTCODECOPY: WARM_STORAGE_READ_COST + WARM_STORAGE_READ_COST,
             SELFDESTRUCT: 5000,
         ],
         dynamic_gas: [
-            Create: 9000,
-            TxCreateCost: 9000,
             CodeDepositCost: 0,
-            NewAccountCost: 0,
-            NewAccountCostForSelfdestruct: 0,
-            SstoreSetWithoutLoadCost: 2800,
-            SstoreSetState: 32 * AMSTERDAM_CPSB,
-            NewAccountState: 112 * AMSTERDAM_CPSB,
+            // EIP-8037 state-gas values: state bytes × CPSB (Glamsterdam).
+            SstoreSetState: 64 * AMSTERDAM_CPSB,
+            NewAccountState: 120 * AMSTERDAM_CPSB,
             CodeDepositState: AMSTERDAM_CPSB,
-            CreateState: 112 * AMSTERDAM_CPSB,
-            SstoreSetRefund: 32 * AMSTERDAM_CPSB + 2800,
+            CreateState: 120 * AMSTERDAM_CPSB,
             TxFloorCostPerToken: TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM,
-            // EIP-7981: charge access-list data at 64 gas per byte (20 bytes per
-            // address, 32 per storage key), baked into the per-item cost. Each
-            // access-list byte also contributes 4 floor tokens (16 * 4 = 64 gas).
-            TxAccessListAddressCost: EIP2930_ACCESS_LIST_ADDRESS + 20 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
-            TxAccessListStorageKeyCost: EIP2930_ACCESS_LIST_STORAGE_KEY + 32 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
+            // EIP-2780: the EIP-7623 calldata floor uses the reduced `TX_BASE`
+            // (12,000) as its base instead of the legacy 21,000.
+            TxFloorCostBase: EIP2780_TX_BASE_COST,
+            // EIP-7976: the calldata floor charges every byte uniformly (64 gas
+            // each), so zero bytes weigh the same as non-zero bytes in the
+            // floor-tokens count.
+            TxFloorZeroByteMultiplier: NON_ZERO_BYTE_MULTIPLIER_ISTANBUL,
             TxAccessListFloorByteMultiplier: EIP7981_ACCESS_LIST_FLOOR_BYTE_MULTIPLIER,
-            TxEip7702PerEmptyAccountCost: 7500 + (112 + 23) * AMSTERDAM_CPSB,
-            TxEip7702AuthRefund: 112 * AMSTERDAM_CPSB,
-            TxEip7702PerAuthState: (112 + 23) * AMSTERDAM_CPSB,
+            // EIP-7702 under EIP-8037: per-authorization regular-gas refund. The
+            // intrinsic per-auth regular charge bundles a worst-case
+            // `ACCOUNT_WRITE`; when the authority leaf already exists (or the auth
+            // is rejected) that account write is not needed and is refunded to the
+            // regular refund counter (execution-specs `set_delegation`). The
+            // state-gas portions come from `NewAccountState` (per-account) and
+            // `TxEip7702PerAuthState` (per-bytecode, AUTH_BASE_BYTES × CPSB).
+            TxEip7702AuthRefund: EIP8038_ACCOUNT_WRITE,
+            TxEip7702PerAuthState: 23 * AMSTERDAM_CPSB,
+
+            // EIP-8038: State-access gas cost update (ethereum/EIPs#11802;
+            // preliminary draft values). Constants in `interpreter::gas`.
+            //   WARM_ACCESS                    100 ->    100  (unchanged)
+            //   COLD_ACCOUNT_ACCESS          2,600 ->  3,000
+            //   ACCOUNT_WRITE                6,700 ->  8,000
+            //   COLD_STORAGE_ACCESS          2,100 ->  3,000
+            //   STORAGE_WRITE                2,800 -> 10,000
+            //   STORAGE_CLEAR_REFUND         4,800 -> 12,480
+            //   CREATE_ACCESS                7,000 -> 11,000  (ACCOUNT_WRITE + COLD_STORAGE_ACCESS)
+            //   ACCESS_LIST_ADDRESS_COST     2,400 ->  3,000  (COLD_ACCOUNT_ACCESS)
+            //   ACCESS_LIST_STORAGE_KEY_COST 1,900 ->  3,000  (COLD_STORAGE_ACCESS)
+            //
+            // WARM_ACCESS and the SSTORE warm base (`SstoreStatic`) are unchanged
+            // (100), so they keep their inherited Berlin values.
+            //
+            // Account/storage access table values.
+            ColdAccountAdditionalCost: EIP8038_COLD_ACCOUNT_ACCESS_ADDITIONAL,
+            ColdStorageAdditionalCost: EIP8038_COLD_STORAGE_ACCESS_ADDITIONAL,
+            // EIP-8038 folds the warm base into the cold cost: a cold SSTORE pays
+            // `COLD_STORAGE_ACCESS` (3000) total, not warm(100)+cold. Since
+            // `SstoreStatic` (warm, 100) is always charged, the cold add-on here
+            // is the premium above warm (2900), unlike pre-8038 forks which add
+            // the full `COLD_SLOAD_COST` on top of the warm base.
+            ColdStorageCost: EIP8038_COLD_STORAGE_ACCESS_ADDITIONAL,
+            // CALL_VALUE = ACCOUNT_WRITE + CALL_STIPEND. A value-bearing CALL already
+            // pays the ACCOUNT_WRITE surcharge here, so creating the target charges
+            // no extra regular gas — only the NEW_ACCOUNT state gas (hence
+            // `NewAccountCost` is zero). SELFDESTRUCT has no such bundled charge, so
+            // it still pays a separate ACCOUNT_WRITE when sending balance to an empty
+            // account (execution-specs `selfdestruct`).
+            TransferValueCost: EIP8038_CALL_VALUE,
+            NewAccountCost: 0,
+            NewAccountCostForSelfdestruct: EIP8038_ACCOUNT_WRITE,
+            // SSTORE write surcharge / refunds = STORAGE_WRITE.
+            SstoreSetWithoutLoadCost: EIP8038_STORAGE_WRITE,
+            SstoreResetWithoutColdLoadCost: EIP8038_STORAGE_WRITE,
+            // SSTORE 0→x→0 regular refund only; the state-gas portion is restored
+            // directly to the reservoir via `sstore_state_gas_refill`.
+            SstoreSetRefund: EIP8038_STORAGE_WRITE,
+            SstoreResetRefund: EIP8038_STORAGE_WRITE,
+            SstoreClearingSlotRefund: EIP8038_STORAGE_CLEAR_REFUND,
+            // CREATE / CREATE2 regular-gas access cost (CREATE opcodes and create txns).
+            Create: EIP8038_CREATE_ACCESS,
+            TxCreateCost: EIP8038_CREATE_ACCESS,
+            // EIP-7981: charge access-list data at 64 gas per byte (20 bytes per
+            // address, 32 per storage key), baked into the per-item cost; EIP-8038
+            // sets each per-item base to COLD_*_ACCESS (3,000).
+            TxAccessListAddressCost: EIP8038_ACCESS_LIST_ADDRESS_COST + 20 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
+            TxAccessListStorageKeyCost: EIP8038_ACCESS_LIST_STORAGE_KEY_COST + 32 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
+            // EIP-7702 regular-gas per-auth cost shifts with ACCOUNT_WRITE /
+            // COLD_ACCOUNT_ACCESS (7,500 -> 9,200).
+            TxEip7702PerEmptyAccountCost: EIP8038_EIP7702_PER_EMPTY_ACCOUNT_REGULAR,
+
+            // EIP-2780: Reduce intrinsic transaction gas. The `to`- and
+            // `value`-based intrinsic charges. ACCOUNT_WRITE / CREATE_ACCESS
+            // source from EIP-8038 so a single change propagates everywhere.
+            TxTransferLogCost: EIP2780_TRANSFER_LOG_COST,
+            TxValueCost: EIP2780_TX_VALUE_COST,
+            TxCreateAccessCost: EIP8038_CREATE_ACCESS,
         ],
     }
 

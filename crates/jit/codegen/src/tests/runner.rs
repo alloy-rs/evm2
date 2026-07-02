@@ -92,7 +92,7 @@ pub struct TestCase<'a> {
     /// Override `inspect_stack` on the compiler. `None` uses the default (`true`).
     pub inspect_stack: Option<bool>,
     pub modify_message: Option<fn(&mut Message<BaseEvmTypes>)>,
-    pub modify_ecx: Option<fn(&mut EvmContext<'_>)>,
+    pub modify_ecx: Option<fn(&mut EvmContext<'_, '_, '_>)>,
 
     pub expected_return: InstrStop,
     pub expected_stack: &'a [U256],
@@ -100,7 +100,7 @@ pub struct TestCase<'a> {
     pub expected_gas: u64,
     pub expected_output: Option<&'a [u8]>,
     pub assert_host: Option<fn(&HostState)>,
-    pub assert_ecx: Option<fn(&EvmContext<'_>)>,
+    pub assert_ecx: Option<fn(&EvmContext<'_, '_, '_>)>,
 }
 
 impl Default for TestCase<'_> {
@@ -310,7 +310,7 @@ pub struct HostState {
 }
 
 impl HostState {
-    fn from_evm(evm: &mut Evm<BaseEvmTypes>) -> Self {
+    fn from_evm(evm: &mut Evm<'_, BaseEvmTypes>) -> Self {
         let keys = [
             U256::from(0),
             U256::from(1),
@@ -340,7 +340,7 @@ impl HostState {
     }
 }
 
-fn prepare_host(spec_id: SpecId) -> Evm<BaseEvmTypes> {
+fn prepare_host(spec_id: SpecId) -> Evm<'static, BaseEvmTypes> {
     let mut evm = Evm::<BaseEvmTypes>::new(
         spec_id,
         def_block_env(),
@@ -365,7 +365,10 @@ fn prepare_host(spec_id: SpecId) -> Evm<BaseEvmTypes> {
     evm
 }
 
-pub fn with_evm_context<F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
+pub fn with_evm_context<
+    F: FnOnce(&mut EvmContext<'_, '_, '_>, &mut EvmStack, &mut usize) -> R,
+    R,
+>(
     bytecode: &[u8],
     spec_id: SpecId,
     f: F,
@@ -374,12 +377,12 @@ pub fn with_evm_context<F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize
 }
 
 fn with_evm_context_and_host_mut<
-    F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R,
+    F: FnOnce(&mut EvmContext<'_, '_, '_>, &mut EvmStack, &mut usize) -> R,
     R,
 >(
     bytecode: &[u8],
     spec_id: SpecId,
-    host: &mut Evm<BaseEvmTypes>,
+    host: &mut Evm<'_, BaseEvmTypes>,
     modify_message: Option<fn(&mut Message<BaseEvmTypes>)>,
     f: F,
 ) -> R {
@@ -402,7 +405,7 @@ fn with_evm_context_and_host_mut<
 }
 
 pub fn with_evm_context_and_host<
-    F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R,
+    F: FnOnce(&mut EvmContext<'_, '_, '_>, &mut EvmStack, &mut usize) -> R,
     R,
 >(
     bytecode: &[u8],
@@ -413,7 +416,7 @@ pub fn with_evm_context_and_host<
 }
 
 fn with_evm_context_and_host_modified<
-    F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R,
+    F: FnOnce(&mut EvmContext<'_, '_, '_>, &mut EvmStack, &mut usize) -> R,
     R,
 >(
     bytecode: &[u8],
@@ -467,7 +470,7 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
 fn run_compiled_test_case_with_context(
     test_case: &TestCase<'_>,
     f: EvmCompilerFn,
-    ecx: &mut EvmContext<'_>,
+    ecx: &mut EvmContext<'_, '_, '_>,
     stack: &mut EvmStack,
     stack_len: &mut usize,
 ) {

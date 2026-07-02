@@ -24,6 +24,7 @@ alloy-primitives.workspace = true
 bitvec = { workspace = true, features = ["alloc"] }
 derive-where.workspace = true
 thiserror.workspace = true
+typeid.workspace = true
 cfg-if.workspace = true
 
 # no_std

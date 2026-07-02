@@ -134,6 +134,8 @@ gas_ids! {
     TxFloorCostPerToken;
     /// Transaction floor base gas.
     TxFloorCostBase;
+    /// Multiplier for a zero calldata byte in the floor-tokens calculation (EIP-7623 `1`, EIP-7976 `4`).
+    TxFloorZeroByteMultiplier;
     /// Transaction access-list address cost.
     TxAccessListAddressCost;
     /// Transaction access-list storage-key cost.
@@ -162,6 +164,13 @@ gas_ids! {
     CreateState;
     /// EIP-7702 transaction state gas per authorization.
     TxEip7702PerAuthState;
+
+    /// EIP-2780 regular gas cost of the EIP-7708 transfer log on a nonzero-value transfer.
+    TxTransferLogCost;
+    /// EIP-2780 additional intrinsic charge for a value-bearing non-create, non-self transaction.
+    TxValueCost;
+    /// EIP-2780/EIP-8038 regular gas cost of a top-level CREATE access.
+    TxCreateAccessCost;
 
     // Reserved custom gas parameter slots.
 
@@ -375,6 +384,47 @@ impl GasParams {
         }
     }
 
+    /// Calculates the `SSTORE` state gas to refill into the reservoir for a
+    /// 0→x→0 storage restoration (EIP-8037).
+    ///
+    /// When a slot that began the transaction at zero is restored to zero
+    /// (`new == original == 0`) by an actual change (`new != present`), the state
+    /// gas charged for the initial 0→x transition is returned to the reservoir.
+    #[inline]
+    pub fn sstore_state_gas_refill(&self, vals: &SStore) -> u64 {
+        if !vals.is_noop() && vals.resets_original() && vals.original_is_zero() {
+            self.get(GasId::SstoreSetState) as u64
+        } else {
+            0
+        }
+    }
+
+    /// Returns the `CREATE`/`CREATE2` upfront state gas (EIP-8037).
+    #[inline]
+    pub const fn create_state_gas(&self) -> u64 {
+        self.get(GasId::CreateState) as u64
+    }
+
+    /// Returns the new-account creation state gas (EIP-8037).
+    #[inline]
+    pub const fn new_account_state_gas(&self) -> u64 {
+        self.get(GasId::NewAccountState) as u64
+    }
+
+    /// Returns the EIP-8037 state gas charged per EIP-7702 authorization: the per-account portion
+    /// ([`Self::new_account_state_gas`]) plus the per-bytecode portion
+    /// ([`GasId::TxEip7702PerAuthState`]). Zero before Amsterdam.
+    #[inline]
+    pub const fn eip7702_auth_state_gas(&self) -> u64 {
+        self.new_account_state_gas().saturating_add(self.get(GasId::TxEip7702PerAuthState) as u64)
+    }
+
+    /// Calculates the code-deposit state gas for `len` bytes (EIP-8037).
+    #[inline]
+    pub const fn code_deposit_state_gas(&self, len: usize) -> u64 {
+        (self.get(GasId::CodeDepositState) as u64).saturating_mul(len as u64)
+    }
+
     /// Returns `SELFDESTRUCT` cold account cost.
     #[inline]
     pub const fn selfdestruct_cold_cost(&self) -> u64 {
@@ -464,14 +514,31 @@ mod tests {
         assert_eq!(prague.get(GasId::TxEip7702PerEmptyAccountCost), 25000);
         assert_eq!(prague.get(GasId::TxEip7702AuthRefund), 12500);
         assert_eq!(prague.get(GasId::TxFloorCostPerToken), 10);
+        // EIP-7623: zero calldata bytes weigh one floor token each.
+        assert_eq!(prague.get(GasId::TxFloorZeroByteMultiplier), 1);
 
         let amsterdam = gas_params(SpecId::AMSTERDAM);
-        assert_eq!(amsterdam.get(GasId::Create), 9000);
-        assert_eq!(amsterdam.get(GasId::SstoreSetState), 37568);
-        assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthState), 158490);
-        assert_eq!(amsterdam.get(GasId::TxAccessListAddressCost), 2400 + 20 * 64);
-        assert_eq!(amsterdam.get(GasId::TxAccessListStorageKeyCost), 1900 + 32 * 64);
+        // EIP-8038 (ethereum/EIPs#11802) state-access cost values.
+        assert_eq!(amsterdam.get(GasId::Create), 11_000);
+        assert_eq!(amsterdam.get(GasId::WarmStorageReadCost), 100); // unchanged
+        assert_eq!(amsterdam.get(GasId::ColdStorageCost), 2900);
+        assert_eq!(amsterdam.get(GasId::ColdAccountAdditionalCost), 2900);
+        assert_eq!(amsterdam.get(GasId::TransferValueCost), 10_300);
+        // CALL folds the account-write surcharge into CALL_VALUE, so a new target
+        // adds no extra regular gas (only NEW_ACCOUNT state gas).
+        assert_eq!(amsterdam.get(GasId::NewAccountCost), 0);
+        assert_eq!(amsterdam.get(GasId::SstoreSetWithoutLoadCost), 10_000);
+        assert_eq!(amsterdam.get(GasId::SstoreClearingSlotRefund), 12_480);
+        // EIP-8038/Amsterdam per-auth regular gas: ACCOUNT_WRITE + REGULAR_PER_AUTH_BASE_COST
+        // = 8000 + (101*16 + 3000 + 3000 + 2*100) = 15_816.
+        assert_eq!(amsterdam.get(GasId::TxEip7702PerEmptyAccountCost), 15_816);
+        assert_eq!(amsterdam.get(GasId::SstoreSetState), 64 * 1530);
+        assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthState), 23 * 1530);
+        assert_eq!(amsterdam.get(GasId::TxAccessListAddressCost), 3000 + 20 * 64);
+        assert_eq!(amsterdam.get(GasId::TxAccessListStorageKeyCost), 3000 + 32 * 64);
         assert_eq!(amsterdam.get(GasId::TxAccessListFloorByteMultiplier), 4);
+        // EIP-7976: zero bytes weigh the same as non-zero bytes in the floor.
+        assert_eq!(amsterdam.get(GasId::TxFloorZeroByteMultiplier), 4);
     }
 
     #[test]

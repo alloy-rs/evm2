@@ -1,4 +1,4 @@
-use crate::{BaseEvmTypes, EvmTypes};
+use crate::{BaseEvmTypes, EvmTypesHost};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use derive_where::derive_where;
 
@@ -31,13 +31,20 @@ impl MessageKind {
 
 /// Frame-local EVM call/create message executed by the interpreter.
 #[derive_where(Clone, Debug, Default, PartialEq, Eq; T::MessageExt)]
-pub struct Message<T: EvmTypes = BaseEvmTypes> {
+pub struct Message<T: EvmTypesHost = BaseEvmTypes> {
     /// Message kind.
     pub kind: MessageKind,
     /// Current call depth.
     pub depth: u16,
     /// Gas available to this message.
     pub gas_limit: u64,
+    /// EIP-8037 state-gas reservoir inherited from the parent frame.
+    ///
+    /// The reservoir is a shared pool threaded down into child frames and
+    /// reconciled back on return by
+    /// [`GasTracker::merge_child_gas`](crate::interpreter::GasTracker::merge_child_gas).
+    /// Zero for non-Amsterdam execution.
+    pub reservoir: u64,
     /// Account whose context is being executed.
     pub destination: Address,
     /// Immediate caller.

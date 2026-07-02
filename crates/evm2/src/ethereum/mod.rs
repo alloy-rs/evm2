@@ -10,10 +10,13 @@ mod legacy;
 pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
-    Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
+    Evm, EvmFeatures, EvmTypes, EvmTypesHost, SpecId, TxResult, Version,
     bytecode::Bytecode,
     evm::{AccountInfo, StateCheckpoint, error_handler},
-    interpreter::{Message, MessageKind, MessageResult, Word},
+    interpreter::{
+        Message, MessageKind, MessageResult, Word,
+        gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS},
+    },
     registry::{HandlerError, HandlerResult, TxRegistry},
     utils::num_words,
     version::GasId,
@@ -177,7 +180,7 @@ impl Typed2718 for RecoveredTxEnvelope {
 }
 
 /// Returns the Ethereum transaction registry for `spec_id`.
-pub fn ethereum_tx_registry<T: EvmTypes<Tx = RecoveredTxEnvelope, Host = Evm<T>>>(
+pub fn ethereum_tx_registry<T: EvmTypes<Tx = RecoveredTxEnvelope>>(
     spec_id: SpecId,
 ) -> TxRegistry<T, TxResult<T>> {
     let mut registry =
@@ -328,9 +331,15 @@ pub(super) const fn validate_nonce_not_overflow(nonce: u64) -> HandlerResult<()>
     Ok(())
 }
 
-pub(super) const fn validate_intrinsic_gas(gas_limit: u64, intrinsic: u64) -> HandlerResult<()> {
-    if gas_limit < intrinsic {
-        return Err(HandlerError::IntrinsicGasTooLow { required: intrinsic, got: gas_limit });
+pub(super) const fn validate_intrinsic_gas(
+    gas_limit: u64,
+    intrinsic: u64,
+    initial_state_gas: u64,
+) -> HandlerResult<()> {
+    // EIP-8037: the gas limit must cover the regular intrinsic gas plus the upfront state gas.
+    let required = intrinsic.saturating_add(initial_state_gas);
+    if gas_limit < required {
+        return Err(HandlerError::IntrinsicGasTooLow { required, got: gas_limit });
     }
     Ok(())
 }
@@ -342,8 +351,8 @@ pub(super) const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> Handle
     Ok(())
 }
 
-pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(super) fn validate_sender<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
     max_upfront: U256,
@@ -371,8 +380,8 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
     Ok(sender.get().cloned().unwrap_or_default())
 }
 
-pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(super) fn warm_base_accounts<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     to: TxKind,
 ) {
@@ -386,10 +395,7 @@ pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
     host.warm_precompiles();
 }
 
-pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
-    access_list: &AccessList,
-) {
+pub(super) fn warm_access_list<'a, T: EvmTypes>(host: &mut Evm<'a, T>, access_list: &AccessList) {
     for item in access_list.iter() {
         host.state.prewarm_storage(
             &item.address,
@@ -398,8 +404,8 @@ pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
-pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(super) fn charge_upfront<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     max_gas_cost: U256,
 ) -> HandlerResult<()> {
@@ -413,14 +419,73 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
     Ok(())
 }
 
-pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+/// Returns the EIP-8037 `initial_state_gas` charged before execution for `is_create` transactions
+/// (the top-level create's `create_state_gas`). Zero without EIP-8037 or for non-create calls.
+///
+/// This is the create transaction's contribution to execution-specs `IntrinsicGas.state`; the
+/// EIP-7702 authorization contribution is computed separately in the EIP-7702 handler. Keeping the
+/// state-gas intrinsic distinct from the regular intrinsic ([`intrinsic_gas`]) mirrors the spec,
+/// which tracks `IntrinsicGas.regular` and `.state` separately.
+pub(super) const fn create_initial_state_gas(version: &Version, is_create: bool) -> u64 {
+    if version.feature(EvmFeatures::EIP8037) && is_create {
+        version.gas_params.create_state_gas()
+    } else {
+        0
+    }
+}
+
+/// Returns `(regular_gas_limit, reservoir)` for the first frame.
+///
+/// `initial_state_gas` is the EIP-8037 state gas charged before execution (top-level create state
+/// gas and EIP-7702 authorization state gas). It is deducted from the reservoir, spilling into the
+/// regular budget when the reservoir is insufficient. `state_refund` is the EIP-7702 state-gas
+/// refund, credited directly back to the reservoir so it stays state gas. Both are zero without
+/// EIP-8037.
+///
+/// `initial_state_gas` and `state_refund` are kept as separate arguments deliberately: per
+/// execution-specs the state refund is added to the state-gas reservoir (`set_delegation` does
+/// `state_gas_reservoir += refund`), not applied to regular gas first. Folding them into a single
+/// regular-first refund — as an earlier note suggested — would diverge from the spec.
+pub(super) fn initial_gas_and_reservoir(
+    version: &Version,
+    tx_gas_limit: u64,
+    intrinsic: u64,
+    initial_state_gas: u64,
+    state_refund: u64,
+) -> (u64, u64) {
+    if !version.feature(EvmFeatures::EIP8037) {
+        return (tx_gas_limit - intrinsic, 0);
+    }
+
+    let cap = version.tx_gas_limit_cap;
+    let execution_gas = tx_gas_limit - intrinsic;
+    let mut regular_gas_limit = core::cmp::min(tx_gas_limit, cap).saturating_sub(intrinsic);
+    let mut reservoir = execution_gas - regular_gas_limit;
+
+    if reservoir >= initial_state_gas {
+        reservoir -= initial_state_gas;
+    } else {
+        regular_gas_limit -= initial_state_gas - reservoir;
+        reservoir = 0;
+    }
+
+    // EIP-7702 state-gas refund for existing authorities goes directly to the reservoir so it
+    // stays state gas rather than being routed through the capped regular refund counter.
+    reservoir += state_refund;
+
+    (regular_gas_limit, reservoir)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn initial_message<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
     to: TxKind,
     input: &Bytes,
     value: U256,
     gas_limit: u64,
+    reservoir: u64,
 ) -> HandlerResult<(Bytecode, Message<T>)> {
     let r = match to {
         TxKind::Call(to) => {
@@ -429,6 +494,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 kind: MessageKind::Call,
                 depth: 0,
                 gas_limit,
+                reservoir,
                 destination: to,
                 caller,
                 input: input.clone(),
@@ -448,6 +514,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 kind: MessageKind::Create,
                 depth: 0,
                 gas_limit,
+                reservoir,
                 destination: address,
                 caller,
                 input: input.clone(),
@@ -472,8 +539,8 @@ struct InitialCallCode {
     disable_precompiles: bool,
 }
 
-fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+fn initial_call_code<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     to: Address,
 ) -> HandlerResult<InitialCallCode> {
     let code = host
@@ -498,8 +565,8 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     Ok(InitialCallCode { code, code_address: to, disable_precompiles: false })
 }
 
-pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+pub(super) fn rollback_failed_execution<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     checkpoint: StateCheckpoint,
     result: &mut MessageResult<T>,
 ) {
@@ -512,20 +579,79 @@ pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
-pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+/// EIP-8037: refunds a top-level CREATE's intrinsic `create_state_gas` back to the reservoir when
+/// no new account leaf ends up created.
+///
+/// The charge was deducted upfront in [`initial_gas_and_reservoir`] (an unbalanced reservoir
+/// reduction, not a `spend_state`), so the inverse is an unbalanced reservoir add. It is refunded
+/// when the deployment failed (a reverted or halted deployment is rolled back, so the state gas was
+/// never actually consumed) or when it succeeded at a pre-existing alive (balance-only) target (no
+/// new leaf was created — execution-specs `created_target_alive`). No-op when `create_state_gas` is
+/// zero (non-create or pre-Amsterdam).
+pub(super) const fn refund_create_state_gas<T: EvmTypesHost>(
+    result: &mut MessageResult<T>,
+    create_state_gas: u64,
+) {
+    if create_state_gas != 0 && (!result.stop.is_success() || result.created_target_was_alive) {
+        let reservoir = result.gas.reservoir().saturating_add(create_state_gas);
+        result.gas.set_reservoir(reservoir);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn settle_gas<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
     caller: Address,
     gas_price: U256,
     tx_gas_limit: u64,
     floor_gas: u64,
+    initial_state_gas: u64,
+    state_refund: u64,
+    is_create: bool,
     result: MessageResult<T>,
 ) -> HandlerResult<TxResult<T>> {
     if let Some(code) = host.error_code {
         return Err(HandlerError::Fatal(code));
     }
 
-    let (gas_remaining, gas_used) =
-        final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
+    let is_eip3529 = host.feature(EvmFeatures::EIP3529);
+    let (gas_remaining, gas_used) = final_tx_gas(&result, tx_gas_limit, is_eip3529, floor_gas);
+    // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
+    // `TxResult::tx_gas_used` reproduces the local `gas_used` (used here for the beneficiary
+    // reward). State gas is execution state gas plus the upfront `initial_state_gas`, less the
+    // EIP-7702 per-authorization `state_refund`.
+    let mut total_gas_spent =
+        tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(result.gas.reservoir());
+    let mut refunded = result.final_refund(tx_gas_limit, is_eip3529);
+    // EIP-7623: when the calldata floor exceeds spent-minus-refund, the floor becomes the gas used
+    // and absorbs the refund. revm folds this into `total_gas_spent` (so block-level regular gas
+    // reflects it), keeping `tx_gas_used` equal to the floor.
+    if total_gas_spent.saturating_sub(refunded) < floor_gas {
+        total_gas_spent = floor_gas;
+        refunded = 0;
+    }
+    // Execution state gas contributes only on success: a revert/halt rolls back its state changes.
+    // A failed top-level CREATE additionally unwinds its intrinsic `create_state_gas` (refunded to
+    // the reservoir by `refund_create_state_gas`), so it nets out of the block state gas.
+    let exec_state_gas = if result.stop.is_success() {
+        result.gas.state_gas_spent()
+    } else if is_create {
+        -(initial_state_gas as i64)
+    } else {
+        0
+    };
+    // A top-level CREATE that succeeds at a pre-existing alive target refunds its upfront
+    // `create_state_gas` (already credited to the reservoir by `refund_create_state_gas`), so it
+    // must not count toward block state gas either.
+    let alive_create_refund =
+        if is_create && result.stop.is_success() && result.created_target_was_alive {
+            initial_state_gas
+        } else {
+            0
+        };
+    let state_gas_spent = (exec_state_gas.saturating_add_unsigned(initial_state_gas).max(0) as u64)
+        .saturating_sub(state_refund)
+        .saturating_sub(alive_create_refund);
     if host.feature(EvmFeatures::FEE_CHARGE) {
         let caller_refund = U256::from(gas_remaining) * gas_price;
         let _ = host
@@ -548,7 +674,10 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     }
     Ok(TxResult {
         status: result.stop.is_success(),
-        gas_used,
+        total_gas_spent,
+        state_gas_spent,
+        refunded,
+        floor_gas,
         stop: result.stop,
         output: result.output,
         created_address: result.created_address,
@@ -557,7 +686,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     })
 }
 
-const fn final_tx_gas<T: EvmTypes>(
+const fn final_tx_gas<T: EvmTypesHost>(
     result: &MessageResult<T>,
     tx_gas_limit: u64,
     is_eip3529: bool,
@@ -596,36 +725,85 @@ pub(super) fn floor_gas(
     let al_multiplier = version.gas_params.get(GasId::TxAccessListFloorByteMultiplier) as u64;
     let mut tokens = (access_list_accounts * 20 + access_list_storage_keys * 32) * al_multiplier;
 
-    // tokens for input.
+    // tokens for input. EIP-7623 weights zero bytes at `TxFloorZeroByteMultiplier`
+    // (1) and non-zero bytes at `TxTokenNonZeroByteMultiplier` (4); EIP-7976
+    // raises the zero-byte weight to 4 so every byte counts uniformly.
     let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
+    let zero_multiplier = u64::from(params.get(GasId::TxFloorZeroByteMultiplier));
     let zero_data_len = input.iter().filter(|v| **v == 0).count() as u64;
     let non_zero_data_len = input.len() as u64 - zero_data_len;
-    tokens += zero_data_len + non_zero_data_len * non_zero_multiplier;
+    tokens += zero_data_len * zero_multiplier + non_zero_data_len * non_zero_multiplier;
 
     params.get(GasId::TxFloorCostBase) as u64 + tokens * floor_cost_per_token
 }
 
 /// Calculates intrinsic transaction gas.
+///
+/// `caller`/`value` feed the EIP-2780 decomposed model (which branches on
+/// self-transfer and whether `tx.value` is zero); the legacy model ignores them.
 pub(super) fn intrinsic_gas(
     version: &Version,
+    caller: Address,
     to: TxKind,
     input: &Bytes,
     access_list_accounts: u64,
     access_list_storage_keys: u64,
+    value: U256,
 ) -> u64 {
     let params = &version.gas_params;
     let non_zero_multiplier = if version.feature(EvmFeatures::EIP2028) { 16 } else { 68 };
-    let mut gas = 21_000;
+    let mut gas = 0;
     for byte in input {
         gas += if *byte == 0 { 4 } else { non_zero_multiplier };
     }
     gas += access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressCost));
     gas += access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyCost));
-    if to.is_create() && version.feature(EvmFeatures::EIP2) {
-        gas += u64::from(params.get(GasId::TxCreateCost));
+
+    // Base + `to`-based + `value`-based charges.
+    let is_create = to.is_create();
+    if version.feature(EvmFeatures::EIP2780) {
+        // EIP-2780: decomposed model replacing the legacy 21,000 base.
+        let is_self_transfer = matches!(to, TxKind::Call(to) if to == caller);
+        gas += eip2780_base_to_value_gas(version, is_create, is_self_transfer, value);
+    } else {
+        gas += 21_000;
+        if is_create && version.feature(EvmFeatures::EIP2) {
+            gas += u64::from(params.get(GasId::TxCreateCost));
+        }
     }
-    if to.is_create() && version.feature(EvmFeatures::EIP3860) {
+    if is_create && version.feature(EvmFeatures::EIP3860) {
         gas += u64::from(params.get(GasId::TxInitcodeCost)) * num_words(input.len()) as u64;
+    }
+    gas
+}
+
+/// EIP-2780: sum of the sender base, `tx.to`-based, and `tx.value`-based
+/// regular-gas charges. Excludes calldata, access list, authorizations, and
+/// initcode pieces which are added by the caller.
+///
+/// Per execution-specs, a self-transfer (`tx.to == sender`) pays neither the
+/// `to`- nor `value`-based charge — only the base. Precompile recipients are
+/// charged the same as any other account (the precompile carve-out from the
+/// draft is not implemented).
+fn eip2780_base_to_value_gas(
+    version: &Version,
+    is_create: bool,
+    is_self_transfer: bool,
+    value: U256,
+) -> u64 {
+    let params = &version.gas_params;
+    let mut gas = u64::from(EIP2780_TX_BASE_COST);
+    if is_create {
+        gas += u64::from(params.get(GasId::TxCreateAccessCost));
+        if !value.is_zero() {
+            gas += u64::from(params.get(GasId::TxTransferLogCost));
+        }
+    } else if !is_self_transfer {
+        gas += u64::from(EIP8038_COLD_ACCOUNT_ACCESS);
+        if !value.is_zero() {
+            gas += u64::from(params.get(GasId::TxTransferLogCost))
+                + u64::from(params.get(GasId::TxValueCost));
+        }
     }
     gas
 }
@@ -648,12 +826,29 @@ mod tests {
     fn intrinsic_gas_charges_shanghai_create_initcode_words() {
         let input = Bytes::from(vec![1; 74]);
 
+        let sender = Address::with_last_byte(0xaa);
         assert_eq!(
-            intrinsic_gas(Version::base(SpecId::LONDON), TxKind::Create, &input, 0, 0),
+            intrinsic_gas(
+                Version::base(SpecId::LONDON),
+                sender,
+                TxKind::Create,
+                &input,
+                0,
+                0,
+                U256::ZERO
+            ),
             21_000 + 32_000 + 74 * 16
         );
         assert_eq!(
-            intrinsic_gas(Version::base(SpecId::SHANGHAI), TxKind::Create, &input, 0, 0),
+            intrinsic_gas(
+                Version::base(SpecId::SHANGHAI),
+                sender,
+                TxKind::Create,
+                &input,
+                0,
+                0,
+                U256::ZERO
+            ),
             21_000 + 32_000 + 74 * 16 + 3 * 2
         );
     }
@@ -661,20 +856,35 @@ mod tests {
     #[test]
     fn intrinsic_gas_charges_access_list_items() {
         let input = Bytes::new();
+        let sender = Address::with_last_byte(0xaa);
 
         assert_eq!(
-            intrinsic_gas(Version::base(SpecId::BERLIN), TxKind::Call(Address::ZERO), &input, 2, 3),
+            intrinsic_gas(
+                Version::base(SpecId::BERLIN),
+                sender,
+                TxKind::Call(Address::ZERO),
+                &input,
+                2,
+                3,
+                U256::ZERO
+            ),
             21_000 + 2 * 2400 + 3 * 1900
         );
         assert_eq!(
             intrinsic_gas(
                 Version::base(SpecId::AMSTERDAM),
+                sender,
                 TxKind::Call(Address::ZERO),
                 &input,
                 1,
-                1
+                1,
+                U256::ZERO
             ),
-            21_000 + (2400 + 20 * 64) + (1900 + 32 * 64)
+            // EIP-2780 replaces the 21,000 base with TX_BASE (12,000) +
+            // COLD_ACCOUNT_ACCESS (3,000) for the zero-value call recipient.
+            // EIP-8038 sets the per-item access-list base to COLD_ACCOUNT_ACCESS /
+            // COLD_STORAGE_ACCESS (both 3,000).
+            (12_000 + 3000) + (3000 + 20 * 64) + (3000 + 32 * 64)
         );
     }
 
@@ -803,8 +1013,19 @@ mod tests {
 
         assert_eq!(
             floor_gas(Version::base(SpecId::AMSTERDAM), &input, 1, 1),
-            21_000 + (1000 * 4 + 80 + 128) * 16
+            // EIP-2780: the floor base drops from 21,000 to TX_BASE (12,000).
+            12_000 + (1000 * 4 + 80 + 128) * 16
         );
+
+        // EIP-7976: amsterdam weights zero calldata bytes the same as non-zero
+        // bytes in the floor (4 tokens each), unlike EIP-7623 (zero = 1 token).
+        let zero_input = Bytes::from(vec![0; 1000]);
+        assert_eq!(
+            floor_gas(Version::base(SpecId::AMSTERDAM), &zero_input, 1, 1),
+            12_000 + (1000 * 4 + 80 + 128) * 16
+        );
+        // Prague keeps the EIP-7623 split: zero bytes count as one token each.
+        assert_eq!(floor_gas(Version::base(SpecId::PRAGUE), &zero_input, 0, 0), 21_000 + 1000 * 10);
     }
 
     #[test]
@@ -942,6 +1163,7 @@ mod tests {
             &Bytes::new(),
             U256::ZERO,
             100_000,
+            0,
         )
         .unwrap();
         assert_eq!(message.destination, target);

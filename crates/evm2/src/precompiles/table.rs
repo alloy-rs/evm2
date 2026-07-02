@@ -1,5 +1,5 @@
 use crate::{
-    BaseEvmTypes, Evm, EvmTypes,
+    BaseEvmTypes, Evm, EvmTypesHost,
     interpreter::{GasTracker, Message},
     precompiles::{
         PrecompileId, PrecompileResult, blake2, bls12_381, bn254, hash, identity,
@@ -13,18 +13,18 @@ use derive_where::derive_where;
 
 /// Precompile implementation function.
 pub type PrecompileFn<T = BaseEvmTypes> =
-    fn(&mut Evm<T>, &Message<T>, &mut GasTracker) -> PrecompileResult;
+    fn(&mut Evm<'_, T>, &Message<T>, &mut GasTracker) -> PrecompileResult;
 
 /// Precompile descriptor.
 #[derive_where(Clone, Debug)]
-pub struct Precompile<T: EvmTypes = BaseEvmTypes> {
+pub struct Precompile<T: EvmTypesHost = BaseEvmTypes> {
     /// Precompile address.
     address: Address,
     /// Precompile data.
     data: PrecompileData<T>,
 }
 
-impl<T: EvmTypes> Precompile<T> {
+impl<T: EvmTypesHost> Precompile<T> {
     /// Creates a precompile descriptor.
     #[inline]
     pub const fn new(address: Address, id: PrecompileId, f: PrecompileFn<T>) -> Self {
@@ -74,8 +74,8 @@ impl<T: EvmTypes> Precompile<T> {
     }
 }
 
-fn dummy_precompile<T: EvmTypes>(
-    _evm: &mut Evm<T>,
+fn dummy_precompile<T: EvmTypesHost>(
+    _evm: &mut Evm<'_, T>,
     _message: &Message<T>,
     _gas: &mut GasTracker,
 ) -> PrecompileResult {
@@ -84,14 +84,14 @@ fn dummy_precompile<T: EvmTypes>(
 
 /// Address-free precompile data.
 #[derive_where(Clone, Debug)]
-pub struct PrecompileData<T: EvmTypes = BaseEvmTypes> {
+pub struct PrecompileData<T: EvmTypesHost = BaseEvmTypes> {
     /// Precompile implementation function.
     run: PrecompileFn<T>,
     /// Precompile ID.
     id: PrecompileId,
 }
 
-impl<T: EvmTypes> PrecompileData<T> {
+impl<T: EvmTypesHost> PrecompileData<T> {
     const DUMMY: Self = Self::new(PrecompileId::custom("__dummy__"), dummy_precompile);
 
     /// Creates precompile data.
@@ -128,7 +128,7 @@ impl<T: EvmTypes> PrecompileData<T> {
     #[inline]
     pub fn execute(
         &self,
-        evm: &mut Evm<T>,
+        evm: &mut Evm<'_, T>,
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> PrecompileResult {
@@ -138,11 +138,11 @@ impl<T: EvmTypes> PrecompileData<T> {
 
 /// Precompile dispatch map.
 #[derive_where(Clone, Debug, Default)]
-pub struct PrecompileMap<T: EvmTypes = BaseEvmTypes> {
+pub struct PrecompileMap<T: EvmTypesHost = BaseEvmTypes> {
     inner: AddressMap<PrecompileData<T>>,
 }
 
-impl<T: EvmTypes> PrecompileMap<T> {
+impl<T: EvmTypesHost> PrecompileMap<T> {
     /// Creates an empty precompile map.
     #[inline]
     pub fn new() -> Self {
@@ -393,9 +393,9 @@ macro_rules! define_precompiles {
         $(
             $(#[$attr])*
             #[allow(non_snake_case)]
-            $vis const fn $name<T: $crate::EvmTypes>() -> $crate::precompiles::Precompile<T> {
-                fn run<T: $crate::EvmTypes>(
-                    _evm: &mut $crate::Evm<T>,
+            $vis const fn $name<T: $crate::EvmTypesHost>() -> $crate::precompiles::Precompile<T> {
+                fn run<T: $crate::EvmTypesHost>(
+                    _evm: &mut $crate::Evm<'_, T>,
                     message: &$crate::interpreter::Message<T>,
                     gas: &mut $crate::interpreter::GasTracker,
                 ) -> $crate::precompiles::PrecompileResult {

@@ -9,7 +9,7 @@ use crate::{
 use alloc::vec::Vec;
 use alloy_primitives::Address;
 
-type TestEvm = Evm<BaseEvmTypes>;
+type TestEvm = Evm<'static, BaseEvmTypes>;
 
 fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
     let mut message = Message {

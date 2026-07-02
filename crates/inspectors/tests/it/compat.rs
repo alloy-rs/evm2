@@ -3,7 +3,7 @@
 use alloy_consensus::{TxEip4844, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, Inspector, NoopInspector, Precompiles, TxResult,
+    BaseEvmTypes, Evm, EvmTypesHost, Inspector, NoopInspector, Precompiles, TxResult,
     TxResultWithState, env as evm_env,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::StateChanges,
@@ -378,17 +378,18 @@ pub enum ExecutionResult {
 
 impl ExecutionResult {
     fn from_tx_result(result: TxResult) -> Self {
+        let gas_used = result.tx_gas_used();
         if result.status {
             let output = if result.created_address.is_some() {
                 Output::Create(result.output, result.created_address)
             } else {
                 Output::Call(result.output)
             };
-            Self::Success { output, gas_used: result.gas_used }
+            Self::Success { output, gas_used }
         } else if result.stop.is_revert() {
-            Self::Revert { output: result.output, gas_used: result.gas_used }
+            Self::Revert { output: result.output, gas_used }
         } else {
-            Self::Halt { reason: result.stop, gas_used: result.gas_used }
+            Self::Halt { reason: result.stop, gas_used }
         }
     }
 
@@ -527,25 +528,29 @@ impl<I> RawInspector<I> {
 }
 
 impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
         self.inner().initialize_interp(interp);
     }
 
-    fn step(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
         self.inner().step(interp);
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
         self.inner().step_end(interp);
     }
 
-    fn log(&mut self, log: &alloy_primitives::Log, host: &mut <BaseEvmTypes as EvmTypes>::Host) {
+    fn log(
+        &mut self,
+        log: &alloy_primitives::Log,
+        host: &mut <BaseEvmTypes as EvmTypesHost>::Host<'_>,
+    ) {
         self.inner().log(log, host);
     }
 
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &mut Message<BaseEvmTypes>,
     ) -> Option<MessageResult<BaseEvmTypes>> {
         self.inner().call(interp, message)
@@ -553,7 +558,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
 
     fn call_end(
         &mut self,
-        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &Message<BaseEvmTypes>,
         result: &mut MessageResult<BaseEvmTypes>,
     ) {
@@ -562,7 +567,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
 
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &mut Message<BaseEvmTypes>,
     ) -> Option<MessageResult<BaseEvmTypes>> {
         self.inner().create(interp, message)
@@ -570,7 +575,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
 
     fn create_end(
         &mut self,
-        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &Message<BaseEvmTypes>,
         result: &mut MessageResult<BaseEvmTypes>,
     ) {
@@ -582,7 +587,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
         contract: &Address,
         target: &Address,
         value: &U256,
-        host: &mut <BaseEvmTypes as EvmTypes>::Host,
+        host: &mut <BaseEvmTypes as EvmTypesHost>::Host<'_>,
     ) {
         self.inner().selfdestruct(contract, target, value, host);
     }

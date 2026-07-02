@@ -1,5 +1,5 @@
 use crate::{
-    EvmFeatures, EvmTypes,
+    EvmFeatures, EvmTypesHost,
     interpreter::{Host, InstrStop, InterpreterState, Result, StackMut, private::GasInstructionCx},
     utils::word_to_usize,
     version::GasId,
@@ -8,7 +8,7 @@ use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
 #[inline]
-const fn require_non_staticcall<T: EvmTypes>(state: &InterpreterState<'_, T>) -> Result {
+const fn require_non_staticcall<T: EvmTypesHost>(state: &InterpreterState<'_, '_, T>) -> Result {
     if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -65,6 +65,12 @@ pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
     // regular gas.
     if cx.state.feature(EvmFeatures::EIP8037) {
         cx.gas.spend_state(cx.state.gas_params().sstore_state_gas(&state_load))?;
+
+        // EIP-8037: a 0→x→0 storage restoration returns the state gas charged for
+        // the initial 0→x transition directly to the reservoir, rather than
+        // routing it through the capped refund counter below.
+        let refill = cx.state.gas_params().sstore_state_gas_refill(&state_load);
+        cx.gas.refill_reservoir(refill);
     }
 
     // EIP-2200 and EIP-3529 refund rules, including negative refund adjustments for
@@ -92,8 +98,8 @@ pub(crate) fn log<const N: usize>(cx: _) -> Result {
 }
 
 #[inline(never)]
-fn log_common<T: EvmTypes>(
-    cx: GasInstructionCx<'_, '_, T>,
+fn log_common<T: EvmTypesHost>(
+    cx: GasInstructionCx<'_, '_, '_, T>,
     mut stack: StackMut<'_>,
     n: usize,
 ) -> Result {
@@ -285,11 +291,14 @@ mod tests {
         let interp = run(RunConfig::new([op::PUSH1, 1, op::PUSH1, 0, op::SSTORE, op::STOP])
             .host(&mut host)
             .spec(SpecId::AMSTERDAM)
-            .gas_limit(100_000));
+            .gas_limit(200_000));
 
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.gas_remaining(), 59_526);
-        assert_eq!(interp.state_gas_spent(), 37_568);
+        // Regular: PUSH1(3)·2 + SSTORE warm (100 static + EIP-8038 STORAGE_WRITE
+        // 10_000 set) = 10_106.
+        // State gas (64 × 1530 = 97_920) spills into regular gas (no reservoir).
+        assert_eq!(interp.state_gas_spent(), 97_920);
+        assert_eq!(interp.gas_remaining(), 200_000 - 10_106 - 97_920);
     }
 
     #[test]

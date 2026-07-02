@@ -219,6 +219,12 @@ evm_features! {
     ///
     /// Default: on since Amsterdam
     EIP8246,
+    /// Applies [EIP-2780](https://eips.ethereum.org/EIPS/eip-2780) reduced intrinsic transaction
+    /// gas: a decomposed `TX_BASE_COST + to-based + value-based` intrinsic model plus top-level
+    /// execution charges for empty recipients with value and EIP-7702-delegated recipients.
+    ///
+    /// Default: on since Amsterdam
+    EIP2780,
 }
 
 #[cfg(test)]

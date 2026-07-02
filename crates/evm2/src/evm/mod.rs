@@ -113,19 +113,19 @@
 //! ```
 
 use self::{
-    inspector::Inspector,
-    precompile::{PrecompileOutput, PrecompileProvider},
+    inspector::{Inspector, boxed_inspector},
+    precompile::{PrecompileOutput, PrecompileProvider, boxed_precompile_provider},
 };
 use crate::{
-    AnyError, ErrorCode, EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError,
-    PrecompileHalt, SpecId,
+    AnyError, ErrorCode, EvmConfigSelector, EvmTypes, EvmTypesHost, ExecutionConfig,
+    PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
     constants::{CALL_DEPTH_LIMIT, EIP7708_TRANSFER_TOPIC},
     env::{BlockEnv, TxEnv},
     error::error_unavailable,
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
-        MessageResult, Word,
+        MessageResult, Word, gas::EIP8038_COLD_ACCOUNT_ACCESS,
     },
     registry::{HandlerError, HandlerResult, TxRegistry},
     trustme,
@@ -136,7 +136,7 @@ use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 #[cfg(feature = "async")]
 use core::future::Future;
-use core::{any::TypeId, ptr::NonNull};
+use core::ptr::NonNull;
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
@@ -152,7 +152,11 @@ pub use system::{
     SYSTEM_CALL_GAS_LIMIT, SystemTx, WITHDRAWAL_REQUEST_ADDRESS,
 };
 
+mod any;
+pub use any::NonStaticAny;
+
 mod db;
+use db::boxed_dyn_database;
 pub use db::{
     AccountStorageCache, Cache, CacheDB, Database, Db, DbResult, DbStats, DbStatsCounts,
     DynDatabase, EmptyDB, InMemoryDB,
@@ -207,19 +211,19 @@ macro_rules! store_error {
 ///
 /// Returning `Some(stop)` means the runner executed the frame. Returning `None` makes the EVM run
 /// the regular interpreter for the same frame.
-pub trait InterpreterRunner<T: EvmTypes>: core::fmt::Debug + Send + Sync + 'static {
+pub trait InterpreterRunner<T: EvmTypesHost>: core::fmt::Debug + Send + Sync + 'static {
     /// Attempts to execute `interpreter` with an external backend.
-    fn run(
+    fn run<'frame, 'host>(
         &self,
         config: &ExecutionConfig<T>,
-        interpreter: &mut Interpreter<'_, T>,
-        host: &mut T::Host,
+        interpreter: &mut Interpreter<'frame, 'host, T>,
+        host: &mut T::Host<'host>,
     ) -> Option<InstrStop>;
 }
 
 /// EVM host and transaction dispatcher.
 #[derive_where(Debug)]
-pub struct Evm<T: EvmTypes> {
+pub struct Evm<'a, T: EvmTypesHost> {
     #[derive_where(skip)]
     spec_id: T::SpecId,
     #[derive_where(skip)]
@@ -228,20 +232,20 @@ pub struct Evm<T: EvmTypes> {
     pub(crate) block: BlockEnv<T>,
     registry: TxRegistry<T, TxResult<T>>,
     #[derive_where(skip)]
-    pub(crate) state: State,
+    pub(crate) state: State<'a>,
     #[derive_where(skip)]
-    precompiles: Box<dyn PrecompileProvider<T>>,
+    precompiles: Box<dyn PrecompileProvider<T> + 'a>,
     #[derive_where(skip)]
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
-    inspector: Option<Box<dyn Inspector<T>>>,
+    inspector: Option<Box<dyn Inspector<T> + 'a>>,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
     /// The currently running interpreter frame, if any.
     ///
     /// This is passed to the inspector call and create hooks as the parent frame.
     #[derive_where(skip)]
-    current_frame: Option<NonNull<Interpreter<'static, T>>>,
+    current_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
     #[derive_where(skip)]
     running: bool,
     #[cfg(feature = "async")]
@@ -253,7 +257,7 @@ pub struct Evm<T: EvmTypes> {
     error: Option<AnyError>,
 }
 
-impl<T: EvmTypes<Host = Self>> Evm<T> {
+impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Creates an EVM for `spec_id` with the provided transaction registry, database, and
     /// precompile provider.
     #[inline]
@@ -261,8 +265,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv<T>,
         registry: TxRegistry<T, TxResult<T>>,
-        database: impl DynDatabase,
-        precompiles: impl PrecompileProvider<T>,
+        database: impl DynDatabase + 'a,
+        precompiles: impl PrecompileProvider<T> + 'a,
     ) -> Self {
         Self::new_with_execution_config(
             <T::ConfigSelector as EvmConfigSelector<T>>::execution_config(spec_id),
@@ -281,16 +285,16 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv<T>,
         registry: TxRegistry<T, TxResult<T>>,
-        database: impl DynDatabase,
-        precompiles: impl PrecompileProvider<T>,
+        database: impl DynDatabase + 'a,
+        precompiles: impl PrecompileProvider<T> + 'a,
     ) -> Self {
         Self::new_mono(
             execution_config,
             spec_id,
             block,
             registry,
-            Box::new(database),
-            Box::new(precompiles),
+            boxed_dyn_database(database),
+            boxed_precompile_provider(precompiles),
         )
     }
 
@@ -300,8 +304,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv<T>,
         registry: TxRegistry<T, TxResult<T>>,
-        database: Box<dyn DynDatabase>,
-        precompiles: Box<dyn PrecompileProvider<T>>,
+        database: Box<dyn DynDatabase + 'a>,
+        precompiles: Box<dyn PrecompileProvider<T> + 'a>,
     ) -> Self {
         assert_eq!(
             spec_id.into(),
@@ -359,6 +363,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     #[inline]
+    fn assert_precompiles_downcast_mutable(&self) {
+        self.assert_precompiles_mutable();
+    }
+
+    #[inline]
     fn assert_inspector_mutable(&self) {
         assert!(!self.running, "inspector cannot be modified during EVM execution");
     }
@@ -387,7 +396,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// [`Self::commit_source`]. The wrapped backing database is available through
     /// [`Self::database`].
     #[inline]
-    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase>> {
+    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase + 'a>> {
         self.state.overlay_db()
     }
 
@@ -397,19 +406,19 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// overlay with a [`Tee`] or another [`StateChangeSink`]. The wrapped backing database is
     /// available through [`Self::database_mut`].
     #[inline]
-    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase>> {
+    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase + 'a>> {
         self.state.overlay_db_mut()
     }
 
     /// Returns the backing database.
     #[inline]
-    pub fn database(&self) -> &dyn DynDatabase {
+    pub fn database(&self) -> &(dyn DynDatabase + 'a) {
         self.state.initial()
     }
 
     /// Returns the backing database mutably.
     #[inline]
-    pub fn database_mut(&mut self) -> &mut dyn DynDatabase {
+    pub fn database_mut(&mut self) -> &mut (dyn DynDatabase + 'a) {
         self.state.initial_mut()
     }
 
@@ -456,7 +465,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Replaces the backing database.
     #[inline]
-    pub fn set_database(&mut self, database: impl DynDatabase) {
+    pub fn set_database(&mut self, database: impl DynDatabase + 'a) {
         self.state.set_initial(database);
         self.evm_send = false;
     }
@@ -484,8 +493,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     pub fn evm_is_send<D, P>(&mut self) -> &mut Self
     where
-        D: DynDatabase + Send,
-        P: PrecompileProvider<T> + Send,
+        D: DynDatabase + Send + 'static,
+        P: PrecompileProvider<T> + Send + 'static,
+        'a: 'static,
     {
         self.assert_database_type::<D>();
         self.assert_precompiles_type::<P>();
@@ -498,9 +508,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     pub fn evm_is_send_with_inspector<D, P, I>(&mut self) -> &mut Self
     where
-        D: DynDatabase + Send,
-        P: PrecompileProvider<T> + Send,
-        I: Inspector<T> + Send,
+        D: DynDatabase + Send + 'static,
+        P: PrecompileProvider<T> + Send + 'static,
+        I: Inspector<T> + Send + 'static,
+        'a: 'static,
     {
         self.assert_database_type::<D>();
         self.assert_precompiles_type::<P>();
@@ -510,48 +521,61 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     #[inline]
-    fn assert_database_type<D: DynDatabase>(&self) {
-        assert_eq!(self.database().type_id(), TypeId::of::<D>(), "database type mismatch");
+    fn assert_database_type<D: DynDatabase + 'static>(&self)
+    where
+        'a: 'static,
+    {
+        assert_eq!(self.database().type_id(), typeid::of::<D>(), "database type mismatch");
     }
 
     #[inline]
-    fn assert_precompiles_type<P: PrecompileProvider<T>>(&self) {
+    fn assert_precompiles_type<P: PrecompileProvider<T> + 'static>(&self)
+    where
+        'a: 'static,
+    {
         assert_eq!(
             self.precompiles().type_id(),
-            TypeId::of::<P>(),
+            typeid::of::<P>(),
             "precompile provider type mismatch"
         );
     }
 
     #[inline]
-    fn assert_inspector_type<I: Inspector<T>>(&self) {
-        let Some(inspector) = self.inspector() else {
-            panic!("inspector type mismatch");
-        };
-        assert_eq!(inspector.type_id(), TypeId::of::<I>(), "inspector type mismatch");
+    fn assert_inspector_type<I: Inspector<T> + 'static>(&self)
+    where
+        'a: 'static,
+    {
+        let inspector = self.inspector().expect("inspector type mismatch");
+        assert_eq!(inspector.type_id(), typeid::of::<I>(), "inspector type mismatch");
     }
 
     /// Returns the backing database as `D` if it has that concrete type.
     #[inline]
-    pub fn database_as<D: DynDatabase>(&self) -> Option<&D> {
+    pub fn database_as<D: DynDatabase + 'static>(&self) -> Option<&D>
+    where
+        'a: 'static,
+    {
         self.database().downcast_ref()
     }
 
     /// Returns the backing database mutably as `D` if it has that concrete type.
     #[inline]
-    pub fn database_as_mut<D: DynDatabase>(&mut self) -> Option<&mut D> {
+    pub fn database_as_mut<D: DynDatabase + 'static>(&mut self) -> Option<&mut D>
+    where
+        'a: 'static,
+    {
         self.database_mut().downcast_mut()
     }
 
     /// Returns the mutable EVM state.
     #[inline]
-    pub const fn state(&self) -> &State {
+    pub const fn state(&self) -> &State<'a> {
         &self.state
     }
 
     /// Returns the mutable EVM state.
     #[inline]
-    pub const fn state_mut(&mut self) -> &mut State {
+    pub const fn state_mut(&mut self) -> &mut State<'a> {
         &mut self.state
     }
 
@@ -563,7 +587,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Returns the precompile provider.
     #[inline]
-    pub fn precompiles(&self) -> &dyn PrecompileProvider<T> {
+    pub fn precompiles(&self) -> &(dyn PrecompileProvider<T> + 'a) {
         self.precompiles.as_ref()
     }
 
@@ -581,50 +605,57 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Returns the precompile provider mutably.
     #[inline]
-    pub fn precompiles_mut(&mut self) -> &mut dyn PrecompileProvider<T> {
+    pub fn precompiles_mut(&mut self) -> &mut (dyn PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
         self.precompiles.as_mut()
     }
 
     /// Replaces the precompile provider.
     #[inline]
-    pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T>) {
+    pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
-        self.precompiles = Box::new(precompiles);
+        self.precompiles = boxed_precompile_provider(precompiles);
         self.evm_send = false;
     }
 
     /// Returns the precompile provider as `P` if it has that concrete type.
     #[inline]
-    pub fn precompiles_as<P: PrecompileProvider<T>>(&self) -> Option<&P> {
-        <dyn core::any::Any>::downcast_ref(self.precompiles())
+    pub fn precompiles_as<P: PrecompileProvider<T> + 'static>(&self) -> Option<&P>
+    where
+        'a: 'static,
+    {
+        self.precompiles().downcast_ref()
     }
 
     /// Returns the precompile provider mutably as `P` if it has that concrete type.
     #[inline]
-    pub fn precompiles_as_mut<P: PrecompileProvider<T>>(&mut self) -> Option<&mut P> {
-        self.assert_precompiles_mutable();
-        <dyn core::any::Any>::downcast_mut(self.precompiles_mut())
+    pub fn precompiles_as_mut<P: PrecompileProvider<T> + 'static>(&mut self) -> Option<&mut P>
+    where
+        'a: 'static,
+    {
+        self.assert_precompiles_downcast_mutable();
+        self.precompiles.as_mut().downcast_mut()
     }
 
     /// Returns the active execution inspector.
     #[inline]
-    pub fn inspector(&self) -> Option<&dyn Inspector<T>> {
+    pub fn inspector(&self) -> Option<&(dyn Inspector<T> + 'a)> {
         self.inspector.as_deref()
     }
 
     /// Returns the active execution inspector mutably.
     #[inline]
-    pub fn inspector_mut(&mut self) -> Option<&mut dyn Inspector<T>> {
+    pub fn inspector_mut(&mut self) -> Option<&mut (dyn Inspector<T> + 'a)> {
         self.assert_inspector_mutable();
         self.inspector.as_deref_mut()
     }
 
     #[inline]
     fn inspect_log(&mut self, log: &Log) {
+        let _guard = self.enter_execution();
         if let Some(inspector) = self.inspector.as_deref_mut() {
-            // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
-            // hook.
+            // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
+            // replacement while the hook is running.
             let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
             inspector.log(log, self);
         }
@@ -650,7 +681,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     #[inline]
-    fn finish_executed_tx(&mut self, mut result: TxResult<T>) -> ExecutedTx<'_, T> {
+    fn finish_executed_tx(&mut self, mut result: TxResult<T>) -> ExecutedTx<'_, 'a, T> {
         let has_pending_state = if let Err(stop) = self.finalize_transaction() {
             result.status = false;
             result.stop = stop;
@@ -677,15 +708,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Sets the active execution inspector.
     #[inline]
-    pub fn set_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
+    pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.assert_inspector_mutable();
-        self.inspector = Some(Box::new(inspector));
+        self.inspector = Some(boxed_inspector(inspector));
         self.evm_send = false;
     }
 
     /// Sets the active boxed execution inspector.
     #[inline]
-    pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T>>) {
+    pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T> + 'a>) {
         self.assert_inspector_mutable();
         self.inspector = Some(inspector);
         self.evm_send = false;
@@ -693,7 +724,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Removes the active execution inspector.
     #[inline]
-    pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T>>> {
+    pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T> + 'a>> {
         self.assert_inspector_mutable();
         self.evm_send = false;
         self.inspector.take()
@@ -701,10 +732,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Removes the active execution inspector if it has type `I`.
     #[inline]
-    pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>> {
+    pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>>
+    where
+        'a: 'static,
+    {
         self.assert_inspector_mutable();
         let i = self.inspector.take_if(|i| i.is::<I>())?;
-        (i as Box<dyn core::any::Any>).downcast().ok()
+        Some(unsafe { Box::from_raw(Box::into_raw(i).cast::<I>()) })
     }
 
     /// Sets the optional external interpreter runner.
@@ -776,16 +810,16 @@ impl Drop for ExecutionGuard {
 }
 
 #[cfg(feature = "async")]
-struct SendEvmRef<'a, T: EvmTypes> {
-    evm: &'a mut Evm<T>,
+struct SendEvmRef<'a, 'evm, T: EvmTypesHost> {
+    evm: &'a mut Evm<'evm, T>,
 }
 
 #[cfg(feature = "async")]
 // SAFETY: `SendEvmRef` is only constructed by async entrypoints after `Evm::evm_is_send` has
 // verified the concrete erased field types as `Send`.
-unsafe impl<T> Send for SendEvmRef<'_, T>
+unsafe impl<T> Send for SendEvmRef<'_, '_, T>
 where
-    T: EvmTypes,
+    T: EvmTypesHost,
     T::SpecId: Send,
     T::Tx: Send,
     T::MessageExt: Send,
@@ -796,7 +830,7 @@ where
 {
 }
 
-impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
+impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// Dispatches the transaction to its handler and returns an executed transaction handle.
     ///
     /// The returned [`ExecutedTx`] keeps post-finalization writes in the transaction scratch layer.
@@ -805,7 +839,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// [`ExecutedTx::detach`] before
     /// another transaction can be executed. Dropping the handle is equivalent to
     /// [`ExecutedTx::discard`].
-    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<ExecutedTx<'_, T>> {
+    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         self.clear_top_level_error_state();
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let result = handler.call(tx, self);
@@ -843,10 +877,10 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// or optional inspector to be `Send`. Use [`Self::transact_async_send`] when the returned
     /// future must be `Send`.
     #[cfg(feature = "async")]
-    pub fn transact_async<'a>(
-        &'a mut self,
-        tx: &'a T::Tx,
-    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'a, T>, registry::HandlerError>> + 'a
+    pub fn transact_async<'fut>(
+        &'fut mut self,
+        tx: &'fut T::Tx,
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'fut, 'a, T>, registry::HandlerError>> + 'fut
     where
         T::Tx: Sync,
     {
@@ -862,10 +896,12 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// Before calling it, the current erased database, precompile provider, and optional inspector
     /// must be verified with [`Self::evm_is_send`] or [`Self::evm_is_send_with_inspector`].
     #[cfg(feature = "async")]
-    pub fn transact_async_send<'a>(
-        &'a mut self,
-        tx: &'a T::Tx,
-    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'a, T>, registry::HandlerError>> + Send + 'a
+    pub fn transact_async_send<'fut>(
+        &'fut mut self,
+        tx: &'fut T::Tx,
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'fut, 'a, T>, registry::HandlerError>>
+    + Send
+    + 'fut
     where
         T::Tx: Sync,
     {
@@ -887,21 +923,21 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     ///
     /// Use [`Self::transact`] directly when the caller wants to choose between commit, discard,
     /// detach, and accumulator/sink commits for each transaction.
-    pub fn transact_iter<'a, I>(
-        &'a mut self,
+    pub fn transact_iter<'txs, I>(
+        &'txs mut self,
         txs: I,
-    ) -> impl Iterator<Item = HandlerResult<TxResult<T>>> + 'a
+    ) -> impl Iterator<Item = HandlerResult<TxResult<T>>> + 'txs
     where
-        I: IntoIterator<Item = &'a T::Tx>,
-        I::IntoIter: 'a,
-        T::Tx: 'a,
-        Self: 'a,
+        I: IntoIterator<Item = &'txs T::Tx>,
+        I::IntoIter: 'txs,
+        T::Tx: 'txs,
+        Self: 'txs,
     {
         txs.into_iter().map(move |tx| self.transact(tx).map(ExecutedTx::commit))
     }
 }
 
-impl<T: EvmTypes<Host = Self>> Evm<T> {
+impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn execute_message_impl(
         &mut self,
@@ -909,7 +945,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: Bytecode,
         message: &mut Message<T>,
     ) -> MessageResult<T> {
-        match message.kind {
+        let mut result = match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
                 self.execute_create_message(tx_env, bytecode, message)
             }
@@ -917,7 +953,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             | MessageKind::CallCode
             | MessageKind::DelegateCall
             | MessageKind::StaticCall => self.execute_call_message(tx_env, bytecode, message),
-        }
+        };
+        // Settle the returning frame's gas for its stop reason at this single exit,
+        // rather than in each result builder, so every consumer (parent
+        // `merge_child_gas`, top-level accounting, inspectors) reads the settled gas.
+        result.gas.settle_gas(result.stop);
+        result
     }
 
     /// Fires the inspector call/create hooks around message execution.
@@ -925,17 +966,18 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// This is invoked for every message when an inspector is installed; hook overrides skip
     /// execution entirely, including the call depth check.
     #[inline(never)]
-    fn execute_message_inspected(
+    fn execute_message_inspected<'frame>(
         &mut self,
-        tx_env: &TxEnv<T>,
+        tx_env: &'frame TxEnv<T>,
         bytecode: Bytecode,
-        message: &mut Message<T>,
+        message: &'frame mut Message<T>,
     ) -> MessageResult<T> {
+        let _guard = self.enter_execution();
         let Some(inspector) = self.inspector.as_deref_mut() else {
             return self.execute_message_impl(tx_env, bytecode, message);
         };
-        // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
-        // message execution.
+        // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
+        // replacement while the hooks are running.
         let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
 
         let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
@@ -947,7 +989,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                     Ok(info) => info.map_or(0, |info| info.nonce),
                     Err(code) => {
                         let stop = self.store_error(code);
-                        return Self::error_message_result(stop, message.gas_limit);
+                        return Self::error_message_result(
+                            stop,
+                            message.gas_limit,
+                            message.reservoir,
+                        );
                     }
                 }
             } else {
@@ -956,11 +1002,16 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             message.destination = Self::derive_create_address(&bytecode, message, nonce);
         }
 
-        let mut top_frame = None;
+        let mut top_frame: Option<Box<Interpreter<'frame, 'a, T>>> = None;
         let frame = match self.current_frame {
             // SAFETY: The parent frame is suspended on this call stack for the duration of the
             // message execution.
-            Some(mut frame) => unsafe { frame.as_mut() },
+            Some(mut frame) => unsafe {
+                core::mem::transmute::<
+                    &mut Interpreter<'static, 'static, T>,
+                    &mut Interpreter<'frame, 'a, T>,
+                >(frame.as_mut())
+            },
             None => {
                 let frame = top_frame.insert(self.interpreter_pool.pop());
                 // SAFETY: The message outlives the frame, which is returned to the pool below.
@@ -1007,24 +1058,51 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &mut Message<T>,
     ) -> MessageResult<T> {
         if message.depth > CALL_DEPTH_LIMIT {
-            return Self::error_message_result(InstrStop::CallTooDeep, message.gas_limit);
+            return Self::error_message_result(
+                InstrStop::CallTooDeep,
+                message.gas_limit,
+                message.reservoir,
+            );
         }
         if let Err(stop) = self.prepare_create_message(&bytecode, message) {
-            return Self::error_message_result(stop, message.gas_limit);
+            return Self::error_message_result(stop, message.gas_limit, message.reservoir);
         }
         let checkpoint = self.state.checkpoint();
+        // EIP-8037: capture whether the target leaf was already alive (existing, non-empty) before
+        // creation, so a successful create at a pre-existing balance-only account can refund the
+        // upfront NEW_ACCOUNT state gas (execution-specs `created_target_alive`).
+        let target_alive = if self.feature(EvmFeatures::EIP8037) {
+            match self.account_is_alive(&message.destination) {
+                Ok(alive) => alive,
+                Err(stop) => {
+                    return Self::error_message_result(stop, message.gas_limit, message.reservoir);
+                }
+            }
+        } else {
+            false
+        };
         if let Err(stop) = self.create_message_account(message) {
             self.state.rollback(checkpoint, self.features);
-            return Self::error_message_result(stop, message.gas_limit);
+            return Self::error_message_result(stop, message.gas_limit, message.reservoir);
         }
         message.code_address = message.destination;
         message.disable_precompiles = false;
         let input = core::mem::take(&mut message.input);
 
-        let stop = self.run_interpreter(bytecode, tx_env, message);
+        // Creates pay their NEW_ACCOUNT-equivalent state gas upfront via the tx-level
+        // `initial_state_gas`, so the create frame starts from the inherited gas as-is.
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let stop = self.run_interpreter(bytecode, tx_env, message, frame_gas);
         message.input = input;
 
-        self.finish_create_message_run(checkpoint, &message.destination, message.gas_limit, stop)
+        self.finish_create_message_run(
+            checkpoint,
+            &message.destination,
+            message.gas_limit,
+            stop,
+            target_alive,
+        )
     }
 
     #[inline(never)]
@@ -1070,6 +1148,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         Ok(())
     }
 
+    /// Returns whether the account is alive (exists and is non-empty), matching execution-specs
+    /// `is_account_alive`. Used by EIP-8037 to detect a create at a pre-existing leaf.
+    fn account_is_alive(&mut self, address: &Address) -> Result<bool, InstrStop> {
+        match self.state.account(address, false) {
+            Ok(account) => Ok(account.get().is_some_and(|info| !info.is_empty())),
+            Err(code) => Err(store_error!(self, code)),
+        }
+    }
+
     #[inline(never)]
     fn create_message_account(&mut self, message: &Message<T>) -> Result<(), InstrStop> {
         self.state
@@ -1087,6 +1174,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         address: &Address,
         gas_limit: u64,
         stop: InstrStop,
+        target_alive: bool,
     ) -> MessageResult<T> {
         let interp = self.interpreter_pool.last_mut().unwrap();
         let mut gas = interp.gas();
@@ -1096,9 +1184,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 self.state.rollback(checkpoint, self.features);
                 return MessageResult {
                     stop,
-                    gas: Self::message_gas(*gas.tracker(), stop),
+                    gas: *gas.tracker(),
                     output,
                     created_address: None,
+                    created_target_was_alive: false,
                     ext: T::MessageResultExt::default(),
                     _non_exhaustive: (),
                 };
@@ -1110,7 +1199,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 .map(|mut a| a.set_code_slow(Bytecode::new_legacy(output.clone())))
             {
                 self.state.rollback(checkpoint, self.features);
-                return Self::error_message_result(self.store_error(code), gas_limit);
+                let stop = self.store_error(code);
+                return Self::error_message_result(stop, gas_limit, gas.reservoir());
             }
         } else {
             self.state.rollback(checkpoint, self.features);
@@ -1118,9 +1208,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
         MessageResult {
             stop,
-            gas: Self::message_gas(*gas.tracker(), stop),
+            gas: *gas.tracker(),
             output,
             created_address: stop.is_success().then_some(*address),
+            created_target_was_alive: stop.is_success() && target_alive,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
         }
@@ -1139,15 +1230,29 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             .len()
             .saturating_mul(self.version().gas_params.get(GasId::CodeDepositCost) as usize);
         let code_deposit_gas = u64::try_from(code_deposit_gas).unwrap_or(u64::MAX);
-        if gas.remaining() >= code_deposit_gas {
-            return gas.spend(code_deposit_gas);
+        if gas.remaining() < code_deposit_gas {
+            if self.feature(EvmFeatures::EIP2) {
+                // EIP-2 makes code-deposit OOG fail contract creation; Frontier instead
+                // creates the account with empty code.
+                return Err(InstrStop::OutOfGas);
+            }
+            *output = Bytes::new();
+            return Ok(());
         }
-        if self.feature(EvmFeatures::EIP2) {
-            // EIP-2 makes code-deposit OOG fail contract creation; Frontier instead creates the
-            // account with empty code.
-            return Err(InstrStop::OutOfGas);
+        gas.spend(code_deposit_gas)?;
+
+        // EIP-8037: hashing the deployed bytecode to compute its code_hash costs
+        // regular keccak word gas, and depositing the code costs state gas. The
+        // state-gas charge must be the last spend before the journal commit so
+        // that any 0→x→0 reservoir refills earlier in the frame are not disturbed.
+        if self.feature(EvmFeatures::EIP8037) {
+            let params = &self.version().gas_params;
+            gas.spend(params.keccak256_word_cost(output.len()))?;
+            let code_deposit_state_gas = params.code_deposit_state_gas(output.len());
+            if code_deposit_state_gas > 0 {
+                gas.spend_state(code_deposit_state_gas)?;
+            }
         }
-        *output = Bytes::new();
         Ok(())
     }
 
@@ -1169,9 +1274,19 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &mut Message<T>,
     ) -> MessageResult<T> {
         if message.depth > CALL_DEPTH_LIMIT {
-            return Self::error_message_result(InstrStop::CallTooDeep, message.gas_limit);
+            return Self::error_message_result(
+                InstrStop::CallTooDeep,
+                message.gas_limit,
+                message.reservoir,
+            );
         }
         let checkpoint = self.state.checkpoint();
+        // EIP-2780 top-level execution charges, computed from the recipient's
+        // pre-call state (before the value transfer below) and applied to the frame
+        // gas before the precompile/interpreter split. Computed inside the checkpoint
+        // so the delegated-target warming it performs is unwound if the frame later
+        // rolls back.
+        let eip2780_charges = self.eip2780_call_charges(message);
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
         let transfers_balance = matches!(
             message.kind,
@@ -1181,23 +1296,97 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             || match self.state.transfer(&message.caller, &message.destination, &message.value) {
                 Ok(result) => result,
                 Err(code) => {
-                    return Self::error_message_result(self.store_error(code), message.gas_limit);
+                    let stop = self.store_error(code);
+                    return Self::error_message_result(stop, message.gas_limit, message.reservoir);
                 }
             };
         if transfers_balance && !transfer_succeeded {
-            return Self::error_message_result(InstrStop::OutOfFunds, message.gas_limit);
+            return Self::error_message_result(
+                InstrStop::OutOfFunds,
+                message.gas_limit,
+                message.reservoir,
+            );
         }
         if transfers_balance {
             self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         }
 
-        if self.contains_precompile(message) {
-            return self.execute_call_precompile(checkpoint, message);
+        // EIP-2780: apply the depth-0 execution charges to the frame gas here, before the
+        // precompile/interpreter split, so both paths share one charge site (mirroring
+        // execution-specs `process_message`, where the top-frame charge precedes the
+        // code-vs-precompile dispatch). The charge is frame-level state gas: it is recorded
+        // on the tracker for EIP-8037 block accounting and refilled on failure by
+        // `settle_gas`. A frame that cannot afford it halts before running; the rollback
+        // unwinds the value transfer and its EIP-7708 log. Off the depth-0 path the charges
+        // are zero, so this is a no-op spend.
+        let mut frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let (eip2780_regular, eip2780_state) = eip2780_charges;
+        if frame_gas.spend(eip2780_regular).is_err()
+            || frame_gas.spend_state(eip2780_state).is_err()
+        {
+            self.state.rollback(checkpoint, self.features);
+            return Self::error_message_result(
+                InstrStop::OutOfGas,
+                message.gas_limit,
+                message.reservoir,
+            );
         }
 
-        let stop = self.run_interpreter(bytecode, tx_env, message);
+        if self.contains_precompile(message) {
+            return self.execute_call_precompile(checkpoint, message, frame_gas);
+        }
+
+        let stop = self.run_interpreter(bytecode, tx_env, message, frame_gas);
 
         self.finish_call_message_run(checkpoint, stop)
+    }
+
+    /// Computes the EIP-2780 top-level (depth-0) execution charges for a call to
+    /// `message.destination`, from the recipient's pre-call state:
+    /// - a regular-gas `COLD_ACCOUNT_ACCESS` surcharge when the recipient carries an EIP-7702
+    ///   delegation, and
+    /// - `new_account_state_gas` of state gas when the recipient is empty (EIP-161) and the call
+    ///   transfers value.
+    ///
+    /// Returns `(regular, state)`, both zero unless EIP-2780 is active at depth 0.
+    fn eip2780_call_charges(&mut self, message: &Message<T>) -> (u64, u64) {
+        if message.depth != 0 || !self.feature(EvmFeatures::EIP2780) {
+            return (0, 0);
+        }
+        let dest = message.destination;
+        // A nonexistent recipient reads as an empty account (EIP-161).
+        let recipient_is_empty = match self.state.account_info_untracked(&dest) {
+            Ok(info) => info.as_ref().is_none_or(AccountInfo::is_empty),
+            Err(_) => return (0, 0),
+        };
+        // EIP-2780: a delegated recipient is charged an extra COLD_ACCOUNT_ACCESS
+        // of regular gas, and the delegation target is warmed for subsequent
+        // access (matching execution-specs' `accessed_addresses.add`). The
+        // recipient's stored code must be loaded — the warmed tx-target overlay
+        // entry may not carry the code bytes needed to read the designator. An
+        // empty recipient is never delegated, so skip the load to avoid touching
+        // an otherwise-untouched account.
+        let delegated = if recipient_is_empty {
+            None
+        } else {
+            match self.state.account(&dest, false) {
+                Ok(mut acc) => acc.load_code().ok().and_then(|code| code.eip7702_address()),
+                Err(_) => None,
+            }
+        };
+        let regular = if let Some(delegated) = delegated {
+            let _ = self.state.account(&delegated, false).map(|mut a| a.warm());
+            u64::from(EIP8038_COLD_ACCOUNT_ACCESS)
+        } else {
+            0
+        };
+        let state = if !message.value.is_zero() && recipient_is_empty {
+            self.version().gas_params.new_account_state_gas()
+        } else {
+            0
+        };
+        (regular, state)
     }
 
     #[inline(never)]
@@ -1205,10 +1394,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &mut self,
         checkpoint: StateCheckpoint,
         message: &Message<T>,
+        mut gas: GasTracker,
     ) -> MessageResult<T> {
-        let mut gas = GasTracker::new(message.gas_limit);
-        let result = self.execute_precompile(message, &mut gas);
-        let (stop, output) = match result {
+        // `gas` is the frame tracker built by the caller with the inherited reservoir and
+        // any EIP-2780 depth-0 charge already applied; the precompile only adds regular gas.
+        let (stop, output) = match self.execute_precompile(message, &mut gas) {
             Ok(output) => (InstrStop::Return, output.into_bytes()),
             Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
             Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
@@ -1226,9 +1416,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
         MessageResult {
             stop,
-            gas: Self::message_gas(gas, stop),
+            gas,
             output,
             created_address: None,
+            created_target_was_alive: false,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
         }
@@ -1249,28 +1440,26 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
         MessageResult {
             stop,
-            gas: Self::message_gas(*child_gas.tracker(), stop),
+            gas: *child_gas.tracker(),
             output,
             created_address: None,
+            created_target_was_alive: false,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
         }
     }
 
     #[inline]
-    fn error_message_result(stop: InstrStop, gas_remaining: u64) -> MessageResult<T> {
-        MessageResult { stop, gas: GasTracker::new(gas_remaining), ..MessageResult::default() }
-    }
-
-    #[inline]
-    const fn message_gas(mut gas: GasTracker, stop: InstrStop) -> GasTracker {
-        if stop.is_halt() {
-            gas.set_remaining(0);
+    fn error_message_result(
+        stop: InstrStop,
+        gas_remaining: u64,
+        reservoir: u64,
+    ) -> MessageResult<T> {
+        MessageResult {
+            stop,
+            gas: GasTracker::new_with_regular_gas_and_reservoir(gas_remaining, reservoir),
+            ..MessageResult::default()
         }
-        if !stop.is_success() {
-            gas.set_refunded(0);
-        }
-        gas
     }
 
     #[inline(never)]
@@ -1279,11 +1468,18 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: Bytecode,
         tx_env: &'frame TxEnv<T>,
         message: &'frame Message<T>,
+        frame_gas: GasTracker,
     ) -> InstrStop {
-        let mut interp = self.interpreter_pool.pop();
+        let mut interp: Box<Interpreter<'frame, 'a, T>> = self.interpreter_pool.pop();
         let _guard = self.enter_execution();
         let interp_ref = interp.as_mut();
         interp_ref.init(bytecode, tx_env, message);
+        // Adopt the caller's frame tracker, which carries the EIP-2780 depth-0 charges
+        // already applied; it is otherwise identical to the one `init` derived (same
+        // regular limit and inherited reservoir). A later revert/halt unwinds the state
+        // charge via the existing `rollback_state_gas` reconciliation, like any in-frame
+        // state gas.
+        *interp_ref.gas_mut().tracker_mut() = frame_gas;
         // SAFETY: `execution_config` points to a private field that host execution does not
         // replace or mutate, so the pointee remains valid here.
         let execution_config = unsafe { trustme::decouple_lt(&self.execution_config) };
@@ -1295,7 +1491,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         });
         let prev_frame = self
             .current_frame
-            .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, T>>());
+            .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
         let interpreter_runner = self.interpreter_runner.clone();
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(execution_config, self, inspector)
@@ -1311,7 +1507,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         stop
     }
 
-    fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, 'a, T>) {
         if let Some(inspector) = self.inspector.as_deref_mut() {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // hook.
@@ -1327,7 +1523,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 }
 
-impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
+impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     fn spec_id(&self) -> SpecId {
         self.spec_id()
     }
@@ -1679,10 +1875,10 @@ mod tests {
     }
 
     fn handle_test_tx(
-        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
+        req: TxRequest<'_, '_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
-        Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
+        Ok(TxResult { status: true, total_gas_spent: req.tx.nonce + 1, ..TxResult::default() })
     }
 
     #[derive(Debug)]
@@ -1692,11 +1888,11 @@ mod tests {
     }
 
     impl InterpreterRunner<BaseEvmTypes> for TestInterpreterRunner {
-        fn run(
+        fn run<'frame, 'host>(
             &self,
             _config: &ExecutionConfig<BaseEvmTypes>,
-            _interpreter: &mut Interpreter<'_, BaseEvmTypes>,
-            _host: &mut Evm<BaseEvmTypes>,
+            _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            _host: &mut Evm<'host, BaseEvmTypes>,
         ) -> Option<InstrStop> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.stop
@@ -1716,10 +1912,13 @@ mod tests {
         let tx_env = TxEnv::default();
         let message = Message { gas_limit: 30_000, ..Default::default() };
 
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
         let stop = evm.run_interpreter(
             Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
             &tx_env,
             &message,
+            frame_gas,
         );
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -1728,6 +1927,23 @@ mod tests {
 
     const LIFECYCLE_ACCOUNT: Address = Address::with_last_byte(0x7a);
     const LIFECYCLE_STORAGE_KEY: Word = Word::from_limbs([1, 0, 0, 0]);
+
+    fn handle_lifecycle_tx(
+        req: TxRequest<'_, '_, BaseEvmTypes, Recovered<TxLegacy>>,
+    ) -> HandlerResult<TxResult> {
+        let value = Word::from(req.tx.nonce);
+        req.host
+            .state
+            .storage(&LIFECYCLE_ACCOUNT)
+            .into_slot(LIFECYCLE_STORAGE_KEY, false)
+            .map_err(registry::HandlerError::Fatal)?
+            .write(value);
+        req.host.state.log(Log {
+            address: LIFECYCLE_ACCOUNT,
+            data: LogData::new_unchecked(vec![], Bytes::new()),
+        });
+        Ok(TxResult { status: true, total_gas_spent: req.tx.nonce, ..TxResult::default() })
+    }
 
     fn empty_precompiles() -> Precompiles<BaseEvmTypes> {
         Precompiles::new(Cow::Owned(PrecompileMap::new()))
@@ -1755,6 +1971,7 @@ mod tests {
             kind: MessageKind::Call,
             depth: 0,
             gas_limit: 30_000,
+            reservoir: 0,
             destination: address,
             caller: Address::ZERO,
             input: Bytes::new(),
@@ -1768,24 +1985,7 @@ mod tests {
         }
     }
 
-    fn lifecycle_evm() -> Evm<BaseEvmTypes> {
-        fn handle_lifecycle_tx(
-            req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
-        ) -> HandlerResult<TxResult> {
-            let value = Word::from(req.tx.nonce);
-            req.host
-                .state
-                .storage(&LIFECYCLE_ACCOUNT)
-                .into_slot(LIFECYCLE_STORAGE_KEY, false)
-                .map_err(registry::HandlerError::Fatal)?
-                .write(value);
-            req.host.state.log(Log {
-                address: LIFECYCLE_ACCOUNT,
-                data: LogData::new_unchecked(vec![], Bytes::new()),
-            });
-            Ok(TxResult { status: true, gas_used: req.tx.nonce, ..TxResult::default() })
-        }
-
+    fn lifecycle_evm() -> Evm<'static, BaseEvmTypes> {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             RecoveredTxEnvelope::as_legacy,
@@ -1991,7 +2191,7 @@ mod tests {
                     Ok(PrecompileOutput::new(Bytes::new()))
                 },
                 PrecompileAccess::AsMut => |evm, _, _| {
-                    let _ = evm.precompiles_as_mut::<Precompiles<BaseEvmTypes>>();
+                    evm.assert_precompiles_downcast_mutable();
                     Ok(PrecompileOutput::new(Bytes::new()))
                 },
                 PrecompileAccess::Set => |evm, _, _| {
@@ -2015,7 +2215,6 @@ mod tests {
     fn immutable_precompile_access_is_allowed_during_execution() {
         let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
             let _ = evm.precompiles();
-            let _ = evm.precompiles_as::<Precompiles<BaseEvmTypes>>();
             Ok(PrecompileOutput::new(Bytes::new()))
         })]);
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -2062,7 +2261,7 @@ mod tests {
         }
 
         impl Inspector<BaseEvmTypes> for AccessingInspector {
-            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 let evm = interp.host();
                 match self.access {
                     InspectorAccess::Mut => {
@@ -2090,7 +2289,9 @@ mod tests {
         let message = Message::default();
         let tx_env = TxEnv::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
-        let _ = evm.run_interpreter(bytecode, &tx_env, &message);
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message, frame_gas);
     }
 
     #[test]
@@ -2098,7 +2299,7 @@ mod tests {
         struct ReadingInspector {}
 
         impl Inspector<BaseEvmTypes> for ReadingInspector {
-            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 let _ = interp.host().inspector();
             }
         }
@@ -2115,7 +2316,9 @@ mod tests {
         let tx_env = TxEnv::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
 
-        let _ = evm.run_interpreter(bytecode, &tx_env, &message);
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message, frame_gas);
     }
 
     #[test]
@@ -2140,6 +2343,93 @@ mod tests {
     #[should_panic(expected = "inspector cannot be modified during EVM execution")]
     fn clear_inspector_panics_during_execution() {
         run_inspector_access(InspectorAccess::Clear);
+    }
+
+    #[derive(Clone, Copy)]
+    enum TopLevelInspectorHook {
+        Log,
+        Call,
+        Create,
+    }
+
+    fn run_top_level_inspector_clear(hook: TopLevelInspectorHook) {
+        struct ClearingInspector;
+
+        impl Inspector<BaseEvmTypes> for ClearingInspector {
+            fn log(&mut self, _log: &Log, host: &mut Evm<'_, BaseEvmTypes>) {
+                let _ = host.clear_inspector();
+            }
+
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &mut Message,
+            ) -> Option<MessageResult> {
+                let _ = interp.host().clear_inspector();
+                None
+            }
+
+            fn create(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &mut Message,
+            ) -> Option<MessageResult> {
+                let _ = interp.host().clear_inspector();
+                None
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(ClearingInspector);
+
+        match hook {
+            TopLevelInspectorHook::Log => Host::log(
+                &mut evm,
+                Log { address: Address::ZERO, data: LogData::new_unchecked(vec![], Bytes::new()) },
+            ),
+            TopLevelInspectorHook::Call => {
+                let mut message = Message { kind: MessageKind::Call, ..Default::default() };
+                let _ = Host::execute_message(
+                    &mut evm,
+                    &TxEnv::default(),
+                    Bytecode::default(),
+                    &mut message,
+                );
+            }
+            TopLevelInspectorHook::Create => {
+                let mut message = Message { kind: MessageKind::Create, ..Default::default() };
+                let _ = Host::execute_message(
+                    &mut evm,
+                    &TxEnv::default(),
+                    Bytecode::default(),
+                    &mut message,
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn top_level_log_inspector_clear_panics_during_execution() {
+        run_top_level_inspector_clear(TopLevelInspectorHook::Log);
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn top_level_call_inspector_clear_panics_during_execution() {
+        run_top_level_inspector_clear(TopLevelInspectorHook::Call);
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn top_level_create_inspector_clear_panics_during_execution() {
+        run_top_level_inspector_clear(TopLevelInspectorHook::Create);
     }
 
     #[test]
@@ -2168,6 +2458,7 @@ mod tests {
             kind: MessageKind::Call,
             depth: 67,
             gas_limit: 30_000,
+            reservoir: 0,
             destination: address,
             caller: Address::with_last_byte(0x7a),
             input: Bytes::from_static(b"message input"),
@@ -2229,7 +2520,7 @@ mod tests {
         );
         let tx = test_tx(41);
 
-        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
     }
 
     #[test]
@@ -2249,7 +2540,7 @@ mod tests {
         );
         let tx = test_tx(41);
 
-        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
     }
 
     #[test]
@@ -2268,11 +2559,11 @@ mod tests {
     #[test]
     fn dispatches_transaction_with_dynamic_version() {
         fn handle_test_tx_version(
-            req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
+            req: TxRequest<'_, '_, BaseEvmTypes, Recovered<TxLegacy>>,
         ) -> HandlerResult<TxResult> {
             Ok(TxResult {
                 status: true,
-                gas_used: req.host.version().tx_gas_limit_cap,
+                total_gas_spent: req.host.version().tx_gas_limit_cap,
                 ..TxResult::default()
             })
         }
@@ -2294,7 +2585,7 @@ mod tests {
         );
         let tx = test_tx(0);
 
-        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
     }
 
     #[test]
@@ -2314,7 +2605,7 @@ mod tests {
         let txs = [test_tx(1), test_tx(2)];
         let gas_used = evm
             .transact_iter(&txs)
-            .map(|result| result.map(|result| result.gas_used()))
+            .map(|result| result.map(|result| result.tx_gas_used()))
             .collect::<HandlerResult<Vec<_>>>();
 
         assert_eq!(gas_used, Ok(vec![2, 3]));
@@ -2326,7 +2617,7 @@ mod tests {
         let outcome =
             evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").discard();
 
-        assert_eq!(outcome.gas_used(), 7);
+        assert_eq!(outcome.tx_gas_used(), 7);
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
@@ -2345,7 +2636,7 @@ mod tests {
             .discard_with(&mut sink)
             .expect("block accumulator is infallible");
 
-        assert_eq!(outcome.gas_used(), 7);
+        assert_eq!(outcome.tx_gas_used(), 7);
         assert_eq!(outcome.logs.len(), 1);
         let storage = sink.storage_sorted();
         assert_eq!(storage.len(), 1);
@@ -2839,7 +3130,9 @@ mod tests {
             destination: target,
             caller,
             value: U256::from(7),
-            gas_limit: 50_000,
+            // Covers the EIP-2780 depth-0 `new_account_state_gas` charge for the
+            // value transfer to the empty target account.
+            gas_limit: 300_000,
             ..Message::default()
         };
 

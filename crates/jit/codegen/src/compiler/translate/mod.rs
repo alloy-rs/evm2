@@ -732,7 +732,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 let _ = self.call_builtin(Builtin::CallDataLoad, &[self.ecx, sp]);
             }
             op::CALLDATASIZE => {
-                field!(@push self.isize_type, self.ecx, EvmContext<'_>; calldatasize);
+                field!(@push self.isize_type, self.ecx, EvmContext<'_, '_, '_>; calldatasize);
             }
             op::CALLDATACOPY => {
                 let sp = self.sp_after_inputs();
@@ -760,7 +760,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.call_fallible_builtin(Builtin::ExtCodeCopy, &[self.ecx, sp]);
             }
             op::RETURNDATASIZE => {
-                field!(@push self.isize_type, self.ecx, EvmContext<'_>; return_data_len);
+                field!(@push self.isize_type, self.ecx, EvmContext<'_, '_, '_>; return_data_len);
             }
             op::RETURNDATACOPY => {
                 let sp = self.sp_after_inputs();
@@ -943,7 +943,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             op::MSIZE => {
                 let mem_len_field = self.get_field(
                     self.ecx,
-                    mem::offset_of!(EvmContext<'_>, mem_len),
+                    mem::offset_of!(EvmContext<'_, '_, '_>, mem_len),
                     "ecx.mem_len.addr",
                 );
                 let mem_len = self.bcx.load(self.isize_type, mem_len_field, "ecx.mem_len");
@@ -974,7 +974,9 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
 
             op::PUSH0..=op::PUSH32 => {
-                unreachable!("handled in const_output");
+                let value = self.bytecode.get_push_value(data);
+                let value = self.bcx.iconst_256(value);
+                self.push(value);
             }
 
             op::DUP1..=op::DUP16 => self.dup((opcode - op::DUP1 + 1) as usize),
@@ -1282,7 +1284,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let ptr_type = self.bcx.type_ptr();
         let field = self.get_field(
             self.ecx,
-            mem::offset_of!(EvmContext<'_>, interpreter),
+            mem::offset_of!(EvmContext<'_, '_, '_>, interpreter),
             "ecx.interpreter.addr",
         );
         self.bcx.load(ptr_type, field, "ecx.interpreter")
@@ -1318,7 +1320,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     fn gas_remaining_addr(&mut self) -> B::Value {
-        const OFFSET: usize = mem::offset_of!(EvmContext<'_>, gas);
+        const OFFSET: usize = mem::offset_of!(EvmContext<'_, '_, '_>, gas);
         let offset = self.bcx.iconst(self.isize_type, OFFSET as i64);
         self.bcx.gep(self.i8_type, self.ecx, &[offset], "gas.remaining.addr")
     }
@@ -1564,8 +1566,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
         // Otherwise emit the normal checked-resize branch.
         // Fast path: offset + len <= mem_len (no overflow).
-        let mem_len_field =
-            self.get_field(self.ecx, mem::offset_of!(EvmContext<'_>, mem_len), "ecx.mem_len.addr");
+        let mem_len_field = self.get_field(
+            self.ecx,
+            mem::offset_of!(EvmContext<'_, '_, '_>, mem_len),
+            "ecx.mem_len.addr",
+        );
         let mem_len = self.bcx.load(isize_type, mem_len_field, "ecx.mem_len");
         let exceeds = self.bcx.icmp(IntCC::UnsignedGreaterThan, min_size, mem_len);
         self.cached_mem_base = None;
@@ -1602,7 +1607,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let ptr_type = self.bcx.type_ptr();
         let mem_base_field = self.get_field(
             self.ecx,
-            mem::offset_of!(EvmContext<'_>, mem_base),
+            mem::offset_of!(EvmContext<'_, '_, '_>, mem_base),
             "ecx.mem_base.addr",
         );
         self.bcx.load(ptr_type, mem_base_field, "ecx.mem_base")

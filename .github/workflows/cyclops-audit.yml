@@ -14,8 +14,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Publish event
+        env:
+          HAS_EVENTS_ARGS: ${{ secrets.EVENTS_ARGS != '' }}
+          HAS_EVENTS_KEY: ${{ secrets.EVENTS_KEY != '' }}
+          HAS_EVENTS_CERT: ${{ secrets.EVENTS_CERT != '' }}
         run: |
           set -euo pipefail
+
+          [[ "$HAS_EVENTS_ARGS" == "true" ]] || { echo "::error::Missing EVENTS_ARGS secret"; exit 1; }
+          [[ "$HAS_EVENTS_KEY" == "true" ]] || { echo "::error::Missing EVENTS_KEY secret"; exit 1; }
+          [[ "$HAS_EVENTS_CERT" == "true" ]] || { echo "::error::Missing EVENTS_CERT secret"; exit 1; }
 
           printf '%s' '${{ secrets.EVENTS_KEY }}' > "${RUNNER_TEMP}/key"
           printf '%s' '${{ secrets.EVENTS_CERT }}' > "${RUNNER_TEMP}/cert"
@@ -46,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
-      pull-requests: read
+      pull-requests: write
     steps:
       - name: Check commenter permission
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -60,13 +68,22 @@ jobs:
               return;
             }
 
+            const trustedPermissions = new Set(['admin', 'maintain', 'write']);
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
             if (!allowed.has(pr.author_association)) {
-              core.setFailed(`PR author @${pr.user.login} is not allowed to trigger Cyclops audits (${pr.author_association})`);
+              const { data: authorPermission } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: pr.user.login,
+              });
+              if (!trustedPermissions.has(authorPermission.permission)) {
+                core.setFailed(`PR author @${pr.user.login} is not allowed to trigger Cyclops audits (${pr.author_association}, ${authorPermission.permission})`);
+                return;
+              }
             }
 
       - name: Parse arguments
@@ -209,6 +226,38 @@ jobs:
             core.setOutput('payload-b64', Buffer.from(JSON.stringify(payload), 'utf8').toString('base64'));
             core.setOutput('summary', `**Config:** ${summaryParts.join(', ')}`);
 
+      - name: Check publisher configuration
+        id: publisher-config
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ACTOR: ${{ steps.args.outputs.actor }}
+          HAS_EVENTS_ARGS: ${{ secrets.EVENTS_ARGS != '' }}
+          HAS_EVENTS_KEY: ${{ secrets.EVENTS_KEY != '' }}
+          HAS_EVENTS_CERT: ${{ secrets.EVENTS_CERT != '' }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const required = {
+              EVENTS_ARGS: process.env.HAS_EVENTS_ARGS,
+              EVENTS_KEY: process.env.HAS_EVENTS_KEY,
+              EVENTS_CERT: process.env.HAS_EVENTS_CERT,
+            };
+            const missing = Object.entries(required).filter(([, present]) => present !== 'true').map(([name]) => name);
+            if (!missing.length) return;
+
+            const msg = `Cyclops audit is not configured: missing ${missing.map((name) => `\`${name}\``).join(', ')} secret${missing.length === 1 ? '' : 's'}.`;
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `cc @${process.env.ACTOR}\n\n${msg}`,
+              });
+            } catch (error) {
+              core.warning(`Could not create configuration failure comment: ${error.message}`);
+            }
+            core.setFailed(msg);
+
       - name: Acknowledge request
         id: ack
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -230,21 +279,33 @@ jobs:
             }
 
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const { data: comment } = await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `cc @${process.env.ACTOR}\n\nCyclops audit event queued. [View workflow run](${runUrl})\n\n${process.env.SUMMARY}`,
-            });
-            core.setOutput('comment-id', String(comment.id));
+            try {
+              const { data: comment } = await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `cc @${process.env.ACTOR}\n\nCyclops audit event queued. [View workflow run](${runUrl})\n\n${process.env.SUMMARY}`,
+              });
+              core.setOutput('comment-id', String(comment.id));
+            } catch (error) {
+              core.warning(`Could not create acknowledgement comment: ${error.message}`);
+              core.setOutput('comment-id', '');
+            }
 
       - name: Publish event
         id: publish
         continue-on-error: true
         env:
           PAYLOAD_B64: ${{ steps.args.outputs.payload-b64 }}
+          HAS_EVENTS_ARGS: ${{ secrets.EVENTS_ARGS != '' }}
+          HAS_EVENTS_KEY: ${{ secrets.EVENTS_KEY != '' }}
+          HAS_EVENTS_CERT: ${{ secrets.EVENTS_CERT != '' }}
         run: |
           set -euo pipefail
+
+          [[ "$HAS_EVENTS_ARGS" == "true" ]] || { echo "::error::Missing EVENTS_ARGS secret"; exit 1; }
+          [[ "$HAS_EVENTS_KEY" == "true" ]] || { echo "::error::Missing EVENTS_KEY secret"; exit 1; }
+          [[ "$HAS_EVENTS_CERT" == "true" ]] || { echo "::error::Missing EVENTS_CERT secret"; exit 1; }
 
           printf '%s' '${{ secrets.EVENTS_KEY }}' > "${RUNNER_TEMP}/key"
           printf '%s' '${{ secrets.EVENTS_CERT }}' > "${RUNNER_TEMP}/cert"
@@ -258,7 +319,7 @@ jobs:
             -d @"${RUNNER_TEMP}/pr-audit-event.json"
 
       - name: Update status
-        if: ${{ always() && steps.ack.outcome == 'success' && steps.ack.outputs['comment-id'] != '' }}
+        if: ${{ always() && steps.args.outcome == 'success' && steps.publisher-config.outcome == 'success' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           COMMENT_ID: ${{ steps.ack.outputs['comment-id'] }}
@@ -274,10 +335,16 @@ jobs:
               ? `cc @${process.env.ACTOR}\n\nCyclops audit event published. [View workflow run](${runUrl})\n\n${process.env.SUMMARY}`
               : `cc @${process.env.ACTOR}\n\nCyclops audit event failed to publish. [View workflow run](${runUrl})\n\n${process.env.SUMMARY}`;
 
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: Number(process.env.COMMENT_ID),
-              body,
-            });
+            if (process.env.COMMENT_ID) {
+              try {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: Number(process.env.COMMENT_ID),
+                  body,
+                });
+              } catch (error) {
+                core.warning(`Could not update acknowledgement comment: ${error.message}`);
+              }
+            }
             if (!success) core.setFailed('Failed to publish pr_audit event');

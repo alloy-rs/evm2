@@ -151,21 +151,21 @@ pub(crate) struct Account {
 /// warm-access queries without going back through [`State`](super::State), mirroring the database
 /// and access-list references revm's `AccountHandle` holds.
 #[derive_where(Debug)]
-pub struct AccountHandle<'a> {
+pub struct AccountHandle<'a, 'db> {
     /// Address of the account.
     address: Address,
     /// Transaction overlay entry: account overlay plus warm/touched access metadata.
     tracked: &'a mut Account,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
-    inner: &'a mut StateInner,
+    inner: &'a mut StateInner<'db>,
     /// Revert entry capturing the overlay as it was before the first mutation made through this
     /// handle. `Some` once a change has been recorded; on drop it is pushed onto the journal as a
     /// single [`JournalEntry::AccountChange`].
     snapshot: Option<JournalEntry>,
 }
 
-impl Drop for AccountHandle<'_> {
+impl Drop for AccountHandle<'_, '_> {
     #[inline]
     fn drop(&mut self) {
         if let Some(entry) = self.snapshot.take() {
@@ -180,14 +180,14 @@ fn empty_account() -> AccountInfo {
     AccountInfo::default()
 }
 
-impl<'a> AccountHandle<'a> {
+impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Creates a handle over a loaded account overlay slot and the shared inner state (backing
     /// database, revert journal, and transaction-initial base warm set).
     #[inline]
     pub(crate) const fn new(
         address: Address,
         tracked: &'a mut Account,
-        inner: &'a mut StateInner,
+        inner: &'a mut StateInner<'db>,
     ) -> Self {
         Self { address, tracked, inner, snapshot: None }
     }
@@ -302,6 +302,29 @@ impl<'a> AccountHandle<'a> {
     #[inline]
     pub fn load_code(&mut self) -> DbResult<Bytecode> {
         let Some(account) = self.tracked.present.as_ref() else {
+            return Ok(Bytecode::default());
+        };
+        if account.code_hash == KECCAK256_EMPTY {
+            return Ok(Bytecode::default());
+        }
+        if let Some(code) = account.code.as_ref()
+            && !code.is_empty()
+        {
+            return Ok(code.clone());
+        }
+        let code_hash = account.code_hash;
+        self.inner.database.get_code_by_hash(&code_hash)
+    }
+
+    /// Loads the account's bytecode as it stood at the start of the transaction.
+    ///
+    /// Used by EIP-7702 to tell whether an authority was already delegated before this transaction
+    /// (distinct from [`Self::load_code`], which reflects delegations applied by earlier
+    /// authorizations in the same transaction). Returns empty bytecode when the account was absent
+    /// or had empty code at the transaction boundary.
+    #[inline]
+    pub fn original_code(&mut self) -> DbResult<Bytecode> {
+        let Some(account) = self.tracked.original.as_ref() else {
             return Ok(Bytecode::default());
         };
         if account.code_hash == KECCAK256_EMPTY {

@@ -16,6 +16,8 @@ pub mod utils;
 pub use error::{AnyError, ErrorCode};
 
 pub mod evm;
+#[doc(hidden)]
+pub use evm::config::EvmTypesHost;
 pub use evm::{
     AccountInfo, BlockStateAccumulator, Evm, ExecutedTx, InterpreterRunner, JournalEntry, TxResult,
     TxResultWithState, config,
