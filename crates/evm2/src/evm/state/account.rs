@@ -401,6 +401,21 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.set_balance(balance);
     }
 
+    /// Adds an unsigned balance increment, touching the account even on overflow.
+    #[inline]
+    pub fn increment_balance(&mut self, delta: Word) -> bool {
+        if delta.is_zero() {
+            self.touch();
+            return true;
+        }
+        let Some(balance) = self.balance().checked_add(delta) else {
+            self.touch();
+            return false;
+        };
+        self.set_balance(balance);
+        true
+    }
+
     /// Sets the account nonce, touching the account and recording a revert snapshot.
     #[inline]
     pub fn set_nonce(&mut self, nonce: u64) {
@@ -511,7 +526,10 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evm::{CacheDB, state::State};
+    use crate::{
+        evm::{CacheDB, state::State},
+        interpreter::InstrStop,
+    };
     use alloy_primitives::Address;
 
     #[test]
@@ -521,8 +539,11 @@ mod tests {
         database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(3)));
         let mut state = State::new(database);
 
-        assert!(!state.transfer(&address, &address, &Word::from(4)).unwrap());
-        assert!(state.transfer(&address, &address, &Word::from(3)).unwrap());
+        assert_eq!(
+            state.transfer(&address, &address, &Word::from(4)).unwrap(),
+            Err(InstrStop::OutOfFunds)
+        );
+        assert_eq!(state.transfer(&address, &address, &Word::from(3)).unwrap(), Ok(()));
     }
 
     #[test]
