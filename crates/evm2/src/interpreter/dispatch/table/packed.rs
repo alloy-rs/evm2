@@ -64,6 +64,11 @@ impl super::DispatchGas for RemainingGas {
     }
 
     #[inline(always)]
+    fn sync_before_inspect<T: EvmTypes>(&self, state: &mut InterpreterState<'_, T>) {
+        state.gas_mut().set_remaining(self.get());
+    }
+
+    #[inline(always)]
     fn sync_before_exec<T: EvmTypes>(
         &self,
         state: &mut InterpreterState<'_, T>,

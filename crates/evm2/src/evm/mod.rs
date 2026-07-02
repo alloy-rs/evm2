@@ -113,7 +113,7 @@
 //! ```
 
 use self::{
-    inspector::Inspector,
+    inspector::{Inspector, InspectorConfig},
     precompile::{PrecompileOutput, PrecompileProvider},
 };
 use crate::{
@@ -236,6 +236,8 @@ pub struct Evm<T: EvmTypes> {
     #[derive_where(skip)]
     inspector: Option<Box<dyn Inspector<T>>>,
     #[derive_where(skip)]
+    registered_inspector_config: Option<InspectorConfig>,
+    #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
     /// The currently running interpreter frame, if any.
     ///
@@ -318,6 +320,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
+            registered_inspector_config: None,
             interpreter_runner: None,
             current_frame: None,
             running: false,
@@ -620,6 +623,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         self.inspector.as_deref_mut()
     }
 
+    /// Requests that the inspector configuration is refreshed before the next interpreter run.
+    #[inline]
+    pub const fn request_inspector_reconfigure(&mut self) {
+        self.registered_inspector_config = None;
+    }
+
     #[inline]
     fn inspect_log(&mut self, log: &Log) {
         if let Some(inspector) = self.inspector.as_deref_mut() {
@@ -679,6 +688,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
         self.assert_inspector_mutable();
+        self.request_inspector_reconfigure();
         self.inspector = Some(Box::new(inspector));
         self.evm_send = false;
     }
@@ -687,6 +697,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T>>) {
         self.assert_inspector_mutable();
+        self.request_inspector_reconfigure();
         self.inspector = Some(inspector);
         self.evm_send = false;
     }
@@ -695,6 +706,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T>>> {
         self.assert_inspector_mutable();
+        self.request_inspector_reconfigure();
         self.evm_send = false;
         self.inspector.take()
     }
@@ -704,6 +716,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>> {
         self.assert_inspector_mutable();
         let i = self.inspector.take_if(|i| i.is::<I>())?;
+        self.request_inspector_reconfigure();
+        self.evm_send = false;
         (i as Box<dyn core::any::Any>).downcast().ok()
     }
 
@@ -730,7 +744,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Returns the active EVM version.
     #[inline]
-    pub const fn version(&self) -> &crate::Version {
+    pub fn version(&self) -> &crate::Version {
         self.execution_config.version()
     }
 
@@ -1441,7 +1455,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         // SAFETY: `execution_config` points to a private field that host execution does not
         // replace or mutate, so the pointee remains valid here.
         let execution_config = unsafe { trustme::decouple_lt(&self.execution_config) };
+        self.register_inspector();
         self.inspect_initialize_interp(interp_ref);
+        self.register_inspector();
         let inspector = self.inspector.as_deref_mut().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // interpreter run.
@@ -1452,7 +1468,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, T>>());
         let interpreter_runner = self.interpreter_runner.clone();
         let stop = if let Some(inspector) = inspector {
-            interp_ref.run_inspect(execution_config, self, inspector)
+            let inspector_config = self
+                .registered_inspector_config
+                .expect("inspector config must be registered before run_inspect");
+            interp_ref.run_inspect(execution_config, &inspector_config, self, inspector)
         } else if let Some(runner) = interpreter_runner
             && let Some(stop) = runner.run(execution_config, interp_ref, self)
         {
@@ -1460,9 +1479,22 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         } else {
             interp_ref.run(execution_config, self)
         };
+        self.register_inspector();
         self.current_frame = prev_frame;
         self.interpreter_pool.push(interp);
         stop
+    }
+
+    fn register_inspector(&mut self) {
+        let Some(inspector) = &self.inspector else {
+            return;
+        };
+        if self.registered_inspector_config.is_some() {
+            return;
+        }
+        let inspector_config = inspector.config();
+        self.execution_config.register_inspector(&inspector_config);
+        self.registered_inspector_config = Some(inspector_config);
     }
 
     fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
@@ -1602,6 +1634,10 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             return self.execute_message_inspected(tx_env, bytecode, message);
         }
         self.execute_message_impl(tx_env, bytecode, message)
+    }
+
+    fn request_inspector_reconfigure(&mut self) {
+        Self::request_inspector_reconfigure(self);
     }
 
     fn selfdestruct(

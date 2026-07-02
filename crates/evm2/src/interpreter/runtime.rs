@@ -1,12 +1,12 @@
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking, StackMut,
-    StackRef, Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking,
+    StackMut, StackRef, Word,
 };
 use crate::{
     EvmTypes, ExecutionConfig, SpecId, Version,
     bytecode::Bytecode,
     env::TxEnv,
-    evm::inspector::Inspector,
+    evm::inspector::{Inspector, InspectorConfig, OpcodeSet},
     interpreter::dispatch::{self, InstrTable},
     trustme,
     version::{EvmFeatures, GasParams},
@@ -185,6 +185,16 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         StackMut { stack: &mut self.stack, len: &mut self.stack_len }
     }
 
+    /// Requests that the host refresh the inspector configuration.
+    #[inline]
+    pub fn request_inspector_reconfigure(&mut self) {
+        if let Some(mut host) = self.host {
+            // SAFETY: `host` is initialized for the active run and the request only marks host
+            // inspector configuration dirty; it does not access interpreter-owned frame data.
+            unsafe { host.as_mut() }.request_inspector_reconfigure();
+        }
+    }
+
     /// Returns the current gas state.
     #[inline]
     pub const fn gas(&self) -> Gas {
@@ -300,23 +310,45 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// Runs the interpreter until it stops.
     #[inline]
     pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
-        self.run_inner(config.base_spec_id(), config.version(), host, None, config.instructions)
+        self.run_inner(config.base_spec_id(), config.version(), host, None, config.instructions())
     }
 
     /// Runs the interpreter until it stops with an execution inspector.
+    ///
+    /// `config` must already be registered with `inspector_config` for `inspector`.
     #[inline]
     pub fn run_inspect(
         &mut self,
         config: &ExecutionConfig<T>,
+        inspector_config: &InspectorConfig,
         host: &mut T::Host,
         inspector: &mut dyn Inspector<T>,
     ) -> InstrStop {
+        let inspector = Some(NonNull::from(inspector));
+        if inspector_config.set.is_empty() {
+            return self.run_inner_no_steps(
+                config.base_spec_id(),
+                config.version(),
+                host,
+                inspector,
+                config.instructions(),
+            );
+        }
+        if inspector_config.set == OpcodeSet::ALL && !cfg!(tco) {
+            return self.run_inner_inspect_loop(
+                config.base_spec_id(),
+                config.version(),
+                host,
+                inspector,
+                config.instructions(),
+            );
+        }
         self.run_inner(
             config.base_spec_id(),
             config.version(),
             host,
-            Some(NonNull::from(inspector)),
-            config.inspect_instructions,
+            inspector,
+            config.inspect_instructions(),
         )
     }
 
@@ -347,6 +379,36 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.inspector = inspector;
 
         dispatch::run(self, instructions)
+    }
+
+    #[inline(never)]
+    fn run_inner_inspect_loop(
+        &mut self,
+        spec: SpecId,
+        version: &Version,
+        host: &mut T::Host,
+        inspector: Option<NonNull<dyn Inspector<T>>>,
+        instructions: &InstrTable<T>,
+    ) -> InstrStop {
+        self.prepare_run(spec, version, host);
+        self.inspector = inspector;
+
+        dispatch::run_inspect_loop(self, instructions)
+    }
+
+    #[inline(never)]
+    fn run_inner_no_steps(
+        &mut self,
+        spec: SpecId,
+        version: &Version,
+        host: &mut T::Host,
+        inspector: Option<NonNull<dyn Inspector<T>>>,
+        instructions: &InstrTable<T>,
+    ) -> InstrStop {
+        self.prepare_run(spec, version, host);
+        self.inspector = inspector;
+
+        dispatch::run_no_steps(self, instructions)
     }
 }
 

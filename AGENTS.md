@@ -9,6 +9,12 @@ This is a work-in-progress repo with no public API stability guarantees. Do not 
 backwards-compatibility aliases, deprecated wrappers, compatibility shims, or similar
 transitional API layers unless explicitly requested.
 
+## Code Style
+
+- for public structs that should be non-exhaustive, prefer the repo pattern:
+  a hidden public `_non_exhaustive: ()` field initialized by constructors, not
+  `#[non_exhaustive]`, unless the surrounding code already uses the attribute.
+
 For all work under `crates/jit`, follow `crates/jit/AGENTS.md` in addition to
 this root file.
 
