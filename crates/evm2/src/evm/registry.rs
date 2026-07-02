@@ -64,6 +64,9 @@ pub enum HandlerError {
     /// Sender cannot pay value plus maximum gas cost.
     #[error("insufficient funds")]
     InsufficientFunds,
+    /// Transaction payment amount overflows.
+    #[error("payment amount overflows")]
+    OverflowPayment,
     /// Sender account has deployed code.
     #[error("caller has code")]
     RejectCallerWithCode,
