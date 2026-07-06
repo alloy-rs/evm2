@@ -19,6 +19,7 @@ use crate::{
     state::{insert_account_with_storage, parse_bytecode},
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
 };
+use alloy_eip7928::BlockAccessList;
 use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
@@ -28,7 +29,7 @@ use evm2::{
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
-        AccountChangeRef, AccountInfo as EvmAccountInfo, AccountInfoRef, BEACON_ROOTS_ADDRESS,
+        AccountChangeRef, AccountInfo as EvmAccountInfo, AccountInfoRef, BEACON_ROOTS_ADDRESS, Bal,
         BlockStateAccumulator, DbStats, DbStatsCounts, HISTORY_STORAGE_ADDRESS, InMemoryDB,
         StateChangeSink, StateChangeSource, SystemTx, Tee, WITHDRAWAL_REQUEST_ADDRESS,
     },
@@ -312,6 +313,17 @@ fn execute_block(
     resources.configure_evm(&mut evm);
     let mut block_state = BlockStateAccumulator::new();
 
+    // When the fixture declares an EIP-7928 block access list, build one alongside execution and
+    // validate it against the fixture. The block access index follows the EIP-7928 layout: index 0
+    // for pre-block system calls, `i + 1` for transaction `i`, and the final index for post-block
+    // rewards/withdrawals. Only Amsterdam+ fixtures carry a block access list, so pre-Amsterdam
+    // blocks pay nothing.
+    let build_bal = block_access_list(block).is_some();
+    if build_bal {
+        evm.state_mut().enable_bal_builder();
+        evm.state_mut().reset_bal_index();
+    }
+
     let result = (|| -> Result<BlockResolution, TestError> {
         pre_block_system_calls(
             &mut evm,
@@ -354,6 +366,38 @@ fn execute_block(
                 }
             };
 
+            // EIP-8037: per-dimension block-level inclusion check (execution-specs
+            // `process_transaction`). A transaction is only includable when its gas limit --
+            // capped by the EIP-7825 limit on the regular dimension, uncapped on the state
+            // dimension -- still fits the block gas remaining on both dimensions.
+            if spec.enables(SpecId::AMSTERDAM)
+                && let Some(header) = block_header(block)
+            {
+                let block_gas_limit = header.gas_limit.saturating_to::<u64>();
+                let tx_gas_limit = tx.gas_limit();
+                let regular_gas_available = block_gas_limit.saturating_sub(block_regular_gas_used);
+                let state_gas_available = block_gas_limit.saturating_sub(block_state_gas_used);
+                if tx_gas_limit.min(evm.version().tx_gas_limit_cap) > regular_gas_available
+                    || tx_gas_limit > state_gas_available
+                {
+                    if should_fail {
+                        return Ok(BlockResolution::Discard);
+                    }
+                    return Err(TestError::case(
+                        path,
+                        name,
+                        TestErrorKind::UnexpectedFailure(format!(
+                            "transaction gas limit {tx_gas_limit} exceeds available block gas \
+                             (regular {regular_gas_available}, state {state_gas_available})"
+                        )),
+                    ));
+                }
+            }
+
+            // Transaction `i` is recorded at block access index `i + 1`.
+            if build_bal {
+                evm.state_mut().bump_bal_index();
+            }
             match execute_tx(&mut evm, &mut block_state, &tx) {
                 Ok(result) => {
                     cumulative_tx_gas_used =
@@ -388,14 +432,11 @@ fn execute_block(
             }
         }
 
-        if should_fail {
-            let expected = block.expect_exception.clone().unwrap_or_default();
-            return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
-        }
-
         // Validate the block header's gas used against the executed transactions. Under EIP-8037
         // (Amsterdam+) regular and state gas are tracked separately and the header records their
         // max; earlier forks record the cumulative per-transaction gas used (refunds included).
+        // Block-validation failures on a block that expects an exception resolve to a discard,
+        // mirroring execution-specs raising `InvalidBlock`.
         if let Some(expected) = block_gas_used(block) {
             let expected = expected.saturating_to::<u64>();
             let actual = if spec.enables(SpecId::AMSTERDAM) {
@@ -404,12 +445,20 @@ fn execute_block(
                 cumulative_tx_gas_used
             };
             if actual != expected {
+                if should_fail {
+                    return Ok(BlockResolution::Discard);
+                }
                 return Err(TestError::case(
                     path,
                     name,
                     TestErrorKind::BlockGasUsedMismatch { expected, actual },
                 ));
             }
+        }
+
+        // Post-block rewards and withdrawals are recorded at the final (post-execution) index.
+        if build_bal {
+            evm.state_mut().bump_bal_index();
         }
 
         post_block_transition(
@@ -421,8 +470,21 @@ fn execute_block(
         )
         .map_err(|err| TestError::case(path, name, err))?;
 
-        if let Some(expected_bal) = &block.block_access_list {
-            assert_block_access_list(block_index, expected_bal);
+        if let Some(expected_bal) = block_access_list(block) {
+            let built = evm.state_mut().take_bal_builder().unwrap_or_default();
+            if let Err(kind) =
+                check_block_access_list(block_index, built, expected_bal, block_header(block))
+            {
+                if should_fail {
+                    return Ok(BlockResolution::Discard);
+                }
+                return Err(TestError::case(path, name, kind));
+            }
+        }
+
+        if should_fail {
+            let expected = block.expect_exception.clone().unwrap_or_default();
+            return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
         }
 
         Ok(BlockResolution::Commit)
@@ -502,6 +564,12 @@ fn block_number(block: &Block) -> Option<U256> {
 
 fn block_gas_used(block: &Block) -> Option<U256> {
     block_header(block).map(|header| header.gas_used)
+}
+
+fn block_access_list(block: &Block) -> Option<&BlockAccessList> {
+    block.block_access_list.as_ref().or_else(|| {
+        block.rlp_decoded.as_ref().and_then(|decoded| decoded.block_access_list.as_ref())
+    })
 }
 
 fn block_header(block: &Block) -> Option<&BlockHeader> {
@@ -596,6 +664,24 @@ fn post_block_transition(
             evm2::evm::CONSOLIDATION_REQUEST_ADDRESS,
             Bytes::new(),
             "eip7251",
+        )?;
+    }
+
+    // EIP-8282: builder deposit (request type 0x03) and builder exit (0x04) requests, Amsterdam+.
+    if spec.enables(SpecId::AMSTERDAM) {
+        run_system_call(
+            evm,
+            block_state,
+            evm2::evm::BUILDER_DEPOSIT_REQUEST_ADDRESS,
+            Bytes::new(),
+            "eip8282_deposit",
+        )?;
+        run_system_call(
+            evm,
+            block_state,
+            evm2::evm::BUILDER_EXIT_REQUEST_ADDRESS,
+            Bytes::new(),
+            "eip8282_exit",
         )?;
     }
     Ok(())
@@ -718,7 +804,11 @@ fn blob_params_for_timestamp(timestamp: U256, spec: SpecId) -> BlobParams {
     const MAINNET_BPO1_TIMESTAMP: u64 = 1_765_290_071;
     const MAINNET_BPO2_TIMESTAMP: u64 = 1_767_747_671;
 
-    if timestamp.to::<u64>() >= MAINNET_BPO2_TIMESTAMP {
+    if spec.enables(SpecId::AMSTERDAM) {
+        // Amsterdam inherits the BPO2 blob schedule (execution-specs amsterdam
+        // `BLOB_SCHEDULE_TARGET` 14 / `BLOB_SCHEDULE_MAX` 21 / update fraction 11,684,671).
+        BlobParams::bpo2()
+    } else if timestamp.to::<u64>() >= MAINNET_BPO2_TIMESTAMP {
         BlobParams::bpo2()
     } else if timestamp.to::<u64>() >= MAINNET_BPO1_TIMESTAMP {
         BlobParams::bpo1()
@@ -797,6 +887,12 @@ fn increment_balance(
 
     let change = AccountStateChange { address, original, current: Some(current) };
     commit_state_changes(evm, block_state, &change);
+    // Post-block balance updates bypass transaction commit, so record them in the BAL directly.
+    evm.overlay_db_mut().bal_context.commit_account_change(
+        change.address,
+        change.original.as_ref(),
+        change.current.as_ref(),
+    );
     Ok(())
 }
 
@@ -863,22 +959,134 @@ fn validate_post_state(
     Ok(())
 }
 
-fn assert_block_access_list(_block_index: usize, _expected: &alloy_eip7928::BlockAccessList) {
-    todo!("evm2 does not build block access lists yet")
+/// Gas represented by one block-access-list item (an address or a unique storage key),
+/// bounding the list size by `block_gas_limit / BLOCK_ACCESS_LIST_ITEM_GAS` (EIP-7928,
+/// execution-specs `GAS_BLOCK_ACCESS_LIST_ITEM`).
+const BLOCK_ACCESS_LIST_ITEM_GAS: u64 = 2_000;
+
+/// Validates the block access list built during execution: the EIP-7928 item-count bound, the
+/// header's block access list hash, and a comparison against the fixture's expected list.
+///
+/// Built and expected lists are canonicalized into EIP-7928 order ([`Bal::into_alloy_bal`]) before
+/// comparison so that map/insertion ordering never causes a spurious mismatch.
+fn check_block_access_list(
+    block_index: usize,
+    built: Bal,
+    expected: &BlockAccessList,
+    header: Option<&BlockHeader>,
+) -> Result<(), TestErrorKind> {
+    let built = built.into_alloy_bal();
+
+    // EIP-7928: the total number of items (addresses + unique storage keys) is bounded by the
+    // block gas limit (execution-specs `validate_block_access_list_gas_limit`).
+    if let Some(header) = header {
+        let items: u64 = built
+            .iter()
+            .map(|account| {
+                1 + account.storage_changes.len() as u64 + account.storage_reads.len() as u64
+            })
+            .sum();
+        let max_items = header.gas_limit.saturating_to::<u64>() / BLOCK_ACCESS_LIST_ITEM_GAS;
+        if items > max_items {
+            return Err(TestErrorKind::UnexpectedFailure(format!(
+                "block access list exceeds gas limit: {items} items exceeds limit of {max_items}"
+            )));
+        }
+    }
+
+    // The header commits to the computed list by hash (execution-specs compares
+    // `hash_block_access_list` against `header.block_access_list_hash`).
+    if let Some(expected_hash) = header.and_then(|header| header.block_access_list_hash) {
+        let computed_hash = alloy_eip7928::compute_block_access_list_hash(&built);
+        if computed_hash != expected_hash {
+            return Err(TestErrorKind::UnexpectedFailure(format!(
+                "block access list hash mismatch: computed {computed_hash}, header {expected_hash}"
+            )));
+        }
+    }
+
+    let expected = match Bal::try_from(expected.clone()) {
+        Ok(bal) => bal.into_alloy_bal(),
+        Err(_) => expected.clone(),
+    };
+    if built == expected {
+        return Ok(());
+    }
+    Err(TestErrorKind::BlockAccessListMismatch {
+        block_index,
+        details: format_bal_diff(&built, &expected),
+    })
+}
+
+/// Renders a compact per-account summary of how the built and expected block access lists differ.
+fn format_bal_diff(
+    built: &alloy_eip7928::BlockAccessList,
+    expected: &alloy_eip7928::BlockAccessList,
+) -> String {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::fmt::Write;
+
+    let built: BTreeMap<_, _> = built.iter().map(|account| (account.address, account)).collect();
+    let expected: BTreeMap<_, _> =
+        expected.iter().map(|account| (account.address, account)).collect();
+    let addresses: BTreeSet<_> = built.keys().chain(expected.keys()).copied().collect();
+
+    let mut out = String::new();
+    for address in addresses {
+        match (built.get(&address), expected.get(&address)) {
+            (Some(_), None) => {
+                let _ = write!(out, "\n  {address}: only in built");
+            }
+            (None, Some(_)) => {
+                let _ = write!(out, "\n  {address}: only in expected");
+            }
+            (Some(built), Some(expected)) if built != expected => {
+                let _ = write!(out, "\n  {address}: differs");
+                if built.nonce_changes != expected.nonce_changes {
+                    let _ = write!(
+                        out,
+                        " nonce (built {:?}, expected {:?})",
+                        built.nonce_changes, expected.nonce_changes
+                    );
+                }
+                if built.balance_changes != expected.balance_changes {
+                    let _ = write!(
+                        out,
+                        " balance (built {:?}, expected {:?})",
+                        built.balance_changes, expected.balance_changes
+                    );
+                }
+                if built.code_changes != expected.code_changes {
+                    let _ = write!(out, " code");
+                }
+                if built.storage_changes != expected.storage_changes {
+                    let _ = write!(
+                        out,
+                        " storage_writes (built {:?}, expected {:?})",
+                        built.storage_changes, expected.storage_changes
+                    );
+                }
+                if built.storage_reads != expected.storage_reads {
+                    let _ = write!(
+                        out,
+                        " storage_reads (built {:?}, expected {:?})",
+                        built.storage_reads, expected.storage_reads
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Whether a blockchain test targeting `spec` should be skipped.
 ///
-/// In addition to the globally unsupported forks ([`is_fork_skipped`]), Amsterdam and later are
-/// skipped at the blockchain layer only. Amsterdam blocks require building and validating block
-/// access lists ([EIP-7928], see the `todo!` in [`assert_block_access_list`]) and block-level gas
-/// accounting without refunds (EIP-7778), neither of which evm2 implements yet, so every Amsterdam
-/// blockchain fixture fails on block structure/gas regardless of the EIP it targets. State tests
-/// have no block layer, so [`crate::runner`] still runs the Amsterdam state suite.
-///
-/// [EIP-7928]: https://eips.ethereum.org/EIPS/eip-7928
+/// Only the globally unsupported forks ([`is_fork_skipped`]) are skipped. Amsterdam blockchain
+/// tests are executed: EIP-7928 block access lists are built and validated (see
+/// [`check_block_access_list`]) and EIP-8037 block-level gas is checked in [`execute_block`].
 fn is_blockchain_fork_skipped(spec: SpecId) -> bool {
-    is_fork_skipped(spec) || spec.enables(SpecId::AMSTERDAM)
+    is_fork_skipped(spec)
 }
 
 fn fork_to_spec_id(fork: ForkSpec) -> SpecId {

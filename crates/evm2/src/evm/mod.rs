@@ -148,8 +148,9 @@ pub mod precompile;
 pub mod registry;
 mod system;
 pub use system::{
-    BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, SYSTEM_ADDRESS,
-    SYSTEM_CALL_GAS_LIMIT, SystemTx, WITHDRAWAL_REQUEST_ADDRESS,
+    BEACON_ROOTS_ADDRESS, BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS,
+    CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, SYSTEM_ADDRESS, SYSTEM_CALL_GAS_LIMIT,
+    SystemTx, WITHDRAWAL_REQUEST_ADDRESS,
 };
 
 mod any;
@@ -158,8 +159,9 @@ pub use any::NonStaticAny;
 mod db;
 use db::boxed_dyn_database;
 pub use db::{
-    AccountStorageCache, Cache, CacheDB, Database, Db, DbResult, DbStats, DbStatsCounts,
-    DynDatabase, EmptyDB, InMemoryDB,
+    AccountBal, AccountInfoBal, AccountStorageCache, Bal, BalContext, BalError, BalWrites,
+    BlockAccessIndex, Cache, CacheDB, Database, Db, DbResult, DbStats, DbStatsCounts, DynDatabase,
+    EmptyDB, InMemoryDB, StorageBal, bal,
 };
 
 mod tx;
@@ -778,6 +780,23 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     const fn store_error(&mut self, code: ErrorCode) -> InstrStop {
         self.set_error_code(code);
         InstrStop::FatalExternalError
+    }
+
+    /// Records a storage-slot access whose cold-load charge is unaffordable, then reports the
+    /// resulting out-of-gas.
+    ///
+    /// The `skip_cold_load` fast path avoids the database read when the frame cannot afford the
+    /// EIP-2929 cold-access charge, but the access still happened. EIP-7928 block access lists --
+    /// like the execution-specs reference -- list a slot as read once it is accessed, before the
+    /// cold gas is charged. Forcing the load here materializes the slot in the transaction overlay
+    /// as a read so it is captured by the block access list, matching the reference. A database
+    /// error during the forced load is surfaced in place of the out-of-gas.
+    #[cold]
+    fn record_cold_access_oog(&mut self, address: &Address, key: &Word) -> InstrStop {
+        match self.state.storage(address).into_slot(*key, false) {
+            Ok(_) => InstrStop::OutOfGas,
+            Err(code) => self.store_error(code),
+        }
     }
 
     /// Returns the active base specification ID.
@@ -1589,6 +1608,9 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
         let mut slot = match self.state.storage(address).into_slot(*key, skip_cold_load) {
             Ok(slot) => slot,
+            // SLOAD's out-of-gas is the cold-access charge itself, so the slot was never accessed
+            // and is not recorded in the block access list (unlike SSTORE, which first pays the
+            // warm-read cost, accessing the slot, before the cold/dynamic charge can run out).
             Err(ErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
             Err(code) => return Err(self.store_error(code)),
         };
@@ -1607,7 +1629,9 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
         let mut slot = match self.state.storage(address).into_slot(*key, skip_cold_load) {
             Ok(slot) => slot,
-            Err(ErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
+            Err(ErrorCode::COLD_LOAD_SKIPPED) => {
+                return Err(self.record_cold_access_oog(address, key));
+            }
             Err(code) => return Err(self.store_error(code)),
         };
         let is_cold = eip2929 && slot.warm();
@@ -2713,6 +2737,51 @@ mod tests {
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
             Word::from(9)
         );
+    }
+
+    #[test]
+    fn committed_transactions_build_block_access_list_on_cache_db() {
+        let mut evm = lifecycle_evm();
+        evm.state.enable_bal_builder();
+        evm.state.reset_bal_index();
+
+        // Transaction 0 maps to block access index 1: it writes 7 to the lifecycle slot (was 1).
+        evm.state.bump_bal_index();
+        assert_eq!(evm.state.bal_index(), BlockAccessIndex::new(1));
+        let _ = evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").commit();
+
+        // Transaction 1 maps to index 2: it overwrites the slot with 9.
+        evm.state.bump_bal_index();
+        let _ = evm.transact(&test_tx(9)).expect("lifecycle transaction should execute").commit();
+
+        let bal = evm.state.bal_builder().expect("bal construction is enabled");
+        let account =
+            bal.accounts.get(&LIFECYCLE_ACCOUNT).expect("lifecycle account is in the bal");
+        let slot = account
+            .storage
+            .storage
+            .get(&LIFECYCLE_STORAGE_KEY)
+            .expect("lifecycle slot is in the bal");
+        assert_eq!(
+            slot.writes,
+            vec![
+                (BlockAccessIndex::new(1), Word::from(7)),
+                (BlockAccessIndex::new(2), Word::from(9)),
+            ]
+        );
+        // The account's info never changed, so it is recorded as reads (no info writes).
+        assert!(account.account_info.balance.writes.is_empty());
+        assert!(account.account_info.nonce.writes.is_empty());
+
+        // Taking the BAL yields a canonical EIP-7928 list and resets the index.
+        let alloy = evm.state.take_bal_builder().expect("bal is present").into_alloy_bal();
+        assert_eq!(alloy.len(), 1);
+        assert_eq!(alloy[0].address, LIFECYCLE_ACCOUNT);
+        assert_eq!(alloy[0].storage_changes.len(), 1);
+        assert_eq!(alloy[0].storage_changes[0].slot, LIFECYCLE_STORAGE_KEY);
+        assert_eq!(alloy[0].storage_changes[0].changes.len(), 2);
+        assert_eq!(evm.state.bal_index(), BlockAccessIndex::PRE_EXECUTION);
+        assert!(evm.state.bal_builder().is_none());
     }
 
     #[test]

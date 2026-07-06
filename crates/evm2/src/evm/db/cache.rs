@@ -1,8 +1,8 @@
 //! In-memory cache database.
 
-use super::{DbResult, DynDatabase, EmptyDB};
+use super::{BalContext, DbResult, DynDatabase, EmptyDB};
 use crate::{
-    ErrorCode,
+    AnyError, ErrorCode,
     bytecode::Bytecode,
     evm::state::{
         AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange,
@@ -75,12 +75,20 @@ impl Default for Cache {
 }
 
 /// A cache database over another backing database.
+///
+/// The optional EIP-7928 Block Access List machinery is carried in [`Self::bal_context`]; when an
+/// attached BAL is present there, [`DynDatabase`] reads are served from it (layered over the
+/// cache/database). Keeping that state in [`BalContext`] leaves this wrapper otherwise
+/// BAL-agnostic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CacheDB<ExtDB = EmptyDB> {
     /// The cache that stores all local state.
     pub cache: Cache,
     /// Wrapped backing database.
     pub db: ExtDB,
+    /// Optional EIP-7928 Block Access List read/build state. Default is empty (no BAL attached and
+    /// no builder), in which case reads go straight to the cache/database.
+    pub bal_context: BalContext,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -96,7 +104,7 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// Creates a new cache over a backing database.
     #[inline]
     pub fn new(db: ExtDB) -> Self {
-        Self { cache: Cache::default(), db, _non_exhaustive: () }
+        Self { cache: Cache::default(), db, bal_context: BalContext::new(), _non_exhaustive: () }
     }
 
     /// Applies borrowed state changes to this cache.
@@ -202,18 +210,28 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
 impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        let Cache { accounts, contracts, .. } = &mut self.cache;
-        match accounts.entry(*address) {
-            Entry::Occupied(entry) => Ok(entry.get().clone()),
-            Entry::Vacant(entry) => {
-                let Some(mut info) = self.db.get_account(address)? else {
-                    return Ok(entry.insert(None).clone());
-                };
-                Self::insert_contract_inner(contracts, &mut info);
-                info.code = None;
-                Ok(entry.insert(Some(info)).clone())
+        // Resolve the raw account from the cache or backing database. The cache always stores the
+        // raw value; any attached BAL is layered onto the returned value only.
+        let mut account = {
+            let Cache { accounts, contracts, .. } = &mut self.cache;
+            match accounts.entry(*address) {
+                Entry::Occupied(entry) => entry.get().clone(),
+                Entry::Vacant(entry) => match self.db.get_account(address)? {
+                    Some(mut info) => {
+                        Self::insert_contract_inner(contracts, &mut info);
+                        info.code = None;
+                        entry.insert(Some(info)).clone()
+                    }
+                    None => entry.insert(None).clone(),
+                },
             }
+        };
+
+        // Apply the attached read BAL's account info at the current block access index.
+        if let Err(err) = self.bal_context.bal_account(address, &mut account) {
+            return Err(self.bal_context.store_error(err));
         }
+        Ok(account)
     }
 
     #[inline]
@@ -226,6 +244,14 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        // Serve the slot from the attached read BAL when it covers a write at or before the current
+        // index; otherwise fall through to the cache/database.
+        match self.bal_context.bal_storage(address, key) {
+            Ok(Some(value)) => return Ok(value),
+            Ok(None) => {}
+            Err(err) => return Err(self.bal_context.store_error(err)),
+        }
+
         if self.account_absent(address) {
             return Ok(Word::ZERO);
         }
@@ -268,7 +294,10 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     }
 
     #[inline]
-    fn error(&mut self, code: ErrorCode) -> crate::AnyError {
+    fn error(&mut self, code: ErrorCode) -> AnyError {
+        if let Some(err) = self.bal_context.take_error(code) {
+            return err;
+        }
         self.db.error(code)
     }
 }
@@ -350,5 +379,100 @@ mod tests {
         assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), Some(block_hash));
         assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), Some(block_hash));
         assert_eq!(cache.db.inner().block_hash_loads, 1);
+    }
+
+    use crate::evm::db::bal::{AccountBal, Bal, BalWrites, BlockAccessIndex};
+    use alloc::sync::Arc;
+
+    /// A counting cache with an attached read BAL positioned at index 2.
+    fn cache_with_read_bal(
+        address: Address,
+        allow_db_fallback: bool,
+    ) -> CacheDB<crate::evm::Db<CountingDB>> {
+        let mut cache = counting_cache();
+        cache.bal_context = BalContext::new()
+            .with_bal(Arc::new(read_bal(address)))
+            .with_allow_db_fallback(allow_db_fallback);
+        cache.bal_context.bal_index = BlockAccessIndex::new(2);
+        cache
+    }
+
+    /// Read BAL covering address `1`: a balance write and a storage write to slot `7`, both at
+    /// index 1 (so visible from index 2 onward).
+    fn read_bal(address: Address) -> Bal {
+        let mut account = AccountBal::default();
+        account.account_info.balance =
+            BalWrites { writes: vec![(BlockAccessIndex::new(1), Word::from(500))] };
+        account.storage.storage.insert(
+            Word::from(7),
+            BalWrites { writes: vec![(BlockAccessIndex::new(1), Word::from(42))] },
+        );
+        Bal::from_iter([(address, account)])
+    }
+
+    fn counting_cache() -> CacheDB<crate::evm::Db<CountingDB>> {
+        let db = CountingDB {
+            account: Some(AccountInfo::default().with_balance(Word::from(100)).with_nonce(3)),
+            storage: Word::from(9),
+            ..CountingDB::default()
+        };
+        CacheDB::new(crate::evm::Db::new(db))
+    }
+
+    #[test]
+    fn attached_bal_serves_account_and_storage_reads() {
+        let address = Address::with_last_byte(1);
+        let mut cache = cache_with_read_bal(address, false);
+
+        // Balance comes from the BAL write; nonce has no BAL write, so it stays the database value.
+        let account = cache.get_account(&address).unwrap().unwrap();
+        assert_eq!(account.balance, Word::from(500));
+        assert_eq!(account.nonce, 3);
+
+        // Storage slot 7 is served from the BAL, shadowing the database value (9).
+        assert_eq!(cache.get_storage(&address, &Word::from(7)).unwrap(), Word::from(42));
+    }
+
+    #[test]
+    fn uncovered_read_errors_without_fallback() {
+        let address = Address::with_last_byte(1);
+        let mut cache = cache_with_read_bal(address, false);
+
+        // Slot 9 is not listed in the BAL for a covered account -> BAL is invalid for this access.
+        let code = cache.get_storage(&address, &Word::from(9)).unwrap_err();
+        assert_eq!(code, ErrorCode::BAL_NOT_COVERED);
+        assert!(cache.error(code).to_string().contains("not found in BAL"));
+
+        // An account entirely absent from the BAL also errors.
+        let missing = Address::with_last_byte(2);
+        let code = cache.get_account(&missing).unwrap_err();
+        assert_eq!(code, ErrorCode::BAL_NOT_COVERED);
+    }
+
+    #[test]
+    fn uncovered_read_falls_back_to_database_when_allowed() {
+        let address = Address::with_last_byte(1);
+        let mut cache = cache_with_read_bal(address, true);
+
+        // Uncovered slot falls through to the database value instead of erroring.
+        assert_eq!(cache.get_storage(&address, &Word::from(9)).unwrap(), Word::from(9));
+
+        // Covered slot is still served from the BAL.
+        assert_eq!(cache.get_storage(&address, &Word::from(7)).unwrap(), Word::from(42));
+
+        // Account absent from the BAL falls back to the database account.
+        let missing = Address::with_last_byte(2);
+        let account = cache.get_account(&missing).unwrap().unwrap();
+        assert_eq!(account.balance, Word::from(100));
+    }
+
+    #[test]
+    fn no_attached_bal_reads_straight_from_database() {
+        let address = Address::with_last_byte(1);
+        let mut cache = counting_cache();
+
+        let account = cache.get_account(&address).unwrap().unwrap();
+        assert_eq!(account.balance, Word::from(100));
+        assert_eq!(cache.get_storage(&address, &Word::from(7)).unwrap(), Word::from(9));
     }
 }
