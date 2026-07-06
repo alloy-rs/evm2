@@ -94,7 +94,7 @@ fn staticcall_precompile(
     }
 }
 
-fn subcall_target_code() -> Bytes {
+const fn subcall_target_code() -> Bytes {
     Bytes::from_static(&[
         // Store U256(42) at memory offset 0.
         op::PUSH1,
@@ -109,7 +109,7 @@ fn subcall_target_code() -> Bytes {
     ])
 }
 
-fn parent_code() -> Bytes {
+const fn parent_code() -> Bytes {
     Bytes::from_static(&[
         // CALL out size: copy 32 return bytes into memory.
         op::PUSH1,
