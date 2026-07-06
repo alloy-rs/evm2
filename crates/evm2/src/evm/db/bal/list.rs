@@ -164,7 +164,7 @@ mod tests {
             state::{AccountChange, AccountInfo, Tracked},
         },
     };
-    use alloc::collections::BTreeMap;
+    use alloc::{collections::BTreeMap, vec, vec::Vec};
     use alloy_eip7928::{
         AccountChanges as AlloyAccountChanges, BalanceChange as AlloyBalanceChange,
         CodeChange as AlloyCodeChange, NonceChange as AlloyNonceChange,

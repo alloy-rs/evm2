@@ -136,6 +136,7 @@ impl<T: PartialEq + Clone> BalWrites<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     const fn idx(index: u64) -> BlockAccessIndex {
         BlockAccessIndex::new(index)

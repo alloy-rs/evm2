@@ -306,6 +306,7 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 mod tests {
     use super::*;
     use crate::interpreter::op;
+    use alloc::{string::ToString, vec};
     use alloy_primitives::Bytes;
 
     #[derive(Debug, Default)]
