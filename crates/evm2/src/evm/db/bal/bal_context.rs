@@ -161,25 +161,6 @@ impl BalContext {
         }
     }
 
-    /// Records storage-slot reads into the BAL builder.
-    ///
-    /// Used for accesses that no longer appear in the transaction's post-state overlay -- slots
-    /// touched inside a reverted CREATE, whose overlay was discarded on rollback -- but that
-    /// EIP-7928 still lists as reads. A slot that already has writes recorded keeps them; the
-    /// read is then redundant and absorbed. No-op when BAL construction is disabled.
-    #[inline]
-    pub fn commit_storage_reads(&mut self, reads: impl Iterator<Item = (Address, Word)>) {
-        if let Some(bal) = self.bal_builder.as_mut() {
-            for (address, key) in reads {
-                bal.accounts
-                    .entry(address)
-                    .or_default()
-                    .storage
-                    .update_reads(core::iter::once(key));
-            }
-        }
-    }
-
     /// Records an account-info-only change (no storage) into the BAL builder at the current index.
     ///
     /// Used for post-block balance updates -- block rewards and withdrawals -- that mutate the

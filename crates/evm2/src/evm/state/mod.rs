@@ -28,7 +28,7 @@ use crate::{
     ErrorCode, EvmFeatures, Version,
     bytecode::Bytecode,
     interpreter::{InstrStop, Word},
-    storage_key::{StorageKey, StorageKeyMap, StorageKeySet},
+    storage_key::{StorageKey, StorageKeyMap},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_primitives::{
@@ -51,11 +51,6 @@ pub struct State<'a> {
     storage: AddressMap<StorageOverlay>,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
     transient_storage: StorageKeyMap<Word>,
-    /// EIP-7928 storage accesses whose overlay was discarded by a [`JournalEntry::StorageWipe`]
-    /// rollback (a reverted CREATE). The block access list must still list them as reads, so they
-    /// are preserved outside the revertible overlay, mirroring execution-specs'
-    /// rollback-surviving `storage_reads` set. Only populated while a BAL builder is enabled.
-    bal_storage_reads: StorageKeySet,
     /// Inner state.
     inner: StateInner<'a>,
 }
@@ -108,7 +103,6 @@ impl<'a> State<'a> {
             accounts: AddressMap::default(),
             storage: AddressMap::default(),
             transient_storage: StorageKeyMap::default(),
-            bal_storage_reads: StorageKeySet::default(),
             inner: StateInner {
                 database: CacheDB::new(initial),
                 prewarm_set: PrewarmSet::new(),
@@ -333,7 +327,6 @@ impl<'a> State<'a> {
         self.journal.clear();
         self.selfdestructs.clear();
         self.transient_storage.clear();
-        self.bal_storage_reads.clear();
         self.logs.clear();
     }
 
@@ -528,8 +521,6 @@ impl<'a> State<'a> {
             caller_account.set_balance(new_caller_balance);
         }
 
-        self.storage(address).wipe();
-
         let mut target = self.account(address, false)?;
         // Preserve any balance the address already held (e.g. funds sent before creation) and add
         // the endowment.
@@ -634,22 +625,6 @@ impl<'a> State<'a> {
                         slot.value.current = previous;
                     }
                 }
-                JournalEntry::StorageWipe { address, previous } => {
-                    let discarded = match previous {
-                        Some(storage) => self.storage.insert(address, storage),
-                        None => self.storage.remove(&address),
-                    };
-                    // EIP-7928: slots accessed inside the discarded overlay (a reverted CREATE)
-                    // must still surface as block-access-list reads even though their writes are
-                    // rolled back, so preserve them outside the revertible overlay.
-                    if self.inner.database.bal_context.has_builder()
-                        && let Some(discarded) = discarded
-                    {
-                        self.bal_storage_reads.extend(
-                            discarded.slots.keys().map(|&key| StorageKey::new(address, key)),
-                        );
-                    }
-                }
                 JournalEntry::TransientStorageChange { address, key, previous } => match previous {
                     Some(previous) if !previous.is_zero() => {
                         self.transient_storage.insert(StorageKey::new(address, key), previous);
@@ -666,20 +641,6 @@ impl<'a> State<'a> {
                     }
                 }
             }
-        }
-    }
-
-    /// Preserves an account's currently loaded storage-slot keys as EIP-7928 reads before its
-    /// overlay is wiped by finalization, so accesses on destroyed accounts still surface in the
-    /// block access list (execution-specs `destroy_storage` converts writes to reads).
-    ///
-    /// No-op when no BAL builder is enabled.
-    fn preserve_bal_storage_reads(&mut self, address: &Address) {
-        if self.inner.database.bal_context.has_builder()
-            && let Some(overlay) = self.storage.get(address)
-        {
-            self.bal_storage_reads
-                .extend(overlay.slots.keys().map(|&key| StorageKey::new(*address, key)));
         }
     }
 
@@ -728,9 +689,6 @@ impl<'a> State<'a> {
                     account.delete_for_finalization();
                 }
             }
-            // EIP-7928: a destroyed account's storage accesses (including its discarded writes)
-            // still appear as block-access-list reads (execution-specs `destroy_storage`).
-            self.preserve_bal_storage_reads(address);
             self.storage(address).wipe();
         }
 
@@ -741,8 +699,6 @@ impl<'a> State<'a> {
                 if account.is_existing_dead() {
                     account.delete_for_finalization();
                     drop(account);
-                    // EIP-7928: accesses of a deleted dead account stay visible as reads.
-                    self.preserve_bal_storage_reads(address);
                     self.storage(address).wipe();
                 }
             }
@@ -896,12 +852,6 @@ impl<'a> State<'a> {
         if self.inner.database.bal_context.has_builder() {
             let changes = self.build_state_changes();
             self.inner.database.bal_context.commit_bal(&changes);
-            // Accesses whose overlay was discarded by a reverted CREATE (see the
-            // `JournalEntry::StorageWipe` rollback arm) are absent from `changes` but must still
-            // appear as EIP-7928 reads.
-            self.inner.database.bal_context.commit_storage_reads(
-                self.bal_storage_reads.iter().map(|k| (k.address(), k.key())),
-            );
         }
 
         for (&address, storage) in &self.storage {
