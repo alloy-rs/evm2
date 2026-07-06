@@ -49,9 +49,9 @@ pub struct BalContext {
     /// Whether reads not covered by the attached [`Self::bal`] fall back to the cache/database
     /// instead of returning [`ErrorCode::BAL_NOT_COVERED`].
     ///
-    /// During block validation an access outside the BAL means the BAL is invalid, so this defaults
-    /// to `false`. Enabling it allows executing transactions that are not part of the block (e.g.
-    /// RPC calls) on top of BAL-positioned state.
+    /// During block validation an access outside the BAL means the BAL is invalid, so this
+    /// defaults to `false`. Enabling it allows executing transactions that are not part of the
+    /// block (e.g. RPC calls) on top of BAL-positioned state.
     pub allow_db_fallback: bool,
     /// Last BAL lookup error, surfaced through [`Self::take_error`] after a read returns
     /// [`ErrorCode::BAL_NOT_COVERED`].
@@ -283,7 +283,8 @@ impl BalContext {
         ErrorCode::BAL_NOT_COVERED
     }
 
-    /// Takes the stashed BAL error as an [`AnyError`] when `code` is [`ErrorCode::BAL_NOT_COVERED`].
+    /// Takes the stashed BAL error as an [`AnyError`] when `code` is
+    /// [`ErrorCode::BAL_NOT_COVERED`].
     ///
     /// Returns `None` for any other code so the caller can fall back to the wrapped database's
     /// error resolution.

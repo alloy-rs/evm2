@@ -1023,8 +1023,10 @@ fn format_bal_diff(
     built: &alloy_eip7928::BlockAccessList,
     expected: &alloy_eip7928::BlockAccessList,
 ) -> String {
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::fmt::Write;
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        fmt::Write,
+    };
 
     let built: BTreeMap<_, _> = built.iter().map(|account| (account.address, account)).collect();
     let expected: BTreeMap<_, _> =

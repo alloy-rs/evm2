@@ -86,7 +86,8 @@ impl<T: PartialEq + Clone> BalWrites<T> {
     ///
     /// If [`BlockAccessIndex`] is same as last it will override the value.
     ///
-    /// Assumes that index is always greater than last one and that Writes are updated in proper order.
+    /// Assumes that index is always greater than last one and that Writes are updated in proper
+    /// order.
     #[inline]
     pub fn update_with_key<K: PartialEq, F>(
         &mut self,
