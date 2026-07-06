@@ -782,23 +782,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         InstrStop::FatalExternalError
     }
 
-    /// Records a storage-slot access whose cold-load charge is unaffordable, then reports the
-    /// resulting out-of-gas.
-    ///
-    /// The `skip_cold_load` fast path avoids the database read when the frame cannot afford the
-    /// EIP-2929 cold-access charge, but the access still happened. EIP-7928 block access lists --
-    /// like the execution-specs reference -- list a slot as read once it is accessed, before the
-    /// cold gas is charged. Forcing the load here materializes the slot in the transaction overlay
-    /// as a read so it is captured by the block access list, matching the reference. A database
-    /// error during the forced load is surfaced in place of the out-of-gas.
-    #[cold]
-    fn record_cold_access_oog(&mut self, address: &Address, key: &Word) -> InstrStop {
-        match self.state.storage(address).into_slot(*key, false) {
-            Ok(_) => InstrStop::OutOfGas,
-            Err(code) => self.store_error(code),
-        }
-    }
-
     /// Returns the active base specification ID.
     #[inline]
     pub fn spec_id(&self) -> SpecId {
@@ -1627,13 +1610,19 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
-        let mut slot = match self.state.storage(address).into_slot(*key, skip_cold_load) {
+        // Unlike SLOAD, SSTORE accesses the slot before the cold surcharge can run out of gas: the
+        // warm-read cost is paid first, so EIP-7928 block access lists -- like the
+        // execution-specs reference -- list the slot as read even when the frame cannot afford the
+        // EIP-2929 cold charge. The load is therefore never skipped; an unaffordable cold access
+        // (`skip_cold_load` with a slot that turns out cold) is reported as out-of-gas only after
+        // the load has materialized the slot in the transaction overlay as a read.
+        let mut slot = match self.state.storage(address).into_slot(*key, false) {
             Ok(slot) => slot,
-            Err(ErrorCode::COLD_LOAD_SKIPPED) => {
-                return Err(self.record_cold_access_oog(address, key));
-            }
             Err(code) => return Err(self.store_error(code)),
         };
+        if skip_cold_load && !slot.is_warm() {
+            return Err(InstrStop::OutOfGas);
+        }
         let is_cold = eip2929 && slot.warm();
         let (original_value, present_value) = slot.write(*value);
         Ok(SStore {
