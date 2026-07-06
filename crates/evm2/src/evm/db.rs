@@ -30,6 +30,30 @@ pub trait Database: NonStaticAny {
     fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error>;
 }
 
+impl<T: Database + ?Sized> Database for &mut T {
+    type Error = T::Error;
+
+    #[inline]
+    fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+        (**self).get_account(address)
+    }
+
+    #[inline]
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
+        (**self).get_code_by_hash(code_hash)
+    }
+
+    #[inline]
+    fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error> {
+        (**self).get_storage(address, key)
+    }
+
+    #[inline]
+    fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error> {
+        (**self).get_block_hash(number)
+    }
+}
+
 /// Object-safe database adapter for typed database implementations.
 #[derive(Clone, Debug)]
 pub struct Db<T: Database> {
@@ -319,6 +343,33 @@ impl<T: DynDatabase + ?Sized> DynDatabase for Box<T> {
     #[inline]
     fn error(&mut self, code: ErrorCode) -> AnyError {
         self.as_mut().error(code)
+    }
+}
+
+impl<T: DynDatabase + ?Sized> DynDatabase for &mut T {
+    #[inline]
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        (**self).get_account(address)
+    }
+
+    #[inline]
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+        (**self).get_code_by_hash(code_hash)
+    }
+
+    #[inline]
+    fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        (**self).get_storage(address, key)
+    }
+
+    #[inline]
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+        (**self).get_block_hash(number)
+    }
+
+    #[inline]
+    fn error(&mut self, code: ErrorCode) -> AnyError {
+        (**self).error(code)
     }
 }
 
