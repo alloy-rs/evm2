@@ -15,6 +15,7 @@ use crate::{
     ethereum::initial_message,
     interpreter::Host,
     registry::{HandlerError, HandlerResult},
+    version::{EvmFeatures, GasId},
 };
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, TxKind, U256, address};
@@ -26,6 +27,12 @@ pub const SYSTEM_ADDRESS: Address = address!("0xffffffffffffffffffffffffffffffff
 
 /// Gas limit used by execution-layer system calls.
 pub const SYSTEM_CALL_GAS_LIMIT: u64 = 30_000_000;
+
+/// Upper bound on the number of new storage slots a single system call is expected to write.
+///
+/// EIP-8037 (Amsterdam) sizes the system-call state-gas reservoir as this many `SSTORE` new-slot
+/// state charges; state gas beyond the reservoir spills into the regular gas budget.
+pub const SYSTEM_MAX_SSTORES_PER_CALL: u64 = 16;
 
 /// EIP-4788 beacon roots system contract address.
 pub const BEACON_ROOTS_ADDRESS: Address = address!("0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02");
@@ -110,6 +117,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             ext: T::TxEnvExt::default(),
             _non_exhaustive: (),
         };
+        // EIP-8037: system calls start with a state-gas reservoir sized for
+        // `SYSTEM_MAX_SSTORES_PER_CALL` new-slot writes (execution-specs
+        // `process_unchecked_system_transaction`).
+        let reservoir = if self.feature(EvmFeatures::EIP8037) {
+            self.version().gas_params.get(GasId::SstoreSetState) as u64
+                * SYSTEM_MAX_SSTORES_PER_CALL
+        } else {
+            0
+        };
         let (bytecode, mut message) = match initial_message(
             self,
             caller,
@@ -118,7 +134,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             &data,
             U256::ZERO,
             SYSTEM_CALL_GAS_LIMIT,
-            0,
+            reservoir,
         ) {
             Ok(result) => result,
             Err(error) => {
