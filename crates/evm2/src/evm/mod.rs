@@ -1607,16 +1607,11 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         address: &Address,
         key: &Word,
         value: &Word,
-        skip_cold_load: bool,
+        _skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
-        // Unlike SLOAD, SSTORE accesses the slot before the cold surcharge can run out of gas: the
-        // warm-read cost is paid first, so EIP-7928 block access lists -- like the
-        // execution-specs reference -- list the slot as read even when the frame cannot afford the
-        // EIP-2929 cold charge. The load is therefore never skipped; an unaffordable cold access
-        // (`skip_cold_load` with a slot that turns out cold) is reported as out-of-gas only after
-        // the load has materialized the slot in the transaction overlay as a read.
-        let mut slot = match self.state.storage(address).into_slot(*key, skip_cold_load) {
+        // TODO: glam-devnet-7 fix this and we should use skip_cold_load.
+        let mut slot = match self.state.storage(address).into_slot(*key, false) {
             Ok(slot) => slot,
             Err(ErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
             Err(code) => return Err(self.store_error(code)),
