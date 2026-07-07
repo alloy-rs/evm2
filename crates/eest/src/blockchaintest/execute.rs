@@ -1149,9 +1149,13 @@ mod tests {
 
     #[test]
     fn json_outcome_reports_pass_and_failure() {
-        use super::super::error::{TestError, TestErrorKind};
-        use super::super::types::ForkSpec;
-        use super::json_outcome_value;
+        use super::{
+            super::{
+                error::{TestError, TestErrorKind},
+                types::ForkSpec,
+            },
+            json_outcome_value,
+        };
         use alloy_primitives::B256;
 
         let root = B256::with_last_byte(7);

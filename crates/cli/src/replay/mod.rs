@@ -26,7 +26,7 @@ struct ReplayOptions {
     blockchain_mode: BlockchainTestExecutionMode,
     state_mode: StateTestExecutionMode,
     db_stats: bool,
-    /// Glob over the EEST test/case name (`--filter-test`).
+    /// Glob over the EEST test/case name (`--entrypoint`).
     test_filter: EntryPoint,
     /// Glob over the `.json` file path or name in folder mode (`--filter-file`).
     file_filter: EntryPoint,
@@ -53,7 +53,7 @@ pub(crate) fn run(command: Replay) -> Result<()> {
         blockchain_mode: replay_blockchain_execution_mode(&command),
         state_mode: replay_state_execution_mode(&command),
         db_stats: command.db_stats,
-        test_filter: EntryPoint::new(command.filter_test),
+        test_filter: EntryPoint::new(command.entrypoint),
         file_filter: EntryPoint::new(command.filter_file),
     };
 
@@ -527,7 +527,7 @@ mod tests {
 
     fn replay(jit: bool, aot: bool) -> Replay {
         Replay {
-            filter_test: None,
+            entrypoint: None,
             filter_file: None,
             jit,
             aot,
