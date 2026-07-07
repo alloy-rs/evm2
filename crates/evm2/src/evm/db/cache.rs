@@ -210,6 +210,13 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
 impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        // Resolve the account in the attached read BAL first: with fallback disabled, an
+        // uncovered account errors before the cache or backing database is consulted.
+        let bal_account = match self.bal_context.get_bal_account(address) {
+            Ok(bal_account) => bal_account,
+            Err(err) => return Err(self.bal_context.store_error(err)),
+        };
+
         // Resolve the raw account from the cache or backing database. The cache always stores the
         // raw value; any attached BAL is layered onto the returned value only.
         let mut account = {
@@ -227,9 +234,9 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
             }
         };
 
-        // Apply the attached read BAL's account info at the current block access index.
-        if let Err(err) = self.bal_context.bal_account(address, &mut account) {
-            return Err(self.bal_context.store_error(err));
+        // Apply the resolved BAL account's info at the current block access index.
+        if let Some(bal_account) = bal_account {
+            self.bal_context.populate_bal_account(bal_account, &mut account);
         }
         Ok(account)
     }

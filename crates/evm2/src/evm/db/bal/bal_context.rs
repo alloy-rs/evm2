@@ -1,6 +1,6 @@
 //! EIP-7928 Block Access List state carried alongside the accepted-overlay database.
 
-use super::{Bal, BalError, BlockAccessIndex};
+use super::{AccountBal, Bal, BalError, BlockAccessIndex};
 use crate::{
     AnyError, ErrorCode,
     evm::state::{AccountInfo, StateChanges},
@@ -22,10 +22,10 @@ type BalResult<T> = Result<T, BalError>;
 ///
 /// The two roles are independent:
 ///
-/// - **Reads** ([`Self::bal`]): when an attached BAL is present, [`Self::bal_account`] and
-///   [`Self::bal_storage`] serve account info and storage from it at [`Self::bal_index`]
-///   (post-state per transaction). A read not covered by the BAL is either an error or falls
-///   through to the database, depending on [`Self::allow_db_fallback`].
+/// - **Reads** ([`Self::bal`]): when an attached BAL is present, [`Self::get_bal_account`] /
+///   [`Self::populate_bal_account`] and [`Self::bal_storage`] serve account info and storage from
+///   it at [`Self::bal_index`] (post-state per transaction). A read not covered by the BAL is
+///   either an error or falls through to the database, depending on [`Self::allow_db_fallback`].
 /// - **Writes** ([`Self::bal_builder`]): when enabled, [`Self::commit_bal`] folds each committed
 ///   transaction's post-state into the builder at [`Self::bal_index`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -197,28 +197,33 @@ impl BalContext {
         self.take_bal_builder().map(Bal::into_alloy_bal)
     }
 
-    /// Applies the attached read BAL's account info for `address` at the current index to
-    /// `account`.
+    /// Resolves `address` in the attached read BAL.
     ///
-    /// Returns `Ok(())` when no BAL is attached, when the account is covered (its BAL writes are
-    /// applied), or when the account is uncovered but [`Self::allow_db_fallback`] is set. Returns
-    /// [`BalError::AccountNotFound`] when the account is uncovered and fallback is disabled.
+    /// Returns `Ok(None)` when no BAL is attached, or when the account is uncovered but
+    /// [`Self::allow_db_fallback`] is set. Returns [`BalError::AccountNotFound`] when the account
+    /// is uncovered and fallback is disabled.
     #[inline]
-    pub fn bal_account(
-        &self,
-        address: &Address,
-        account: &mut Option<AccountInfo>,
-    ) -> BalResult<()> {
+    pub fn get_bal_account(&self, address: &Address) -> BalResult<Option<&AccountBal>> {
         let Some(bal) = &self.bal else {
-            return Ok(());
+            return Ok(None);
         };
-        let Some(bal_account) = bal.accounts.get(address) else {
-            if self.allow_db_fallback {
-                return Ok(());
-            }
-            return Err(BalError::AccountNotFound { address: *address });
-        };
+        match bal.accounts.get(address) {
+            Some(bal_account) => Ok(Some(bal_account)),
+            None if self.allow_db_fallback => Ok(None),
+            None => Err(BalError::AccountNotFound { address: *address }),
+        }
+    }
 
+    /// Applies a resolved BAL account's info writes at the current index to `account`.
+    ///
+    /// `bal_account` comes from [`Self::get_bal_account`], resolved before the raw account is
+    /// read from the cache/database.
+    #[inline]
+    pub fn populate_bal_account(
+        &self,
+        bal_account: &AccountBal,
+        account: &mut Option<AccountInfo>,
+    ) {
         let was_present = account.is_some();
         let mut info = account.take().unwrap_or_default();
         let changed = bal_account.populate_account_info(self.bal_index, &mut info);
@@ -226,7 +231,6 @@ impl BalContext {
         if changed || was_present {
             *account = Some(info);
         }
-        Ok(())
     }
 
     /// Resolves storage slot `key` for `address` from the attached read BAL at the current
