@@ -8,6 +8,7 @@ pub mod blockchaintest;
 #[cfg(feature = "jit")]
 mod compiled;
 mod discover;
+mod dump;
 mod env;
 mod error;
 mod execute;
@@ -21,6 +22,7 @@ mod harness;
 mod jit;
 mod runner;
 mod state;
+mod trace;
 mod tx;
 mod types;
 

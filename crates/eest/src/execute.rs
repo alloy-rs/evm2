@@ -1,6 +1,7 @@
 #[cfg(feature = "jit")]
 use crate::compiled::{self, FileSummary};
 use crate::{
+    dump,
     error::{TestError, TestErrorKind},
     execution::ExecutionResources,
     filter::EntryPoint,
@@ -9,6 +10,7 @@ use crate::{
     state::{
         insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
     },
+    trace::{self, Eip3155Tracer},
     tx::{TxFields, build_recovered_tx, recover_address, rpc_access_list, signed_authorizations},
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
@@ -57,6 +59,13 @@ pub(crate) struct SpecOutcome {
 pub struct ExecuteConfig {
     /// Whether to print JSON outcome records.
     pub print_json_outcome: bool,
+    /// Whether to stream EIP-3155 struct logs to stdout during execution.
+    ///
+    /// Only observable under [`ExecutionMode::Interpreter`]; the JIT/AOT runners
+    /// bypass instruction-level dispatch.
+    pub trace: bool,
+    /// Whether to dump the post-execution state (accounts and storage) to stdout.
+    pub dump_state: bool,
     /// Execution backend.
     pub mode: ExecutionMode,
     /// Whether to print database method call counts.
@@ -201,6 +210,8 @@ fn execute_unit(
                 &tx,
                 &unit.env,
                 resources,
+                config.trace,
+                config.dump_state,
                 if config.db_stats { Some(&mut *db_stats_counts) } else { None },
             );
             validate_result(path, name, &unit, post, result, spec, config)?;
@@ -313,9 +324,10 @@ fn print_json_outcome(
         "g": test.indexes.gas,
         "v": test.indexes.value,
     });
-    eprintln!("{value}");
+    println!("{value}");
 }
 
+#[expect(clippy::too_many_arguments)]
 fn execute_spec(
     spec: SpecId,
     block: BlockEnv,
@@ -323,6 +335,8 @@ fn execute_spec(
     tx: &RecoveredTxEnvelope,
     env: &Env,
     resources: &ExecutionResources,
+    trace: bool,
+    dump_state: bool,
     db_stats_counts: Option<&mut DbStatsCounts>,
 ) -> Result<SpecOutcome, HandlerError> {
     let db_stats = db_stats_counts.is_some();
@@ -344,6 +358,9 @@ fn execute_spec(
         )
     };
     resources.configure_evm(&mut evm);
+    if trace {
+        evm.set_inspector(Eip3155Tracer::to_stdout());
+    }
     let mut post = database;
     pre_block_system_calls(&mut evm, &mut post, spec, env);
     let Ok(result) = evm.transact(tx)?.commit_with(&mut post);
@@ -352,7 +369,19 @@ fn execute_spec(
     {
         *counts += stats.counts();
     }
-    Ok(spec_outcome(post, result))
+    if dump_state {
+        dump::dump_state(&mut std::io::stdout(), &post, state_root_from_database(&post));
+    }
+    let outcome = spec_outcome(post, result);
+    if trace {
+        trace::write_summary(
+            &mut std::io::stdout(),
+            &outcome.output,
+            outcome.gas_used,
+            outcome.state_root,
+        );
+    }
+    Ok(outcome)
 }
 
 fn print_db_stats(counts: DbStatsCounts) {
@@ -439,7 +468,7 @@ fn logs_hash(logs: &[Log]) -> B256 {
     keccak256(out)
 }
 
-fn state_root_from_database(state: &InMemoryDB) -> B256 {
+pub(crate) fn state_root_from_database(state: &InMemoryDB) -> B256 {
     let accounts = state.cache.accounts.iter().filter_map(|(&address, info)| {
         let info = info.as_ref()?;
         let storage = storage_for_root(state, address);
@@ -760,6 +789,8 @@ mod tests {
             &tx,
             &env,
             &resources,
+            false,
+            false,
             None,
         )
         .unwrap()
@@ -826,6 +857,8 @@ mod tests {
             &tx,
             &env,
             &resources,
+            false,
+            false,
             None,
         )
         .unwrap()
