@@ -325,15 +325,21 @@ fn execute_block(
     }
 
     let result = (|| -> Result<BlockResolution, TestError> {
-        pre_block_system_calls(
+        if let Err(err) = pre_block_system_calls(
             &mut evm,
             &mut block_state,
             spec,
             next_block_env,
             *parent_block_hash,
             beacon_root,
-        )
-        .map_err(|err| TestError::case(path, name, err))?;
+        ) {
+            // A failed pre-block system call invalidates the block only when the fixture expects
+            // an exception; otherwise it is a test failure.
+            if should_fail {
+                return Ok(BlockResolution::Discard);
+            }
+            return Err(TestError::case(path, name, err));
+        }
 
         let transactions = block_transactions(block);
         // EIP-8037: track regular and state gas separately for the block-header gas check.
@@ -461,14 +467,20 @@ fn execute_block(
             evm.state_mut().bump_bal_index();
         }
 
-        post_block_transition(
+        if let Err(err) = post_block_transition(
             &mut evm,
             &mut block_state,
             spec,
             next_block_env,
             block_withdrawals(block),
-        )
-        .map_err(|err| TestError::case(path, name, err))?;
+        ) {
+            // A failed post-block system call (e.g. SYSTEM_CONTRACT_CALL_FAILED) invalidates the
+            // block, mirroring execution-specs raising `InvalidBlock`.
+            if should_fail {
+                return Ok(BlockResolution::Discard);
+            }
+            return Err(TestError::case(path, name, err));
+        }
 
         if let Some(expected_bal) = block_access_list(block) {
             let built = evm.state_mut().take_bal_builder().unwrap_or_default();
