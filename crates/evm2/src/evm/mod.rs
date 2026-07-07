@@ -1616,13 +1616,12 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         // EIP-2929 cold charge. The load is therefore never skipped; an unaffordable cold access
         // (`skip_cold_load` with a slot that turns out cold) is reported as out-of-gas only after
         // the load has materialized the slot in the transaction overlay as a read.
-        let mut slot = match self.state.storage(address).into_slot(*key, false) {
+        let mut slot = match self.state.storage(address).into_slot(*key, skip_cold_load) {
             Ok(slot) => slot,
+            Err(ErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
             Err(code) => return Err(self.store_error(code)),
         };
-        if skip_cold_load && !slot.is_warm() {
-            return Err(InstrStop::OutOfGas);
-        }
+
         let is_cold = eip2929 && slot.warm();
         let (original_value, present_value) = slot.write(*value);
         Ok(SStore {
