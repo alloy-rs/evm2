@@ -166,13 +166,13 @@ mod tests {
             state::{AccountChange, AccountInfo, Tracked},
         },
     };
-    use alloc::{collections::BTreeMap, vec, vec::Vec};
+    use alloc::{vec, vec::Vec};
     use alloy_eip7928::{
         AccountChanges as AlloyAccountChanges, BalanceChange as AlloyBalanceChange,
         CodeChange as AlloyCodeChange, NonceChange as AlloyNonceChange,
         SlotChanges as AlloySlotChanges, StorageChange as AlloyStorageChange,
     };
-    use alloy_primitives::{B256, Bytes, U256};
+    use alloy_primitives::{B256, Bytes, U256, map::U256Map};
 
     fn code(byte: u8) -> (B256, Bytecode) {
         let bytecode = Bytecode::new_raw(vec![byte].into());
@@ -197,7 +197,7 @@ mod tests {
                 code: BalWrites { writes: vec![(idx(7), code(7)), (idx(3), code(3))] },
             },
             storage: StorageBal {
-                storage: BTreeMap::from([
+                storage: U256Map::from_iter([
                     (
                         U256::from(4),
                         BalWrites {

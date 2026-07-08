@@ -6,16 +6,16 @@ use crate::{
     evm::state::{AccountChange, AccountInfo, Tracked},
     interpreter::Word,
 };
-use alloc::{
-    collections::{BTreeMap, btree_map::Entry},
-    vec::Vec,
-};
+use alloc::vec::Vec;
 use alloy_eip7928::{
     AccountChanges as AlloyAccountChanges, BalanceChange as AlloyBalanceChange,
     CodeChange as AlloyCodeChange, NonceChange as AlloyNonceChange,
     SlotChanges as AlloySlotChanges, StorageChange as AlloyStorageChange,
 };
-use alloy_primitives::{Address, B256, U256, map::U256Map};
+use alloy_primitives::{
+    Address, B256, U256,
+    map::{U256Map, hash_map::Entry},
+};
 use core::ops::{Deref, DerefMut};
 
 /// Account BAL structure.
@@ -153,13 +153,10 @@ impl AccountBal {
     /// <https://eips.ethereum.org/EIPS/eip-7928#ordering-uniqueness-and-determinism>.
     #[inline]
     pub fn into_alloy_account(self, address: Address) -> AlloyAccountChanges {
-        let storage_len = self.storage.storage.len();
-        let mut storage_reads = Vec::with_capacity(storage_len);
-        let mut storage_changes = Vec::with_capacity(storage_len);
-        for (key, value) in self.storage.storage {
-            if value.writes.is_empty() {
-                storage_reads.push(key);
-            } else {
+        let (storage_reads, writes) = self.storage.into_vecs();
+        let storage_changes = writes
+            .into_iter()
+            .map(|(key, value)| {
                 let mut changes = value
                     .writes
                     .into_iter()
@@ -167,9 +164,9 @@ impl AccountBal {
                     .collect::<Vec<_>>();
                 changes.sort_unstable_by_key(|change| change.block_access_index);
 
-                storage_changes.push(AlloySlotChanges::new(key, changes));
-            }
-        }
+                AlloySlotChanges::new(key, changes)
+            })
+            .collect::<Vec<_>>();
 
         let mut balance_changes = self
             .account_info
@@ -306,7 +303,7 @@ impl AccountInfoBal {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StorageBal {
     /// Storage with writes and reads.
-    pub storage: BTreeMap<U256, BalWrites<U256>>,
+    pub storage: U256Map<BalWrites<U256>>,
 }
 
 impl StorageBal {
@@ -336,6 +333,7 @@ impl StorageBal {
     /// Extend storage from another storage.
     #[inline]
     pub fn extend(&mut self, storage: Self) {
+        self.storage.reserve(storage.storage.len());
         for (key, value) in storage.storage {
             match self.storage.entry(key) {
                 Entry::Occupied(mut entry) => {
@@ -351,6 +349,7 @@ impl StorageBal {
     /// Update storage from the per-account storage of an [`AccountChange`].
     #[inline]
     pub fn update(&mut self, bal_index: BlockAccessIndex, storage: &U256Map<Tracked<Word>>) {
+        self.storage.reserve(storage.len());
         for (key, value) in storage {
             self.storage.entry(*key).or_default().update(bal_index, &value.original, value.current);
         }
@@ -373,10 +372,11 @@ impl StorageBal {
         }
     }
 
-    /// Convert the storage into a vector of reads and writes
+    /// Convert the storage into a vector of reads and writes, each sorted by slot key.
     pub fn into_vecs(self) -> (Vec<U256>, Vec<(U256, BalWrites<U256>)>) {
-        let mut reads = Vec::new();
-        let mut writes = Vec::new();
+        let len = self.storage.len();
+        let mut reads = Vec::with_capacity(len);
+        let mut writes = Vec::with_capacity(len);
 
         for (key, value) in self.storage {
             if value.writes.is_empty() {
@@ -385,6 +385,9 @@ impl StorageBal {
                 writes.push((key, value));
             }
         }
+
+        reads.sort_unstable();
+        writes.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
 
         (reads, writes)
     }
