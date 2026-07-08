@@ -47,7 +47,6 @@ use std::{
     },
 };
 
-#[doc(no_inline)] // Work around rustdoc ICE: https://github.com/rust-lang/rust/issues/158686
 pub use inkwell::{self, context::Context};
 
 mod cpp;
