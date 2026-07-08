@@ -3,12 +3,12 @@
 use super::{AccountBal, Bal, BalError, BlockAccessIndex};
 use crate::{
     AnyError, ErrorCode,
-    evm::state::{AccountInfo, StateChanges},
+    evm::state::{Account, AccountInfo, StorageOverlay},
     interpreter::Word,
 };
 use alloc::sync::Arc;
 use alloy_eip7928::BlockAccessList;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, map::AddressMap};
 
 /// Result of an EIP-7928 BAL lookup during a read.
 type BalResult<T> = Result<T, BalError>;
@@ -26,8 +26,8 @@ type BalResult<T> = Result<T, BalError>;
 ///   [`Self::populate_bal_account`] and [`Self::bal_storage`] serve account info and storage from
 ///   it at [`Self::bal_index`] (post-state per transaction). A read not covered by the BAL is
 ///   either an error or falls through to the database, depending on [`Self::allow_db_fallback`].
-/// - **Writes** ([`Self::bal_builder`]): when enabled, [`Self::commit_bal`] folds each committed
-///   transaction's post-state into the builder at [`Self::bal_index`].
+/// - **Writes** ([`Self::bal_builder`]): when enabled, `Self::commit_pending` folds each
+///   committed transaction's pending post-state into the builder at [`Self::bal_index`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BalContext {
     /// Optional attached EIP-7928 BAL consulted on reads.
@@ -39,9 +39,10 @@ pub struct BalContext {
     /// Optional EIP-7928 Block Access List builder.
     ///
     /// `None` (the default) disables BAL construction so normal execution pays nothing. When
-    /// `Some`, [`Self::commit_bal`] folds each committed transaction's post-state into it.
+    /// `Some`, [`Self::commit_pending`] folds each committed transaction's post-state into it.
     bal_builder: Option<Bal>,
-    /// Current EIP-7928 block access index used by both BAL-served reads and [`Self::commit_bal`].
+    /// Current EIP-7928 block access index used by both BAL-served reads and
+    /// [`Self::commit_pending`].
     ///
     /// Callers bump this once per transaction (see [`Self::bump_bal_index`]) so each transaction's
     /// writes are recorded under, and reads served at, a distinct index.
@@ -152,18 +153,34 @@ impl BalContext {
         self.bal_index.increment();
     }
 
-    /// Folds a committed transaction's post-state into the BAL builder at the current
-    /// [`Self::bal_index`].
+    /// Folds a committed transaction's pending post-state -- its transaction overlay -- into the
+    /// BAL builder at the current [`Self::bal_index`].
     ///
-    /// No-op when BAL construction is disabled. Loaded-but-unchanged accounts and storage slots in
-    /// `changes` are recorded as BAL reads; changed ones as writes.
+    /// No-op when BAL construction is disabled. Loaded-but-unchanged accounts and storage slots
+    /// are recorded as BAL reads; changed ones as writes. No [`StateChanges`] is materialized;
+    /// the overlay is folded directly.
+    ///
+    /// [`StateChanges`]: crate::evm::state::StateChanges
     #[inline]
-    pub fn commit_bal(&mut self, changes: &StateChanges) {
+    pub(crate) fn commit_pending(
+        &mut self,
+        accounts: &AddressMap<Account>,
+        storage: &AddressMap<StorageOverlay>,
+    ) {
         let index = self.bal_index;
-        if let Some(bal) = self.bal_builder.as_mut() {
-            for (address, change) in &changes.accounts {
-                bal.update_account(index, *address, change);
-            }
+        let Some(bal) = self.bal_builder.as_mut() else {
+            return;
+        };
+        for (&address, entry) in accounts {
+            bal.update_pending_account(
+                index,
+                address,
+                entry.original.as_ref(),
+                entry.present.as_ref(),
+            );
+        }
+        for (&address, overlay) in storage {
+            bal.accounts.entry(address).or_default().storage.update_pending(index, &overlay.slots);
         }
     }
 
@@ -171,7 +188,7 @@ impl BalContext {
     ///
     /// Used for post-block balance updates -- block rewards and withdrawals -- that mutate the
     /// accepted overlay directly instead of flowing through a transaction commit, so they are not
-    /// captured by [`Self::commit_bal`]. No-op when BAL construction is disabled.
+    /// captured by the transaction-commit fold. No-op when BAL construction is disabled.
     #[inline]
     pub fn commit_account_change(
         &mut self,

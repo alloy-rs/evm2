@@ -4,15 +4,17 @@ mod account;
 mod block;
 mod changes;
 mod journal;
+mod pending;
 mod storage;
 mod stream;
 mod tracked;
 
-use account::Account;
+pub(crate) use account::Account;
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
 pub use changes::{AccountChange, StateChanges};
 pub use journal::{JournalEntry, StateCheckpoint};
+pub use pending::PendingState;
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
 pub use stream::{
     AccountChangeRef, AccountInfoRef, NoopChangeSink, StateChangeSink, StateChangeSource,
@@ -810,42 +812,38 @@ impl<'a> State<'a> {
     /// take logs, or advance the overlay to the next transaction. Logs are execution output and are
     /// exposed through [`crate::TxResult`] and [`crate::TxResultWithState`].
     pub(crate) fn build_state_changes(&mut self) -> StateChanges {
-        let mut changes = StateChanges::default();
+        let database = &self.inner.database;
+        build_state_changes_from(
+            &self.accounts,
+            &self.storage,
+            &self.inner.selfdestructs,
+            |address| database.account_info(address).cloned(),
+        )
+    }
 
-        for (&address, entry) in self.accounts.iter() {
-            changes.accounts.insert(
-                address,
-                AccountChange {
-                    original: entry.original.clone(),
-                    current: entry.present.clone(),
-                    storage: U256Map::default(),
-                    wipe_storage: false,
-                    // `just_created` is preserved across selfdestruct finalization, so it also
-                    // covers accounts that were created and then destroyed in the same transaction.
-                    created: entry.just_created,
-                    selfdestructed: self.selfdestructs.contains(&address),
-                },
-            );
-            if let Some(account) = entry.present.as_ref()
-                && let Some((code_hash, code)) = Self::changed_code(entry.code_changed, account)
-            {
-                changes.code.entry(code_hash).or_insert_with(|| code.clone());
+    /// Detaches the transaction overlay into an owned [`PendingState`].
+    ///
+    /// Storage-only accounts (loaded storage whose account was never itself loaded) are
+    /// materialized from the accepted overlay so the pending state stays self-contained once it
+    /// leaves this EVM. The remaining transaction scratch (journal, logs, warm sets, transient
+    /// storage) is left for [`Self::clear_transaction_state`].
+    pub(crate) fn take_pending_state(&mut self) -> PendingState {
+        let mut accounts = mem::take(&mut self.accounts);
+        for address in self.storage.keys() {
+            if let hash_map::Entry::Vacant(entry) = accounts.entry(*address) {
+                let info = self.inner.database.account_info(address).cloned();
+                entry.insert(Account {
+                    original: info.clone(),
+                    present: info,
+                    ..Account::default()
+                });
             }
         }
-
-        // Fold per-account storage in, materializing an entry for any storage-only account whose
-        // info is unchanged by resolving it from the backing database.
-        let database = &self.inner.database;
-        for (&address, storage) in &self.storage {
-            let entry = changes.accounts.entry(address).or_insert_with(|| {
-                let info = database.account_info(&address).cloned();
-                AccountChange { original: info.clone(), current: info, ..AccountChange::default() }
-            });
-            entry.wipe_storage = storage.wiped;
-            entry.storage = storage.slots.iter().map(|(&key, slot)| (key, slot.value)).collect();
+        PendingState {
+            accounts,
+            storage: mem::take(&mut self.storage),
+            selfdestructs: mem::take(&mut self.inner.selfdestructs),
         }
-
-        changes
     }
 
     /// Accepts the current transaction's state transition into the accepted overlay.
@@ -854,13 +852,11 @@ impl<'a> State<'a> {
     /// transaction account/storage layers. It does not materialize [`StateChanges`], take logs, or
     /// write to the wrapped backing database.
     pub(crate) fn commit_transaction(&mut self) {
-        // When BAL construction is enabled, fold this transaction's full post-state -- including
-        // loaded-but-unchanged reads -- into the accepted-overlay database's builder before the
-        // overlay is advanced and cleared below.
-        if self.inner.database.bal_context.has_builder() {
-            let changes = self.build_state_changes();
-            self.inner.database.bal_context.commit_bal(&changes);
-        }
+        // When BAL construction is enabled, fold this transaction's pending post-state --
+        // including loaded-but-unchanged reads -- into the accepted-overlay database's builder
+        // before the overlay is advanced and cleared below. The overlay is folded directly; no
+        // `StateChanges` is materialized.
+        self.inner.database.bal_context.commit_pending(&self.accounts, &self.storage);
 
         for (&address, storage) in &self.storage {
             if storage.wiped {
@@ -906,4 +902,51 @@ impl<'a> State<'a> {
         self.accounts.clear();
         self.storage.clear();
     }
+}
+
+/// Builds an owned [`StateChanges`] transition from a transaction overlay.
+///
+/// `resolve_info` supplies the account info for a storage-only address (loaded storage whose
+/// account was never itself loaded) that has no entry in `accounts`.
+fn build_state_changes_from(
+    accounts: &AddressMap<Account>,
+    storage: &AddressMap<StorageOverlay>,
+    selfdestructs: &AddressSet,
+    mut resolve_info: impl FnMut(&Address) -> Option<AccountInfo>,
+) -> StateChanges {
+    let mut changes = StateChanges::default();
+
+    for (&address, entry) in accounts {
+        changes.accounts.insert(
+            address,
+            AccountChange {
+                original: entry.original.clone(),
+                current: entry.present.clone(),
+                storage: U256Map::default(),
+                wipe_storage: false,
+                // `just_created` is preserved across selfdestruct finalization, so it also
+                // covers accounts that were created and then destroyed in the same transaction.
+                created: entry.just_created,
+                selfdestructed: selfdestructs.contains(&address),
+            },
+        );
+        if let Some(account) = entry.present.as_ref()
+            && let Some((code_hash, code)) = State::changed_code(entry.code_changed, account)
+        {
+            changes.code.entry(code_hash).or_insert_with(|| code.clone());
+        }
+    }
+
+    // Fold per-account storage in, materializing an entry for any storage-only account whose
+    // info is unchanged by resolving it through `resolve_info`.
+    for (&address, overlay) in storage {
+        let entry = changes.accounts.entry(address).or_insert_with(|| {
+            let info = resolve_info(&address);
+            AccountChange { original: info.clone(), current: info, ..AccountChange::default() }
+        });
+        entry.wipe_storage = overlay.wiped;
+        entry.storage = overlay.slots.iter().map(|(&key, slot)| (key, slot.value)).collect();
+    }
+
+    changes
 }

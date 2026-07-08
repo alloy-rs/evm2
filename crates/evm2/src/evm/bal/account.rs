@@ -3,7 +3,7 @@
 use super::{BalError, BlockAccessIndex, writes::BalWrites};
 use crate::{
     bytecode::{Bytecode, BytecodeDecodeError},
-    evm::state::{AccountChange, AccountInfo, Tracked},
+    evm::state::{AccountChange, AccountInfo, StorageSlot, Tracked},
     interpreter::Word,
 };
 use alloc::vec::Vec;
@@ -355,6 +355,20 @@ impl StorageBal {
         }
     }
 
+    /// Update storage from an account's pending [`StorageSlot`] overlay: a changed slot records a
+    /// write at `bal_index`, a loaded-but-unchanged slot records a read.
+    #[inline]
+    pub fn update_pending(&mut self, bal_index: BlockAccessIndex, slots: &U256Map<StorageSlot>) {
+        self.storage.reserve(slots.len());
+        for (key, slot) in slots {
+            self.storage.entry(*key).or_default().update(
+                bal_index,
+                &slot.value.original,
+                slot.value.current,
+            );
+        }
+    }
+
     /// Update reads with new storage keys.
     ///
     /// It will expend inner map with new reads.
@@ -387,7 +401,7 @@ impl StorageBal {
         }
 
         reads.sort_unstable();
-        writes.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+        writes.sort_unstable_by_key(|&(key, _)| key);
 
         (reads, writes)
     }

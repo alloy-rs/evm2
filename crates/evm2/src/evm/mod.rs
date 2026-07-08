@@ -20,7 +20,9 @@
 //! - [`ExecutedTx::discard`] drops the writes and returns only the result;
 //! - [`ExecutedTx::discard_with`] streams writes to a [`StateChangeSink`] and then drops them;
 //! - [`ExecutedTx::detach`] materializes an owned [`TxResultWithState`] without accepting the
-//!   writes.
+//!   writes;
+//! - [`ExecutedTx::detach_pending`] moves the pending transaction overlay out as a
+//!   [`PendingState`] without accepting the writes.
 //!
 //! Dropping an unresolved [`ExecutedTx`] is equivalent to [`ExecutedTx::discard`], so transaction
 //! scratch cannot leak into later execution.
@@ -81,7 +83,7 @@
 //! block output:          transact -> commit_to -> BlockStateAccumulator
 //! traced simulation:     transact -> discard_with -> Sink
 //! materialized tx diff:  transact -> detach -> TxResultWithState
-//! parallel worker:       transact -> detach -> send owned diff
+//! parallel worker:       transact -> detach_pending -> send owned pending state
 //! ```
 //!
 //! Result-only execution:
@@ -172,9 +174,9 @@ pub use tx::{ExecutedTx, TxResult, TxResultWithState};
 mod state;
 pub use state::{
     AccountChange, AccountChangeRef, AccountHandle, AccountInfo, AccountInfoRef,
-    BlockStateAccumulator, JournalEntry, NoopChangeSink, State, StateChangeSink, StateChangeSource,
-    StateChanges, StateCheckpoint, StateInner, StorageChange, StorageHandle, StorageOverlay,
-    StorageSlot, StorageSlotHandle, Tee, Tracked,
+    BlockStateAccumulator, JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink,
+    StateChangeSource, StateChanges, StateCheckpoint, StateInner, StorageChange, StorageHandle,
+    StorageOverlay, StorageSlot, StorageSlotHandle, Tee, Tracked,
 };
 
 mod prewarm_set;
@@ -2675,6 +2677,39 @@ mod tests {
             .expect("storage slot should be present");
         assert_eq!(slot.original, Word::from(1));
         assert_eq!(slot.current, Word::from(7));
+        assert_eq!(
+            evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
+            Word::from(1)
+        );
+    }
+
+    #[test]
+    fn executed_transaction_detach_pending_matches_detach_and_commit_fold() {
+        // Commit with the builder enabled: the reference BAL fold.
+        let mut evm = lifecycle_evm();
+        evm.state.enable_bal_builder();
+        evm.state.set_bal_index(BlockAccessIndex::new(1));
+        let _ = evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").commit();
+        let committed_bal = evm.state.take_bal_builder().expect("builder was enabled");
+
+        // The same execution detached as a pending state.
+        let mut evm = lifecycle_evm();
+        let expected_changes =
+            evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").detach();
+        let mut evm = lifecycle_evm();
+        let (result, pending) = evm
+            .transact(&test_tx(7))
+            .expect("lifecycle transaction should execute")
+            .detach_pending();
+
+        assert_eq!(result, expected_changes.result);
+        // The pending state still materializes the change-set `detach` produces.
+        assert_eq!(pending.build_state_changes(), expected_changes.state_changes);
+        // Folding the pending state into a fresh BAL matches the commit-built BAL.
+        let mut rebuilt = Bal::new();
+        rebuilt.apply_pending_state(BlockAccessIndex::new(1), pending);
+        assert_eq!(rebuilt, committed_bal);
+        // Detaching accepted nothing into this EVM's overlay.
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
             Word::from(1)

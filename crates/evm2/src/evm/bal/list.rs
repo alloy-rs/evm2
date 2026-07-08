@@ -1,7 +1,7 @@
 //! The top-level Block Access List structure.
 
 use super::{AccountBal, BalError, BlockAccessIndex};
-use crate::evm::state::AccountChange;
+use crate::evm::state::{AccountInfo, PendingState};
 use alloc::vec::Vec;
 use alloy_eip7928::BlockAccessList as AlloyBal;
 use alloy_primitives::{Address, U256, map::AddressMap};
@@ -25,16 +25,52 @@ impl Bal {
         Self { accounts: AddressMap::default() }
     }
 
+    /// Extend BAL with a transaction's detached [`PendingState`] at `bal_index`.
+    ///
+    /// This is the fold [`Evm`](crate::Evm) applies on transaction commit when its BAL builder is
+    /// enabled: loaded-but-unchanged accounts and storage slots are recorded as reads, changed
+    /// ones as writes at `bal_index`. Apply pending states in transaction order, since writes
+    /// must be appended with ascending indices.
+    pub fn apply_pending_state(&mut self, bal_index: BlockAccessIndex, pending: PendingState) {
+        for (address, entry) in &pending.accounts {
+            self.update_pending_account(
+                bal_index,
+                *address,
+                entry.original.as_ref(),
+                entry.present.as_ref(),
+            );
+        }
+        for (address, overlay) in &pending.storage {
+            self.accounts
+                .entry(*address)
+                .or_default()
+                .storage
+                .update_pending(bal_index, &overlay.slots);
+        }
+    }
+
+    /// Extend BAL with one pending account overlay entry: its transaction-boundary original info
+    /// against its present info. An absent side is the non-existent (default) account, so an
+    /// account removed by the transaction records zeroed writes.
+    ///
+    /// A selfdestructed account needs no special-casing: transaction finalization already resolved
+    /// its present info to the EIP-8246 balance-only remnant or to a removed account, and its
+    /// destroyed storage writes surface as reads (execution-specs `destroy_storage`).
     #[inline]
-    /// Extend BAL with an [`AccountChange`] produced by transaction execution.
-    pub fn update_account(
+    pub(crate) fn update_pending_account(
         &mut self,
         bal_index: BlockAccessIndex,
         address: Address,
-        account: &AccountChange,
+        original: Option<&AccountInfo>,
+        present: Option<&AccountInfo>,
     ) {
         let bal_account = self.accounts.entry(address).or_default();
-        bal_account.update(bal_index, account);
+        let absent = AccountInfo::default();
+        bal_account.account_info.update(
+            bal_index,
+            original.unwrap_or(&absent),
+            present.unwrap_or(&absent),
+        );
     }
 
     /// Populate storage slot from BAL by account address.
@@ -163,7 +199,7 @@ mod tests {
         bytecode::Bytecode,
         evm::{
             bal::{AccountInfoBal, BalWrites, StorageBal},
-            state::{AccountChange, AccountInfo, Tracked},
+            state::{Account, AccountInfo, StorageOverlay, StorageSlot, Tracked},
         },
     };
     use alloc::{vec, vec::Vec};
@@ -172,7 +208,10 @@ mod tests {
         CodeChange as AlloyCodeChange, NonceChange as AlloyNonceChange,
         SlotChanges as AlloySlotChanges, StorageChange as AlloyStorageChange,
     };
-    use alloy_primitives::{B256, Bytes, U256, map::U256Map};
+    use alloy_primitives::{
+        B256, Bytes, U256,
+        map::{AddressSet, U256Map},
+    };
 
     fn code(byte: u8) -> (B256, Bytecode) {
         let bytecode = Bytecode::new_raw(vec![byte].into());
@@ -271,22 +310,32 @@ mod tests {
         );
     }
 
+    fn slot(original: U256, current: U256) -> StorageSlot {
+        StorageSlot { value: Tracked::from_parts(original, current), ..Default::default() }
+    }
+
     #[test]
-    fn update_account_builds_bal_from_account_change() {
+    fn apply_pending_state_builds_bal_from_pending_overlay() {
         let address = Address::with_last_byte(1);
 
         // A freshly created account: no original info, present nonce/balance set, and one changed
         // storage slot plus one loaded-but-unchanged (read) slot.
-        let mut change = AccountChange {
+        let account = Account {
             original: None,
-            current: Some(AccountInfo::default().with_nonce(1).with_balance(U256::from(100))),
+            present: Some(AccountInfo::default().with_nonce(1).with_balance(U256::from(100))),
             ..Default::default()
         };
-        change.storage.insert(U256::from(5), Tracked::from_parts(U256::ZERO, U256::from(42)));
-        change.storage.insert(U256::from(6), Tracked::new(U256::from(7)));
+        let mut overlay = StorageOverlay::default();
+        overlay.slots.insert(U256::from(5), slot(U256::ZERO, U256::from(42)));
+        overlay.slots.insert(U256::from(6), slot(U256::from(7), U256::from(7)));
+        let pending = PendingState {
+            accounts: AddressMap::from_iter([(address, account)]),
+            storage: AddressMap::from_iter([(address, overlay)]),
+            selfdestructs: Default::default(),
+        };
 
         let mut bal = Bal::new();
-        bal.update_account(idx(1), address, &change);
+        bal.apply_pending_state(idx(1), pending);
 
         let account = bal.accounts.get(&address).unwrap();
         assert_eq!(account.account_info.nonce.writes, vec![(idx(1), 1)]);
@@ -303,22 +352,28 @@ mod tests {
     }
 
     #[test]
-    fn update_account_selfdestruct_uses_finalized_post_state() {
+    fn apply_pending_state_selfdestruct_uses_finalized_post_state() {
         let address = Address::with_last_byte(1);
 
         // Transaction finalization already resolved the selfdestructed account: removed
-        // (`current: None`), storage overlay wiped, with a leftover loaded-but-unchanged slot
-        // surfacing as a read. The BAL derives from that diff without special-casing.
-        let mut change = AccountChange {
+        // (`present: None`), storage overlay wiped with the prior writes turned into
+        // loaded-but-unchanged slots surfacing as reads. The BAL derives from that overlay
+        // without special-casing.
+        let account = Account {
             original: Some(AccountInfo::default().with_balance(U256::from(100))),
-            current: None,
+            present: None,
             ..Default::default()
         };
-        change.mark_selfdestruct();
-        change.storage.insert(U256::from(5), Tracked::new(U256::from(42)));
+        let mut overlay = StorageOverlay { wiped: true, ..Default::default() };
+        overlay.slots.insert(U256::from(5), slot(U256::from(42), U256::from(42)));
+        let pending = PendingState {
+            accounts: AddressMap::from_iter([(address, account)]),
+            storage: AddressMap::from_iter([(address, overlay)]),
+            selfdestructs: AddressSet::from_iter([address]),
+        };
 
         let mut bal = Bal::new();
-        bal.update_account(idx(2), address, &change);
+        bal.apply_pending_state(idx(2), pending);
 
         let account = bal.accounts.get(&address).unwrap();
         // Balance goes to zero on removal.
