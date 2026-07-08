@@ -229,16 +229,16 @@ impl AccountInfoBal {
     ) -> bool {
         let mut changed = false;
         if let Some(nonce) = self.nonce.get(bal_index) {
-            account.nonce = nonce;
+            account.nonce = *nonce;
             changed = true;
         }
         if let Some(balance) = self.balance.get(bal_index) {
-            account.balance = balance;
+            account.balance = *balance;
             changed = true;
         }
-        if let Some(code) = self.code.get(bal_index) {
-            account.code_hash = code.0;
-            account.code = Some(code.1);
+        if let Some((code_hash, code)) = self.code.get(bal_index) {
+            account.code_hash = *code_hash;
+            account.code = Some(code.clone());
             changed = true;
         }
         changed
@@ -318,7 +318,7 @@ impl StorageBal {
         key: U256,
         bal_index: BlockAccessIndex,
     ) -> Result<Option<U256>, BalError> {
-        Ok(self.get_bal_writes(address, key)?.get(bal_index))
+        Ok(self.get_bal_writes(address, key)?.get(bal_index).copied())
     }
 
     /// Get storage writes from the builder.

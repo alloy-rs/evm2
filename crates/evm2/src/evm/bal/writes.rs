@@ -21,7 +21,7 @@ impl<T: PartialEq + Clone> BalWrites<T> {
 
     /// Linear search is used for small number of writes. It is faster than binary search.
     #[inline(never)]
-    pub fn get_linear_search(&self, bal_index: BlockAccessIndex) -> Option<T> {
+    pub fn get_linear_search(&self, bal_index: BlockAccessIndex) -> Option<&T> {
         // find the first write at or after bal_index; the value before it is the one visible.
         let i = self
             .writes
@@ -29,11 +29,11 @@ impl<T: PartialEq + Clone> BalWrites<T> {
             .position(|(index, _)| *index >= bal_index)
             .unwrap_or(self.writes.len());
         // only if i is not zero, we return the previous value.
-        (i != 0).then(|| self.writes[i - 1].1.clone())
+        (i != 0).then(|| &self.writes[i - 1].1)
     }
 
     /// Get value from BAL.
-    pub fn get(&self, bal_index: BlockAccessIndex) -> Option<T> {
+    pub fn get(&self, bal_index: BlockAccessIndex) -> Option<&T> {
         if self.writes.len() < 5 {
             return self.get_linear_search(bal_index);
         }
@@ -43,7 +43,7 @@ impl<T: PartialEq + Clone> BalWrites<T> {
             Err(i) => i,
         };
         // only if i is not zero, we return the previous value.
-        (i != 0).then(|| self.writes[i - 1].1.clone())
+        (i != 0).then(|| &self.writes[i - 1].1)
     }
 
     /// Extend the builder with another builder.
@@ -145,10 +145,10 @@ mod tests {
     fn test_get() {
         let bal_writes = BalWrites::new(vec![(idx(0), 1), (idx(1), 2), (idx(2), 3)]);
         assert_eq!(bal_writes.get(idx(0)), None);
-        assert_eq!(bal_writes.get(idx(1)), Some(1));
-        assert_eq!(bal_writes.get(idx(2)), Some(2));
-        assert_eq!(bal_writes.get(idx(3)), Some(3));
-        assert_eq!(bal_writes.get(idx(4)), Some(3));
+        assert_eq!(bal_writes.get(idx(1)), Some(&1));
+        assert_eq!(bal_writes.get(idx(2)), Some(&2));
+        assert_eq!(bal_writes.get(idx(3)), Some(&3));
+        assert_eq!(bal_writes.get(idx(4)), Some(&3));
     }
 
     fn get_binary_search(threshold: u64) {
@@ -165,14 +165,14 @@ mod tests {
 
         // Case 2: lookups for existing keys before the gap
         for i in 1..threshold - 1 {
-            assert_eq!(bal_writes.get(idx(i)), Some(i));
+            assert_eq!(bal_writes.get(idx(i)), Some(&i));
         }
 
         // Case 3: lookup at the skipped key — should return the previous value
-        assert_eq!(bal_writes.get(idx(threshold)), Some(threshold - 1));
+        assert_eq!(bal_writes.get(idx(threshold)), Some(&(threshold - 1)));
 
         // Case 4: lookup after the skipped key — should return the next valid value
-        assert_eq!(bal_writes.get(idx(threshold + 1)), Some(threshold + 1));
+        assert_eq!(bal_writes.get(idx(threshold + 1)), Some(&(threshold + 1)));
     }
 
     #[test]
