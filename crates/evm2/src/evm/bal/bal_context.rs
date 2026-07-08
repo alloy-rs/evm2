@@ -35,24 +35,24 @@ pub struct BalContext {
     /// `None` (the default) disables BAL-served reads, so reads go straight to the cache/database.
     /// When `Some`, reads resolve account info and storage from the BAL at [`Self::bal_index`].
     /// Shared via [`Arc`] so the same BAL can back multiple executions.
-    pub bal: Option<Arc<Bal>>,
+    bal: Option<Arc<Bal>>,
     /// Optional EIP-7928 Block Access List builder.
     ///
     /// `None` (the default) disables BAL construction so normal execution pays nothing. When
     /// `Some`, [`Self::commit_bal`] folds each committed transaction's post-state into it.
-    pub bal_builder: Option<Bal>,
+    bal_builder: Option<Bal>,
     /// Current EIP-7928 block access index used by both BAL-served reads and [`Self::commit_bal`].
     ///
     /// Callers bump this once per transaction (see [`Self::bump_bal_index`]) so each transaction's
     /// writes are recorded under, and reads served at, a distinct index.
-    pub bal_index: BlockAccessIndex,
+    bal_index: BlockAccessIndex,
     /// Whether reads not covered by the attached [`Self::bal`] fall back to the cache/database
     /// instead of returning [`ErrorCode::BAL_NOT_COVERED`].
     ///
     /// During block validation an access outside the BAL means the BAL is invalid, so this
     /// defaults to `false`. Enabling it allows executing transactions that are not part of the
     /// block (e.g. RPC calls) on top of BAL-positioned state.
-    pub allow_db_fallback: bool,
+    allow_db_fallback: bool,
     /// Last BAL lookup error, surfaced through [`Self::take_error`] after a read returns
     /// [`ErrorCode::BAL_NOT_COVERED`].
     bal_error: Option<BalError>,
@@ -135,6 +135,12 @@ impl BalContext {
     #[inline]
     pub const fn reset_bal_index(&mut self) {
         self.bal_index = BlockAccessIndex::PRE_EXECUTION;
+    }
+
+    /// Sets the block access index to the given value.
+    #[inline]
+    pub const fn set_bal_index(&mut self, index: BlockAccessIndex) {
+        self.bal_index = index;
     }
 
     /// Bumps the block access index by one.

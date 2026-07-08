@@ -2,6 +2,7 @@
 
 use super::{AccountBal, BalError, BlockAccessIndex};
 use crate::evm::state::AccountChange;
+use alloc::vec::Vec;
 use alloy_eip7928::BlockAccessList as AlloyBal;
 use alloy_primitives::{Address, U256, map::AddressMap};
 
@@ -22,85 +23,6 @@ impl Bal {
     /// Create a new BAL builder.
     pub fn new() -> Self {
         Self { accounts: AddressMap::default() }
-    }
-
-    /// Pretty print the entire BAL structure in a human-readable format.
-    #[cfg(feature = "std")]
-    pub fn pretty_print(&self) {
-        println!("=== Block Access List (BAL) ===");
-        println!("Total accounts: {}", self.accounts.len());
-        println!();
-
-        if self.accounts.is_empty() {
-            println!("(empty)");
-            return;
-        }
-
-        // Sort accounts by address before printing
-        let mut sorted_accounts: Vec<_> = self.accounts.iter().collect();
-        sorted_accounts.sort_unstable_by_key(|(address, _)| *address);
-
-        for (idx, (address, account)) in sorted_accounts.into_iter().enumerate() {
-            println!("Account #{idx} - Address: {address:?}");
-            println!("  Account Info:");
-
-            // Print nonce writes
-            if account.account_info.nonce.is_empty() {
-                println!("    Nonce: (read-only, no writes)");
-            } else {
-                println!("    Nonce writes:");
-                for (bal_index, nonce) in &account.account_info.nonce.writes {
-                    println!("      [{bal_index}] -> {nonce}");
-                }
-            }
-
-            // Print balance writes
-            if account.account_info.balance.is_empty() {
-                println!("    Balance: (read-only, no writes)");
-            } else {
-                println!("    Balance writes:");
-                for (bal_index, balance) in &account.account_info.balance.writes {
-                    println!("      [{bal_index}] -> {balance}");
-                }
-            }
-
-            // Print code writes
-            if account.account_info.code.is_empty() {
-                println!("    Code: (read-only, no writes)");
-            } else {
-                println!("    Code writes:");
-                for (bal_index, (code_hash, bytecode)) in &account.account_info.code.writes {
-                    println!(
-                        "      [{}] -> hash: {:?}, size: {} bytes",
-                        bal_index,
-                        code_hash,
-                        bytecode.len()
-                    );
-                }
-            }
-
-            // Print storage writes
-            println!("  Storage:");
-            if account.storage.storage.is_empty() {
-                println!("    (no storage slots)");
-            } else {
-                println!("    Total slots: {}", account.storage.storage.len());
-                for (storage_key, storage_writes) in &account.storage.storage {
-                    println!("    Slot: {storage_key:#x}");
-                    if storage_writes.is_empty() {
-                        println!("      (read-only, no writes)");
-                    } else {
-                        println!("      Writes:");
-                        for (bal_index, value) in &storage_writes.writes {
-                            println!("        [{bal_index}] -> {value:?}");
-                        }
-                    }
-                }
-            }
-
-            println!();
-        }
-        println!("=== End of BAL ===");
     }
 
     #[inline]
@@ -154,13 +76,93 @@ impl Bal {
     }
 }
 
+impl core::fmt::Display for Bal {
+    /// Pretty prints the entire BAL structure in a human-readable format.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        writeln!(f, "=== Block Access List (BAL) ===")?;
+        writeln!(f, "Total accounts: {}", self.accounts.len())?;
+        writeln!(f)?;
+
+        if self.accounts.is_empty() {
+            return writeln!(f, "(empty)");
+        }
+
+        // Sort accounts by address before printing
+        let mut sorted_accounts: Vec<_> = self.accounts.iter().collect();
+        sorted_accounts.sort_unstable_by_key(|(address, _)| *address);
+
+        for (idx, (address, account)) in sorted_accounts.into_iter().enumerate() {
+            writeln!(f, "Account #{idx} - Address: {address:?}")?;
+            writeln!(f, "  Account Info:")?;
+
+            // Print nonce writes
+            if account.account_info.nonce.is_empty() {
+                writeln!(f, "    Nonce: (read-only, no writes)")?;
+            } else {
+                writeln!(f, "    Nonce writes:")?;
+                for (bal_index, nonce) in &account.account_info.nonce.writes {
+                    writeln!(f, "      [{bal_index}] -> {nonce}")?;
+                }
+            }
+
+            // Print balance writes
+            if account.account_info.balance.is_empty() {
+                writeln!(f, "    Balance: (read-only, no writes)")?;
+            } else {
+                writeln!(f, "    Balance writes:")?;
+                for (bal_index, balance) in &account.account_info.balance.writes {
+                    writeln!(f, "      [{bal_index}] -> {balance}")?;
+                }
+            }
+
+            // Print code writes
+            if account.account_info.code.is_empty() {
+                writeln!(f, "    Code: (read-only, no writes)")?;
+            } else {
+                writeln!(f, "    Code writes:")?;
+                for (bal_index, (code_hash, bytecode)) in &account.account_info.code.writes {
+                    writeln!(
+                        f,
+                        "      [{}] -> hash: {:?}, size: {} bytes",
+                        bal_index,
+                        code_hash,
+                        bytecode.len()
+                    )?;
+                }
+            }
+
+            // Print storage writes
+            writeln!(f, "  Storage:")?;
+            if account.storage.storage.is_empty() {
+                writeln!(f, "    (no storage slots)")?;
+            } else {
+                writeln!(f, "    Total slots: {}", account.storage.storage.len())?;
+                for (storage_key, storage_writes) in &account.storage.storage {
+                    writeln!(f, "    Slot: {storage_key:#x}")?;
+                    if storage_writes.is_empty() {
+                        writeln!(f, "      (read-only, no writes)")?;
+                    } else {
+                        writeln!(f, "      Writes:")?;
+                        for (bal_index, value) in &storage_writes.writes {
+                            writeln!(f, "        [{bal_index}] -> {value:?}")?;
+                        }
+                    }
+                }
+            }
+
+            writeln!(f)?;
+        }
+        write!(f, "=== End of BAL ===")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
         bytecode::Bytecode,
         evm::{
-            db::bal::{AccountInfoBal, BalWrites, StorageBal},
+            bal::{AccountInfoBal, BalWrites, StorageBal},
             state::{AccountChange, AccountInfo, Tracked},
         },
     };

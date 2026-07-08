@@ -22,15 +22,14 @@ impl<T: PartialEq + Clone> BalWrites<T> {
     /// Linear search is used for small number of writes. It is faster than binary search.
     #[inline(never)]
     pub fn get_linear_search(&self, bal_index: BlockAccessIndex) -> Option<T> {
-        let mut last_item = None;
-        for (index, item) in self.writes.iter() {
-            // if index is greater than bal_index we return the last item.
-            if index >= &bal_index {
-                return last_item;
-            }
-            last_item = Some(item.clone());
-        }
-        last_item
+        // find the first write at or after bal_index; the value before it is the one visible.
+        let i = self
+            .writes
+            .iter()
+            .position(|(index, _)| *index >= bal_index)
+            .unwrap_or(self.writes.len());
+        // only if i is not zero, we return the previous value.
+        (i != 0).then(|| self.writes[i - 1].1.clone())
     }
 
     /// Get value from BAL.

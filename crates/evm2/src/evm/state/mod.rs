@@ -22,7 +22,8 @@ pub use tracked::Tracked;
 
 use super::{
     PrewarmSet,
-    db::{Bal, BlockAccessIndex, CacheDB, DbResult, DynDatabase, boxed_dyn_database},
+    bal::{Bal, BlockAccessIndex},
+    db::{CacheDB, DbResult, DynDatabase, boxed_dyn_database},
 };
 use crate::{
     ErrorCode, EvmFeatures, Version,

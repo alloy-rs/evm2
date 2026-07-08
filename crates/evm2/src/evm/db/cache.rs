@@ -1,11 +1,12 @@
 //! In-memory cache database.
 
-use super::{BalContext, DbResult, DynDatabase, EmptyDB};
+use super::{DbResult, DynDatabase, EmptyDB};
 use crate::{
     AnyError, ErrorCode,
     bytecode::Bytecode,
-    evm::state::{
-        AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange,
+    evm::{
+        bal::bal_context::BalContext,
+        state::{AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange},
     },
     interpreter::Word,
 };
@@ -312,8 +313,11 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interpreter::op;
-    use alloc::{string::ToString, vec};
+    use crate::{
+        evm::bal::{AccountBal, Bal, BalWrites, BlockAccessIndex},
+        interpreter::op,
+    };
+    use alloc::{string::ToString, sync::Arc, vec};
     use alloy_primitives::Bytes;
 
     #[derive(Debug, Default)]
@@ -389,9 +393,6 @@ mod tests {
         assert_eq!(cache.db.inner().block_hash_loads, 1);
     }
 
-    use crate::evm::db::bal::{AccountBal, Bal, BalWrites, BlockAccessIndex};
-    use alloc::sync::Arc;
-
     /// A counting cache with an attached read BAL positioned at index 2.
     fn cache_with_read_bal(
         address: Address,
@@ -401,7 +402,7 @@ mod tests {
         cache.bal_context = BalContext::new()
             .with_bal(Arc::new(read_bal(address)))
             .with_allow_db_fallback(allow_db_fallback);
-        cache.bal_context.bal_index = BlockAccessIndex::new(2);
+        cache.bal_context.set_bal_index(BlockAccessIndex::new(2));
         cache
     }
 

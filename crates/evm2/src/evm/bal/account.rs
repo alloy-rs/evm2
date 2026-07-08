@@ -87,7 +87,7 @@ impl AccountBal {
                 account_info: AccountInfoBal {
                     nonce: BalWrites::from(alloy_account.nonce_changes),
                     balance: BalWrites::from(alloy_account.balance_changes),
-                    code: BalWrites::try_from(alloy_account.code_changes)?,
+                    code: BalWrites::try_from(alloy_account.code_changes.as_slice())?,
                 },
                 storage: StorageBal::from_iter(
                     alloy_account

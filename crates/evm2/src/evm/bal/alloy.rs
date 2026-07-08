@@ -131,25 +131,6 @@ impl From<&[AlloyStorageChange]> for BalWrites<U256> {
     }
 }
 
-impl TryFrom<Vec<AlloyCodeChange>> for BalWrites<(B256, Bytecode)> {
-    type Error = BytecodeDecodeError;
-
-    fn try_from(value: Vec<AlloyCodeChange>) -> Result<Self, Self::Error> {
-        Ok(Self {
-            writes: value
-                .into_iter()
-                .map(|change| {
-                    // convert bytes to bytecode.
-                    Bytecode::new_raw_checked(change.new_code).map(|bytecode| {
-                        let hash = bytecode.hash_slow();
-                        (change.block_access_index, (hash, bytecode))
-                    })
-                })
-                .collect::<Result<Vec<_>, Self::Error>>()?,
-        })
-    }
-}
-
 impl TryFrom<&[AlloyCodeChange]> for BalWrites<(B256, Bytecode)> {
     type Error = BytecodeDecodeError;
 

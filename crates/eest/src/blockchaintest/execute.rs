@@ -816,11 +816,7 @@ fn blob_params_for_timestamp(timestamp: U256, spec: SpecId) -> BlobParams {
     const MAINNET_BPO1_TIMESTAMP: u64 = 1_765_290_071;
     const MAINNET_BPO2_TIMESTAMP: u64 = 1_767_747_671;
 
-    if spec.enables(SpecId::AMSTERDAM) {
-        // Amsterdam inherits the BPO2 blob schedule (execution-specs amsterdam
-        // `BLOB_SCHEDULE_TARGET` 14 / `BLOB_SCHEDULE_MAX` 21 / update fraction 11,684,671).
-        BlobParams::bpo2()
-    } else if timestamp.to::<u64>() >= MAINNET_BPO2_TIMESTAMP {
+    if spec.enables(SpecId::AMSTERDAM) || timestamp.to::<u64>() >= MAINNET_BPO2_TIMESTAMP {
         BlobParams::bpo2()
     } else if timestamp.to::<u64>() >= MAINNET_BPO1_TIMESTAMP {
         BlobParams::bpo1()

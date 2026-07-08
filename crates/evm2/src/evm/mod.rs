@@ -156,12 +156,14 @@ pub use system::{
 mod any;
 pub use any::NonStaticAny;
 
+pub mod bal;
+pub use bal::{AccountBal, AccountInfoBal, Bal, BalError, BalWrites, BlockAccessIndex, StorageBal};
+
 mod db;
 use db::boxed_dyn_database;
 pub use db::{
-    AccountBal, AccountInfoBal, AccountStorageCache, Bal, BalContext, BalError, BalWrites,
-    BlockAccessIndex, Cache, CacheDB, Database, Db, DbResult, DbStats, DbStatsCounts, DynDatabase,
-    EmptyDB, InMemoryDB, StorageBal, bal,
+    AccountStorageCache, Cache, CacheDB, Database, Db, DbResult, DbStats, DbStatsCounts,
+    DynDatabase, EmptyDB, InMemoryDB,
 };
 
 mod tx;

@@ -23,7 +23,6 @@ pub mod writes;
 
 pub use account::{AccountBal, AccountInfoBal, StorageBal};
 pub use alloy_eip7928::BlockAccessIndex;
-pub use bal_context::BalContext;
 pub use error::BalError;
 pub use list::Bal;
 pub use writes::BalWrites;
