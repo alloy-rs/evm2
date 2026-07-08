@@ -1,7 +1,7 @@
 //! Owned pending transaction state detached from the EVM.
 
-use super::{Account, StateChanges, StorageOverlay, build_state_changes_from};
-use alloy_primitives::map::{AddressMap, AddressSet};
+use super::{Account, AccountChange, State, StateChanges, StorageOverlay};
+use alloy_primitives::map::{AddressMap, AddressSet, U256Map};
 
 /// A transaction's finalized-but-uncommitted state, moved out of the EVM.
 ///
@@ -39,8 +39,44 @@ impl PendingState {
     /// so consumers persisting state changes keep working from a pending state that was detached
     /// for BAL construction.
     pub fn build_state_changes(&self) -> StateChanges {
-        // Storage-only accounts were materialized when the pending state was taken from the EVM,
-        // so the resolver is never consulted.
-        build_state_changes_from(&self.accounts, &self.storage, &self.selfdestructs, |_| None)
+        self.into()
+    }
+}
+
+impl From<&PendingState> for StateChanges {
+    fn from(pending: &PendingState) -> Self {
+        let mut changes = Self::default();
+
+        for (&address, entry) in &pending.accounts {
+            changes.accounts.insert(
+                address,
+                AccountChange {
+                    original: entry.original.clone(),
+                    current: entry.present.clone(),
+                    storage: U256Map::default(),
+                    wipe_storage: false,
+                    // `just_created` is preserved across selfdestruct finalization, so it also
+                    // covers accounts that were created and then destroyed in the same
+                    // transaction.
+                    created: entry.just_created,
+                    selfdestructed: pending.selfdestructs.contains(&address),
+                },
+            );
+            if let Some(account) = entry.present.as_ref()
+                && let Some((code_hash, code)) = State::changed_code(entry.code_changed, account)
+            {
+                changes.code.entry(code_hash).or_insert_with(|| code.clone());
+            }
+        }
+
+        // Fold per-account storage in. Storage-only accounts were materialized when the pending
+        // state was taken from the EVM, so the entry already exists and holds unchanged info.
+        for (&address, overlay) in &pending.storage {
+            let entry = changes.accounts.entry(address).or_default();
+            entry.wipe_storage = overlay.wiped;
+            entry.storage = overlay.slots.iter().map(|(&key, slot)| (key, slot.value)).collect();
+        }
+
+        changes
     }
 }

@@ -36,7 +36,7 @@ use crate::{
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
-    map::{AddressMap, AddressSet, U256Map, hash_map},
+    map::{AddressMap, AddressSet, hash_map},
 };
 use core::{
     mem,
@@ -812,13 +812,16 @@ impl<'a> State<'a> {
     /// take logs, or advance the overlay to the next transaction. Logs are execution output and are
     /// exposed through [`crate::TxResult`] and [`crate::TxResultWithState`].
     pub(crate) fn build_state_changes(&mut self) -> StateChanges {
-        let database = &self.inner.database;
-        build_state_changes_from(
-            &self.accounts,
-            &self.storage,
-            &self.inner.selfdestructs,
-            |address| database.account_info(address).cloned(),
-        )
+        // Detach the overlay to reuse the `From<&PendingState>` conversion, then put it back.
+        // The storage-only accounts materialized by the take stay behind as harmless read-cache
+        // entries (`original == present`).
+        let pending = self.take_pending_state();
+        let changes = StateChanges::from(&pending);
+        let PendingState { accounts, storage, selfdestructs } = pending;
+        self.accounts = accounts;
+        self.storage = storage;
+        self.inner.selfdestructs = selfdestructs;
+        changes
     }
 
     /// Detaches the transaction overlay into an owned [`PendingState`].
@@ -902,51 +905,4 @@ impl<'a> State<'a> {
         self.accounts.clear();
         self.storage.clear();
     }
-}
-
-/// Builds an owned [`StateChanges`] transition from a transaction overlay.
-///
-/// `resolve_info` supplies the account info for a storage-only address (loaded storage whose
-/// account was never itself loaded) that has no entry in `accounts`.
-fn build_state_changes_from(
-    accounts: &AddressMap<Account>,
-    storage: &AddressMap<StorageOverlay>,
-    selfdestructs: &AddressSet,
-    mut resolve_info: impl FnMut(&Address) -> Option<AccountInfo>,
-) -> StateChanges {
-    let mut changes = StateChanges::default();
-
-    for (&address, entry) in accounts {
-        changes.accounts.insert(
-            address,
-            AccountChange {
-                original: entry.original.clone(),
-                current: entry.present.clone(),
-                storage: U256Map::default(),
-                wipe_storage: false,
-                // `just_created` is preserved across selfdestruct finalization, so it also
-                // covers accounts that were created and then destroyed in the same transaction.
-                created: entry.just_created,
-                selfdestructed: selfdestructs.contains(&address),
-            },
-        );
-        if let Some(account) = entry.present.as_ref()
-            && let Some((code_hash, code)) = State::changed_code(entry.code_changed, account)
-        {
-            changes.code.entry(code_hash).or_insert_with(|| code.clone());
-        }
-    }
-
-    // Fold per-account storage in, materializing an entry for any storage-only account whose
-    // info is unchanged by resolving it through `resolve_info`.
-    for (&address, overlay) in storage {
-        let entry = changes.accounts.entry(address).or_insert_with(|| {
-            let info = resolve_info(&address);
-            AccountChange { original: info.clone(), current: info, ..AccountChange::default() }
-        });
-        entry.wipe_storage = overlay.wiped;
-        entry.storage = overlay.slots.iter().map(|(&key, slot)| (key, slot.value)).collect();
-    }
-
-    changes
 }

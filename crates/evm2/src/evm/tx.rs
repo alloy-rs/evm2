@@ -74,8 +74,10 @@ impl<T: EvmTypesHost> TxResult<T> {
     }
 }
 
+/// Whether the transaction scratch is still pending resolution. Not the owned
+/// [`PendingState`] a transaction detaches into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Scratch {
+enum StateStatus {
     Present,
     Cleared,
 }
@@ -91,15 +93,15 @@ enum Scratch {
 /// - [`Self::discard`] drops the state and keeps only the result;
 /// - [`Self::discard_with`] streams the state to an external sink and then drops it;
 /// - [`Self::detach`] materializes an owned [`StateChanges`] value without committing it;
-/// - [`Self::detach_pending`] moves the pending transaction overlay out as a [`PendingState`]
-///   without committing it.
+/// - [`Self::detach_pending`] moves the pending transaction overlay out as a
+///   [`PendingState`] without committing it.
 ///
 /// Dropping `ExecutedTx` without calling one of those methods is equivalent to [`Self::discard`].
 #[must_use = "executed transaction state must be committed, discarded, or detached"]
 pub struct ExecutedTx<'evm, 'host, T: EvmTypesHost = crate::BaseEvmTypes> {
     evm: &'evm mut Evm<'host, T>,
     result: Option<TxResult<T>>,
-    state: Scratch,
+    state: StateStatus,
 }
 
 impl<T: EvmTypesHost> fmt::Debug for ExecutedTx<'_, '_, T> {
@@ -120,13 +122,13 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
         Self {
             evm,
             result: Some(result),
-            state: if has_pending_state { Scratch::Present } else { Scratch::Cleared },
+            state: if has_pending_state { StateStatus::Present } else { StateStatus::Cleared },
         }
     }
 
     #[inline]
     fn has_pending_state(&self) -> bool {
-        self.state == Scratch::Present
+        self.state == StateStatus::Present
     }
 
     #[inline]
@@ -141,7 +143,7 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     fn clear_pending_state(&mut self) {
         if self.has_pending_state() {
             self.evm.state.clear_transaction_state();
-            self.state = Scratch::Cleared;
+            self.state = StateStatus::Cleared;
         }
     }
 
@@ -150,7 +152,7 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
         if self.has_pending_state() {
             self.evm.state.commit_transaction();
             self.evm.state.clear_transaction_state();
-            self.state = Scratch::Cleared;
+            self.state = StateStatus::Cleared;
         }
     }
 
@@ -159,7 +161,7 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
         if self.has_pending_state() {
             let changes = self.evm.state.build_state_changes();
             self.evm.state.clear_transaction_state();
-            self.state = Scratch::Cleared;
+            self.state = StateStatus::Cleared;
             changes
         } else {
             StateChanges::default()
@@ -247,16 +249,17 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     /// Detaches the transaction into its owned pending state without materializing
     /// [`StateChanges`].
     ///
-    /// The returned [`PendingState`] is the transaction overlay moved out of the EVM. It folds
-    /// into an EIP-7928 Block Access List via
+    /// The returned [`PendingState`] is the transaction overlay moved out of
+    /// the EVM. It folds into an EIP-7928 Block Access List via
     /// [`Bal::apply_pending_state`](crate::evm::Bal::apply_pending_state) and still materializes
-    /// the owned change-set via [`PendingState::build_state_changes`]. Like [`Self::detach`], the
-    /// detached state is not accepted into this EVM's internal overlay.
+    /// the owned change-set via
+    /// [`PendingState::build_state_changes`]. Like
+    /// [`Self::detach`], the detached state is not accepted into this EVM's internal overlay.
     pub fn detach_pending(mut self) -> (TxResult<T>, PendingState) {
         let pending = if self.has_pending_state() {
             let pending = self.evm.state.take_pending_state();
             self.evm.state.clear_transaction_state();
-            self.state = Scratch::Cleared;
+            self.state = StateStatus::Cleared;
             pending
         } else {
             PendingState::default()
