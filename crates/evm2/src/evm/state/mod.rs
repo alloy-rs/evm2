@@ -210,6 +210,13 @@ impl<'a> State<'a> {
         self.inner.database.bal_context.reset_bal_index();
     }
 
+    /// Sets the BAL block access index to the given value. Use to position reads at an arbitrary
+    /// transaction index, e.g. when executing on top of a read BAL mid-block.
+    #[inline]
+    pub const fn set_bal_index(&mut self, index: BlockAccessIndex) {
+        self.inner.database.bal_context.set_bal_index(index);
+    }
+
     /// Bumps the BAL block access index by one. Call once per transaction.
     #[inline]
     pub const fn bump_bal_index(&mut self) {
