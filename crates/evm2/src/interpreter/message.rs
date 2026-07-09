@@ -45,6 +45,11 @@ pub struct Message<T: EvmTypesHost = BaseEvmTypes> {
     /// [`GasTracker::merge_child_gas`](crate::interpreter::GasTracker::merge_child_gas).
     /// Zero for non-Amsterdam execution.
     pub reservoir: u64,
+    /// EIP-2780/EIP-8037 state gas charged on the first frame after transaction inclusion.
+    ///
+    /// Used for top-level CREATE state gas so failure can roll the charge back through normal
+    /// frame gas settlement. Zero for non-top-level messages and non-Amsterdam execution.
+    pub first_frame_state_gas: u64,
     /// Account whose context is being executed.
     pub destination: Address,
     /// Immediate caller.

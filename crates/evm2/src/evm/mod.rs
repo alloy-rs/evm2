@@ -1009,6 +1009,19 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             message.destination = Self::derive_create_address(&bytecode, message, nonce);
         }
 
+        if is_create && message.first_frame_state_gas != 0 {
+            let mut probe = GasTracker::new_with_regular_gas_and_reservoir(
+                message.gas_limit,
+                message.reservoir,
+            );
+            if let Err(stop) = self.spend_first_frame_create_state_gas(message, &mut probe) {
+                let mut result =
+                    Self::error_message_result(stop, message.gas_limit, message.reservoir);
+                result.gas.settle_gas(result.stop);
+                return result;
+            }
+        }
+
         let mut top_frame: Option<Box<Interpreter<'frame, 'a, T>>> = None;
         let frame = match self.current_frame {
             // SAFETY: The parent frame is suspended on this call stack for the duration of the
@@ -1088,6 +1101,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             false
         };
+        let mut frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        if let Err(stop) = self.spend_first_frame_create_state_gas(message, &mut frame_gas) {
+            self.state.rollback(checkpoint, self.features);
+            return Self::error_message_result(stop, message.gas_limit, message.reservoir);
+        }
+
         if let Err(stop) = self.create_message_account(message) {
             self.state.rollback(checkpoint, self.features);
             return Self::error_message_result(stop, message.gas_limit, message.reservoir);
@@ -1096,10 +1116,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         message.disable_precompiles = false;
         let input = core::mem::take(&mut message.input);
 
-        // Creates pay their NEW_ACCOUNT-equivalent state gas upfront via the tx-level
-        // `initial_state_gas`, so the create frame starts from the inherited gas as-is.
-        let frame_gas =
-            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
         let stop = self.run_interpreter(bytecode, tx_env, message, frame_gas);
         message.input = input;
 
@@ -1162,6 +1178,27 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             Ok(account) => Ok(account.get().is_some_and(|info| !info.is_empty())),
             Err(code) => Err(store_error!(self, code)),
         }
+    }
+
+    fn account_is_empty(&mut self, address: &Address) -> Result<bool, InstrStop> {
+        match self.state.account(address, false) {
+            Ok(account) => Ok(account.get().is_none_or(AccountInfo::is_empty)),
+            Err(code) => Err(store_error!(self, code)),
+        }
+    }
+
+    fn spend_first_frame_create_state_gas(
+        &mut self,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+    ) -> Result<(), InstrStop> {
+        if message.first_frame_state_gas == 0 {
+            return Ok(());
+        }
+        if self.account_is_empty(&message.destination)? {
+            gas.spend_state(message.first_frame_state_gas)?;
+        }
+        Ok(())
     }
 
     #[inline(never)]
@@ -1985,6 +2022,7 @@ mod tests {
             depth: 0,
             gas_limit: 30_000,
             reservoir: 0,
+            first_frame_state_gas: 0,
             destination: address,
             caller: Address::ZERO,
             input: Bytes::new(),
@@ -2472,6 +2510,7 @@ mod tests {
             depth: 67,
             gas_limit: 30_000,
             reservoir: 0,
+            first_frame_state_gas: 0,
             destination: address,
             caller: Address::with_last_byte(0x7a),
             input: Bytes::from_static(b"message input"),

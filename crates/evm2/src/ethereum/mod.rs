@@ -482,6 +482,7 @@ pub(crate) fn initial_message<'a, T: EvmTypes>(
     value: U256,
     gas_limit: u64,
     reservoir: u64,
+    first_frame_state_gas: u64,
 ) -> HandlerResult<(Bytecode, Message<T>)> {
     let r = match to {
         TxKind::Call(to) => {
@@ -491,6 +492,7 @@ pub(crate) fn initial_message<'a, T: EvmTypes>(
                 depth: 0,
                 gas_limit,
                 reservoir,
+                first_frame_state_gas: 0,
                 destination: to,
                 caller,
                 input: input.clone(),
@@ -511,6 +513,7 @@ pub(crate) fn initial_message<'a, T: EvmTypes>(
                 depth: 0,
                 gas_limit,
                 reservoir,
+                first_frame_state_gas,
                 destination: address,
                 caller,
                 input: input.clone(),
@@ -810,8 +813,11 @@ mod tests {
         registry::TxRegistry,
     };
     use alloc::vec;
-    use alloy_consensus::{TxEip2930, transaction::Recovered};
-    use alloy_eips::eip2930::AccessList;
+    use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy, transaction::Recovered};
+    use alloy_eips::{
+        eip2930::AccessList,
+        eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization},
+    };
 
     #[test]
     fn intrinsic_gas_charges_shanghai_create_initcode_words() {
@@ -912,6 +918,127 @@ mod tests {
             evm.transact(&tx).map(|executed| executed.discard()),
             Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
         );
+    }
+
+    #[test]
+    fn amsterdam_create_state_gas_out_of_gas_is_runtime_failure() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
+        );
+        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy {
+                gas_limit: 100_000,
+                to: TxKind::Create,
+                input: Bytes::from_static(&[op::STOP]),
+                ..Default::default()
+            },
+            caller,
+        ));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+
+        let result = evm.transact(&tx).expect("runtime OOG is an executed transaction").discard();
+        assert!(!result.status);
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert_eq!(result.tx_gas_used(), 100_000);
+    }
+
+    #[test]
+    fn amsterdam_typed_create_state_gas_out_of_gas_is_runtime_failure() {
+        let caller = Address::with_last_byte(0xaa);
+        let input = Bytes::from_static(&[op::STOP]);
+        let transactions = [
+            RecoveredTxEnvelope::Eip2930(Recovered::new_unchecked(
+                TxEip2930 {
+                    chain_id: 1,
+                    gas_limit: 100_000,
+                    to: TxKind::Create,
+                    input: input.clone(),
+                    ..Default::default()
+                },
+                caller,
+            )),
+            RecoveredTxEnvelope::Eip1559(Recovered::new_unchecked(
+                TxEip1559 {
+                    chain_id: 1,
+                    gas_limit: 100_000,
+                    to: TxKind::Create,
+                    input,
+                    ..Default::default()
+                },
+                caller,
+            )),
+        ];
+
+        for tx in transactions {
+            let mut database = InMemoryDB::default();
+            database.insert_account_info(
+                &caller,
+                AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
+            );
+            let mut evm = Evm::<BaseEvmTypes>::new(
+                SpecId::AMSTERDAM,
+                BlockEnv::default(),
+                ethereum_tx_registry(SpecId::AMSTERDAM),
+                database,
+                Precompiles::base(SpecId::AMSTERDAM),
+            );
+
+            let result =
+                evm.transact(&tx).expect("runtime OOG is an executed transaction").discard();
+            assert!(!result.status);
+            assert_eq!(result.stop, InstrStop::OutOfGas);
+            assert_eq!(result.tx_gas_used(), 100_000);
+        }
+    }
+
+    #[test]
+    fn amsterdam_authorization_state_gas_out_of_gas_is_runtime_failure() {
+        let caller = Address::with_last_byte(0xaa);
+        let authority = Address::with_last_byte(0xcc);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
+        );
+        let authorization = RecoveredAuthorization::new_unchecked(
+            Authorization {
+                chain_id: U256::from(1),
+                address: Address::with_last_byte(0xdd),
+                nonce: 0,
+            },
+            RecoveredAuthority::Valid(authority),
+        );
+        let tx = LazyTxEip7702::from_cached_recovered_authorizations(
+            TxEip7702 {
+                chain_id: 1,
+                gas_limit: 100_000,
+                to: Address::with_last_byte(0xbb),
+                ..Default::default()
+            },
+            vec![authorization],
+        );
+        let tx = RecoveredTxEnvelope::Eip7702(Recovered::new_unchecked(tx, caller));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+
+        let result = evm.transact(&tx).expect("runtime OOG is an executed transaction").discard();
+        assert!(!result.status);
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert_eq!(result.tx_gas_used(), 100_000);
     }
 
     #[test]
@@ -1081,6 +1208,7 @@ mod tests {
             &Bytes::new(),
             U256::ZERO,
             100_000,
+            0,
             0,
         )
         .unwrap();
