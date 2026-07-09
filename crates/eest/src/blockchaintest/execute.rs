@@ -578,17 +578,17 @@ fn block_gas_used(block: &Block) -> Option<U256> {
     block_header(block).map(|header| header.gas_used)
 }
 
-fn block_access_list(block: &Block) -> Option<&BlockAccessList> {
-    block.block_access_list.as_ref().or_else(|| {
-        block.rlp_decoded.as_ref().and_then(|decoded| decoded.block_access_list.as_ref())
-    })
-}
-
 fn block_header(block: &Block) -> Option<&BlockHeader> {
     block
         .block_header
         .as_ref()
         .or_else(|| block.rlp_decoded.as_ref().and_then(|decoded| decoded.block_header.as_ref()))
+}
+
+fn block_access_list(block: &Block) -> Option<&BlockAccessList> {
+    block.block_access_list.as_ref().or_else(|| {
+        block.rlp_decoded.as_ref().and_then(|decoded| decoded.block_access_list.as_ref())
+    })
 }
 
 fn block_transactions(block: &Block) -> &[Transaction] {
@@ -967,23 +967,19 @@ fn validate_post_state(
     Ok(())
 }
 
-/// Gas represented by one block-access-list item (an address or a unique storage key),
-/// bounding the list size by `block_gas_limit / BLOCK_ACCESS_LIST_ITEM_GAS` (EIP-7928,
-/// execution-specs `GAS_BLOCK_ACCESS_LIST_ITEM`).
-const BLOCK_ACCESS_LIST_ITEM_GAS: u64 = 2_000;
-
 /// Validates the block access list built during execution: the EIP-7928 item-count bound, the
 /// header's block access list hash, and a comparison against the fixture's expected list.
 ///
-/// Built and expected lists are canonicalized into EIP-7928 order ([`Bal::into_alloy_bal`]) before
-/// comparison so that map/insertion ordering never causes a spurious mismatch.
+/// Built and expected lists are canonicalized into EIP-7928 order (`From<Bal> for
+/// BlockAccessList`) before comparison so that map/insertion ordering never causes a spurious
+/// mismatch.
 fn check_block_access_list(
     block_index: usize,
     built: Bal,
     expected: &BlockAccessList,
     header: Option<&BlockHeader>,
 ) -> Result<(), TestErrorKind> {
-    let built = built.into_alloy_bal();
+    let built = BlockAccessList::from(built);
 
     // EIP-7928: the total number of items (addresses + unique storage keys) is bounded by the
     // block gas limit (execution-specs `validate_block_access_list_gas_limit`).
@@ -994,7 +990,7 @@ fn check_block_access_list(
                 1 + account.storage_changes.len() as u64 + account.storage_reads.len() as u64
             })
             .sum();
-        let max_items = header.gas_limit.saturating_to::<u64>() / BLOCK_ACCESS_LIST_ITEM_GAS;
+        let max_items = header.gas_limit.saturating_to::<u64>() / alloy_eip7928::ITEM_COST as u64;
         if items > max_items {
             return Err(TestErrorKind::UnexpectedFailure(format!(
                 "block access list exceeds gas limit: {items} items exceeds limit of {max_items}"
@@ -1014,7 +1010,7 @@ fn check_block_access_list(
     }
 
     let expected = match Bal::try_from(expected.clone()) {
-        Ok(bal) => bal.into_alloy_bal(),
+        Ok(bal) => BlockAccessList::from(bal),
         Err(_) => expected.clone(),
     };
     if built == expected {

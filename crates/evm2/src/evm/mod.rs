@@ -21,8 +21,8 @@
 //! - [`ExecutedTx::discard_with`] streams writes to a [`StateChangeSink`] and then drops them;
 //! - [`ExecutedTx::detach`] materializes an owned [`TxResultWithState`] without accepting the
 //!   writes;
-//! - [`ExecutedTx::detach_pending`] moves the pending transaction overlay out as a
-//!   [`PendingState`] without accepting the writes.
+//! - [`ExecutedTx::detach_pending`] moves the pending transaction overlay out as a [`PendingState`]
+//!   without accepting the writes.
 //!
 //! Dropping an unresolved [`ExecutedTx`] is equivalent to [`ExecutedTx::discard`], so transaction
 //! scratch cannot leak into later execution.
@@ -159,7 +159,10 @@ mod any;
 pub use any::NonStaticAny;
 
 pub mod bal;
-pub use bal::{AccountBal, AccountInfoBal, Bal, BalError, BalWrites, BlockAccessIndex, StorageBal};
+pub use bal::{
+    AccountBal, AccountInfoBal, Bal, BalChange, BalChanges, BalCodeChange, BalError,
+    BlockAccessIndex, StorageBal,
+};
 
 mod db;
 use db::boxed_dyn_database;
@@ -1867,6 +1870,7 @@ mod tests {
     };
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
+    use alloy_eip7928::{BlockAccessList, StorageChange};
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, TxKind, U256};
     use core::{
         error::Error,
@@ -2783,18 +2787,18 @@ mod tests {
             .get(&LIFECYCLE_STORAGE_KEY)
             .expect("lifecycle slot is in the bal");
         assert_eq!(
-            slot.writes,
+            slot.changes,
             vec![
-                (BlockAccessIndex::new(1), Word::from(7)),
-                (BlockAccessIndex::new(2), Word::from(9)),
+                StorageChange::new(BlockAccessIndex::new(1), Word::from(7)),
+                StorageChange::new(BlockAccessIndex::new(2), Word::from(9)),
             ]
         );
         // The account's info never changed, so it is recorded as reads (no info writes).
-        assert!(account.account_info.balance.writes.is_empty());
-        assert!(account.account_info.nonce.writes.is_empty());
+        assert!(account.account_info.balance.is_empty());
+        assert!(account.account_info.nonce.is_empty());
 
         // Taking the BAL yields a canonical EIP-7928 list and resets the index.
-        let alloy = evm.state.take_bal_builder().expect("bal is present").into_alloy_bal();
+        let alloy = BlockAccessList::from(evm.state.take_bal_builder().expect("bal is present"));
         assert_eq!(alloy.len(), 1);
         assert_eq!(alloy[0].address, LIFECYCLE_ACCOUNT);
         assert_eq!(alloy[0].storage_changes.len(), 1);

@@ -7,49 +7,28 @@ pub use alloy_eip7928::{
     StorageChange as AlloyStorageChange,
 };
 
-use super::{AccountBal, Bal, BalWrites};
-use crate::bytecode::{Bytecode, BytecodeDecodeError};
-use alloc::vec::Vec;
-use alloy_primitives::{B256, U256, map::AddressMap};
+use super::{AccountBal, Bal};
+use crate::bytecode::BytecodeDecodeError;
+use alloy_primitives::map::AddressMap;
 
-impl Bal {
-    /// Convert an EIP-7928 [`AlloyBal`] into a [`Bal`].
+impl TryFrom<&[AlloyAccountChanges]> for Bal {
+    type Error = BytecodeDecodeError;
+
+    /// Convert borrowed EIP-7928 [`AlloyAccountChanges`] into a [`Bal`] without consuming
+    /// the source.
     ///
     /// # Errors
     ///
     /// Returns [`BytecodeDecodeError`] if any account code change contains bytecode
-    /// rejected by [`Bytecode::new_raw_checked`]. This currently happens for malformed
-    /// EIP-7702 bytecode, such as bytes with the EIP-7702 magic prefix but an invalid
-    /// length or unsupported version.
+    /// rejected by [`Bytecode::new_raw_checked`](crate::bytecode::Bytecode::new_raw_checked). This
+    /// currently happens for malformed EIP-7702 bytecode, such as bytes with the EIP-7702 magic
+    /// prefix but an invalid length or unsupported version.
     #[inline]
-    pub fn try_from_alloy(alloy_bal: AlloyBal) -> Result<Self, BytecodeDecodeError> {
+    fn try_from(alloy_bal: &[AlloyAccountChanges]) -> Result<Self, Self::Error> {
         let mut accounts =
             AddressMap::with_capacity_and_hasher(alloy_bal.len(), Default::default());
         for alloy_account in alloy_bal {
-            let (address, account_bal) = AccountBal::try_from_alloy(alloy_account)?;
-            accounts.insert(address, account_bal);
-        }
-
-        Ok(Self { accounts })
-    }
-
-    /// Clone EIP-7928 [`AlloyAccountChanges`] into a [`Bal`] without consuming the source.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BytecodeDecodeError`] if any account code change contains bytecode
-    /// rejected by [`Bytecode::new_raw_checked`]. This currently happens for malformed
-    /// EIP-7702 bytecode, such as bytes with the EIP-7702 magic prefix but an invalid
-    /// length or unsupported version.
-    #[inline]
-    pub fn clone_from_alloy(
-        alloy_bal: &[AlloyAccountChanges],
-    ) -> Result<Self, BytecodeDecodeError> {
-        let mut accounts =
-            AddressMap::with_capacity_and_hasher(alloy_bal.len(), Default::default());
-        for alloy_account in alloy_bal {
-            let (address, account_bal) = AccountBal::clone_from_alloy(alloy_account)?;
-            accounts.insert(address, account_bal);
+            accounts.insert(alloy_account.address, AccountBal::try_from(alloy_account)?);
         }
 
         Ok(Self { accounts })
@@ -59,92 +38,23 @@ impl Bal {
 impl TryFrom<AlloyBal> for Bal {
     type Error = BytecodeDecodeError;
 
+    /// Convert an EIP-7928 [`AlloyBal`] into a [`Bal`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BytecodeDecodeError`] if any account code change contains bytecode
+    /// rejected by [`Bytecode::new_raw_checked`](crate::bytecode::Bytecode::new_raw_checked). This
+    /// currently happens for malformed EIP-7702 bytecode, such as bytes with the EIP-7702 magic
+    /// prefix but an invalid length or unsupported version.
     #[inline]
     fn try_from(alloy_bal: AlloyBal) -> Result<Self, Self::Error> {
-        Self::try_from_alloy(alloy_bal)
-    }
-}
-
-impl From<Vec<AlloyBalanceChange>> for BalWrites<U256> {
-    fn from(value: Vec<AlloyBalanceChange>) -> Self {
-        Self {
-            writes: value
-                .into_iter()
-                .map(|change| (change.block_access_index, change.post_balance))
-                .collect(),
+        let mut accounts =
+            AddressMap::with_capacity_and_hasher(alloy_bal.len(), Default::default());
+        for alloy_account in alloy_bal {
+            let address = alloy_account.address;
+            accounts.insert(address, AccountBal::try_from(alloy_account)?);
         }
-    }
-}
 
-impl From<&[AlloyBalanceChange]> for BalWrites<U256> {
-    fn from(value: &[AlloyBalanceChange]) -> Self {
-        Self {
-            writes: value
-                .iter()
-                .map(|change| (change.block_access_index, change.post_balance))
-                .collect(),
-        }
-    }
-}
-
-impl From<Vec<AlloyNonceChange>> for BalWrites<u64> {
-    fn from(value: Vec<AlloyNonceChange>) -> Self {
-        Self {
-            writes: value
-                .into_iter()
-                .map(|change| (change.block_access_index, change.new_nonce))
-                .collect(),
-        }
-    }
-}
-
-impl From<&[AlloyNonceChange]> for BalWrites<u64> {
-    fn from(value: &[AlloyNonceChange]) -> Self {
-        Self {
-            writes: value
-                .iter()
-                .map(|change| (change.block_access_index, change.new_nonce))
-                .collect(),
-        }
-    }
-}
-
-impl From<Vec<AlloyStorageChange>> for BalWrites<U256> {
-    fn from(value: Vec<AlloyStorageChange>) -> Self {
-        Self {
-            writes: value
-                .into_iter()
-                .map(|change| (change.block_access_index, change.new_value))
-                .collect(),
-        }
-    }
-}
-
-impl From<&[AlloyStorageChange]> for BalWrites<U256> {
-    fn from(value: &[AlloyStorageChange]) -> Self {
-        Self {
-            writes: value
-                .iter()
-                .map(|change| (change.block_access_index, change.new_value))
-                .collect(),
-        }
-    }
-}
-
-impl TryFrom<&[AlloyCodeChange]> for BalWrites<(B256, Bytecode)> {
-    type Error = BytecodeDecodeError;
-
-    fn try_from(value: &[AlloyCodeChange]) -> Result<Self, Self::Error> {
-        Ok(Self {
-            writes: value
-                .iter()
-                .map(|change| {
-                    Bytecode::new_raw_checked(change.new_code.clone()).map(|bytecode| {
-                        let hash = bytecode.hash_slow();
-                        (change.block_access_index, (hash, bytecode))
-                    })
-                })
-                .collect::<Result<Vec<_>, Self::Error>>()?,
-        })
+        Ok(Self { accounts })
     }
 }

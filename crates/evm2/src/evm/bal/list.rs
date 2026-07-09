@@ -3,7 +3,7 @@
 use super::{AccountBal, BalError, BlockAccessIndex};
 use crate::evm::state::{AccountInfo, PendingState};
 use alloc::vec::Vec;
-use alloy_eip7928::BlockAccessList as AlloyBal;
+use alloy_eip7928::{AccountChanges as AlloyAccountChanges, BlockAccessList as AlloyBal};
 use alloy_primitives::{Address, U256, map::AddressMap};
 
 /// BAL structure.
@@ -94,18 +94,23 @@ impl Bal {
         };
         Ok(())
     }
+}
 
+impl From<Bal> for AlloyBal {
     /// Consume `Bal` and create a canonical EIP-7928 [`AlloyBal`].
     ///
     /// The returned access list is ordered deterministically: accounts are
     /// sorted lexicographically by address, and each account's nested reads and
-    /// changes are sorted by [`AccountBal::into_alloy_account`].
+    /// changes are sorted by the [`AccountBal`] `From` conversion into
+    /// [`AlloyAccountChanges`].
     ///
     /// This matches the EIP-7928 ordering requirements:
     /// <https://eips.ethereum.org/EIPS/eip-7928#ordering-uniqueness-and-determinism>.
-    pub fn into_alloy_bal(self) -> AlloyBal {
-        let mut alloy_bal = AlloyBal::from_iter(
-            self.accounts.into_iter().map(|(address, account)| account.into_alloy_account(address)),
+    fn from(bal: Bal) -> Self {
+        let mut alloy_bal = Self::from_iter(
+            bal.accounts
+                .into_iter()
+                .map(|(address, account)| AlloyAccountChanges { address, ..account.into() }),
         );
         alloy_bal.sort_unstable_by_key(|a| a.address);
         alloy_bal
@@ -136,8 +141,8 @@ impl core::fmt::Display for Bal {
                 writeln!(f, "    Nonce: (read-only, no writes)")?;
             } else {
                 writeln!(f, "    Nonce writes:")?;
-                for (bal_index, nonce) in &account.account_info.nonce.writes {
-                    writeln!(f, "      [{bal_index}] -> {nonce}")?;
+                for change in &account.account_info.nonce.changes {
+                    writeln!(f, "      [{}] -> {}", change.block_access_index, change.new_nonce)?;
                 }
             }
 
@@ -146,8 +151,12 @@ impl core::fmt::Display for Bal {
                 writeln!(f, "    Balance: (read-only, no writes)")?;
             } else {
                 writeln!(f, "    Balance writes:")?;
-                for (bal_index, balance) in &account.account_info.balance.writes {
-                    writeln!(f, "      [{bal_index}] -> {balance}")?;
+                for change in &account.account_info.balance.changes {
+                    writeln!(
+                        f,
+                        "      [{}] -> {}",
+                        change.block_access_index, change.post_balance
+                    )?;
                 }
             }
 
@@ -156,11 +165,12 @@ impl core::fmt::Display for Bal {
                 writeln!(f, "    Code: (read-only, no writes)")?;
             } else {
                 writeln!(f, "    Code writes:")?;
-                for (bal_index, (code_hash, bytecode)) in &account.account_info.code.writes {
+                for change in &account.account_info.code.changes {
+                    let (code_hash, bytecode) = &change.code;
                     writeln!(
                         f,
                         "      [{}] -> hash: {:?}, size: {} bytes",
-                        bal_index,
+                        change.block_access_index,
                         code_hash,
                         bytecode.len()
                     )?;
@@ -173,14 +183,18 @@ impl core::fmt::Display for Bal {
                 writeln!(f, "    (no storage slots)")?;
             } else {
                 writeln!(f, "    Total slots: {}", account.storage.storage.len())?;
-                for (storage_key, storage_writes) in &account.storage.storage {
+                for (storage_key, slot_changes) in &account.storage.storage {
                     writeln!(f, "    Slot: {storage_key:#x}")?;
-                    if storage_writes.is_empty() {
+                    if slot_changes.is_empty() {
                         writeln!(f, "      (read-only, no writes)")?;
                     } else {
                         writeln!(f, "      Writes:")?;
-                        for (bal_index, value) in &storage_writes.writes {
-                            writeln!(f, "        [{bal_index}] -> {value:?}")?;
+                        for change in &slot_changes.changes {
+                            writeln!(
+                                f,
+                                "        [{}] -> {:?}",
+                                change.block_access_index, change.new_value
+                            )?;
                         }
                     }
                 }
@@ -198,7 +212,7 @@ mod tests {
     use crate::{
         bytecode::Bytecode,
         evm::{
-            bal::{AccountInfoBal, BalWrites, StorageBal},
+            bal::{AccountInfoBal, BalChanges, BalCodeChange, StorageBal},
             state::{Account, AccountInfo, StorageOverlay, StorageSlot, Tracked},
         },
     };
@@ -229,37 +243,55 @@ mod tests {
 
         let unordered_account = AccountBal {
             account_info: AccountInfoBal {
-                nonce: BalWrites { writes: vec![(idx(9), 90), (idx(4), 40)] },
-                balance: BalWrites {
-                    writes: vec![(idx(5), U256::from(50)), (idx(2), U256::from(20))],
+                nonce: BalChanges {
+                    changes: vec![
+                        AlloyNonceChange::new(idx(9), 90),
+                        AlloyNonceChange::new(idx(4), 40),
+                    ],
                 },
-                code: BalWrites { writes: vec![(idx(7), code(7)), (idx(3), code(3))] },
+                balance: BalChanges {
+                    changes: vec![
+                        AlloyBalanceChange::new(idx(5), U256::from(50)),
+                        AlloyBalanceChange::new(idx(2), U256::from(20)),
+                    ],
+                },
+                code: BalChanges {
+                    changes: vec![
+                        BalCodeChange::new(idx(7), code(7)),
+                        BalCodeChange::new(idx(3), code(3)),
+                    ],
+                },
             },
             storage: StorageBal {
                 storage: U256Map::from_iter([
                     (
                         U256::from(4),
-                        BalWrites {
-                            writes: vec![(idx(8), U256::from(80)), (idx(6), U256::from(60))],
+                        BalChanges {
+                            changes: vec![
+                                AlloyStorageChange::new(idx(8), U256::from(80)),
+                                AlloyStorageChange::new(idx(6), U256::from(60)),
+                            ],
                         },
                     ),
-                    (U256::from(1), BalWrites { writes: vec![] }),
+                    (U256::from(1), BalChanges::default()),
                     (
                         U256::from(2),
-                        BalWrites {
-                            writes: vec![(idx(3), U256::from(30)), (idx(1), U256::from(10))],
+                        BalChanges {
+                            changes: vec![
+                                AlloyStorageChange::new(idx(3), U256::from(30)),
+                                AlloyStorageChange::new(idx(1), U256::from(10)),
+                            ],
                         },
                     ),
-                    (U256::from(3), BalWrites { writes: vec![] }),
+                    (U256::from(3), BalChanges::default()),
                 ]),
             },
         };
 
-        let alloy_bal = Bal::from_iter([
+        let alloy_bal = AlloyBal::from(Bal::from_iter([
             (high_address, AccountBal::default()),
             (low_address, unordered_account),
-        ])
-        .into_alloy_bal();
+        ]));
 
         assert_eq!(
             alloy_bal.iter().map(|account| account.address).collect::<Vec<_>>(),
@@ -338,17 +370,20 @@ mod tests {
         bal.apply_pending_state(idx(1), pending);
 
         let account = bal.accounts.get(&address).unwrap();
-        assert_eq!(account.account_info.nonce.writes, vec![(idx(1), 1)]);
-        assert_eq!(account.account_info.balance.writes, vec![(idx(1), U256::from(100))]);
+        assert_eq!(account.account_info.nonce.changes, vec![AlloyNonceChange::new(idx(1), 1)]);
+        assert_eq!(
+            account.account_info.balance.changes,
+            vec![AlloyBalanceChange::new(idx(1), U256::from(100))]
+        );
         // No code change, so no code writes.
-        assert!(account.account_info.code.writes.is_empty());
+        assert!(account.account_info.code.is_empty());
         // Changed slot recorded as a write.
         assert_eq!(
-            account.storage.storage.get(&U256::from(5)).unwrap().writes,
-            vec![(idx(1), U256::from(42))]
+            account.storage.storage.get(&U256::from(5)).unwrap().changes,
+            vec![AlloyStorageChange::new(idx(1), U256::from(42))]
         );
         // Loaded-but-unchanged slot recorded as a read (empty writes).
-        assert!(account.storage.storage.get(&U256::from(6)).unwrap().writes.is_empty());
+        assert!(account.storage.storage.get(&U256::from(6)).unwrap().is_empty());
     }
 
     #[test]
@@ -377,9 +412,12 @@ mod tests {
 
         let account = bal.accounts.get(&address).unwrap();
         // Balance goes to zero on removal.
-        assert_eq!(account.account_info.balance.writes, vec![(idx(2), U256::ZERO)]);
+        assert_eq!(
+            account.account_info.balance.changes,
+            vec![AlloyBalanceChange::new(idx(2), U256::ZERO)]
+        );
         // The loaded-but-unchanged slot stays a read (empty writes).
-        assert!(account.storage.storage.get(&U256::from(5)).unwrap().writes.is_empty());
+        assert!(account.storage.storage.get(&U256::from(5)).unwrap().is_empty());
     }
 
     #[test]
@@ -392,15 +430,15 @@ mod tests {
             ..Default::default()
         }];
 
-        let bal = Bal::try_from_alloy(alloy_bal).unwrap();
+        let bal = Bal::try_from(alloy_bal).unwrap();
         let account = bal.accounts.get(&address).unwrap();
-        let (_, bytecode) = &account.account_info.code.writes[0].1;
+        let (_, bytecode) = &account.account_info.code.changes[0].code;
 
         assert_eq!(bytecode.original_bytes(), code_bytes);
     }
 
     #[test]
-    fn clone_from_alloy_matches_owned_conversion() {
+    fn try_from_alloy_ref_matches_owned_conversion() {
         let address = Address::with_last_byte(1);
         let code_bytes = Bytes::from_static(&[0x60, 0x00]);
         let alloy_bal = vec![AlloyAccountChanges {
@@ -415,8 +453,8 @@ mod tests {
             code_changes: vec![AlloyCodeChange::new(idx(4), code_bytes.clone())],
         }];
 
-        let borrowed = Bal::clone_from_alloy(&alloy_bal).unwrap();
-        let owned = Bal::try_from_alloy(alloy_bal.clone()).unwrap();
+        let borrowed = Bal::try_from(alloy_bal.as_slice()).unwrap();
+        let owned = Bal::try_from(alloy_bal.clone()).unwrap();
 
         assert_eq!(borrowed, owned);
         assert_eq!(alloy_bal[0].code_changes[0].new_code(), &code_bytes);
@@ -430,17 +468,17 @@ mod tests {
             ..Default::default()
         }];
 
-        assert!(Bal::try_from_alloy(alloy_bal).is_err());
+        assert!(Bal::try_from(alloy_bal).is_err());
     }
 
     #[test]
-    fn clone_from_alloy_errors_on_invalid_code_change() {
+    fn try_from_alloy_ref_errors_on_invalid_code_change() {
         let alloy_bal = vec![AlloyAccountChanges {
             address: Address::with_last_byte(1),
             code_changes: vec![AlloyCodeChange::new(idx(1), vec![0xef, 0x01, 0xde].into())],
             ..Default::default()
         }];
 
-        assert!(Bal::clone_from_alloy(&alloy_bal).is_err());
+        assert!(Bal::try_from(alloy_bal.as_slice()).is_err());
     }
 }

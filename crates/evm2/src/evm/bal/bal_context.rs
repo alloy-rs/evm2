@@ -26,8 +26,8 @@ type BalResult<T> = Result<T, BalError>;
 ///   [`Self::populate_bal_account`] and [`Self::bal_storage`] serve account info and storage from
 ///   it at [`Self::bal_index`] (post-state per transaction). A read not covered by the BAL is
 ///   either an error or falls through to the database, depending on [`Self::allow_db_fallback`].
-/// - **Writes** ([`Self::bal_builder`]): when enabled, `Self::commit_pending` folds each
-///   committed transaction's pending post-state into the builder at [`Self::bal_index`].
+/// - **Writes** ([`Self::bal_builder`]): when enabled, `Self::commit_pending` folds each committed
+///   transaction's pending post-state into the builder at [`Self::bal_index`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BalContext {
     /// Optional attached EIP-7928 BAL consulted on reads.
@@ -217,7 +217,7 @@ impl BalContext {
     /// index. Returns `None` when BAL construction is disabled.
     #[inline]
     pub fn take_alloy_bal(&mut self) -> Option<BlockAccessList> {
-        self.take_bal_builder().map(Bal::into_alloy_bal)
+        self.take_bal_builder().map(BlockAccessList::from)
     }
 
     /// Resolves `address` in the attached read BAL.
@@ -276,8 +276,8 @@ impl BalContext {
             return Err(BalError::AccountNotFound { address: *address });
         };
 
-        match bal_account.storage.get_bal_writes(address, *key) {
-            Ok(writes) => Ok(writes.get(self.bal_index).copied()),
+        match bal_account.storage.get_bal_changes(address, *key) {
+            Ok(changes) => Ok(changes.get(self.bal_index).copied()),
             Err(BalError::SlotNotFound { .. }) if self.allow_db_fallback => Ok(None),
             Err(err) => Err(err),
         }

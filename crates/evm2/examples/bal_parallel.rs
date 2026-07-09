@@ -14,6 +14,7 @@
 //! change-set persistence consumers (e.g. reth) apply to the database.
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
+use alloy_eip7928::BalanceChange;
 use alloy_primitives::{Address, TxKind, U256};
 use evm2::{
     BaseEvmTypes, Evm, PendingState, Precompiles, SpecId, TxResult,
@@ -36,8 +37,11 @@ fn main() {
     // `bal_build` example). A validator would instead decode it from the block body.
     let bal = build_bal(&transactions);
     assert_eq!(
-        bal.accounts.get(&ALICE).unwrap().account_info.balance.writes,
-        vec![(idx(1), U256::from(1_000_000)), (idx(2), U256::from(600_000))]
+        bal.accounts.get(&ALICE).unwrap().account_info.balance.changes,
+        vec![
+            BalanceChange::new(idx(1), U256::from(1_000_000)),
+            BalanceChange::new(idx(2), U256::from(600_000)),
+        ]
     );
 
     // Without the BAL, transaction 1 on pre-block state fails: ALICE has no funds yet.

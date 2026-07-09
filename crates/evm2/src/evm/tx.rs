@@ -93,8 +93,8 @@ enum StateStatus {
 /// - [`Self::discard`] drops the state and keeps only the result;
 /// - [`Self::discard_with`] streams the state to an external sink and then drops it;
 /// - [`Self::detach`] materializes an owned [`StateChanges`] value without committing it;
-/// - [`Self::detach_pending`] moves the pending transaction overlay out as a
-///   [`PendingState`] without committing it.
+/// - [`Self::detach_pending`] moves the pending transaction overlay out as a [`PendingState`]
+///   without committing it.
 ///
 /// Dropping `ExecutedTx` without calling one of those methods is equivalent to [`Self::discard`].
 #[must_use = "executed transaction state must be committed, discarded, or detached"]

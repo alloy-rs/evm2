@@ -11,8 +11,8 @@ use alloy_primitives::map::{AddressMap, AddressSet, U256Map};
 /// value. Two consumers draw from it:
 ///
 /// - [`Bal::apply_pending_state`](crate::evm::Bal::apply_pending_state) folds it into an EIP-7928
-///   Block Access List, recording loaded-but-unchanged entries as reads and changed ones as
-///   writes — the same fold the EVM applies on transaction commit when its builder is enabled.
+///   Block Access List, recording loaded-but-unchanged entries as reads and changed ones as writes
+///   — the same fold the EVM applies on transaction commit when its builder is enabled.
 /// - [`Self::build_state_changes`] materializes the owned [`StateChanges`] change-set that
 ///   persistence consumers (e.g. reth) apply to the database.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

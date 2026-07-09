@@ -7,7 +7,8 @@
 //!
 //! - [`BlockAccessIndex`]: block access index
 //! - [`Bal`]: Main BAL structure containing a map of accounts
-//! - [`BalWrites<T>`]: Array of (index, value) pairs representing sequential writes to a state item
+//! - [`BalChanges<T>`]: Chronological list of [`BalChange`] items recording sequential writes to a
+//!   state item
 //! - [`AccountBal`]: Complete BAL structure for an account (balance, nonce, code, and storage)
 //! - [`AccountInfoBal`]: Account info BAL data (nonce, balance, code)
 //! - [`StorageBal`]: Storage-level BAL data for an account
@@ -17,12 +18,12 @@
 pub mod account;
 pub mod alloy;
 pub mod bal_context;
+pub mod changes;
 pub mod error;
 pub mod list;
-pub mod writes;
 
 pub use account::{AccountBal, AccountInfoBal, StorageBal};
 pub use alloy_eip7928::BlockAccessIndex;
+pub use changes::{BalChange, BalChanges, BalCodeChange};
 pub use error::BalError;
 pub use list::Bal;
-pub use writes::BalWrites;
