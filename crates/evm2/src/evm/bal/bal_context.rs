@@ -200,7 +200,7 @@ impl BalContext {
     /// index. Returns `None` when BAL construction is disabled.
     #[inline]
     pub fn take_alloy_bal(&mut self) -> Option<BlockAccessList> {
-        self.take_bal_builder().map(Bal::into_alloy_bal)
+        self.take_bal_builder().map(BlockAccessList::from)
     }
 
     /// Resolves `address` in the attached read BAL.

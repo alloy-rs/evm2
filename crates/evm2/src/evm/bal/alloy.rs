@@ -13,26 +13,6 @@ use alloc::vec::Vec;
 use alloy_primitives::{B256, U256, map::AddressMap};
 
 impl Bal {
-    /// Convert an EIP-7928 [`AlloyBal`] into a [`Bal`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BytecodeDecodeError`] if any account code change contains bytecode
-    /// rejected by [`Bytecode::new_raw_checked`]. This currently happens for malformed
-    /// EIP-7702 bytecode, such as bytes with the EIP-7702 magic prefix but an invalid
-    /// length or unsupported version.
-    #[inline]
-    pub fn try_from_alloy(alloy_bal: AlloyBal) -> Result<Self, BytecodeDecodeError> {
-        let mut accounts =
-            AddressMap::with_capacity_and_hasher(alloy_bal.len(), Default::default());
-        for alloy_account in alloy_bal {
-            let (address, account_bal) = AccountBal::try_from_alloy(alloy_account)?;
-            accounts.insert(address, account_bal);
-        }
-
-        Ok(Self { accounts })
-    }
-
     /// Clone EIP-7928 [`AlloyAccountChanges`] into a [`Bal`] without consuming the source.
     ///
     /// # Errors
@@ -59,9 +39,24 @@ impl Bal {
 impl TryFrom<AlloyBal> for Bal {
     type Error = BytecodeDecodeError;
 
+    /// Convert an EIP-7928 [`AlloyBal`] into a [`Bal`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BytecodeDecodeError`] if any account code change contains bytecode
+    /// rejected by [`Bytecode::new_raw_checked`]. This currently happens for malformed
+    /// EIP-7702 bytecode, such as bytes with the EIP-7702 magic prefix but an invalid
+    /// length or unsupported version.
     #[inline]
     fn try_from(alloy_bal: AlloyBal) -> Result<Self, Self::Error> {
-        Self::try_from_alloy(alloy_bal)
+        let mut accounts =
+            AddressMap::with_capacity_and_hasher(alloy_bal.len(), Default::default());
+        for alloy_account in alloy_bal {
+            let address = alloy_account.address;
+            accounts.insert(address, AccountBal::try_from(alloy_account)?);
+        }
+
+        Ok(Self { accounts })
     }
 }
 

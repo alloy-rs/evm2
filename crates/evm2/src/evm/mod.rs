@@ -1865,6 +1865,7 @@ mod tests {
     };
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
+    use alloy_eip7928::BlockAccessList;
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, TxKind, U256};
     use core::{
         error::Error,
@@ -2759,7 +2760,7 @@ mod tests {
         assert!(account.account_info.nonce.writes.is_empty());
 
         // Taking the BAL yields a canonical EIP-7928 list and resets the index.
-        let alloy = evm.state.take_bal_builder().expect("bal is present").into_alloy_bal();
+        let alloy = BlockAccessList::from(evm.state.take_bal_builder().expect("bal is present"));
         assert_eq!(alloy.len(), 1);
         assert_eq!(alloy[0].address, LIFECYCLE_ACCOUNT);
         assert_eq!(alloy[0].storage_changes.len(), 1);

@@ -16,7 +16,6 @@ use alloy_primitives::{
     Address, B256, U256,
     map::{U256Map, hash_map::Entry},
 };
-use core::ops::{Deref, DerefMut};
 
 /// Account BAL structure.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -25,20 +24,6 @@ pub struct AccountBal {
     pub account_info: AccountInfoBal,
     /// Storage bal.
     pub storage: StorageBal,
-}
-
-impl Deref for AccountBal {
-    type Target = AccountInfoBal;
-
-    fn deref(&self) -> &Self::Target {
-        &self.account_info
-    }
-}
-
-impl DerefMut for AccountBal {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.account_info
-    }
 }
 
 impl AccountBal {
@@ -67,42 +52,6 @@ impl AccountBal {
         self.account_info.update(bal_index, &original, &present);
 
         self.storage.update(bal_index, &account.storage);
-    }
-
-    /// Create an account BAL from EIP-7928 [`AlloyAccountChanges`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BytecodeDecodeError`] if any code change contains bytecode rejected by
-    /// [`Bytecode::new_raw_checked`]. This currently happens for malformed EIP-7702
-    /// bytecode, such as bytes with the EIP-7702 magic prefix but an invalid length or
-    /// unsupported version.
-    #[inline]
-    pub fn try_from_alloy(
-        alloy_account: AlloyAccountChanges,
-    ) -> Result<(Address, Self), BytecodeDecodeError> {
-        Ok((
-            alloy_account.address,
-            Self {
-                account_info: AccountInfoBal {
-                    nonce: BalWrites::from(alloy_account.nonce_changes),
-                    balance: BalWrites::from(alloy_account.balance_changes),
-                    code: BalWrites::try_from(alloy_account.code_changes.as_slice())?,
-                },
-                storage: StorageBal::from_iter(
-                    alloy_account
-                        .storage_changes
-                        .into_iter()
-                        .chain(
-                            alloy_account
-                                .storage_reads
-                                .into_iter()
-                                .map(|key| AlloySlotChanges::new(key, Default::default())),
-                        )
-                        .map(|slot| (slot.slot, BalWrites::from(slot.changes))),
-                ),
-            },
-        ))
     }
 
     /// Clone an account BAL from EIP-7928 [`AlloyAccountChanges`] without consuming the source.
@@ -140,9 +89,15 @@ impl AccountBal {
             },
         ))
     }
+}
 
+impl From<AccountBal> for AlloyAccountChanges {
     /// Consumes `AccountBal` and converts it into canonical EIP-7928
     /// [`AlloyAccountChanges`].
+    ///
+    /// The account address is not part of the source; the returned changes carry
+    /// [`Address::ZERO`] and the caller is expected to set
+    /// [`AlloyAccountChanges::address`].
     ///
     /// The returned account changes are ordered deterministically: storage reads
     /// and storage changes are sorted lexicographically by slot key, changes
@@ -152,8 +107,8 @@ impl AccountBal {
     /// This matches the EIP-7928 ordering requirements:
     /// <https://eips.ethereum.org/EIPS/eip-7928#ordering-uniqueness-and-determinism>.
     #[inline]
-    pub fn into_alloy_account(self, address: Address) -> AlloyAccountChanges {
-        let (storage_reads, writes) = self.storage.into_vecs();
+    fn from(account: AccountBal) -> Self {
+        let (storage_reads, writes) = account.storage.into_vecs();
         let storage_changes = writes
             .into_iter()
             .map(|(key, value)| {
@@ -168,7 +123,7 @@ impl AccountBal {
             })
             .collect::<Vec<_>>();
 
-        let mut balance_changes = self
+        let mut balance_changes = account
             .account_info
             .balance
             .writes
@@ -177,7 +132,7 @@ impl AccountBal {
             .collect::<Vec<_>>();
         balance_changes.sort_unstable_by_key(|change| change.block_access_index);
 
-        let mut nonce_changes = self
+        let mut nonce_changes = account
             .account_info
             .nonce
             .writes
@@ -186,7 +141,7 @@ impl AccountBal {
             .collect::<Vec<_>>();
         nonce_changes.sort_unstable_by_key(|change| change.block_access_index);
 
-        let mut code_changes = self
+        let mut code_changes = account
             .account_info
             .code
             .writes
@@ -195,14 +150,52 @@ impl AccountBal {
             .collect::<Vec<_>>();
         code_changes.sort_unstable_by_key(|change| change.block_access_index);
 
-        AlloyAccountChanges {
-            address,
+        Self {
+            address: Address::ZERO,
             storage_changes,
             storage_reads,
             balance_changes,
             nonce_changes,
             code_changes,
         }
+    }
+}
+
+impl TryFrom<AlloyAccountChanges> for AccountBal {
+    type Error = BytecodeDecodeError;
+
+    /// Create an account BAL from EIP-7928 [`AlloyAccountChanges`].
+    ///
+    /// The account address is not part of the result; read it from
+    /// [`AlloyAccountChanges::address`] before converting.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BytecodeDecodeError`] if any code change contains bytecode rejected by
+    /// [`Bytecode::new_raw_checked`]. This currently happens for malformed EIP-7702
+    /// bytecode, such as bytes with the EIP-7702 magic prefix but an invalid length or
+    /// unsupported version.
+    #[inline]
+    fn try_from(alloy_account: AlloyAccountChanges) -> Result<Self, Self::Error> {
+        Ok(Self {
+            account_info: AccountInfoBal {
+                nonce: BalWrites::from(alloy_account.nonce_changes),
+                balance: BalWrites::from(alloy_account.balance_changes),
+                code: BalWrites::try_from(alloy_account.code_changes.as_slice())?,
+            },
+            storage: StorageBal::from_iter(
+                alloy_account
+                    .storage_changes
+                    .into_iter()
+                    .chain(
+                        alloy_account
+                            .storage_reads
+                            .into_iter()
+                            .map(|key| AlloySlotChanges::new(key, Default::default())),
+                    )
+                    .map(|slot| (slot.slot, BalWrites::from(slot.changes))),
+            ),
+        })
     }
 }
 
@@ -387,7 +380,7 @@ impl StorageBal {
         }
 
         reads.sort_unstable();
-        writes.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+        writes.sort_unstable_by_key(|&(key, _)| key);
 
         (reads, writes)
     }

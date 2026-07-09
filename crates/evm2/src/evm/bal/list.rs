@@ -3,7 +3,7 @@
 use super::{AccountBal, BalError, BlockAccessIndex};
 use crate::evm::state::AccountChange;
 use alloc::vec::Vec;
-use alloy_eip7928::BlockAccessList as AlloyBal;
+use alloy_eip7928::{AccountChanges as AlloyAccountChanges, BlockAccessList as AlloyBal};
 use alloy_primitives::{Address, U256, map::AddressMap};
 
 /// BAL structure.
@@ -58,18 +58,23 @@ impl Bal {
         };
         Ok(())
     }
+}
 
+impl From<Bal> for AlloyBal {
     /// Consume `Bal` and create a canonical EIP-7928 [`AlloyBal`].
     ///
     /// The returned access list is ordered deterministically: accounts are
     /// sorted lexicographically by address, and each account's nested reads and
-    /// changes are sorted by [`AccountBal::into_alloy_account`].
+    /// changes are sorted by the [`AccountBal`] `From` conversion into
+    /// [`AlloyAccountChanges`].
     ///
     /// This matches the EIP-7928 ordering requirements:
     /// <https://eips.ethereum.org/EIPS/eip-7928#ordering-uniqueness-and-determinism>.
-    pub fn into_alloy_bal(self) -> AlloyBal {
-        let mut alloy_bal = AlloyBal::from_iter(
-            self.accounts.into_iter().map(|(address, account)| account.into_alloy_account(address)),
+    fn from(bal: Bal) -> Self {
+        let mut alloy_bal = Self::from_iter(
+            bal.accounts
+                .into_iter()
+                .map(|(address, account)| AlloyAccountChanges { address, ..account.into() }),
         );
         alloy_bal.sort_unstable_by_key(|a| a.address);
         alloy_bal
@@ -216,11 +221,10 @@ mod tests {
             },
         };
 
-        let alloy_bal = Bal::from_iter([
+        let alloy_bal = AlloyBal::from(Bal::from_iter([
             (high_address, AccountBal::default()),
             (low_address, unordered_account),
-        ])
-        .into_alloy_bal();
+        ]));
 
         assert_eq!(
             alloy_bal.iter().map(|account| account.address).collect::<Vec<_>>(),
@@ -337,7 +341,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let bal = Bal::try_from_alloy(alloy_bal).unwrap();
+        let bal = Bal::try_from(alloy_bal).unwrap();
         let account = bal.accounts.get(&address).unwrap();
         let (_, bytecode) = &account.account_info.code.writes[0].1;
 
@@ -361,7 +365,7 @@ mod tests {
         }];
 
         let borrowed = Bal::clone_from_alloy(&alloy_bal).unwrap();
-        let owned = Bal::try_from_alloy(alloy_bal.clone()).unwrap();
+        let owned = Bal::try_from(alloy_bal.clone()).unwrap();
 
         assert_eq!(borrowed, owned);
         assert_eq!(alloy_bal[0].code_changes[0].new_code(), &code_bytes);
@@ -375,7 +379,7 @@ mod tests {
             ..Default::default()
         }];
 
-        assert!(Bal::try_from_alloy(alloy_bal).is_err());
+        assert!(Bal::try_from(alloy_bal).is_err());
     }
 
     #[test]

@@ -8,6 +8,7 @@
 //! committed post-state into the builder at the current index automatically.
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
+use alloy_eip7928::BlockAccessList;
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
@@ -103,9 +104,9 @@ fn main() {
 
     println!("{bal}");
 
-    // `into_alloy_bal` canonicalizes the builder into the EIP-7928 wire shape
+    // Converting into `BlockAccessList` canonicalizes the builder into the EIP-7928 wire shape
     // (accounts and nested changes in deterministic order) for hashing/encoding.
-    let alloy_bal = bal.into_alloy_bal();
+    let alloy_bal = BlockAccessList::from(bal);
     println!("canonical EIP-7928 list covers {} accounts", alloy_bal.len());
 }
 
