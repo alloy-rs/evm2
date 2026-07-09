@@ -56,7 +56,7 @@ fn main() {
     // block's BAL, which is exactly how a validator confirms the block's BAL is
     // correct.
     let bal = Arc::new(bal);
-    let mut rebuilt = Bal::new();
+    let mut bal_builder = Bal::new();
     std::thread::scope(|s| {
         let handles: Vec<_> = transactions
             .iter()
@@ -76,11 +76,11 @@ fn main() {
             let changes: StateChanges = pending.build_state_changes();
             assert!(changes.is_changed());
 
-            rebuilt.apply_pending_state(idx(i as u64 + 1), pending);
+            bal_builder.apply_pending_state(idx(i as u64 + 1), pending);
             println!("transaction {i} executed in parallel, gas used {}", result.tx_gas_used());
         }
     });
-    assert_eq!(rebuilt, *bal, "BAL rebuilt from parallel execution must match the block's BAL");
+    assert_eq!(bal_builder, *bal, "BAL rebuilt from parallel execution must match the block's BAL");
     println!("rebuilt BAL from parallel outputs matches the block's BAL");
 }
 
