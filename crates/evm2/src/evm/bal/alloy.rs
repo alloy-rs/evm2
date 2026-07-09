@@ -20,9 +20,9 @@ impl TryFrom<&[AlloyAccountChanges]> for Bal {
     /// # Errors
     ///
     /// Returns [`BytecodeDecodeError`] if any account code change contains bytecode
-    /// rejected by [`Bytecode::new_raw_checked`](crate::bytecode::Bytecode::new_raw_checked). This currently happens for malformed
-    /// EIP-7702 bytecode, such as bytes with the EIP-7702 magic prefix but an invalid
-    /// length or unsupported version.
+    /// rejected by [`Bytecode::new_raw_checked`](crate::bytecode::Bytecode::new_raw_checked). This
+    /// currently happens for malformed EIP-7702 bytecode, such as bytes with the EIP-7702 magic
+    /// prefix but an invalid length or unsupported version.
     #[inline]
     fn try_from(alloy_bal: &[AlloyAccountChanges]) -> Result<Self, Self::Error> {
         let mut accounts =
@@ -43,9 +43,9 @@ impl TryFrom<AlloyBal> for Bal {
     /// # Errors
     ///
     /// Returns [`BytecodeDecodeError`] if any account code change contains bytecode
-    /// rejected by [`Bytecode::new_raw_checked`](crate::bytecode::Bytecode::new_raw_checked). This currently happens for malformed
-    /// EIP-7702 bytecode, such as bytes with the EIP-7702 magic prefix but an invalid
-    /// length or unsupported version.
+    /// rejected by [`Bytecode::new_raw_checked`](crate::bytecode::Bytecode::new_raw_checked). This
+    /// currently happens for malformed EIP-7702 bytecode, such as bytes with the EIP-7702 magic
+    /// prefix but an invalid length or unsupported version.
     #[inline]
     fn try_from(alloy_bal: AlloyBal) -> Result<Self, Self::Error> {
         let mut accounts =
