@@ -314,10 +314,11 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 mod tests {
     use super::*;
     use crate::{
-        evm::bal::{AccountBal, Bal, BalWrites, BlockAccessIndex},
+        evm::bal::{AccountBal, Bal, BalChanges, BlockAccessIndex},
         interpreter::op,
     };
     use alloc::{string::ToString, sync::Arc, vec};
+    use alloy_eip7928::{BalanceChange, StorageChange};
     use alloy_primitives::Bytes;
 
     #[derive(Debug, Default)]
@@ -411,10 +412,10 @@ mod tests {
     fn read_bal(address: Address) -> Bal {
         let mut account = AccountBal::default();
         account.account_info.balance =
-            BalWrites { writes: vec![(BlockAccessIndex::new(1), Word::from(500))] };
+            BalChanges::new(vec![BalanceChange::new(BlockAccessIndex::new(1), Word::from(500))]);
         account.storage.storage.insert(
             Word::from(7),
-            BalWrites { writes: vec![(BlockAccessIndex::new(1), Word::from(42))] },
+            BalChanges::new(vec![StorageChange::new(BlockAccessIndex::new(1), Word::from(42))]),
         );
         Bal::from_iter([(address, account)])
     }

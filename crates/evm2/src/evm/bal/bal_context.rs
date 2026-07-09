@@ -259,8 +259,8 @@ impl BalContext {
             return Err(BalError::AccountNotFound { address: *address });
         };
 
-        match bal_account.storage.get_bal_writes(address, *key) {
-            Ok(writes) => Ok(writes.get(self.bal_index).copied()),
+        match bal_account.storage.get_bal_changes(address, *key) {
+            Ok(changes) => Ok(changes.get(self.bal_index).copied()),
             Err(BalError::SlotNotFound { .. }) if self.allow_db_fallback => Ok(None),
             Err(err) => Err(err),
         }

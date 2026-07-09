@@ -8,7 +8,7 @@
 //! committed post-state into the builder at the current index automatically.
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
-use alloy_eip7928::BlockAccessList;
+use alloy_eip7928::{BalanceChange, BlockAccessList, NonceChange, StorageChange};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
@@ -80,26 +80,32 @@ fn main() {
 
     let pre_system = bal.accounts.get(&PRE_SYSTEM_CONTRACT).unwrap();
     assert_eq!(
-        pre_system.storage.storage.get(&U256::ZERO).unwrap().writes,
-        vec![(idx(0), U256::from(0xbeef))]
+        pre_system.storage.storage.get(&U256::ZERO).unwrap().changes,
+        vec![StorageChange::new(idx(0), U256::from(0xbeef))]
     );
 
     let caller = bal.accounts.get(&CALLER).unwrap();
-    assert_eq!(caller.account_info.nonce.writes, vec![(idx(1), 1), (idx(2), 2)]);
+    assert_eq!(
+        caller.account_info.nonce.changes,
+        vec![NonceChange::new(idx(1), 1), NonceChange::new(idx(2), 2)]
+    );
 
     let alice = bal.accounts.get(&ALICE).unwrap();
-    assert_eq!(alice.account_info.balance.writes, vec![(idx(1), U256::from(1_000_000))]);
+    assert_eq!(
+        alice.account_info.balance.changes,
+        vec![BalanceChange::new(idx(1), U256::from(1_000_000))]
+    );
 
     let storage_contract = bal.accounts.get(&STORAGE_CONTRACT).unwrap();
     assert_eq!(
-        storage_contract.storage.storage.get(&U256::from(5)).unwrap().writes,
-        vec![(idx(2), U256::from(42))]
+        storage_contract.storage.storage.get(&U256::from(5)).unwrap().changes,
+        vec![StorageChange::new(idx(2), U256::from(42))]
     );
 
     let post_system = bal.accounts.get(&POST_SYSTEM_CONTRACT).unwrap();
     assert_eq!(
-        post_system.storage.storage.get(&U256::ZERO).unwrap().writes,
-        vec![(idx(3), U256::from(0x22))]
+        post_system.storage.storage.get(&U256::ZERO).unwrap().changes,
+        vec![StorageChange::new(idx(3), U256::from(0x22))]
     );
 
     println!("{bal}");
