@@ -15,15 +15,15 @@
 //! - [`BalContext`]: attached read BAL plus optional builder, carried by the database wrapper
 //! - [`BalError`]: lookup failures against an attached BAL
 
-pub mod account;
-pub mod alloy;
-pub mod bal_context;
-pub mod changes;
-pub mod error;
-pub mod list;
+mod account;
+mod bal_context;
+mod changes;
+mod error;
+mod list;
 
 pub use account::{AccountBal, AccountInfoBal, StorageBal};
 pub use alloy_eip7928::BlockAccessIndex;
+pub use bal_context::BalContext;
 pub use changes::{BalChange, BalChanges, BalCodeChange};
 pub use error::BalError;
 pub use list::Bal;

@@ -5,7 +5,7 @@ use crate::{
     AnyError, ErrorCode,
     bytecode::Bytecode,
     evm::{
-        bal::bal_context::BalContext,
+        bal::BalContext,
         state::{AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange},
     },
     interpreter::Word,

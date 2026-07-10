@@ -25,7 +25,7 @@ type BalResult<T> = Result<T, BalError>;
 /// - **Reads** ([`Self::bal`]): when an attached BAL is present, [`Self::get_bal_account`] /
 ///   [`Self::populate_bal_account`] and [`Self::bal_storage`] serve account info and storage from
 ///   it at [`Self::bal_index`] (post-state per transaction). A read not covered by the BAL is
-///   either an error or falls through to the database, depending on [`Self::allow_db_fallback`].
+///   either an error or falls through to the database, depending on whether fallback is enabled.
 /// - **Writes** ([`Self::bal_builder`]): when enabled, [`Self::commit_bal`] folds each committed
 ///   transaction's post-state into the builder at [`Self::bal_index`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -206,8 +206,8 @@ impl BalContext {
     /// Resolves `address` in the attached read BAL.
     ///
     /// Returns `Ok(None)` when no BAL is attached, or when the account is uncovered but
-    /// [`Self::allow_db_fallback`] is set. Returns [`BalError::AccountNotFound`] when the account
-    /// is uncovered and fallback is disabled.
+    /// [`Self::set_allow_db_fallback`] is enabled. Returns [`BalError::AccountNotFound`] when the
+    /// account is uncovered and fallback is disabled.
     #[inline]
     pub fn get_bal_account(&self, address: &Address) -> BalResult<Option<&AccountBal>> {
         let Some(bal) = &self.bal else {
@@ -245,8 +245,8 @@ impl BalContext {
     /// Returns `Ok(Some(value))` when the BAL has a write for the slot at or before the current
     /// index. Returns `Ok(None)` when no BAL is attached, when the slot is covered but has no
     /// applicable write (caller should read the cache/database), or when the account/slot is
-    /// uncovered but [`Self::allow_db_fallback`] is set. Returns an error when the account or slot
-    /// is uncovered and fallback is disabled.
+    /// uncovered but [`Self::set_allow_db_fallback`] is enabled. Returns an error when the account
+    /// or slot is uncovered and fallback is disabled.
     #[inline]
     pub fn bal_storage(&self, address: &Address, key: &Word) -> BalResult<Option<Word>> {
         let Some(bal) = &self.bal else {
