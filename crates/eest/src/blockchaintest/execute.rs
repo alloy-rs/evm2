@@ -753,6 +753,8 @@ impl StateChangeSource for AccountStateChange {
             address: self.address,
             original: self.original.as_ref().map(account_info_ref),
             current: self.current.as_ref().map(account_info_ref),
+            created: false,
+            selfdestructed: false,
         })
     }
 }

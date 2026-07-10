@@ -8,7 +8,8 @@ mod storage;
 mod stream;
 mod tracked;
 
-pub use account::{Account, AccountHandle, AccountInfo};
+pub(crate) use account::Account;
+pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use pending::PendingState;
@@ -765,6 +766,8 @@ impl<'a> State<'a> {
                     address,
                     original: entry.original.as_ref().map(AccountInfoRef::from_info),
                     current: entry.present.as_ref().map(AccountInfoRef::from_info),
+                    created: entry.is_created(),
+                    selfdestructed: self.selfdestructs.contains(&address),
                 })?;
             }
         }

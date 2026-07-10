@@ -1,6 +1,9 @@
 use crate::fuzzer::case::EvmCase;
 use alloy_primitives::{Address, B256, U256, keccak256};
-use evm2::evm::PendingState;
+use core::convert::Infallible;
+use evm2::evm::{
+    AccountChangeRef, PendingState, StateChangeSink, StateChangeSource, StorageChange,
+};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -123,25 +126,32 @@ fn normalize_error(error: String) -> String {
 }
 
 pub(crate) fn state_from_evm2_changes(pending: &PendingState) -> CanonicalState {
-    let mut state = CanonicalState::default();
-    for (&address, entry) in &pending.accounts {
-        if entry.is_changed() {
-            let account = entry.present.as_ref().map(|info| CanonicalAccount {
+    struct Collector(CanonicalState);
+
+    impl StateChangeSink for Collector {
+        type Error = Infallible;
+
+        fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+            let account = change.current.map(|info| CanonicalAccount {
                 balance: info.balance,
                 nonce: info.nonce,
                 code_hash: info.code_hash,
             });
-            state.accounts.insert(address, account);
+            self.0.accounts.insert(change.address, account);
+            Ok(())
         }
-    }
-    for (&address, overlay) in &pending.storage {
-        for (&key, slot) in overlay.changed_slots() {
-            if !slot.current.is_zero() {
-                state.storage.insert((address, key), slot.current);
+
+        fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+            if !change.current.is_zero() {
+                self.0.storage.insert((change.address, change.key), change.current);
             }
+            Ok(())
         }
     }
-    state
+
+    let mut collector = Collector(CanonicalState::default());
+    let Ok(()) = pending.visit(&mut collector);
+    collector.0
 }
 
 pub(crate) fn state_from_revm(

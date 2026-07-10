@@ -214,6 +214,9 @@ fn visit_block_changes<S: StateChangeSink>(
             address: *address,
             original: delta.original.as_ref().map(AccountInfoRef::from_info),
             current: delta.current.as_ref().map(AccountInfoRef::from_info),
+            // Block-level aggregation loses per-transaction lifecycle flags.
+            created: false,
+            selfdestructed: false,
         })?;
     }
     Ok(())

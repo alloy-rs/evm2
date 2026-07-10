@@ -6,6 +6,7 @@ use crate::tracing::{
         address_to_uint8_array, address_to_uint8_array_value, bytes_from_value, bytes_to_address,
         bytes_to_b256, to_bigint, to_uint8_array, to_uint8_array_value,
     },
+    tx_state::TxState,
     types::CallKind,
 };
 use alloc::{
@@ -25,7 +26,7 @@ use boa_gc::{Finalize, Trace, empty_trace};
 use core::cell::RefCell;
 use evm2::{
     bytecode::Bytecode,
-    evm::{AccountInfo, DbResult, DynDatabase, PendingState, State},
+    evm::{AccountInfo, DbResult, DynDatabase, State},
     interpreter::{
         Memory, Word,
         opcode::{OpCode, op},
@@ -1156,10 +1157,10 @@ impl EvmDbRef {
         Self::new_reader(StateDbReader { state })
     }
 
-    /// Creates a new evm and db JS object over a transaction's pending state and a backing
+    /// Creates a new evm and db JS object over a transaction's materialized state and a backing
     /// database.
     pub(crate) fn new_changes<'a>(
-        changes: &'a PendingState,
+        changes: &'a TxState,
         db: &'a mut dyn DynDatabase,
     ) -> (Self, EvmDbGuard<'a>) {
         Self::new_reader(ChangesDbReader { changes, db })
@@ -1352,7 +1353,7 @@ impl EvmDbReader for StateDbReader<'_, '_> {
 }
 
 struct ChangesDbReader<'a> {
-    changes: &'a PendingState,
+    changes: &'a TxState,
     db: &'a mut dyn DynDatabase,
 }
 
@@ -1375,7 +1376,7 @@ impl ChangesDbReader<'_> {
 impl EvmDbReader for ChangesDbReader<'_> {
     fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         if let Some(account) = self.changes.accounts.get(address) {
-            return Ok(account.present.clone());
+            return Ok(account.current.clone());
         }
         self.db.get_account(address)
     }
@@ -1636,7 +1637,7 @@ mod tests {
             .with_nonce(9)
             .with_code(code.clone());
         let mut db = Db::new(BackingDb { address, account, slot, value });
-        let changes = PendingState::default();
+        let changes = TxState::default();
         let (db_ref, _guard) = EvmDbRef::new_changes(&changes, &mut db);
         let js_db = db_ref.into_js_object(&mut context).unwrap();
         let js_addr = JsValue::from(js_string!(address.to_string()));

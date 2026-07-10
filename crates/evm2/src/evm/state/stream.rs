@@ -62,20 +62,16 @@ pub struct AccountChangeRef<'a> {
     pub original: Option<AccountInfoRef<'a>>,
     /// Account after the change. `None` is an explicit deletion.
     pub current: Option<AccountInfoRef<'a>>,
-}
-
-impl AccountChangeRef<'_> {
-    /// Returns whether this change creates an account.
-    #[inline]
-    pub const fn created(&self) -> bool {
-        self.original.is_none() && self.current.is_some()
-    }
-
-    /// Returns whether this change deletes an account.
-    #[inline]
-    pub const fn deleted(&self) -> bool {
-        self.original.is_some() && self.current.is_none()
-    }
+    /// Whether the account was created during the transaction.
+    ///
+    /// Only transaction-level sources report this; block-level aggregation loses per-transaction
+    /// lifecycle flags and reports `false`.
+    pub created: bool,
+    /// Whether the account was selfdestructed during the transaction.
+    ///
+    /// Only transaction-level sources report this; block-level aggregation loses per-transaction
+    /// lifecycle flags and reports `false`.
+    pub selfdestructed: bool,
 }
 
 /// Storage slot change passed to [`StateChangeSink`].
@@ -122,6 +118,32 @@ pub trait StateChangeSink {
     fn storage(&mut self, _change: StorageChange) -> Result<(), Self::Error> {
         Ok(())
     }
+
+    /// Observes an account the transaction loaded but left unchanged. `None` means the account
+    /// was loaded as non-existent.
+    ///
+    /// Only transaction-level sources report reads; sinks that persist changes can ignore them.
+    #[inline]
+    fn account_read(
+        &mut self,
+        _address: Address,
+        _info: Option<AccountInfoRef<'_>>,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Observes a storage slot the transaction loaded but left unchanged.
+    ///
+    /// Only transaction-level sources report reads; sinks that persist changes can ignore them.
+    #[inline]
+    fn storage_read(
+        &mut self,
+        _address: Address,
+        _key: Word,
+        _value: Word,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 impl<S> StateChangeSink for &mut S
@@ -149,11 +171,33 @@ where
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
         (**self).storage(change)
     }
+
+    #[inline]
+    fn account_read(
+        &mut self,
+        address: Address,
+        info: Option<AccountInfoRef<'_>>,
+    ) -> Result<(), Self::Error> {
+        (**self).account_read(address, info)
+    }
+
+    #[inline]
+    fn storage_read(
+        &mut self,
+        address: Address,
+        key: Word,
+        value: Word,
+    ) -> Result<(), Self::Error> {
+        (**self).storage_read(address, key, value)
+    }
 }
 
 /// Source of borrowed state changes.
 pub trait StateChangeSource {
     /// Visits all changes in deterministic application order.
+    ///
+    /// Sources that track reads also report loaded-but-unchanged entries through
+    /// [`StateChangeSink::account_read`] and [`StateChangeSink::storage_read`].
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error>;
 }
 
@@ -209,5 +253,26 @@ where
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
         self.a.storage(change)?;
         self.b.storage(change)
+    }
+
+    #[inline]
+    fn account_read(
+        &mut self,
+        address: Address,
+        info: Option<AccountInfoRef<'_>>,
+    ) -> Result<(), Self::Error> {
+        self.a.account_read(address, info)?;
+        self.b.account_read(address, info)
+    }
+
+    #[inline]
+    fn storage_read(
+        &mut self,
+        address: Address,
+        key: Word,
+        value: Word,
+    ) -> Result<(), Self::Error> {
+        self.a.storage_read(address, key, value)?;
+        self.b.storage_read(address, key, value)
     }
 }

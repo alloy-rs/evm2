@@ -120,11 +120,11 @@ impl AccountInfo {
 /// the account's transaction transition: `original` against `present`, with
 /// [`Self::is_created`] flagging in-transaction creation.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Account {
+pub(crate) struct Account {
     /// Account info at the start of the transaction. `None` means the account did not exist.
-    pub original: Option<AccountInfo>,
+    pub(crate) original: Option<AccountInfo>,
     /// Present account overlay after mutations. `None` means the account is absent/deleted.
-    pub present: Option<AccountInfo>,
+    pub(crate) present: Option<AccountInfo>,
     /// Whether this account is warm in the current transaction.
     pub(crate) is_warm: bool,
     /// Whether this account is touched for transaction-finalization account-lifetime rules.
@@ -141,13 +141,13 @@ impl Account {
     /// Creates an account overlay entry from its transaction-boundary original info and its
     /// present info.
     #[inline]
-    pub fn new(original: Option<AccountInfo>, present: Option<AccountInfo>) -> Self {
+    pub(crate) fn new(original: Option<AccountInfo>, present: Option<AccountInfo>) -> Self {
         Self { original, present, ..Self::default() }
     }
 
     /// Marks the account as created during the transaction, which also flags its code as changed.
     #[inline]
-    pub const fn mark_created(&mut self) {
+    pub(crate) const fn mark_created(&mut self) {
         self.just_created = true;
         self.code_changed = true;
     }
@@ -157,7 +157,7 @@ impl Account {
     /// Creation is preserved across selfdestruct finalization, so it also covers accounts that
     /// were created and then destroyed in the same transaction.
     #[inline]
-    pub const fn is_created(&self) -> bool {
+    pub(crate) const fn is_created(&self) -> bool {
         self.just_created
     }
 
@@ -165,7 +165,7 @@ impl Account {
     ///
     /// This compares balance, nonce, code hash, and existence; it does not consider storage.
     #[inline]
-    pub fn is_changed(&self) -> bool {
+    pub(crate) fn is_changed(&self) -> bool {
         self.original != self.present
     }
 

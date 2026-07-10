@@ -1,6 +1,7 @@
 use super::walker::CallTraceNodeWalkerBF;
 use crate::tracing::{
     TracingInspectorConfig,
+    tx_state::TxState,
     types::{CallTraceNode, CallTraceStep},
     utils::load_account_code,
 };
@@ -502,19 +503,12 @@ pub fn populate_state_diff(
     db: &mut dyn DynDatabase,
     pending: &PendingState,
 ) -> DbResult<()> {
-    for (addr, changed_acc) in pending.accounts.iter() {
-        let selfdestructed = pending.selfdestructs.contains(addr);
+    let state = TxState::from_pending(pending);
+    for (addr, changed_acc) in state.accounts.iter() {
         // if the account was selfdestructed and created during the transaction, we can ignore it
-        if selfdestructed && changed_acc.is_created() {
+        if changed_acc.selfdestructed && changed_acc.created {
             continue;
         }
-
-        let changed_storage = pending
-            .storage
-            .get(addr)
-            .into_iter()
-            .flat_map(|overlay| overlay.slots.iter())
-            .filter(|(_, slot)| slot.value.is_changed());
 
         let entry = state_diff.entry(*addr).or_default();
 
@@ -524,13 +518,13 @@ pub fn populate_state_diff(
         // deleted accounts are treated as drained: the balance is zero and nonce and code are
         // unchanged
         let info = changed_acc
-            .present
+            .current
             .clone()
             .unwrap_or_else(|| AccountInfo { balance: U256::ZERO, ..db_acc.clone() });
 
         // we check if this account was created during the transaction
         // where the smart contract was not touched before being created (no balance)
-        if changed_acc.is_created() && db_acc.balance == U256::ZERO {
+        if changed_acc.created && db_acc.balance == U256::ZERO {
             // This only applies to newly created accounts without balance
             // A non existing touched account (e.g. `to` that does not exist) is excluded here
             entry.balance = Delta::Added(info.balance);
@@ -542,28 +536,28 @@ pub fn populate_state_diff(
 
             // new storage values are marked as added,
             // however we're filtering changed here to avoid adding entries for the zero value
-            for (key, slot) in changed_storage {
-                entry.storage.insert((*key).into(), Delta::Added(slot.value.current.into()));
+            for (key, slot) in changed_acc.changed_storage() {
+                entry.storage.insert((*key).into(), Delta::Added(slot.current.into()));
             }
         } else {
             // we check if this account was created during the transaction
             // where the smart contract was touched before being created (has balance)
-            if changed_acc.is_created() {
+            if changed_acc.created {
                 let original_account_code = load_account_code(db, &db_acc)?.unwrap_or_default();
                 let present_account_code = load_account_code(db, &info)?.unwrap_or_default();
                 entry.code = Delta::changed(original_account_code, present_account_code);
             }
 
             // update _changed_ storage values
-            for (key, slot) in changed_storage {
+            for (key, slot) in changed_acc.changed_storage() {
                 entry.storage.insert(
                     (*key).into(),
-                    Delta::changed(slot.value.original.into(), slot.value.current.into()),
+                    Delta::changed(slot.original.into(), slot.current.into()),
                 );
             }
 
             // check if the account was changed at all
-            if entry.storage.is_empty() && db_acc == info && !selfdestructed {
+            if entry.storage.is_empty() && db_acc == info && !changed_acc.selfdestructed {
                 // clear the entry if the account was not changed
                 state_diff.remove(addr);
                 continue;

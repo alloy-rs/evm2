@@ -44,6 +44,8 @@ pub use opcount::OpcodeCountInspector;
 pub mod types;
 use types::{CallLog, CallTrace, CallTraceStep};
 
+mod tx_state;
+
 mod utils;
 
 #[cfg(feature = "std")]

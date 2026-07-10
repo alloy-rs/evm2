@@ -172,7 +172,7 @@ pub use tx::{ExecutedTx, TxResult, TxResultWithState};
 
 mod state;
 pub use state::{
-    Account, AccountChangeRef, AccountHandle, AccountInfo, AccountInfoRef, BlockStateAccumulator,
+    AccountChangeRef, AccountHandle, AccountInfo, AccountInfoRef, BlockStateAccumulator,
     JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource,
     StateCheckpoint, StateInner, StorageChange, StorageHandle, StorageOverlay, StorageSlot,
     StorageSlotHandle, Tee, Tracked,

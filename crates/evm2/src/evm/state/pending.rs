@@ -17,9 +17,10 @@ use alloy_primitives::map::{AddressMap, AddressSet};
 /// - [`Bal::apply_pending_state`](crate::evm::Bal::apply_pending_state) folds it into an EIP-7928
 ///   Block Access List, recording loaded-but-unchanged entries as reads and changed ones as writes
 ///   — the same fold the EVM applies on transaction commit when its builder is enabled.
-/// - [`StateChangeSource::visit`] streams the changed entries to a [`StateChangeSink`] in
-///   deterministic application order, which is how persistence consumers (e.g. reth) apply the
-///   transaction to the database.
+/// - [`StateChangeSource::visit`] streams it to a [`StateChangeSink`] in deterministic application
+///   order: changed entries through the change callbacks (how persistence consumers, e.g. reth,
+///   apply the transaction to the database) and loaded-but-unchanged entries through the read
+///   callbacks.
 ///
 /// A detached pending state can also be reattached to an EVM with
 /// [`State::set_pending_state`](super::State::set_pending_state).
@@ -27,14 +28,14 @@ use alloy_primitives::map::{AddressMap, AddressSet};
 pub struct PendingState {
     /// Accounts loaded by the transaction: transaction-boundary original info, present info, and
     /// account-lifetime flags.
-    pub accounts: AddressMap<Account>,
+    pub(crate) accounts: AddressMap<Account>,
     /// Per-account storage overlays loaded by the transaction.
     ///
     /// Accounts whose storage was loaded are normally present in [`Self::accounts`] as well, since
     /// executing an account loads it.
-    pub storage: AddressMap<StorageOverlay>,
+    pub(crate) storage: AddressMap<StorageOverlay>,
     /// Accounts selfdestructed by the transaction.
-    pub selfdestructs: AddressSet,
+    pub(crate) selfdestructs: AddressSet,
 }
 
 impl PendingState {
@@ -58,9 +59,13 @@ impl PendingState {
 }
 
 impl StateChangeSource for PendingState {
-    /// Visits the transaction's changed entries in deterministic application order: deduplicated
-    /// bytecode sorted by code hash, then per-account storage wipes and changed slots sorted by
-    /// address and key, then changed accounts sorted by address.
+    /// Visits the transaction's loaded entries in deterministic application order: deduplicated
+    /// bytecode sorted by code hash, then per-account storage wipes, changed slots, and slot reads
+    /// sorted by address and key, then accounts sorted by address.
+    ///
+    /// Changed accounts — including created or selfdestructed accounts whose info ended up
+    /// unchanged — go through [`StateChangeSink::account`]; loaded-but-unchanged entries go
+    /// through the read callbacks.
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
         let mut code_entries =
             self.accounts.values().filter_map(Account::changed_code).collect::<Vec<_>>();
@@ -76,29 +81,38 @@ impl StateChangeSource for PendingState {
             if overlay.wiped {
                 sink.storage_wipe(address)?;
             }
-            let mut slots = overlay.changed_slots().collect::<Vec<_>>();
+            let mut slots = overlay.slots.iter().collect::<Vec<_>>();
             slots.sort_by_key(|entry| *entry.0);
             for (&key, slot) in slots {
-                sink.storage(StorageChange {
-                    address,
-                    key,
-                    original: slot.original,
-                    current: slot.current,
-                })?;
+                let value = &slot.value;
+                if value.is_changed() && (!overlay.wiped || !value.current.is_zero()) {
+                    sink.storage(StorageChange {
+                        address,
+                        key,
+                        original: value.original,
+                        current: value.current,
+                    })?;
+                } else {
+                    sink.storage_read(address, key, value.current)?;
+                }
             }
         }
 
         let mut account_entries = self.accounts.iter().collect::<Vec<_>>();
         account_entries.sort_by_key(|entry| *entry.0);
         for (&address, entry) in account_entries {
-            if !entry.is_changed() {
-                continue;
+            let selfdestructed = self.selfdestructs.contains(&address);
+            if entry.is_changed() || entry.is_created() || selfdestructed {
+                sink.account(AccountChangeRef {
+                    address,
+                    original: entry.original.as_ref().map(AccountInfoRef::from_info),
+                    current: entry.present.as_ref().map(AccountInfoRef::from_info),
+                    created: entry.is_created(),
+                    selfdestructed,
+                })?;
+            } else {
+                sink.account_read(address, entry.present.as_ref().map(AccountInfoRef::from_info))?;
             }
-            sink.account(AccountChangeRef {
-                address,
-                original: entry.original.as_ref().map(AccountInfoRef::from_info),
-                current: entry.present.as_ref().map(AccountInfoRef::from_info),
-            })?;
         }
         Ok(())
     }

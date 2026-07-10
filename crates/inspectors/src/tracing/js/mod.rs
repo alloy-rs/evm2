@@ -11,6 +11,7 @@ use crate::tracing::{
         },
         builtins::{PrecompileList, register_builtins, to_serde_value},
     },
+    tx_state::TxState,
     types::CallKind,
     utils,
 };
@@ -292,8 +293,9 @@ impl JsInspector {
         block: &BlockEnv,
         db: &mut dyn DynDatabase,
     ) -> Result<JsValue, JsInspectorError> {
-        let TxResultWithState { result, pending_state: state, .. } = res;
-        let (db, _db_guard) = EvmDbRef::new_changes(state, db);
+        let TxResultWithState { result, pending_state, .. } = res;
+        let state = TxState::from_pending(pending_state);
+        let (db, _db_guard) = EvmDbRef::new_changes(&state, db);
 
         let mut to = None;
         let mut output_bytes = None;
