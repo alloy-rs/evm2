@@ -157,10 +157,8 @@ impl BalContext {
     /// BAL builder at the current [`Self::bal_index`].
     ///
     /// No-op when BAL construction is disabled. Loaded-but-unchanged accounts and storage slots
-    /// are recorded as BAL reads; changed ones as writes. No [`StateChanges`] is materialized;
-    /// the overlay is folded directly.
-    ///
-    /// [`StateChanges`]: crate::evm::state::StateChanges
+    /// are recorded as BAL reads; changed ones as writes. The overlay is folded directly, without
+    /// detaching it.
     #[inline]
     pub(crate) fn commit_pending(
         &mut self,

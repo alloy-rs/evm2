@@ -292,7 +292,7 @@ impl JsInspector {
         block: &BlockEnv,
         db: &mut dyn DynDatabase,
     ) -> Result<JsValue, JsInspectorError> {
-        let TxResultWithState { result, state_changes: state, .. } = res;
+        let TxResultWithState { result, pending_state: state, .. } = res;
         let (db, _db_guard) = EvmDbRef::new_changes(state, db);
 
         let mut to = None;

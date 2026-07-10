@@ -6,7 +6,7 @@ use evm2::{
     BaseEvmTypes, Evm, EvmTypesHost, Inspector, NoopInspector, Precompiles, TxResult,
     TxResultWithState, env as evm_env,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::StateChanges,
+    evm::PendingState,
     interpreter::{Interpreter, Message, MessageResult},
     registry::HandlerError,
 };
@@ -354,13 +354,13 @@ impl TxEnv {
 #[derive(Clone, Debug)]
 pub struct ResultAndState {
     pub result: ExecutionResult,
-    pub state: StateChanges,
+    pub state: PendingState,
     pub tx_result: TxResultWithState,
 }
 
 impl ResultAndState {
     fn new(result: TxResultWithState) -> Self {
-        let state = result.state_changes.clone();
+        let state = result.pending_state.clone();
         Self {
             result: ExecutionResult::from_tx_result(result.result.clone()),
             state,
@@ -451,11 +451,11 @@ impl DeployResult {
 }
 
 pub trait DatabaseCommit {
-    fn commit(&mut self, changes: StateChanges);
+    fn commit(&mut self, changes: PendingState);
 }
 
 impl DatabaseCommit for CacheDB<EmptyDB> {
-    fn commit(&mut self, changes: StateChanges) {
+    fn commit(&mut self, changes: PendingState) {
         self.commit_source(&changes);
     }
 }

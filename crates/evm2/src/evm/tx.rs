@@ -1,6 +1,6 @@
 //! Transaction execution lifecycle and result types.
 
-use super::{BlockStateAccumulator, Evm, PendingState, StateChangeSink, StateChanges};
+use super::{BlockStateAccumulator, Evm, PendingState, StateChangeSink};
 use crate::{ErrorCode, EvmTypesHost, interpreter::InstrStop};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, Log};
@@ -11,8 +11,8 @@ use derive_where::derive_where;
 ///
 /// This is the result-only half of transaction execution: status, gas used, output, stop reason,
 /// logs, host error code, and extension data. Logs live here because they are execution
-/// output, not database state. Use [`ExecutedTx::detach`] only when an owned [`StateChanges`] value
-/// is required.
+/// output, not database state. Use [`ExecutedTx::detach`] only when an owned [`PendingState`]
+/// value is required.
 #[must_use = "transaction results contain execution status, gas, logs, and errors"]
 #[derive_where(Clone, Debug, Default, PartialEq, Eq; T::TxResultExt)]
 pub struct TxResult<T: EvmTypesHost = crate::BaseEvmTypes> {
@@ -92,9 +92,8 @@ enum StateStatus {
 /// - [`Self::commit_with`] accepts the state and first streams it to an external sink;
 /// - [`Self::discard`] drops the state and keeps only the result;
 /// - [`Self::discard_with`] streams the state to an external sink and then drops it;
-/// - [`Self::detach`] materializes an owned [`StateChanges`] value without committing it;
-/// - [`Self::detach_pending`] moves the pending transaction overlay out as a [`PendingState`]
-///   without committing it.
+/// - [`Self::detach`] moves the pending transaction overlay out as a [`PendingState`] without
+///   committing it.
 ///
 /// Dropping `ExecutedTx` without calling one of those methods is equivalent to [`Self::discard`].
 #[must_use = "executed transaction state must be committed, discarded, or detached"]
@@ -157,14 +156,14 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     }
 
     #[inline]
-    fn take_state_changes(&mut self) -> StateChanges {
+    fn take_pending_state(&mut self) -> PendingState {
         if self.has_pending_state() {
-            let changes = self.evm.state.build_state_changes();
+            let pending = self.evm.state.take_pending_state();
             self.evm.state.clear_transaction_state();
             self.state = StateStatus::Cleared;
-            changes
+            pending
         } else {
-            StateChanges::default()
+            PendingState::default()
         }
     }
 
@@ -189,7 +188,7 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     /// Accepts the transaction state and records its changes in a block accumulator.
     ///
     /// This streams transaction changes into `block_state`, commits them to the accepted overlay,
-    /// and returns the result-only [`TxResult`]. No owned [`StateChanges`] is materialized.
+    /// and returns the result-only [`TxResult`]. The transaction overlay is not detached.
     pub fn commit_to(self, block_state: &mut BlockStateAccumulator) -> TxResult<T> {
         let Ok(result) = self.commit_with(block_state);
         result
@@ -212,8 +211,8 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
 
     /// Discards the transaction state and returns the result.
     ///
-    /// Discarding does not mutate the accepted overlay and does not materialize [`StateChanges`].
-    /// This is the intended path for result-only execution such as `eth_call`.
+    /// Discarding does not mutate the accepted overlay and does not detach the transaction
+    /// overlay. This is the intended path for result-only execution such as `eth_call`.
     pub fn discard(mut self) -> TxResult<T> {
         self.clear_pending_state();
         self.take_result()
@@ -235,36 +234,19 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
         Ok(self.take_result())
     }
 
-    /// Detaches the transaction into an owned state diff without committing it.
+    /// Detaches the transaction into its owned pending state without committing it.
     ///
-    /// Detaching materializes [`StateChanges`], clears transaction scratch, and returns a
-    /// [`TxResultWithState`] that can be moved or stored. The detached state is not accepted into
-    /// this EVM's internal overlay unless the caller commits it separately.
+    /// Detaching moves the transaction overlay out of the EVM as a [`PendingState`], clears
+    /// transaction scratch, and returns a [`TxResultWithState`] that can be moved or stored. The
+    /// pending state folds into an EIP-7928 Block Access List via
+    /// [`Bal::apply_pending_state`](crate::evm::Bal::apply_pending_state) and streams its changes
+    /// to a [`StateChangeSink`] via
+    /// [`StateChangeSource::visit`](super::StateChangeSource::visit). The detached state is not
+    /// accepted into this EVM's internal overlay unless the caller commits it separately.
     pub fn detach(mut self) -> TxResultWithState<T> {
-        let state_changes = self.take_state_changes();
+        let pending_state = self.take_pending_state();
         let result = self.take_result();
-        TxResultWithState { result, state_changes, _non_exhaustive: () }
-    }
-
-    /// Detaches the transaction into its owned pending state without materializing
-    /// [`StateChanges`].
-    ///
-    /// The returned [`PendingState`] is the transaction overlay moved out of
-    /// the EVM. It folds into an EIP-7928 Block Access List via
-    /// [`Bal::apply_pending_state`](crate::evm::Bal::apply_pending_state) and still materializes
-    /// the owned change-set via
-    /// [`PendingState::build_state_changes`]. Like
-    /// [`Self::detach`], the detached state is not accepted into this EVM's internal overlay.
-    pub fn detach_pending(mut self) -> (TxResult<T>, PendingState) {
-        let pending = if self.has_pending_state() {
-            let pending = self.evm.state.take_pending_state();
-            self.evm.state.clear_transaction_state();
-            self.state = StateStatus::Cleared;
-            pending
-        } else {
-            PendingState::default()
-        };
-        (self.take_result(), pending)
+        TxResultWithState { result, pending_state, _non_exhaustive: () }
     }
 }
 
@@ -275,17 +257,17 @@ impl<T: EvmTypesHost> Drop for ExecutedTx<'_, '_, T> {
     }
 }
 
-/// Result of executing a transaction with an owned state diff.
+/// Result of executing a transaction with its owned pending state.
 ///
-/// This is the materialized shape produced by [`ExecutedTx::detach`]. It pairs a [`TxResult`] with
-/// an owned [`StateChanges`] value. Prefer resolving [`Evm::transact`] with [`ExecutedTx::commit`]
-/// or [`ExecutedTx::discard`] when an owned write-set is unnecessary.
+/// This is the detached shape produced by [`ExecutedTx::detach`]. It pairs a [`TxResult`] with
+/// the owned [`PendingState`] the transaction was left in. Prefer resolving [`Evm::transact`] with
+/// [`ExecutedTx::commit`] or [`ExecutedTx::discard`] when an owned write-set is unnecessary.
 #[derive_where(Clone, Debug, Default, PartialEq, Eq; T::TxResultExt)]
 pub struct TxResultWithState<T: EvmTypesHost = crate::BaseEvmTypes> {
     /// Execution result produced by the transaction.
     pub result: TxResult<T>,
-    /// State transition produced by this transaction.
-    pub state_changes: StateChanges,
+    /// Pending state the transaction detached into.
+    pub pending_state: PendingState,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }

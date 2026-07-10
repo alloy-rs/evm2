@@ -10,8 +10,8 @@
 //! Each worker thread detaches its transaction's pending state -- the transaction
 //! overlay moved out of the EVM -- and sends it back to the main thread, which folds
 //! it into a fresh BAL and checks it against the block's BAL: the validation half of
-//! EIP-7928. The pending state still materializes the owned [`StateChanges`]
-//! change-set persistence consumers (e.g. reth) apply to the database.
+//! EIP-7928. The pending state still streams the change-set persistence consumers
+//! (e.g. reth) apply to the database.
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_eip7928::BalanceChange;
@@ -20,7 +20,7 @@ use evm2::{
     BaseEvmTypes, Evm, PendingState, Precompiles, SpecId, TxResult,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo, Bal, BlockAccessIndex, InMemoryDB, StateChanges},
+    evm::{AccountInfo, Bal, BlockAccessIndex, InMemoryDB},
 };
 use std::sync::Arc;
 
@@ -74,11 +74,10 @@ fn main() {
             let (result, pending) = handle.join().expect("worker thread panicked");
             assert!(result.status);
 
-            // The pending state still builds the owned change-set that persistence
-            // consumers (e.g. reth) apply to the database; detaching it for the BAL
-            // fold loses nothing.
-            let changes: StateChanges = pending.build_state_changes();
-            assert!(changes.is_changed());
+            // The pending state still carries the change-set that persistence
+            // consumers (e.g. reth) stream to the database through a
+            // `StateChangeSink`; detaching it for the BAL fold loses nothing.
+            assert!(pending.is_changed());
 
             bal_builder.apply_pending_state(idx(i as u64 + 1), pending);
             println!("transaction {i} executed in parallel, gas used {}", result.tx_gas_used());
@@ -104,7 +103,8 @@ fn execute_with_bal(
     let mut evm = pre_block_evm();
     evm.state_mut().set_bal(bal);
     evm.state_mut().set_bal_index(BlockAccessIndex::new(index));
-    evm.transact(tx).expect("transaction should execute").detach_pending()
+    let detached = evm.transact(tx).expect("transaction should execute").detach();
+    (detached.result, detached.pending_state)
 }
 
 fn build_bal(transactions: &[RecoveredTxEnvelope]) -> Bal {

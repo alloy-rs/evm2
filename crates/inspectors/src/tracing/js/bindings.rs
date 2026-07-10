@@ -25,7 +25,7 @@ use boa_gc::{Finalize, Trace, empty_trace};
 use core::cell::RefCell;
 use evm2::{
     bytecode::Bytecode,
-    evm::{AccountInfo, DbResult, DynDatabase, State, StateChanges},
+    evm::{AccountInfo, DbResult, DynDatabase, PendingState, State},
     interpreter::{
         Memory, Word,
         opcode::{OpCode, op},
@@ -1156,9 +1156,10 @@ impl EvmDbRef {
         Self::new_reader(StateDbReader { state })
     }
 
-    /// Creates a new evm and db JS object over transaction changes and a backing database.
+    /// Creates a new evm and db JS object over a transaction's pending state and a backing
+    /// database.
     pub(crate) fn new_changes<'a>(
-        changes: &'a StateChanges,
+        changes: &'a PendingState,
         db: &'a mut dyn DynDatabase,
     ) -> (Self, EvmDbGuard<'a>) {
         Self::new_reader(ChangesDbReader { changes, db })
@@ -1351,7 +1352,7 @@ impl EvmDbReader for StateDbReader<'_, '_> {
 }
 
 struct ChangesDbReader<'a> {
-    changes: &'a StateChanges,
+    changes: &'a PendingState,
     db: &'a mut dyn DynDatabase,
 }
 
@@ -1374,7 +1375,7 @@ impl ChangesDbReader<'_> {
 impl EvmDbReader for ChangesDbReader<'_> {
     fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         if let Some(account) = self.changes.accounts.get(address) {
-            return Ok(account.current.clone());
+            return Ok(account.present.clone());
         }
         self.db.get_account(address)
     }
@@ -1635,7 +1636,7 @@ mod tests {
             .with_nonce(9)
             .with_code(code.clone());
         let mut db = Db::new(BackingDb { address, account, slot, value });
-        let changes = StateChanges::default();
+        let changes = PendingState::default();
         let (db_ref, _guard) = EvmDbRef::new_changes(&changes, &mut db);
         let js_db = db_ref.into_js_object(&mut context).unwrap();
         let js_addr = JsValue::from(js_string!(address.to_string()));

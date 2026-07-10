@@ -1,6 +1,6 @@
 use crate::fuzzer::case::EvmCase;
 use alloy_primitives::{Address, B256, U256, keccak256};
-use evm2::evm::StateChanges;
+use evm2::evm::PendingState;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,18 +122,20 @@ fn normalize_error(error: String) -> String {
     error.to_string()
 }
 
-pub(crate) fn state_from_evm2_changes(changes: &StateChanges) -> CanonicalState {
+pub(crate) fn state_from_evm2_changes(pending: &PendingState) -> CanonicalState {
     let mut state = CanonicalState::default();
-    for (&address, change) in &changes.accounts {
-        if change.is_changed() {
-            let account = change.current.as_ref().map(|info| CanonicalAccount {
+    for (&address, entry) in &pending.accounts {
+        if entry.is_changed() {
+            let account = entry.present.as_ref().map(|info| CanonicalAccount {
                 balance: info.balance,
                 nonce: info.nonce,
                 code_hash: info.code_hash,
             });
             state.accounts.insert(address, account);
         }
-        for (&key, slot) in change.changed_storage() {
+    }
+    for (&address, overlay) in &pending.storage {
+        for (&key, slot) in overlay.changed_slots() {
             if !slot.current.is_zero() {
                 state.storage.insert((address, key), slot.current);
             }
