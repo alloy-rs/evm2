@@ -9,7 +9,7 @@ use crate::{
     utils::{word_to_address, word_to_usize},
     version::GasId,
 };
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, B256, Bytes, keccak256};
 use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
@@ -68,6 +68,44 @@ fn memory_range_bytes<T: EvmTypesHost>(
         return Ok(Bytes::new());
     }
     Ok(Bytes::copy_from_slice(state.memory().slice(range.start, range.len())))
+}
+
+fn prepare_eip8037_create_state_gas<T: EvmTypesHost>(
+    gas: &mut Gas,
+    state: &mut InterpreterState<'_, '_, T>,
+    caller: Address,
+    value: Word,
+    input: &Bytes,
+    salt: Option<Word>,
+    is_create2: bool,
+) -> Result<Option<u64>> {
+    if !state.feature(EvmFeatures::EIP8037) {
+        return Ok(Some(0));
+    }
+
+    // Amsterdam charges CREATE state gas at opcode time, but only after
+    // balance and nonce pre-access checks pass. Failing these checks returns 0
+    // without constructing a child create frame.
+    let caller_account = state.host().load_account(&caller, false, false)?;
+    if caller_account.balance < value || caller_account.nonce == u64::MAX {
+        state.clear_return_data();
+        return Ok(None);
+    }
+
+    let destination = if is_create2 {
+        let salt = B256::from(salt.expect("CREATE2 salt is present").to_be_bytes());
+        caller.create2(salt, keccak256(input.as_ref()))
+    } else {
+        caller.create(caller_account.nonce)
+    };
+    let destination = state.host().load_account(&destination, false, false)?;
+    if destination.is_empty {
+        let create_state_gas = state.gas_params().create_state_gas();
+        gas.spend_state(create_state_gas)?;
+        return Ok(Some(create_state_gas));
+    }
+
+    Ok(Some(0))
 }
 
 fn load_acc_and_calc_gas<T: EvmTypesHost>(
@@ -315,12 +353,24 @@ fn create_inner<T: EvmTypesHost>(
         state.gas_params().get(GasId::Create).into()
     };
     gas.spend(create_cost)?;
-    // EIP-8037: charge the upfront CREATE state gas on this frame before the
-    // child gas/reservoir split. Refunded via `refill_reservoir` if the child
-    // fails to deploy (see the create-failure path after `execute_message`).
-    if state.feature(EvmFeatures::EIP8037) {
-        gas.spend_state(state.gas_params().create_state_gas())?;
-    }
+    let current = state.message();
+    let current_destination = current.destination;
+    let depth = current.depth.saturating_add(1);
+    let charged_create_state_gas = match prepare_eip8037_create_state_gas(
+        gas,
+        state,
+        current_destination,
+        value,
+        &input,
+        salt,
+        is_create2,
+    )? {
+        Some(cost) => cost,
+        None => {
+            stack.push(Word::ZERO)?;
+            return Ok(());
+        }
+    };
     let gas_limit = if state.feature(EvmFeatures::EIP150) {
         state.gas_params().call_stipend_reduction(gas.remaining())
     } else {
@@ -328,17 +378,16 @@ fn create_inner<T: EvmTypesHost>(
     };
     gas.spend(gas_limit)?;
 
-    let current = state.message();
     let mut message = Message {
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
-        depth: current.depth.saturating_add(1),
+        depth,
         gas_limit,
         reservoir: gas.reservoir(),
-        destination: current.destination,
-        caller: current.destination,
+        destination: current_destination,
+        caller: current_destination,
         input,
         value,
-        code_address: current.destination,
+        code_address: current_destination,
         disable_precompiles: false,
         // CREATE is rejected in a static context (see `require_non_staticcall`).
         caller_is_static: false,
@@ -355,14 +404,12 @@ fn create_inner<T: EvmTypesHost>(
     gas.merge_child_gas(result.gas, result.stop);
 
     // EIP-8037: the CREATE/CREATE2 opcode charged `create_state_gas` upfront on
-    // this frame's tracker. Refund it to the reservoir via `refill_reservoir`
-    // (matching 0→x→0 storage restoration) when no new account leaf ends up
-    // created: either the create failed to deploy (revert, halt, or early-fail
-    // paths that leave `created_address == None` — depth, out-of-funds, nonce
-    // overflow), or it succeeded at a pre-existing alive (balance-only) target.
+    // this frame's tracker only when the destination was empty at access time.
+    // Refund it when no new account leaf is created because the create failed
+    // to deploy (revert, halt, or early-fail paths that leave no address).
     let create_failed = result.created_address.is_none() || !result.stop.is_success();
-    if (create_failed || result.created_target_was_alive) && state.feature(EvmFeatures::EIP8037) {
-        gas.refill_reservoir(state.gas_params().create_state_gas());
+    if create_failed && charged_create_state_gas != 0 {
+        gas.refill_reservoir(charged_create_state_gas);
     }
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
     if result.stop == InstrStop::Revert {

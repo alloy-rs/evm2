@@ -756,6 +756,39 @@ mod tests {
     }
 
     #[test]
+    fn amsterdam_create_out_of_funds_does_not_fire_create_hook() {
+        let contract = Address::from([0x11; 20]);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&contract, AccountInfo::default().with_balance(U256::from(1)));
+
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::from(2)]);
+        code.push(op::CREATE);
+        return_top_word(&mut code);
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            db,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        evm.set_inspector(HookInspector::default());
+        let tx_env = TxEnv::default();
+        let bytecode = legacy_bytecode(code);
+        let mut message =
+            Message { destination: contract, gas_limit: 100_000, ..Default::default() };
+
+        let result = Host::execute_message(&mut evm, &tx_env, bytecode, &mut message);
+        let inspector = evm.clear_inspector_as::<HookInspector>().unwrap();
+
+        assert_matches!(result.stop, InstrStop::Return);
+        assert_eq!(Word::from_be_slice(&result.output), Word::ZERO);
+        assert!(inspector.create_depths.is_empty());
+        assert!(inspector.create_end_stops.is_empty());
+    }
+
+    #[test]
     fn create_inspector_override_wins_at_max_depth() {
         let created = Address::from([0x77; 20]);
         let inspector =

@@ -98,6 +98,7 @@ impl Host<TestTypes> for TestHost {
         }
         Ok(AccountLoad {
             balance: address.into_word().into(),
+            nonce: 0,
             code_hash: self.code_hash,
             code: if load_code {
                 Bytecode::new_legacy(self.code.clone())
