@@ -614,9 +614,10 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         };
 
         // if calls to precompiles should be excluded, check whether this is a call to a precompile
-        let maybe_precompile = self.config.exclude_precompile_calls.then(|| {
-            !message.disable_precompiles && self.is_precompile_call(interp.host(), &to, &value)
-        });
+        let maybe_precompile = self
+            .config
+            .exclude_precompile_calls
+            .then(|| self.is_precompile_call(interp.host(), &to, &value));
 
         self.start_trace_on_call(
             usize::from(message.depth),

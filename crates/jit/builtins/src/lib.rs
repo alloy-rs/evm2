@@ -691,7 +691,6 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         input: code,
         value: value.to_u256(),
         code_address: current.destination,
-        disable_precompiles: false,
         caller_is_static: false,
         salt,
         ext: (),
@@ -770,19 +769,15 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         usize::MAX
     };
 
-    let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address, disable_precompiles) =
+    let (gas_limit, new_account_state_gas, loaded_code) =
         load_acc_and_calc_gas(ecx, to, transfers_value, call_kind == CallKind::Call, local_gas_limit)?;
 
     let current = ecx.message();
-    let (destination, caller, call_value, code_address) = match call_kind {
-        CallKind::Call => (to, current.destination, value, resolved_code_address),
-        CallKind::CallCode => {
-            (current.destination, current.destination, value, resolved_code_address)
-        }
-        CallKind::DelegateCall => {
-            (current.destination, current.caller, current.value, resolved_code_address)
-        }
-        CallKind::StaticCall => (to, current.destination, U256::ZERO, resolved_code_address),
+    let (destination, caller, call_value) = match call_kind {
+        CallKind::Call => (to, current.destination, value),
+        CallKind::CallCode => (current.destination, current.destination, value),
+        CallKind::DelegateCall => (current.destination, current.caller, current.value),
+        CallKind::StaticCall => (to, current.destination, U256::ZERO),
     };
     let mut message = Message {
         kind: call_kind.into(),
@@ -793,8 +788,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         caller,
         input,
         value: call_value,
-        code_address,
-        disable_precompiles,
+        code_address: to,
         caller_is_static: ecx.is_static(),
         salt: B256::ZERO,
         ext: (),
@@ -834,7 +828,7 @@ fn load_acc_and_calc_gas(
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
-) -> Result<(u64, u64, Bytecode, Address, bool), BuiltinError> {
+) -> Result<(u64, u64, Bytecode), BuiltinError> {
     let version = *ecx.version();
     if transfers_value {
         ecx.gas.spend(version.gas_params.get(GasId::TransferValueCost).into())?;
@@ -854,7 +848,6 @@ fn load_acc_and_calc_gas(
     }
     let mut new_account_state_gas = 0;
     let mut code = account.code;
-    let mut code_address = to;
     if ecx.enables(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
@@ -871,7 +864,6 @@ fn load_acc_and_calc_gas(
             cost += additional_cold_cost;
         }
         code = delegated_account.code;
-        code_address = delegated_address;
     }
     let features = ecx.version().features;
     if create_empty_account
@@ -900,8 +892,7 @@ fn load_acc_and_calc_gas(
         gas_limit = gas_limit.saturating_add(version.gas_params.get(GasId::CallStipend).into());
     }
 
-    let disable_precompiles = code_address != to;
-    Ok((gas_limit, new_account_state_gas, code, code_address, disable_precompiles))
+    Ok((gas_limit, new_account_state_gas, code))
 }
 
 #[unsafe(no_mangle)]
