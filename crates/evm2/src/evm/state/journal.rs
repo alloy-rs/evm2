@@ -1,6 +1,6 @@
 //! Revert journal and checkpoint types.
 
-use super::{AccountInfo, StorageOverlay};
+use super::AccountInfo;
 use crate::interpreter::Word;
 use alloy_primitives::Address;
 
@@ -45,17 +45,6 @@ pub enum JournalEntry {
         key: Word,
         /// Previous current storage value.
         previous: Word,
-    },
-    /// Account storage wipe snapshot.
-    ///
-    /// Required for rollback: `create_account` wipes the overlay for contract re-incarnation
-    /// inside a revertible scope, so a reverted CREATE must restore the pre-wipe overlay (its
-    /// loaded slots and cleared wipe flag). See the `storage_wipe_rolls_back_to_checkpoint` test.
-    StorageWipe {
-        /// Account address.
-        address: Address,
-        /// Previous storage overlay.
-        previous: Option<StorageOverlay>,
     },
     /// Transient storage changed.
     TransientStorageChange {

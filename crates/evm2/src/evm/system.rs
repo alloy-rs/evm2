@@ -15,6 +15,7 @@ use crate::{
     ethereum::initial_message,
     interpreter::Host,
     registry::{HandlerError, HandlerResult},
+    version::{EvmFeatures, GasId},
 };
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, TxKind, U256, address};
@@ -26,6 +27,12 @@ pub const SYSTEM_ADDRESS: Address = address!("0xffffffffffffffffffffffffffffffff
 
 /// Gas limit used by execution-layer system calls.
 pub const SYSTEM_CALL_GAS_LIMIT: u64 = 30_000_000;
+
+/// Upper bound on the number of new storage slots a single system call is expected to write.
+///
+/// EIP-8037 (Amsterdam) sizes the system-call state-gas reservoir as this many `SSTORE` new-slot
+/// state charges; state gas beyond the reservoir spills into the regular gas budget.
+pub const SYSTEM_MAX_SSTORES_PER_CALL: u64 = 16;
 
 /// EIP-4788 beacon roots system contract address.
 pub const BEACON_ROOTS_ADDRESS: Address = address!("0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02");
@@ -40,6 +47,14 @@ pub const WITHDRAWAL_REQUEST_ADDRESS: Address =
 /// EIP-7251 consolidation request system contract address.
 pub const CONSOLIDATION_REQUEST_ADDRESS: Address =
     address!("0x0000BBdDc7CE488642fb579F8B00f3a590007251");
+
+/// EIP-8282 builder deposit request system contract address (request type `0x03`).
+pub const BUILDER_DEPOSIT_REQUEST_ADDRESS: Address =
+    address!("0x0000884d2AA32eAa155F59A2f24eFa73D9008282");
+
+/// EIP-8282 builder exit request system contract address (request type `0x04`).
+pub const BUILDER_EXIT_REQUEST_ADDRESS: Address =
+    address!("0x000014574A74c805590AFF9499fc7A690f008282");
 
 /// System transaction input for [`Evm::system_call`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,6 +117,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             ext: T::TxEnvExt::default(),
             _non_exhaustive: (),
         };
+        // EIP-8037: system calls start with a state-gas reservoir sized for
+        // `SYSTEM_MAX_SSTORES_PER_CALL` new-slot writes (execution-specs
+        // `process_unchecked_system_transaction`).
+        let reservoir = if self.feature(EvmFeatures::EIP8037) {
+            self.version().gas_params.get(GasId::SstoreSetState) as u64
+                * SYSTEM_MAX_SSTORES_PER_CALL
+        } else {
+            0
+        };
         let (bytecode, mut message) = match initial_message(
             self,
             caller,
@@ -110,7 +134,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             &data,
             U256::ZERO,
             SYSTEM_CALL_GAS_LIMIT,
-            0,
+            reservoir,
         ) {
             Ok(result) => result,
             Err(error) => {

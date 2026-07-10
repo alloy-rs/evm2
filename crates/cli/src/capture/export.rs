@@ -208,6 +208,7 @@ fn export_header(header: &Header) -> BlockHeader {
         requests_hash: header.requests_hash,
         target_blobs_per_block: None,
         slot_number: header.slot_number.map(U256::from),
+        block_access_list_hash: header.block_access_list_hash,
     }
 }
 
