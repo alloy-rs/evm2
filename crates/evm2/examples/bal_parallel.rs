@@ -17,7 +17,7 @@ use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_eip7928::BalanceChange;
 use alloy_primitives::{Address, TxKind, U256};
 use evm2::{
-    BaseEvmTypes, Evm, PendingState, Precompiles, SpecId, TxResult,
+    BaseEvmTypes, Evm, Precompiles, SpecId, TxResultWithState,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo, Bal, BlockAccessIndex, InMemoryDB},
@@ -71,7 +71,8 @@ fn main() {
             })
             .collect();
         for (i, handle) in handles.into_iter().enumerate() {
-            let (result, pending) = handle.join().expect("worker thread panicked");
+            let TxResultWithState { result, pending_state: pending, .. } =
+                handle.join().expect("worker thread panicked");
             assert!(result.status);
 
             // The pending state still carries the change-set that persistence
@@ -93,18 +94,14 @@ fn main() {
 /// `set_allow_bal_db_fallback(true)` to instead fall through to the database, e.g.
 /// for RPC calls on BAL-positioned state).
 ///
-/// The executed transaction is detached into its owned [`PendingState`] so it can
-/// leave the worker thread; nothing is committed to this EVM, which is dropped here.
-fn execute_with_bal(
-    bal: Arc<Bal>,
-    index: u64,
-    tx: &RecoveredTxEnvelope,
-) -> (TxResult, PendingState) {
+/// The executed transaction is detached into an owned [`TxResultWithState`] so it
+/// can leave the worker thread; nothing is committed to this EVM, which is dropped
+/// here.
+fn execute_with_bal(bal: Arc<Bal>, index: u64, tx: &RecoveredTxEnvelope) -> TxResultWithState {
     let mut evm = pre_block_evm();
     evm.state_mut().set_bal(bal);
     evm.state_mut().set_bal_index(BlockAccessIndex::new(index));
-    let detached = evm.transact(tx).expect("transaction should execute").detach();
-    (detached.result, detached.pending_state)
+    evm.transact(tx).expect("transaction should execute").detach()
 }
 
 fn build_bal(transactions: &[RecoveredTxEnvelope]) -> Bal {
