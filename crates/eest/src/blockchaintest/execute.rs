@@ -318,7 +318,7 @@ fn execute_block(
     // for pre-block system calls, `i + 1` for transaction `i`, and the final index for post-block
     // rewards/withdrawals. Only Amsterdam+ fixtures carry a block access list, so pre-Amsterdam
     // blocks pay nothing.
-    let build_bal = block.block_access_list.is_some();
+    let build_bal = block_access_list(block).is_some();
     if build_bal {
         evm.state_mut().enable_bal_builder();
         evm.state_mut().reset_bal_index();
@@ -482,7 +482,7 @@ fn execute_block(
             return Err(TestError::case(path, name, err));
         }
 
-        if let Some(expected_bal) = block.block_access_list.as_ref() {
+        if let Some(expected_bal) = block_access_list(block) {
             let built = evm.state_mut().take_bal_builder().unwrap_or_default();
             if let Err(kind) =
                 check_block_access_list(block_index, built, expected_bal, block_header(block))
@@ -583,6 +583,14 @@ fn block_header(block: &Block) -> Option<&BlockHeader> {
         .block_header
         .as_ref()
         .or_else(|| block.rlp_decoded.as_ref().and_then(|decoded| decoded.block_header.as_ref()))
+}
+
+/// Returns the block's EIP-7928 access list, falling back to the decoded RLP payload: invalid-BAL
+/// fixtures carry the corrupted list only under `rlp_decoded`.
+fn block_access_list(block: &Block) -> Option<&BlockAccessList> {
+    block.block_access_list.as_ref().or_else(|| {
+        block.rlp_decoded.as_ref().and_then(|decoded| decoded.block_access_list.as_ref())
+    })
 }
 
 fn block_transactions(block: &Block) -> &[Transaction] {
