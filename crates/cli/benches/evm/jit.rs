@@ -48,7 +48,6 @@ pub(crate) struct PreparedBench {
     tx: RecoveredTxEnvelope,
     entry_bytecode: Option<alloy_primitives::Bytes>,
     functions: Arc<HashMap<B256, EvmCompilerFn>>,
-    runtime_backend: Option<JitBackend>,
 }
 
 impl PreparedBench {
