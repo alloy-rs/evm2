@@ -1,5 +1,5 @@
 use crate::fixture::Suites;
-use alloy_primitives::{B256, hex, keccak256};
+use alloy_primitives::{B256, hex};
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
     BaseEvmTypes, Evm, ExecutionConfig, InterpreterRunner, Precompiles, SpecId,
