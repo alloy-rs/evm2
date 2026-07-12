@@ -1,4 +1,4 @@
-use crate::fixture::{CompiledAccount, Suites};
+use crate::fixture::Suites;
 use alloy_primitives::{B256, hex, keccak256};
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
@@ -11,11 +11,7 @@ use evm2::{
 use evm2_cli::evm_bench::BenchCase;
 use evm2_jit_context::EvmCompilerFn;
 use evm2_jit_llvm::EvmLlvmBackend;
-use evm2_jit_runtime::{
-    EvmCompiler, OptimizationLevel,
-    evm2_evm::JitInterpreterRunner,
-    runtime::{JitBackend, LookupRequest, RuntimeCacheKey, RuntimeConfig},
-};
+use evm2_jit_runtime::{EvmCompiler, OptimizationLevel};
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 type BenchEvm = Evm<'static, BaseEvmTypes>;
@@ -31,8 +27,6 @@ const SKIP_COMPILE_JIT: &[&str] = &[
     "usdc_proxy",
 ];
 const SKIP_ALL: &[&str] = &["seaport", "snailtracer"];
-const RUNTIME_LOOKUP_BENCHES: &[&str] =
-    &["counter", "weth", "erc20_transfer", "usdc_proxy", "curve_stableswap"];
 
 #[derive(Debug)]
 pub(crate) struct Compiler {
@@ -76,7 +70,7 @@ impl PreparedBench {
         }
 
         let mut functions = HashMap::new();
-        for account in &accounts {
+        for account in accounts {
             if functions.contains_key(&account.code_hash) {
                 continue;
             }
@@ -90,10 +84,6 @@ impl PreparedBench {
             compiler.compiler.clear_ir().expect("benchmark JIT compiler IR must clear");
         }
 
-        let runtime_backend = RUNTIME_LOOKUP_BENCHES
-            .contains(&bench.name.as_ref())
-            .then(|| compile_runtime_accounts(&bench.name, spec, &accounts));
-
         Some(Self {
             name: bench.name.clone(),
             spec,
@@ -102,7 +92,6 @@ impl PreparedBench {
             tx: case.tx(spec),
             entry_bytecode: case.entry_bytecode(),
             functions: Arc::new(functions),
-            runtime_backend,
         })
     }
 
@@ -110,7 +99,7 @@ impl PreparedBench {
         let interpreter = self.run_interpreter().unwrap_or_else(|err| {
             panic!("{} interpreter benchmark transaction must execute: {err:?}", self.name)
         });
-        let jit = Runner::with_function_map(self).run().unwrap_or_else(|err| {
+        let jit = self.run_jit().unwrap_or_else(|err| {
             panic!("{} JIT benchmark transaction must execute: {err:?}", self.name)
         });
         assert_eq!(
@@ -118,16 +107,6 @@ impl PreparedBench {
             "{} interpreter and JIT status differ",
             self.name
         );
-        if self.runtime_backend.is_some() {
-            let runtime = Runner::with_runtime_backend(self).run().unwrap_or_else(|err| {
-                panic!("{} runtime JIT benchmark transaction must execute: {err:?}", self.name)
-            });
-            assert_eq!(
-                interpreter.status, runtime.status,
-                "{} interpreter and runtime JIT status differ",
-                self.name
-            );
-        }
     }
 
     pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
@@ -165,24 +144,12 @@ impl PreparedBench {
             }
         }
 
-        self.bench_execution(group, "function_map", Runner::with_function_map);
-        if self.runtime_backend.is_some() {
-            self.bench_execution(group, "runtime_backend", Runner::with_runtime_backend);
-        }
-    }
-
-    fn bench_execution(
-        &self,
-        group: &mut BenchmarkGroup<'_, WallTime>,
-        name: &str,
-        prepare: fn(&Self) -> Runner,
-    ) {
-        group.bench_function(format!("{}/jit/{name}", self.name), |b| {
+        group.bench_function(format!("{}/jit/run", self.name), |b| {
             b.iter_batched(
-                || prepare(self),
+                || Runner::new(self),
                 |mut runner| {
                     black_box(runner.run().unwrap_or_else(|err| {
-                        panic!("{} {name} benchmark transaction must execute: {err:?}", self.name)
+                        panic!("{} JIT benchmark transaction must execute: {err:?}", self.name)
                     }))
                 },
                 BatchSize::SmallInput,
@@ -194,6 +161,11 @@ impl PreparedBench {
         let mut evm = new_evm(self.spec, self.block, self.db.clone());
         evm.transact(&self.tx).map(evm2::ExecutedTx::commit)
     }
+
+    fn run_jit(&self) -> evm2::registry::HandlerResult<evm2::TxResult> {
+        let mut runner = Runner::new(self);
+        runner.run()
+    }
 }
 
 struct Runner {
@@ -202,40 +174,15 @@ struct Runner {
 }
 
 impl Runner {
-    fn with_function_map(prepared: &PreparedBench) -> Self {
+    fn new(prepared: &PreparedBench) -> Self {
         let mut evm = new_evm(prepared.spec, prepared.block, prepared.db.clone());
         evm.set_interpreter_runner(FixedJitRunner { functions: Arc::clone(&prepared.functions) });
-        Self { evm, tx: prepared.tx.clone() }
-    }
-
-    fn with_runtime_backend(prepared: &PreparedBench) -> Self {
-        let mut evm = new_evm(prepared.spec, prepared.block, prepared.db.clone());
-        let backend = prepared.runtime_backend.as_ref().expect("runtime benchmark is not enabled");
-        evm.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
         Self { evm, tx: prepared.tx.clone() }
     }
 
     fn run(&mut self) -> evm2::registry::HandlerResult<evm2::TxResult> {
         self.evm.transact(&self.tx).map(evm2::ExecutedTx::commit)
     }
-}
-
-fn compile_runtime_accounts(name: &str, spec: SpecId, accounts: &[CompiledAccount]) -> JitBackend {
-    let backend = JitBackend::new(RuntimeConfig { enabled: true, ..Default::default() })
-        .expect("benchmark JIT runtime must initialize");
-    for account in accounts {
-        backend
-            .compile_jit_sync(LookupRequest {
-                key: RuntimeCacheKey { code_hash: account.code_hash, spec_id: spec },
-                code: account.bytecode.clone(),
-            })
-            .unwrap_or_else(|err| panic!("{name} runtime JIT compilation failed: {err:?}"));
-        assert!(
-            backend.get_compiled(account.code_hash, spec).is_some(),
-            "{name} runtime JIT program was not resident after compilation"
-        );
-    }
-    backend
 }
 
 #[derive(Clone, Debug)]
@@ -250,8 +197,7 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
         interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
-        let code = interpreter.original_bytecode();
-        let func = *self.functions.get(&keccak256(&code))?;
+        let func = *self.functions.get(&interpreter.original_bytecode_hash())?;
         interpreter.prepare_run(config.base_spec_id(), config.version(), host);
         Some(unsafe { func.call_with_interpreter(interpreter) })
     }
