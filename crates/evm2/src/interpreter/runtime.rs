@@ -12,7 +12,7 @@ use crate::{
     version::{EvmFeatures, GasParams},
 };
 use alloc::{boxed::Box, vec::Vec};
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::{Address, B256, Bytes};
 use core::{fmt, ops::Range, ptr::NonNull};
 use derive_where::derive_where;
 
@@ -171,6 +171,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub fn original_bytecode(&self) -> Bytes {
         self.bytecode.original_bytes()
+    }
+
+    /// Calculates or returns the cached hash of the original active bytecode.
+    #[inline]
+    pub fn original_bytecode_hash(&self) -> B256 {
+        self.bytecode.hash_slow()
     }
 
     /// Returns the current operand stack.
