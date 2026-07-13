@@ -512,6 +512,7 @@ pub fn initial_message<'a, T: EvmTypes>(
     value: U256,
     gas_limit: u64,
     reservoir: u64,
+    first_frame_state_gas: u64,
 ) -> HandlerResult<(Bytecode, Message<T>)> {
     let r = match to {
         TxKind::Call(to) => {
@@ -521,12 +522,12 @@ pub fn initial_message<'a, T: EvmTypes>(
                 depth: 0,
                 gas_limit,
                 reservoir,
+                first_frame_state_gas: 0,
                 destination: to,
                 caller,
                 input: input.clone(),
                 value,
-                code_address: initial_code.code_address,
-                disable_precompiles: initial_code.disable_precompiles,
+                code_address: to,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
@@ -541,12 +542,12 @@ pub fn initial_message<'a, T: EvmTypes>(
                 depth: 0,
                 gas_limit,
                 reservoir,
+                first_frame_state_gas,
                 destination: address,
                 caller,
                 input: input.clone(),
                 value,
                 code_address: address,
-                disable_precompiles: false,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
@@ -561,8 +562,6 @@ pub fn initial_message<'a, T: EvmTypes>(
 
 struct InitialCallCode {
     code: Bytecode,
-    code_address: Address,
-    disable_precompiles: bool,
 }
 
 fn initial_call_code<'a, T: EvmTypes>(
@@ -582,13 +581,9 @@ fn initial_call_code<'a, T: EvmTypes>(
             host.state.account(&delegated_address, false).map_err(error_handler!(host))?;
         account.warm();
         let delegated_code = account.load_code().map_err(error_handler!(host))?;
-        return Ok(InitialCallCode {
-            code: delegated_code,
-            code_address: delegated_address,
-            disable_precompiles: true,
-        });
+        return Ok(InitialCallCode { code: delegated_code });
     }
-    Ok(InitialCallCode { code, code_address: to, disable_precompiles: false })
+    Ok(InitialCallCode { code })
 }
 
 /// Rolls back failed top-level execution and normalizes halt gas.
@@ -733,6 +728,9 @@ pub fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
 /// Calculates transaction calldata floor gas.
 pub fn floor_gas(
     version: &Version,
+    caller: Address,
+    to: TxKind,
+    value: U256,
     input: &Bytes,
     access_list_accounts: u64,
     access_list_storage_keys: u64,
@@ -759,7 +757,14 @@ pub fn floor_gas(
     let non_zero_data_len = input.len() as u64 - zero_data_len;
     tokens += zero_data_len * zero_multiplier + non_zero_data_len * non_zero_multiplier;
 
-    params.get(GasId::TxFloorCostBase) as u64 + tokens * floor_cost_per_token
+    let base = if version.feature(EvmFeatures::EIP2780) {
+        let is_create = to.is_create();
+        let is_self_transfer = matches!(to, TxKind::Call(to) if to == caller);
+        eip2780_base_to_value_gas(version, is_create, is_self_transfer, value)
+    } else {
+        u64::from(params.get(GasId::TxFloorCostBase))
+    };
+    base + tokens * floor_cost_per_token
 }
 
 /// Calculates intrinsic transaction gas.
@@ -844,8 +849,11 @@ mod tests {
         registry::TxRegistry,
     };
     use alloc::vec;
-    use alloy_consensus::{TxEip2930, transaction::Recovered};
-    use alloy_eips::eip2930::AccessList;
+    use alloy_consensus::{TxEip2930, TxEip7702, TxLegacy, transaction::Recovered};
+    use alloy_eips::{
+        eip2930::AccessList,
+        eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization},
+    };
 
     #[test]
     fn intrinsic_gas_charges_shanghai_create_initcode_words() {
@@ -949,35 +957,140 @@ mod tests {
     }
 
     #[test]
+    fn amsterdam_create_state_gas_out_of_gas_is_runtime_failure() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
+        );
+        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy {
+                gas_limit: 100_000,
+                to: TxKind::Create,
+                input: Bytes::from_static(&[op::STOP]),
+                ..Default::default()
+            },
+            caller,
+        ));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+
+        let result = evm.transact(&tx).expect("runtime OOG is an executed transaction").discard();
+        assert!(!result.status);
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert_eq!(result.tx_gas_used(), 100_000);
+    }
+
+    #[test]
+    fn amsterdam_authorization_state_gas_out_of_gas_is_runtime_failure() {
+        let caller = Address::with_last_byte(0xaa);
+        let authority = Address::with_last_byte(0xcc);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
+        );
+        let authorization = RecoveredAuthorization::new_unchecked(
+            Authorization {
+                chain_id: U256::from(1),
+                address: Address::with_last_byte(0xdd),
+                nonce: 0,
+            },
+            RecoveredAuthority::Valid(authority),
+        );
+        let tx = LazyTxEip7702::from_cached_recovered_authorizations(
+            TxEip7702 {
+                chain_id: 1,
+                gas_limit: 100_000,
+                to: Address::with_last_byte(0xbb),
+                ..Default::default()
+            },
+            vec![authorization],
+        );
+        let tx = RecoveredTxEnvelope::Eip7702(Recovered::new_unchecked(tx, caller));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+
+        let result = evm.transact(&tx).expect("runtime OOG is an executed transaction").discard();
+        assert!(!result.status);
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert_eq!(result.tx_gas_used(), 100_000);
+    }
+
+    #[test]
     fn floor_gas_charges_prague_calldata_tokens() {
         let input = Bytes::from_static(&[0, 1, 2]);
+        let caller = Address::with_last_byte(0xaa);
+        let to = TxKind::Call(Address::with_last_byte(0xbb));
         let mut prague_without_eip7623 = Version::new(SpecId::PRAGUE);
         prague_without_eip7623.features.remove(EvmFeatures::EIP7623);
 
-        assert_eq!(floor_gas(Version::base(SpecId::SHANGHAI), &input, 0, 0), 0);
-        assert_eq!(floor_gas(Version::base(SpecId::PRAGUE), &input, 0, 0), 21_000 + 9 * 10);
-        assert_eq!(floor_gas(&prague_without_eip7623, &input, 0, 0), 0);
+        assert_eq!(
+            floor_gas(Version::base(SpecId::SHANGHAI), caller, to, U256::ZERO, &input, 0, 0),
+            0
+        );
+        assert_eq!(
+            floor_gas(Version::base(SpecId::PRAGUE), caller, to, U256::ZERO, &input, 0, 0),
+            21_000 + 9 * 10
+        );
+        assert_eq!(floor_gas(&prague_without_eip7623, caller, to, U256::ZERO, &input, 0, 0), 0);
     }
 
     #[test]
     fn floor_gas_charges_amsterdam_access_list_tokens() {
         let input = Bytes::from(vec![1; 1000]);
+        let caller = Address::with_last_byte(0xaa);
+        let to = TxKind::Call(Address::with_last_byte(0xbb));
+        let value = U256::from(1);
 
         assert_eq!(
-            floor_gas(Version::base(SpecId::AMSTERDAM), &input, 1, 1),
-            // EIP-2780: the floor base drops from 21,000 to TX_BASE (12,000).
-            12_000 + (1000 * 4 + 80 + 128) * 16
+            floor_gas(Version::base(SpecId::AMSTERDAM), caller, to, value, &input, 1, 1),
+            // EIP-2780 anchors the floor on sender + recipient + value charges.
+            21_000 + (1000 * 4 + 80 + 128) * 16
         );
 
         // EIP-7976: amsterdam weights zero calldata bytes the same as non-zero
         // bytes in the floor (4 tokens each), unlike EIP-7623 (zero = 1 token).
         let zero_input = Bytes::from(vec![0; 1000]);
         assert_eq!(
-            floor_gas(Version::base(SpecId::AMSTERDAM), &zero_input, 1, 1),
-            12_000 + (1000 * 4 + 80 + 128) * 16
+            floor_gas(Version::base(SpecId::AMSTERDAM), caller, to, value, &zero_input, 1, 1),
+            21_000 + (1000 * 4 + 80 + 128) * 16
         );
         // Prague keeps the EIP-7623 split: zero bytes count as one token each.
-        assert_eq!(floor_gas(Version::base(SpecId::PRAGUE), &zero_input, 0, 0), 21_000 + 1000 * 10);
+        assert_eq!(
+            floor_gas(Version::base(SpecId::PRAGUE), caller, to, value, &zero_input, 0, 0),
+            21_000 + 1000 * 10
+        );
+    }
+
+    #[test]
+    fn amsterdam_floor_uses_decomposed_value_transfer_base() {
+        let caller = Address::with_last_byte(0xaa);
+        let to = TxKind::Call(Address::with_last_byte(0xbb));
+
+        assert_eq!(
+            floor_gas(
+                Version::base(SpecId::AMSTERDAM),
+                caller,
+                to,
+                U256::from(1),
+                &Bytes::from_static(&[0]),
+                0,
+                0,
+            ),
+            21_064
+        );
     }
 
     #[test]
@@ -1098,9 +1211,9 @@ mod tests {
     }
 
     #[test]
-    fn initial_delegated_call_uses_delegated_code_address() {
+    fn initial_delegated_call_keeps_target_code_address() {
         let caller = Address::with_last_byte(0xaa);
-        let target = Address::with_last_byte(0x02);
+        let target = Address::with_last_byte(0x42);
         let delegated = Address::with_last_byte(0x33);
         let delegated_code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
@@ -1135,11 +1248,11 @@ mod tests {
             U256::ZERO,
             100_000,
             0,
+            0,
         )
         .unwrap();
         assert_eq!(message.destination, target);
-        assert_eq!(message.code_address, delegated);
-        assert!(message.disable_precompiles);
+        assert_eq!(message.code_address, target);
 
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
 

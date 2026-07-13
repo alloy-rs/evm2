@@ -10,11 +10,11 @@ use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult,
     env::TxEnv,
     evm::error_handler,
-    interpreter::Host,
+    interpreter::{GasTracker, Host, InstrStop, MessageResult},
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
 };
-use alloy_primitives::U256;
+use alloy_primitives::{Address, TxKind, U256, map::AddressHashSet};
 
 /// Executes an EIP-7702 transaction using Ethereum rules.
 pub fn handle<T: EvmTypes>(
@@ -47,12 +47,22 @@ pub fn handle<T: EvmTypes>(
         access_list_storage_keys,
         tx.value,
     ) + eip7702_authorization_gas(req.host, tx.authorization_list.len());
-    // EIP-8037: per-auth state gas (account + bytecode) is charged before execution. Zero before
-    // Amsterdam.
-    let initial_state_gas = eip7702_authorization_state_gas(req.host, tx.authorization_list.len());
-    validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
-    let floor_gas =
-        floor_gas(req.host.version(), &tx.input, access_list_accounts, access_list_storage_keys);
+    let is_eip2780 = req.host.feature(EvmFeatures::EIP2780);
+    let pre_execution_state_gas = if is_eip2780 {
+        0
+    } else {
+        eip7702_authorization_state_gas(req.host, tx.authorization_list.len())
+    };
+    validate_intrinsic_gas(tx.gas_limit, intrinsic, pre_execution_state_gas)?;
+    let floor_gas = floor_gas(
+        req.host.version(),
+        caller,
+        tx.to.into(),
+        tx.value,
+        &tx.input,
+        access_list_accounts,
+        access_list_storage_keys,
+    );
     validate_floor_gas(tx.gas_limit, floor_gas)?;
     validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
@@ -66,18 +76,55 @@ pub fn handle<T: EvmTypes>(
     charge_upfront(req.host, caller, effective_gas_cost)?;
     req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
     let chain_id = req.host.version().chain_id;
-    let (state_refund, regular_refund) =
-        apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
+
+    let mut state_refund = 0;
+    let mut regular_refund = 0;
+    let settlement_initial_state_gas;
+    let (gas_limit, reservoir) = if is_eip2780 {
+        let (gas_limit, reservoir) =
+            initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, 0, 0);
+        let mut runtime_gas = GasTracker::new_with_regular_gas_and_reservoir(gas_limit, reservoir);
+        let auth_checkpoint = req.host.state.checkpoint();
+        let auth_gas = apply_auth_list_eip2780(
+            req.host,
+            chain_id,
+            &tx.authorization_list,
+            caller,
+            tx.to.into(),
+            tx.value,
+            &mut runtime_gas,
+        )?;
+        if auth_gas.out_of_gas {
+            req.host.state.rollback(auth_checkpoint, req.host.version().features);
+            return settle_gas(
+                req.host,
+                caller,
+                gas_price,
+                tx.gas_limit,
+                floor_gas,
+                0,
+                0,
+                false,
+                runtime_oog_result(tx.gas_limit, reservoir),
+            );
+        }
+        settlement_initial_state_gas = auth_gas.state_gas;
+        (runtime_gas.remaining(), runtime_gas.reservoir())
+    } else {
+        (state_refund, regular_refund) =
+            apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
+        settlement_initial_state_gas = pre_execution_state_gas;
+        initial_gas_and_reservoir(
+            req.host.version(),
+            tx.gas_limit,
+            intrinsic,
+            pre_execution_state_gas,
+            state_refund,
+        )
+    };
     let execution_checkpoint = req.host.state.checkpoint();
 
     // EIP-7702 transactions are always calls, never creates.
-    let (gas_limit, reservoir) = initial_gas_and_reservoir(
-        req.host.version(),
-        tx.gas_limit,
-        intrinsic,
-        initial_state_gas,
-        state_refund,
-    );
     let tx_env = TxEnv {
         origin: caller,
         gas_price,
@@ -93,12 +140,15 @@ pub fn handle<T: EvmTypes>(
         tx.value,
         gas_limit,
         reservoir,
+        0,
     )?;
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
-    result.gas.set_refunded(
-        result.gas.refunded().saturating_add(i64::try_from(regular_refund).unwrap_or(i64::MAX)),
-    );
+    if regular_refund != 0 {
+        result.gas.set_refunded(
+            result.gas.refunded().saturating_add(i64::try_from(regular_refund).unwrap_or(i64::MAX)),
+        );
+    }
 
     settle_gas(
         req.host,
@@ -106,7 +156,7 @@ pub fn handle<T: EvmTypes>(
         gas_price,
         tx.gas_limit,
         floor_gas,
-        initial_state_gas,
+        settlement_initial_state_gas,
         state_refund,
         false,
         result,
@@ -114,7 +164,12 @@ pub fn handle<T: EvmTypes>(
 }
 
 fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations: usize) -> u64 {
-    let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
+    let mut per_auth =
+        u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
+    if host.feature(EvmFeatures::EIP2780) {
+        per_auth = per_auth
+            .saturating_sub(u64::from(host.version().gas_params.get(GasId::TxEip7702AuthRefund)));
+    }
     (authorizations as u64).saturating_mul(per_auth)
 }
 
@@ -177,6 +232,118 @@ fn apply_one_auth<'a, T: EvmTypes>(
     let clearing = authorization.address().is_zero();
     account.set_delegation(*authorization.address());
     Ok(Some(AppliedAuth { existed, delegated_before_tx, delegated_now, clearing }))
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RuntimeAuthListGas {
+    state_gas: u64,
+    out_of_gas: bool,
+}
+
+fn runtime_oog_result<T: EvmTypes>(tx_gas_limit: u64, reservoir: u64) -> MessageResult<T> {
+    MessageResult {
+        stop: InstrStop::OutOfGas,
+        gas: GasTracker::new_spent_with_reservoir(tx_gas_limit, reservoir),
+        ..MessageResult::default()
+    }
+}
+
+const fn spend_regular(gas: &mut GasTracker, cost: u64) -> bool {
+    let mut next = *gas;
+    if next.spend(cost).is_err() {
+        return false;
+    }
+    *gas = next;
+    true
+}
+
+fn spend_state(gas: &mut GasTracker, cost: u64) -> bool {
+    let mut next = *gas;
+    if next.spend_state(cost).is_err() {
+        return false;
+    }
+    *gas = next;
+    true
+}
+
+fn apply_auth_list_eip2780<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
+    chain_id: u64,
+    authorizations: &[super::LazyAuthorization],
+    caller: Address,
+    to: TxKind,
+    value: U256,
+    gas: &mut GasTracker,
+) -> HandlerResult<RuntimeAuthListGas> {
+    let account_write = u64::from(host.version().gas_params.get(GasId::TxEip7702AuthRefund));
+    let new_account = host.version().gas_params.new_account_state_gas();
+    let auth_base = u64::from(host.version().gas_params.get(GasId::TxEip7702PerAuthState));
+    let mut written_accounts = AddressHashSet::default();
+    written_accounts.insert(caller);
+    if let TxKind::Call(target) = to
+        && !value.is_zero()
+    {
+        written_accounts.insert(target);
+    }
+    let mut charged_delegation_bytes = AddressHashSet::default();
+    let mut state_gas = 0u64;
+
+    for authorization in authorizations {
+        if !authorization.chain_id().is_zero() && authorization.chain_id() != &U256::from(chain_id)
+        {
+            continue;
+        }
+        if authorization.nonce() == u64::MAX {
+            continue;
+        }
+        let Some(authority) = authorization.authority() else {
+            continue;
+        };
+
+        let mut account = host.state.account(&authority, false).map_err(error_handler!(host))?;
+        account.warm();
+        let existed = account.exists();
+        let authority_nonce = account.nonce();
+        let code = account.load_code().map_err(error_handler!(host))?;
+        let delegated_now = !code.is_empty();
+        if delegated_now && !code.is_eip7702() {
+            continue;
+        }
+        if authorization.nonce() != authority_nonce {
+            continue;
+        }
+        let delegated_before_tx =
+            account.original_code().map_err(error_handler!(host))?.is_eip7702();
+        let clearing = authorization.address().is_zero();
+
+        if !existed {
+            if !spend_state(gas, new_account) {
+                return Ok(RuntimeAuthListGas { state_gas, out_of_gas: true });
+            }
+            state_gas = state_gas.saturating_add(new_account);
+        }
+        if !written_accounts.contains(&authority) {
+            if !spend_regular(gas, account_write) {
+                return Ok(RuntimeAuthListGas { state_gas, out_of_gas: true });
+            }
+            written_accounts.insert(authority);
+        }
+        if !clearing
+            && !delegated_now
+            && !delegated_before_tx
+            && !charged_delegation_bytes.contains(&authority)
+        {
+            if !spend_state(gas, auth_base) {
+                return Ok(RuntimeAuthListGas { state_gas, out_of_gas: true });
+            }
+            state_gas = state_gas.saturating_add(auth_base);
+            charged_delegation_bytes.insert(authority);
+        }
+
+        account.set_delegation(*authorization.address());
+    }
+
+    Ok(RuntimeAuthListGas { state_gas, out_of_gas: false })
 }
 
 /// Applies the EIP-7702 authorization list and returns `(state_refund, regular_refund)`.

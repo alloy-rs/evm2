@@ -1,6 +1,7 @@
 /target
 /fuzz/artifacts
 /fuzz/corpus
+/fuzz/coverage
 /fuzz/target
 fuzz-*.log
 .DS_Store

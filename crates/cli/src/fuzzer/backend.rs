@@ -95,6 +95,12 @@ fn run_evm2(
             .transact(&tx.evm2())
             .map(|executed| executed.detach())
             .map_err(|err| format!("{err:?}"));
+        // A resolved top-level transaction must clear all transaction-local state, or warm/touched
+        // entries can leak into the next transaction and change EIP-2929 gas semantics.
+        assert!(
+            evm.state().transaction_state_is_empty(),
+            "evm2 transact left transaction-local state behind"
+        );
         match result {
             Ok(result) => {
                 let tx_result = &result.result;
@@ -211,7 +217,15 @@ impl EvmBackend for RevmBackend {
                 tx_env.authorization_list =
                     tx.eip7702_authorization_list().into_iter().map(Either::Left).collect();
             }
-            match evm.transact(tx_env) {
+            let result = evm.transact(tx_env);
+            let leftover = evm.finalize();
+            // Revm transact already returns finalized state; a second finalize must not drain
+            // anything, or transaction-local journal state survived the top-level transaction.
+            assert!(
+                leftover.is_empty(),
+                "revm transact left transaction-local journal state: {leftover:#?}"
+            );
+            match result {
                 Ok(result) => {
                     let kind = if result.result.is_success() {
                         OutcomeKind::Success
@@ -242,7 +256,7 @@ impl EvmBackend for RevmBackend {
     }
 }
 
-fn evm2_db(case: &EvmCase) -> InMemoryDB {
+pub(super) fn evm2_db(case: &EvmCase) -> InMemoryDB {
     let mut db = InMemoryDB::default();
     for account in &case.accounts {
         db.insert_account_info(
@@ -259,7 +273,7 @@ fn evm2_db(case: &EvmCase) -> InMemoryDB {
     db
 }
 
-fn revm_db(case: &EvmCase) -> RevmInMemoryDB {
+pub(super) fn revm_db(case: &EvmCase) -> RevmInMemoryDB {
     let mut db = RevmInMemoryDB::new(RevmEmptyDB::new());
     for account in &case.accounts {
         let mut info = revm::state::AccountInfo {
@@ -279,7 +293,7 @@ fn revm_db(case: &EvmCase) -> RevmInMemoryDB {
     db
 }
 
-const fn revm_spec(spec: SpecId) -> RevmSpecId {
+pub(super) const fn revm_spec(spec: SpecId) -> RevmSpecId {
     match spec {
         SpecId::FRONTIER => RevmSpecId::FRONTIER,
         SpecId::HOMESTEAD => RevmSpecId::HOMESTEAD,

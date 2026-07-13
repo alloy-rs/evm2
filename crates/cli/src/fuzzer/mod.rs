@@ -17,12 +17,11 @@
 //!
 //! `cargo run -p evm2-cli -- fuzzer corpus crates/cli/fuzzer/corpus/failures`
 
-#![allow(missing_docs)]
-
 mod backend;
 mod case;
 mod cli;
 mod coverage;
+pub mod inspect;
 mod io;
 mod minimize;
 mod normalize;

@@ -1,6 +1,6 @@
 use evm2_fuzzer::{
     CaseContext, Evm2Backend, EvmBackend, EvmCase, RevmBackend, SpecId, bytecode_case_with_spec,
-    compare_case,
+    compare_case, compare_inspector_case,
 };
 
 #[cfg(feature = "jit")]
@@ -48,6 +48,9 @@ pub fn run_case(case: EvmCase) {
     if let Err(err) = compare_case(&backends, &case, CaseContext::Bytes) {
         panic!("{err}");
     }
+    if let Err(err) = compare_inspector_case(&case, CaseContext::Bytes) {
+        panic!("{err}");
+    }
 }
 
 #[cfg(feature = "jit")]
@@ -57,11 +60,17 @@ pub fn run_case(case: EvmCase) {
         if let Err(err) = compare_case(&backends, &case, CaseContext::Bytes) {
             panic!("{err}");
         }
+        if let Err(err) = compare_inspector_case(&case, CaseContext::Bytes) {
+            panic!("{err}");
+        }
         return;
     }
 
     let backends: [&dyn EvmBackend; 3] = [&RevmBackend, &Evm2Backend, &JitEvm2Backend];
     if let Err(err) = compare_case(&backends, &case, CaseContext::Bytes) {
+        panic!("{err}");
+    }
+    if let Err(err) = compare_inspector_case(&case, CaseContext::Bytes) {
         panic!("{err}");
     }
 }

@@ -628,7 +628,7 @@ fn bounded_bytes(mut bytes: Vec<u8>, max_len: usize) -> Bytes {
     bytes.into()
 }
 
-fn word(bytes: [u8; 32]) -> U256 {
+const fn word(bytes: [u8; 32]) -> U256 {
     U256::from_be_slice(&bytes)
 }
 

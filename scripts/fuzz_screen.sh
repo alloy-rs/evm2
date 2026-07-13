@@ -20,7 +20,7 @@ CRASH_LOG="${FUZZ_CRASH_LOG:-$LOG_ROOT/crashes.log}"
 CARGO_BIN="${CARGO:-cargo}"
 RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-nightly}"
 CARGO_FUZZ_RUN_ARGS="${CARGO_FUZZ_RUN_ARGS:---features jit --no-trace-compares}"
-LIBFUZZER_ARGS="${LIBFUZZER_ARGS:--rss_limit_mb=8192}"
+LIBFUZZER_ARGS="${LIBFUZZER_ARGS:--timeout=300 -ignore_ooms=1 -rss_limit_mb=8192}"
 ROTATELOGS_BIN="${ROTATELOGS_BIN:-}"
 if [[ -z "${LLVM_SYS_221_PREFIX:-}" && -x /usr/lib/llvm-22/bin/llvm-config ]]; then
     export LLVM_SYS_221_PREFIX=/usr/lib/llvm-22
@@ -47,7 +47,9 @@ Options:
 
 Environment:
   CARGO_FUZZ_RUN_ARGS  Extra cargo-fuzz run args. Default: --features jit --no-trace-compares
-  LIBFUZZER_ARGS       Default libFuzzer args appended after '--'. Default: -rss_limit_mb=8192
+  LIBFUZZER_ARGS       Default libFuzzer args appended after '--'. Default: -timeout=300 -ignore_ooms=1 -rss_limit_mb=8192
+  FUZZ_WORKER_WALL_TIME
+                       Optional positive wall-clock seconds; expiry is a clean scheduled stop.
   FUZZ_CRASH_HOOK      Optional executable called on nonzero fuzzer exit.
                        Overrides the default Slack hook.
                        Args: target status current_log artifact_dir session
@@ -236,8 +238,13 @@ run_worker() {
     local env_libfuzzer_args=()
     local libfuzzer_args=()
     local status
+    local worker_wall_time="${FUZZ_WORKER_WALL_TIME:-}"
 
     require_cmd "$CARGO_BIN"
+    if [[ -n "$worker_wall_time" ]]; then
+        [[ "$worker_wall_time" =~ ^[1-9][0-9]*$ ]] || die "FUZZ_WORKER_WALL_TIME must be a positive integer"
+        require_cmd timeout
+    fi
     rotatelogs_bin="$(resolve_rotatelogs)"
     mkdir -p "$log_dir" "$artifact_dir" "$ROOT/fuzz/corpus/$target"
 
@@ -256,11 +263,23 @@ run_worker() {
         printf 'root: %s\n' "$ROOT"
         printf 'log: %s\n' "$current_log"
         printf 'artifacts: %s\n' "$artifact_dir"
-        print_command "$CARGO_BIN" "+$RUSTUP_TOOLCHAIN" fuzz run "${cargo_args[@]}" "$target" -- "${libfuzzer_args[@]}"
-        "$CARGO_BIN" "+$RUSTUP_TOOLCHAIN" fuzz run "${cargo_args[@]}" "$target" -- "${libfuzzer_args[@]}"
+        if [[ -n "$worker_wall_time" ]]; then
+            print_command timeout --signal=INT --kill-after=30 "$worker_wall_time" \
+                "$CARGO_BIN" "+$RUSTUP_TOOLCHAIN" fuzz run "${cargo_args[@]}" "$target" -- "${libfuzzer_args[@]}"
+            timeout --signal=INT --kill-after=30 "$worker_wall_time" \
+                "$CARGO_BIN" "+$RUSTUP_TOOLCHAIN" fuzz run "${cargo_args[@]}" "$target" -- "${libfuzzer_args[@]}"
+        else
+            print_command "$CARGO_BIN" "+$RUSTUP_TOOLCHAIN" fuzz run "${cargo_args[@]}" "$target" -- "${libfuzzer_args[@]}"
+            "$CARGO_BIN" "+$RUSTUP_TOOLCHAIN" fuzz run "${cargo_args[@]}" "$target" -- "${libfuzzer_args[@]}"
+        fi
     } 2>&1 | "$rotatelogs_bin" -L "$current_log" "$log_pattern" "$LOG_ROTATE_SIZE"
     status=${PIPESTATUS[0]}
     set -e
+
+    if [[ -n "$worker_wall_time" ]] && ((status == 124)); then
+        printf '[%s] target=%s reached scheduled wall time=%ss\n' "$(date -Is)" "$target" "$worker_wall_time" >>"$current_log"
+        status=0
+    fi
 
     printf '[%s] target=%s exited status=%s\n' "$(date -Is)" "$target" "$status" >>"$current_log"
     if ((status != 0)); then

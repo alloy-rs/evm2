@@ -45,6 +45,11 @@ pub struct Message<T: EvmTypesHost = BaseEvmTypes> {
     /// [`GasTracker::merge_child_gas`](crate::interpreter::GasTracker::merge_child_gas).
     /// Zero for non-Amsterdam execution.
     pub reservoir: u64,
+    /// EIP-2780/EIP-8037 state gas charged on the first frame after transaction inclusion.
+    ///
+    /// Used for top-level CREATE state gas so failure can roll the charge back through normal
+    /// frame gas settlement. Zero for non-top-level messages and non-Amsterdam execution.
+    pub first_frame_state_gas: u64,
     /// Account whose context is being executed.
     pub destination: Address,
     /// Immediate caller.
@@ -53,12 +58,13 @@ pub struct Message<T: EvmTypesHost = BaseEvmTypes> {
     pub input: Bytes,
     /// Value transferred with the message.
     pub value: U256,
-    /// Address whose code is being executed. This can differ from `destination` for `CALLCODE`,
-    /// `DELEGATECALL`, and EIP-7702 delegated-code execution.
+    /// Address whose bytecode account is being called.
+    ///
+    /// This can differ from `destination` for `CALLCODE` and `DELEGATECALL`. For EIP-7702
+    /// delegated-code execution this remains the target account, matching revm's
+    /// `CallInputs::bytecode_address`; the resolved delegated bytecode is passed to the
+    /// interpreter separately.
     pub code_address: Address,
-    /// Whether native precompile dispatch is disabled for this frame because its bytecode was
-    /// loaded through an EIP-7702 delegation designation.
-    pub disable_precompiles: bool,
     /// Whether the immediate caller frame is executing in a static context. Combined with a
     /// `STATICCALL` kind, this determines whether the new frame is static.
     pub caller_is_static: bool,

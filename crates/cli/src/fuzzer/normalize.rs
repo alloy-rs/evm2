@@ -98,7 +98,7 @@ pub(crate) struct CanonicalLog {
     pub(crate) data: Vec<u8>,
 }
 
-fn normalize_error(error: String) -> String {
+pub(crate) fn normalize_error(error: String) -> String {
     let error = error
         .strip_prefix("Transaction(")
         .and_then(|error| error.strip_suffix(')'))

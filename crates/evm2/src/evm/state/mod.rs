@@ -338,6 +338,18 @@ impl<'a> State<'a> {
         self.logs.clear();
     }
 
+    /// Returns whether transaction-scoped state has been fully cleared.
+    #[inline]
+    pub fn transaction_state_is_empty(&self) -> bool {
+        self.accounts.is_empty()
+            && self.prewarm_set.is_empty()
+            && self.storage.is_empty()
+            && self.journal.is_empty()
+            && self.selfdestructs.is_empty()
+            && self.transient_storage.is_empty()
+            && self.logs.is_empty()
+    }
+
     /// Ensures the account is present in the transaction overlay, loading it from the backing
     /// database when it has not been loaded yet.
     ///

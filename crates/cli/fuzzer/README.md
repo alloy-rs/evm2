@@ -52,6 +52,35 @@ Run any target with the JIT backend included:
 cargo +nightly fuzz run --features jit evm_smith_arbitrary_compare_amsterdam
 ```
 
+Replay saved cargo-fuzz artifacts as fixed inputs without starting open-ended fuzzing:
+
+```sh
+scripts/fuzz_replay_artifacts.sh structured_compare_amsterdam
+```
+
+The replay helper defaults to `crash-*` artifacts and libFuzzer args
+`-runs=1 -timeout=300 -ignore_ooms=1 -rss_limit_mb=8192`.
+
+Run all cargo-fuzz targets continuously with bounded contention:
+
+```sh
+scripts/fuzz_round_robin.sh
+```
+
+The round-robin scheduler defaults to eight concurrent targets and gives each
+target a hard one-hour wall-clock slice. It preserves the screen runner
+defaults for the 300-second timeout, OOM handling, and RSS limit, and disables `slow-unit-*`
+reporting. Inspect or stop it with:
+
+```sh
+scripts/fuzz_round_robin.sh --status
+scripts/fuzz_round_robin.sh --stop
+```
+
+Use `--jobs` and `--slice` to adjust concurrency and the per-target time slice.
+For example, `scripts/fuzz_round_robin.sh --jobs 4 --slice 900 *_amsterdam` runs
+four Amsterdam targets at a time for fifteen minutes each.
+
 Fuzzer corpora, artifacts, target directories, logs, and lockfiles are ignored
 by the repository-level `.gitignore`.
 

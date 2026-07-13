@@ -345,6 +345,71 @@ mod tests {
 
     #[test]
     #[cfg(feature = "llvm")]
+    fn compiled_amsterdam_create_checks_balance_before_state_gas() {
+        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
+            SpecId::AMSTERDAM,
+        );
+        let creator = Address::from([0x33; 20]);
+        let code = [
+            op::PUSH0,
+            op::PUSH0,
+            op::PUSH1,
+            2,
+            op::CREATE,
+            op::PUSH0,
+            op::MSTORE,
+            op::PUSH1,
+            0x20,
+            op::PUSH0,
+            op::RETURN,
+        ];
+
+        let run = |with_jit: bool| {
+            let mut database = InMemoryDB::default();
+            database
+                .insert_account_info(&creator, AccountInfo::default().with_balance(Word::from(1)));
+            let backend = blocking_backend();
+            let mut host = Evm::<BaseEvmTypes>::new(
+                SpecId::AMSTERDAM,
+                BlockEnv::default(),
+                ethereum_tx_registry(SpecId::AMSTERDAM),
+                database,
+                Precompiles::base(SpecId::AMSTERDAM),
+            );
+            host.state_mut().prewarm(&creator);
+            if with_jit {
+                host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
+            }
+            let tx_env = TxEnv::default();
+            let message =
+                Message { gas_limit: 100_000, destination: creator, ..Message::default() };
+            let mut interpreter = Interpreter::<BaseEvmTypes>::new(
+                Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+                &tx_env,
+                &message,
+            );
+            let stop = if with_jit {
+                run_interpreter(&backend, &config, &mut interpreter, &mut host).unwrap()
+            } else {
+                interpreter.run(&config, &mut host)
+            };
+            (
+                stop,
+                interpreter.gas().spent(),
+                interpreter.gas().refunded(),
+                interpreter.output().to_vec(),
+            )
+        };
+
+        let interpreter = run(false);
+        let jit = run(true);
+        assert_eq!(jit, interpreter);
+        assert_eq!(jit.0, InstrStop::Return);
+        assert_eq!(jit.3, vec![0; 32]);
+    }
+
+    #[test]
+    #[cfg(feature = "llvm")]
     fn compiled_staticcall_zeros_child_callvalue() {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,

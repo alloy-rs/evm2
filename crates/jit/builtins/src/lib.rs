@@ -664,34 +664,61 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         version.gas_params.get(GasId::Create).into()
     };
     ecx.gas.spend(create_cost)?;
-    if ecx.enables(EvmFeatures::EIP8037) {
-        ecx.gas.spend_state(version.gas_params.create_state_gas())?;
-    }
-
-    let mut gas_limit = ecx.gas.remaining();
-    if ecx.enables(EvmFeatures::EIP150) {
-        gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
-    }
-    ecx.gas.spend(gas_limit)?;
     let salt = if is_create2 {
         pop!(sp; salt);
         B256::from(salt.to_be_bytes())
     } else {
         B256::ZERO
     };
-
+    let value = value.to_u256();
     let current = ecx.message();
+    let current_destination = current.destination;
+    let depth = current.depth.saturating_add(1);
+
+    let charged_create_state_gas = if ecx.enables(EvmFeatures::EIP8037) {
+        let caller_account = ecx.host().load_account(&current_destination, false, false)?;
+        if caller_account.balance < value || caller_account.nonce == u64::MAX {
+            unsafe {
+                sp.write(EvmWord::ZERO);
+            }
+            ecx.set_return_data(Bytes::new());
+            return Ok(());
+        }
+
+        let destination = if is_create2 {
+            current_destination.create2(salt, keccak256(code.as_ref()))
+        } else {
+            current_destination.create(caller_account.nonce)
+        };
+        let destination_account = ecx.host().load_account(&destination, false, false)?;
+        if destination_account.is_empty {
+            let create_state_gas = version.gas_params.create_state_gas();
+            ecx.gas.spend_state(create_state_gas)?;
+            create_state_gas
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let mut gas_limit = ecx.gas.remaining();
+    if ecx.enables(EvmFeatures::EIP150) {
+        gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
+    }
+    ecx.gas.spend(gas_limit)?;
+
     let mut message = Message {
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
-        depth: current.depth.saturating_add(1),
+        depth,
         gas_limit,
         reservoir: ecx.gas.reservoir(),
-        destination: current.destination,
-        caller: current.destination,
+        first_frame_state_gas: 0,
+        destination: current_destination,
+        caller: current_destination,
         input: code,
-        value: value.to_u256(),
-        code_address: current.destination,
-        disable_precompiles: false,
+        value,
+        code_address: current_destination,
         caller_is_static: false,
         salt,
         ext: (),
@@ -702,8 +729,8 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     let mut result = ecx.host().execute_message(tx_env, bytecode, &mut message);
     ecx.gas.merge_child_gas(result.gas, result.stop);
     let create_failed = result.created_address.is_none() || !result.stop.is_success();
-    if (create_failed || result.created_target_was_alive) && ecx.enables(EvmFeatures::EIP8037) {
-        ecx.gas.refill_reservoir(ecx.gas_params().create_state_gas());
+    if create_failed && charged_create_state_gas != 0 {
+        ecx.gas.refill_reservoir(charged_create_state_gas);
     }
 
     let address = EvmWord::from(result.created_address_for_parent());
@@ -770,31 +797,27 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         usize::MAX
     };
 
-    let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address, disable_precompiles) =
+    let (gas_limit, new_account_state_gas, loaded_code) =
         load_acc_and_calc_gas(ecx, to, transfers_value, call_kind == CallKind::Call, local_gas_limit)?;
 
     let current = ecx.message();
-    let (destination, caller, call_value, code_address) = match call_kind {
-        CallKind::Call => (to, current.destination, value, resolved_code_address),
-        CallKind::CallCode => {
-            (current.destination, current.destination, value, resolved_code_address)
-        }
-        CallKind::DelegateCall => {
-            (current.destination, current.caller, current.value, resolved_code_address)
-        }
-        CallKind::StaticCall => (to, current.destination, U256::ZERO, resolved_code_address),
+    let (destination, caller, call_value) = match call_kind {
+        CallKind::Call => (to, current.destination, value),
+        CallKind::CallCode => (current.destination, current.destination, value),
+        CallKind::DelegateCall => (current.destination, current.caller, current.value),
+        CallKind::StaticCall => (to, current.destination, U256::ZERO),
     };
     let mut message = Message {
         kind: call_kind.into(),
         depth: current.depth.saturating_add(1),
         gas_limit,
         reservoir: ecx.gas.reservoir(),
+        first_frame_state_gas: 0,
         destination,
         caller,
         input,
         value: call_value,
-        code_address,
-        disable_precompiles,
+        code_address: to,
         caller_is_static: ecx.is_static(),
         salt: B256::ZERO,
         ext: (),
@@ -834,7 +857,7 @@ fn load_acc_and_calc_gas(
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
-) -> Result<(u64, u64, Bytecode, Address, bool), BuiltinError> {
+) -> Result<(u64, u64, Bytecode), BuiltinError> {
     let version = *ecx.version();
     if transfers_value {
         ecx.gas.spend(version.gas_params.get(GasId::TransferValueCost).into())?;
@@ -854,7 +877,6 @@ fn load_acc_and_calc_gas(
     }
     let mut new_account_state_gas = 0;
     let mut code = account.code;
-    let mut code_address = to;
     if ecx.enables(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
@@ -871,7 +893,6 @@ fn load_acc_and_calc_gas(
             cost += additional_cold_cost;
         }
         code = delegated_account.code;
-        code_address = delegated_address;
     }
     let features = ecx.version().features;
     if create_empty_account
@@ -900,8 +921,7 @@ fn load_acc_and_calc_gas(
         gas_limit = gas_limit.saturating_add(version.gas_params.get(GasId::CallStipend).into());
     }
 
-    let disable_precompiles = code_address != to;
-    Ok((gas_limit, new_account_state_gas, code, code_address, disable_precompiles))
+    Ok((gas_limit, new_account_state_gas, code))
 }
 
 #[unsafe(no_mangle)]

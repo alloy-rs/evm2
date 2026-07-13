@@ -1,0 +1,223 @@
+From f44e4d8cfc238b84bbce116c5ee91b79e2780914 Mon Sep 17 00:00:00 2001
+From: 0xalpharush <0xalpharush@protonmail.com>
+Date: Thu, 9 Jul 2026 22:56:44 +0000
+Subject: [PATCH] fix EIP-7708 inspector log hooks
+
+---
+ crates/inspector/src/handler.rs         | 37 ++++++++++-
+ crates/inspector/src/inspector_tests.rs | 87 ++++++++++++++++++++++++-
+ crates/inspector/src/traits.rs          |  7 +-
+ 3 files changed, 127 insertions(+), 4 deletions(-)
+
+diff --git a/crates/inspector/src/handler.rs b/crates/inspector/src/handler.rs
+index eed25211..15ec77d4 100644
+--- a/crates/inspector/src/handler.rs
++++ b/crates/inspector/src/handler.rs
+@@ -9,7 +9,11 @@ use interpreter::{
+     CallOutcome, CreateOutcome, FrameInput, Host, InitialAndFloorGas, InstructionResult,
+     Interpreter, InterpreterAction, InterpreterTypes,
+ };
+-use primitives::{hints_util::cold_path, TxKind};
++use primitives::{
++    eip7708::{ETH_TRANSFER_LOG_ADDRESS, ETH_TRANSFER_LOG_TOPIC},
++    hints_util::cold_path,
++    Log, TxKind,
++};
+ use state::bytecode::opcode;
+ 
+ /// Trait that extends [`Handler`] with inspection functionality.
+@@ -265,6 +269,7 @@ where
+         }
+ 
+         let opcode = interpreter.bytecode.opcode();
++        let logs_i = context.journal().logs().len();
+         if let Err(e) = interpreter.step(instructions, gas_table, context) {
+             cold_path();
+             if interpreter.bytecode.action().is_none() {
+@@ -274,6 +279,8 @@ where
+ 
+         if (opcode::LOG0..=opcode::LOG4).contains(&opcode) {
+             inspect_log(interpreter, context, &mut inspector);
++        } else {
++            inspect_eip7708_transfer_logs(context, &mut inspector, logs_i);
+         }
+ 
+         inspector.step_end(interpreter, context);
+@@ -296,6 +303,34 @@ where
+     next_action
+ }
+ 
++#[inline]
++pub(crate) fn inspect_eip7708_transfer_logs<CTX, IT>(
++    context: &mut CTX,
++    inspector: &mut impl Inspector<CTX, IT>,
++    logs_i: usize,
++) where
++    CTX: ContextTr<Journal: JournalExt>,
++    IT: InterpreterTypes,
++{
++    let logs = context.journal().logs();
++    if logs_i >= logs.len() {
++        return;
++    }
++
++    let logs = logs[logs_i..].to_vec();
++    for log in logs {
++        if is_eip7708_transfer_log(&log) {
++            inspector.log(context, log);
++        }
++    }
++}
++
++#[inline]
++fn is_eip7708_transfer_log(log: &Log) -> bool {
++    log.address == ETH_TRANSFER_LOG_ADDRESS
++        && log.data.topics().first() == Some(&ETH_TRANSFER_LOG_TOPIC)
++}
++
+ #[inline(never)]
+ #[cold]
+ fn inspect_log<CTX, IT>(
+diff --git a/crates/inspector/src/inspector_tests.rs b/crates/inspector/src/inspector_tests.rs
+index 6372ef03..55fb70f4 100644
+--- a/crates/inspector/src/inspector_tests.rs
++++ b/crates/inspector/src/inspector_tests.rs
+@@ -3,10 +3,15 @@ mod tests {
+     use crate::{
+         InspectCommitEvm, InspectEvm, InspectSystemCallEvm, InspectorEvent, TestInspector,
+     };
+-    use context::{Context, TxEnv};
++    use context::{CfgEnv, Context, TxEnv};
+     use database::{BenchmarkDB, BENCH_CALLER, BENCH_TARGET};
+     use handler::{ExecuteEvm, MainBuilder, MainContext};
+-    use primitives::{address, Address, Bytes, TxKind, U256};
++    use primitives::{
++        address,
++        eip7708::{ETH_TRANSFER_LOG_ADDRESS, ETH_TRANSFER_LOG_TOPIC},
++        hardfork::SpecId,
++        Address, Bytes, TxKind, B256, U256,
++    };
+     use state::{bytecode::opcode, AccountInfo, Bytecode};
+ 
+     #[test]
+@@ -399,6 +404,84 @@ mod tests {
+         assert_eq!(log.topics().len(), 0, "LOG0 should have 0 topics");
+     }
+ 
++    #[test]
++    fn test_eip7708_tx_value_transfer_log_is_inspected() {
++        let recipient = address!("4000000000000000000000000000000000000000");
++        let value = U256::from(1_000_000_000_000_000u128);
++
++        let ctx = Context::mainnet()
++            .with_cfg(CfgEnv::new_with_spec(SpecId::AMSTERDAM))
++            .with_db(BenchmarkDB::new_bytecode(Bytecode::new()));
++        let mut evm = ctx.build_mainnet_with_inspector(TestInspector::new());
++
++        let result = evm
++            .inspect_one_tx(
++                TxEnv::builder_for_bench()
++                    .to(recipient)
++                    .value(value)
++                    .gas_limit(300_000)
++                    .gas_price(0)
++                    .build_fill(),
++            )
++            .unwrap();
++        assert!(result.is_success());
++
++        let events = evm.inspector.get_events();
++        let transfer_log = events.iter().find_map(|event| {
++            let InspectorEvent::Log(log) = event else {
++                return None;
++            };
++            (log.address == ETH_TRANSFER_LOG_ADDRESS
++                && log.data.topics().len() == 3
++                && log.data.topics()[0] == ETH_TRANSFER_LOG_TOPIC
++                && log.data.topics()[1] == B256::left_padding_from(BENCH_CALLER.as_slice())
++                && log.data.topics()[2] == B256::left_padding_from(recipient.as_slice()))
++            .then_some(log)
++        });
++
++        assert!(
++            transfer_log.is_some(),
++            "expected inspector to receive EIP-7708 tx value transfer log"
++        );
++    }
++
++    #[test]
++    fn test_eip7708_selfdestruct_transfer_log_is_inspected() {
++        let code = Bytes::from(vec![opcode::CALLER, opcode::SELFDESTRUCT, opcode::STOP]);
++        let ctx = Context::mainnet()
++            .with_cfg(CfgEnv::new_with_spec(SpecId::AMSTERDAM))
++            .with_db(BenchmarkDB::new_bytecode(Bytecode::new_legacy(code)));
++        let mut evm = ctx.build_mainnet_with_inspector(TestInspector::new());
++
++        let result = evm
++            .inspect_one_tx(
++                TxEnv::builder_for_bench()
++                    .gas_limit(100_000)
++                    .gas_price(0)
++                    .build_fill(),
++            )
++            .unwrap();
++        assert!(result.is_success());
++
++        let events = evm.inspector.get_events();
++        let transfer_log = events.iter().find_map(|event| {
++            let InspectorEvent::Log(log) = event else {
++                return None;
++            };
++            (log.address == ETH_TRANSFER_LOG_ADDRESS
++                && log.data.topics().len() == 3
++                && log.data.topics()[0] == ETH_TRANSFER_LOG_TOPIC
++                && log.data.topics()[1] == B256::left_padding_from(BENCH_TARGET.as_slice())
++                && log.data.topics()[2] == B256::left_padding_from(BENCH_CALLER.as_slice()))
++            .then_some(log)
++        });
++
++        assert!(
++            transfer_log.is_some(),
++            "expected inspector to receive EIP-7708 selfdestruct transfer log"
++        );
++    }
++
+     #[test]
+     fn test_selfdestruct() {
+         // SELFDESTRUCT test
+diff --git a/crates/inspector/src/traits.rs b/crates/inspector/src/traits.rs
+index e04a3928..3cf0dfa5 100644
+--- a/crates/inspector/src/traits.rs
++++ b/crates/inspector/src/traits.rs
+@@ -10,7 +10,7 @@ use interpreter::{
+ };
+ 
+ use crate::{
+-    handler::{frame_end, frame_start},
++    handler::{frame_end, frame_start, inspect_eip7708_transfer_logs},
+     inspect_instructions, Inspector, JournalExt,
+ };
+ 
+@@ -122,7 +122,11 @@ pub trait InspectorEvmTr:
+                     for log in logs.into_iter().chain(precompile_call_logs.iter().cloned()) {
+                         inspector.log(ctx, log);
+                     }
++                } else {
++                    inspect_eip7708_transfer_logs(ctx, inspector, logs_i);
+                 }
++            } else {
++                inspect_eip7708_transfer_logs(ctx, inspector, logs_i);
+             }
+             frame_end(ctx, inspector, &frame_input, &mut output);
+             return Ok(ItemOrResult::Result(output));
+@@ -130,6 +134,7 @@ pub trait InspectorEvmTr:
+ 
+         // if it is new frame, initialize the interpreter.
+         let (ctx, inspector, frame) = self.ctx_inspector_frame();
++        inspect_eip7708_transfer_logs(ctx, inspector, logs_i);
+         if let Some(frame) = frame.eth_frame() {
+             let interp = &mut frame.interpreter;
+             inspector.initialize_interp(interp, ctx);
+-- 
+2.43.0
+

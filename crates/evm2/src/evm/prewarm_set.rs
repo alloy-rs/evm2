@@ -135,6 +135,12 @@ impl PrewarmSet {
         self.access_list.clear();
     }
 
+    /// Returns whether this set has no per-transaction warm entries.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        !self.short_addresses.any() && self.access_list.is_empty()
+    }
+
     /// Returns whether the address is warm-loaded.
     pub fn is_warm(&self, address: &Address) -> bool {
         // check if it is a short address
