@@ -699,6 +699,9 @@ pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
 /// Calculates transaction calldata floor gas.
 pub(super) fn floor_gas(
     version: &Version,
+    caller: Address,
+    to: TxKind,
+    value: U256,
     input: &Bytes,
     access_list_accounts: u64,
     access_list_storage_keys: u64,
@@ -725,7 +728,14 @@ pub(super) fn floor_gas(
     let non_zero_data_len = input.len() as u64 - zero_data_len;
     tokens += zero_data_len * zero_multiplier + non_zero_data_len * non_zero_multiplier;
 
-    params.get(GasId::TxFloorCostBase) as u64 + tokens * floor_cost_per_token
+    let base = if version.feature(EvmFeatures::EIP2780) {
+        let is_create = to.is_create();
+        let is_self_transfer = matches!(to, TxKind::Call(to) if to == caller);
+        eip2780_base_to_value_gas(version, is_create, is_self_transfer, value)
+    } else {
+        u64::from(params.get(GasId::TxFloorCostBase))
+    };
+    base + tokens * floor_cost_per_token
 }
 
 /// Calculates intrinsic transaction gas.
@@ -917,33 +927,102 @@ mod tests {
     #[test]
     fn floor_gas_charges_prague_calldata_tokens() {
         let input = Bytes::from_static(&[0, 1, 2]);
+        let caller = Address::with_last_byte(0xaa);
+        let to = TxKind::Call(Address::with_last_byte(0xbb));
         let mut prague_without_eip7623 = Version::new(SpecId::PRAGUE);
         prague_without_eip7623.features.remove(EvmFeatures::EIP7623);
 
-        assert_eq!(floor_gas(Version::base(SpecId::SHANGHAI), &input, 0, 0), 0);
-        assert_eq!(floor_gas(Version::base(SpecId::PRAGUE), &input, 0, 0), 21_000 + 9 * 10);
-        assert_eq!(floor_gas(&prague_without_eip7623, &input, 0, 0), 0);
+        assert_eq!(
+            floor_gas(Version::base(SpecId::SHANGHAI), caller, to, U256::ZERO, &input, 0, 0),
+            0
+        );
+        assert_eq!(
+            floor_gas(Version::base(SpecId::PRAGUE), caller, to, U256::ZERO, &input, 0, 0),
+            21_000 + 9 * 10
+        );
+        assert_eq!(floor_gas(&prague_without_eip7623, caller, to, U256::ZERO, &input, 0, 0), 0);
     }
 
     #[test]
     fn floor_gas_charges_amsterdam_access_list_tokens() {
         let input = Bytes::from(vec![1; 1000]);
+        let caller = Address::with_last_byte(0xaa);
+        let to = TxKind::Call(Address::with_last_byte(0xbb));
+        let value = U256::from(1);
 
         assert_eq!(
-            floor_gas(Version::base(SpecId::AMSTERDAM), &input, 1, 1),
-            // EIP-2780: the floor base drops from 21,000 to TX_BASE (12,000).
-            12_000 + (1000 * 4 + 80 + 128) * 16
+            floor_gas(Version::base(SpecId::AMSTERDAM), caller, to, value, &input, 1, 1),
+            // EIP-2780 anchors the floor on sender + recipient + value charges.
+            21_000 + (1000 * 4 + 80 + 128) * 16
         );
 
         // EIP-7976: amsterdam weights zero calldata bytes the same as non-zero
         // bytes in the floor (4 tokens each), unlike EIP-7623 (zero = 1 token).
         let zero_input = Bytes::from(vec![0; 1000]);
         assert_eq!(
-            floor_gas(Version::base(SpecId::AMSTERDAM), &zero_input, 1, 1),
-            12_000 + (1000 * 4 + 80 + 128) * 16
+            floor_gas(Version::base(SpecId::AMSTERDAM), caller, to, value, &zero_input, 1, 1),
+            21_000 + (1000 * 4 + 80 + 128) * 16
         );
         // Prague keeps the EIP-7623 split: zero bytes count as one token each.
-        assert_eq!(floor_gas(Version::base(SpecId::PRAGUE), &zero_input, 0, 0), 21_000 + 1000 * 10);
+        assert_eq!(
+            floor_gas(Version::base(SpecId::PRAGUE), caller, to, value, &zero_input, 0, 0),
+            21_000 + 1000 * 10
+        );
+    }
+
+    #[test]
+    fn amsterdam_floor_uses_decomposed_value_transfer_base() {
+        let caller = Address::with_last_byte(0xaa);
+        let to = TxKind::Call(Address::with_last_byte(0xbb));
+
+        assert_eq!(
+            floor_gas(
+                Version::base(SpecId::AMSTERDAM),
+                caller,
+                to,
+                U256::from(1),
+                &Bytes::from_static(&[0]),
+                0,
+                0,
+            ),
+            21_064
+        );
+    }
+
+    #[test]
+    fn amsterdam_eip2930_value_transfer_charges_decomposed_floor() {
+        let caller = Address::with_last_byte(0xaa);
+        let recipient = Address::with_last_byte(0xbb);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
+        );
+        database.insert_account_info(&recipient, AccountInfo::default().with_balance(U256::ONE));
+        let tx = RecoveredTxEnvelope::Eip2930(Recovered::new_unchecked(
+            TxEip2930 {
+                chain_id: 1,
+                gas_limit: 100_000,
+                to: TxKind::Call(recipient),
+                value: U256::ONE,
+                input: Bytes::from_static(&[0]),
+                ..Default::default()
+            },
+            caller,
+        ));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+
+        let result = evm.transact(&tx).unwrap().discard();
+
+        assert!(result.status);
+        assert_eq!(result.floor_gas, 21_064);
+        assert_eq!(result.tx_gas_used(), 21_064);
     }
 
     #[test]
