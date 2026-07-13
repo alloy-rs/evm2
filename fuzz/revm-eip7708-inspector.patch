@@ -1,4 +1,4 @@
-From f44e4d8cfc238b84bbce116c5ee91b79e2780914 Mon Sep 17 00:00:00 2001
+From 0efa0806e8aa6020cb1b95158a10ed60e62288bc Mon Sep 17 00:00:00 2001
 From: 0xalpharush <0xalpharush@protonmail.com>
 Date: Thu, 9 Jul 2026 22:56:44 +0000
 Subject: [PATCH] fix EIP-7708 inspector log hooks
@@ -10,10 +10,10 @@ Subject: [PATCH] fix EIP-7708 inspector log hooks
  3 files changed, 127 insertions(+), 4 deletions(-)
 
 diff --git a/crates/inspector/src/handler.rs b/crates/inspector/src/handler.rs
-index eed25211..15ec77d4 100644
+index 46bd9b4b..f43df1b0 100644
 --- a/crates/inspector/src/handler.rs
 +++ b/crates/inspector/src/handler.rs
-@@ -9,7 +9,11 @@ use interpreter::{
+@@ -12,7 +12,11 @@ use interpreter::{
      CallOutcome, CreateOutcome, FrameInput, Host, InitialAndFloorGas, InstructionResult,
      Interpreter, InterpreterAction, InterpreterTypes,
  };
@@ -26,7 +26,7 @@ index eed25211..15ec77d4 100644
  use state::bytecode::opcode;
  
  /// Trait that extends [`Handler`] with inspection functionality.
-@@ -265,6 +269,7 @@ where
+@@ -277,6 +281,7 @@ where
          }
  
          let opcode = interpreter.bytecode.opcode();
@@ -34,7 +34,7 @@ index eed25211..15ec77d4 100644
          if let Err(e) = interpreter.step(instructions, gas_table, context) {
              cold_path();
              if interpreter.bytecode.action().is_none() {
-@@ -274,6 +279,8 @@ where
+@@ -286,6 +291,8 @@ where
  
          if (opcode::LOG0..=opcode::LOG4).contains(&opcode) {
              inspect_log(interpreter, context, &mut inspector);
@@ -43,7 +43,7 @@ index eed25211..15ec77d4 100644
          }
  
          inspector.step_end(interpreter, context);
-@@ -296,6 +303,34 @@ where
+@@ -308,6 +315,34 @@ where
      next_action
  }
  

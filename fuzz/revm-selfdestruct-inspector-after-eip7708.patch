@@ -1,18 +1,18 @@
-From f341f65259c5db29a02b704d6400af9cd212664c Mon Sep 17 00:00:00 2001
+From 8300124bc9f2d5e541441d15668e3c4c25986dec Mon Sep 17 00:00:00 2001
 From: 0xalpharush <0xalpharush@protonmail.com>
 Date: Mon, 13 Jul 2026 13:23:41 +0000
 Subject: [PATCH] fix(inspector): ignore stale selfdestruct journal entries
 
 ---
- crates/inspector/src/handler.rs         | 21 ++++++++++++---
- crates/inspector/src/inspector_tests.rs | 35 +++++++++++++++++++++++--
- 2 files changed, 50 insertions(+), 6 deletions(-)
+ crates/inspector/src/handler.rs         | 21 +++++++++++++----
+ crates/inspector/src/inspector_tests.rs | 31 +++++++++++++++++++++++++
+ 2 files changed, 48 insertions(+), 4 deletions(-)
 
 diff --git a/crates/inspector/src/handler.rs b/crates/inspector/src/handler.rs
-index 46bd9b4b..33cadd59 100644
+index f43df1b0..da3a735c 100644
 --- a/crates/inspector/src/handler.rs
 +++ b/crates/inspector/src/handler.rs
-@@ -269,6 +269,7 @@ where
+@@ -273,6 +273,7 @@ where
      CTX: ContextTr<Journal: JournalExt> + Host,
      IT: InterpreterTypes,
  {
@@ -20,15 +20,15 @@ index 46bd9b4b..33cadd59 100644
      loop {
          inspector.step(interpreter, context);
          if interpreter.bytecode.is_end() {
-@@ -277,6 +278,7 @@ where
-         }
- 
+@@ -282,6 +283,7 @@ where
+
          let opcode = interpreter.bytecode.opcode();
+         let logs_i = context.journal().logs().len();
 +        instruction_journal_i = Some(context.journal().journal().len());
          if let Err(e) = interpreter.step(instructions, gas_table, context) {
              cold_path();
              if interpreter.bytecode.action().is_none() {
-@@ -301,7 +303,9 @@ where
+@@ -308,7 +310,9 @@ where
      // Handle selfdestruct.
      if let InterpreterAction::Return(result) = &next_action {
          if result.result == InstructionResult::SelfDestruct {
@@ -38,9 +38,9 @@ index 46bd9b4b..33cadd59 100644
 +            }
          }
      }
- 
-@@ -334,11 +338,20 @@ fn inspect_log<CTX, IT>(
- 
+
+@@ -369,11 +373,20 @@ fn inspect_log<CTX, IT>(
+
  #[inline(never)]
  #[cold]
 -fn inspect_selfdestruct<CTX, IT>(context: &mut CTX, inspector: &mut impl Inspector<CTX, IT>)
@@ -62,7 +62,7 @@ index 46bd9b4b..33cadd59 100644
      if let Some(
          JournalEntry::AccountDestroyed {
              address: contract,
-@@ -352,7 +365,7 @@ where
+@@ -387,7 +400,7 @@ where
              balance,
              ..
          },
@@ -72,26 +72,13 @@ index 46bd9b4b..33cadd59 100644
          inspector.selfdestruct(*contract, *to, *balance);
      }
 diff --git a/crates/inspector/src/inspector_tests.rs b/crates/inspector/src/inspector_tests.rs
-index 6372ef03..6191156a 100644
+index 55fb70f4..23ebb1f1 100644
 --- a/crates/inspector/src/inspector_tests.rs
 +++ b/crates/inspector/src/inspector_tests.rs
-@@ -3,10 +3,10 @@ mod tests {
-     use crate::{
-         InspectCommitEvm, InspectEvm, InspectSystemCallEvm, InspectorEvent, TestInspector,
-     };
--    use context::{Context, TxEnv};
-+    use context::{CfgEnv, Context, TxEnv};
-     use database::{BenchmarkDB, BENCH_CALLER, BENCH_TARGET};
-     use handler::{ExecuteEvm, MainBuilder, MainContext};
--    use primitives::{address, Address, Bytes, TxKind, U256};
-+    use primitives::{address, hardfork::SpecId, Address, Bytes, TxKind, U256};
-     use state::{bytecode::opcode, AccountInfo, Bytecode};
- 
-     #[test]
-@@ -450,6 +450,37 @@ mod tests {
+@@ -533,6 +533,37 @@ mod tests {
          assert_eq!(*event_beneficiary, beneficiary);
      }
- 
+
 +    #[test]
 +    fn cancun_selfdestruct_to_self_does_not_reuse_prior_journal_entry() {
 +        let code = Bytes::from(vec![opcode::ADDRESS, opcode::SELFDESTRUCT]);
@@ -126,6 +113,5 @@ index 6372ef03..6191156a 100644
      #[test]
      fn test_comprehensive_inspector_integration() {
          // Complex contract with multiple operations:
--- 
+--
 2.43.0
-

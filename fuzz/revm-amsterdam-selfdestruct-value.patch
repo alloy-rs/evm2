@@ -1,4 +1,4 @@
-From 825a01ff9dc4de7ece26dadfec38f59db10d6627 Mon Sep 17 00:00:00 2001
+From 097720736c0e4f3e418d109f4aa70804f70400d0 Mon Sep 17 00:00:00 2001
 From: 0xalpharush <0xalpharush@protonmail.com>
 Date: Mon, 13 Jul 2026 19:47:05 +0000
 Subject: [PATCH] fix(inspector): report preserved selfdestruct value
@@ -9,10 +9,10 @@ Subject: [PATCH] fix(inspector): report preserved selfdestruct value
  2 files changed, 82 insertions(+), 14 deletions(-)
 
 diff --git a/crates/inspector/src/handler.rs b/crates/inspector/src/handler.rs
-index c44d3b6e..19bc9ec9 100644
+index da3a735c..e8c07dea 100644
 --- a/crates/inspector/src/handler.rs
 +++ b/crates/inspector/src/handler.rs
-@@ -370,26 +370,36 @@ fn inspect_selfdestruct<CTX, IT>(
+@@ -382,26 +382,36 @@ fn inspect_selfdestruct<CTX, IT>(
      IT: InterpreterTypes,
  {
      let entry = context
