@@ -110,7 +110,7 @@ quanta = "0.12"
 postcard = { version = "1.1.3", default-features = false }
 rand = "0.10"
 rayon = "1.10"
-revm = { git = "https://github.com/0xalpharush/revm", branch = "agent/eip7708-inspector-logs", default-features = true, features = [
+revm = { git = "https://github.com/0xalpharush/revm", branch = "agent/amsterdam-selfdestruct-value", default-features = true, features = [
     "asm-keccak",
 ] }
 rstest = "0.26.0"
