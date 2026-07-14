@@ -140,7 +140,7 @@ pub(crate) struct Account {
 impl Account {
     /// Creates an account overlay entry from its transaction-boundary original info and its
     /// present info.
-    #[inline]
+    #[cfg(test)]
     pub(crate) fn new(original: Option<AccountInfo>, present: Option<AccountInfo>) -> Self {
         Self { original, present, ..Self::default() }
     }
