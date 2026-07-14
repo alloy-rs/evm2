@@ -1,4 +1,4 @@
-use alloc::string::ToString;
+use alloc::{string::ToString, vec::Vec};
 use alloy_primitives::map::HashMap;
 use alloy_rpc_types_trace::opcode::OpcodeGas;
 use evm2::{
@@ -9,6 +9,13 @@ use evm2::{
     },
 };
 
+#[derive(Clone, Copy, Debug)]
+struct PendingOpcodeGas {
+    opcode: OpCode,
+    gas_remaining: u64,
+    child_gas_used: u64,
+}
+
 /// An Inspector that counts opcodes and measures gas usage per opcode.
 #[derive(Clone, Debug, Default)]
 pub struct OpcodeGasInspector {
@@ -16,8 +23,8 @@ pub struct OpcodeGasInspector {
     opcode_counts: HashMap<OpCode, u64>,
     /// Map of total gas used per opcode.
     opcode_gas: HashMap<OpCode, u64>,
-    /// Keep track of the last opcode executed and the remaining gas
-    last_opcode_gas_remaining: Option<(OpCode, u64)>,
+    /// Tracks opcodes waiting for `step_end`.
+    pending_steps: Vec<PendingOpcodeGas>,
 }
 
 impl OpcodeGasInspector {
@@ -57,12 +64,16 @@ impl OpcodeGasInspector {
         })
     }
 
-    /// Helper function to subtract gas limit from opcode gas tracking.
+    /// Helper function to exclude child gas from opcode gas tracking.
     /// This prevents call/create opcodes from including the gas consumed within the call/create.
-    fn subtract_gas_limit(&mut self, opcode_value: u8, gas_limit: u64) {
-        if let Some(opcode) = OpCode::new(opcode_value) {
-            let opcode_gas = self.opcode_gas.entry(opcode).or_default();
-            *opcode_gas = opcode_gas.saturating_sub(gas_limit);
+    fn exclude_child_gas(&mut self, opcode_value: u8, child_gas_used: u64) {
+        let Some(opcode) = OpCode::new(opcode_value) else {
+            return;
+        };
+        if let Some(pending) = self.pending_steps.last_mut()
+            && pending.opcode == opcode
+        {
+            pending.child_gas_used = pending.child_gas_used.saturating_add(child_gas_used);
         }
     }
 }
@@ -75,29 +86,38 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
             *self.opcode_counts.entry(opcode).or_default() += 1;
 
             // keep track of the last opcode executed
-            self.last_opcode_gas_remaining = Some((opcode, interp.gas().remaining()));
+            self.pending_steps.push(PendingOpcodeGas {
+                opcode,
+                gas_remaining: interp.gas().remaining(),
+                child_gas_used: 0,
+            });
         }
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         // update gas usage for the last opcode
-        if let Some((opcode, gas_remaining)) = self.last_opcode_gas_remaining.take() {
-            let gas_cost = gas_remaining.saturating_sub(interp.gas().remaining());
+        if let Some(pending) = self.pending_steps.pop() {
+            let gas_cost = pending
+                .gas_remaining
+                .saturating_sub(interp.gas().remaining())
+                .saturating_sub(pending.child_gas_used);
+            let opcode = pending.opcode;
             *self.opcode_gas.entry(opcode).or_default() += gas_cost;
         }
     }
 
-    fn call(
+    fn call_end(
         &mut self,
         _interp: &mut Interpreter<'_, '_, T>,
-        message: &mut Message<T>,
-    ) -> Option<MessageResult<T>> {
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
         if message.depth == 0 {
             // skip the root call
-            return None;
+            return;
         }
 
-        // for accurate call opcode gas tracking, we need to deduct the gas limit from the opcode
+        // for accurate call opcode gas tracking, we need to deduct the child gas from the opcode
         // gas, because otherwise the call opcodes would include the total gas consumed within the
         // call itself, but we want to track how much gas the call opcode itself consumes.
         let opcode = match message.kind {
@@ -105,35 +125,32 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
             MessageKind::CallCode => op::CALLCODE,
             MessageKind::DelegateCall => op::DELEGATECALL,
             MessageKind::StaticCall => op::STATICCALL,
-            MessageKind::Create | MessageKind::Create2 => return None,
-            _ => return None,
+            MessageKind::Create | MessageKind::Create2 => return,
+            _ => return,
         };
-        self.subtract_gas_limit(opcode, message.gas_limit);
-
-        None
+        self.exclude_child_gas(opcode, result.gas.spent());
     }
 
-    fn create(
+    fn create_end(
         &mut self,
         _interp: &mut Interpreter<'_, '_, T>,
-        message: &mut Message<T>,
-    ) -> Option<MessageResult<T>> {
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
         if message.depth == 0 {
             // skip the root create
-            return None;
+            return;
         }
 
-        // for accurate create opcode gas tracking, we need to deduct the gas limit from the opcode
+        // for accurate create opcode gas tracking, we need to deduct the child gas from the opcode
         // gas, because otherwise the create opcodes would include the total gas consumed within the
         // create itself, but we want to track how much gas the create opcode itself consumes.
         let opcode = match message.kind {
             MessageKind::Create => op::CREATE,
             MessageKind::Create2 => op::CREATE2,
-            _ => return None,
+            _ => return,
         };
-        self.subtract_gas_limit(opcode, message.gas_limit);
-
-        None
+        self.exclude_child_gas(opcode, result.gas.spent());
     }
 }
 

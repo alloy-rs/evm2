@@ -158,8 +158,9 @@ pub trait StateChangeSource {
 }
 
 /// Sink that ignores all changes.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NoopChangeSink;
+#[derive(Clone, Debug, Default)]
+#[allow(missing_copy_implementations)]
+pub struct NoopChangeSink(());
 
 impl StateChangeSink for NoopChangeSink {
     type Error = Infallible;
