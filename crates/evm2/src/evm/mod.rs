@@ -156,7 +156,7 @@ pub use any::NonStaticAny;
 
 pub mod bal;
 pub use bal::{
-    AccountBal, AccountInfoBal, Bal, BalChange, BalChanges, BalCodeChange, BalError,
+    AccountBal, AccountInfoBal, Bal, BalChange, BalChanges, BalCodeChange, BalContext, BalError,
     BlockAccessIndex, StorageBal,
 };
 
