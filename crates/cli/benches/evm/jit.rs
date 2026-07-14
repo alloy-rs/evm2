@@ -1,5 +1,5 @@
 use crate::fixture::Suites;
-use alloy_primitives::{B256, hex, keccak256};
+use alloy_primitives::{B256, hex};
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
     BaseEvmTypes, Evm, ExecutionConfig, InterpreterRunner, Precompiles, SpecId,
@@ -196,8 +196,7 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
         interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
-        let code = interpreter.original_bytecode();
-        let func = *self.functions.get(&keccak256(&code))?;
+        let func = *self.functions.get(&interpreter.original_bytecode_hash())?;
         interpreter.prepare_run(config.base_spec_id(), config.version(), host);
         Some(unsafe { func.call_with_interpreter(interpreter) })
     }

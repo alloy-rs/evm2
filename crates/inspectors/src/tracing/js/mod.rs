@@ -69,6 +69,8 @@ struct PendingStep {
     refund: u64,
     /// Contract info
     contract: Contract,
+    /// Memory before opcode execution.
+    memory: MemorySnapshot,
     /// Total gas spent before this opcode (to compute delta in step_end)
     gas_spent_before: u64,
 }
@@ -119,12 +121,14 @@ pub struct JsInspector {
     call_stack: Vec<CallStackItem>,
     /// Marker to track whether the precompiles have been registered.
     precompiles_registered: bool,
-    /// Pre-execution state captured in `step()` to be processed in `step_end()`.
-    pending_step: Option<PendingStep>,
+    /// Pre-execution states captured in `step()` to be processed in `step_end()`.
+    pending_steps: Vec<PendingStep>,
     /// Cached memory snapshot, only updated when the previous opcode modifies memory.
     cached_memory: MemorySnapshot,
     /// The opcode from the previous step, used to decide whether to re-snapshot memory.
     prev_op: Option<OpCode>,
+    /// The call depth from the previous step, used to refresh memory across frames.
+    prev_depth: Option<u16>,
 }
 
 impl JsInspector {
@@ -238,9 +242,10 @@ impl JsInspector {
             reusable_db,
             call_stack: Default::default(),
             precompiles_registered: false,
-            pending_step: None,
+            pending_steps: Vec::new(),
             cached_memory: MemorySnapshot::default(),
             prev_op: None,
+            prev_depth: None,
         })
     }
 
@@ -461,19 +466,22 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return;
         }
 
-        // Update the cached memory snapshot only if the previous opcode modified memory.
+        let message = interp.message();
+
+        // Update the cached memory snapshot only if the previous opcode modified memory or
+        // execution moved to a different frame.
         // This avoids an expensive Vec<u8> clone on every single step.
-        let should_update_memory = self.prev_op.is_none_or(|prev| prev.modifies_memory());
+        let should_update_memory = self.prev_op.is_none_or(|prev| prev.modifies_memory())
+            || self.prev_depth != Some(message.depth);
         if should_update_memory {
             self.cached_memory = MemorySnapshot::new(interp.memory());
         }
 
         let op = interp.opcode();
         self.prev_op = OpCode::new(op);
-
+        self.prev_depth = Some(message.depth);
         let active_call = self.active_call();
-        let message = interp.message();
-        self.pending_step = Some(PendingStep {
+        self.pending_steps.push(PendingStep {
             stack: interp.stack().as_slice().to_vec(),
             pc: interp.pc() as u64,
             op,
@@ -486,6 +494,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 value: active_call.contract.value,
                 input: active_call.contract.input.clone(),
             },
+            memory: self.cached_memory.clone(),
             gas_spent_before: interp.gas().spent(),
         });
     }
@@ -495,7 +504,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return;
         }
 
-        let Some(pending) = self.pending_step.take() else {
+        let Some(pending) = self.pending_steps.pop() else {
             return;
         };
 
@@ -505,7 +514,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
 
         let (db, db_guard) = EvmDbRef::new_state(interp.host().state_mut());
         let (stack, stack_guard) = StackRef::new_owned(pending.stack);
-        let (memory, memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
+        let (memory, memory_guard) = MemoryRef::new_owned(pending.memory);
 
         let stop = if is_revert {
             let step = StepLog {
