@@ -495,7 +495,7 @@ fn limit_cpu_affinity(cpu_count: usize) -> std::io::Result<()> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn limit_cpu_affinity(_cpu_count: usize) -> std::io::Result<()> {
+const fn limit_cpu_affinity(_cpu_count: usize) -> std::io::Result<()> {
     Ok(())
 }
 
