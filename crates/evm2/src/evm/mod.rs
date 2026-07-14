@@ -425,7 +425,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// coherent block context. The caller is responsible for the resulting semantics when it is
     /// called from an inspector or precompile.
     #[inline]
-    pub fn set_block(&mut self, block: BlockEnv<T>) {
+    pub const fn set_block(&mut self, block: BlockEnv<T>) {
         self.block = block;
     }
 
