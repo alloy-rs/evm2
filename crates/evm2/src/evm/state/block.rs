@@ -18,10 +18,12 @@ use core::convert::Infallible;
 
 /// Mutable block-level state accumulator.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockStateAccumulator {
     accounts: AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: AddressSet,
     storage: StorageKeyMap<Tracked<Word>>,
+    #[cfg_attr(feature = "serde", serde(with = "bytecode_map_serde"))]
     code: B256Map<Bytecode>,
 }
 
@@ -174,6 +176,32 @@ impl StateChangeSource for BlockStateAccumulator {
     #[inline]
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
         visit_block_changes(&self.accounts, &self.storage_wipes, &self.storage, &self.code, sink)
+    }
+}
+
+#[cfg(feature = "serde")]
+mod bytecode_map_serde {
+    use super::*;
+    use alloy_primitives::Bytes;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S>(code: &B256Map<Bytecode>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        code.iter()
+            .map(|(&hash, bytecode)| (hash, bytecode.original_bytes()))
+            .collect::<B256Map<Bytes>>()
+            .serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<B256Map<Bytecode>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        B256Map::<Bytes>::deserialize(deserializer).map(|code| {
+            code.into_iter().map(|(hash, bytes)| (hash, Bytecode::new_raw(bytes))).collect()
+        })
     }
 }
 
