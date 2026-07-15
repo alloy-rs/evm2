@@ -7,8 +7,10 @@ use crate::{
 };
 use alloc::boxed::Box;
 use alloy_primitives::{Address, Log, U256};
+use auto_impl::auto_impl;
 
 /// EVM execution inspector.
+#[auto_impl(&mut, Box)]
 pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Called after a frame interpreter has been initialized.
     #[inline]

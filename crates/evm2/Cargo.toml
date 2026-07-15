@@ -22,6 +22,7 @@ alloy-consensus.workspace = true
 alloy-eip7928.workspace = true
 alloy-eips = { workspace = true, features = ["k256"] }
 alloy-primitives.workspace = true
+auto_impl.workspace = true
 bitvec = { workspace = true, features = ["alloc"] }
 derive-where.workspace = true
 thiserror.workspace = true
