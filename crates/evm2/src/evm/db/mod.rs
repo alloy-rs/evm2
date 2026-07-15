@@ -4,6 +4,7 @@ use super::{NonStaticAny, state::AccountInfo};
 use crate::{AnyError, ErrorCode, bytecode::Bytecode, error::error_unavailable, interpreter::Word};
 use alloc::{boxed::Box, string::ToString};
 use alloy_primitives::{Address, B256, keccak256};
+use auto_impl::auto_impl;
 use core::error::Error;
 
 mod cache;
@@ -13,6 +14,7 @@ pub use cache::{AccountStorageCache, Cache, CacheDB, InMemoryDB};
 pub type DbResult<T> = Result<T, ErrorCode>;
 
 /// Backing database implementation with a concrete error type.
+#[auto_impl(&mut, Box)]
 pub trait Database: NonStaticAny {
     /// Database error type.
     type Error: Error + Send + Sync + 'static;
@@ -28,30 +30,6 @@ pub trait Database: NonStaticAny {
 
     /// Loads a historical block hash.
     fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error>;
-}
-
-impl<T: Database + ?Sized> Database for &mut T {
-    type Error = T::Error;
-
-    #[inline]
-    fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
-        (**self).get_account(address)
-    }
-
-    #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
-        (**self).get_code_by_hash(code_hash)
-    }
-
-    #[inline]
-    fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error> {
-        (**self).get_storage(address, key)
-    }
-
-    #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error> {
-        (**self).get_block_hash(number)
-    }
 }
 
 /// Object-safe database adapter for typed database implementations.
@@ -145,6 +123,7 @@ impl<T: Database> DynDatabase for Db<T> {
 }
 
 /// Backing database view used to initialize mutable [`super::State`].
+#[auto_impl(&mut, Box)]
 pub trait DynDatabase: NonStaticAny {
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
@@ -317,60 +296,6 @@ impl<'a> core::ops::DerefMut for dyn DynDatabase + 'a {
 #[inline]
 pub(crate) fn boxed_dyn_database<'a>(database: impl DynDatabase + 'a) -> Box<dyn DynDatabase + 'a> {
     Box::new(database)
-}
-
-impl<T: DynDatabase + ?Sized> DynDatabase for Box<T> {
-    #[inline]
-    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        self.as_mut().get_account(address)
-    }
-
-    #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
-        self.as_mut().get_code_by_hash(code_hash)
-    }
-
-    #[inline]
-    fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        self.as_mut().get_storage(address, key)
-    }
-
-    #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
-        self.as_mut().get_block_hash(number)
-    }
-
-    #[inline]
-    fn error(&mut self, code: ErrorCode) -> AnyError {
-        self.as_mut().error(code)
-    }
-}
-
-impl<T: DynDatabase + ?Sized> DynDatabase for &mut T {
-    #[inline]
-    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        (**self).get_account(address)
-    }
-
-    #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
-        (**self).get_code_by_hash(code_hash)
-    }
-
-    #[inline]
-    fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        (**self).get_storage(address, key)
-    }
-
-    #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
-        (**self).get_block_hash(number)
-    }
-
-    #[inline]
-    fn error(&mut self, code: ErrorCode) -> AnyError {
-        (**self).error(code)
-    }
 }
 
 /// Empty backing database.
