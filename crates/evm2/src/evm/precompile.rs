@@ -7,6 +7,7 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes};
+use auto_impl::auto_impl;
 
 /// Result returned by a precompile.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -36,6 +37,7 @@ impl PrecompileOutput {
 }
 
 /// Precompile execution hook.
+#[auto_impl(&mut, Box)]
 pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     /// Returns precompile addresses.
     fn addresses(&self) -> Vec<Address> {
@@ -74,28 +76,6 @@ impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn PrecompileProvider<T> + 'a
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self
-    }
-}
-
-impl<T: EvmTypesHost, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for Box<P> {
-    #[inline]
-    fn addresses(&self) -> Vec<Address> {
-        self.as_ref().addresses()
-    }
-
-    #[inline]
-    fn contains(&self, address: &Address) -> bool {
-        self.as_ref().contains(address)
-    }
-
-    #[inline]
-    fn execute(
-        &mut self,
-        evm: &mut Evm<'_, T>,
-        message: &Message<T>,
-        gas: &mut GasTracker,
-    ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-        self.as_mut().execute(evm, message, gas)
     }
 }
 

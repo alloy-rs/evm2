@@ -3,6 +3,7 @@
 use super::AccountInfo;
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256};
+use auto_impl::auto_impl;
 use core::convert::Infallible;
 
 /// Borrowed account information exposed to change sinks.
@@ -88,6 +89,7 @@ pub struct StorageChange {
 }
 
 /// Consumer of borrowed transaction or block state changes.
+#[auto_impl(&mut, Box)]
 pub trait StateChangeSink {
     /// Error returned by this sink.
     type Error;
@@ -143,52 +145,6 @@ pub trait StateChangeSink {
         _value: Word,
     ) -> Result<(), Self::Error> {
         Ok(())
-    }
-}
-
-impl<S> StateChangeSink for &mut S
-where
-    S: StateChangeSink + ?Sized,
-{
-    type Error = S::Error;
-
-    #[inline]
-    fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
-        (**self).bytecode(code_hash, code)
-    }
-
-    #[inline]
-    fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
-        (**self).account(change)
-    }
-
-    #[inline]
-    fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
-        (**self).storage_wipe(address)
-    }
-
-    #[inline]
-    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
-        (**self).storage(change)
-    }
-
-    #[inline]
-    fn account_read(
-        &mut self,
-        address: Address,
-        info: Option<AccountInfoRef<'_>>,
-    ) -> Result<(), Self::Error> {
-        (**self).account_read(address, info)
-    }
-
-    #[inline]
-    fn storage_read(
-        &mut self,
-        address: Address,
-        key: Word,
-        value: Word,
-    ) -> Result<(), Self::Error> {
-        (**self).storage_read(address, key, value)
     }
 }
 

@@ -383,6 +383,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     #[inline]
+    fn assert_execution_config_mutable(&self) {
+        assert!(!self.running, "execution config cannot be modified during EVM execution");
+    }
+
+    #[inline]
     const fn enter_execution(&mut self) -> ExecutionGuard {
         let was_running = self.running;
         self.running = true;
@@ -393,6 +398,112 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub const fn registry(&self) -> &TxRegistry<T, TxResult<T>> {
         &self.registry
+    }
+
+    /// Returns the active block environment.
+    #[inline]
+    pub const fn block(&self) -> &BlockEnv<T> {
+        &self.block
+    }
+
+    /// Replaces the active block environment, including during execution.
+    ///
+    /// This changes only the block fields visible to execution. The [`State`] object is kept in
+    /// place: its accepted account and storage overlay, backing database, cached block hashes,
+    /// attached BAL, BAL builder, and current BAL index all remain unchanged. Transaction
+    /// scratch is also left untouched.
+    ///
+    /// A live replacement is intentional context mutation for testing and simulation hosts. The
+    /// current frame and nested frames observe the new environment on subsequent host reads, so
+    /// callers can implement controls such as changing the block number or timestamp during a
+    /// call. This does not change the active execution specification or its gas rules; use
+    /// [`Self::set_execution_config`] only at a frame boundary for a fork transition.
+    ///
+    /// For normal block execution, call this at a segment boundary so a transaction observes one
+    /// coherent block context. The caller is responsible for the resulting semantics when it is
+    /// called from an inspector or precompile.
+    #[inline]
+    pub const fn set_block(&mut self, block: BlockEnv<T>) {
+        self.block = block;
+    }
+
+    /// Replaces the active execution specification and its fork-dependent dispatch state.
+    ///
+    /// `execution_config` must have the same base specification as `spec_id`. The transaction
+    /// registry and precompile provider are supplied together with the new config so a hardfork
+    /// transition cannot silently retain handlers or precompiles from the previous fork.
+    ///
+    /// The existing [`State`] is preserved in place. In particular, the accepted account and
+    /// storage overlay, backing database, cached block hashes, attached BAL, BAL builder, and
+    /// current BAL index are not recreated or cleared. The derived feature set is refreshed from
+    /// `execution_config.version()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an interpreter frame is currently executing or if `spec_id` does not match
+    /// `execution_config`.
+    #[inline]
+    pub fn set_execution_config(
+        &mut self,
+        execution_config: ExecutionConfig<T>,
+        spec_id: T::SpecId,
+        registry: TxRegistry<T, TxResult<T>>,
+        precompiles: impl PrecompileProvider<T> + 'a,
+    ) {
+        self.assert_execution_config_mutable();
+        assert_eq!(
+            spec_id.into(),
+            execution_config.base_spec_id(),
+            "execution config spec mismatch"
+        );
+        let precompiles = boxed_precompile_provider(precompiles);
+        self.replace_execution_config(execution_config, spec_id, registry, precompiles);
+    }
+
+    /// Replaces the block environment and execution specification as one segment-boundary update.
+    ///
+    /// This is equivalent to [`Self::set_block`] and [`Self::set_execution_config`] performed as
+    /// one atomic update. The state, database/cache, block-hash cache, and BAL context are kept in
+    /// place; only the supplied block/config/registry/precompile fields are replaced.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an interpreter frame is currently executing or if `spec_id` does not match
+    /// `execution_config`.
+    #[inline]
+    pub fn set_block_and_execution_config(
+        &mut self,
+        block: BlockEnv<T>,
+        execution_config: ExecutionConfig<T>,
+        spec_id: T::SpecId,
+        registry: TxRegistry<T, TxResult<T>>,
+        precompiles: impl PrecompileProvider<T> + 'a,
+    ) {
+        self.assert_execution_config_mutable();
+        assert_eq!(
+            spec_id.into(),
+            execution_config.base_spec_id(),
+            "execution config spec mismatch"
+        );
+        let precompiles = boxed_precompile_provider(precompiles);
+        self.block = block;
+        self.replace_execution_config(execution_config, spec_id, registry, precompiles);
+    }
+
+    #[inline]
+    fn replace_execution_config(
+        &mut self,
+        execution_config: ExecutionConfig<T>,
+        spec_id: T::SpecId,
+        registry: TxRegistry<T, TxResult<T>>,
+        precompiles: Box<dyn PrecompileProvider<T> + 'a>,
+    ) {
+        self.spec_id = spec_id;
+        self.features = execution_config.version().features;
+        self.execution_config = execution_config;
+        self.registry = registry;
+        self.precompiles = precompiles;
+        self.evm_send = false;
     }
 
     /// Returns the accepted-state overlay database.
@@ -2223,6 +2334,90 @@ mod tests {
     }
 
     #[test]
+    fn replacing_block_preserves_state_and_bal_context() {
+        let mut evm = lifecycle_evm();
+        let state = core::ptr::addr_of!(evm.state);
+        let account = Address::with_last_byte(0x51);
+        let storage_key = Word::from(0x52);
+        let block_number = Word::from(0x53);
+        let block_hash = B256::with_last_byte(0x54);
+
+        evm.overlay_db_mut()
+            .insert_account_info(&account, AccountInfo::default().with_balance(Word::from(55)));
+        evm.overlay_db_mut().insert_account_storage(&account, &storage_key, &Word::from(56));
+        evm.overlay_db_mut().insert_block_hash(&block_number, &block_hash);
+
+        let bal = Arc::new(Bal::new());
+        evm.state.set_bal(Arc::clone(&bal));
+        evm.state.enable_bal_builder();
+        evm.state.set_bal_index(BlockAccessIndex::new(57));
+
+        let block = BlockEnv { number: Word::from(58), ..BlockEnv::default() };
+        evm.set_block(block);
+
+        assert!(core::ptr::eq(state, core::ptr::addr_of!(evm.state)));
+        assert_eq!(evm.block(), &block);
+        assert_eq!(evm.overlay_db().account_info(&account).unwrap().balance, Word::from(55));
+        assert_eq!(
+            evm.overlay_db()
+                .cache
+                .storage
+                .get(&account)
+                .and_then(|storage| storage.slots.get(&storage_key)),
+            Some(&Word::from(56))
+        );
+        assert_eq!(evm.overlay_db().cache.block_hashes.get(&block_number), Some(&block_hash));
+        assert!(Arc::ptr_eq(evm.state.bal().unwrap(), &bal));
+        assert!(evm.state.bal_builder().is_some());
+        assert_eq!(evm.state.bal_index(), BlockAccessIndex::new(57));
+    }
+
+    #[test]
+    fn replacing_execution_config_preserves_state_and_rebuilds_fork_state() {
+        let mut evm = lifecycle_evm();
+        let state = core::ptr::addr_of!(evm.state);
+        let account = Address::with_last_byte(0x61);
+        let storage_key = Word::from(0x62);
+        let block_number = Word::from(0x63);
+        let block_hash = B256::with_last_byte(0x64);
+        evm.overlay_db_mut()
+            .insert_account_info(&account, AccountInfo::default().with_balance(Word::from(65)));
+        evm.overlay_db_mut().insert_account_storage(&account, &storage_key, &Word::from(66));
+        evm.overlay_db_mut().insert_block_hash(&block_number, &block_hash);
+
+        let bal = Arc::new(Bal::new());
+        evm.state.set_bal(Arc::clone(&bal));
+        evm.state.enable_bal_builder();
+        evm.state.set_bal_index(BlockAccessIndex::new(67));
+
+        let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::PRAGUE);
+        evm.set_execution_config(
+            config,
+            SpecId::PRAGUE,
+            crate::ethereum::ethereum_tx_registry(SpecId::PRAGUE),
+            Precompiles::base(SpecId::PRAGUE),
+        );
+
+        assert!(core::ptr::eq(state, core::ptr::addr_of!(evm.state)));
+        assert_eq!(evm.spec_id(), SpecId::PRAGUE);
+        assert_eq!(evm.config_spec_id(), SpecId::PRAGUE);
+        assert_eq!(evm.version().features, config.version().features);
+        assert!(evm.feature(EvmFeatures::EIP7702));
+        assert!(evm.registry().contains(4));
+        assert!(
+            evm.precompiles_as::<Precompiles>()
+                .unwrap()
+                .as_map()
+                .contains(&Address::with_last_byte(0x0b))
+        );
+        assert_eq!(evm.overlay_db().account_info(&account).unwrap().balance, Word::from(65));
+        assert_eq!(evm.overlay_db().cache.block_hashes.get(&block_number), Some(&block_hash));
+        assert!(Arc::ptr_eq(evm.state.bal().unwrap(), &bal));
+        assert!(evm.state.bal_builder().is_some());
+        assert_eq!(evm.state.bal_index(), BlockAccessIndex::new(67));
+    }
+
+    #[test]
     fn immutable_precompile_access_is_allowed_during_execution() {
         let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
             let _ = evm.precompiles();
@@ -2354,6 +2549,74 @@ mod tests {
     #[should_panic(expected = "inspector cannot be modified during EVM execution")]
     fn clear_inspector_panics_during_execution() {
         run_inspector_access(InspectorAccess::Clear);
+    }
+
+    #[test]
+    fn set_block_during_execution_updates_live_context() {
+        struct BlockReplacingInspector;
+
+        impl Inspector<BaseEvmTypes> for BlockReplacingInspector {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                let host = interp.host();
+                host.set_block(BlockEnv {
+                    number: Word::from(123),
+                    timestamp: Word::from(124),
+                    ..BlockEnv::default()
+                });
+                assert_eq!(host.block().number, Word::from(123));
+                assert_eq!(host.block().timestamp, Word::from(124));
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(BlockReplacingInspector);
+        let message = Message::default();
+        let tx_env = TxEnv::default();
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message, frame_gas);
+        assert_eq!(evm.block().number, Word::from(123));
+        assert_eq!(evm.block().timestamp, Word::from(124));
+    }
+
+    #[test]
+    #[should_panic(expected = "execution config cannot be modified during EVM execution")]
+    fn set_execution_config_panics_during_execution() {
+        struct ConfigReplacingInspector;
+
+        impl Inspector<BaseEvmTypes> for ConfigReplacingInspector {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                let host = interp.host();
+                host.set_execution_config(
+                    ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::PRAGUE),
+                    SpecId::PRAGUE,
+                    crate::ethereum::ethereum_tx_registry(SpecId::PRAGUE),
+                    Precompiles::base(SpecId::PRAGUE),
+                );
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(ConfigReplacingInspector);
+        let message = Message::default();
+        let tx_env = TxEnv::default();
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message, frame_gas);
     }
 
     #[derive(Clone, Copy)]
