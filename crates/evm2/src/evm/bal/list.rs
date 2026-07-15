@@ -34,9 +34,9 @@ impl Bal {
     /// enabled: loaded-but-unchanged accounts and storage slots are recorded as reads, changed
     /// ones as writes at `bal_index`. Apply pending states in transaction order, since writes
     /// must be appended with ascending indices.
-    pub fn apply_pending_state(&mut self, bal_index: BlockAccessIndex, pending: PendingState) {
+    pub fn commit(&mut self, bal_index: BlockAccessIndex, pending: PendingState) {
         for (address, entry) in &pending.accounts {
-            self.update_pending_account(
+            self.update_account(
                 bal_index,
                 *address,
                 entry.original.as_ref(),
@@ -60,7 +60,7 @@ impl Bal {
     /// its present info to the EIP-8246 balance-only remnant or to a removed account, and its
     /// destroyed storage writes surface as reads (execution-specs `destroy_storage`).
     #[inline]
-    pub(crate) fn update_pending_account(
+    pub(crate) fn update_account(
         &mut self,
         bal_index: BlockAccessIndex,
         address: Address,
@@ -398,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_pending_state_builds_bal_from_pending_overlay() {
+    fn commit_builds_bal_from_pending_overlay() {
         let address = Address::with_last_byte(1);
 
         // A freshly created account: no original info, present nonce/balance set, and one changed
@@ -418,7 +418,7 @@ mod tests {
         };
 
         let mut bal = Bal::new();
-        bal.apply_pending_state(idx(1), pending);
+        bal.commit(idx(1), pending);
 
         let account = bal.accounts.get(&address).unwrap();
         assert_eq!(account.account_info.nonce.changes, vec![AlloyNonceChange::new(idx(1), 1)]);
@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_pending_state_selfdestruct_uses_finalized_post_state() {
+    fn commit_selfdestruct_uses_finalized_post_state() {
         let address = Address::with_last_byte(1);
 
         // Transaction finalization already resolved the selfdestructed account: removed
@@ -459,7 +459,7 @@ mod tests {
         };
 
         let mut bal = Bal::new();
-        bal.apply_pending_state(idx(2), pending);
+        bal.commit(idx(2), pending);
 
         let account = bal.accounts.get(&address).unwrap();
         // Balance goes to zero on removal.

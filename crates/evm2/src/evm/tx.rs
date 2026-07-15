@@ -239,7 +239,7 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     /// Detaching moves the transaction overlay out of the EVM as a [`PendingState`], clears
     /// transaction scratch, and returns a [`TxResultWithState`] that can be moved or stored. The
     /// pending state folds into an EIP-7928 Block Access List via
-    /// [`Bal::apply_pending_state`](crate::evm::Bal::apply_pending_state) and streams its changes
+    /// [`Bal::commit`](crate::evm::Bal::commit) and streams its changes
     /// to a [`StateChangeSink`] via
     /// [`StateChangeSource::visit`](super::StateChangeSource::visit). The detached state is not
     /// accepted into this EVM's internal overlay unless the caller commits it separately.

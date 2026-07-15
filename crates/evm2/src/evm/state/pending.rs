@@ -14,7 +14,7 @@ use alloy_primitives::map::{AddressMap, AddressSet};
 /// each carrying its transaction-boundary original value next to its present value. Two consumers
 /// draw from it:
 ///
-/// - [`Bal::apply_pending_state`](crate::evm::Bal::apply_pending_state) folds it into an EIP-7928
+/// - [`Bal::commit`](crate::evm::Bal::commit) folds it into an EIP-7928
 ///   Block Access List, recording loaded-but-unchanged entries as reads and changed ones as writes
 ///   — the same fold the EVM applies on transaction commit when its builder is enabled.
 /// - [`StateChangeSource::visit`] streams it to a [`StateChangeSink`] in deterministic application
@@ -48,8 +48,8 @@ impl PendingState {
     /// Returns whether the transaction contains any account or storage change.
     ///
     /// Loaded-but-unchanged accounts and storage slots are ignored.
-    #[inline]
-    pub fn is_changed(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_changed(&self) -> bool {
         self.accounts.values().any(Account::is_changed)
             || self
                 .storage

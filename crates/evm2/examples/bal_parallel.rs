@@ -78,9 +78,7 @@ fn main() {
             // The pending state still carries the change-set that persistence
             // consumers (e.g. reth) stream to the database through a
             // `StateChangeSink`; detaching it for the BAL fold loses nothing.
-            assert!(pending.is_changed());
-
-            bal_builder.apply_pending_state(idx(i as u64 + 1), pending);
+            bal_builder.commit(idx(i as u64 + 1), pending);
             println!("transaction {i} executed in parallel, gas used {}", result.tx_gas_used());
         }
     });

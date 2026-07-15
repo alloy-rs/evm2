@@ -807,47 +807,9 @@ impl<'a> State<'a> {
     /// transaction account/storage layers. It does not take logs or write to the wrapped backing
     /// database.
     pub(crate) fn commit_transaction(&mut self) {
-        // When BAL construction is enabled, fold this transaction's pending post-state --
-        // including loaded-but-unchanged reads -- into the accepted-overlay database's builder
-        // before the overlay is advanced and cleared below. The overlay is folded directly,
-        // without detaching it.
-        self.inner.database.bal_context.commit_pending(&self.accounts, &self.storage);
-
-        for (&address, storage) in &self.storage {
-            if storage.wiped {
-                self.inner.database.cache.storage.entry(address).or_default().wipe();
-            }
-            for (&key, slot) in storage.changed_slots() {
-                self.inner
-                    .database
-                    .cache
-                    .storage
-                    .entry(address)
-                    .or_default()
-                    .slots
-                    .insert(key, slot.current);
-            }
-        }
-
-        for (&address, entry) in self.accounts.iter() {
-            if let Some((code_hash, code)) = entry.changed_code() {
-                self.inner.database.cache.contracts.insert(code_hash, code.clone());
-            }
-            if !entry.is_changed() {
-                continue;
-            }
-            match entry.present.as_ref() {
-                Some(account) => self.inner.database.insert_account_info(
-                    &address,
-                    AccountInfoRef::from_info(account).to_account_info_without_code(),
-                ),
-                None => {
-                    self.inner.database.cache.accounts.insert(address, None);
-                    self.inner.database.cache.storage.entry(address).or_default().wipe();
-                }
-            }
-        }
-
+        // The transaction overlay is folded into the accepted-overlay database directly, without
+        // detaching it.
+        self.inner.database.commit(&self.accounts, &self.storage);
         self.accounts.clear();
         self.storage.clear();
     }

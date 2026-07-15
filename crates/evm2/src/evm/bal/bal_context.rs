@@ -3,7 +3,7 @@
 use super::{AccountBal, Bal, BalError, BlockAccessIndex};
 use crate::{
     AnyError, ErrorCode,
-    evm::state::{Account, AccountInfo, StorageOverlay},
+    evm::state::{Account, AccountInfo, PendingState, StorageOverlay},
     interpreter::Word,
 };
 use alloc::sync::Arc;
@@ -153,14 +153,23 @@ impl BalContext {
         self.bal_index.increment();
     }
 
-    /// Folds a committed transaction's pending post-state -- its transaction overlay -- into the
-    /// BAL builder at the current [`Self::bal_index`].
+    /// Folds a detached [`PendingState`] -- a committed transaction's post-state -- into the BAL
+    /// builder at the current [`Self::bal_index`].
     ///
     /// No-op when BAL construction is disabled. Loaded-but-unchanged accounts and storage slots
-    /// are recorded as BAL reads; changed ones as writes. The overlay is folded directly, without
-    /// detaching it.
+    /// are recorded as BAL reads; changed ones as writes.
     #[inline]
-    pub(crate) fn commit_pending(
+    pub fn commit_pending(&mut self, pending: &PendingState) {
+        self.commit(&pending.accounts, &pending.storage);
+    }
+
+    /// Folds a committed transaction's pending accounts and storage overlays into the BAL builder
+    /// at the current [`Self::bal_index`].
+    ///
+    /// Same as [`Self::commit_pending`], operating on the transaction layers directly so the
+    /// overlay need not be detached. No-op when BAL construction is disabled.
+    #[inline]
+    pub(crate) fn commit(
         &mut self,
         accounts: &AddressMap<Account>,
         storage: &AddressMap<StorageOverlay>,
@@ -170,12 +179,7 @@ impl BalContext {
             return;
         };
         for (&address, entry) in accounts {
-            bal.update_pending_account(
-                index,
-                address,
-                entry.original.as_ref(),
-                entry.present.as_ref(),
-            );
+            bal.update_account(index, address, entry.original.as_ref(), entry.present.as_ref());
         }
         for (&address, overlay) in storage {
             bal.accounts.entry(address).or_default().storage.update_pending(index, &overlay.slots);

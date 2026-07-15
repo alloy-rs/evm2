@@ -2697,7 +2697,7 @@ mod tests {
 
         // Folding the pending state into a fresh BAL matches the commit-built BAL.
         let mut rebuilt = Bal::new();
-        rebuilt.apply_pending_state(BlockAccessIndex::new(1), pending);
+        rebuilt.commit(BlockAccessIndex::new(1), pending);
         assert_eq!(rebuilt, committed_bal);
         // Detaching accepted nothing into this EVM's overlay.
         assert_eq!(
