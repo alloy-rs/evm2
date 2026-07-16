@@ -181,7 +181,9 @@ jobs:
       - name: Install LLVM
         if: ${{ matrix.os == 'macos' }}
         run: .github/scripts/install_llvm.sh macos
-      - uses: dtolnay/rust-toolchain@stable # zizmor: ignore[unpinned-uses] Keep the toolchain branch ref for this matrix job.
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
         if: runner.os == 'Linux'
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
@@ -189,7 +191,9 @@ jobs:
         with:
           cache-on-failure: true
           cache-bin: false
-      - uses: taiki-e/install-action@nextest # zizmor: ignore[unpinned-uses] Keep the tool-specific install-action ref.
+      - uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2.82.9
+        with:
+          tool: nextest
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
       - name: Download EEST fixtures
         run: ./scripts/setup_test_fixtures.py
