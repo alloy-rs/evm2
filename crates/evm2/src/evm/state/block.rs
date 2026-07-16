@@ -23,7 +23,6 @@ pub struct BlockStateAccumulator {
     accounts: AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: AddressSet,
     storage: StorageKeyMap<Tracked<Word>>,
-    #[cfg_attr(feature = "serde", serde(with = "bytecode_map_serde"))]
     code: B256Map<Bytecode>,
 }
 
@@ -179,32 +178,6 @@ impl StateChangeSource for BlockStateAccumulator {
     }
 }
 
-#[cfg(feature = "serde")]
-mod bytecode_map_serde {
-    use super::*;
-    use alloy_primitives::Bytes;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub(super) fn serialize<S>(code: &B256Map<Bytecode>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        code.iter()
-            .map(|(&hash, bytecode)| (hash, bytecode.original_bytes()))
-            .collect::<B256Map<Bytes>>()
-            .serialize(serializer)
-    }
-
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<B256Map<Bytecode>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        B256Map::<Bytes>::deserialize(deserializer).map(|code| {
-            code.into_iter().map(|(hash, bytes)| (hash, Bytecode::new_raw(bytes))).collect()
-        })
-    }
-}
-
 fn visit_block_changes<S: StateChangeSink>(
     accounts: &AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: &AddressSet,
@@ -256,6 +229,13 @@ mod tests {
     use crate::interpreter::Word;
     use alloy_primitives::{Address, map::U256Map};
 
+    #[cfg(feature = "serde")]
+    use super::super::StateChangeSink;
+    #[cfg(feature = "serde")]
+    use crate::bytecode::Bytecode;
+    #[cfg(feature = "serde")]
+    use alloy_primitives::B256;
+
     fn changes(address: Address, change: AccountChange) -> StateChanges {
         let mut changes = StateChanges::default();
         changes.accounts.insert(address, change);
@@ -264,6 +244,20 @@ mod tests {
 
     fn slot(key: Word, original: Word, current: Word) -> U256Map<Tracked<Word>> {
         U256Map::from_iter([(key, Tracked::from_parts(original, current))])
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_binary_roundtrip() {
+        let mut accumulator = BlockStateAccumulator::new();
+        let code_hash = B256::with_last_byte(1);
+        let bytecode = Bytecode::new_raw_checked(vec![0x60, 0x00].into()).unwrap();
+        accumulator.bytecode(code_hash, &bytecode).unwrap();
+
+        let encoded = postcard::to_allocvec(&accumulator).unwrap();
+        let deserialized: BlockStateAccumulator = postcard::from_bytes(&encoded).unwrap();
+
+        assert_eq!(deserialized, accumulator);
     }
 
     #[test]
