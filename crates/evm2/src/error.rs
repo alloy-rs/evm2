@@ -72,6 +72,10 @@ impl ErrorCode {
     /// Reserved code signalling that precompile execution stopped on a fatal error.
     pub const FATAL_PRECOMPILE: Self = Self::new_reserved(3);
 
+    /// Reserved code signalling that a read is not covered by the attached EIP-7928 Block Access
+    /// List and database fallback is disabled, so the BAL is invalid for this access.
+    pub const BAL_NOT_COVERED: Self = Self::new_reserved(4);
+
     #[inline]
     const fn new_reserved(code: usize) -> Self {
         assert!(code > 0 && code <= Self::RESERVED_COUNT);

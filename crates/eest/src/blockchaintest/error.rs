@@ -83,6 +83,14 @@ pub(crate) enum TestErrorKind {
     /// Execution resource initialization failed.
     #[error(transparent)]
     ExecutionResource(#[from] ExecutionResourceError),
+    /// The built EIP-7928 block access list does not match the block header's.
+    #[error("block access list mismatch at block {block_index}:{details}")]
+    BlockAccessListMismatch {
+        /// Index of the block whose access list mismatched.
+        block_index: usize,
+        /// Human-readable summary of the differing accounts.
+        details: String,
+    },
 }
 
 impl From<TxBuildError> for TestErrorKind {

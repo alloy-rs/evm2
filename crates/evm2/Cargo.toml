@@ -19,8 +19,10 @@ workspace = true
 evm2-macros.workspace = true
 
 alloy-consensus.workspace = true
+alloy-eip7928.workspace = true
 alloy-eips = { workspace = true, features = ["k256"] }
 alloy-primitives.workspace = true
+auto_impl.workspace = true
 bitvec = { workspace = true, features = ["alloc"] }
 derive-where.workspace = true
 thiserror.workspace = true
@@ -110,6 +112,7 @@ default = [
 ]
 std = [
     "alloy-consensus/std",
+    "alloy-eip7928/std",
     "alloy-eips/std",
     "alloy-primitives/std",
     "bitvec/std",
@@ -135,6 +138,7 @@ async = ["std", "dep:corosensei"]
 serde = [
     "dep:serde",
     "alloy-consensus/serde",
+    "alloy-eip7928/serde",
     "alloy-eips/serde",
     "alloy-primitives/serde",
     "ark-serialize/serde",

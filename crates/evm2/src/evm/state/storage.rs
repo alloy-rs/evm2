@@ -170,20 +170,18 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
 
     /// Marks all of the account's prior persistent storage as deleted.
     ///
-    /// Loaded slot values are reset to zero so wiped slots resolve to zero on re-load, while warm
-    /// slots keep their entry so EIP-2929 warmth survives the wipe; cold slots are dropped. A
-    /// [`JournalEntry::StorageWipe`] snapshot of the prior overlay is recorded so the wipe is
-    /// undone by [`State::rollback`](super::State::rollback).
+    /// Only called during transaction finalization (selfdestruct and EIP-161 dead-account
+    /// deletion), after the last revertible scope, so the wipe is not journaled. Loaded slot
+    /// entries are kept with their values reset to zero: wiped slots resolve to zero on re-load,
+    /// and resetting `original` alongside `current` turns the transaction's prior writes into
+    /// unchanged reads, which keeps a destroyed account's storage accesses visible to the EIP-7928
+    /// block access list (execution-specs `destroy_storage` converts writes to reads).
     #[inline]
     pub fn wipe(&mut self) {
-        let previous = self.storage.clone();
         self.storage.wiped = true;
         self.storage.slots.iter_mut().for_each(|(_, slot)| {
             slot.value = Tracked::new(Word::ZERO);
         });
-        self.inner
-            .journal
-            .push(JournalEntry::StorageWipe { address: self.address, previous: Some(previous) });
     }
 }
 
@@ -369,30 +367,6 @@ mod tests {
         let account_change = changes.accounts.get(&account).expect("wipe must be emitted");
         assert!(account_change.is_storage_wiped());
         assert!(account_change.changed_storage().next().is_none());
-    }
-
-    #[test]
-    fn storage_wipe_rolls_back_to_checkpoint() {
-        // A wipe performed inside a revertible scope (as `create_account` does for contract
-        // re-incarnation) must be undone by rollback: the cleared slots resolve to their real
-        // database values again and no spurious wipe marker is emitted.
-        let address = Address::from([0x49; 20]);
-        let key = Word::from(1);
-        let mut database = CacheDB::default();
-        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        database.insert_account_storage(&address, &key, &Word::from(7));
-        let mut state = State::new(database);
-
-        let checkpoint = state.checkpoint();
-        assert_eq!(state.storage_slot(&address, key, false).unwrap().current(), Word::from(7));
-        state.storage(&address).wipe();
-        assert!(state.storage(&address).is_wiped());
-        assert_eq!(state.storage_slot(&address, key, false).unwrap().current(), Word::ZERO);
-
-        state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.storage(&address).is_wiped());
-        assert_eq!(state.storage_slot(&address, key, false).unwrap().current(), Word::from(7));
-        assert!(!state.build_state_changes().is_changed());
     }
 
     #[test]

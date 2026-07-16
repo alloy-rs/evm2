@@ -47,7 +47,6 @@ use std::{
     },
 };
 
-#[doc(no_inline)] // Work around rustdoc ICE: https://github.com/rust-lang/rust/issues/158686
 pub use inkwell::{self, context::Context};
 
 mod cpp;
@@ -2078,7 +2077,7 @@ fn init_() -> Result<()> {
         info: true,
         machine_code: true,
     };
-    Target::initialize_all(&config);
+    Target::initialize_native(&config).map_err(|e| eyre::eyre!(e))?;
 
     Ok(())
 }

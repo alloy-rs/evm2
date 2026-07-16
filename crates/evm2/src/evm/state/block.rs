@@ -107,6 +107,13 @@ impl StateChangeSink for BlockStateAccumulator {
         match self.accounts.entry(change.address) {
             hash_map::Entry::Occupied(mut entry) => {
                 let delta = entry.get_mut();
+                // Reviving an account deleted earlier in the block re-records the deletion's
+                // implied storage wipe: the deletion dropped the wipe marker because applying
+                // `current == None` wipes storage at the sink, but applying a live account does
+                // not, so pre-block storage would otherwise leak through the revival.
+                if delta.current.is_none() && current.is_some() && delta.original.is_some() {
+                    self.storage_wipes.insert(change.address);
+                }
                 delta.set_current(current);
                 if !delta.is_changed() {
                     entry.remove();
@@ -303,6 +310,59 @@ mod tests {
         assert_eq!(storage.len(), 1);
         assert_eq!(storage[0].0.key(), key);
         assert_eq!(storage[0].1.current, Word::from(7));
+    }
+
+    #[test]
+    fn block_accumulator_restores_wipe_when_deleted_account_is_revived() {
+        // Selfdestruct followed by a revival in a later transaction of the same block (a plain
+        // transfer or a re-create) must keep the deletion's storage wipe: the revived account is
+        // applied as a live account, which does not wipe storage at the sink by itself.
+        let address = Address::from([0x55; 20]);
+        let original = AccountInfo::default().with_balance(Word::from(3));
+        let revived = AccountInfo::default().with_balance(Word::from(1));
+        let mut accumulator = BlockStateAccumulator::new();
+
+        let delete = changes(
+            address,
+            AccountChange {
+                original: Some(original.clone()),
+                wipe_storage: true,
+                ..AccountChange::default()
+            },
+        );
+        delete.visit(&mut accumulator).expect("block accumulator is infallible");
+        assert!(accumulator.storage_wipes_sorted().is_empty(), "deletion subsumes the wipe");
+
+        let revive = changes(
+            address,
+            AccountChange { current: Some(revived.clone()), ..AccountChange::default() },
+        );
+        revive.visit(&mut accumulator).expect("block accumulator is infallible");
+
+        let accounts = accumulator.accounts_sorted();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].1.original.as_ref(), Some(&original));
+        assert_eq!(accounts[0].1.current.as_ref(), Some(&revived));
+        assert_eq!(accumulator.storage_wipes_sorted(), [address]);
+
+        // Reviving back to a value equal to the original collapses the account delta, but the
+        // wipe still stands: the account's pre-block storage was destroyed.
+        let mut collapsing = BlockStateAccumulator::new();
+        changes(
+            address,
+            AccountChange {
+                original: Some(original.clone()),
+                wipe_storage: true,
+                ..AccountChange::default()
+            },
+        )
+        .visit(&mut collapsing)
+        .expect("block accumulator is infallible");
+        changes(address, AccountChange { current: Some(original), ..AccountChange::default() })
+            .visit(&mut collapsing)
+            .expect("block accumulator is infallible");
+        assert!(collapsing.accounts_sorted().is_empty());
+        assert_eq!(collapsing.storage_wipes_sorted(), [address]);
     }
 
     #[test]
