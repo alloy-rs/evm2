@@ -25,7 +25,7 @@ use boa_engine::{Context, JsError, JsObject, JsResult, JsValue, Source, js_strin
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
     env::BlockEnv,
-    ethereum::RecoveredTxEnvelope,
+    ethereum::TransactionExt,
     evm::DynDatabase,
     interpreter::{
         GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word,
@@ -278,11 +278,11 @@ impl JsInspector {
     /// Calls the result function and returns the result as [serde_json::Value].
     ///
     /// Note: This is supposed to be called after the inspection has finished.
-    pub fn json_result<T: EvmTypesHost>(
+    pub fn json_result<T: EvmTypesHost<Tx: TransactionExt>>(
         &mut self,
         res: &TxResultWithState<T>,
-        tx: &RecoveredTxEnvelope,
-        block: &BlockEnv,
+        tx: &T::Tx,
+        block: &BlockEnv<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<serde_json::Value, JsInspectorError> {
         let result = self.result(res, tx, block, db)?;
@@ -290,11 +290,11 @@ impl JsInspector {
     }
 
     /// Calls the result function and returns the result.
-    pub fn result<T: EvmTypesHost>(
+    pub fn result<T: EvmTypesHost<Tx: TransactionExt>>(
         &mut self,
         res: &TxResultWithState<T>,
-        tx: &RecoveredTxEnvelope,
-        block: &BlockEnv,
+        tx: &T::Tx,
+        block: &BlockEnv<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<JsValue, JsInspectorError> {
         let TxResultWithState { result, state_changes: state, .. } = res;
@@ -327,7 +327,7 @@ impl JsInspector {
                 TxKind::Create => "CREATE",
             }
             .to_string(),
-            from: tx.signer(),
+            from: tx.caller(),
             to,
             input: tx.input().clone(),
             gas: tx.gas_limit(),

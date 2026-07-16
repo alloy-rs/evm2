@@ -134,6 +134,17 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
     }
 
     #[inline]
+    fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
+        self.map
+            .as_ref()
+            .addresses()
+            .filter_map(|address| {
+                Some((address, self.map.as_ref().get_data(&address)?.id().clone()))
+            })
+            .collect()
+    }
+
+    #[inline]
     fn contains(&self, address: &Address) -> bool {
         self.map.as_ref().contains(address)
     }

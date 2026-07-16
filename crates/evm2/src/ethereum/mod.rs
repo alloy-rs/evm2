@@ -22,11 +22,12 @@ use crate::{
     version::GasId,
 };
 use alloy_consensus::{
-    TxEip1559, TxEip2930, TxEip7702, TxLegacy,
+    EthereumTxEnvelope, TxEip1559, TxEip2930, TxEip4844, TxEip7702, TxLegacy,
     transaction::{Recovered, Transaction, TxEip4844Variant},
 };
 use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
+use core::fmt::Debug;
 
 /// Ethereum transaction envelope containing recovered transactions.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +42,30 @@ pub enum RecoveredTxEnvelope {
     Eip4844(Recovered<TxEip4844Variant>),
     /// EIP-7702 set-code transaction.
     Eip7702(Recovered<LazyTxEip7702>),
+}
+
+impl From<Recovered<EthereumTxEnvelope<TxEip4844>>> for RecoveredTxEnvelope {
+    fn from(tx: Recovered<EthereumTxEnvelope<TxEip4844>>) -> Self {
+        let (tx, signer) = tx.into_parts();
+        match tx {
+            EthereumTxEnvelope::Legacy(tx) => {
+                Self::Legacy(Recovered::new_unchecked(tx.strip_signature(), signer))
+            }
+            EthereumTxEnvelope::Eip2930(tx) => {
+                Self::Eip2930(Recovered::new_unchecked(tx.strip_signature(), signer))
+            }
+            EthereumTxEnvelope::Eip1559(tx) => {
+                Self::Eip1559(Recovered::new_unchecked(tx.strip_signature(), signer))
+            }
+            EthereumTxEnvelope::Eip4844(tx) => {
+                Self::Eip4844(Recovered::new_unchecked(tx.strip_signature().into(), signer))
+            }
+            EthereumTxEnvelope::Eip7702(tx) => Self::Eip7702(Recovered::new_unchecked(
+                LazyTxEip7702::from_recovered_authorizations(tx.strip_signature()),
+                signer,
+            )),
+        }
+    }
 }
 
 impl RecoveredTxEnvelope {
@@ -152,6 +177,53 @@ impl RecoveredTxEnvelope {
             Self::Eip4844(tx) => tx.value(),
             Self::Eip7702(tx) => tx.value,
         }
+    }
+}
+
+/// Transaction fields used by RPC execution and tracing.
+pub trait TransactionExt: Debug + Clone + Send + Sync + 'static {
+    /// Returns the transaction caller.
+    fn caller(&self) -> Address;
+
+    /// Returns the transaction gas limit.
+    fn gas_limit(&self) -> u64;
+
+    /// Returns the transaction value.
+    fn value(&self) -> U256;
+
+    /// Returns the transaction input.
+    fn input(&self) -> &Bytes;
+
+    /// Returns the transaction target kind.
+    fn kind(&self) -> TxKind;
+
+    /// Returns the transaction effective gas price for the block base fee.
+    fn effective_gas_price(&self, base_fee: Option<u64>) -> u128;
+}
+
+impl TransactionExt for RecoveredTxEnvelope {
+    fn caller(&self) -> Address {
+        self.signer()
+    }
+
+    fn gas_limit(&self) -> u64 {
+        Self::gas_limit(self)
+    }
+
+    fn value(&self) -> U256 {
+        Self::value(self)
+    }
+
+    fn input(&self) -> &Bytes {
+        Self::input(self)
+    }
+
+    fn kind(&self) -> TxKind {
+        Self::kind(self)
+    }
+
+    fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
+        Self::effective_gas_price(self, base_fee)
     }
 }
 
