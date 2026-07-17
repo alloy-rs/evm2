@@ -77,12 +77,18 @@ jobs:
         with:
           cache-on-failure: true
           cache-bin: false
-      - uses: taiki-e/install-action@96c7780c1d8a2b8723e12031def873a434d39d8d # nextest
+      - uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2.82.9
         if: ${{ !matrix.command || matrix.command == 'nextest' }}
-      - uses: taiki-e/install-action@019ff5fd0f8eae341c18fae38f5dcf1ad6dced0b # cross
+        with:
+          tool: nextest
+      - uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2.82.9
         if: ${{ matrix.command == 'cross-test' }}
-      - uses: taiki-e/install-action@55b64938ebc43fea1373a940406514e0937f1471 # wasmtime
+        with:
+          tool: cross
+      - uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2.82.9
         if: ${{ matrix.command == 'wasm-test' }}
+        with:
+          tool: wasmtime
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         if: ${{ matrix.kind == 'eest' }}
       - name: Download EEST fixtures
@@ -247,7 +253,9 @@ jobs:
         run: .github/scripts/install_llvm.sh ubuntu
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
-      - uses: taiki-e/install-action@c8fac77ad14033d073e5c8e4f5a25fffd79d4e75 # cargo-hack
+      - uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2.82.9
+        with:
+          tool: cargo-hack
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
