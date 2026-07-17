@@ -10,20 +10,19 @@ use k256::ecdsa::{Error, RecoveryId, Signature, VerifyingKey};
 /// This function is using the `k256` crate.
 pub(crate) fn ecrecover(sig: &B512, mut recid: u8, msg: &B256) -> Result<B256, Error> {
     // parse signature
-    let mut sig = Signature::from_slice(sig.as_slice())?;
+    let sig = Signature::from_slice(sig.as_slice())?;
 
     // normalize signature and flip recovery id if needed.
-    if let Some(sig_normalized) = sig.normalize_s() {
-        sig = sig_normalized;
+    let sig_normalized = sig.normalize_s();
+    if sig != sig_normalized {
         recid ^= 1;
     }
     let recid = RecoveryId::from_byte(recid).expect("recovery ID is valid");
 
     // recover key
-    let recovered_key = VerifyingKey::recover_from_prehash(&msg[..], &sig, recid)?;
+    let recovered_key = VerifyingKey::recover_from_prehash(&msg[..], &sig_normalized, recid)?;
     // hash it
-    let mut hash =
-        keccak256(&recovered_key.to_encoded_point(/* compress = */ false).as_bytes()[1..]);
+    let mut hash = keccak256(&recovered_key.to_sec1_point(/* compress = */ false).as_bytes()[1..]);
 
     // truncate to 20 bytes
     hash[..12].fill(0);
