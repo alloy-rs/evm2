@@ -234,6 +234,8 @@ mod tests {
     #[cfg(feature = "serde")]
     use crate::bytecode::Bytecode;
     #[cfg(feature = "serde")]
+    use alloc::vec;
+    #[cfg(feature = "serde")]
     use alloy_primitives::B256;
 
     fn changes(address: Address, change: AccountChange) -> StateChanges {
