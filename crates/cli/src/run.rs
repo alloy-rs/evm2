@@ -857,7 +857,7 @@ fn read_code_string(contents: &[u8], ext: Option<&str>) -> eyre::Result<Vec<u8>>
             }
         })
     } else {
-        eyre::bail!("could not determine bytecode type")
+        eyre::bail!("could not determine bytecode type");
     }
 }
 
