@@ -1,10 +1,10 @@
-/// Optional test-name filter.
+/// Optional glob filter over a name (test/case name or file path).
 #[derive(Clone, Debug, Default)]
-pub struct EntryPoint {
+pub struct NameFilter {
     pattern: Option<String>,
 }
 
-impl EntryPoint {
+impl NameFilter {
     /// Creates a filter from an optional glob pattern.
     #[inline]
     pub const fn new(pattern: Option<String>) -> Self {

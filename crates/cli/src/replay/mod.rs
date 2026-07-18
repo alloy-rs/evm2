@@ -9,7 +9,7 @@ use evm2_eest::{
     BlockchainTestBlockFailed, BlockchainTestBlockFinished, BlockchainTestBlockStarted,
     BlockchainTestCaseStarted, BlockchainTestExecuteConfig, BlockchainTestExecutionMode,
     BlockchainTestHook, BlockchainTestTransactionFailed, BlockchainTestTransactionFinished,
-    BlockchainTestTransactionStarted, EntryPoint, StateTestExecuteConfig, StateTestExecutionMode,
+    BlockchainTestTransactionStarted, NameFilter, StateTestExecuteConfig, StateTestExecutionMode,
     execute_blockchain_tests_str, execute_blockchain_tests_suite,
     execute_state_tests_str_with_filter,
 };
@@ -26,10 +26,10 @@ struct ReplayOptions {
     blockchain_mode: BlockchainTestExecutionMode,
     state_mode: StateTestExecutionMode,
     db_stats: bool,
-    /// Glob over the EEST test/case name (`--entrypoint`).
-    test_filter: EntryPoint,
+    /// Glob over the EEST test/case name (`--filter-test`).
+    test_filter: NameFilter,
     /// Glob over the `.json` file path or name in folder mode (`--filter-file`).
-    file_filter: EntryPoint,
+    file_filter: NameFilter,
 }
 
 /// Executed/skipped counts and detected kind for a single fixture file.
@@ -53,8 +53,8 @@ pub(crate) fn run(command: Replay) -> Result<()> {
         blockchain_mode: replay_blockchain_execution_mode(&command),
         state_mode: replay_state_execution_mode(&command),
         db_stats: command.db_stats,
-        test_filter: EntryPoint::new(command.entrypoint),
-        file_filter: EntryPoint::new(command.filter_file),
+        test_filter: NameFilter::new(command.filter_test),
+        file_filter: NameFilter::new(command.filter_file),
     };
 
     if command.path.is_dir() {
@@ -213,7 +213,7 @@ fn replay_file(path: &Path, options: &ReplayOptions) -> Result<FileReplay> {
 /// Whether `path` is selected by the `--filter-file` glob. The pattern matches
 /// against either the full path or the bare file name, so `*/create/*` and
 /// `create_*.json` both work; an empty filter selects everything.
-fn file_selected(filter: &EntryPoint, path: &Path) -> bool {
+fn file_selected(filter: &NameFilter, path: &Path) -> bool {
     filter.matches(&path.to_string_lossy())
         || path.file_name().is_some_and(|name| filter.matches(&name.to_string_lossy()))
 }
@@ -501,19 +501,19 @@ mod collect_tests {
 
     #[test]
     fn file_filter_matches_path_or_file_name() {
-        use super::{EntryPoint, file_selected};
+        use super::{NameFilter, file_selected};
         use std::path::Path;
 
         let path = Path::new("test-fixtures/frontier/create/create_one_byte.json");
 
         // An empty filter selects everything.
-        assert!(file_selected(&EntryPoint::new(None), path));
+        assert!(file_selected(&NameFilter::new(None), path));
         // Path-oriented glob.
-        assert!(file_selected(&EntryPoint::new(Some("*/create/*".to_string())), path));
+        assert!(file_selected(&NameFilter::new(Some("*/create/*".to_string())), path));
         // File-name-oriented glob.
-        assert!(file_selected(&EntryPoint::new(Some("create_*.json".to_string())), path));
+        assert!(file_selected(&NameFilter::new(Some("create_*.json".to_string())), path));
         // Non-matching glob.
-        assert!(!file_selected(&EntryPoint::new(Some("*/access_list/*".to_string())), path));
+        assert!(!file_selected(&NameFilter::new(Some("*/access_list/*".to_string())), path));
     }
 }
 
@@ -527,7 +527,7 @@ mod tests {
 
     fn replay(jit: bool, aot: bool) -> Replay {
         Replay {
-            entrypoint: None,
+            filter_test: None,
             filter_file: None,
             jit,
             aot,

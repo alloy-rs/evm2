@@ -4,7 +4,7 @@ use crate::{
     dump,
     error::{TestError, TestErrorKind},
     execution::ExecutionResources,
-    filter::EntryPoint,
+    filter::NameFilter,
     fixture_io,
     forks::is_fork_skipped,
     state::{
@@ -77,7 +77,7 @@ pub struct ExecuteConfig {
 pub struct ExecuteSummary {
     /// Number of executed test units.
     pub executed: usize,
-    /// Number of test units skipped by the entrypoint filter.
+    /// Number of test units skipped by the test-name filter.
     pub skipped: usize,
 }
 
@@ -105,7 +105,7 @@ pub(crate) fn execute_test_suites(
             &path,
             &input,
             config,
-            &EntryPoint::default(),
+            &NameFilter::default(),
             &resources,
             &mut db_stats_counts,
         )?;
@@ -129,15 +129,15 @@ pub fn execute_str_with_config(
     input: &str,
     config: ExecuteConfig,
 ) -> Result<ExecuteSummary, TestError> {
-    execute_str_with_filter(path, input, config, &EntryPoint::default())
+    execute_str_with_filter(path, input, config, &NameFilter::default())
 }
 
-/// Executes a loaded state test JSON file, selecting test units by entrypoint.
+/// Executes a loaded state test JSON file, selecting test units by name filter.
 pub fn execute_str_with_filter(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
 ) -> Result<ExecuteSummary, TestError> {
     let resources =
         ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
@@ -146,7 +146,7 @@ pub fn execute_str_with_filter(
         path,
         input,
         config,
-        entrypoint,
+        test_filter,
         &resources,
         &mut db_stats_counts,
     )?;
@@ -160,7 +160,7 @@ fn execute_str_with_resources(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
     resources: &ExecutionResources,
     db_stats_counts: &mut DbStatsCounts,
 ) -> Result<ExecuteSummary, TestError> {
@@ -168,7 +168,7 @@ fn execute_str_with_resources(
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
     for (name, unit) in suite.0 {
-        if !entrypoint.matches(&name) {
+        if !test_filter.matches(&name) {
             summary.skipped += 1;
             continue;
         }

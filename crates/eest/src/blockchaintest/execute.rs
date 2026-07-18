@@ -15,7 +15,7 @@ use crate::{
     dump,
     execute::state_root_from_database,
     execution::ExecutionResources,
-    filter::EntryPoint,
+    filter::NameFilter,
     fixture_io,
     forks::is_fork_skipped,
     state::{insert_account_with_storage, parse_bytecode},
@@ -102,9 +102,9 @@ pub(crate) fn execute_test_suite(
 ) -> Result<ExecuteSummary, TestError> {
     let suite =
         fixture_io::read_blockchain(path).map_err(|err| TestError::unknown(path, err.into()))?;
-    let entrypoint = EntryPoint::default();
+    let test_filter = NameFilter::default();
     let mut hook = NoopHook;
-    execute_suite(path, &suite, config, &entrypoint, &mut hook)
+    execute_suite(path, &suite, config, &test_filter, &mut hook)
 }
 
 /// Executes multiple blockchain test JSON files using one shared execution resource set.
@@ -119,13 +119,13 @@ pub(crate) fn execute_test_suites(
     let summary = compiled::run_files(paths.to_vec(), resources, move |path, resources| {
         let suite = fixture_io::read_blockchain(&path)
             .map_err(|err| TestError::unknown(path.as_path(), err.into()))?;
-        let entrypoint = EntryPoint::default();
+        let test_filter = NameFilter::default();
         let mut hook = NoopHook;
         let file_summary = execute_suite_with_resources(
             &path,
             &suite,
             config,
-            &entrypoint,
+            &test_filter,
             &mut hook,
             &resources,
         )?;
@@ -144,12 +144,12 @@ pub fn execute_str(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
     hook: &mut dyn Hook,
 ) -> Result<ExecuteSummary, TestError> {
     let suite: BlockchainTest =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
-    execute_suite(path, &suite, config, entrypoint, hook)
+    execute_suite(path, &suite, config, test_filter, hook)
 }
 
 /// Executes a parsed blockchain test suite.
@@ -157,25 +157,25 @@ pub fn execute_suite(
     path: &Path,
     suite: &BlockchainTest,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
     hook: &mut dyn Hook,
 ) -> Result<ExecuteSummary, TestError> {
     let resources =
         ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
-    execute_suite_with_resources(path, suite, config, entrypoint, hook, &resources)
+    execute_suite_with_resources(path, suite, config, test_filter, hook, &resources)
 }
 
 fn execute_suite_with_resources(
     path: &Path,
     suite: &BlockchainTest,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
 ) -> Result<ExecuteSummary, TestError> {
     let mut summary = ExecuteSummary::default();
     for (name, test_case) in &suite.0 {
-        if !entrypoint.matches(name)
+        if !test_filter.matches(name)
             || test_case.network.is_transition()
             || is_blockchain_fork_skipped(fork_to_spec_id(test_case.network))
         {
@@ -1341,7 +1341,7 @@ mod tests {
             Path::new("simple-storage.json"),
             &input,
             ExecuteConfig { validate_post_state: true, mode, ..ExecuteConfig::default() },
-            &EntryPoint::default(),
+            &NameFilter::default(),
             &mut hook,
         )
         .unwrap()

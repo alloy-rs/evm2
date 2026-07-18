@@ -16,7 +16,7 @@ pub(crate) enum Command {
     Capture(Capture),
     /// Run the differential fuzzer against revm.
     Fuzzer(crate::fuzzer::Options),
-    /// List the test/case names in an EEST fixture (usable with `--entrypoint`).
+    /// List the test/case names in an EEST fixture (usable with `--filter-test`).
     List(List),
     /// Replay an EEST JSON fixture, or every `.json` fixture under a folder.
     Replay(Replay),
@@ -48,7 +48,7 @@ pub(crate) struct Capture {
 pub(crate) struct Replay {
     /// Only replay tests whose EEST test/case name matches this glob.
     #[arg(long, value_name = "GLOB")]
-    pub(crate) entrypoint: Option<String>,
+    pub(crate) filter_test: Option<String>,
     /// When replaying a folder, only replay `.json` files whose path or file
     /// name matches this glob.
     #[arg(long, value_name = "GLOB")]
