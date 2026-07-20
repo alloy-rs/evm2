@@ -21,6 +21,7 @@ impl EvmTypesHost for TestTypes {
     type ConfigSelector = crate::BaseEvmConfigSelector;
     type SpecId = crate::SpecId;
     type Tx = ();
+    type EvmExt = ();
     type MessageExt = ();
     type MessageResultExt = ();
     type TxEnvExt = ();
