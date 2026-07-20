@@ -64,7 +64,7 @@ pub fn maybe_run_jit_helper() -> eyre::Result<ControlFlow<()>> {
     #[cfg(not(all(feature = "llvm", unix)))]
     {
         if std::env::var_os("EVM2_JIT_HELPER").is_some() {
-            eyre::bail!("out-of-process JIT helper is only available on Unix with LLVM")
+            eyre::bail!("out-of-process JIT helper is only available on Unix with LLVM");
         }
         Ok(ControlFlow::Continue(()))
     }
@@ -321,10 +321,10 @@ impl JitBackend {
         match rx.recv_timeout(self.inner.tuning.sync_compile_timeout) {
             Ok(()) => Ok(()),
             Err(chan::RecvTimeoutError::Timeout) => {
-                eyre::bail!("timed out waiting for compilation to complete")
+                eyre::bail!("timed out waiting for compilation to complete");
             }
             Err(chan::RecvTimeoutError::Disconnected) => {
-                eyre::bail!("backend shut down before compilation completed")
+                eyre::bail!("backend shut down before compilation completed");
             }
         }
     }

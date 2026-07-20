@@ -18,6 +18,7 @@ use core::convert::Infallible;
 
 /// Mutable block-level state accumulator.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockStateAccumulator {
     accounts: AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: AddressSet,
@@ -228,6 +229,15 @@ mod tests {
     use crate::interpreter::Word;
     use alloy_primitives::{Address, map::U256Map};
 
+    #[cfg(feature = "serde")]
+    use super::super::StateChangeSink;
+    #[cfg(feature = "serde")]
+    use crate::bytecode::Bytecode;
+    #[cfg(feature = "serde")]
+    use alloc::vec;
+    #[cfg(feature = "serde")]
+    use alloy_primitives::B256;
+
     fn changes(address: Address, change: AccountChange) -> StateChanges {
         let mut changes = StateChanges::default();
         changes.accounts.insert(address, change);
@@ -236,6 +246,20 @@ mod tests {
 
     fn slot(key: Word, original: Word, current: Word) -> U256Map<Tracked<Word>> {
         U256Map::from_iter([(key, Tracked::from_parts(original, current))])
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_binary_roundtrip() {
+        let mut accumulator = BlockStateAccumulator::new();
+        let code_hash = B256::with_last_byte(1);
+        let bytecode = Bytecode::new_raw_checked(vec![0x60, 0x00].into()).unwrap();
+        accumulator.bytecode(code_hash, &bytecode).unwrap();
+
+        let encoded = postcard::to_allocvec(&accumulator).unwrap();
+        let deserialized: BlockStateAccumulator = postcard::from_bytes(&encoded).unwrap();
+
+        assert_eq!(deserialized, accumulator);
     }
 
     #[test]
