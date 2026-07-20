@@ -132,6 +132,13 @@ pub(crate) fn state_from_evm2_changes(pending: &PendingState) -> CanonicalState 
         type Error = Infallible;
 
         fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+            // A created-then-destroyed account (e.g. a CREATE whose init code selfdestructs) ends
+            // the transaction absent with no transaction-boundary original, a net no-op. revm's
+            // `state_from_revm` omits such an account, so drop the spurious `None` deletion here to
+            // keep the two backends' diffs symmetric.
+            if change.current.is_none() && change.original.is_none() {
+                return Ok(());
+            }
             let account = change.current.map(|info| CanonicalAccount {
                 balance: info.balance,
                 nonce: info.nonce,
