@@ -14,9 +14,9 @@ use alloy_primitives::map::{AddressMap, AddressSet};
 /// each carrying its transaction-boundary original value next to its present value. Two consumers
 /// draw from it:
 ///
-/// - [`Bal::commit`](crate::evm::Bal::commit) folds it into an EIP-7928
-///   Block Access List, recording loaded-but-unchanged entries as reads and changed ones as writes
-///   — the same fold the EVM applies on transaction commit when its builder is enabled.
+/// - [`Bal::commit`](crate::evm::Bal::commit) folds it into an EIP-7928 Block Access List,
+///   recording loaded-but-unchanged entries as reads and changed ones as writes — the same fold the
+///   EVM applies on transaction commit when its builder is enabled.
 /// - [`StateChangeSource::visit`] streams it to a [`StateChangeSink`] in deterministic application
 ///   order: changed entries through the change callbacks (how persistence consumers, e.g. reth,
 ///   apply the transaction to the database) and loaded-but-unchanged entries through the read
