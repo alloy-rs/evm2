@@ -116,6 +116,8 @@ gas_ids! {
     SelfdestructRefund;
     /// Gas stipend for a value-transferring call.
     CallStipend;
+    /// Maximum transaction gas refund quotient.
+    MaxRefundQuotient;
     /// Additional gas charged for cold storage.
     ColdStorageAdditionalCost;
     /// Gas charged for cold storage.
@@ -478,6 +480,7 @@ mod tests {
         assert_eq!(params.get(GasId::SstoreStatic), 5000);
         assert_eq!(params.get(GasId::SstoreSetWithoutLoadCost), 15000);
         assert_eq!(params.get(GasId::TxCreateCost), 0);
+        assert_eq!(params.get(GasId::MaxRefundQuotient), 2);
     }
 
     #[test]
@@ -502,10 +505,12 @@ mod tests {
         assert_eq!(berlin.get(GasId::SstoreStatic), 100);
         assert_eq!(berlin.get(GasId::ColdAccountAdditionalCost), 2500);
         assert_eq!(berlin.get(GasId::ColdStorageCost), 2100);
+        assert_eq!(berlin.get(GasId::MaxRefundQuotient), 2);
 
         let london = gas_params(SpecId::LONDON);
         assert_eq!(london.get(GasId::SstoreClearingSlotRefund), 4800);
         assert_eq!(london.get(GasId::SelfdestructRefund), 0);
+        assert_eq!(london.get(GasId::MaxRefundQuotient), 5);
 
         let shanghai = gas_params(SpecId::SHANGHAI);
         assert_eq!(shanghai.get(GasId::TxInitcodeCost), 2);

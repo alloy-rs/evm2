@@ -610,15 +610,16 @@ pub(super) fn settle_gas<'a, T: EvmTypes>(
         return Err(HandlerError::Fatal(code));
     }
 
-    let is_eip3529 = host.feature(EvmFeatures::EIP3529);
-    let (gas_remaining, gas_used) = final_tx_gas(&result, tx_gas_limit, is_eip3529, floor_gas);
+    let max_refund_quotient = u64::from(host.version().gas_params.get(GasId::MaxRefundQuotient));
+    let (gas_remaining, gas_used) =
+        final_tx_gas(&result, tx_gas_limit, max_refund_quotient, floor_gas);
     // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
     // `TxResult::tx_gas_used` reproduces the local `gas_used` (used here for the beneficiary
     // reward). State gas is execution state gas plus the upfront `initial_state_gas`, less the
     // EIP-7702 per-authorization `state_refund`.
     let total_gas_spent =
         tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(result.gas.reservoir());
-    let refunded = result.final_refund(tx_gas_limit, is_eip3529);
+    let refunded = result.final_refund(tx_gas_limit, max_refund_quotient);
     // EIP-7623: when the calldata floor exceeds spent-minus-refund, `TxResult::tx_gas_used`
     // resolves to the floor. `total_gas_spent` stays pre-refund and pre-floor: block-level
     // regular gas (EIP-7778/EIP-8037) accumulates `tx_gas_used_before_refund` per
@@ -680,11 +681,11 @@ pub(super) fn settle_gas<'a, T: EvmTypes>(
 const fn final_tx_gas<T: EvmTypesHost>(
     result: &MessageResult<T>,
     tx_gas_limit: u64,
-    is_eip3529: bool,
+    max_refund_quotient: u64,
     floor_gas: u64,
 ) -> (u64, u64) {
-    let gas_remaining = result.gas_remaining_after_final_refund(tx_gas_limit, is_eip3529);
-    let gas_used = result.gas_used_after_final_refund(tx_gas_limit, is_eip3529);
+    let gas_remaining = result.gas_remaining_after_final_refund(tx_gas_limit, max_refund_quotient);
+    let gas_used = result.gas_used_after_final_refund(tx_gas_limit, max_refund_quotient);
     // EIP-7623 charges at least the calldata floor after applying refunds.
     if gas_used < floor_gas {
         return (tx_gas_limit.saturating_sub(floor_gas), floor_gas);
@@ -1030,7 +1031,7 @@ mod tests {
             ..MessageResult::<BaseEvmTypes>::default()
         };
 
-        assert_eq!(final_tx_gas(&result, 100_000, true, 60_000), (40_000, 60_000));
+        assert_eq!(final_tx_gas(&result, 100_000, 5, 60_000), (40_000, 60_000));
     }
 
     #[test]
@@ -1041,7 +1042,7 @@ mod tests {
             ..MessageResult::<BaseEvmTypes>::default()
         };
 
-        assert_eq!(final_tx_gas(&result, 100_000, true, 60_000), (30_000, 70_000));
+        assert_eq!(final_tx_gas(&result, 100_000, 5, 60_000), (30_000, 70_000));
     }
 
     #[test]

@@ -516,6 +516,7 @@ evm_versions! {
             SstoreClearingSlotRefund: REFUND_SSTORE_CLEARS,
             SelfdestructRefund: SELFDESTRUCT_REFUND,
             CallStipend: CALL_STIPEND,
+            MaxRefundQuotient: 2,
             CodeDepositCost: CODEDEPOSIT,
             TxTokenNonZeroByteMultiplier: NON_ZERO_BYTE_MULTIPLIER,
             TxTokenCost: STANDARD_TOKEN_COST,
@@ -660,6 +661,7 @@ evm_versions! {
         dynamic_gas: [
             SstoreClearingSlotRefund: WARM_SSTORE_RESET + EIP2930_ACCESS_LIST_STORAGE_KEY,
             SelfdestructRefund: 0,
+            MaxRefundQuotient: 5,
         ],
     }
 
