@@ -321,6 +321,7 @@ mod tests {
         type ConfigSelector = BaseEvmConfigSelector;
         type SpecId = SpecId;
         type Tx = Envelope;
+        type EvmExt = ();
         type MessageExt = ();
         type MessageResultExt = ();
         type TxEnvExt = ();
