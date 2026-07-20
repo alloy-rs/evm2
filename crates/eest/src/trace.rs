@@ -14,7 +14,7 @@
 use alloy_primitives::{B256, Bytes, U256};
 use evm2::{
     EvmTypesHost, Inspector,
-    interpreter::{Interpreter, opcode::OpCode},
+    interpreter::{Interpreter, Message, MessageResult, opcode::OpCode},
 };
 use serde_json::json;
 use std::io::{self, Write};
@@ -53,6 +53,22 @@ impl<W: Write> Eip3155Tracer<W> {
         Self { out, pending: None }
     }
 
+    /// Emits the pending step, if any, with a gas cost derived from `interp`'s
+    /// remaining gas.
+    ///
+    /// Frame-spawning opcodes (CALL/CREATE families) never reach `step_end`:
+    /// dispatch unwinds into the frame machinery instead, so the pending step
+    /// is flushed from the `call`/`create` hooks, which fire on the spawning
+    /// frame before the child executes. The gas cost then covers everything
+    /// charged so far, including the gas forwarded to the child.
+    fn flush_pending<T: EvmTypesHost>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        let Some(step) = self.pending.take() else {
+            return;
+        };
+        let gas_cost = step.gas.saturating_sub(interp.gas().remaining());
+        self.emit(&step, gas_cost);
+    }
+
     fn emit(&mut self, step: &PendingStep, gas_cost: u64) {
         let value = json!({
             "pc": step.pc,
@@ -86,11 +102,25 @@ impl<W: Write, T: EvmTypesHost> Inspector<T> for Eip3155Tracer<W> {
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        let Some(step) = self.pending.take() else {
-            return;
-        };
-        let gas_cost = step.gas.saturating_sub(interp.gas().remaining());
-        self.emit(&step, gas_cost);
+        self.flush_pending(interp);
+    }
+
+    fn call(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        _message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        self.flush_pending(interp);
+        None
+    }
+
+    fn create(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        _message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        self.flush_pending(interp);
+        None
     }
 }
 

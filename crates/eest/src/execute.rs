@@ -54,6 +54,14 @@ pub(crate) struct SpecOutcome {
     pub(crate) evm_result: String,
 }
 
+/// Transaction-level failure paired with the outcome over the untouched
+/// pre-state, so JSON outcome/trace consumers still see the real state root.
+#[derive(Debug)]
+struct SpecFailure {
+    error: HandlerError,
+    outcome: SpecOutcome,
+}
+
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ExecuteConfig {
@@ -225,14 +233,14 @@ fn validate_result(
     name: &str,
     unit: &TestUnit,
     post: &Test,
-    result: Result<SpecOutcome, HandlerError>,
+    result: Result<SpecOutcome, Box<SpecFailure>>,
     spec: SpecId,
     config: ExecuteConfig,
 ) -> Result<(), TestError> {
     let error = match (&post.expect_exception, result) {
-        (Some(_), Err(_)) => {
+        (Some(_), Err(failure)) => {
             if config.print_json_outcome {
-                print_json_outcome(post, name, None, spec, None);
+                print_json_outcome(post, name, Some(&failure.outcome), spec, None);
             }
             return Ok(());
         }
@@ -245,13 +253,13 @@ fn validate_result(
                 print_json_outcome(post, name, Some(&outcome), spec, Some(err));
             }
         }),
-        (None, Err(err)) => Some(TestErrorKind::UnexpectedException {
+        (None, Err(failure)) => Some(TestErrorKind::UnexpectedException {
             expected_exception: None,
-            got_exception: Some(err.to_string()),
+            got_exception: Some(failure.error.to_string()),
         })
         .inspect(|kind| {
             if config.print_json_outcome {
-                print_json_outcome(post, name, None, spec, Some(kind));
+                print_json_outcome(post, name, Some(&failure.outcome), spec, Some(kind));
             }
         }),
         (None, Ok(outcome)) => {
@@ -338,7 +346,7 @@ fn execute_spec(
     trace: bool,
     dump_state: bool,
     db_stats_counts: Option<&mut DbStatsCounts>,
-) -> Result<SpecOutcome, HandlerError> {
+) -> Result<SpecOutcome, Box<SpecFailure>> {
     let db_stats = db_stats_counts.is_some();
     let mut evm = if db_stats {
         Evm::<BaseEvmTypes>::new(
@@ -363,7 +371,24 @@ fn execute_spec(
     }
     let mut post = database;
     pre_block_system_calls(&mut evm, &mut post, spec, env);
-    let Ok(result) = evm.transact(tx)?.commit_with(&mut post);
+    let result = match evm.transact(tx) {
+        Ok(pending) => {
+            let Ok(result) = pending.commit_with(&mut post);
+            result
+        }
+        Err(error) => {
+            let outcome = failed_spec_outcome(&post);
+            if trace {
+                trace::write_summary(
+                    &mut std::io::stdout(),
+                    &outcome.output,
+                    outcome.gas_used,
+                    outcome.state_root,
+                );
+            }
+            return Err(Box::new(SpecFailure { error, outcome }));
+        }
+    };
     if let Some(counts) = db_stats_counts
         && let Some(stats) = evm.database_as::<DbStats<InMemoryDB>>()
     {
@@ -404,6 +429,18 @@ fn print_db_stats(counts: DbStatsCounts) {
 #[inline]
 const fn db_stats_style() -> Style {
     Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightCyan))).bold()
+}
+
+/// Outcome for a transaction that failed before execution: the state (and thus
+/// the state root) is the untouched pre-state, with no output, logs, or gas.
+fn failed_spec_outcome(post: &InMemoryDB) -> SpecOutcome {
+    SpecOutcome {
+        state_root: state_root_from_database(post),
+        logs_root: logs_hash(&[]),
+        output: Bytes::new(),
+        gas_used: 0,
+        evm_result: "Error".to_string(),
+    }
 }
 
 fn spec_outcome(post: InMemoryDB, result: TxResult) -> SpecOutcome {
