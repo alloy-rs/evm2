@@ -150,7 +150,7 @@ pub trait StateChangeSink {
 
 /// Source of borrowed state changes.
 pub trait StateChangeSource {
-    /// Visits all changes in deterministic application order.
+    /// Visits all changes. Ordering is source-defined and not guaranteed to be deterministic.
     ///
     /// Sources that track reads also report loaded-but-unchanged entries through
     /// [`StateChangeSink::account_read`] and [`StateChangeSink::storage_read`].

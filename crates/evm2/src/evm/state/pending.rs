@@ -4,7 +4,6 @@ use super::{
     Account, AccountChangeRef, AccountInfoRef, StateChangeSink, StateChangeSource, StorageChange,
     StorageOverlay,
 };
-use alloc::vec::Vec;
 use alloy_primitives::map::{AddressMap, AddressSet};
 
 /// A transaction's finalized-but-uncommitted state, moved out of the EVM.
@@ -59,31 +58,25 @@ impl PendingState {
 }
 
 impl StateChangeSource for PendingState {
-    /// Visits the transaction's loaded entries in deterministic application order: deduplicated
-    /// bytecode sorted by code hash, then per-account storage wipes, changed slots, and slot reads
-    /// sorted by address and key, then accounts sorted by address.
+    /// Visits the transaction's loaded entries in an unspecified order: bytecode, then per-account
+    /// storage wipes, changed slots, and slot reads, then accounts.
+    ///
+    /// The same code hash may be visited more than once when several accounts share bytecode; sinks
+    /// key bytecode by hash, so repeated visits are idempotent.
     ///
     /// Changed accounts — including created or selfdestructed accounts whose info ended up
     /// unchanged — go through [`StateChangeSink::account`]; loaded-but-unchanged entries go
     /// through the read callbacks.
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        let mut code_entries =
-            self.accounts.values().filter_map(Account::changed_code).collect::<Vec<_>>();
-        code_entries.sort_by_key(|(code_hash, _)| *code_hash);
-        code_entries.dedup_by_key(|(code_hash, _)| *code_hash);
-        for (code_hash, code) in code_entries {
+        for (code_hash, code) in self.accounts.values().filter_map(Account::changed_code) {
             sink.bytecode(code_hash, code)?;
         }
 
-        let mut storage_entries = self.storage.iter().collect::<Vec<_>>();
-        storage_entries.sort_by_key(|entry| *entry.0);
-        for (&address, overlay) in storage_entries {
+        for (&address, overlay) in &self.storage {
             if overlay.wiped {
                 sink.storage_wipe(address)?;
             }
-            let mut slots = overlay.slots.iter().collect::<Vec<_>>();
-            slots.sort_by_key(|entry| *entry.0);
-            for (&key, slot) in slots {
+            for (&key, slot) in &overlay.slots {
                 let value = &slot.value;
                 if value.is_changed() && (!overlay.wiped || !value.current.is_zero()) {
                     sink.storage(StorageChange {
@@ -98,9 +91,7 @@ impl StateChangeSource for PendingState {
             }
         }
 
-        let mut account_entries = self.accounts.iter().collect::<Vec<_>>();
-        account_entries.sort_by_key(|entry| *entry.0);
-        for (&address, entry) in account_entries {
+        for (&address, entry) in &self.accounts {
             let selfdestructed = self.selfdestructs.contains(&address);
             if entry.is_changed() || entry.is_created() || selfdestructed {
                 sink.account(AccountChangeRef {
