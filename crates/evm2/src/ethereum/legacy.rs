@@ -29,7 +29,13 @@ pub(super) fn handle<T: EvmTypes>(
     validate_create_initcode(req.host.version(), tx.to, &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
     let intrinsic = intrinsic_gas(req.host.version(), caller, tx.to, &tx.input, 0, 0, tx.value);
-    let initial_state_gas = create_initial_state_gas(req.host.version(), tx.to.is_create());
+    let create_state_gas = create_initial_state_gas(req.host.version(), tx.to.is_create());
+    let (initial_state_gas, first_frame_state_gas) =
+        if req.host.feature(crate::EvmFeatures::EIP2780) {
+            (0, create_state_gas)
+        } else {
+            (create_state_gas, 0)
+        };
     validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
     let floor_gas = floor_gas(req.host.version(), &tx.input, 0, 0);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
@@ -58,7 +64,15 @@ pub(super) fn handle<T: EvmTypes>(
         ..TxEnv::default()
     };
     let (bytecode, mut message) = initial_message(
-        req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, gas_limit, reservoir,
+        req.host,
+        caller,
+        tx.nonce,
+        tx.to,
+        &tx.input,
+        tx.value,
+        gas_limit,
+        reservoir,
+        first_frame_state_gas,
     )?;
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);

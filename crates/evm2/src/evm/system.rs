@@ -135,6 +135,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             U256::ZERO,
             SYSTEM_CALL_GAS_LIMIT,
             reservoir,
+            0,
         ) {
             Ok(result) => result,
             Err(error) => {

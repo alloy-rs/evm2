@@ -99,6 +99,7 @@ pub(super) fn handle<T: EvmTypes>(
         tx.value,
         gas_limit,
         reservoir,
+        0,
     )?;
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
