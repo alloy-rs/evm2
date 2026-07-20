@@ -8,6 +8,7 @@ pub mod blockchaintest;
 #[cfg(feature = "jit")]
 mod compiled;
 mod discover;
+mod dump;
 mod env;
 mod error;
 mod execute;
@@ -21,6 +22,7 @@ mod harness;
 mod jit;
 mod runner;
 mod state;
+mod trace;
 mod tx;
 mod types;
 
@@ -42,7 +44,7 @@ pub use execute::{
     ExecutionMode as StateTestExecutionMode, execute_str_with_config as execute_state_tests_str,
     execute_str_with_filter as execute_state_tests_str_with_filter,
 };
-pub use filter::EntryPoint;
+pub use filter::NameFilter;
 pub use fixture_io::{
     FixtureReadError, FixtureWriteError, is_binary_path as is_binary_fixture_path,
     read_blockchain as read_blockchain_fixture, read_to_string as read_fixture_text,

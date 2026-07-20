@@ -51,4 +51,9 @@ pub(crate) enum Error {
     },
     #[error("could not detect EEST fixture kind in {path}")]
     UnknownFixtureKind { path: std::path::PathBuf },
+    #[error("{failed} of {total} replayed fixtures failed")]
+    ReplayFailures { failed: usize, total: usize },
+    #[cfg(feature = "jit")]
+    #[error("invalid arguments: {0}")]
+    InvalidArgs(String),
 }
