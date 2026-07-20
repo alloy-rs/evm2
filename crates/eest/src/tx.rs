@@ -193,7 +193,7 @@ pub(crate) fn signed_authorizations(
 /// Recovers an address from a private key.
 pub(crate) fn recover_address(private_key: &[u8]) -> Option<Address> {
     let key = SigningKey::from_slice(private_key).ok()?;
-    let public_key = key.verifying_key().to_encoded_point(false);
+    let public_key = key.verifying_key().to_sec1_point(false);
     Some(Address::from_raw_public_key(&public_key.as_bytes()[1..]))
 }
 

@@ -12,6 +12,7 @@ use derive_where::derive_where;
 /// [`Self::code_hash`]; [`Self::code`] is a cache keyed by the code hash and may or may not be
 /// populated.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AccountInfo {
     /// Account balance.
     pub balance: Word,
@@ -22,6 +23,7 @@ pub struct AccountInfo {
     /// Bytecode associated with this account.
     pub code: Option<Bytecode>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub _non_exhaustive: (),
 }
 

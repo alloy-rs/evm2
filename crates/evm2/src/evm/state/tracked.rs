@@ -9,6 +9,7 @@
 /// value after all observed mutations in that boundary. When a transaction is accepted, `current`
 /// becomes the next transaction's `original` without writing anything to the backing database.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Tracked<T> {
     /// Value at the start of the aggregation boundary.
     pub original: T,
