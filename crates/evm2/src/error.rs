@@ -24,6 +24,11 @@ impl AnyError {
     pub fn new(err: impl Error + Send + Sync + 'static) -> Self {
         Self(Arc::new(err))
     }
+
+    /// Returns the contained error when it has type `T`.
+    pub fn downcast_ref<T: Error + 'static>(&self) -> Option<&T> {
+        self.0.downcast_ref()
+    }
 }
 
 struct StringError(String);
@@ -124,6 +129,12 @@ pub(crate) fn error_unavailable(code: ErrorCode) -> AnyError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downcasts_inner_error() {
+        let error = AnyError::new(StringError("test".into()));
+        assert_eq!(error.downcast_ref::<StringError>().unwrap().0, "test");
+    }
 
     #[test]
     fn reserved_codes_stay_in_reserved_range() {
