@@ -124,6 +124,13 @@ evm_features! {
     ///
     /// Default: on
     BALANCE_CHECK,
+    /// Tops up the sender's native balance when [`Self::BALANCE_CHECK`] is disabled.
+    ///
+    /// This preserves Ethereum simulation behavior while allowing custom fee systems to disable
+    /// native-balance validation without minting a synthetic native balance.
+    ///
+    /// Default: on
+    BALANCE_TOP_UP,
     /// Checks that transaction gas limits do not exceed the block gas limit.
     ///
     /// Default: on
