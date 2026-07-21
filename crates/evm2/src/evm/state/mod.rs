@@ -117,7 +117,7 @@ impl<'a> State<'a> {
     /// Returns a checkpoint for later rollback.
     #[inline]
     pub const fn checkpoint(&self) -> StateCheckpoint {
-        StateCheckpoint { journal_len: self.inner.journal.len(), logs_len: self.inner.logs.len() }
+        StateCheckpoint::new(self.inner.journal.len(), self.inner.logs.len())
     }
 
     /// Returns the initial database.
@@ -584,6 +584,28 @@ impl<'a> State<'a> {
         }
     }
 
+    /// Removes and returns every transient storage slot owned by `address`.
+    ///
+    /// This is intended for transaction-finalization policies that encode per-account pending
+    /// work in EIP-1153 storage and must consume it before transaction scratch is cleared.
+    pub fn take_transient_storage(&mut self, address: &Address) -> Vec<(Word, Word)> {
+        let keys = self
+            .transient_storage
+            .keys()
+            .copied()
+            .filter(|key| key.address() == *address)
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .map(|key| {
+                let value = self
+                    .transient_storage
+                    .remove(&key)
+                    .expect("collected transient storage key must exist");
+                (key.key(), value)
+            })
+            .collect()
+    }
+
     /// Reverts state changes after the checkpoint.
     #[inline(never)]
     pub fn rollback(&mut self, checkpoint: StateCheckpoint, features: EvmFeatures) {
@@ -806,7 +828,7 @@ impl<'a> State<'a> {
     /// This advances the in-memory accepted overlay by the transaction's write-set and clears the
     /// transaction account/storage layers. It does not take logs or write to the wrapped backing
     /// database.
-    pub(crate) fn commit_transaction(&mut self) {
+    pub fn commit_transaction(&mut self) {
         // The transaction overlay is folded into the accepted-overlay database directly, without
         // detaching it.
         self.inner.database.commit(&self.accounts, &self.storage);

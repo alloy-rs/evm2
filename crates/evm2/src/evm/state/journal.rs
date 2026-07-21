@@ -14,6 +14,26 @@ pub struct StateCheckpoint {
     pub(crate) logs_len: usize,
 }
 
+impl StateCheckpoint {
+    /// Creates a checkpoint from journal and log cursors.
+    #[inline]
+    pub const fn new(journal_len: usize, logs_len: usize) -> Self {
+        Self { journal_len, logs_len }
+    }
+
+    /// Returns the revert-journal cursor captured by this checkpoint.
+    #[inline]
+    pub const fn journal_len(&self) -> usize {
+        self.journal_len
+    }
+
+    /// Returns the emitted-log cursor captured by this checkpoint.
+    #[inline]
+    pub const fn logs_len(&self) -> usize {
+        self.logs_len
+    }
+}
+
 /// Compact journal entry for reverting state changes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
