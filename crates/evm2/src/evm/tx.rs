@@ -55,14 +55,15 @@ impl<T: EvmTypesHost> TxResult<T> {
         if spent_sub_refunded > self.floor_gas { spent_sub_refunded } else { self.floor_gas }
     }
 
-    /// Returns this transaction's regular (non-state) gas: `total_gas_spent - state_gas_spent`,
-    /// pre-refund (refund and floor only affect [`Self::tx_gas_used`]).
+    /// Returns this transaction's regular (non-state) block gas:
+    /// `max(total_gas_spent - state_gas_spent, floor_gas)`.
     ///
-    /// Together with [`Self::state_gas_spent()`] this is the per-transaction split that callers add
-    /// to the block's separate regular- and state-gas counters (EIP-8037 + EIP-7778).
+    /// Callers add this and [`Self::state_gas_spent()`] to the block's separate regular- and
+    /// state-gas counters (EIP-8037 + EIP-7778).
     #[inline]
     pub const fn regular_gas_spent(&self) -> u64 {
-        self.total_gas_spent.saturating_sub(self.state_gas_spent)
+        let regular_gas_spent = self.total_gas_spent.saturating_sub(self.state_gas_spent);
+        if regular_gas_spent > self.floor_gas { regular_gas_spent } else { self.floor_gas }
     }
 
     /// Returns this transaction's state gas (EIP-8037) — the stored `state_gas_spent` field,
@@ -294,6 +295,12 @@ mod tests {
         assert_eq!(r.regular_gas_spent(), 70_000);
         assert_eq!(r.state_gas_spent(), 30_000);
         assert_eq!(r.regular_gas_spent() + r.state_gas_spent(), r.total_gas_spent);
+    }
+
+    #[test]
+    fn floor_gas_applies_to_regular_block_gas() {
+        let r = result(100_000, 80_000, 0, 30_000);
+        assert_eq!(r.regular_gas_spent(), 30_000);
     }
 
     #[test]

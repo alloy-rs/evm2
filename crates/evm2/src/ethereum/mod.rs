@@ -644,9 +644,8 @@ pub(super) fn settle_gas<'a, T: EvmTypes>(
         tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(result.gas.reservoir());
     let refunded = result.final_refund(tx_gas_limit, max_refund_quotient);
     // EIP-7623: when the calldata floor exceeds spent-minus-refund, `TxResult::tx_gas_used`
-    // resolves to the floor. `total_gas_spent` stays pre-refund and pre-floor: block-level
-    // regular gas (EIP-7778/EIP-8037) accumulates `tx_gas_used_before_refund` per
-    // execution-specs, without the floor clamp.
+    // resolves to the floor. `total_gas_spent` stays pre-refund and pre-floor;
+    // `TxResult::regular_gas_spent` applies the floor when block-level regular gas is accumulated.
     // Execution state gas contributes only on success: a revert/halt rolls back its state changes.
     // A failed top-level CREATE additionally unwinds its intrinsic `create_state_gas` (refunded to
     // the reservoir by `refund_create_state_gas`), so it nets out of the block state gas.
