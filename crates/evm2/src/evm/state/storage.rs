@@ -22,6 +22,20 @@ pub struct StorageOverlay {
     pub _non_exhaustive: (),
 }
 
+impl StorageOverlay {
+    /// Returns the changed storage slots.
+    ///
+    /// A slot is changed when its current value differs from its transaction-boundary original,
+    /// except slots of a wiped overlay whose current value is zero: the wipe already deletes them.
+    #[inline]
+    pub fn changed_slots(&self) -> impl Iterator<Item = (&Word, &Tracked<Word>)> {
+        self.slots.iter().filter_map(|(key, slot)| {
+            (slot.value.is_changed() && (!self.wiped || !slot.value.current.is_zero()))
+                .then_some((key, &slot.value))
+        })
+    }
+}
+
 /// Persistent storage slot cached by [`super::State`].
 ///
 /// A slot is held in the overlay only once it has been loaded or written, so its value is always
@@ -363,10 +377,10 @@ mod tests {
         assert_eq!(state.storage_slot(&account, warm_key, false).unwrap().current(), Word::ZERO);
         assert_eq!(state.storage_slot(&account, cold_key, false).unwrap().current(), Word::ZERO);
 
-        let changes = state.build_state_changes();
-        let account_change = changes.accounts.get(&account).expect("wipe must be emitted");
-        assert!(account_change.is_storage_wiped());
-        assert!(account_change.changed_storage().next().is_none());
+        let pending = state.take_pending_state();
+        let overlay = pending.storage.get(&account).expect("wipe must be emitted");
+        assert!(overlay.wiped);
+        assert!(overlay.changed_slots().next().is_none());
     }
 
     #[test]
@@ -395,7 +409,7 @@ mod tests {
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(!state.storage_slot(&address, key, false).unwrap().is_warm());
         assert_eq!(state.storage_slot(&address, key, false).unwrap().current(), Word::from(10));
-        assert!(!state.build_state_changes().is_changed());
+        assert!(!state.take_pending_state().is_changed());
     }
 
     #[test]
@@ -414,7 +428,7 @@ mod tests {
         }
         // Loading caches the value but a read-only handle records no transition.
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.build_state_changes().is_changed());
+        assert!(!state.take_pending_state().is_changed());
     }
 
     #[test]

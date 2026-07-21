@@ -1,6 +1,9 @@
 use crate::fuzzer::case::EvmCase;
 use alloy_primitives::{Address, B256, U256, keccak256};
-use evm2::evm::StateChanges;
+use core::convert::Infallible;
+use evm2::evm::{
+    AccountChangeRef, PendingState, StateChangeSink, StateChangeSource, StorageChange,
+};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,24 +125,40 @@ fn normalize_error(error: String) -> String {
     error.to_string()
 }
 
-pub(crate) fn state_from_evm2_changes(changes: &StateChanges) -> CanonicalState {
-    let mut state = CanonicalState::default();
-    for (&address, change) in &changes.accounts {
-        if change.is_changed() {
-            let account = change.current.as_ref().map(|info| CanonicalAccount {
+pub(crate) fn state_from_evm2_changes(pending: &PendingState) -> CanonicalState {
+    struct Collector(CanonicalState);
+
+    impl StateChangeSink for Collector {
+        type Error = Infallible;
+
+        fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+            // A created-then-destroyed account (e.g. a CREATE whose init code selfdestructs) ends
+            // the transaction absent with no transaction-boundary original, a net no-op. revm's
+            // `state_from_revm` omits such an account, so drop the spurious `None` deletion here to
+            // keep the two backends' diffs symmetric.
+            if change.current.is_none() && change.original.is_none() {
+                return Ok(());
+            }
+            let account = change.current.map(|info| CanonicalAccount {
                 balance: info.balance,
                 nonce: info.nonce,
                 code_hash: info.code_hash,
             });
-            state.accounts.insert(address, account);
+            self.0.accounts.insert(change.address, account);
+            Ok(())
         }
-        for (&key, slot) in change.changed_storage() {
-            if !slot.current.is_zero() {
-                state.storage.insert((address, key), slot.current);
+
+        fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+            if !change.current.is_zero() {
+                self.0.storage.insert((change.address, change.key), change.current);
             }
+            Ok(())
         }
     }
-    state
+
+    let mut collector = Collector(CanonicalState::default());
+    let Ok(()) = pending.visit(&mut collector);
+    collector.0
 }
 
 pub(crate) fn state_from_revm(

@@ -6,8 +6,7 @@ use super::{
 };
 use crate::{
     bytecode::{Bytecode, BytecodeDecodeError},
-    evm::state::{AccountChange, AccountInfo, Tracked},
-    interpreter::Word,
+    evm::state::{AccountInfo, StorageSlot},
 };
 use alloc::vec::Vec;
 use alloy_eip7928::{
@@ -36,24 +35,6 @@ impl AccountBal {
         account: &mut AccountInfo,
     ) -> bool {
         self.account_info.populate_account_info(bal_index, account)
-    }
-
-    /// Extend account from an [`AccountChange`] produced by transaction execution.
-    ///
-    /// The `original` value of the account info and each storage slot is the value at the start of
-    /// the transaction, `current` is the value after execution. Loaded-but-unchanged slots are
-    /// recorded as reads (empty writes).
-    #[inline]
-    pub fn update(&mut self, bal_index: BlockAccessIndex, account: &AccountChange) {
-        let original = account.original.clone().unwrap_or_default();
-        // A selfdestructed account needs no special-casing: transaction finalization already
-        // resolved `current` to the EIP-8246 balance-only remnant or to a removed account, and
-        // its destroyed storage writes surface as reads (execution-specs `destroy_storage`)
-        // through the preserved-reads path, not as zero-writes.
-        let present = account.current.clone().unwrap_or_default();
-        self.account_info.update(bal_index, &original, &present);
-
-        self.storage.update(bal_index, &account.storage);
     }
 }
 
@@ -335,12 +316,17 @@ impl StorageBal {
         }
     }
 
-    /// Update storage from the per-account storage of an [`AccountChange`].
+    /// Update storage from an account's pending [`StorageSlot`] overlay: a changed slot records a
+    /// write at `bal_index`, a loaded-but-unchanged slot records a read.
     #[inline]
-    pub fn update(&mut self, bal_index: BlockAccessIndex, storage: &U256Map<Tracked<Word>>) {
-        self.storage.reserve(storage.len());
-        for (key, value) in storage {
-            self.storage.entry(*key).or_default().update(bal_index, &value.original, value.current);
+    pub fn update_pending(&mut self, bal_index: BlockAccessIndex, slots: &U256Map<StorageSlot>) {
+        self.storage.reserve(slots.len());
+        for (key, slot) in slots {
+            self.storage.entry(*key).or_default().update(
+                bal_index,
+                &slot.value.original,
+                slot.value.current,
+            );
         }
     }
 

@@ -2,17 +2,17 @@
 
 mod account;
 mod block;
-mod changes;
 mod journal;
+mod pending;
 mod storage;
 mod stream;
 mod tracked;
 
-use account::Account;
+pub(crate) use account::Account;
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
-pub use changes::{AccountChange, StateChanges};
 pub use journal::{JournalEntry, StateCheckpoint};
+pub use pending::PendingState;
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
 pub use stream::{
     AccountChangeRef, AccountInfoRef, NoopChangeSink, StateChangeSink, StateChangeSource,
@@ -34,7 +34,7 @@ use crate::{
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
-    map::{AddressMap, AddressSet, U256Map, hash_map},
+    map::{AddressMap, AddressSet, hash_map},
 };
 use core::{
     mem,
@@ -671,8 +671,8 @@ impl<'a> State<'a> {
 
     /// Applies transaction-finalization account-lifetime rules to the overlay.
     ///
-    /// This mutates the in-memory post-transaction state before it is serialized
-    /// by [`Self::build_state_changes`]. Runtime records
+    /// This mutates the in-memory post-transaction state before it is streamed to a
+    /// [`StateChangeSink`] or detached as a [`PendingState`]. Runtime records
     /// transaction substate such as touches and selfdestructs, while finalization
     /// turns that substate into account deletions, storage wipes, balance-only
     /// selfdestruct resets (EIP-8246), or pre-EIP-161 empty-account materialization.
@@ -719,9 +719,9 @@ impl<'a> State<'a> {
             }
         }
 
-        // Restore the selfdestruct set without clearing it: `build_state_changes` reads it to flag
-        // selfdestructed accounts, and `clear_transaction_state` clears it at the end of the
-        // transaction lifecycle.
+        // Restore the selfdestruct set without clearing it: `take_pending_state` moves it into the
+        // detached [`PendingState`] to flag selfdestructed accounts, and `clear_transaction_state`
+        // clears it at the end of the transaction lifecycle.
         self.selfdestructs = selfdestructs;
 
         for address in touched {
@@ -732,44 +732,16 @@ impl<'a> State<'a> {
         Ok(())
     }
 
-    #[inline]
-    fn account_changed(original: Option<&AccountInfo>, current: Option<&AccountInfo>) -> bool {
-        match (original, current) {
-            (Some(original), Some(current)) => {
-                original.balance != current.balance
-                    || original.nonce != current.nonce
-                    || original.code_hash != current.code_hash
-            }
-            (None, None) => false,
-            _ => true,
-        }
-    }
-
-    #[inline]
-    fn changed_code(code_changed: bool, account: &AccountInfo) -> Option<(B256, &Bytecode)> {
-        let code = account.code.as_ref()?;
-        let code_hash = account.code_hash;
-        (code_changed && !code.is_empty() && !code_hash.is_zero() && code_hash != KECCAK256_EMPTY)
-            .then_some((code_hash, code))
-    }
-
-    #[inline]
-    fn storage_slot_changed(storage_wiped: bool, slot: &Tracked<Word>) -> bool {
-        slot.is_changed() && (!storage_wiped || !slot.current.is_zero())
-    }
-
     /// Visits transaction state changes in database application order.
     ///
-    /// This borrows changes directly from the transaction layer. It does not materialize
-    /// [`StateChanges`] and does not mutate the accepted overlay.
+    /// This borrows changes directly from the transaction layer without detaching it and does not
+    /// mutate the accepted overlay.
     pub(crate) fn visit_transaction_changes<S: StateChangeSink>(
         &self,
         sink: &mut S,
     ) -> Result<(), S::Error> {
         for entry in self.accounts.values() {
-            if let Some(account) = entry.present.as_ref()
-                && let Some((code_hash, code)) = Self::changed_code(entry.code_changed, account)
-            {
+            if let Some((code_hash, code)) = entry.changed_code() {
                 sink.bytecode(code_hash, code)?;
             }
         }
@@ -778,25 +750,24 @@ impl<'a> State<'a> {
             if storage.wiped {
                 sink.storage_wipe(address)?;
             }
-            for (&key, slot) in &storage.slots {
-                let tracked = &slot.value;
-                if Self::storage_slot_changed(storage.wiped, tracked) {
-                    sink.storage(StorageChange {
-                        address,
-                        key,
-                        original: tracked.original,
-                        current: tracked.current,
-                    })?;
-                }
+            for (&key, slot) in storage.changed_slots() {
+                sink.storage(StorageChange {
+                    address,
+                    key,
+                    original: slot.original,
+                    current: slot.current,
+                })?;
             }
         }
 
         for (&address, entry) in self.accounts.iter() {
-            if Self::account_changed(entry.original.as_ref(), entry.present.as_ref()) {
+            if entry.is_changed() {
                 sink.account(AccountChangeRef {
                     address,
                     original: entry.original.as_ref().map(AccountInfoRef::from_info),
                     current: entry.present.as_ref().map(AccountInfoRef::from_info),
+                    created: entry.is_created(),
+                    selfdestructed: self.selfdestructs.contains(&address),
                 })?;
             }
         }
@@ -804,105 +775,41 @@ impl<'a> State<'a> {
         Ok(())
     }
 
-    /// Builds the state transition for the current transaction.
+    /// Detaches the transaction overlay into an owned [`PendingState`].
     ///
-    /// This does not apply changes to the backing database, apply transaction-finalization rules,
-    /// take logs, or advance the overlay to the next transaction. Logs are execution output and are
-    /// exposed through [`crate::TxResult`] and [`crate::TxResultWithState`].
-    pub(crate) fn build_state_changes(&mut self) -> StateChanges {
-        let mut changes = StateChanges::default();
-
-        for (&address, entry) in self.accounts.iter() {
-            changes.accounts.insert(
-                address,
-                AccountChange {
-                    original: entry.original.clone(),
-                    current: entry.present.clone(),
-                    storage: U256Map::default(),
-                    wipe_storage: false,
-                    // `just_created` is preserved across selfdestruct finalization, so it also
-                    // covers accounts that were created and then destroyed in the same transaction.
-                    created: entry.just_created,
-                    selfdestructed: self.selfdestructs.contains(&address),
-                },
-            );
-            if let Some(account) = entry.present.as_ref()
-                && let Some((code_hash, code)) = Self::changed_code(entry.code_changed, account)
-            {
-                changes.code.entry(code_hash).or_insert_with(|| code.clone());
-            }
+    /// The remaining transaction scratch (journal, logs, warm sets, transient storage) is left for
+    /// [`Self::clear_transaction_state`].
+    pub(crate) fn take_pending_state(&mut self) -> PendingState {
+        PendingState {
+            accounts: mem::take(&mut self.accounts),
+            storage: mem::take(&mut self.storage),
+            selfdestructs: mem::take(&mut self.inner.selfdestructs),
         }
+    }
 
-        // Fold per-account storage in, materializing an entry for any storage-only account whose
-        // info is unchanged by resolving it from the backing database.
-        let database = &self.inner.database;
-        for (&address, storage) in &self.storage {
-            let entry = changes.accounts.entry(address).or_insert_with(|| {
-                let info = database.account_info(&address).cloned();
-                AccountChange { original: info.clone(), current: info, ..AccountChange::default() }
-            });
-            entry.wipe_storage = storage.wiped;
-            entry.storage = storage.slots.iter().map(|(&key, slot)| (key, slot.value)).collect();
-        }
-
-        changes
+    /// Reattaches a detached [`PendingState`] as the current transaction overlay, replacing it.
+    ///
+    /// This is the inverse of the detach performed by
+    /// [`ExecutedTx::detach`](crate::ExecutedTx::detach): the pending accounts, storage, and
+    /// selfdestruct set become the transaction layer again, as if the transaction had just been
+    /// finalized. Other transaction scratch (journal, logs, warm sets, transient storage) is not
+    /// affected.
+    pub fn set_pending_state(&mut self, pending: PendingState) {
+        let PendingState { accounts, storage, selfdestructs } = pending;
+        self.accounts = accounts;
+        self.storage = storage;
+        self.inner.selfdestructs = selfdestructs;
     }
 
     /// Accepts the current transaction's state transition into the accepted overlay.
     ///
     /// This advances the in-memory accepted overlay by the transaction's write-set and clears the
-    /// transaction account/storage layers. It does not materialize [`StateChanges`], take logs, or
-    /// write to the wrapped backing database.
+    /// transaction account/storage layers. It does not take logs or write to the wrapped backing
+    /// database.
     pub(crate) fn commit_transaction(&mut self) {
-        // When BAL construction is enabled, fold this transaction's full post-state -- including
-        // loaded-but-unchanged reads -- into the accepted-overlay database's builder before the
-        // overlay is advanced and cleared below.
-        if self.inner.database.bal_context.has_builder() {
-            let changes = self.build_state_changes();
-            self.inner.database.bal_context.commit_bal(&changes);
-        }
-
-        for (&address, storage) in &self.storage {
-            if storage.wiped {
-                self.inner.database.cache.storage.entry(address).or_default().wipe();
-            }
-            for (&key, slot) in &storage.slots {
-                let tracked = &slot.value;
-                if !Self::storage_slot_changed(storage.wiped, tracked) {
-                    continue;
-                }
-                self.inner
-                    .database
-                    .cache
-                    .storage
-                    .entry(address)
-                    .or_default()
-                    .slots
-                    .insert(key, tracked.current);
-            }
-        }
-
-        for (&address, entry) in self.accounts.iter() {
-            if let Some(account) = entry.present.as_ref()
-                && let Some((code_hash, code)) = Self::changed_code(entry.code_changed, account)
-            {
-                self.inner.database.cache.contracts.insert(code_hash, code.clone());
-            }
-            if !Self::account_changed(entry.original.as_ref(), entry.present.as_ref()) {
-                continue;
-            }
-            match entry.present.as_ref() {
-                Some(account) => self.inner.database.insert_account_info(
-                    &address,
-                    AccountInfoRef::from_info(account).to_account_info_without_code(),
-                ),
-                None => {
-                    self.inner.database.cache.accounts.insert(address, None);
-                    self.inner.database.cache.storage.entry(address).or_default().wipe();
-                }
-            }
-        }
-
+        // The transaction overlay is folded into the accepted-overlay database directly, without
+        // detaching it.
+        self.inner.database.commit(&self.accounts, &self.storage);
         self.accounts.clear();
         self.storage.clear();
     }

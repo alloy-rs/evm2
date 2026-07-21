@@ -19,8 +19,8 @@
 //! - [`ExecutedTx::commit_with`] streams writes to a [`StateChangeSink`] and then accepts them;
 //! - [`ExecutedTx::discard`] drops the writes and returns only the result;
 //! - [`ExecutedTx::discard_with`] streams writes to a [`StateChangeSink`] and then drops them;
-//! - [`ExecutedTx::detach`] materializes an owned [`TxResultWithState`] without accepting the
-//!   writes.
+//! - [`ExecutedTx::detach`] moves the pending transaction overlay out as an owned
+//!   [`TxResultWithState`] without accepting the writes.
 //!
 //! Dropping an unresolved [`ExecutedTx`] is equivalent to [`ExecutedTx::discard`], so transaction
 //! scratch cannot leak into later execution.
@@ -41,21 +41,20 @@
 //! The accepted overlay is for execution correctness between transactions. The block accumulator
 //! is for final block output.
 //!
-//! ## Outcomes, logs, and materialized state
+//! ## Outcomes, logs, and detached state
 //!
 //! [`TxResult`] is the cheap result-only shape: status, gas used, output, stop reason, logs,
 //! host error code, and extension data. Logs live in [`TxResult`] because logs are
 //! execution output, not database state.
 //!
-//! [`StateChanges`] is the owned materialized write-set. It is produced only by
-//! [`ExecutedTx::detach`]. Normal serial block execution can build receipts from [`TxResult`] and
-//! stream state directly into a
-//! [`BlockStateAccumulator`] without first allocating a per-transaction [`StateChanges`] map.
+//! [`PendingState`] is the owned transaction overlay, moved out by [`ExecutedTx::detach`]. Normal
+//! serial block execution can build receipts from [`TxResult`] and stream state directly into a
+//! [`BlockStateAccumulator`] without detaching a per-transaction [`PendingState`].
 //!
 //! ## Source and sink API
 //!
 //! [`StateChangeSource`] and [`StateChangeSink`] provide borrowed state-change streaming. Sources
-//! include transaction scratch, [`StateChanges`], and [`BlockStateAccumulator`]. Sinks include
+//! include transaction scratch, [`PendingState`], and [`BlockStateAccumulator`]. Sinks include
 //! [`BlockStateAccumulator`], [`CacheDB`], [`Tee`], and custom consumers such as trie updaters,
 //! witnesses, execution caches, or test recorders.
 //!
@@ -80,8 +79,7 @@
 //! serial block:          transact -> commit
 //! block output:          transact -> commit_to -> BlockStateAccumulator
 //! traced simulation:     transact -> discard_with -> Sink
-//! materialized tx diff:  transact -> detach -> TxResultWithState
-//! parallel worker:       transact -> detach -> send owned diff
+//! parallel worker:       transact -> detach -> send owned TxResultWithState
 //! ```
 //!
 //! Result-only execution:
@@ -175,10 +173,10 @@ pub use tx::{ExecutedTx, TxResult, TxResultWithState};
 
 mod state;
 pub use state::{
-    AccountChange, AccountChangeRef, AccountHandle, AccountInfo, AccountInfoRef,
-    BlockStateAccumulator, JournalEntry, NoopChangeSink, State, StateChangeSink, StateChangeSource,
-    StateChanges, StateCheckpoint, StateInner, StorageChange, StorageHandle, StorageOverlay,
-    StorageSlot, StorageSlotHandle, Tee, Tracked,
+    AccountChangeRef, AccountHandle, AccountInfo, AccountInfoRef, BlockStateAccumulator,
+    JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource,
+    StateCheckpoint, StateInner, StorageChange, StorageHandle, StorageOverlay, StorageSlot,
+    StorageSlotHandle, Tee, Tracked,
 };
 
 mod prewarm_set;
@@ -1038,8 +1036,8 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// Executes a transaction for its outcome and discards its state changes.
     ///
     /// This is the cheapest convenience entrypoint for `eth_call`-style simulations: execution
-    /// output and logs are returned, but transaction writes are not accepted and no owned
-    /// [`StateChanges`] is materialized.
+    /// output and logs are returned, but transaction writes are not accepted and the transaction
+    /// overlay is not detached.
     pub fn call_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         self.transact(tx).map(ExecutedTx::discard)
     }
@@ -2277,12 +2275,12 @@ mod tests {
         assert_eq!(result.stop, InstrStop::FatalPrecompileError);
         assert_eq!(evm.error_code(), Some(ErrorCode::FATAL_PRECOMPILE));
         evm.state.finalize_transaction_(Version::base(SpecId::OSAKA));
-        let changes = evm.state.build_state_changes();
+        let pending = evm.state.take_pending_state();
         assert!(
-            !changes
-                .accounts
+            !pending
+                .storage
                 .get(&contract)
-                .is_some_and(|account| account.storage.contains_key(&Word::from(1)))
+                .is_some_and(|overlay| overlay.slots.contains_key(&Word::from(1)))
         );
     }
 
@@ -2332,12 +2330,12 @@ mod tests {
         assert_eq!(result.stop, InstrStop::Stop);
         assert!(evm.error_code().is_none());
         evm.state.finalize_transaction_(Version::base(SpecId::OSAKA));
-        let changes = evm.state.build_state_changes();
+        let pending = evm.state.take_pending_state();
         assert!(
-            changes
-                .accounts
+            pending
+                .storage
                 .get(&contract)
-                .is_some_and(|account| account.storage.contains_key(&Word::from(1)))
+                .is_some_and(|overlay| overlay.slots.contains_key(&Word::from(1)))
         );
     }
 
@@ -3006,23 +3004,46 @@ mod tests {
     }
 
     #[test]
-    fn executed_transaction_detach_materializes_without_committing() {
+    fn executed_transaction_detach_moves_pending_state_without_committing() {
         let mut evm = lifecycle_evm();
         let result =
             evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").detach();
 
         assert_eq!(result.result.logs.len(), 1);
-        let account_change = result
-            .state_changes
-            .accounts
+        let overlay = result
+            .pending_state
+            .storage
             .get(&LIFECYCLE_ACCOUNT)
             .expect("storage change should be present");
-        let slot = account_change
-            .storage
-            .get(&LIFECYCLE_STORAGE_KEY)
-            .expect("storage slot should be present");
-        assert_eq!(slot.original, Word::from(1));
-        assert_eq!(slot.current, Word::from(7));
+        let slot =
+            overlay.slots.get(&LIFECYCLE_STORAGE_KEY).expect("storage slot should be present");
+        assert_eq!(slot.value.original, Word::from(1));
+        assert_eq!(slot.value.current, Word::from(7));
+        assert_eq!(
+            evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
+            Word::from(1)
+        );
+    }
+
+    #[test]
+    fn executed_transaction_detach_matches_commit_fold() {
+        // Commit with the builder enabled: the reference BAL fold.
+        let mut evm = lifecycle_evm();
+        evm.state.enable_bal_builder();
+        evm.state.set_bal_index(BlockAccessIndex::new(1));
+        let _ = evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").commit();
+        let committed_bal = evm.state.take_bal_builder().expect("builder was enabled");
+
+        // The same execution detached as a pending state.
+        let mut evm = lifecycle_evm();
+        let TxResultWithState { pending_state: pending, .. } =
+            evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").detach();
+
+        // Folding the pending state into a fresh BAL matches the commit-built BAL.
+        let mut rebuilt = Bal::new();
+        rebuilt.commit(BlockAccessIndex::new(1), pending);
+        assert_eq!(rebuilt, committed_bal);
+        // Detaching accepted nothing into this EVM's overlay.
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
             Word::from(1)
@@ -3377,9 +3398,9 @@ mod tests {
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
-        let changes = evm.state.build_state_changes();
+        let pending = evm.state.take_pending_state();
         let account =
-            changes.accounts.get(&created).and_then(|change| change.current.as_ref()).unwrap();
+            pending.accounts.get(&created).and_then(|entry| entry.present.as_ref()).unwrap();
         assert_eq!(account.code_hash, KECCAK256_EMPTY);
     }
 
@@ -3410,8 +3431,8 @@ mod tests {
         assert_eq!(result.stop, InstrStop::OutOfGas);
 
         evm.state.finalize_transaction_(Version::base(SpecId::HOMESTEAD));
-        let changes = evm.state.build_state_changes();
-        assert!(changes.accounts.get(&created).is_none_or(|change| change.current.is_none()));
+        let pending = evm.state.take_pending_state();
+        assert!(pending.accounts.get(&created).is_none_or(|entry| entry.present.is_none()));
     }
 
     #[test]
@@ -3440,11 +3461,11 @@ mod tests {
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
-        let changes = evm.state.build_state_changes();
-        let account = changes.accounts.get(&target).expect("empty destination should be deleted");
+        let pending = evm.state.take_pending_state();
+        let account = pending.accounts.get(&target).expect("empty destination should be deleted");
         assert!(account.original.is_some());
-        assert_eq!(account.current, None);
-        assert!(account.is_storage_wiped());
+        assert_eq!(account.present, None);
+        assert!(pending.storage.get(&target).is_some_and(|overlay| overlay.wiped));
     }
 
     #[test]
@@ -3476,8 +3497,8 @@ mod tests {
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
-        let changes = evm.state.build_state_changes();
-        assert!(changes.accounts.get(&code_address).is_none_or(|change| !change.is_changed()));
+        let pending = evm.state.take_pending_state();
+        assert!(pending.accounts.get(&code_address).is_none_or(|entry| !entry.is_changed()));
     }
 
     #[test]
@@ -3545,7 +3566,6 @@ mod tests {
         let version = *evm.version();
         evm.state.finalize_transaction_(&version);
         let logs = evm.state.take_logs();
-        let _changes = evm.state.build_state_changes();
         assert_eq!(logs.len(), 1);
         let log = &logs[0];
         assert_eq!(log.address, SYSTEM_ADDRESS);
@@ -3585,10 +3605,9 @@ mod tests {
         assert_eq!(info.nonce, 0);
         assert_eq!(info.code_hash, KECCAK256_EMPTY);
 
-        let changes = state.build_state_changes();
-        assert!(
-            changes.accounts.get(&contract).expect("account change recorded").is_selfdestructed()
-        );
+        let pending = state.take_pending_state();
+        assert!(pending.accounts.contains_key(&contract), "account change recorded");
+        assert!(pending.selfdestructs.contains(&contract));
     }
 
     #[test]

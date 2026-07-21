@@ -7,9 +7,11 @@
 //! EVM. Every execution only needs the pre-block database plus the shared BAL,
 //! which is what makes the transactions of a block executable in parallel.
 //!
-//! Each worker thread sends its detached execution output (result + state diff) back
-//! to the main thread, which folds the diffs into a fresh BAL and checks it against
-//! the block's BAL — the validation half of EIP-7928.
+//! Each worker thread detaches its transaction's pending state -- the transaction
+//! overlay moved out of the EVM -- and sends it back to the main thread, which folds
+//! it into a fresh BAL and checks it against the block's BAL: the validation half of
+//! EIP-7928. The pending state still streams the change-set persistence consumers
+//! (e.g. reth) apply to the database.
 
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_eip7928::BalanceChange;
@@ -51,13 +53,14 @@ fn main() {
     // index `i + 1` see all writes recorded at indices `<= i`, i.e. exactly the
     // transaction's pre-state, so no thread needs another thread's committed state.
     //
-    // Each worker detaches its transaction into an owned result + state diff and sends
-    // it back to main through its join handle. Main is the single consumer: it folds
-    // the diffs into a fresh BAL in transaction order (`Bal` writes must be appended
-    // with ascending indices) and checks the rebuilt BAL against the block's BAL,
-    // which is exactly how a validator confirms the block's BAL is correct.
+    // Each worker detaches its transaction into an owned result + pending state and
+    // sends both back to main through its join handle. Main is the single consumer:
+    // it folds each pending state into a fresh BAL in transaction order (`Bal` writes
+    // must be appended with ascending indices) and checks the rebuilt BAL against the
+    // block's BAL, which is exactly how a validator confirms the block's BAL is
+    // correct.
     let bal = Arc::new(bal);
-    let mut rebuilt = Bal::new();
+    let mut bal_builder = Bal::new();
     std::thread::scope(|s| {
         let handles: Vec<_> = transactions
             .iter()
@@ -68,18 +71,18 @@ fn main() {
             })
             .collect();
         for (i, handle) in handles.into_iter().enumerate() {
-            let output = handle.join().expect("worker thread panicked");
-            assert!(output.result.status);
-            for (address, change) in &output.state_changes.accounts {
-                rebuilt.update_account(idx(i as u64 + 1), *address, change);
-            }
-            println!(
-                "transaction {i} executed in parallel, gas used {}",
-                output.result.tx_gas_used()
-            );
+            let TxResultWithState { result, pending_state: pending, .. } =
+                handle.join().expect("worker thread panicked");
+            assert!(result.status);
+
+            // The pending state still carries the change-set that persistence
+            // consumers (e.g. reth) stream to the database through a
+            // `StateChangeSink`; detaching it for the BAL fold loses nothing.
+            bal_builder.commit(idx(i as u64 + 1), pending);
+            println!("transaction {i} executed in parallel, gas used {}", result.tx_gas_used());
         }
     });
-    assert_eq!(rebuilt, *bal, "BAL rebuilt from parallel execution must match the block's BAL");
+    assert_eq!(bal_builder, *bal, "BAL rebuilt from parallel execution must match the block's BAL");
     println!("rebuilt BAL from parallel outputs matches the block's BAL");
 }
 
@@ -89,8 +92,9 @@ fn main() {
 /// `set_allow_bal_db_fallback(true)` to instead fall through to the database, e.g.
 /// for RPC calls on BAL-positioned state).
 ///
-/// The executed transaction is detached into an owned [`TxResultWithState`] so it can
-/// leave the worker thread; nothing is committed to this EVM, which is dropped here.
+/// The executed transaction is detached into an owned [`TxResultWithState`] so it
+/// can leave the worker thread; nothing is committed to this EVM, which is dropped
+/// here.
 fn execute_with_bal(bal: Arc<Bal>, index: u64, tx: &RecoveredTxEnvelope) -> TxResultWithState {
     let mut evm = pre_block_evm();
     evm.state_mut().set_bal(bal);

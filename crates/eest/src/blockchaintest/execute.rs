@@ -672,6 +672,8 @@ fn block_header(block: &Block) -> Option<&BlockHeader> {
         .or_else(|| block.rlp_decoded.as_ref().and_then(|decoded| decoded.block_header.as_ref()))
 }
 
+/// Returns the block's EIP-7928 access list, falling back to the decoded RLP payload: invalid-BAL
+/// fixtures carry the corrupted list only under `rlp_decoded`.
 fn block_access_list(block: &Block) -> Option<&BlockAccessList> {
     block.block_access_list.as_ref().or_else(|| {
         block.rlp_decoded.as_ref().and_then(|decoded| decoded.block_access_list.as_ref())
@@ -838,6 +840,8 @@ impl StateChangeSource for AccountStateChange {
             address: self.address,
             original: self.original.as_ref().map(account_info_ref),
             current: self.current.as_ref().map(account_info_ref),
+            created: false,
+            selfdestructed: false,
         })
     }
 }

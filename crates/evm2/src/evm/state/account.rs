@@ -117,6 +117,10 @@ impl AccountInfo {
 /// `just_created` and `code_changed` track creation and code-modification state of the present
 /// overlay account, driving transaction-finalization and change-emission rules. They are meaningful
 /// only while `present` is `Some`.
+///
+/// Detached from the EVM as part of a [`PendingState`](super::PendingState), the entry describes
+/// the account's transaction transition: `original` against `present`, with
+/// [`Self::is_created`] flagging in-transaction creation.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Account {
     /// Account info at the start of the transaction. `None` means the account did not exist.
@@ -133,6 +137,53 @@ pub(crate) struct Account {
     pub(crate) just_created: bool,
     /// Whether the present overlay account's code has been modified.
     pub(crate) code_changed: bool,
+}
+
+impl Account {
+    /// Creates an account overlay entry from its transaction-boundary original info and its
+    /// present info.
+    #[cfg(test)]
+    pub(crate) fn new(original: Option<AccountInfo>, present: Option<AccountInfo>) -> Self {
+        Self { original, present, ..Self::default() }
+    }
+
+    /// Marks the account as created during the transaction, which also flags its code as changed.
+    #[inline]
+    pub(crate) const fn mark_created(&mut self) {
+        self.just_created = true;
+        self.code_changed = true;
+    }
+
+    /// Returns whether the account was created during the transaction.
+    ///
+    /// Creation is preserved across selfdestruct finalization, so it also covers accounts that
+    /// were created and then destroyed in the same transaction.
+    #[inline]
+    pub(crate) const fn is_created(&self) -> bool {
+        self.just_created
+    }
+
+    /// Returns whether the account's info changed during the transaction.
+    ///
+    /// This compares balance, nonce, code hash, and existence; it does not consider storage.
+    #[inline]
+    pub(crate) fn is_changed(&self) -> bool {
+        self.original != self.present
+    }
+
+    /// Returns the account's new bytecode keyed by code hash when its code changed during the
+    /// transaction to non-empty code.
+    #[inline]
+    pub(crate) fn changed_code(&self) -> Option<(B256, &Bytecode)> {
+        let account = self.present.as_ref()?;
+        let code = account.code.as_ref()?;
+        let code_hash = account.code_hash;
+        (self.code_changed
+            && !code.is_empty()
+            && !code_hash.is_zero()
+            && code_hash != KECCAK256_EMPTY)
+            .then_some((code_hash, code))
+    }
 }
 
 /// A mutable, journaled handle to an account loaded into the transaction overlay.
@@ -473,8 +524,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub(crate) fn mark_created(&mut self) {
         self.record_change();
-        self.tracked.just_created = true;
-        self.tracked.code_changed = true;
+        self.tracked.mark_created();
     }
 
     /// Records a revert snapshot and returns the live account, materializing an empty one when it
@@ -560,7 +610,7 @@ mod tests {
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(!state.account(&address, false).unwrap().is_warm());
         assert!(state.account_info_untracked(&address).unwrap().is_none());
-        assert!(!state.build_state_changes().is_changed());
+        assert!(!state.take_pending_state().is_changed());
     }
 
     #[test]
@@ -602,7 +652,7 @@ mod tests {
         assert_eq!(info.balance, Word::from(10));
         assert_eq!(info.nonce, 2);
         assert_eq!(info.code_hash, original_code_hash);
-        assert!(!state.build_state_changes().is_changed());
+        assert!(!state.take_pending_state().is_changed());
     }
 
     #[test]
@@ -620,7 +670,7 @@ mod tests {
         }
         // Loading preserves the account but a read-only handle records no transition.
         state.rollback(checkpoint, crate::Version::base(crate::SpecId::FRONTIER).features);
-        assert!(!state.build_state_changes().is_changed());
+        assert!(!state.take_pending_state().is_changed());
     }
 
     #[test]

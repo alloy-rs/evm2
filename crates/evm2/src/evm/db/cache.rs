@@ -6,7 +6,10 @@ use crate::{
     bytecode::Bytecode,
     evm::{
         bal::BalContext,
-        state::{AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange},
+        state::{
+            Account, AccountChangeRef, AccountInfo, AccountInfoRef, PendingState, StateChangeSink,
+            StateChangeSource, StorageChange, StorageOverlay,
+        },
     },
     interpreter::Word,
 };
@@ -112,6 +115,59 @@ impl<ExtDB> CacheDB<ExtDB> {
     #[inline]
     pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
         let Ok(()) = source.visit(self);
+    }
+
+    /// Accepts a detached [`PendingState`] -- a committed transaction's post-state -- into this
+    /// cache.
+    ///
+    /// When BAL construction is enabled, the pending state -- including loaded-but-unchanged
+    /// reads -- is first folded into the BAL builder at the current block access index. Changed
+    /// storage slots, code, and account info are then applied to the cache; the wrapped backing
+    /// database is not written.
+    pub fn commit_pending(&mut self, pending: &PendingState) {
+        self.commit(&pending.accounts, &pending.storage);
+    }
+
+    /// Accepts a committed transaction's pending accounts and storage overlays into this cache.
+    ///
+    /// Same as [`Self::commit_pending`], operating on the transaction layers directly so the
+    /// overlay need not be detached.
+    pub(crate) fn commit(
+        &mut self,
+        accounts: &AddressMap<Account>,
+        storage: &AddressMap<StorageOverlay>,
+    ) {
+        // When BAL construction is enabled, fold the transaction's pending post-state into the
+        // builder before applying the changes to the cache.
+        self.bal_context.commit(accounts, storage);
+
+        for (&address, overlay) in storage {
+            if overlay.wiped {
+                self.cache.storage.entry(address).or_default().wipe();
+            }
+            for (&key, slot) in overlay.changed_slots() {
+                self.cache.storage.entry(address).or_default().slots.insert(key, slot.current);
+            }
+        }
+
+        for (&address, entry) in accounts {
+            if let Some((code_hash, code)) = entry.changed_code() {
+                self.cache.contracts.insert(code_hash, code.clone());
+            }
+            if !entry.is_changed() {
+                continue;
+            }
+            match entry.present.as_ref() {
+                Some(account) => self.insert_account_info(
+                    &address,
+                    AccountInfoRef::from_info(account).to_account_info_without_code(),
+                ),
+                None => {
+                    self.cache.accounts.insert(address, None);
+                    self.cache.storage.entry(address).or_default().wipe();
+                }
+            }
+        }
     }
 
     /// Inserts account code into the contract cache.

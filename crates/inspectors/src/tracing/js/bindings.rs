@@ -6,6 +6,7 @@ use crate::tracing::{
         address_to_uint8_array, address_to_uint8_array_value, bytes_from_value, bytes_to_address,
         bytes_to_b256, to_bigint, to_uint8_array, to_uint8_array_value,
     },
+    tx_state::TxState,
     types::CallKind,
 };
 use alloc::{
@@ -25,7 +26,7 @@ use boa_gc::{Finalize, Trace, empty_trace};
 use core::cell::RefCell;
 use evm2::{
     bytecode::Bytecode,
-    evm::{AccountInfo, DbResult, DynDatabase, State, StateChanges},
+    evm::{AccountInfo, DbResult, DynDatabase, State},
     interpreter::{
         Memory, Word,
         opcode::{OpCode, op},
@@ -1156,9 +1157,10 @@ impl EvmDbRef {
         Self::new_reader(StateDbReader { state })
     }
 
-    /// Creates a new evm and db JS object over transaction changes and a backing database.
+    /// Creates a new evm and db JS object over a transaction's materialized state and a backing
+    /// database.
     pub(crate) fn new_changes<'a>(
-        changes: &'a StateChanges,
+        changes: &'a TxState,
         db: &'a mut dyn DynDatabase,
     ) -> (Self, EvmDbGuard<'a>) {
         Self::new_reader(ChangesDbReader { changes, db })
@@ -1351,7 +1353,7 @@ impl EvmDbReader for StateDbReader<'_, '_> {
 }
 
 struct ChangesDbReader<'a> {
-    changes: &'a StateChanges,
+    changes: &'a TxState,
     db: &'a mut dyn DynDatabase,
 }
 
@@ -1635,7 +1637,7 @@ mod tests {
             .with_nonce(9)
             .with_code(code.clone());
         let mut db = Db::new(BackingDb { address, account, slot, value });
-        let changes = StateChanges::default();
+        let changes = TxState::default();
         let (db_ref, _guard) = EvmDbRef::new_changes(&changes, &mut db);
         let js_db = db_ref.into_js_object(&mut context).unwrap();
         let js_addr = JsValue::from(js_string!(address.to_string()));

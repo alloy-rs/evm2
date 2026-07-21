@@ -1,6 +1,6 @@
 //! Transaction execution lifecycle and result types.
 
-use super::{BlockStateAccumulator, Evm, StateChangeSink, StateChanges};
+use super::{BlockStateAccumulator, Evm, PendingState, StateChangeSink};
 use crate::{ErrorCode, EvmTypesHost, interpreter::InstrStop};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, Log};
@@ -11,8 +11,8 @@ use derive_where::derive_where;
 ///
 /// This is the result-only half of transaction execution: status, gas used, output, stop reason,
 /// logs, host error code, and extension data. Logs live here because they are execution
-/// output, not database state. Use [`ExecutedTx::detach`] only when an owned [`StateChanges`] value
-/// is required.
+/// output, not database state. Use [`ExecutedTx::detach`] only when an owned [`PendingState`]
+/// value is required.
 #[must_use = "transaction results contain execution status, gas, logs, and errors"]
 #[derive_where(Clone, Debug, Default, PartialEq, Eq; T::TxResultExt)]
 pub struct TxResult<T: EvmTypesHost = crate::BaseEvmTypes> {
@@ -74,8 +74,10 @@ impl<T: EvmTypesHost> TxResult<T> {
     }
 }
 
+/// Whether the transaction scratch is still pending resolution. Not the owned
+/// [`PendingState`] a transaction detaches into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PendingState {
+enum StateStatus {
     Present,
     Cleared,
 }
@@ -90,14 +92,15 @@ enum PendingState {
 /// - [`Self::commit_with`] accepts the state and first streams it to an external sink;
 /// - [`Self::discard`] drops the state and keeps only the result;
 /// - [`Self::discard_with`] streams the state to an external sink and then drops it;
-/// - [`Self::detach`] materializes an owned [`StateChanges`] value without committing it.
+/// - [`Self::detach`] moves the pending transaction overlay out as a [`PendingState`] without
+///   committing it.
 ///
 /// Dropping `ExecutedTx` without calling one of those methods is equivalent to [`Self::discard`].
 #[must_use = "executed transaction state must be committed, discarded, or detached"]
 pub struct ExecutedTx<'evm, 'host, T: EvmTypesHost = crate::BaseEvmTypes> {
     evm: &'evm mut Evm<'host, T>,
     result: Option<TxResult<T>>,
-    state: PendingState,
+    state: StateStatus,
 }
 
 impl<T: EvmTypesHost> fmt::Debug for ExecutedTx<'_, '_, T> {
@@ -118,13 +121,13 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
         Self {
             evm,
             result: Some(result),
-            state: if has_pending_state { PendingState::Present } else { PendingState::Cleared },
+            state: if has_pending_state { StateStatus::Present } else { StateStatus::Cleared },
         }
     }
 
     #[inline]
     fn has_pending_state(&self) -> bool {
-        self.state == PendingState::Present
+        self.state == StateStatus::Present
     }
 
     #[inline]
@@ -139,7 +142,7 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     fn clear_pending_state(&mut self) {
         if self.has_pending_state() {
             self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
+            self.state = StateStatus::Cleared;
         }
     }
 
@@ -148,19 +151,19 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
         if self.has_pending_state() {
             self.evm.state.commit_transaction();
             self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
+            self.state = StateStatus::Cleared;
         }
     }
 
     #[inline]
-    fn take_state_changes(&mut self) -> StateChanges {
+    fn take_pending_state(&mut self) -> PendingState {
         if self.has_pending_state() {
-            let changes = self.evm.state.build_state_changes();
+            let pending = self.evm.state.take_pending_state();
             self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
-            changes
+            self.state = StateStatus::Cleared;
+            pending
         } else {
-            StateChanges::default()
+            PendingState::default()
         }
     }
 
@@ -185,7 +188,7 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     /// Accepts the transaction state and records its changes in a block accumulator.
     ///
     /// This streams transaction changes into `block_state`, commits them to the accepted overlay,
-    /// and returns the result-only [`TxResult`]. No owned [`StateChanges`] is materialized.
+    /// and returns the result-only [`TxResult`]. The transaction overlay is not detached.
     pub fn commit_to(self, block_state: &mut BlockStateAccumulator) -> TxResult<T> {
         let Ok(result) = self.commit_with(block_state);
         result
@@ -208,8 +211,8 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
 
     /// Discards the transaction state and returns the result.
     ///
-    /// Discarding does not mutate the accepted overlay and does not materialize [`StateChanges`].
-    /// This is the intended path for result-only execution such as `eth_call`.
+    /// Discarding does not mutate the accepted overlay and does not detach the transaction
+    /// overlay. This is the intended path for result-only execution such as `eth_call`.
     pub fn discard(mut self) -> TxResult<T> {
         self.clear_pending_state();
         self.take_result()
@@ -231,15 +234,19 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
         Ok(self.take_result())
     }
 
-    /// Detaches the transaction into an owned state diff without committing it.
+    /// Detaches the transaction into its owned pending state without committing it.
     ///
-    /// Detaching materializes [`StateChanges`], clears transaction scratch, and returns a
-    /// [`TxResultWithState`] that can be moved or stored. The detached state is not accepted into
-    /// this EVM's internal overlay unless the caller commits it separately.
+    /// Detaching moves the transaction overlay out of the EVM as a [`PendingState`], clears
+    /// transaction scratch, and returns a [`TxResultWithState`] that can be moved or stored. The
+    /// pending state folds into an EIP-7928 Block Access List via
+    /// [`Bal::commit`](crate::evm::Bal::commit) and streams its changes
+    /// to a [`StateChangeSink`] via
+    /// [`StateChangeSource::visit`](super::StateChangeSource::visit). The detached state is not
+    /// accepted into this EVM's internal overlay unless the caller commits it separately.
     pub fn detach(mut self) -> TxResultWithState<T> {
-        let state_changes = self.take_state_changes();
+        let pending_state = self.take_pending_state();
         let result = self.take_result();
-        TxResultWithState { result, state_changes, _non_exhaustive: () }
+        TxResultWithState { result, pending_state, _non_exhaustive: () }
     }
 }
 
@@ -250,17 +257,17 @@ impl<T: EvmTypesHost> Drop for ExecutedTx<'_, '_, T> {
     }
 }
 
-/// Result of executing a transaction with an owned state diff.
+/// Result of executing a transaction with its owned pending state.
 ///
-/// This is the materialized shape produced by [`ExecutedTx::detach`]. It pairs a [`TxResult`] with
-/// an owned [`StateChanges`] value. Prefer resolving [`Evm::transact`] with [`ExecutedTx::commit`]
-/// or [`ExecutedTx::discard`] when an owned write-set is unnecessary.
+/// This is the detached shape produced by [`ExecutedTx::detach`]. It pairs a [`TxResult`] with
+/// the owned [`PendingState`] the transaction was left in. Prefer resolving [`Evm::transact`] with
+/// [`ExecutedTx::commit`] or [`ExecutedTx::discard`] when an owned write-set is unnecessary.
 #[derive_where(Clone, Debug, Default, PartialEq, Eq; T::TxResultExt)]
 pub struct TxResultWithState<T: EvmTypesHost = crate::BaseEvmTypes> {
     /// Execution result produced by the transaction.
     pub result: TxResult<T>,
-    /// State transition produced by this transaction.
-    pub state_changes: StateChanges,
+    /// Pending state the transaction detached into.
+    pub pending_state: PendingState,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }

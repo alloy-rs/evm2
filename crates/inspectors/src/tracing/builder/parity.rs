@@ -1,6 +1,7 @@
 use super::walker::CallTraceNodeWalkerBF;
 use crate::tracing::{
     TracingInspectorConfig,
+    tx_state::TxState,
     types::{CallTraceNode, CallTraceStep},
     utils::load_account_code,
 };
@@ -11,7 +12,7 @@ use alloy_rpc_types_trace::parity::*;
 use core::iter::Peekable;
 use evm2::{
     AccountInfo, EvmTypesHost, SpecId, TxResult, TxResultWithState,
-    evm::{DbResult, DynDatabase, StateChanges},
+    evm::{DbResult, DynDatabase, PendingState},
 };
 
 /// A type for creating parity style traces
@@ -172,7 +173,7 @@ impl ParityTraceBuilder {
         trace_types: &HashSet<TraceType>,
         db: &mut dyn DynDatabase,
     ) -> DbResult<TraceResults> {
-        let TxResultWithState { ref result, state_changes: ref state, .. } = *res;
+        let TxResultWithState { ref result, pending_state: ref state, .. } = *res;
 
         let breadth_first_addresses = if trace_types.contains(&TraceType::VmTrace) {
             CallTraceNodeWalkerBF::new(&self.nodes)
@@ -492,19 +493,20 @@ where
     Ok(())
 }
 
-/// Populates [StateDiff] given the [StateChanges] of a transaction and a database.
+/// Populates [StateDiff] given the [PendingState] of a transaction and a database.
 ///
 /// Loops over all state accounts in the accounts diff that contains all accounts that are included
-/// in the [StateChanges] and compares the balance and nonce against what's in the `db`, which
+/// in the [PendingState] and compares the balance and nonce against what's in the `db`, which
 /// should point to the beginning of the transaction.
 pub fn populate_state_diff(
     state_diff: &mut StateDiff,
     db: &mut dyn DynDatabase,
-    state_changes: &StateChanges,
+    pending: &PendingState,
 ) -> DbResult<()> {
-    for (addr, changed_acc) in state_changes.accounts.iter() {
+    let state = TxState::from_pending(pending);
+    for (addr, changed_acc) in state.accounts.iter() {
         // if the account was selfdestructed and created during the transaction, we can ignore it
-        if changed_acc.is_selfdestructed() && changed_acc.is_created() {
+        if changed_acc.selfdestructed && changed_acc.created {
             continue;
         }
 
@@ -522,7 +524,7 @@ pub fn populate_state_diff(
 
         // we check if this account was created during the transaction
         // where the smart contract was not touched before being created (no balance)
-        if changed_acc.is_created() && db_acc.balance == U256::ZERO {
+        if changed_acc.created && db_acc.balance == U256::ZERO {
             // This only applies to newly created accounts without balance
             // A non existing touched account (e.g. `to` that does not exist) is excluded here
             entry.balance = Delta::Added(info.balance);
@@ -534,20 +536,20 @@ pub fn populate_state_diff(
 
             // new storage values are marked as added,
             // however we're filtering changed here to avoid adding entries for the zero value
-            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
+            for (key, slot) in changed_acc.changed_storage() {
                 entry.storage.insert((*key).into(), Delta::Added(slot.current.into()));
             }
         } else {
             // we check if this account was created during the transaction
             // where the smart contract was touched before being created (has balance)
-            if changed_acc.is_created() {
+            if changed_acc.created {
                 let original_account_code = load_account_code(db, &db_acc)?.unwrap_or_default();
                 let present_account_code = load_account_code(db, &info)?.unwrap_or_default();
                 entry.code = Delta::changed(original_account_code, present_account_code);
             }
 
             // update _changed_ storage values
-            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
+            for (key, slot) in changed_acc.changed_storage() {
                 entry.storage.insert(
                     (*key).into(),
                     Delta::changed(slot.original.into(), slot.current.into()),
@@ -555,7 +557,7 @@ pub fn populate_state_diff(
             }
 
             // check if the account was changed at all
-            if entry.storage.is_empty() && db_acc == info && !changed_acc.is_selfdestructed() {
+            if entry.storage.is_empty() && db_acc == info && !changed_acc.selfdestructed {
                 // clear the entry if the account was not changed
                 state_diff.remove(addr);
                 continue;
