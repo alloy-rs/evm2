@@ -1,10 +1,13 @@
 //! Owned pending transaction state detached from the EVM.
 
 use super::{
-    Account, AccountChangeRef, AccountInfoRef, StateChangeSink, StateChangeSource, StorageChange,
-    StorageOverlay,
+    Account, AccountChangeRef, AccountInfo, AccountInfoRef, StateChangeSink, StateChangeSource,
+    StorageChange, StorageOverlay,
 };
-use alloy_primitives::map::{AddressMap, AddressSet};
+use alloy_primitives::{
+    Address,
+    map::{AddressMap, AddressSet},
+};
 
 /// A transaction's finalized-but-uncommitted state, moved out of the EVM.
 ///
@@ -38,6 +41,12 @@ pub struct PendingState {
 }
 
 impl PendingState {
+    /// Returns current account information when the account is present in the pending state.
+    #[inline]
+    pub fn account_info(&self, address: &Address) -> Option<&AccountInfo> {
+        self.accounts.get(address).and_then(|account| account.present.as_ref())
+    }
+
     /// Returns whether the transaction loaded no accounts and no storage.
     #[inline]
     pub fn is_empty(&self) -> bool {
