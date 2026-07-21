@@ -18,7 +18,8 @@ use alloy_consensus::transaction::TxEip4844Variant;
 use alloy_eips::eip4844::{DATA_GAS_PER_BLOB, VERSIONED_HASH_VERSION_KZG};
 use alloy_primitives::U256;
 
-pub(super) fn handle<T: EvmTypes>(
+/// Executes an EIP-4844 transaction using Ethereum rules.
+pub fn handle<T: EvmTypes>(
     req: TxRequest<'_, '_, T, TxEip4844Variant>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();

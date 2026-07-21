@@ -1,11 +1,16 @@
 //! Ethereum transaction envelope and handlers.
 
-mod eip1559;
-mod eip2930;
-mod eip4844;
-mod eip7702;
+/// EIP-1559 transaction handler.
+pub mod eip1559;
+/// EIP-2930 transaction handler.
+pub mod eip2930;
+/// EIP-4844 transaction handler.
+pub mod eip4844;
+/// EIP-7702 transaction handler.
+pub mod eip7702;
 mod lazy_eip7702;
-mod legacy;
+/// Legacy transaction handler.
+pub mod legacy;
 
 pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
@@ -225,11 +230,8 @@ pub fn ethereum_tx_registry<T: EvmTypes<Tx = TxEnvelope>>(
     registry
 }
 
-pub(super) fn validate_gas_price(
-    version: &Version,
-    gas_price: U256,
-    basefee: U256,
-) -> HandlerResult<()> {
+/// Validates the effective gas price against the block base fee.
+pub fn validate_gas_price(version: &Version, gas_price: U256, basefee: U256) -> HandlerResult<()> {
     if version.feature(EvmFeatures::BASE_FEE_CHECK) && gas_price < basefee {
         return Err(HandlerError::FeeCapLessThanBaseFee {
             max_fee_per_gas: gas_price,
@@ -239,7 +241,8 @@ pub(super) fn validate_gas_price(
     Ok(())
 }
 
-pub(super) fn validate_priority_fee(
+/// Validates that the priority fee does not exceed the maximum fee.
+pub fn validate_priority_fee(
     version: &Version,
     max_fee_per_gas: U256,
     max_priority_fee_per_gas: U256,
@@ -252,7 +255,8 @@ pub(super) fn validate_priority_fee(
     Ok(())
 }
 
-pub(super) fn effective_gas_price(
+/// Calculates the effective gas price for an EIP-1559 transaction.
+pub fn effective_gas_price(
     max_fee_per_gas: U256,
     max_priority_fee_per_gas: U256,
     basefee: U256,
@@ -260,7 +264,8 @@ pub(super) fn effective_gas_price(
     max_fee_per_gas.min(basefee.saturating_add(max_priority_fee_per_gas))
 }
 
-pub(super) fn validate_block_gas_limit(
+/// Validates the transaction gas limit against the block gas limit.
+pub fn validate_block_gas_limit(
     version: &Version,
     tx_gas_limit: u64,
     block_gas_limit: U256,
@@ -276,10 +281,8 @@ pub(super) fn validate_block_gas_limit(
     Ok(())
 }
 
-pub(super) const fn validate_tx_gas_limit_cap(
-    version: &Version,
-    tx_gas_limit: u64,
-) -> HandlerResult<()> {
+/// Validates the transaction gas limit against the active transaction cap.
+pub const fn validate_tx_gas_limit_cap(version: &Version, tx_gas_limit: u64) -> HandlerResult<()> {
     // EIP-7825 caps each transaction gas limit to 2^24 in Osaka. Amsterdam/EIP-8037
     // replaces this with a regular-gas cap while allowing extra transaction gas to serve as
     // the state-gas reservoir.
@@ -290,7 +293,8 @@ pub(super) const fn validate_tx_gas_limit_cap(
     Ok(())
 }
 
-pub(super) const fn validate_regular_gas_limit_cap(
+/// Validates the regular-gas portion against the active transaction cap.
+pub const fn validate_regular_gas_limit_cap(
     version: &Version,
     tx_gas_limit: u64,
     intrinsic: u64,
@@ -309,7 +313,8 @@ pub(super) const fn validate_regular_gas_limit_cap(
     Ok(())
 }
 
-pub(super) const fn validate_chain_id(
+/// Validates a transaction chain ID against the active chain.
+pub const fn validate_chain_id(
     version: &Version,
     chain_id: Option<u64>,
     allow_missing: bool,
@@ -326,11 +331,8 @@ pub(super) const fn validate_chain_id(
     Ok(())
 }
 
-pub(super) fn validate_create_initcode(
-    version: &Version,
-    to: TxKind,
-    input: &Bytes,
-) -> HandlerResult<()> {
+/// Validates top-level create initcode against the active size limit.
+pub fn validate_create_initcode(version: &Version, to: TxKind, input: &Bytes) -> HandlerResult<()> {
     if version.feature(EvmFeatures::EIP3860)
         && to.is_create()
         && input.len() > version.max_initcode_size
@@ -343,14 +345,16 @@ pub(super) fn validate_create_initcode(
     Ok(())
 }
 
-pub(super) const fn validate_nonce_not_overflow(nonce: u64) -> HandlerResult<()> {
+/// Rejects a nonce that cannot be incremented.
+pub const fn validate_nonce_not_overflow(nonce: u64) -> HandlerResult<()> {
     if nonce == u64::MAX {
         return Err(HandlerError::NonceOverflow);
     }
     Ok(())
 }
 
-pub(super) const fn validate_intrinsic_gas(
+/// Validates that the gas limit covers regular and state intrinsic gas.
+pub const fn validate_intrinsic_gas(
     gas_limit: u64,
     intrinsic: u64,
     initial_state_gas: u64,
@@ -363,14 +367,16 @@ pub(super) const fn validate_intrinsic_gas(
     Ok(())
 }
 
-pub(super) const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult<()> {
+/// Validates that the gas limit covers the calldata floor gas.
+pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult<()> {
     if gas_limit < floor_gas {
         return Err(HandlerError::IntrinsicGasTooLow { required: floor_gas, got: gas_limit });
     }
     Ok(())
 }
 
-pub(super) fn validate_sender<'a, T: EvmTypes>(
+/// Loads and validates the sender account.
+pub fn validate_sender<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
@@ -400,11 +406,8 @@ pub(super) fn validate_sender<'a, T: EvmTypes>(
     Ok(sender.get().cloned().unwrap_or_default())
 }
 
-pub(super) fn warm_base_accounts<'a, T: EvmTypes>(
-    host: &mut Evm<'a, T>,
-    caller: Address,
-    to: TxKind,
-) {
+/// Warms the accounts required by every transaction.
+pub fn warm_base_accounts<'a, T: EvmTypes>(host: &mut Evm<'a, T>, caller: Address, to: TxKind) {
     host.state.prewarm(&caller);
     if host.feature(EvmFeatures::EIP3651) {
         host.state.prewarm(&host.block.beneficiary);
@@ -415,7 +418,8 @@ pub(super) fn warm_base_accounts<'a, T: EvmTypes>(
     host.warm_precompiles();
 }
 
-pub(super) fn warm_access_list<'a, T: EvmTypes>(host: &mut Evm<'a, T>, access_list: &AccessList) {
+/// Warms every account and storage key in an access list.
+pub fn warm_access_list<'a, T: EvmTypes>(host: &mut Evm<'a, T>, access_list: &AccessList) {
     for item in access_list.iter() {
         host.state.prewarm_storage(
             &item.address,
@@ -424,7 +428,8 @@ pub(super) fn warm_access_list<'a, T: EvmTypes>(host: &mut Evm<'a, T>, access_li
     }
 }
 
-pub(super) fn charge_upfront<'a, T: EvmTypes>(
+/// Deducts a transaction's upfront native-token gas charge.
+pub fn charge_upfront<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     max_gas_cost: U256,
@@ -446,7 +451,7 @@ pub(super) fn charge_upfront<'a, T: EvmTypes>(
 /// EIP-7702 authorization contribution is computed separately in the EIP-7702 handler. Keeping the
 /// state-gas intrinsic distinct from the regular intrinsic ([`intrinsic_gas`]) mirrors the spec,
 /// which tracks `IntrinsicGas.regular` and `.state` separately.
-pub(super) const fn create_initial_state_gas(version: &Version, is_create: bool) -> u64 {
+pub const fn create_initial_state_gas(version: &Version, is_create: bool) -> u64 {
     if version.feature(EvmFeatures::EIP8037) && is_create {
         version.gas_params.create_state_gas()
     } else {
@@ -466,7 +471,7 @@ pub(super) const fn create_initial_state_gas(version: &Version, is_create: bool)
 /// execution-specs the state refund is added to the state-gas reservoir (`set_delegation` does
 /// `state_gas_reservoir += refund`), not applied to regular gas first. Folding them into a single
 /// regular-first refund — as an earlier note suggested — would diverge from the spec.
-pub(super) fn initial_gas_and_reservoir(
+pub fn initial_gas_and_reservoir(
     version: &Version,
     tx_gas_limit: u64,
     intrinsic: u64,
@@ -497,7 +502,8 @@ pub(super) fn initial_gas_and_reservoir(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn initial_message<'a, T: EvmTypes>(
+/// Creates the bytecode and top-level message for a transaction call or create.
+pub fn initial_message<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
@@ -585,7 +591,8 @@ fn initial_call_code<'a, T: EvmTypes>(
     Ok(InitialCallCode { code, code_address: to, disable_precompiles: false })
 }
 
-pub(super) fn rollback_failed_execution<'a, T: EvmTypes>(
+/// Rolls back failed top-level execution and normalizes halt gas.
+pub fn rollback_failed_execution<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     checkpoint: StateCheckpoint,
     result: &mut MessageResult<T>,
@@ -608,7 +615,7 @@ pub(super) fn rollback_failed_execution<'a, T: EvmTypes>(
 /// never actually consumed) or when it succeeded at a pre-existing alive (balance-only) target (no
 /// new leaf was created — execution-specs `created_target_alive`). No-op when `create_state_gas` is
 /// zero (non-create or pre-Amsterdam).
-pub(super) const fn refund_create_state_gas<T: EvmTypesHost>(
+pub const fn refund_create_state_gas<T: EvmTypesHost>(
     result: &mut MessageResult<T>,
     create_state_gas: u64,
 ) {
@@ -619,7 +626,8 @@ pub(super) const fn refund_create_state_gas<T: EvmTypesHost>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn settle_gas<'a, T: EvmTypes>(
+/// Applies Ethereum gas refunds, sender reimbursement, and beneficiary rewards.
+pub fn settle_gas<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     gas_price: U256,
@@ -717,12 +725,13 @@ const fn final_tx_gas<T: EvmTypesHost>(
     (gas_remaining, gas_used)
 }
 
-pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
+/// Returns the account and storage-key counts in an access list.
+pub fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
     (access_list.len() as u64, access_list.storage_keys_count() as u64)
 }
 
 /// Calculates transaction calldata floor gas.
-pub(super) fn floor_gas(
+pub fn floor_gas(
     version: &Version,
     input: &Bytes,
     access_list_accounts: u64,
@@ -757,7 +766,7 @@ pub(super) fn floor_gas(
 ///
 /// `caller`/`value` feed the EIP-2780 decomposed model (which branches on
 /// self-transfer and whether `tx.value` is zero); the legacy model ignores them.
-pub(super) fn intrinsic_gas(
+pub fn intrinsic_gas(
     version: &Version,
     caller: Address,
     to: TxKind,
