@@ -135,7 +135,7 @@ use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 #[cfg(feature = "async")]
 use core::future::Future;
-use core::ptr::NonNull;
+use core::{marker::PhantomData, ptr::NonNull};
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
@@ -165,7 +165,7 @@ mod db;
 use db::boxed_dyn_database;
 pub use db::{
     AccountStorageCache, Cache, CacheDB, Database, Db, DbResult, DbStats, DbStatsCounts,
-    DynDatabase, EmptyDB, InMemoryDB,
+    DynDatabase, EmptyDB, InMemoryDB, OverrideBlockHashes,
 };
 
 mod tx;
@@ -974,6 +974,48 @@ struct ExecutionGuard {
     was_running: bool,
 }
 
+struct ScopedInspector<'evm, 'host, T: EvmTypesHost> {
+    evm: NonNull<Evm<'host, T>>,
+    previous: Option<Box<dyn Inspector<T> + 'host>>,
+    evm_send: bool,
+    _borrow: PhantomData<&'evm mut Evm<'host, T>>,
+}
+
+impl<'evm, 'host, T: EvmTypes> ScopedInspector<'evm, 'host, T> {
+    fn new<I: Inspector<T>>(evm: &'evm mut Evm<'host, T>, inspector: &'evm mut I) -> Self {
+        evm.assert_inspector_mutable();
+        let previous = evm.inspector.take();
+        let evm_send = evm.evm_send;
+        let inspector = boxed_inspector(inspector);
+        // SAFETY: `ScopedInspector` exclusively borrows the EVM and removes this inspector in its
+        // `Drop` implementation before the shorter inspector borrow can end.
+        let inspector = unsafe {
+            core::mem::transmute::<Box<dyn Inspector<T> + 'evm>, Box<dyn Inspector<T> + 'host>>(
+                inspector,
+            )
+        };
+        evm.inspector = Some(inspector);
+        evm.evm_send = false;
+        Self { evm: NonNull::from(evm), previous, evm_send, _borrow: PhantomData }
+    }
+
+    const fn evm_mut(&mut self) -> &mut Evm<'host, T> {
+        // SAFETY: the guard owns the exclusive borrow represented by `_borrow`.
+        unsafe { self.evm.as_mut() }
+    }
+}
+
+impl<T: EvmTypesHost> Drop for ScopedInspector<'_, '_, T> {
+    fn drop(&mut self) {
+        // SAFETY: the guard owns the exclusive EVM borrow and the scoped inspector is still alive
+        // for the duration of this drop.
+        let evm = unsafe { self.evm.as_mut() };
+        drop(evm.inspector.take());
+        evm.inspector = self.previous.take();
+        evm.evm_send = self.evm_send;
+    }
+}
+
 impl Drop for ExecutionGuard {
     #[inline]
     fn drop(&mut self) {
@@ -1031,6 +1073,16 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
                 Err(err)
             }
         }
+    }
+
+    /// Executes a transaction with a scoped borrowed inspector and detaches its state changes.
+    pub fn transact_with_inspector<I: Inspector<T>>(
+        &mut self,
+        tx: &Recovered<T::Tx>,
+        inspector: &mut I,
+    ) -> HandlerResult<TxResultWithState<T>> {
+        let mut scoped = ScopedInspector::new(self, inspector);
+        scoped.evm_mut().transact(tx).map(ExecutedTx::detach)
     }
 
     /// Executes a transaction for its outcome and discards its state changes.
@@ -2929,6 +2981,50 @@ mod tests {
         let tx = test_tx(41);
 
         assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
+    }
+
+    #[test]
+    fn transact_with_borrowed_inspector() {
+        fn handle_inspected_tx(
+            req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
+        ) -> HandlerResult<TxResult> {
+            Host::log(
+                req.host,
+                Log { address: Address::ZERO, data: LogData::new_unchecked(vec![], Bytes::new()) },
+            );
+            handle_test_tx(req)
+        }
+
+        struct BorrowedInspector<'a>(&'a mut usize);
+
+        impl Inspector<BaseEvmTypes> for BorrowedInspector<'_> {
+            fn log(&mut self, _log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
+                *self.0 += 1;
+            }
+        }
+
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handle_inspected_tx,
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let mut calls = 0;
+        let mut inspector = BorrowedInspector(&mut calls);
+
+        let result = evm
+            .transact_with_inspector(&test_tx(41), &mut inspector)
+            .expect("transaction succeeds");
+
+        assert_eq!(result.result.tx_gas_used(), 42);
+        assert_eq!(calls, 1);
+        assert!(evm.inspector().is_none());
     }
 
     #[test]

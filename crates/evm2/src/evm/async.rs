@@ -1079,6 +1079,18 @@ mod tests {
             false
         }
 
+        fn move_precompiles(
+            &mut self,
+            moves: &[(Address, Address)],
+        ) -> Result<(), crate::precompiles::MovePrecompileError> {
+            match moves.iter().find(|(source, destination)| source != destination) {
+                Some((source, _)) => {
+                    Err(crate::precompiles::MovePrecompileError::NotAPrecompile(*source))
+                }
+                None => Ok(()),
+            }
+        }
+
         fn execute(
             &mut self,
             _evm: &mut Evm<'_, BaseEvmTypes>,
