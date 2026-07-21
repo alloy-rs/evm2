@@ -318,6 +318,7 @@ mod tests {
             state::{AccountInfo, State},
         },
     };
+    use alloc::vec;
     use alloy_primitives::Address;
 
     #[test]
@@ -355,6 +356,23 @@ mod tests {
         assert_eq!(state.tload(&address, &Word::from(1)), Word::from(20));
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert_eq!(state.tload(&address, &Word::from(1)), Word::from(10));
+    }
+
+    #[test]
+    fn take_transient_storage_only_drains_requested_account() {
+        let address = Address::from([0x22; 20]);
+        let other = Address::from([0x23; 20]);
+        let mut state = State::new(CacheDB::default());
+
+        state.tstore(&address, &Word::from(1), &Word::from(10));
+        state.tstore(&address, &Word::from(2), &Word::from(20));
+        state.tstore(&other, &Word::from(1), &Word::from(30));
+
+        let mut slots = state.take_transient_storage(&address);
+        slots.sort_unstable_by_key(|(key, _)| *key);
+        assert_eq!(slots, vec![(Word::from(1), Word::from(10)), (Word::from(2), Word::from(20))]);
+        assert_eq!(state.tload(&address, &Word::from(1)), Word::ZERO);
+        assert_eq!(state.tload(&other, &Word::from(1)), Word::from(30));
     }
 
     #[test]
