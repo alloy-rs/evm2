@@ -51,5 +51,11 @@ std = [
     "evm2/std",
     "thiserror/std",
 ]
-serde = ["dep:serde", "alloy-primitives/serde", "alloy-rpc-types-eth/serde", "evm2/serde"]
+serde = [
+    "dep:serde",
+    "alloy-primitives/serde",
+    "alloy-consensus/serde",
+    "alloy-rpc-types-eth/serde",
+    "evm2/serde",
+]
 js-tracer = ["std", "dep:boa_engine", "dep:boa_gc"]
