@@ -32,6 +32,13 @@ pub trait Database: NonStaticAny {
     fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error>;
 }
 
+/// Database overlay capable of overriding historical block hashes.
+#[auto_impl(&mut, Box)]
+pub trait OverrideBlockHashes {
+    /// Sets the block hash returned for `number`.
+    fn insert_block_hash(&mut self, number: &Word, hash: &B256);
+}
+
 /// Object-safe database adapter for typed database implementations.
 #[derive(Clone, Debug)]
 pub struct Db<T: Database> {
@@ -119,6 +126,13 @@ impl<T: Database> DynDatabase for Db<T> {
             return err;
         }
         error_unavailable(code)
+    }
+}
+
+impl<T: Database + OverrideBlockHashes> OverrideBlockHashes for Db<T> {
+    #[inline]
+    fn insert_block_hash(&mut self, number: &Word, hash: &B256) {
+        self.db.insert_block_hash(number, hash);
     }
 }
 

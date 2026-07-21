@@ -12,7 +12,7 @@ use alloy_rpc_types_trace::geth::{
     erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    ErrorCode, EvmTypes, EvmTypesHost, Inspector, NoopInspector, TxResultWithState,
+    EvmTypes, EvmTypesHost, Inspector, NoopInspector, TxResultWithState,
     env::BlockEnv,
     evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
@@ -226,13 +226,13 @@ impl DebugInspector {
                 inspector
                     .geth_builder()
                     .geth_prestate_traces(res, config, db)
-                    .map_err(DebugInspectorError::Database)?
+                    .map_err(|code| database_error(db, code))?
                     .into()
             }
             Self::Noop(_) => NoopFrame::default().into(),
             Self::Mux(inspector, _) => inspector
                 .try_into_mux_frame(res, db, tx_info)
-                .map_err(DebugInspectorError::Database)?
+                .map_err(|code| database_error(db, code))?
                 .into(),
             Self::FlatCallTracer(inspector) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit());
@@ -249,7 +249,7 @@ impl DebugInspector {
                 inspector
                     .geth_builder()
                     .geth_erc7562_traces(config.clone(), res.result.tx_gas_used(), db)
-                    .map_err(DebugInspectorError::Database)?
+                    .map_err(|code| database_error(db, code))?
                     .into()
             }
             Self::Default(inspector, config) => {
@@ -370,6 +370,48 @@ pub enum DebugInspectorError {
     #[error(transparent)]
     JsInspector(#[from] crate::tracing::js::JsInspectorError),
     /// Database operation failed
-    #[error("database error {0:?}")]
-    Database(ErrorCode),
+    #[error(transparent)]
+    Database(evm2::AnyError),
+}
+
+fn database_error(db: &mut dyn DynDatabase, code: evm2::ErrorCode) -> DebugInspectorError {
+    DebugInspectorError::Database(db.error(code))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+    use evm2::{AnyError, ErrorCode, bytecode::Bytecode, evm::DbResult, interpreter::Word};
+
+    struct ErrorDatabase;
+
+    impl DynDatabase for ErrorDatabase {
+        fn get_account(&mut self, _address: &Address) -> DbResult<Option<evm2::AccountInfo>> {
+            unreachable!()
+        }
+
+        fn get_code_by_hash(&mut self, _code_hash: &alloy_primitives::B256) -> DbResult<Bytecode> {
+            unreachable!()
+        }
+
+        fn get_storage(&mut self, _address: &Address, _key: &Word) -> DbResult<Word> {
+            unreachable!()
+        }
+
+        fn get_block_hash(&mut self, _number: &Word) -> DbResult<Option<alloy_primitives::B256>> {
+            unreachable!()
+        }
+
+        fn error(&mut self, _code: ErrorCode) -> AnyError {
+            AnyError::from("sentinel database error")
+        }
+    }
+
+    #[test]
+    fn resolves_database_error_code() {
+        let error = database_error(&mut ErrorDatabase, ErrorCode::new_custom(0).unwrap());
+
+        assert_eq!(error.to_string(), "sentinel database error");
+    }
 }

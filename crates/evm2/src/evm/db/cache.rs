@@ -1,6 +1,6 @@
 //! In-memory cache database.
 
-use super::{DbResult, DynDatabase, EmptyDB};
+use super::{DbResult, DynDatabase, EmptyDB, OverrideBlockHashes};
 use crate::{
     AnyError, ErrorCode,
     bytecode::Bytecode,
@@ -261,6 +261,13 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
             }
         }
         Ok(())
+    }
+}
+
+impl<ExtDB> OverrideBlockHashes for CacheDB<ExtDB> {
+    #[inline]
+    fn insert_block_hash(&mut self, number: &Word, hash: &B256) {
+        Self::insert_block_hash(self, number, hash);
     }
 }
 

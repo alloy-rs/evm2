@@ -4,7 +4,7 @@ use super::{Evm, NonStaticAny};
 use crate::{
     EvmTypesHost, PrecompileError,
     interpreter::{GasTracker, Message},
-    precompiles::PrecompileId,
+    precompiles::{MovePrecompileError, PrecompileId},
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes};
@@ -53,6 +53,10 @@ pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     /// Returns whether `address` has a registered precompile.
     fn contains(&self, address: &Address) -> bool;
 
+    /// Moves precompiles from source addresses to destination addresses.
+    fn move_precompiles(&mut self, moves: &[(Address, Address)])
+    -> Result<(), MovePrecompileError>;
+
     /// Executes the precompile at `address`, if one is registered.
     fn execute(
         &mut self,
@@ -99,6 +103,17 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for NoPrecompiles {
     #[inline]
     fn contains(&self, _address: &Address) -> bool {
         false
+    }
+
+    #[inline]
+    fn move_precompiles(
+        &mut self,
+        moves: &[(Address, Address)],
+    ) -> Result<(), MovePrecompileError> {
+        match moves.iter().find(|(source, destination)| source != destination) {
+            Some((source, _)) => Err(MovePrecompileError::NotAPrecompile(*source)),
+            None => Ok(()),
+        }
     }
 
     #[inline]

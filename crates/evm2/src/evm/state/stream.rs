@@ -20,8 +20,9 @@ pub struct AccountInfoRef<'a> {
 }
 
 impl<'a> AccountInfoRef<'a> {
+    /// Borrows account information for a state change.
     #[inline]
-    pub(crate) const fn from_info(info: &'a AccountInfo) -> Self {
+    pub const fn from_info(info: &'a AccountInfo) -> Self {
         Self {
             balance: info.balance,
             nonce: info.nonce,

@@ -398,7 +398,10 @@ pub fn validate_sender<'a, T: EvmTypes>(
         return Err(HandlerError::InvalidNonce { expected: sender.nonce(), got: nonce });
     }
     if has_balance_check && sender.balance() < max_upfront {
-        return Err(HandlerError::InsufficientFunds);
+        return Err(HandlerError::InsufficientFunds {
+            cost: max_upfront,
+            balance: sender.balance(),
+        });
     }
     if !has_balance_check && has_balance_top_up && sender.balance() < max_upfront {
         sender.add_balance(max_upfront - sender.balance());
@@ -1038,6 +1041,25 @@ mod tests {
 
         assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
         assert!(evm.state.account_info_untracked(&caller).unwrap().is_none());
+    }
+
+    #[test]
+    fn insufficient_funds_reports_cost_and_balance() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(40)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        assert_eq!(
+            validate_sender(&mut evm, caller, 0, U256::from(100)),
+            Err(HandlerError::InsufficientFunds { cost: U256::from(100), balance: U256::from(40) })
+        );
     }
 
     #[test]

@@ -63,8 +63,13 @@ pub enum HandlerError {
         got: u64,
     },
     /// Sender cannot pay value plus maximum gas cost.
-    #[error("insufficient funds")]
-    InsufficientFunds,
+    #[error("insufficient funds: required {cost}, balance {balance}")]
+    InsufficientFunds {
+        /// Maximum upfront transaction cost.
+        cost: U256,
+        /// Sender balance.
+        balance: U256,
+    },
     /// Sender account has deployed code.
     #[error("caller has code")]
     RejectCallerWithCode,
