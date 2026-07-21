@@ -19,13 +19,13 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
 pub use boa_engine::vm::RuntimeLimits;
 use boa_engine::{Context, JsError, JsObject, JsResult, JsValue, Source, js_string};
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
     env::BlockEnv,
-    ethereum::TransactionExt,
     evm::DynDatabase,
     interpreter::{
         GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word,
@@ -278,10 +278,10 @@ impl JsInspector {
     /// Calls the result function and returns the result as [serde_json::Value].
     ///
     /// Note: This is supposed to be called after the inspection has finished.
-    pub fn json_result<T: EvmTypesHost<Tx: TransactionExt>>(
+    pub fn json_result<T: EvmTypesHost<Tx: Transaction>>(
         &mut self,
         res: &TxResultWithState<T>,
-        tx: &T::Tx,
+        tx: &Recovered<T::Tx>,
         block: &BlockEnv<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<serde_json::Value, JsInspectorError> {
@@ -290,10 +290,10 @@ impl JsInspector {
     }
 
     /// Calls the result function and returns the result.
-    pub fn result<T: EvmTypesHost<Tx: TransactionExt>>(
+    pub fn result<T: EvmTypesHost<Tx: Transaction>>(
         &mut self,
         res: &TxResultWithState<T>,
-        tx: &T::Tx,
+        tx: &Recovered<T::Tx>,
         block: &BlockEnv<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<JsValue, JsInspectorError> {
@@ -327,7 +327,7 @@ impl JsInspector {
                 TxKind::Create => "CREATE",
             }
             .to_string(),
-            from: tx.caller(),
+            from: tx.signer(),
             to,
             input: tx.input().clone(),
             gas: tx.gas_limit(),
@@ -750,7 +750,7 @@ mod tests {
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId,
         bytecode::Bytecode,
-        ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+        ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, CacheDB, EmptyDB},
         interpreter::Host,
     };
@@ -815,15 +815,15 @@ mod tests {
         );
         evm.set_inspector(insp);
 
-        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy {
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
                 gas_price: 1024,
                 gas_limit: 1_000_000,
                 to: TxKind::Call(addr),
                 ..Default::default()
-            },
+            }),
             Address::ZERO,
-        ));
+        );
         let res = evm.transact(&tx).expect("pass without error").detach();
 
         assert_eq!(res.result.status, success);

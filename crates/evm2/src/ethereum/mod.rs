@@ -27,50 +27,42 @@ use alloy_consensus::{
 };
 use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
-use core::fmt::Debug;
 
-/// Ethereum transaction envelope containing recovered transactions.
+/// Ethereum transaction envelope.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RecoveredTxEnvelope {
+pub enum TxEnvelope {
     /// Legacy transaction.
-    Legacy(Recovered<TxLegacy>),
+    Legacy(TxLegacy),
     /// EIP-2930 access-list transaction.
-    Eip2930(Recovered<TxEip2930>),
+    Eip2930(TxEip2930),
     /// EIP-1559 dynamic-fee transaction.
-    Eip1559(Recovered<TxEip1559>),
+    Eip1559(TxEip1559),
     /// EIP-4844 blob transaction.
-    Eip4844(Recovered<TxEip4844Variant>),
+    Eip4844(TxEip4844Variant),
     /// EIP-7702 set-code transaction.
-    Eip7702(Recovered<LazyTxEip7702>),
+    Eip7702(LazyTxEip7702),
 }
 
-impl From<Recovered<EthereumTxEnvelope<TxEip4844>>> for RecoveredTxEnvelope {
-    fn from(tx: Recovered<EthereumTxEnvelope<TxEip4844>>) -> Self {
-        let (tx, signer) = tx.into_parts();
+/// Recovered Ethereum transaction envelope.
+pub type RecoveredTxEnvelope = Recovered<TxEnvelope>;
+
+impl From<EthereumTxEnvelope<TxEip4844>> for TxEnvelope {
+    fn from(tx: EthereumTxEnvelope<TxEip4844>) -> Self {
         match tx {
-            EthereumTxEnvelope::Legacy(tx) => {
-                Self::Legacy(Recovered::new_unchecked(tx.strip_signature(), signer))
+            EthereumTxEnvelope::Legacy(tx) => Self::Legacy(tx.strip_signature()),
+            EthereumTxEnvelope::Eip2930(tx) => Self::Eip2930(tx.strip_signature()),
+            EthereumTxEnvelope::Eip1559(tx) => Self::Eip1559(tx.strip_signature()),
+            EthereumTxEnvelope::Eip4844(tx) => Self::Eip4844(tx.strip_signature().into()),
+            EthereumTxEnvelope::Eip7702(tx) => {
+                Self::Eip7702(LazyTxEip7702::from_recovered_authorizations(tx.strip_signature()))
             }
-            EthereumTxEnvelope::Eip2930(tx) => {
-                Self::Eip2930(Recovered::new_unchecked(tx.strip_signature(), signer))
-            }
-            EthereumTxEnvelope::Eip1559(tx) => {
-                Self::Eip1559(Recovered::new_unchecked(tx.strip_signature(), signer))
-            }
-            EthereumTxEnvelope::Eip4844(tx) => {
-                Self::Eip4844(Recovered::new_unchecked(tx.strip_signature().into(), signer))
-            }
-            EthereumTxEnvelope::Eip7702(tx) => Self::Eip7702(Recovered::new_unchecked(
-                LazyTxEip7702::from_recovered_authorizations(tx.strip_signature()),
-                signer,
-            )),
         }
     }
 }
 
-impl RecoveredTxEnvelope {
+impl TxEnvelope {
     /// Returns the contained legacy transaction, if this is legacy.
-    pub const fn as_legacy(&self) -> Option<&Recovered<TxLegacy>> {
+    pub const fn as_legacy(&self) -> Option<&TxLegacy> {
         match self {
             Self::Legacy(tx) => Some(tx),
             Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip4844(_) | Self::Eip7702(_) => None,
@@ -78,7 +70,7 @@ impl RecoveredTxEnvelope {
     }
 
     /// Returns the contained EIP-2930 transaction, if this is EIP-2930.
-    pub const fn as_eip2930(&self) -> Option<&Recovered<TxEip2930>> {
+    pub const fn as_eip2930(&self) -> Option<&TxEip2930> {
         match self {
             Self::Eip2930(tx) => Some(tx),
             Self::Legacy(_) | Self::Eip1559(_) | Self::Eip4844(_) | Self::Eip7702(_) => None,
@@ -86,7 +78,7 @@ impl RecoveredTxEnvelope {
     }
 
     /// Returns the contained EIP-1559 transaction, if this is EIP-1559.
-    pub const fn as_eip1559(&self) -> Option<&Recovered<TxEip1559>> {
+    pub const fn as_eip1559(&self) -> Option<&TxEip1559> {
         match self {
             Self::Eip1559(tx) => Some(tx),
             Self::Legacy(_) | Self::Eip2930(_) | Self::Eip4844(_) | Self::Eip7702(_) => None,
@@ -94,7 +86,7 @@ impl RecoveredTxEnvelope {
     }
 
     /// Returns the contained EIP-4844 transaction, if this is EIP-4844.
-    pub const fn as_eip4844(&self) -> Option<&Recovered<TxEip4844Variant>> {
+    pub const fn as_eip4844(&self) -> Option<&TxEip4844Variant> {
         match self {
             Self::Eip4844(tx) => Some(tx),
             Self::Legacy(_) | Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip7702(_) => None,
@@ -102,173 +94,132 @@ impl RecoveredTxEnvelope {
     }
 
     /// Returns the contained EIP-7702 transaction, if this is EIP-7702.
-    pub const fn as_eip7702(&self) -> Option<&Recovered<LazyTxEip7702>> {
+    pub const fn as_eip7702(&self) -> Option<&LazyTxEip7702> {
         match self {
             Self::Eip7702(tx) => Some(tx),
             Self::Legacy(_) | Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip4844(_) => None,
         }
     }
+}
 
-    /// Returns the transaction signer.
-    pub const fn signer(&self) -> Address {
-        match self {
-            Self::Legacy(tx) => tx.signer(),
-            Self::Eip2930(tx) => tx.signer(),
-            Self::Eip1559(tx) => tx.signer(),
-            Self::Eip4844(tx) => tx.signer(),
-            Self::Eip7702(tx) => tx.signer(),
-        }
-    }
-
-    /// Returns the transaction gas limit.
-    pub fn gas_limit(&self) -> u64 {
-        match self {
-            Self::Legacy(tx) => tx.gas_limit(),
-            Self::Eip2930(tx) => tx.gas_limit(),
-            Self::Eip1559(tx) => tx.gas_limit(),
-            Self::Eip4844(tx) => tx.gas_limit(),
-            Self::Eip7702(tx) => tx.gas_limit,
-        }
-    }
-
-    /// Returns the transaction target kind.
-    pub fn kind(&self) -> TxKind {
-        match self {
-            Self::Legacy(tx) => tx.kind(),
-            Self::Eip2930(tx) => tx.kind(),
-            Self::Eip1559(tx) => tx.kind(),
-            Self::Eip4844(tx) => tx.kind(),
-            Self::Eip7702(tx) => tx.to.into(),
-        }
-    }
-
-    /// Returns the transaction input.
-    pub fn input(&self) -> &Bytes {
-        match self {
-            Self::Legacy(tx) => tx.input(),
-            Self::Eip2930(tx) => tx.input(),
-            Self::Eip1559(tx) => tx.input(),
-            Self::Eip4844(tx) => tx.input(),
-            Self::Eip7702(tx) => &tx.input,
-        }
-    }
-
-    /// Returns the transaction effective gas price for the block base fee.
-    pub fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
-        match self {
-            Self::Legacy(tx) => tx.effective_gas_price(base_fee),
-            Self::Eip2930(tx) => tx.effective_gas_price(base_fee),
-            Self::Eip1559(tx) => tx.effective_gas_price(base_fee),
-            Self::Eip4844(tx) => tx.effective_gas_price(base_fee),
-            Self::Eip7702(tx) => alloy_eips::eip1559::calc_effective_gas_price(
-                tx.max_fee_per_gas,
-                tx.max_priority_fee_per_gas,
-                base_fee,
-            ),
-        }
-    }
-
-    /// Returns the transaction value.
-    pub fn value(&self) -> U256 {
-        match self {
-            Self::Legacy(tx) => tx.value(),
-            Self::Eip2930(tx) => tx.value(),
-            Self::Eip1559(tx) => tx.value(),
-            Self::Eip4844(tx) => tx.value(),
-            Self::Eip7702(tx) => tx.value,
-        }
+impl From<TxEip7702> for TxEnvelope {
+    fn from(tx: TxEip7702) -> Self {
+        Self::Eip7702(tx.into())
     }
 }
 
-/// Transaction fields used by RPC execution and tracing.
-pub trait TransactionExt: Debug + Clone + Send + Sync + 'static {
-    /// Returns the transaction caller.
-    fn caller(&self) -> Address;
-
-    /// Returns the transaction gas limit.
-    fn gas_limit(&self) -> u64;
-
-    /// Returns the transaction value.
-    fn value(&self) -> U256;
-
-    /// Returns the transaction input.
-    fn input(&self) -> &Bytes;
-
-    /// Returns the transaction target kind.
-    fn kind(&self) -> TxKind;
-
-    /// Returns the transaction effective gas price for the block base fee.
-    fn effective_gas_price(&self, base_fee: Option<u64>) -> u128;
-}
-
-impl TransactionExt for RecoveredTxEnvelope {
-    fn caller(&self) -> Address {
-        self.signer()
-    }
-
-    fn gas_limit(&self) -> u64 {
-        Self::gas_limit(self)
-    }
-
-    fn value(&self) -> U256 {
-        Self::value(self)
-    }
-
-    fn input(&self) -> &Bytes {
-        Self::input(self)
-    }
-
-    fn kind(&self) -> TxKind {
-        Self::kind(self)
-    }
-
-    fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
-        Self::effective_gas_price(self, base_fee)
-    }
-}
-
-impl From<Recovered<TxEip7702>> for RecoveredTxEnvelope {
-    fn from(tx: Recovered<TxEip7702>) -> Self {
-        Self::Eip7702(tx.convert())
-    }
-}
-
-impl From<Recovered<LazyTxEip7702>> for RecoveredTxEnvelope {
-    fn from(tx: Recovered<LazyTxEip7702>) -> Self {
+impl From<LazyTxEip7702> for TxEnvelope {
+    fn from(tx: LazyTxEip7702) -> Self {
         Self::Eip7702(tx)
     }
 }
 
-impl Typed2718 for RecoveredTxEnvelope {
-    fn ty(&self) -> u8 {
-        match self {
-            Self::Legacy(tx) => tx.ty(),
-            Self::Eip2930(tx) => tx.ty(),
-            Self::Eip1559(tx) => tx.ty(),
-            Self::Eip4844(tx) => tx.ty(),
-            Self::Eip7702(tx) => tx.ty(),
+macro_rules! delegate {
+    ($self:expr, $method:ident $(, $arg:expr)*) => {
+        match $self {
+            Self::Legacy(tx) => tx.$method($($arg),*),
+            Self::Eip2930(tx) => tx.$method($($arg),*),
+            Self::Eip1559(tx) => tx.$method($($arg),*),
+            Self::Eip4844(tx) => tx.$method($($arg),*),
+            Self::Eip7702(tx) => tx.$method($($arg),*),
         }
+    };
+}
+
+impl Typed2718 for TxEnvelope {
+    fn ty(&self) -> u8 {
+        delegate!(self, ty)
+    }
+}
+
+impl Transaction for TxEnvelope {
+    fn chain_id(&self) -> Option<u64> {
+        delegate!(self, chain_id)
+    }
+
+    fn nonce(&self) -> u64 {
+        delegate!(self, nonce)
+    }
+
+    fn gas_limit(&self) -> u64 {
+        delegate!(self, gas_limit)
+    }
+
+    fn gas_price(&self) -> Option<u128> {
+        delegate!(self, gas_price)
+    }
+
+    fn max_fee_per_gas(&self) -> u128 {
+        delegate!(self, max_fee_per_gas)
+    }
+
+    fn max_priority_fee_per_gas(&self) -> Option<u128> {
+        delegate!(self, max_priority_fee_per_gas)
+    }
+
+    fn max_fee_per_blob_gas(&self) -> Option<u128> {
+        delegate!(self, max_fee_per_blob_gas)
+    }
+
+    fn priority_fee_or_price(&self) -> u128 {
+        delegate!(self, priority_fee_or_price)
+    }
+
+    fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
+        delegate!(self, effective_gas_price, base_fee)
+    }
+
+    fn is_dynamic_fee(&self) -> bool {
+        delegate!(self, is_dynamic_fee)
+    }
+
+    fn kind(&self) -> TxKind {
+        delegate!(self, kind)
+    }
+
+    fn is_create(&self) -> bool {
+        delegate!(self, is_create)
+    }
+
+    fn value(&self) -> U256 {
+        delegate!(self, value)
+    }
+
+    fn input(&self) -> &Bytes {
+        delegate!(self, input)
+    }
+
+    fn access_list(&self) -> Option<&AccessList> {
+        delegate!(self, access_list)
+    }
+
+    fn blob_versioned_hashes(&self) -> Option<&[B256]> {
+        delegate!(self, blob_versioned_hashes)
+    }
+
+    fn authorization_list(&self) -> Option<&[alloy_eips::eip7702::SignedAuthorization]> {
+        delegate!(self, authorization_list)
     }
 }
 
 /// Returns the Ethereum transaction registry for `spec_id`.
-pub fn ethereum_tx_registry<T: EvmTypes<Tx = RecoveredTxEnvelope>>(
+pub fn ethereum_tx_registry<T: EvmTypes<Tx = TxEnvelope>>(
     spec_id: SpecId,
 ) -> TxRegistry<T, TxResult<T>> {
     let mut registry =
-        TxRegistry::new().with_handler(0, RecoveredTxEnvelope::as_legacy, legacy::handle::<T>);
+        TxRegistry::new().with_handler(0, TxEnvelope::as_legacy, legacy::handle::<T>);
 
     if spec_id.enables(SpecId::BERLIN) {
-        registry.register(1, RecoveredTxEnvelope::as_eip2930, eip2930::handle::<T>);
+        registry.register(1, TxEnvelope::as_eip2930, eip2930::handle::<T>);
     }
     if spec_id.enables(SpecId::LONDON) {
-        registry.register(2, RecoveredTxEnvelope::as_eip1559, eip1559::handle::<T>);
+        registry.register(2, TxEnvelope::as_eip1559, eip1559::handle::<T>);
     }
     if spec_id.enables(SpecId::CANCUN) {
-        registry.register(3, RecoveredTxEnvelope::as_eip4844, eip4844::handle::<T>);
+        registry.register(3, TxEnvelope::as_eip4844, eip4844::handle::<T>);
     }
     if spec_id.enables(SpecId::PRAGUE) {
-        registry.register(4, RecoveredTxEnvelope::as_eip7702, eip7702::handle::<T>);
+        registry.register(4, TxEnvelope::as_eip7702, eip7702::handle::<T>);
     }
 
     registry
@@ -959,8 +910,8 @@ mod tests {
             &caller,
             AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
         );
-        let tx = RecoveredTxEnvelope::Eip2930(Recovered::new_unchecked(
-            TxEip2930 {
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Eip2930(TxEip2930 {
                 chain_id: 1,
                 nonce: 0,
                 gas_price: 1,
@@ -969,9 +920,9 @@ mod tests {
                 value: U256::ZERO,
                 input: Bytes::new(),
                 access_list: AccessList::default(),
-            },
+            }),
             caller,
-        ));
+        );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::BERLIN,
             BlockEnv::default(),

@@ -132,6 +132,7 @@ use crate::{
     version::{EvmFeatures, GasId},
 };
 use alloc::{boxed::Box, sync::Arc, vec};
+use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 #[cfg(feature = "async")]
@@ -957,7 +958,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// [`ExecutedTx::detach`] before
     /// another transaction can be executed. Dropping the handle is equivalent to
     /// [`ExecutedTx::discard`].
-    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
+    pub fn transact(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         self.clear_top_level_error_state();
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let result = handler.call(tx, self);
@@ -979,7 +980,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// This is the cheapest convenience entrypoint for `eth_call`-style simulations: execution
     /// output and logs are returned, but transaction writes are not accepted and no owned
     /// [`StateChanges`] is materialized.
-    pub fn call_tx(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
+    pub fn call_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         self.transact(tx).map(ExecutedTx::discard)
     }
 
@@ -997,7 +998,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     #[cfg(feature = "async")]
     pub fn transact_async<'fut>(
         &'fut mut self,
-        tx: &'fut T::Tx,
+        tx: &'fut Recovered<T::Tx>,
     ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'fut, 'a, T>, registry::HandlerError>> + 'fut
     where
         T::Tx: Sync,
@@ -1016,7 +1017,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     #[cfg(feature = "async")]
     pub fn transact_async_send<'fut>(
         &'fut mut self,
-        tx: &'fut T::Tx,
+        tx: &'fut Recovered<T::Tx>,
     ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'fut, 'a, T>, registry::HandlerError>>
     + Send
     + 'fut
@@ -1046,7 +1047,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
         txs: I,
     ) -> impl Iterator<Item = HandlerResult<TxResult<T>>> + 'txs
     where
-        I: IntoIterator<Item = &'txs T::Tx>,
+        I: IntoIterator<Item = &'txs Recovered<T::Tx>>,
         I::IntoIter: 'txs,
         T::Tx: 'txs,
         Self: 'txs,
@@ -1971,7 +1972,7 @@ mod tests {
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         env::TxEnv,
-        ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+        ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, MessageKind, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileMap},
         registry::{HandlerError, TxRequest},
@@ -1992,15 +1993,13 @@ mod tests {
     const INNER_TEST_PRECOMPILE: Address = Address::with_last_byte(0x43);
 
     fn test_tx(value: u64) -> RecoveredTxEnvelope {
-        RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy { nonce: value, ..TxLegacy::default() },
+        Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy { nonce: value, ..TxLegacy::default() }),
             Address::ZERO,
-        ))
+        )
     }
 
-    fn handle_test_tx(
-        req: TxRequest<'_, '_, BaseEvmTypes, Recovered<TxLegacy>>,
-    ) -> HandlerResult<TxResult> {
+    fn handle_test_tx(req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
         Ok(TxResult { status: true, total_gas_spent: req.tx.nonce + 1, ..TxResult::default() })
     }
@@ -2053,7 +2052,7 @@ mod tests {
     const LIFECYCLE_STORAGE_KEY: Word = Word::from_limbs([1, 0, 0, 0]);
 
     fn handle_lifecycle_tx(
-        req: TxRequest<'_, '_, BaseEvmTypes, Recovered<TxLegacy>>,
+        req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
     ) -> HandlerResult<TxResult> {
         let value = Word::from(req.tx.nonce);
         req.host
@@ -2112,7 +2111,7 @@ mod tests {
     fn lifecycle_evm() -> Evm<'static, BaseEvmTypes> {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            RecoveredTxEnvelope::as_legacy,
+            TxEnvelope::as_legacy,
             handle_lifecycle_tx,
         );
         let mut database = InMemoryDB::default();
@@ -2267,14 +2266,14 @@ mod tests {
         impl Error for TestPrecompileError {}
 
         let caller = Address::from([0xaa; 20]);
-        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy {
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
                 gas_limit: 50_000,
                 to: TxKind::Call(FATAL_PRECOMPILE_ADDRESS),
                 ..TxLegacy::default()
-            },
+            }),
             caller,
-        ));
+        );
         let mut precompiles = Precompiles::base(SpecId::OSAKA);
         precompiles.as_map_mut().insert(Precompile::new(
             FATAL_PRECOMPILE_ADDRESS,
@@ -2782,11 +2781,8 @@ mod tests {
 
     #[test]
     fn dispatches_transaction_by_typed_2718_type() {
-        let registry = TxRegistry::new().with_handler(
-            TEST_TX_TYPE,
-            RecoveredTxEnvelope::as_legacy,
-            handle_test_tx,
-        );
+        let registry =
+            TxRegistry::new().with_handler(TEST_TX_TYPE, TxEnvelope::as_legacy, handle_test_tx);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -2801,11 +2797,8 @@ mod tests {
 
     #[test]
     fn dispatches_transaction_without_evm_config() {
-        let registry = TxRegistry::new().with_handler(
-            TEST_TX_TYPE,
-            RecoveredTxEnvelope::as_legacy,
-            handle_test_tx,
-        );
+        let registry =
+            TxRegistry::new().with_handler(TEST_TX_TYPE, TxEnvelope::as_legacy, handle_test_tx);
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA),
             SpecId::OSAKA,
@@ -2835,7 +2828,7 @@ mod tests {
     #[test]
     fn dispatches_transaction_with_dynamic_version() {
         fn handle_test_tx_version(
-            req: TxRequest<'_, '_, BaseEvmTypes, Recovered<TxLegacy>>,
+            req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
         ) -> HandlerResult<TxResult> {
             Ok(TxResult {
                 status: true,
@@ -2846,7 +2839,7 @@ mod tests {
 
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            RecoveredTxEnvelope::as_legacy,
+            TxEnvelope::as_legacy,
             handle_test_tx_version,
         );
         let mut version = crate::Version::new(SpecId::OSAKA);
@@ -2866,11 +2859,8 @@ mod tests {
 
     #[test]
     fn dispatches_transaction_iter() {
-        let registry = TxRegistry::new().with_handler(
-            TEST_TX_TYPE,
-            RecoveredTxEnvelope::as_legacy,
-            handle_test_tx,
-        );
+        let registry =
+            TxRegistry::new().with_handler(TEST_TX_TYPE, TxEnvelope::as_legacy, handle_test_tx);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),

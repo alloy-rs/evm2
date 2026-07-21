@@ -14,12 +14,12 @@ use crate::{
     registry::{HandlerError, HandlerResult, TxRequest},
     utils::b256_to_word,
 };
-use alloy_consensus::transaction::{Recovered, TxEip4844Variant};
+use alloy_consensus::transaction::TxEip4844Variant;
 use alloy_eips::eip4844::{DATA_GAS_PER_BLOB, VERSIONED_HASH_VERSION_KZG};
 use alloy_primitives::U256;
 
 pub(super) fn handle<T: EvmTypes>(
-    req: TxRequest<'_, '_, T, Recovered<TxEip4844Variant>>,
+    req: TxRequest<'_, '_, T, TxEip4844Variant>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner().tx();

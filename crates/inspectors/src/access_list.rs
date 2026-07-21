@@ -58,7 +58,7 @@ impl AccessListInspector {
         let authorities = tx
             .as_eip7702()
             .into_iter()
-            .flat_map(|tx| &tx.inner().authorization_list)
+            .flat_map(|tx| &tx.authorization_list)
             .filter_map(|authorization| authorization.authority());
         self.with_excluded(authorities)
     }

@@ -6,7 +6,7 @@ use evm2::{
     SpecId, Version,
     bytecode::Bytecode,
     env::BlockEnv,
-    ethereum::RecoveredTxEnvelope,
+    ethereum::{RecoveredTxEnvelope, TxEnvelope},
     evm::{AccountInfo, InMemoryDB},
 };
 use evm2_eest::{StateTestPost, StateTestSuite, StateTestUnit};
@@ -144,10 +144,10 @@ impl Case<'_> {
                 .cloned()
                 .expect("fixture transaction data index must exist"),
         };
-        RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            tx,
+        Recovered::new_unchecked(
+            TxEnvelope::Legacy(tx),
             raw.sender.expect("benchmark transaction sender is required"),
-        ))
+        )
     }
 
     #[cfg(feature = "jit")]

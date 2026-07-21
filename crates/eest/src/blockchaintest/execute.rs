@@ -19,6 +19,7 @@ use crate::{
     state::{insert_account_with_storage, parse_bytecode},
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
 };
+use alloy_consensus::Transaction as _;
 use alloy_eip7928::BlockAccessList;
 use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};

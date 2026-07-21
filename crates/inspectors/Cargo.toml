@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 # eth
+alloy-consensus.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-rpc-types-trace.workspace = true
 alloy-sol-types.workspace = true
@@ -35,13 +36,13 @@ boa_gc = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-hardforks.workspace = true
-alloy-consensus = { workspace = true, features = ["std"] }
 snapbox = { workspace = true, features = ["term-svg"] }
 
 [features]
 default = ["std"]
 std = [
     "alloy-primitives/std",
+    "alloy-consensus/std",
     "alloy-rpc-types-eth/std",
     "alloy-sol-types/std",
     "anstyle/std",

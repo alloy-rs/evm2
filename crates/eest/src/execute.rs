@@ -631,11 +631,11 @@ mod tests {
 
         let tx = build_tx(&raw, &TxPartIndices { data: 0, gas: 0, value: 0 }, None).unwrap();
 
-        let RecoveredTxEnvelope::Legacy(tx) = tx else {
+        let evm2::ethereum::TxEnvelope::Legacy(inner) = tx.inner() else {
             panic!("expected legacy transaction");
         };
         assert_eq!(tx.signer(), caller);
-        assert_eq!(tx.inner().gas_price, 7);
+        assert_eq!(inner.gas_price, 7);
     }
 
     #[test]
@@ -659,11 +659,11 @@ mod tests {
 
         let tx = build_tx(&raw, &TxPartIndices { data: 0, gas: 0, value: 0 }, None).unwrap();
 
-        let RecoveredTxEnvelope::Eip2930(tx) = tx else {
+        let evm2::ethereum::TxEnvelope::Eip2930(inner) = tx.inner() else {
             panic!("expected EIP-2930 transaction");
         };
         assert_eq!(tx.signer(), caller);
-        assert_eq!(tx.inner().access_list[0].address, access_address);
+        assert_eq!(inner.access_list[0].address, access_address);
     }
 
     #[test]
@@ -694,10 +694,10 @@ mod tests {
 
         let tx = build_tx(&raw, &TxPartIndices { data: 1, gas: 0, value: 0 }, None).unwrap();
 
-        let RecoveredTxEnvelope::Eip2930(tx) = tx else {
+        let evm2::ethereum::TxEnvelope::Eip2930(inner) = tx.inner() else {
             panic!("expected EIP-2930 transaction");
         };
-        assert_eq!(tx.inner().access_list[0].address, second_address);
+        assert_eq!(inner.access_list[0].address, second_address);
     }
 
     #[cfg(feature = "jit")]
