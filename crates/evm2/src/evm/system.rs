@@ -106,8 +106,27 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
     pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
-        let SystemTx { caller, system_contract_address, data, .. } = tx;
         self.clear_top_level_error_state();
+        // System calls are not inspected.
+        let inspector = self.inspector.take();
+        let result = self.execute_system_call(tx);
+        self.inspector = inspector;
+        match result {
+            Ok(outcome) => Ok(self.finish_executed_tx(outcome)),
+            Err(error) => {
+                self.state.clear_transaction_state();
+                Err(error)
+            }
+        }
+    }
+
+    /// Executes a system call without finalizing transaction state.
+    ///
+    /// This is the handler-level counterpart to [`Self::system_call`]. It allows a transaction
+    /// registry handler to execute system-call semantics and return the outcome to the outer
+    /// transaction lifecycle for finalization.
+    pub fn execute_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
+        let SystemTx { caller, system_contract_address, data, .. } = tx;
         self.state.prewarm(&system_contract_address);
         let tx_env = TxEnv {
             origin: caller,
@@ -126,7 +145,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             0
         };
-        let (bytecode, mut message) = match initial_message(
+        let (bytecode, mut message) = initial_message(
             self,
             caller,
             0,
@@ -135,19 +154,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             U256::ZERO,
             SYSTEM_CALL_GAS_LIMIT,
             reservoir,
-        ) {
-            Ok(result) => result,
-            Err(error) => {
-                self.state.clear_transaction_state();
-                return Err(error);
-            }
-        };
-        // System calls are not inspected.
-        let inspector = self.inspector.take();
+        )?;
         let result = Host::execute_message(self, &tx_env, bytecode, &mut message);
-        self.inspector = inspector;
         if let Some(code) = self.error_code {
-            self.state.clear_transaction_state();
             return Err(HandlerError::Fatal(code));
         }
         let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());
@@ -156,7 +165,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             0
         };
-        let outcome = TxResult {
+        Ok(TxResult {
             status: result.stop.is_success(),
             total_gas_spent: gas_spent,
             state_gas_spent: result.gas.state_gas_spent().max(0) as u64,
@@ -165,9 +174,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             stop: result.stop,
             output: result.output,
             ..TxResult::default()
-        };
-
-        Ok(self.finish_executed_tx(outcome))
+        })
     }
 
     /// Executes a system call on an async fiber.
