@@ -242,6 +242,8 @@ pub struct Evm<'a, T: EvmTypesHost> {
     #[derive_where(skip)]
     pub(crate) state: State<'a>,
     #[derive_where(skip)]
+    ext: T::EvmExt,
+    #[derive_where(skip)]
     precompiles: Box<dyn PrecompileProvider<T> + 'a>,
     #[derive_where(skip)]
     interpreter_pool: InterpreterPool<T>,
@@ -275,14 +277,31 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         registry: TxRegistry<T, TxResult<T>>,
         database: impl DynDatabase + 'a,
         precompiles: impl PrecompileProvider<T> + 'a,
+    ) -> Self
+    where
+        T::EvmExt: Default,
+    {
+        Self::new_with_ext(spec_id, block, registry, database, precompiles, T::EvmExt::default())
+    }
+
+    /// Creates an EVM with explicit instance-specific extension state.
+    #[inline]
+    pub fn new_with_ext(
+        spec_id: T::SpecId,
+        block: BlockEnv<T>,
+        registry: TxRegistry<T, TxResult<T>>,
+        database: impl DynDatabase + 'a,
+        precompiles: impl PrecompileProvider<T> + 'a,
+        ext: T::EvmExt,
     ) -> Self {
-        Self::new_with_execution_config(
+        Self::new_with_execution_config_and_ext(
             <T::ConfigSelector as EvmConfigSelector<T>>::execution_config(spec_id),
             spec_id,
             block,
             registry,
             database,
             precompiles,
+            ext,
         )
     }
 
@@ -295,6 +314,31 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         registry: TxRegistry<T, TxResult<T>>,
         database: impl DynDatabase + 'a,
         precompiles: impl PrecompileProvider<T> + 'a,
+    ) -> Self
+    where
+        T::EvmExt: Default,
+    {
+        Self::new_with_execution_config_and_ext(
+            execution_config,
+            spec_id,
+            block,
+            registry,
+            database,
+            precompiles,
+            T::EvmExt::default(),
+        )
+    }
+
+    /// Creates an EVM with an execution config and explicit instance-specific extension state.
+    #[inline]
+    pub fn new_with_execution_config_and_ext(
+        execution_config: ExecutionConfig<T>,
+        spec_id: T::SpecId,
+        block: BlockEnv<T>,
+        registry: TxRegistry<T, TxResult<T>>,
+        database: impl DynDatabase + 'a,
+        precompiles: impl PrecompileProvider<T> + 'a,
+        ext: T::EvmExt,
     ) -> Self {
         Self::new_mono(
             execution_config,
@@ -303,6 +347,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             registry,
             boxed_dyn_database(database),
             boxed_precompile_provider(precompiles),
+            ext,
         )
     }
 
@@ -314,6 +359,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         registry: TxRegistry<T, TxResult<T>>,
         database: Box<dyn DynDatabase + 'a>,
         precompiles: Box<dyn PrecompileProvider<T> + 'a>,
+        ext: T::EvmExt,
     ) -> Self {
         assert_eq!(
             spec_id.into(),
@@ -327,6 +373,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             block,
             registry,
             state: State::new_mono(database),
+            ext,
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
@@ -401,6 +448,18 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub const fn registry(&self) -> &TxRegistry<T, TxResult<T>> {
         &self.registry
+    }
+
+    /// Returns the EVM instance-specific extension state.
+    #[inline]
+    pub const fn ext(&self) -> &T::EvmExt {
+        &self.ext
+    }
+
+    /// Returns the EVM instance-specific extension state mutably.
+    #[inline]
+    pub const fn ext_mut(&mut self) -> &mut T::EvmExt {
+        &mut self.ext
     }
 
     /// Returns the active block environment.
@@ -941,6 +1000,7 @@ where
     T: EvmTypesHost,
     T::SpecId: Send,
     T::Tx: Send,
+    T::EvmExt: Send,
     T::MessageExt: Send,
     T::MessageResultExt: Send,
     T::TxEnvExt: Send,
@@ -1991,6 +2051,37 @@ mod tests {
     const TEST_TX_TYPE: u8 = 0x00;
     const TEST_PRECOMPILE: Address = Address::with_last_byte(0x42);
     const INNER_TEST_PRECOMPILE: Address = Address::with_last_byte(0x43);
+
+    struct ExtensionTestTypes;
+
+    impl EvmTypesHost for ExtensionTestTypes {
+        type ConfigSelector = BaseEvmConfigSelector;
+        type SpecId = SpecId;
+        type Tx = ();
+        type EvmExt = u64;
+        type MessageExt = ();
+        type MessageResultExt = ();
+        type TxEnvExt = ();
+        type TxResultExt = ();
+        type BlockEnvExt = ();
+        type Host<'a> = Evm<'a, Self>;
+    }
+
+    #[test]
+    fn stores_typed_evm_extension_state() {
+        let mut evm = Evm::<ExtensionTestTypes>::new_with_ext(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompile::NoPrecompiles::default(),
+            41,
+        );
+
+        assert_eq!(*evm.ext(), 41);
+        *evm.ext_mut() += 1;
+        assert_eq!(*evm.ext(), 42);
+    }
 
     fn test_tx(value: u64) -> RecoveredTxEnvelope {
         Recovered::new_unchecked(

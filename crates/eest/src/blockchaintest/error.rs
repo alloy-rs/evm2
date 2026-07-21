@@ -72,6 +72,14 @@ pub(crate) enum TestErrorKind {
         /// Gas used computed from executing the block's transactions.
         actual: u64,
     },
+    /// Recomputed post-block state root does not match the block header.
+    #[error("state root mismatch: got {got}, expected {expected}")]
+    StateRootMismatch {
+        /// State root recomputed from the post-block database.
+        got: alloy_primitives::B256,
+        /// State root declared in the block header.
+        expected: alloy_primitives::B256,
+    },
     /// Execution resource initialization failed.
     #[error(transparent)]
     ExecutionResource(#[from] ExecutionResourceError),

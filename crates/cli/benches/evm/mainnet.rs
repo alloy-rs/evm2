@@ -1,7 +1,7 @@
 use criterion::{BenchmarkGroup, black_box, measurement::WallTime};
 use evm2_cli::evm_bench::BenchCase;
 use evm2_eest::{
-    BlockchainTestExecuteConfig, BlockchainTestNoopHook, EntryPoint,
+    BlockchainTestExecuteConfig, BlockchainTestNoopHook, NameFilter,
     blockchaintest::BlockchainTest, execute_blockchain_tests_suite,
 };
 use std::{
@@ -15,7 +15,7 @@ pub(crate) struct PreparedBench {
     name: Cow<'static, str>,
     path: PathBuf,
     suite: Arc<BlockchainTest>,
-    entrypoint: EntryPoint,
+    test_filter: NameFilter,
 }
 
 impl PreparedBench {
@@ -27,7 +27,7 @@ impl PreparedBench {
             name: bench.name.clone(),
             path,
             suite: Arc::new(suite),
-            entrypoint: EntryPoint::default(),
+            test_filter: NameFilter::default(),
         }
     }
 
@@ -37,7 +37,7 @@ impl PreparedBench {
             &self.path,
             &self.suite,
             BlockchainTestExecuteConfig::default(),
-            &self.entrypoint,
+            &self.test_filter,
             &mut hook,
         )
         .unwrap_or_else(|err| panic!("{} fixture sanity check failed: {err}", self.name));
@@ -57,7 +57,7 @@ impl PreparedBench {
                             validate_post_state: false,
                             ..Default::default()
                         },
-                        &self.entrypoint,
+                        &self.test_filter,
                         &mut hook,
                     )
                     .unwrap_or_else(|err| panic!("{} fixture replay failed: {err}", self.name)),

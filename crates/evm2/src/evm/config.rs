@@ -31,6 +31,9 @@ pub trait EvmTypesHost: Sized + 'static {
     /// Transaction type handled by this EVM.
     type Tx;
 
+    /// EVM instance-specific extension state.
+    type EvmExt;
+
     /// Extra data stored in frame messages.
     type MessageExt: Clone + Debug + Default;
 
@@ -216,6 +219,7 @@ impl EvmTypesHost for BaseEvmTypes {
     type ConfigSelector = BaseEvmConfigSelector;
     type SpecId = SpecId;
     type Tx = TxEnvelope;
+    type EvmExt = ();
     type MessageExt = ();
     type MessageResultExt = ();
     type TxEnvExt = ();

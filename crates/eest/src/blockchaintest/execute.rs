@@ -12,11 +12,14 @@ use super::{
 #[cfg(feature = "jit")]
 use crate::compiled::{self, FileSummary};
 use crate::{
+    dump,
+    execute::state_root_from_database,
     execution::ExecutionResources,
-    filter::EntryPoint,
+    filter::NameFilter,
     fixture_io,
     forks::is_fork_skipped,
     state::{insert_account_with_storage, parse_bytecode},
+    trace::{self, Eip3155Tracer},
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
 };
 use alloy_consensus::Transaction as _;
@@ -50,6 +53,20 @@ const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
 pub struct ExecuteConfig {
     /// Whether to validate final post-state when fixtures contain it.
     pub validate_post_state: bool,
+    /// Whether to recompute each committed block's state root and compare it to
+    /// the block header's `stateRoot`.
+    pub compare_state_root: bool,
+    /// Whether to stream EIP-3155 struct logs to stdout during execution.
+    ///
+    /// Only observable under [`ExecutionMode::Interpreter`]; the JIT/AOT runners
+    /// bypass instruction-level dispatch.
+    pub trace: bool,
+    /// Whether to print a JSON outcome record per executed case (pass/fail,
+    /// fork, and final state root).
+    pub print_json_outcome: bool,
+    /// Whether to dump the final post-execution state (accounts and storage) to
+    /// stdout after the last block.
+    pub dump_state: bool,
     /// Execution backend.
     pub mode: ExecutionMode,
     /// Whether to print database method call counts.
@@ -58,7 +75,15 @@ pub struct ExecuteConfig {
 
 impl Default for ExecuteConfig {
     fn default() -> Self {
-        Self { validate_post_state: true, mode: ExecutionMode::Interpreter, db_stats: false }
+        Self {
+            validate_post_state: true,
+            compare_state_root: false,
+            trace: false,
+            print_json_outcome: false,
+            dump_state: false,
+            mode: ExecutionMode::Interpreter,
+            db_stats: false,
+        }
     }
 }
 
@@ -78,9 +103,9 @@ pub(crate) fn execute_test_suite(
 ) -> Result<ExecuteSummary, TestError> {
     let suite =
         fixture_io::read_blockchain(path).map_err(|err| TestError::unknown(path, err.into()))?;
-    let entrypoint = EntryPoint::default();
+    let test_filter = NameFilter::default();
     let mut hook = NoopHook;
-    execute_suite(path, &suite, config, &entrypoint, &mut hook)
+    execute_suite(path, &suite, config, &test_filter, &mut hook)
 }
 
 /// Executes multiple blockchain test JSON files using one shared execution resource set.
@@ -95,13 +120,13 @@ pub(crate) fn execute_test_suites(
     let summary = compiled::run_files(paths.to_vec(), resources, move |path, resources| {
         let suite = fixture_io::read_blockchain(&path)
             .map_err(|err| TestError::unknown(path.as_path(), err.into()))?;
-        let entrypoint = EntryPoint::default();
+        let test_filter = NameFilter::default();
         let mut hook = NoopHook;
         let file_summary = execute_suite_with_resources(
             &path,
             &suite,
             config,
-            &entrypoint,
+            &test_filter,
             &mut hook,
             &resources,
         )?;
@@ -120,12 +145,12 @@ pub fn execute_str(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
     hook: &mut dyn Hook,
 ) -> Result<ExecuteSummary, TestError> {
     let suite: BlockchainTest =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
-    execute_suite(path, &suite, config, entrypoint, hook)
+    execute_suite(path, &suite, config, test_filter, hook)
 }
 
 /// Executes a parsed blockchain test suite.
@@ -133,35 +158,63 @@ pub fn execute_suite(
     path: &Path,
     suite: &BlockchainTest,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
     hook: &mut dyn Hook,
 ) -> Result<ExecuteSummary, TestError> {
     let resources =
         ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
-    execute_suite_with_resources(path, suite, config, entrypoint, hook, &resources)
+    execute_suite_with_resources(path, suite, config, test_filter, hook, &resources)
 }
 
 fn execute_suite_with_resources(
     path: &Path,
     suite: &BlockchainTest,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
 ) -> Result<ExecuteSummary, TestError> {
     let mut summary = ExecuteSummary::default();
     for (name, test_case) in &suite.0 {
-        if !entrypoint.matches(name)
+        if !test_filter.matches(name)
             || test_case.network.is_transition()
             || is_blockchain_fork_skipped(fork_to_spec_id(test_case.network))
         {
             summary.skipped += 1;
             continue;
         }
-        execute_case(path, name, test_case, config, hook, resources)?;
+        let outcome = execute_case(path, name, test_case, config, hook, resources);
+        if config.print_json_outcome {
+            print_json_outcome(name, test_case.network, &outcome);
+        }
+        outcome?;
         summary.executed += 1;
     }
     Ok(summary)
+}
+
+/// Emits one JSON outcome record for a finished case (pass/fail, fork, root).
+fn print_json_outcome(name: &str, network: ForkSpec, outcome: &Result<Option<B256>, TestError>) {
+    println!("{}", json_outcome_value(name, network, outcome));
+}
+
+/// Builds the per-case JSON outcome record.
+fn json_outcome_value(
+    name: &str,
+    network: ForkSpec,
+    outcome: &Result<Option<B256>, TestError>,
+) -> serde_json::Value {
+    let (pass, state_root, error) = match outcome {
+        Ok(state_root) => (true, state_root.unwrap_or(B256::ZERO), String::new()),
+        Err(err) => (false, B256::ZERO, err.to_string()),
+    };
+    serde_json::json!({
+        "test": name,
+        "fork": network,
+        "pass": pass,
+        "stateRoot": state_root,
+        "errorMsg": error,
+    })
 }
 
 fn execute_case(
@@ -171,7 +224,7 @@ fn execute_case(
     config: ExecuteConfig,
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
-) -> Result<(), TestError> {
+) -> Result<Option<B256>, TestError> {
     let mut database =
         parse_state(&test_case.pre.0).map_err(|err| TestError::case(path, name, err))?;
     seed_block_hashes(&mut database, test_case);
@@ -213,6 +266,8 @@ fn execute_case(
             &mut parent_excess_blob_gas,
             hook,
             resources,
+            config.trace,
+            config.compare_state_root,
             if config.db_stats { Some(&mut db_stats_counts) } else { None },
         ) {
             Ok(()) => hook.block_finished(BlockFinished {
@@ -239,10 +294,16 @@ fn execute_case(
     {
         validate_post_state(&database, expected).map_err(|err| TestError::case(path, name, err))?;
     }
+    // Recompute the final state root only when a consumer needs it.
+    let state_root = (config.print_json_outcome || config.dump_state)
+        .then(|| state_root_from_database(&database));
+    if config.dump_state {
+        dump::dump_state(&mut std::io::stdout(), &database, state_root.unwrap_or_default());
+    }
     if config.db_stats {
         print_db_stats(db_stats_counts);
     }
-    Ok(())
+    Ok(state_root)
 }
 
 fn seed_block_hashes(database: &mut InMemoryDB, test_case: &BlockchainTestCase) {
@@ -277,6 +338,8 @@ fn execute_block(
     parent_excess_blob_gas: &mut u64,
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
+    trace: bool,
+    compare_state_root: bool,
     db_stats_counts: Option<&mut DbStatsCounts>,
 ) -> Result<(), TestError> {
     let db_stats = db_stats_counts.is_some();
@@ -284,6 +347,7 @@ fn execute_block(
     let mut block_hash = None;
     let mut beacon_root = None;
     let mut this_excess_blob_gas = None;
+    let mut expected_state_root = None;
 
     let mut next_block_env = *block_env;
     if let Some(header) = block_header(block) {
@@ -291,6 +355,7 @@ fn execute_block(
         beacon_root = header.parent_beacon_block_root;
         next_block_env = block_env_from_header(header, *parent_excess_blob_gas, spec);
         this_excess_blob_gas = header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>());
+        expected_state_root = Some(header.state_root);
     }
 
     let initial_database = mem::take(database);
@@ -312,6 +377,9 @@ fn execute_block(
         )
     };
     resources.configure_evm(&mut evm);
+    if trace {
+        evm.set_inspector(Eip3155Tracer::to_stdout());
+    }
     let mut block_state = BlockStateAccumulator::new();
 
     // When the fixture declares an EIP-7928 block access list, build one alongside execution and
@@ -535,6 +603,24 @@ fn execute_block(
             *parent_block_hash = block_hash;
             if let Some(excess_blob_gas) = this_excess_blob_gas {
                 *parent_excess_blob_gas = excess_blob_gas;
+            }
+            if trace || compare_state_root {
+                let got = state_root_from_database(database);
+                if trace {
+                    let gas_used =
+                        block_gas_used(block).map(|gas| gas.saturating_to::<u64>()).unwrap_or(0);
+                    trace::write_summary(&mut std::io::stdout(), &Bytes::new(), gas_used, got);
+                }
+                if compare_state_root
+                    && let Some(expected) = expected_state_root
+                    && got != expected
+                {
+                    return Err(TestError::case(
+                        path,
+                        name,
+                        TestErrorKind::StateRootMismatch { got, expected },
+                    ));
+                }
             }
             Ok(())
         }
@@ -1256,7 +1342,7 @@ mod tests {
             Path::new("simple-storage.json"),
             &input,
             ExecuteConfig { validate_post_state: true, mode, ..ExecuteConfig::default() },
-            &EntryPoint::default(),
+            &NameFilter::default(),
             &mut hook,
         )
         .unwrap()
@@ -1274,5 +1360,34 @@ mod tests {
         assert_eq!(jit.skipped, interpreter.skipped);
         assert_eq!(aot.executed, interpreter.executed);
         assert_eq!(aot.skipped, interpreter.skipped);
+    }
+
+    #[test]
+    fn json_outcome_reports_pass_and_failure() {
+        use super::{
+            super::{
+                error::{TestError, TestErrorKind},
+                types::ForkSpec,
+            },
+            json_outcome_value,
+        };
+        use alloy_primitives::B256;
+
+        let root = B256::with_last_byte(7);
+        let pass = json_outcome_value("case-a", ForkSpec::Byzantium, &Ok(Some(root)));
+        assert_eq!(pass["pass"], true);
+        assert_eq!(pass["fork"], "Byzantium");
+        assert_eq!(pass["stateRoot"], serde_json::to_value(root).unwrap());
+        assert_eq!(pass["errorMsg"], "");
+
+        let failure: Result<Option<B256>, TestError> = Err(TestError::case(
+            std::path::Path::new("f.json"),
+            "case-b",
+            TestErrorKind::UnexpectedFailure("boom".to_string()),
+        ));
+        let fail = json_outcome_value("case-b", ForkSpec::Byzantium, &failure);
+        assert_eq!(fail["pass"], false);
+        assert_eq!(fail["stateRoot"], serde_json::to_value(B256::ZERO).unwrap());
+        assert!(fail["errorMsg"].as_str().unwrap().contains("boom"));
     }
 }
