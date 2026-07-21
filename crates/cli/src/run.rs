@@ -5,7 +5,7 @@ use evm2::{
     BaseEvmTypes, Evm, ExecutionConfig, InterpreterRunner, Precompiles, SpecId, Version,
     bytecode::Bytecode,
     env::BlockEnv,
-    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+    ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo, InMemoryDB},
     interpreter::{InstrStop, Interpreter},
 };
@@ -715,7 +715,7 @@ fn parse_bytecode_bench(bench: &Bench, bytecode: &[u8]) -> eyre::Result<Prepared
         vec![ParsedAccount { bytecode, code_hash }],
         BlockEnv::default(),
         db,
-        RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(tx, BENCH_CALLER)),
+        Recovered::new_unchecked(TxEnvelope::Legacy(tx), BENCH_CALLER),
     ))
 }
 
@@ -798,7 +798,7 @@ fn build_fixture_tx(
         value,
         input: data,
     };
-    Ok(RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(tx, caller)))
+    Ok(Recovered::new_unchecked(TxEnvelope::Legacy(tx), caller))
 }
 
 impl Bench {

@@ -5,7 +5,7 @@ use alloy_rpc_types_eth::{
     AccessList as RpcAccessList, AccessListItem as RpcAccessListItem, TransactionInput,
     TransactionRequest,
 };
-use evm2::ethereum::RecoveredTxEnvelope;
+use evm2::ethereum::{RecoveredTxEnvelope, TxEnvelope};
 use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -199,21 +199,11 @@ pub(crate) fn recover_address(private_key: &[u8]) -> Option<Address> {
 
 fn recovered_envelope(tx: TypedTransaction, caller: Address) -> RecoveredTxEnvelope {
     match tx {
-        TypedTransaction::Legacy(tx) => {
-            RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(tx, caller))
-        }
-        TypedTransaction::Eip2930(tx) => {
-            RecoveredTxEnvelope::Eip2930(Recovered::new_unchecked(tx, caller))
-        }
-        TypedTransaction::Eip1559(tx) => {
-            RecoveredTxEnvelope::Eip1559(Recovered::new_unchecked(tx, caller))
-        }
-        TypedTransaction::Eip4844(tx) => {
-            RecoveredTxEnvelope::Eip4844(Recovered::new_unchecked(tx, caller))
-        }
-        TypedTransaction::Eip7702(tx) => {
-            RecoveredTxEnvelope::from(Recovered::new_unchecked(tx, caller))
-        }
+        TypedTransaction::Legacy(tx) => Recovered::new_unchecked(TxEnvelope::Legacy(tx), caller),
+        TypedTransaction::Eip2930(tx) => Recovered::new_unchecked(TxEnvelope::Eip2930(tx), caller),
+        TypedTransaction::Eip1559(tx) => Recovered::new_unchecked(TxEnvelope::Eip1559(tx), caller),
+        TypedTransaction::Eip4844(tx) => Recovered::new_unchecked(TxEnvelope::Eip4844(tx), caller),
+        TypedTransaction::Eip7702(tx) => Recovered::new_unchecked(tx.into(), caller),
     }
 }
 

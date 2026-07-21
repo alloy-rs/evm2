@@ -12,7 +12,12 @@ use alloy_eips::{
     eip7702::{Authorization, SignedAuthorization},
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
-use evm2::{SpecId, env::BlockEnv, ethereum::RecoveredTxEnvelope, interpreter::op};
+use evm2::{
+    SpecId,
+    env::BlockEnv,
+    ethereum::{RecoveredTxEnvelope, TxEnvelope},
+    interpreter::op,
+};
 use revm::{
     context::{BlockEnv as RevmBlockEnv, TxEnv as RevmTxEnv},
     primitives::TxKind as RevmTxKind,
@@ -570,8 +575,8 @@ impl CaseTx {
 
     pub(crate) fn evm2(&self) -> RecoveredTxEnvelope {
         match self.kind {
-            TxKindCase::Legacy => RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-                TxLegacy {
+            TxKindCase::Legacy => Recovered::new_unchecked(
+                TxEnvelope::Legacy(TxLegacy {
                     nonce: self.nonce,
                     gas_price: self.gas_price,
                     gas_limit: self.gas_limit,
@@ -579,11 +584,11 @@ impl CaseTx {
                     value: self.value,
                     input: self.input.clone(),
                     chain_id: None,
-                },
+                }),
                 self.caller,
-            )),
-            TxKindCase::Eip2930 => RecoveredTxEnvelope::Eip2930(Recovered::new_unchecked(
-                TxEip2930 {
+            ),
+            TxKindCase::Eip2930 => Recovered::new_unchecked(
+                TxEnvelope::Eip2930(TxEip2930 {
                     chain_id: 1,
                     nonce: self.nonce,
                     gas_price: self.gas_price,
@@ -592,11 +597,11 @@ impl CaseTx {
                     value: self.value,
                     access_list: self.access_list.clone(),
                     input: self.input.clone(),
-                },
+                }),
                 self.caller,
-            )),
-            TxKindCase::Eip1559 => RecoveredTxEnvelope::Eip1559(Recovered::new_unchecked(
-                TxEip1559 {
+            ),
+            TxKindCase::Eip1559 => Recovered::new_unchecked(
+                TxEnvelope::Eip1559(TxEip1559 {
                     chain_id: 1,
                     nonce: self.nonce,
                     gas_limit: self.gas_limit,
@@ -606,11 +611,11 @@ impl CaseTx {
                     value: self.value,
                     access_list: self.access_list.clone(),
                     input: self.input.clone(),
-                },
+                }),
                 self.caller,
-            )),
-            TxKindCase::Eip4844 => RecoveredTxEnvelope::Eip4844(Recovered::new_unchecked(
-                TxEip4844Variant::TxEip4844(TxEip4844 {
+            ),
+            TxKindCase::Eip4844 => Recovered::new_unchecked(
+                TxEnvelope::Eip4844(TxEip4844Variant::TxEip4844(TxEip4844 {
                     chain_id: 1,
                     nonce: self.nonce,
                     gas_limit: self.gas_limit,
@@ -622,24 +627,27 @@ impl CaseTx {
                     blob_versioned_hashes: self.blob_hashes.clone(),
                     max_fee_per_blob_gas: 1,
                     input: self.input.clone(),
-                }),
+                })),
                 self.caller,
-            )),
-            TxKindCase::Eip7702 => RecoveredTxEnvelope::from(Recovered::new_unchecked(
-                TxEip7702 {
-                    chain_id: 1,
-                    nonce: self.nonce,
-                    gas_limit: self.gas_limit,
-                    max_fee_per_gas: self.gas_price,
-                    max_priority_fee_per_gas: 0,
-                    to: self.target,
-                    value: self.value,
-                    access_list: self.access_list.clone(),
-                    authorization_list: self.eip7702_authorization_list(),
-                    input: self.input.clone(),
-                },
+            ),
+            TxKindCase::Eip7702 => Recovered::new_unchecked(
+                TxEnvelope::Eip7702(
+                    TxEip7702 {
+                        chain_id: 1,
+                        nonce: self.nonce,
+                        gas_limit: self.gas_limit,
+                        max_fee_per_gas: self.gas_price,
+                        max_priority_fee_per_gas: 0,
+                        to: self.target,
+                        value: self.value,
+                        access_list: self.access_list.clone(),
+                        authorization_list: self.eip7702_authorization_list(),
+                        input: self.input.clone(),
+                    }
+                    .into(),
+                ),
                 self.caller,
-            )),
+            ),
         }
     }
 

@@ -148,7 +148,7 @@ mod tests {
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnv, TxEnv},
-        ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+        ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
         interpreter::{GasTracker, Host, InstrStop, Interpreter, Message, MessageResult, Word, op},
         registry::TxRegistry,
@@ -981,10 +981,14 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(SharedE2eInspector::default());
-        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy { to: TxKind::Call(contract), gas_limit: 100_000, ..Default::default() },
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(contract),
+                gas_limit: 100_000,
+                ..Default::default()
+            }),
             caller,
-        ));
+        );
 
         let result = evm.transact(&tx).expect("transaction should execute").discard();
         let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
@@ -1017,15 +1021,15 @@ mod tests {
             Precompiles::base(SpecId::AMSTERDAM),
         );
         evm.set_inspector(SharedE2eInspector::default());
-        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy {
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
                 to: TxKind::Call(target),
                 value: U256::from(7),
                 gas_limit: 300_000,
                 ..Default::default()
-            },
+            }),
             caller,
-        ));
+        );
 
         let result = evm.transact(&tx).expect("transaction should execute").detach();
         let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
@@ -1053,15 +1057,15 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(SharedE2eInspector::default());
-        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy {
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
                 to: TxKind::Create,
                 input: Bytes::from_static(&[op::STOP]),
                 gas_limit: 100_000,
                 ..Default::default()
-            },
+            }),
             caller,
-        ));
+        );
 
         let result = evm.transact(&tx).expect("transaction should execute").discard();
         let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();

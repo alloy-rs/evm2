@@ -1,11 +1,11 @@
 use alloc::vec::Vec;
-use alloy_consensus::{TxEip7702, TxType};
+use alloy_consensus::{Transaction, TxEip7702, TxType};
 use alloy_eips::{
     Typed2718,
     eip2930::AccessList,
     eip7702::{Authorization, RecoveredAuthorization, SignedAuthorization},
 };
-use alloy_primitives::{Address, Bytes, ChainId, U256};
+use alloy_primitives::{Address, B256, Bytes, ChainId, TxKind, U256};
 
 /// EIP-7702 authorization that may already have its authority recovered.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -104,6 +104,7 @@ pub struct LazyTxEip7702 {
     pub access_list: AccessList,
     /// EIP-7702 authorizations, either signed or with cached recovery results.
     pub authorization_list: Vec<LazyAuthorization>,
+    signed_authorization_list: Vec<SignedAuthorization>,
     /// Transaction input calldata.
     pub input: Bytes,
 }
@@ -111,7 +112,8 @@ pub struct LazyTxEip7702 {
 impl LazyTxEip7702 {
     /// Converts a consensus transaction while keeping signed authorizations unresolved.
     pub fn from_signed_authorizations(tx: TxEip7702) -> Self {
-        tx.map_authorizations(Into::into)
+        let authorization_list = tx.authorization_list.iter().cloned().map(Into::into).collect();
+        Self::from_authorizations(tx, authorization_list)
     }
 
     /// Converts a consensus transaction and eagerly recovers all authorization authorities.
@@ -119,7 +121,13 @@ impl LazyTxEip7702 {
     /// Invalid authorization signatures are cached as invalid recovered authorizations so execution
     /// skips them in the same way as a failed on-demand recovery.
     pub fn from_recovered_authorizations(tx: TxEip7702) -> Self {
-        tx.map_authorizations(|authorization| authorization.into_recovered().into())
+        let authorization_list = tx
+            .authorization_list
+            .iter()
+            .cloned()
+            .map(|authorization| authorization.into_recovered().into())
+            .collect();
+        Self::from_authorizations(tx, authorization_list)
     }
 
     /// Converts a consensus transaction using an externally supplied authorization list.
@@ -135,7 +143,7 @@ impl LazyTxEip7702 {
             to,
             value,
             access_list,
-            authorization_list: _,
+            authorization_list: signed_authorization_list,
             input,
         } = tx;
         Self {
@@ -148,6 +156,7 @@ impl LazyTxEip7702 {
             value,
             access_list,
             authorization_list,
+            signed_authorization_list,
             input,
         }
     }
@@ -169,45 +178,7 @@ impl LazyTxEip7702 {
             + self.access_list.size()
             + self.input.len()
             + self.authorization_list.capacity() * size_of::<LazyAuthorization>()
-    }
-}
-
-trait MapAuthorizationList {
-    fn map_authorizations(
-        self,
-        f: impl FnMut(SignedAuthorization) -> LazyAuthorization,
-    ) -> LazyTxEip7702;
-}
-
-impl MapAuthorizationList for TxEip7702 {
-    fn map_authorizations(
-        self,
-        f: impl FnMut(SignedAuthorization) -> LazyAuthorization,
-    ) -> LazyTxEip7702 {
-        let Self {
-            chain_id,
-            nonce,
-            gas_limit,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
-            to,
-            value,
-            access_list,
-            authorization_list,
-            input,
-        } = self;
-        LazyTxEip7702 {
-            chain_id,
-            nonce,
-            gas_limit,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
-            to,
-            value,
-            access_list,
-            authorization_list: authorization_list.into_iter().map(f).collect(),
-            input,
-        }
+            + self.signed_authorization_list.capacity() * size_of::<SignedAuthorization>()
     }
 }
 
@@ -220,5 +191,79 @@ impl From<TxEip7702> for LazyTxEip7702 {
 impl Typed2718 for LazyTxEip7702 {
     fn ty(&self) -> u8 {
         TxType::Eip7702 as u8
+    }
+}
+
+impl Transaction for LazyTxEip7702 {
+    fn chain_id(&self) -> Option<ChainId> {
+        Some(self.chain_id)
+    }
+
+    fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    fn gas_limit(&self) -> u64 {
+        self.gas_limit
+    }
+
+    fn gas_price(&self) -> Option<u128> {
+        None
+    }
+
+    fn max_fee_per_gas(&self) -> u128 {
+        self.max_fee_per_gas
+    }
+
+    fn max_priority_fee_per_gas(&self) -> Option<u128> {
+        Some(self.max_priority_fee_per_gas)
+    }
+
+    fn max_fee_per_blob_gas(&self) -> Option<u128> {
+        None
+    }
+
+    fn priority_fee_or_price(&self) -> u128 {
+        self.max_priority_fee_per_gas
+    }
+
+    fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
+        alloy_eips::eip1559::calc_effective_gas_price(
+            self.max_fee_per_gas,
+            self.max_priority_fee_per_gas,
+            base_fee,
+        )
+    }
+
+    fn is_dynamic_fee(&self) -> bool {
+        true
+    }
+
+    fn kind(&self) -> TxKind {
+        TxKind::Call(self.to)
+    }
+
+    fn is_create(&self) -> bool {
+        false
+    }
+
+    fn value(&self) -> U256 {
+        self.value
+    }
+
+    fn input(&self) -> &Bytes {
+        &self.input
+    }
+
+    fn access_list(&self) -> Option<&AccessList> {
+        Some(&self.access_list)
+    }
+
+    fn blob_versioned_hashes(&self) -> Option<&[B256]> {
+        None
+    }
+
+    fn authorization_list(&self) -> Option<&[SignedAuthorization]> {
+        Some(&self.signed_authorization_list)
     }
 }

@@ -678,7 +678,7 @@ mod tests {
     fn dispatches_transaction_async_by_typed_2718_type() {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            crate::ethereum::TxEnvelope::as_legacy,
             handle_test_tx,
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -699,7 +699,7 @@ mod tests {
     fn transaction_async_send_future_is_send_with_send_erased_fields() {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            crate::ethereum::TxEnvelope::as_legacy,
             handle_test_tx,
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -721,7 +721,7 @@ mod tests {
     fn transaction_async_send_future_is_send_after_type_check() {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            crate::ethereum::TxEnvelope::as_legacy,
             handle_test_tx,
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -761,7 +761,7 @@ mod tests {
         let marker = Rc::new(());
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            crate::ethereum::TxEnvelope::as_legacy,
             handle_test_tx,
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -783,7 +783,7 @@ mod tests {
         let marker = Rc::new(());
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            crate::ethereum::TxEnvelope::as_legacy,
             handle_test_tx,
         );
         let database = Db::new(NonSendDb { marker: Rc::clone(&marker) });
@@ -912,10 +912,13 @@ mod tests {
             Db::new(FailOnceAccountDb { fail_next_account: true }),
             Precompiles::base(SpecId::OSAKA),
         );
-        let tx = crate::ethereum::RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy { gas_limit: 100_000, ..TxLegacy::default() },
+        let tx = Recovered::new_unchecked(
+            crate::ethereum::TxEnvelope::Legacy(TxLegacy {
+                gas_limit: 100_000,
+                ..TxLegacy::default()
+            }),
             Address::ZERO,
-        ));
+        );
 
         assert_matches!(evm.transact(&tx), Err(HandlerError::Fatal(_)));
         assert!(evm.error_code().is_some());
@@ -941,10 +944,14 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         evm.evm_is_send::<AsyncDb<CancellingDb>, Precompiles<BaseEvmTypes>>();
-        let tx = crate::ethereum::RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy { to: TxKind::Call(contract), gas_limit: 100_000, ..TxLegacy::default() },
+        let tx = Recovered::new_unchecked(
+            crate::ethereum::TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(contract),
+                gas_limit: 100_000,
+                ..TxLegacy::default()
+            }),
             caller,
-        ));
+        );
         {
             let mut future = core::pin::pin!(evm.transact_async(&tx));
             let waker = Waker::noop();
@@ -976,15 +983,13 @@ mod tests {
     const TEST_TX_TYPE: u8 = 0x00;
 
     fn test_tx(value: u64) -> crate::ethereum::RecoveredTxEnvelope {
-        crate::ethereum::RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy { nonce: value, ..TxLegacy::default() },
+        Recovered::new_unchecked(
+            crate::ethereum::TxEnvelope::Legacy(TxLegacy { nonce: value, ..TxLegacy::default() }),
             Address::ZERO,
-        ))
+        )
     }
 
-    fn handle_test_tx(
-        req: TxRequest<'_, '_, BaseEvmTypes, Recovered<TxLegacy>>,
-    ) -> HandlerResult<TxResult> {
+    fn handle_test_tx(req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
         Ok(TxResult { status: true, total_gas_spent: req.tx.nonce + 1, ..TxResult::default() })
     }

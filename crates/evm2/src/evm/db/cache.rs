@@ -310,6 +310,37 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     }
 }
 
+mod typed {
+    use super::*;
+    use crate::evm::Database;
+
+    impl<ExtDB: DynDatabase> Database for CacheDB<ExtDB> {
+        type Error = AnyError;
+
+        #[inline]
+        fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+            DynDatabase::get_account(self, address).map_err(|code| DynDatabase::error(self, code))
+        }
+
+        #[inline]
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            DynDatabase::get_code_by_hash(self, code_hash)
+                .map_err(|code| DynDatabase::error(self, code))
+        }
+
+        #[inline]
+        fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error> {
+            DynDatabase::get_storage(self, address, key)
+                .map_err(|code| DynDatabase::error(self, code))
+        }
+
+        #[inline]
+        fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error> {
+            DynDatabase::get_block_hash(self, number).map_err(|code| DynDatabase::error(self, code))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

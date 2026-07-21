@@ -2,7 +2,7 @@
 
 use crate::{
     Evm, OpcodeConfig, SpecId,
-    ethereum::RecoveredTxEnvelope,
+    ethereum::TxEnvelope,
     interpreter::{
         Host,
         dispatch::{ConfigInstrTables, InstrTable, SelectorInstrTables},
@@ -218,7 +218,7 @@ pub struct BaseEvmTypes(());
 impl EvmTypesHost for BaseEvmTypes {
     type ConfigSelector = BaseEvmConfigSelector;
     type SpecId = SpecId;
-    type Tx = RecoveredTxEnvelope;
+    type Tx = TxEnvelope;
     type EvmExt = ();
     type MessageExt = ();
     type MessageResultExt = ();
