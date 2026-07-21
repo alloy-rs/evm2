@@ -16,9 +16,8 @@ use crate::{
 use alloy_consensus::TxEip1559;
 use alloy_primitives::U256;
 
-pub(super) fn handle<T: EvmTypes>(
-    req: TxRequest<'_, '_, T, TxEip1559>,
-) -> HandlerResult<TxResult<T>> {
+/// Executes an EIP-1559 transaction using Ethereum rules.
+pub fn handle<T: EvmTypes>(req: TxRequest<'_, '_, T, TxEip1559>) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let max_fee_per_gas = U256::from(tx.max_fee_per_gas);

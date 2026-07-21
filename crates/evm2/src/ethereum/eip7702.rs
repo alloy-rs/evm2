@@ -16,7 +16,8 @@ use crate::{
 };
 use alloy_primitives::U256;
 
-pub(super) fn handle<T: EvmTypes>(
+/// Executes an EIP-7702 transaction using Ethereum rules.
+pub fn handle<T: EvmTypes>(
     req: TxRequest<'_, '_, T, super::LazyTxEip7702>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();

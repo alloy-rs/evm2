@@ -15,9 +15,8 @@ use crate::{
 use alloy_consensus::TxLegacy;
 use alloy_primitives::U256;
 
-pub(super) fn handle<T: EvmTypes>(
-    req: TxRequest<'_, '_, T, TxLegacy>,
-) -> HandlerResult<TxResult<T>> {
+/// Executes a legacy transaction using Ethereum rules.
+pub fn handle<T: EvmTypes>(req: TxRequest<'_, '_, T, TxLegacy>) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let gas_price = U256::from(tx.gas_price);
