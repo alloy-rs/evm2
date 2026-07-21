@@ -248,6 +248,7 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::TX_CHAIN_ID_CHECK));
         assert!(osaka.feature(EvmFeatures::NONCE_CHECK));
         assert!(osaka.feature(EvmFeatures::BALANCE_CHECK));
+        assert!(osaka.feature(EvmFeatures::BALANCE_TOP_UP));
         assert!(osaka.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
         assert!(osaka.feature(EvmFeatures::CODE_SIZE_CHECK));
         assert!(osaka.feature(EvmFeatures::EIP2));
@@ -359,6 +360,7 @@ evm_versions! {
             TX_CHAIN_ID_CHECK,
             NONCE_CHECK,
             BALANCE_CHECK,
+            BALANCE_TOP_UP,
             BLOCK_GAS_LIMIT_CHECK,
             EIP3607,
             PRIORITY_FEE_CHECK,

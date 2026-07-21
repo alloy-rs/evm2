@@ -378,6 +378,7 @@ pub(super) fn validate_sender<'a, T: EvmTypes>(
 ) -> HandlerResult<AccountInfo> {
     let has_nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let has_balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
+    let has_balance_top_up = host.feature(EvmFeatures::BALANCE_TOP_UP);
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
 
     let mut sender = host.state.account(&caller, false).map_err(error_handler!(host))?;
@@ -393,7 +394,7 @@ pub(super) fn validate_sender<'a, T: EvmTypes>(
     if has_balance_check && sender.balance() < max_upfront {
         return Err(HandlerError::InsufficientFunds);
     }
-    if !has_balance_check && sender.balance() < max_upfront {
+    if !has_balance_check && has_balance_top_up && sender.balance() < max_upfront {
         sender.add_balance(max_upfront - sender.balance());
     }
     Ok(sender.get().cloned().unwrap_or_default())
@@ -1009,6 +1010,25 @@ mod tests {
         assert_eq!(validate_chain_id(&version, None, true), Ok(()));
         version.features.remove(EvmFeatures::TX_CHAIN_ID_CHECK);
         assert_eq!(validate_chain_id(&version, Some(1), false), Ok(()));
+    }
+
+    #[test]
+    fn balance_top_up_can_be_disabled_independently() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut version = Version::new(SpecId::OSAKA);
+        version.features.remove(EvmFeatures::BALANCE_CHECK);
+        version.features.remove(EvmFeatures::BALANCE_TOP_UP);
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
+        assert!(evm.state.account_info_untracked(&caller).unwrap().is_none());
     }
 
     #[test]
