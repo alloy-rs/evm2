@@ -1577,7 +1577,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ) -> MessageResult<T> {
         // `gas` is the frame tracker built by the caller with the inherited reservoir and
         // any EIP-2780 depth-0 charge already applied; the precompile only adds regular gas.
-        let (stop, output) = match self.execute_precompile(message, &mut gas) {
+        let logs_len = self.state.logs().len();
+        let execution = self.execute_precompile(message, &mut gas);
+        let logs = self.state.logs()[logs_len..].to_vec();
+        for log in &logs {
+            self.inspect_log(log);
+        }
+        let (stop, output) = match execution {
             Ok(output) => (InstrStop::Return, output.into_bytes()),
             Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
             Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
@@ -2041,7 +2047,7 @@ mod tests {
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_eip7928::{BlockAccessList, StorageChange};
-    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, TxKind, U256};
+    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, Log, LogData, TxKind, U256};
     use core::{
         error::Error,
         fmt,
@@ -2197,6 +2203,47 @@ mod tests {
             ext: (),
             _non_exhaustive: (),
         }
+    }
+
+    #[test]
+    fn precompile_logs_are_inspected() {
+        #[derive(Default)]
+        struct LogInspector(Vec<Log>);
+
+        impl Inspector<BaseEvmTypes> for LogInspector {
+            fn log(&mut self, log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
+                self.0.push(log.clone());
+            }
+        }
+
+        let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
+            evm.state_mut().log(Log {
+                address: TEST_PRECOMPILE,
+                data: LogData::new_unchecked(Vec::new(), Bytes::from_static(b"precompile")),
+            });
+            Ok(PrecompileOutput::new(Bytes::new()))
+        })]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+        evm.set_inspector(LogInspector::default());
+        let mut message = precompile_message(TEST_PRECOMPILE);
+
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnv::default(),
+            Bytecode::new_legacy(Bytes::new()),
+            &mut message,
+        );
+
+        assert_eq!(result.stop, InstrStop::Return);
+        let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
+        assert_eq!(inspector.0.len(), 1);
+        assert_eq!(inspector.0.as_slice(), evm.logs());
     }
 
     fn lifecycle_evm() -> Evm<'static, BaseEvmTypes> {
