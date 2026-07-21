@@ -5,7 +5,7 @@ use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
     BaseEvmTypes, Evm, EvmTypesHost, Inspector, NoopInspector, Precompiles, TxResult,
     TxResultWithState, env as evm_env,
-    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+    ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
     evm::PendingState,
     interpreter::{Interpreter, Message, MessageResult},
     registry::HandlerError,
@@ -318,26 +318,28 @@ impl TxEnv {
     pub fn envelope(&self) -> RecoveredTxEnvelope {
         if !self.blob_hashes.is_empty() {
             let TxKind::Call(to) = self.kind else { panic!("blob transactions must be calls") };
-            return RecoveredTxEnvelope::Eip4844(Recovered::new_unchecked(
-                TxEip4844 {
-                    chain_id: self.chain_id.unwrap_or(1),
-                    nonce: self.nonce,
-                    gas_limit: self.gas_limit,
-                    max_fee_per_gas: self.gas_price,
-                    max_priority_fee_per_gas: self.gas_priority_fee.unwrap_or_default(),
-                    to,
-                    value: self.value,
-                    access_list: Default::default(),
-                    blob_versioned_hashes: self.blob_hashes.clone(),
-                    max_fee_per_blob_gas: self.max_fee_per_blob_gas,
-                    input: self.data.clone(),
-                }
-                .into(),
+            return Recovered::new_unchecked(
+                TxEnvelope::Eip4844(
+                    TxEip4844 {
+                        chain_id: self.chain_id.unwrap_or(1),
+                        nonce: self.nonce,
+                        gas_limit: self.gas_limit,
+                        max_fee_per_gas: self.gas_price,
+                        max_priority_fee_per_gas: self.gas_priority_fee.unwrap_or_default(),
+                        to,
+                        value: self.value,
+                        access_list: Default::default(),
+                        blob_versioned_hashes: self.blob_hashes.clone(),
+                        max_fee_per_blob_gas: self.max_fee_per_blob_gas,
+                        input: self.data.clone(),
+                    }
+                    .into(),
+                ),
                 self.caller,
-            ));
+            );
         }
-        RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy {
+        Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
                 chain_id: self.chain_id,
                 nonce: self.nonce,
                 gas_price: self.gas_price,
@@ -345,9 +347,9 @@ impl TxEnv {
                 to: self.kind,
                 value: self.value,
                 input: self.data.clone(),
-            },
+            }),
             self.caller,
-        ))
+        )
     }
 }
 

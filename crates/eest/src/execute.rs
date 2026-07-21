@@ -1,14 +1,16 @@
 #[cfg(feature = "jit")]
 use crate::compiled::{self, FileSummary};
 use crate::{
+    dump,
     error::{TestError, TestErrorKind},
     execution::ExecutionResources,
-    filter::EntryPoint,
+    filter::NameFilter,
     fixture_io,
     forks::is_fork_skipped,
     state::{
         insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
     },
+    trace::{self, Eip3155Tracer},
     tx::{TxFields, build_recovered_tx, recover_address, rpc_access_list, signed_authorizations},
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
@@ -52,11 +54,26 @@ pub(crate) struct SpecOutcome {
     pub(crate) evm_result: String,
 }
 
+/// Transaction-level failure paired with the outcome over the untouched
+/// pre-state, so JSON outcome/trace consumers still see the real state root.
+#[derive(Debug)]
+struct SpecFailure {
+    error: HandlerError,
+    outcome: SpecOutcome,
+}
+
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ExecuteConfig {
     /// Whether to print JSON outcome records.
     pub print_json_outcome: bool,
+    /// Whether to stream EIP-3155 struct logs to stdout during execution.
+    ///
+    /// Only observable under [`ExecutionMode::Interpreter`]; the JIT/AOT runners
+    /// bypass instruction-level dispatch.
+    pub trace: bool,
+    /// Whether to dump the post-execution state (accounts and storage) to stdout.
+    pub dump_state: bool,
     /// Execution backend.
     pub mode: ExecutionMode,
     /// Whether to print database method call counts.
@@ -68,7 +85,7 @@ pub struct ExecuteConfig {
 pub struct ExecuteSummary {
     /// Number of executed test units.
     pub executed: usize,
-    /// Number of test units skipped by the entrypoint filter.
+    /// Number of test units skipped by the test-name filter.
     pub skipped: usize,
 }
 
@@ -96,7 +113,7 @@ pub(crate) fn execute_test_suites(
             &path,
             &input,
             config,
-            &EntryPoint::default(),
+            &NameFilter::default(),
             &resources,
             &mut db_stats_counts,
         )?;
@@ -120,15 +137,15 @@ pub fn execute_str_with_config(
     input: &str,
     config: ExecuteConfig,
 ) -> Result<ExecuteSummary, TestError> {
-    execute_str_with_filter(path, input, config, &EntryPoint::default())
+    execute_str_with_filter(path, input, config, &NameFilter::default())
 }
 
-/// Executes a loaded state test JSON file, selecting test units by entrypoint.
+/// Executes a loaded state test JSON file, selecting test units by name filter.
 pub fn execute_str_with_filter(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
 ) -> Result<ExecuteSummary, TestError> {
     let resources =
         ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
@@ -137,7 +154,7 @@ pub fn execute_str_with_filter(
         path,
         input,
         config,
-        entrypoint,
+        test_filter,
         &resources,
         &mut db_stats_counts,
     )?;
@@ -151,7 +168,7 @@ fn execute_str_with_resources(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
     resources: &ExecutionResources,
     db_stats_counts: &mut DbStatsCounts,
 ) -> Result<ExecuteSummary, TestError> {
@@ -159,7 +176,7 @@ fn execute_str_with_resources(
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
     for (name, unit) in suite.0 {
-        if !entrypoint.matches(&name) {
+        if !test_filter.matches(&name) {
             summary.skipped += 1;
             continue;
         }
@@ -201,6 +218,8 @@ fn execute_unit(
                 &tx,
                 &unit.env,
                 resources,
+                config.trace,
+                config.dump_state,
                 if config.db_stats { Some(&mut *db_stats_counts) } else { None },
             );
             validate_result(path, name, &unit, post, result, spec, config)?;
@@ -214,14 +233,14 @@ fn validate_result(
     name: &str,
     unit: &TestUnit,
     post: &Test,
-    result: Result<SpecOutcome, HandlerError>,
+    result: Result<SpecOutcome, Box<SpecFailure>>,
     spec: SpecId,
     config: ExecuteConfig,
 ) -> Result<(), TestError> {
     let error = match (&post.expect_exception, result) {
-        (Some(_), Err(_)) => {
+        (Some(_), Err(failure)) => {
             if config.print_json_outcome {
-                print_json_outcome(post, name, None, spec, None);
+                print_json_outcome(post, name, Some(&failure.outcome), spec, None);
             }
             return Ok(());
         }
@@ -234,13 +253,13 @@ fn validate_result(
                 print_json_outcome(post, name, Some(&outcome), spec, Some(err));
             }
         }),
-        (None, Err(err)) => Some(TestErrorKind::UnexpectedException {
+        (None, Err(failure)) => Some(TestErrorKind::UnexpectedException {
             expected_exception: None,
-            got_exception: Some(err.to_string()),
+            got_exception: Some(failure.error.to_string()),
         })
         .inspect(|kind| {
             if config.print_json_outcome {
-                print_json_outcome(post, name, None, spec, Some(kind));
+                print_json_outcome(post, name, Some(&failure.outcome), spec, Some(kind));
             }
         }),
         (None, Ok(outcome)) => {
@@ -313,9 +332,10 @@ fn print_json_outcome(
         "g": test.indexes.gas,
         "v": test.indexes.value,
     });
-    eprintln!("{value}");
+    println!("{value}");
 }
 
+#[expect(clippy::too_many_arguments)]
 fn execute_spec(
     spec: SpecId,
     block: BlockEnv,
@@ -323,8 +343,10 @@ fn execute_spec(
     tx: &RecoveredTxEnvelope,
     env: &Env,
     resources: &ExecutionResources,
+    trace: bool,
+    dump_state: bool,
     db_stats_counts: Option<&mut DbStatsCounts>,
-) -> Result<SpecOutcome, HandlerError> {
+) -> Result<SpecOutcome, Box<SpecFailure>> {
     let db_stats = db_stats_counts.is_some();
     let mut evm = if db_stats {
         Evm::<BaseEvmTypes>::new(
@@ -344,15 +366,47 @@ fn execute_spec(
         )
     };
     resources.configure_evm(&mut evm);
+    if trace {
+        evm.set_inspector(Eip3155Tracer::to_stdout());
+    }
     let mut post = database;
     pre_block_system_calls(&mut evm, &mut post, spec, env);
-    let Ok(result) = evm.transact(tx)?.commit_with(&mut post);
+    let result = match evm.transact(tx) {
+        Ok(pending) => {
+            let Ok(result) = pending.commit_with(&mut post);
+            result
+        }
+        Err(error) => {
+            let outcome = failed_spec_outcome(&post);
+            if trace {
+                trace::write_summary(
+                    &mut std::io::stdout(),
+                    &outcome.output,
+                    outcome.gas_used,
+                    outcome.state_root,
+                );
+            }
+            return Err(Box::new(SpecFailure { error, outcome }));
+        }
+    };
     if let Some(counts) = db_stats_counts
         && let Some(stats) = evm.database_as::<DbStats<InMemoryDB>>()
     {
         *counts += stats.counts();
     }
-    Ok(spec_outcome(post, result))
+    if dump_state {
+        dump::dump_state(&mut std::io::stdout(), &post, state_root_from_database(&post));
+    }
+    let outcome = spec_outcome(post, result);
+    if trace {
+        trace::write_summary(
+            &mut std::io::stdout(),
+            &outcome.output,
+            outcome.gas_used,
+            outcome.state_root,
+        );
+    }
+    Ok(outcome)
 }
 
 fn print_db_stats(counts: DbStatsCounts) {
@@ -375,6 +429,18 @@ fn print_db_stats(counts: DbStatsCounts) {
 #[inline]
 const fn db_stats_style() -> Style {
     Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightCyan))).bold()
+}
+
+/// Outcome for a transaction that failed before execution: the state (and thus
+/// the state root) is the untouched pre-state, with no output, logs, or gas.
+fn failed_spec_outcome(post: &InMemoryDB) -> SpecOutcome {
+    SpecOutcome {
+        state_root: state_root_from_database(post),
+        logs_root: logs_hash(&[]),
+        output: Bytes::new(),
+        gas_used: 0,
+        evm_result: "Error".to_string(),
+    }
 }
 
 fn spec_outcome(post: InMemoryDB, result: TxResult) -> SpecOutcome {
@@ -439,7 +505,7 @@ fn logs_hash(logs: &[Log]) -> B256 {
     keccak256(out)
 }
 
-fn state_root_from_database(state: &InMemoryDB) -> B256 {
+pub(crate) fn state_root_from_database(state: &InMemoryDB) -> B256 {
     let accounts = state.cache.accounts.iter().filter_map(|(&address, info)| {
         let info = info.as_ref()?;
         let storage = storage_for_root(state, address);
@@ -631,11 +697,11 @@ mod tests {
 
         let tx = build_tx(&raw, &TxPartIndices { data: 0, gas: 0, value: 0 }, None).unwrap();
 
-        let RecoveredTxEnvelope::Legacy(tx) = tx else {
+        let evm2::ethereum::TxEnvelope::Legacy(inner) = tx.inner() else {
             panic!("expected legacy transaction");
         };
         assert_eq!(tx.signer(), caller);
-        assert_eq!(tx.inner().gas_price, 7);
+        assert_eq!(inner.gas_price, 7);
     }
 
     #[test]
@@ -659,11 +725,11 @@ mod tests {
 
         let tx = build_tx(&raw, &TxPartIndices { data: 0, gas: 0, value: 0 }, None).unwrap();
 
-        let RecoveredTxEnvelope::Eip2930(tx) = tx else {
+        let evm2::ethereum::TxEnvelope::Eip2930(inner) = tx.inner() else {
             panic!("expected EIP-2930 transaction");
         };
         assert_eq!(tx.signer(), caller);
-        assert_eq!(tx.inner().access_list[0].address, access_address);
+        assert_eq!(inner.access_list[0].address, access_address);
     }
 
     #[test]
@@ -694,10 +760,10 @@ mod tests {
 
         let tx = build_tx(&raw, &TxPartIndices { data: 1, gas: 0, value: 0 }, None).unwrap();
 
-        let RecoveredTxEnvelope::Eip2930(tx) = tx else {
+        let evm2::ethereum::TxEnvelope::Eip2930(inner) = tx.inner() else {
             panic!("expected EIP-2930 transaction");
         };
-        assert_eq!(tx.inner().access_list[0].address, second_address);
+        assert_eq!(inner.access_list[0].address, second_address);
     }
 
     #[cfg(feature = "jit")]
@@ -760,6 +826,8 @@ mod tests {
             &tx,
             &env,
             &resources,
+            false,
+            false,
             None,
         )
         .unwrap()
@@ -826,6 +894,8 @@ mod tests {
             &tx,
             &env,
             &resources,
+            false,
+            false,
             None,
         )
         .unwrap()

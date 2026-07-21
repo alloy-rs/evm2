@@ -4,6 +4,7 @@ use super::{Evm, NonStaticAny};
 use crate::{
     EvmTypesHost, PrecompileError,
     interpreter::{GasTracker, Message},
+    precompiles::PrecompileId,
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes};
@@ -41,6 +42,11 @@ impl PrecompileOutput {
 pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     /// Returns precompile addresses.
     fn addresses(&self) -> Vec<Address> {
+        Vec::new()
+    }
+
+    /// Returns precompile addresses and identifiers.
+    fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
         Vec::new()
     }
 

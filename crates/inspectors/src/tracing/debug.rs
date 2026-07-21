@@ -3,6 +3,7 @@ use crate::tracing::{
 };
 #[cfg(feature = "js-tracer")]
 use alloc::boxed::Box;
+use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Log, U256};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
@@ -13,7 +14,6 @@ use alloy_rpc_types_trace::geth::{
 use evm2::{
     ErrorCode, EvmTypes, EvmTypesHost, Inspector, NoopInspector, TxResultWithState,
     env::BlockEnv,
-    ethereum::RecoveredTxEnvelope,
     evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -196,11 +196,11 @@ impl DebugInspector {
     }
 
     /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
-    pub fn get_result<T: EvmTypesHost>(
+    pub fn get_result<T: EvmTypesHost<Tx: Transaction>>(
         &mut self,
         tx_context: Option<TransactionContext>,
-        tx: &RecoveredTxEnvelope,
-        block_env: &BlockEnv,
+        tx: &Recovered<T::Tx>,
+        block_env: &BlockEnv<T>,
         res: &TxResultWithState<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<GethTrace, DebugInspectorError> {

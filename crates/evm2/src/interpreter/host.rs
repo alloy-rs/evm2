@@ -56,11 +56,11 @@ impl<T: EvmTypesHost> MessageResult<T> {
 
     /// Calculates the final refund amount for a top-level transaction.
     #[inline]
-    pub const fn final_refund(&self, gas_limit: u64, is_eip3529: bool) -> u64 {
+    pub const fn final_refund(&self, gas_limit: u64, max_refund_quotient: u64) -> u64 {
         if self.gas.refunded() <= 0 {
             return 0;
         }
-        let max_refund_quotient = if is_eip3529 { 5 } else { 2 };
+        let max_refund_quotient = if max_refund_quotient == 0 { 1 } else { max_refund_quotient };
         // EIP-8037: the unused state-gas reservoir is reimbursed to the caller, so it
         // is not part of the gas actually spent. The EIP-3529 refund cap is a fraction
         // of the gas the transaction truly consumed, so the reservoir must be excluded
@@ -74,8 +74,12 @@ impl<T: EvmTypesHost> MessageResult<T> {
 
     /// Returns top-level gas remaining after applying the final refund cap.
     #[inline]
-    pub const fn gas_remaining_after_final_refund(&self, gas_limit: u64, is_eip3529: bool) -> u64 {
-        let refunded = self.final_refund(gas_limit, is_eip3529);
+    pub const fn gas_remaining_after_final_refund(
+        &self,
+        gas_limit: u64,
+        max_refund_quotient: u64,
+    ) -> u64 {
+        let refunded = self.final_refund(gas_limit, max_refund_quotient);
         // EIP-8037: the unused reservoir (already settled to its frame-start value
         // on failure by `rollback_state_gas`) is also reimbursed to the caller.
         let remaining =
@@ -85,8 +89,13 @@ impl<T: EvmTypesHost> MessageResult<T> {
 
     /// Returns top-level gas used after applying the final refund cap.
     #[inline]
-    pub const fn gas_used_after_final_refund(&self, gas_limit: u64, is_eip3529: bool) -> u64 {
-        gas_limit.saturating_sub(self.gas_remaining_after_final_refund(gas_limit, is_eip3529))
+    pub const fn gas_used_after_final_refund(
+        &self,
+        gas_limit: u64,
+        max_refund_quotient: u64,
+    ) -> u64 {
+        gas_limit
+            .saturating_sub(self.gas_remaining_after_final_refund(gas_limit, max_refund_quotient))
     }
 }
 
@@ -157,4 +166,23 @@ pub trait Host<T: EvmTypesHost> {
         target: &Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interpreter::GasTracker;
+
+    #[test]
+    fn final_refund_uses_configured_quotient() {
+        let mut result =
+            MessageResult::<BaseEvmTypes> { gas: GasTracker::new(100), ..Default::default() };
+        result.gas.set_remaining(20);
+        result.gas.set_refunded(60);
+
+        assert_eq!(result.final_refund(100, 2), 40);
+        assert_eq!(result.final_refund(100, 5), 16);
+        assert_eq!(result.final_refund(100, 1), 60);
+        assert_eq!(result.final_refund(100, 0), 60);
+    }
 }

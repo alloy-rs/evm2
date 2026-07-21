@@ -3,6 +3,7 @@
 #![allow(missing_docs, clippy::missing_const_for_fn)]
 
 use crate::config::CustomConfigSelector;
+use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use config::{CustomBlockEnvExt, CustomSpecId, CustomTypes, custom_version};
@@ -71,11 +72,20 @@ fn state_change_consumer() -> HandlerResult<()> {
     database.insert_account_info(&target, AccountInfo::default().with_nonce(1));
     let mut evm = custom_evm_with_database(database);
     let mut consumer = ExampleStateConsumer::default();
-    let tx = CustomEnvelope::ExecuteCode(ExecuteCodeTx {
-        target,
-        gas_limit: 100_000,
-        code: Bytes::from_static(&[opcode::CUSTOM_OPCODE, op::PUSH1, 0x01, op::SSTORE, op::STOP]),
-    });
+    let tx = Recovered::new_unchecked(
+        CustomEnvelope::ExecuteCode(ExecuteCodeTx {
+            target,
+            gas_limit: 100_000,
+            code: Bytes::from_static(&[
+                opcode::CUSTOM_OPCODE,
+                op::PUSH1,
+                0x01,
+                op::SSTORE,
+                op::STOP,
+            ]),
+        }),
+        Address::ZERO,
+    );
 
     let Ok(result) = evm.transact(&tx)?.commit_with(&mut consumer);
     let storage_change = consumer.storage_changes.first().expect("storage change observed");
@@ -224,12 +234,15 @@ fn custom_execution_config() -> ExecutionConfig<CustomTypes> {
         .with_version(configured_custom_version())
 }
 
-fn custom_opcode_tx(code: Bytes) -> CustomEnvelope {
-    CustomEnvelope::ExecuteCode(ExecuteCodeTx {
-        target: Address::from([0xcc; 20]),
-        gas_limit: 100_000,
-        code,
-    })
+fn custom_opcode_tx(code: Bytes) -> Recovered<CustomEnvelope> {
+    Recovered::new_unchecked(
+        CustomEnvelope::ExecuteCode(ExecuteCodeTx {
+            target: Address::from([0xcc; 20]),
+            gas_limit: 100_000,
+            code,
+        }),
+        Address::ZERO,
+    )
 }
 
 pub fn configured_custom_version() -> Version {

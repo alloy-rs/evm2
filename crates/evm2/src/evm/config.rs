@@ -2,7 +2,7 @@
 
 use crate::{
     Evm, OpcodeConfig, SpecId,
-    ethereum::RecoveredTxEnvelope,
+    ethereum::TxEnvelope,
     interpreter::{
         Host,
         dispatch::{ConfigInstrTables, InstrTable, SelectorInstrTables},
@@ -30,6 +30,9 @@ pub trait EvmTypesHost: Sized + 'static {
 
     /// Transaction type handled by this EVM.
     type Tx;
+
+    /// EVM instance-specific extension state.
+    type EvmExt;
 
     /// Extra data stored in frame messages.
     type MessageExt: Clone + Debug + Default;
@@ -215,7 +218,8 @@ pub struct BaseEvmTypes(());
 impl EvmTypesHost for BaseEvmTypes {
     type ConfigSelector = BaseEvmConfigSelector;
     type SpecId = SpecId;
-    type Tx = RecoveredTxEnvelope;
+    type Tx = TxEnvelope;
+    type EvmExt = ();
     type MessageExt = ();
     type MessageResultExt = ();
     type TxEnvExt = ();

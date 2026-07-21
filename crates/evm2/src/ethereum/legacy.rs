@@ -12,11 +12,11 @@ use crate::{
     interpreter::Host,
     registry::{HandlerResult, TxRequest},
 };
-use alloy_consensus::{TxLegacy, transaction::Recovered};
+use alloy_consensus::TxLegacy;
 use alloy_primitives::U256;
 
 pub(super) fn handle<T: EvmTypes>(
-    req: TxRequest<'_, '_, T, Recovered<TxLegacy>>,
+    req: TxRequest<'_, '_, T, TxLegacy>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();

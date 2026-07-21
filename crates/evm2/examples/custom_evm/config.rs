@@ -56,6 +56,7 @@ impl EvmTypesHost for CustomTypes {
     type ConfigSelector = CustomConfigSelector;
     type SpecId = CustomSpecId;
     type Tx = crate::tx::CustomEnvelope;
+    type EvmExt = ();
     type MessageExt = CustomMessageExt;
     type MessageResultExt = CustomMessageResultExt;
     type TxEnvExt = CustomTxEnvExt;

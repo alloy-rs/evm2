@@ -14,7 +14,7 @@ use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
     env::BlockEnv,
-    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+    ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo, BlockAccessIndex, InMemoryDB, SystemTx},
     interpreter::op,
 };
@@ -50,16 +50,16 @@ fn main() {
     // Transaction 1 is recorded at index 2: a call that stores 42 at slot 5.
     evm.state_mut().bump_bal_index();
     assert_eq!(evm.state_mut().bal_index(), idx(2));
-    let tx1 = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-        TxLegacy {
+    let tx1 = Recovered::new_unchecked(
+        TxEnvelope::Legacy(TxLegacy {
             to: TxKind::Call(STORAGE_CONTRACT),
             input: word(42),
             gas_limit: 300_000,
             nonce: 1,
             ..Default::default()
-        },
+        }),
         CALLER,
-    ));
+    );
     let result = evm.transact(&tx1).expect("transaction 1 should execute").commit();
     assert!(result.status);
 
@@ -146,16 +146,16 @@ fn block_evm() -> Evm<'static, BaseEvmTypes> {
 }
 
 fn transfer(from: Address, to: Address, value: u64, nonce: u64) -> RecoveredTxEnvelope {
-    RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-        TxLegacy {
+    Recovered::new_unchecked(
+        TxEnvelope::Legacy(TxLegacy {
             to: TxKind::Call(to),
             value: U256::from(value),
             gas_limit: 300_000,
             nonce,
             ..Default::default()
-        },
+        }),
         from,
-    ))
+    )
 }
 
 /// Stores the first calldata word at storage slot `slot`.

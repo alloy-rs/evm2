@@ -120,10 +120,10 @@ pub(crate) fn detect(value: &Value) -> Option<FixtureKind> {
     None
 }
 
-pub(crate) fn entrypoints(value: &Value) -> Option<Vec<&str>> {
-    let mut entrypoints = value.as_object()?.keys().map(String::as_str).collect::<Vec<_>>();
-    entrypoints.sort_unstable();
-    Some(entrypoints)
+pub(crate) fn test_names(value: &Value) -> Option<Vec<&str>> {
+    let mut names = value.as_object()?.keys().map(String::as_str).collect::<Vec<_>>();
+    names.sort_unstable();
+    Some(names)
 }
 
 fn has_any(object: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {
@@ -132,7 +132,7 @@ fn has_any(object: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FixtureKind, detect, detect_str, entrypoints};
+    use super::{FixtureKind, detect, detect_str, test_names};
     use serde_json::json;
     use std::path::Path;
 
@@ -159,6 +159,6 @@ mod tests {
     #[test]
     fn lists_top_level_case_names() {
         let value = json!({"b": {"env": {}}, "a": {"env": {}}});
-        assert_eq!(entrypoints(&value).unwrap(), ["a", "b"]);
+        assert_eq!(test_names(&value).unwrap(), ["a", "b"]);
     }
 }

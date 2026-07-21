@@ -19,7 +19,7 @@ use alloy_primitives::{Address, TxKind, U256};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId, TxResultWithState,
     env::BlockEnv,
-    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+    ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo, Bal, BlockAccessIndex, InMemoryDB},
 };
 use std::sync::Arc;
@@ -132,16 +132,16 @@ fn pre_block_evm() -> Evm<'static, BaseEvmTypes> {
 }
 
 fn transfer(from: Address, to: Address, value: u64, nonce: u64) -> RecoveredTxEnvelope {
-    RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-        TxLegacy {
+    Recovered::new_unchecked(
+        TxEnvelope::Legacy(TxLegacy {
             to: TxKind::Call(to),
             value: U256::from(value),
             gas_limit: 300_000,
             nonce,
             ..Default::default()
-        },
+        }),
         from,
-    ))
+    )
 }
 
 const fn idx(index: u64) -> BlockAccessIndex {

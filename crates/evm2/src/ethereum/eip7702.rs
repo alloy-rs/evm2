@@ -14,11 +14,10 @@ use crate::{
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
 };
-use alloy_consensus::transaction::Recovered;
 use alloy_primitives::U256;
 
 pub(super) fn handle<T: EvmTypes>(
-    req: TxRequest<'_, '_, T, Recovered<super::LazyTxEip7702>>,
+    req: TxRequest<'_, '_, T, super::LazyTxEip7702>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();

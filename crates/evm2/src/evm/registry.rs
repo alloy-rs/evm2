@@ -9,6 +9,7 @@
 
 use crate::{ErrorCode, EvmTypesHost};
 use alloc::{string::String, sync::Arc};
+use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, U256, map::HashMap};
 use core::{fmt, marker::PhantomData};
 use thiserror::Error;
@@ -147,7 +148,7 @@ pub enum HandlerError {
 #[derive(Debug)]
 pub struct TxRequest<'a, 'host, T: EvmTypesHost, Tx> {
     /// Concrete transaction extracted from the envelope.
-    pub tx: &'a Tx,
+    pub tx: Recovered<&'a Tx>,
     /// Mutable host used by this handler.
     pub host: &'a mut T::Host<'host>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
@@ -186,13 +187,21 @@ impl<T: EvmTypesHost, Output> fmt::Debug for AnyTxHandler<T, Output> {
 
 impl<T: EvmTypesHost, Output> AnyTxHandler<T, Output> {
     /// Executes the erased handler against an envelope and host.
-    pub fn call<'host>(&self, env: &T::Tx, host: &mut T::Host<'host>) -> HandlerResult<Output> {
+    pub fn call<'host>(
+        &self,
+        env: &Recovered<T::Tx>,
+        host: &mut T::Host<'host>,
+    ) -> HandlerResult<Output> {
         self.inner.call(env, host)
     }
 }
 
 trait ErasedTxHandler<T: EvmTypesHost, Output>: Send + Sync {
-    fn call<'host>(&self, env: &T::Tx, host: &mut T::Host<'host>) -> HandlerResult<Output>;
+    fn call<'host>(
+        &self,
+        env: &Recovered<T::Tx>,
+        host: &mut T::Host<'host>,
+    ) -> HandlerResult<Output>;
 }
 
 struct HandlerAdapter<Tx, H, F> {
@@ -214,10 +223,18 @@ where
     H: TxHandler<T, Tx, Output> + Send + Sync,
     F: for<'a> Fn(&'a T::Tx) -> Option<&'a Tx> + Send + Sync,
 {
-    fn call<'host>(&self, env: &T::Tx, host: &mut T::Host<'host>) -> HandlerResult<Output> {
-        let tx = (self.extract)(env)
+    fn call<'host>(
+        &self,
+        env: &Recovered<T::Tx>,
+        host: &mut T::Host<'host>,
+    ) -> HandlerResult<Output> {
+        let tx = (self.extract)(env.inner())
             .ok_or(HandlerError::WrongTransactionType { expected: self.type_id })?;
-        self.handler.call(TxRequest { tx, host, _non_exhaustive: () })
+        self.handler.call(TxRequest {
+            tx: Recovered::new_unchecked(tx, env.signer()),
+            host,
+            _non_exhaustive: (),
+        })
     }
 }
 
@@ -299,17 +316,17 @@ mod tests {
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256, Log};
 
-    #[derive(Debug)]
+    #[derive(Clone, Debug)]
     struct TransferTx {
         amount: u64,
     }
 
-    #[derive(Debug)]
+    #[derive(Clone, Debug)]
     struct CreateTx {
         initcode: Vec<u8>,
     }
 
-    #[derive(Debug)]
+    #[derive(Clone, Debug)]
     enum Envelope {
         Transfer(TransferTx),
         Create(CreateTx),
@@ -321,6 +338,7 @@ mod tests {
         type ConfigSelector = BaseEvmConfigSelector;
         type SpecId = SpecId;
         type Tx = Envelope;
+        type EvmExt = ();
         type MessageExt = ();
         type MessageResultExt = ();
         type TxEnvExt = ();
@@ -452,7 +470,10 @@ mod tests {
         type_id: u8,
         env: &Envelope,
     ) -> HandlerResult<Receipt> {
-        registry.try_get_by_type(type_id)?.call(env, &mut TestHost { block: BlockEnv::default() })
+        registry.try_get_by_type(type_id)?.call(
+            &Recovered::new_unchecked(env.clone(), Address::ZERO),
+            &mut TestHost { block: BlockEnv::default() },
+        )
     }
 
     #[test]
