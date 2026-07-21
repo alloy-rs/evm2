@@ -381,6 +381,7 @@ fn database_error(db: &mut dyn DynDatabase, code: evm2::ErrorCode) -> DebugInspe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
     use evm2::{AnyError, ErrorCode, bytecode::Bytecode, evm::DbResult, interpreter::Word};
 
     struct ErrorDatabase;
