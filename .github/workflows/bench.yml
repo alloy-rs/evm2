@@ -10,6 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CODSPEED_WALLTIME_PROFILER: samply
   RUSTC_WRAPPER: "sccache"
   RUSTFLAGS: -Csymbol-mangling-version=v0
 
