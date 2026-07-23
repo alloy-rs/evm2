@@ -30,7 +30,7 @@ use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
     BaseEvmTypes, ErrorCode, Evm, Precompiles, SpecId, TxResult,
-    env::BlockEnv,
+    env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
         AccountChangeRef, AccountInfo as EvmAccountInfo, AccountInfoRef, BEACON_ROOTS_ADDRESS, Bal,
@@ -882,7 +882,7 @@ fn parse_state(
 fn block_env_from_header(header: &BlockHeader, excess_blob_gas: u64, spec: SpecId) -> BlockEnv {
     let excess_blob_gas =
         header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>()).unwrap_or(excess_blob_gas);
-    BlockEnv {
+    BlockEnvExt {
         number: header.number,
         beneficiary: header.coinbase,
         timestamp: header.timestamp,

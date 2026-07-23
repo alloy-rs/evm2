@@ -2,11 +2,11 @@ use crate::{
     BaseEvmConfigSelector, EvmFeatures, EvmTypesHost, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
-    env::{BlockEnv, TxEnv},
+    env::{BlockEnv, BlockEnvExt, TxEnv, TxEnvExt},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
     interpreter::{
-        Gas, GasTracker, Host, InstrStop, Interpreter, Memory, Message, MessageKind, MessageResult,
-        StackBacking, Word, op,
+        Gas, GasTracker, Host, InstrStop, Interpreter, Memory, Message, MessageExt, MessageKind,
+        MessageResult, MessageResultExt, StackBacking, Word, op,
     },
     storage_key::{StorageKey, StorageKeyMap},
 };
@@ -57,7 +57,7 @@ impl Default for TestHost {
     fn default() -> Self {
         Self {
             spec_id: SpecId::OSAKA,
-            block: BlockEnv::default(),
+            block: BlockEnvExt::default(),
             code_hash: B256::ZERO,
             code: Bytes::new(),
             exists: true,
@@ -69,7 +69,10 @@ impl Default for TestHost {
             original_storage: StorageKeyMap::default(),
             transient_storage: StorageKeyMap::default(),
             logs: Vec::new(),
-            execute_result: MessageResult { stop: InstrStop::Return, ..MessageResult::default() },
+            execute_result: MessageResultExt {
+                stop: InstrStop::Return,
+                ..MessageResultExt::default()
+            },
             selfdestruct_result: SelfDestructResult::default(),
             selfdestruct_error: None,
             calls: Vec::new(),
@@ -193,7 +196,7 @@ impl Host<TestTypes> for TestHost {
     ) -> MessageResult<TestTypes> {
         // Mimics the depth limit enforced by the real host.
         if message.depth > CALL_DEPTH_LIMIT {
-            return MessageResult {
+            return MessageResultExt {
                 stop: InstrStop::CallTooDeep,
                 gas: GasTracker::new(message.gas_limit),
                 ..Default::default()
@@ -311,8 +314,8 @@ impl Default for RunConfig<'_> {
             code: Vec::new(),
             host: None,
             spec_id: SpecId::OSAKA,
-            tx_env: TxEnv::default(),
-            message: Message { gas_limit: 10_000, ..Message::default() },
+            tx_env: TxEnvExt::default(),
+            message: MessageExt { gas_limit: 10_000, ..MessageExt::default() },
             gas_limit: 10_000,
             return_data: Bytes::new(),
         }

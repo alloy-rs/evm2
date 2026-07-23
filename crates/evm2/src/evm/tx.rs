@@ -7,15 +7,18 @@ use alloy_primitives::{Address, Bytes, Log};
 use core::fmt;
 use derive_where::derive_where;
 
-/// Transaction execution result without an owned state diff.
+/// Transaction execution result without an owned state diff for an EVM type family.
+pub type TxResult<T = crate::BaseEvmTypes> = TxResultExt<<T as EvmTypesHost>::TxResultExt>;
+
+/// Transaction execution result without an owned state diff, parameterized by extension data.
 ///
 /// This is the result-only half of transaction execution: status, gas used, output, stop reason,
 /// logs, host error code, and extension data. Logs live here because they are execution
 /// output, not database state. Use [`ExecutedTx::detach`] only when an owned [`PendingState`]
 /// value is required.
 #[must_use = "transaction results contain execution status, gas, logs, and errors"]
-#[derive_where(Clone, Debug, Default, PartialEq, Eq; T::TxResultExt)]
-pub struct TxResult<T: EvmTypesHost = crate::BaseEvmTypes> {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TxResultExt<E = ()> {
     /// Whether execution succeeded.
     pub status: bool,
     /// Total gas spent (regular + state) before refund. The receipt gas-used value is
@@ -41,12 +44,12 @@ pub struct TxResult<T: EvmTypesHost = crate::BaseEvmTypes> {
     /// Host error code raised during execution, if any.
     pub error_code: Option<ErrorCode>,
     /// EVM type-specific extension data.
-    pub ext: T::TxResultExt,
+    pub ext: E,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
-impl<T: EvmTypesHost> TxResult<T> {
+impl<E> TxResultExt<E> {
     /// Returns the receipt gas-used value: `max(total_gas_spent - refunded, floor_gas)`.
     #[inline]
     pub const fn tx_gas_used(&self) -> u64 {
@@ -274,21 +277,20 @@ pub struct TxResultWithState<T: EvmTypesHost = crate::BaseEvmTypes> {
 
 #[cfg(test)]
 mod tests {
-    use super::TxResult;
-    use crate::BaseEvmTypes;
+    use super::TxResultExt;
 
     fn result(
         total_gas_spent: u64,
         state_gas_spent: u64,
         refunded: u64,
         floor_gas: u64,
-    ) -> TxResult {
-        TxResult::<BaseEvmTypes> {
+    ) -> TxResultExt {
+        TxResultExt {
             total_gas_spent,
             state_gas_spent,
             refunded,
             floor_gas,
-            ..TxResult::default()
+            ..TxResultExt::default()
         }
     }
 

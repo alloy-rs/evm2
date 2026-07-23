@@ -1,6 +1,5 @@
 use crate::{BaseEvmTypes, EvmTypesHost};
 use alloy_primitives::{Address, B256, Bytes, U256};
-use derive_where::derive_where;
 
 /// EVM message kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -29,9 +28,12 @@ impl MessageKind {
     }
 }
 
-/// Frame-local EVM call/create message executed by the interpreter.
-#[derive_where(Clone, Debug, Default, PartialEq, Eq; T::MessageExt)]
-pub struct Message<T: EvmTypesHost = BaseEvmTypes> {
+/// Frame-local EVM call/create message executed by the interpreter for an EVM type family.
+pub type Message<T = BaseEvmTypes> = MessageExt<<T as EvmTypesHost>::MessageExt>;
+
+/// Frame-local EVM call/create message, parameterized by extension data.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageExt<E = ()> {
     /// Message kind.
     pub kind: MessageKind,
     /// Current call depth.
@@ -65,7 +67,7 @@ pub struct Message<T: EvmTypesHost = BaseEvmTypes> {
     /// CREATE2 salt. Ignored for other message kinds.
     pub salt: B256,
     /// EVM type-specific extension data.
-    pub ext: T::MessageExt,
+    pub ext: E,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }

@@ -6,12 +6,12 @@
 //! before calling [`Evm::system_call`]. Calling an address without code succeeds as an empty call
 //! and produces no state changes.
 
-use super::{Evm, ExecutedTx, TxResult};
+use super::{Evm, ExecutedTx, TxResult, TxResultExt};
 #[cfg(feature = "async")]
 use super::{SendEvmRef, r#async};
 use crate::{
     EvmTypes,
-    env::TxEnv,
+    env::TxEnvExt,
     ethereum::initial_message,
     interpreter::Host,
     registry::{HandlerError, HandlerResult},
@@ -128,7 +128,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn execute_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
         let SystemTx { caller, system_contract_address, data, .. } = tx;
         self.state.prewarm(&system_contract_address);
-        let tx_env = TxEnv {
+        let tx_env = TxEnvExt {
             origin: caller,
             gas_price: U256::ZERO,
             chain_id: U256::from(self.version().chain_id),
@@ -165,7 +165,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             0
         };
-        Ok(TxResult {
+        Ok(TxResultExt {
             status: result.stop.is_success(),
             total_gas_spent: gas_spent,
             state_gas_spent: result.gas.state_gas_spent().max(0) as u64,
@@ -173,7 +173,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             floor_gas: 0,
             stop: result.stop,
             output: result.output,
-            ..TxResult::default()
+            ..TxResultExt::default()
         })
     }
 
@@ -231,7 +231,7 @@ mod tests {
     use crate::{
         BaseEvmTypes, ErrorCode, Precompiles, SpecId,
         bytecode::Bytecode,
-        env::BlockEnv,
+        env::BlockEnvExt,
         evm::{AccountInfo, InMemoryDB},
         interpreter::{GasTracker, InstrStop, Message, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileResult},
@@ -257,7 +257,7 @@ mod tests {
         ]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
-        let block = BlockEnv { beneficiary, basefee: U256::from(7), ..BlockEnv::default() };
+        let block = BlockEnvExt { beneficiary, basefee: U256::from(7), ..BlockEnvExt::default() };
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
             block,
@@ -300,7 +300,7 @@ mod tests {
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::OSAKA),
@@ -327,7 +327,7 @@ mod tests {
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::OSAKA),
@@ -348,7 +348,7 @@ mod tests {
         let contract = Address::from([0x42; 20]);
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -380,7 +380,7 @@ mod tests {
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::OSAKA),
@@ -425,7 +425,7 @@ mod tests {
 
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompiles,

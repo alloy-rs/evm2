@@ -16,7 +16,7 @@ use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256
 use core::cmp::min;
 use evm2::{
     bytecode::Bytecode,
-    interpreter::{Host, Message, MessageKind, Word, i256},
+    interpreter::{Host, MessageExt, MessageKind, Word, i256},
     utils::{word_to_usize, word_to_usize_saturated},
     version::{EvmFeatures, GasId},
 };
@@ -681,7 +681,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     };
 
     let current = ecx.message();
-    let mut message = Message {
+    let mut message = MessageExt {
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
         gas_limit,
@@ -784,7 +784,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         }
         CallKind::StaticCall => (to, current.destination, U256::ZERO, resolved_code_address),
     };
-    let mut message = Message {
+    let mut message = MessageExt {
         kind: call_kind.into(),
         depth: current.depth.saturating_add(1),
         gas_limit,
@@ -997,10 +997,10 @@ mod tests {
     use alloy_primitives::Address;
     use evm2::{
         BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
-        env::{BlockEnv, TxEnv},
+        env::{BlockEnvExt, TxEnvExt},
         ethereum::ethereum_tx_registry,
         evm::{EmptyDB, inspector::Inspector},
-        interpreter::{GasTracker, MessageResult, op},
+        interpreter::{GasTracker, Message, MessageResult, MessageResultExt, op},
     };
     use evm2_jit_context::EvmStack;
 
@@ -1015,9 +1015,9 @@ mod tests {
     impl Default for MessageInspector {
         fn default() -> Self {
             Self {
-                execute_result: MessageResult {
+                execute_result: MessageResultExt {
                     stop: InstrStop::Return,
-                    ..MessageResult::default()
+                    ..MessageResultExt::default()
                 },
                 calls: Vec::new(),
                 creates: Vec::new(),
@@ -1080,7 +1080,7 @@ mod tests {
     fn base_evm(spec_id: SpecId) -> Evm<'static, BaseEvmTypes> {
         Evm::<BaseEvmTypes>::new(
             spec_id,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(spec_id),
             EmptyDB::default(),
             Precompiles::base(spec_id),
@@ -1107,16 +1107,17 @@ mod tests {
         let child_output = Bytes::from_static(&[0xaa, 0xbb, 0xcc]);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector {
-            execute_result: MessageResult {
+            execute_result: MessageResultExt {
                 stop: InstrStop::Return,
                 gas: GasTracker::new(37),
                 output: child_output.clone(),
-                ..MessageResult::default()
+                ..MessageResultExt::default()
             },
             ..MessageInspector::default()
         });
-        let tx_env = TxEnv::default();
-        let message = Message { gas_limit: 1_000_000, destination: caller, ..Message::default() };
+        let tx_env = TxEnvExt::default();
+        let message =
+            MessageExt { gas_limit: 1_000_000, destination: caller, ..MessageExt::default() };
         let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             &tx_env,
@@ -1166,13 +1167,13 @@ mod tests {
         let stack_value = Word::from(0x12);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector::default());
-        let tx_env = TxEnv::default();
-        let message = Message {
+        let tx_env = TxEnvExt::default();
+        let message = MessageExt {
             gas_limit: 1_000_000,
             destination,
             caller,
             value: Word::from(0x99),
-            ..Message::default()
+            ..MessageExt::default()
         };
         let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
@@ -1208,13 +1209,13 @@ mod tests {
         let current_value = Word::from(0x99);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector::default());
-        let tx_env = TxEnv::default();
-        let message = Message {
+        let tx_env = TxEnvExt::default();
+        let message = MessageExt {
             gas_limit: 1_000_000,
             destination,
             caller,
             value: current_value,
-            ..Message::default()
+            ..MessageExt::default()
         };
         let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
@@ -1249,13 +1250,13 @@ mod tests {
         let caller = Address::from([0x11; 20]);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector::default());
-        let tx_env = TxEnv::default();
-        let message = Message {
+        let tx_env = TxEnvExt::default();
+        let message = MessageExt {
             gas_limit: 1_000_000,
             destination,
             caller,
             value: Word::from(0x99),
-            ..Message::default()
+            ..MessageExt::default()
         };
         let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
@@ -1289,16 +1290,16 @@ mod tests {
         let initcode = [op::STOP];
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector {
-            execute_result: MessageResult {
+            execute_result: MessageResultExt {
                 stop: InstrStop::Return,
                 gas: GasTracker::new(11),
                 created_address: Some(created),
-                ..MessageResult::default()
+                ..MessageResultExt::default()
             },
             ..MessageInspector::default()
         });
-        let tx_env = TxEnv::default();
-        let message = Message { gas_limit: 1_000_000, ..Message::default() };
+        let tx_env = TxEnvExt::default();
+        let message = MessageExt { gas_limit: 1_000_000, ..MessageExt::default() };
         let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             &tx_env,
@@ -1333,16 +1334,16 @@ mod tests {
         let salt = EvmWord::from(Word::from(0xabcdu64));
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector {
-            execute_result: MessageResult {
+            execute_result: MessageResultExt {
                 stop: InstrStop::Return,
                 gas: GasTracker::new(11),
                 created_address: Some(created),
-                ..MessageResult::default()
+                ..MessageResultExt::default()
             },
             ..MessageInspector::default()
         });
-        let tx_env = TxEnv::default();
-        let message = Message { gas_limit: 1_000_000, ..Message::default() };
+        let tx_env = TxEnvExt::default();
+        let message = MessageExt { gas_limit: 1_000_000, ..MessageExt::default() };
         let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             &tx_env,

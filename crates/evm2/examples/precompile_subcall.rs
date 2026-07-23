@@ -4,9 +4,9 @@ use alloy_primitives::{Address, Bytes, U256};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
-    env::{BlockEnv, TxEnv},
+    env::{BlockEnvExt, TxEnvExt},
     evm::{AccountInfo, InMemoryDB, precompile::PrecompileOutput},
-    interpreter::{GasTracker, Host, InstrStop, Message, MessageKind, Word, op},
+    interpreter::{GasTracker, Host, InstrStop, Message, MessageExt, MessageKind, Word, op},
     precompiles::{Precompile, PrecompileError, PrecompileHalt, PrecompileId, PrecompileResult},
     registry::TxRegistry,
 };
@@ -18,15 +18,15 @@ const SUBCALL_TARGET: Address = Address::with_last_byte(0xca);
 fn main() {
     let mut evm = evm_with_custom_precompile();
     let parent_code = Bytecode::new_legacy(parent_code());
-    let mut message = Message {
+    let mut message = MessageExt {
         kind: MessageKind::Call,
         gas_limit: 200_000,
         destination: PARENT,
         code_address: PARENT,
-        ..Message::default()
+        ..MessageExt::default()
     };
 
-    let result = Host::execute_message(&mut evm, &TxEnv::default(), parent_code, &mut message);
+    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), parent_code, &mut message);
     assert_eq!(result.stop, InstrStop::Return);
     assert_eq!(result.output.len(), 32);
 
@@ -54,7 +54,7 @@ fn evm_with_custom_precompile() -> Evm<'static, BaseEvmTypes> {
         staticcall_precompile,
     ));
 
-    Evm::new(SpecId::OSAKA, BlockEnv::default(), TxRegistry::new(), database, precompiles)
+    Evm::new(SpecId::OSAKA, BlockEnvExt::default(), TxRegistry::new(), database, precompiles)
 }
 
 fn staticcall_precompile(
@@ -68,7 +68,7 @@ fn staticcall_precompile(
     let child_gas_limit = gas.remaining().min(50_000);
     gas.spend(child_gas_limit)?;
 
-    let mut child = Message {
+    let mut child = MessageExt {
         kind: MessageKind::StaticCall,
         depth: message.depth.saturating_add(1),
         gas_limit: child_gas_limit,
@@ -80,10 +80,10 @@ fn staticcall_precompile(
         code_address: SUBCALL_TARGET,
         caller_is_static: message.caller_is_static
             || matches!(message.kind, MessageKind::StaticCall),
-        ..Message::default()
+        ..MessageExt::default()
     };
 
-    let result = Host::execute_message(evm, &TxEnv::default(), loaded.code, &mut child);
+    let result = Host::execute_message(evm, &TxEnvExt::default(), loaded.code, &mut child);
     gas.merge_child_gas(result.gas, result.stop);
 
     match result.stop {

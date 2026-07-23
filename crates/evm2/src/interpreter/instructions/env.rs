@@ -169,8 +169,8 @@ pub(crate) fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -
 mod tests {
     use crate::{
         SpecId,
-        env::TxEnv,
-        interpreter::{InstrStop, Message, Word, op},
+        env::TxEnvExt,
+        interpreter::{InstrStop, Message, MessageExt, Word, op},
         test_utils::{
             RunConfig, TestHost, TestTypes, assert_stack, neg, push, run, run_stack, stack_code,
         },
@@ -181,14 +181,14 @@ mod tests {
     use core::assert_matches;
 
     fn test_message() -> Message<TestTypes> {
-        Message { gas_limit: 10_000, ..Message::default() }
+        MessageExt { gas_limit: 10_000, ..MessageExt::default() }
     }
 
     #[test]
     fn address_opcode() {
         let address = Address::from([0x11; 20]);
         let mut host = TestHost::default();
-        let message = Message { destination: address, ..test_message() };
+        let message = MessageExt { destination: address, ..test_message() };
         let interp = run(RunConfig::new([op::ADDRESS, op::STOP]).host(&mut host).message(message));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [address_to_word(&address)]);
@@ -226,7 +226,7 @@ mod tests {
     fn origin_opcode() {
         let origin = Address::from([0x22; 20]);
         let mut host = TestHost::default();
-        let tx_env = TxEnv { origin, ..TxEnv::default() };
+        let tx_env = TxEnvExt { origin, ..TxEnvExt::default() };
         let interp = run(RunConfig::new([op::ORIGIN, op::STOP]).host(&mut host).tx_env(tx_env));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [address_to_word(&origin)]);
@@ -236,7 +236,7 @@ mod tests {
     fn caller_opcode() {
         let caller = Address::from([0x33; 20]);
         let mut host = TestHost::default();
-        let message = Message { caller, ..test_message() };
+        let message = MessageExt { caller, ..test_message() };
         let interp = run(RunConfig::new([op::CALLER, op::STOP]).host(&mut host).message(message));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [address_to_word(&caller)]);
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn callvalue_opcode() {
         let mut host = TestHost::default();
-        let message = Message { value: Word::from(0xbeef), ..test_message() };
+        let message = MessageExt { value: Word::from(0xbeef), ..test_message() };
         let interp =
             run(RunConfig::new([op::CALLVALUE, op::STOP]).host(&mut host).message(message));
         assert_matches!(interp.err, InstrStop::Stop);
@@ -256,7 +256,7 @@ mod tests {
     fn calldataload_opcode() {
         let input = Bytes::from(Vec::from([1_u8, 2, 3]));
         let mut host = TestHost::default();
-        let message = Message { input, ..test_message() };
+        let message = MessageExt { input, ..test_message() };
 
         let interp = run(RunConfig::new([op::PUSH0, op::CALLDATALOAD, op::STOP])
             .host(&mut host)
@@ -277,7 +277,7 @@ mod tests {
     fn calldatasize_opcode() {
         let input = Bytes::from(Vec::from([1_u8, 2, 3, 4]));
         let mut host = TestHost::default();
-        let message = Message { input, ..test_message() };
+        let message = MessageExt { input, ..test_message() };
         let interp =
             run(RunConfig::new([op::CALLDATASIZE, op::STOP]).host(&mut host).message(message));
         assert_matches!(interp.err, InstrStop::Stop);
@@ -288,7 +288,7 @@ mod tests {
     fn calldatacopy_opcode() {
         let input = Bytes::from(Vec::from([0xaa_u8, 0xbb, 0xcc]));
         let mut host = TestHost::default();
-        let message = Message { input, ..test_message() };
+        let message = MessageExt { input, ..test_message() };
         let mut code = Vec::new();
         push(&mut code, 2);
         push(&mut code, 1);
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn gasprice_opcode() {
         let mut host = TestHost::default();
-        let tx_env = TxEnv { gas_price: Word::from(0x1234), ..TxEnv::default() };
+        let tx_env = TxEnvExt { gas_price: Word::from(0x1234), ..TxEnvExt::default() };
         let interp = run(RunConfig::new([op::GASPRICE, op::STOP]).host(&mut host).tx_env(tx_env));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [Word::from(0x1234)]);
