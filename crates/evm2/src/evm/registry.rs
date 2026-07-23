@@ -7,11 +7,11 @@
 //! it does not force a particular transaction or receipt representation onto
 //! the rest of the crate.
 
-use crate::{ErrorCode, EvmTypesHost};
-use alloc::{string::String, sync::Arc};
+use crate::{AnyError, ErrorCode, EvmTypesHost};
+use alloc::sync::Arc;
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, U256, map::HashMap};
-use core::{any::Any, error::Error, fmt, marker::PhantomData};
+use core::{error::Error, fmt, marker::PhantomData};
 use thiserror::Error;
 
 /// Convenience result type used by the registry and handlers.
@@ -23,12 +23,9 @@ pub enum HandlerError {
     /// Host error propagated as a transaction handler failure.
     #[error("fatal error {0:?}")]
     Fatal(ErrorCode),
-    /// Custom error from a handler or fatal extension boundary.
-    #[error("{0}")]
-    Custom(String),
     /// Typed error supplied by a custom transaction handler.
     #[error(transparent)]
-    External(AnyHandlerError),
+    External(AnyError),
     /// No handler is registered for the transaction type byte.
     #[error("unsupported transaction type 0x{0:02x}")]
     UnsupportedTransactionType(u8),
@@ -150,7 +147,7 @@ pub enum HandlerError {
 impl HandlerError {
     /// Wraps a typed custom transaction handler error.
     pub fn external(error: impl Error + Send + Sync + 'static) -> Self {
-        Self::External(AnyHandlerError::new(error))
+        Self::External(AnyError::new(error))
     }
 
     /// Returns the typed custom error when it has type `E`.
@@ -161,57 +158,6 @@ impl HandlerError {
         }
     }
 }
-
-trait ErasedHandlerError: Error + Send + Sync + 'static {
-    fn as_any(&self) -> &dyn Any;
-}
-
-impl<E> ErasedHandlerError for E
-where
-    E: Error + Send + Sync + 'static,
-{
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-/// A typed error supplied by a custom transaction handler.
-#[derive(Clone)]
-pub struct AnyHandlerError(Arc<dyn ErasedHandlerError>);
-
-impl AnyHandlerError {
-    /// Erases a custom handler error while preserving it for downcasting.
-    pub fn new(error: impl Error + Send + Sync + 'static) -> Self {
-        Self(Arc::new(error))
-    }
-
-    /// Returns the original error when it has type `E`.
-    pub fn downcast_ref<E: Error + 'static>(&self) -> Option<&E> {
-        self.0.as_ref().as_any().downcast_ref()
-    }
-}
-
-impl fmt::Debug for AnyHandlerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.0, f)
-    }
-}
-
-impl fmt::Display for AnyHandlerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl Error for AnyHandlerError {}
-
-impl PartialEq for AnyHandlerError {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for AnyHandlerError {}
 
 /// Request passed to a typed transaction handler.
 #[derive(Debug)]
