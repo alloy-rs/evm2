@@ -1,7 +1,7 @@
 From 0412a6ca8e59ed549bd8402e8039df85af1ae28d Mon Sep 17 00:00:00 2001
 From: 0xalpharush <0xalpharush@protonmail.com>
 Date: Thu, 9 Jul 2026 22:51:26 +0000
-Subject: [PATCH] fix amsterdam runtime gas handling
+Subject: [PATCH 1/2] fix amsterdam runtime gas handling
 
 ---
  crates/evm2/src/ethereum/eip1559.rs           |  18 +-
@@ -117,7 +117,7 @@ index ffab1c3..6c5a6e8 100644
  use alloy_consensus::transaction::Recovered;
 -use alloy_primitives::U256;
 +use alloy_primitives::{Address, TxKind, U256, map::AddressHashSet};
- 
+
  pub(super) fn handle<T: EvmTypes>(
      req: TxRequest<'_, '_, T, Recovered<super::LazyTxEip7702>>,
 @@ -47,10 +47,13 @@ pub(super) fn handle<T: EvmTypes>(
@@ -191,7 +191,7 @@ index ffab1c3..6c5a6e8 100644
 +        )
 +    };
      let execution_checkpoint = req.host.state.checkpoint();
- 
+
      // EIP-7702 transactions are always calls, never creates.
 -    let (gas_limit, reservoir) = initial_gas_and_reservoir(
 -        req.host.version(),
@@ -219,7 +219,7 @@ index ffab1c3..6c5a6e8 100644
 +            result.gas.refunded().saturating_add(i64::try_from(regular_refund).unwrap_or(i64::MAX)),
 +        );
 +    }
- 
+
      settle_gas(
          req.host,
 @@ -106,7 +149,7 @@ pub(super) fn handle<T: EvmTypes>(
@@ -233,7 +233,7 @@ index ffab1c3..6c5a6e8 100644
          result,
 @@ -114,7 +157,12 @@ pub(super) fn handle<T: EvmTypes>(
  }
- 
+
  fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations: usize) -> u64 {
 -    let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
 +    let mut per_auth =
@@ -244,11 +244,11 @@ index ffab1c3..6c5a6e8 100644
 +    }
      (authorizations as u64).saturating_mul(per_auth)
  }
- 
+
 @@ -179,6 +227,118 @@ fn apply_one_auth<'a, T: EvmTypes>(
      Ok(Some(AppliedAuth { existed, delegated_before_tx, delegated_now, clearing }))
  }
- 
+
 +#[derive(Clone, Copy, Debug, Default)]
 +struct RuntimeAuthListGas {
 +    state_gas: u64,
@@ -439,13 +439,13 @@ index f3e200f..05614dc 100644
 +        eip2930::AccessList,
 +        eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization},
 +    };
- 
+
      #[test]
      fn intrinsic_gas_charges_shanghai_create_initcode_words() {
 @@ -914,6 +920,127 @@ mod tests {
          );
      }
- 
+
 +    #[test]
 +    fn amsterdam_create_state_gas_out_of_gas_is_runtime_failure() {
 +        let caller = Address::with_last_byte(0xaa);
@@ -585,7 +585,7 @@ index fe6e6e5..3bef09b 100644
 @@ -1009,6 +1009,19 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
              message.destination = Self::derive_create_address(&bytecode, message, nonce);
          }
- 
+
 +        if is_create && message.first_frame_state_gas != 0 {
 +            let mut probe = GasTracker::new_with_regular_gas_and_reservoir(
 +                message.gas_limit,
@@ -619,18 +619,18 @@ index fe6e6e5..3bef09b 100644
 @@ -1096,10 +1116,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
          message.disable_precompiles = false;
          let input = core::mem::take(&mut message.input);
- 
+
 -        // Creates pay their NEW_ACCOUNT-equivalent state gas upfront via the tx-level
 -        // `initial_state_gas`, so the create frame starts from the inherited gas as-is.
 -        let frame_gas =
 -            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
          let stop = self.run_interpreter(bytecode, tx_env, message, frame_gas);
          message.input = input;
- 
+
 @@ -1164,6 +1180,27 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
          }
      }
- 
+
 +    fn account_is_empty(&mut self, address: &Address) -> Result<bool, InstrStop> {
 +        match self.state.account(address, false) {
 +            Ok(account) => Ok(account.get().is_none_or(AccountInfo::is_empty)),
@@ -739,6 +739,130 @@ index 8ae87cc..90c9e6a 100644
          destination,
          caller,
          input,
--- 
+--
+2.43.0
+
+
+From a20b2e9e1e14ce797b1bf312ac97ed940a37bab5 Mon Sep 17 00:00:00 2001
+From: 0xalpharush <0xalpharush@protonmail.com>
+Date: Tue, 14 Jul 2026 00:37:33 +0000
+Subject: [PATCH 2/2] fix(evm): expose Amsterdam create runtime gas to
+ inspectors
+
+---
+ crates/evm2/src/evm/mod.rs | 71 ++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 68 insertions(+), 3 deletions(-)
+
+diff --git a/crates/evm2/src/evm/mod.rs b/crates/evm2/src/evm/mod.rs
+index 3bef09b..3e941d6 100644
+--- a/crates/evm2/src/evm/mod.rs
++++ b/crates/evm2/src/evm/mod.rs
+@@ -1009,7 +1009,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
+             message.destination = Self::derive_create_address(&bytecode, message, nonce);
+         }
+
+-        if is_create && message.first_frame_state_gas != 0 {
++        let inspector_create_gas = if is_create && message.first_frame_state_gas != 0 {
+             let mut probe = GasTracker::new_with_regular_gas_and_reservoir(
+                 message.gas_limit,
+                 message.reservoir,
+@@ -1020,7 +1020,20 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
+                 result.gas.settle_gas(result.stop);
+                 return result;
+             }
+-        }
++            Some((probe.remaining(), probe.reservoir()))
++        } else {
++            None
++        };
++
++        // revm constructs the inspected CREATE frame after applying its first-frame state charge.
++        // Present the same post-charge budget to the hook, then restore the message before normal
++        // execution so the real frame records and settles the charge exactly once.
++        let original_create_gas = inspector_create_gas.map(|(gas_limit, reservoir)| {
++            let original = (message.gas_limit, message.reservoir);
++            message.gas_limit = gas_limit;
++            message.reservoir = reservoir;
++            original
++        });
+
+         let mut top_frame: Option<Box<Interpreter<'frame, 'a, T>>> = None;
+         let frame = match self.current_frame {
+@@ -1054,6 +1067,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
+             inspector.call(frame, message)
+         };
+
++        if let Some((gas_limit, reservoir)) = original_create_gas {
++            message.gas_limit = gas_limit;
++            message.reservoir = reservoir;
++        }
++
+         let mut result =
+             inspected.unwrap_or_else(|| self.execute_message_impl(tx_env, bytecode, message));
+
+@@ -1910,7 +1928,7 @@ mod tests {
+     use core::{
+         error::Error,
+         fmt,
+-        sync::atomic::{AtomicUsize, Ordering},
++        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+     };
+
+     const TEST_TX_TYPE: u8 = 0x00;
+@@ -3209,6 +3227,53 @@ mod tests {
+         );
+     }
+
++    #[test]
++    fn amsterdam_create_inspector_observes_runtime_state_gas() {
++        struct CreateGasInspector {
++            gas_limit: Arc<AtomicU64>,
++        }
++
++        impl Inspector<BaseEvmTypes> for CreateGasInspector {
++            fn create(
++                &mut self,
++                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
++                message: &mut Message<BaseEvmTypes>,
++            ) -> Option<MessageResult<BaseEvmTypes>> {
++                self.gas_limit.store(message.gas_limit, Ordering::Relaxed);
++                None
++            }
++        }
++
++        let caller = Address::from([0x01; 20]);
++        let mut database = InMemoryDB::default();
++        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(1)));
++        let mut evm = Evm::<BaseEvmTypes>::new(
++            SpecId::AMSTERDAM,
++            BlockEnv::default(),
++            TxRegistry::new(),
++            database,
++            Precompiles::base(SpecId::AMSTERDAM),
++        );
++        let create_state_gas = evm.version().gas_params.create_state_gas();
++        let observed_gas = Arc::new(AtomicU64::new(0));
++        evm.set_inspector(CreateGasInspector { gas_limit: Arc::clone(&observed_gas) });
++        let gas_limit = 300_000;
++        let mut message = Message {
++            kind: MessageKind::Create,
++            caller,
++            gas_limit,
++            first_frame_state_gas: create_state_gas,
++            ..Message::default()
++        };
++
++        let result =
++            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
++
++        assert!(result.stop.is_success());
++        assert_eq!(observed_gas.load(Ordering::Relaxed), gas_limit - create_state_gas);
++        assert_eq!(result.gas.state_gas_spent(), create_state_gas as i64);
++    }
++
+     #[test]
+     fn amsterdam_call_value_emits_eip7708_log() {
+         let caller = Address::from([0x01; 20]);
+--
 2.43.0
 

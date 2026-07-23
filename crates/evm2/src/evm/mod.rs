@@ -1179,7 +1179,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             message.destination = Self::derive_create_address(&bytecode, message, nonce);
         }
 
-        if is_create && message.first_frame_state_gas != 0 {
+        let inspector_create_gas = if is_create && message.first_frame_state_gas != 0 {
             let mut probe = GasTracker::new_with_regular_gas_and_reservoir(
                 message.gas_limit,
                 message.reservoir,
@@ -1190,13 +1190,26 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 result.gas.settle_gas(result.stop);
                 return result;
             }
-        }
+            Some((probe.remaining(), probe.reservoir()))
+        } else {
+            None
+        };
 
         if !is_create && let Err(stop) = self.preflight_first_frame_call_runtime_gas(message) {
             let mut result = Self::error_message_result(stop, message.gas_limit, message.reservoir);
             result.gas.settle_gas(result.stop);
             return result;
         }
+
+        // revm constructs the inspected CREATE frame after applying its first-frame state charge.
+        // Present the same post-charge budget to the hook, then restore the message before normal
+        // execution so the real frame records and settles the charge exactly once.
+        let original_create_gas = inspector_create_gas.map(|(gas_limit, reservoir)| {
+            let original = (message.gas_limit, message.reservoir);
+            message.gas_limit = gas_limit;
+            message.reservoir = reservoir;
+            original
+        });
 
         let mut top_frame: Option<Box<Interpreter<'frame, 'a, T>>> = None;
         let frame = match self.current_frame {
@@ -1229,6 +1242,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             inspector.call(frame, message)
         };
+
+        if let Some((gas_limit, reservoir)) = original_create_gas {
+            message.gas_limit = gas_limit;
+            message.reservoir = reservoir;
+        }
 
         let mut result =
             inspected.unwrap_or_else(|| self.execute_message_impl(tx_env, bytecode, message));
@@ -2115,7 +2133,7 @@ mod tests {
     use core::{
         error::Error,
         fmt,
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     };
 
     const TEST_TX_TYPE: u8 = 0x00;
@@ -3711,6 +3729,53 @@ mod tests {
         assert_eq!(inspector.call_ends, 0);
         assert_eq!(inspector.logs, 0);
         assert!(evm.logs().is_empty());
+    }
+
+    #[test]
+    fn amsterdam_create_inspector_observes_runtime_state_gas() {
+        struct CreateGasInspector {
+            gas_limit: Arc<AtomicU64>,
+        }
+
+        impl Inspector<BaseEvmTypes> for CreateGasInspector {
+            fn create(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                self.gas_limit.store(message.gas_limit, Ordering::Relaxed);
+                None
+            }
+        }
+
+        let caller = Address::from([0x01; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(1)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        let create_state_gas = evm.version().gas_params.create_state_gas();
+        let observed_gas = Arc::new(AtomicU64::new(0));
+        evm.set_inspector(CreateGasInspector { gas_limit: Arc::clone(&observed_gas) });
+        let gas_limit = 300_000;
+        let mut message = Message {
+            kind: MessageKind::Create,
+            caller,
+            gas_limit,
+            first_frame_state_gas: create_state_gas,
+            ..Message::default()
+        };
+
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
+
+        assert!(result.stop.is_success());
+        assert_eq!(observed_gas.load(Ordering::Relaxed), gas_limit - create_state_gas);
+        assert_eq!(result.gas.state_gas_spent(), create_state_gas as i64);
     }
 
     #[test]

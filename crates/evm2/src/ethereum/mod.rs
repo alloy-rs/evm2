@@ -964,15 +964,15 @@ mod tests {
             &caller,
             AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
         );
-        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy {
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
                 gas_limit: 100_000,
                 to: TxKind::Create,
                 input: Bytes::from_static(&[op::STOP]),
                 ..Default::default()
-            },
+            }),
             caller,
-        ));
+        );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::AMSTERDAM,
             BlockEnv::default(),
@@ -1013,7 +1013,7 @@ mod tests {
             },
             vec![authorization],
         );
-        let tx = RecoveredTxEnvelope::Eip7702(Recovered::new_unchecked(tx, caller));
+        let tx = Recovered::new_unchecked(TxEnvelope::Eip7702(tx), caller);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::AMSTERDAM,
             BlockEnv::default(),

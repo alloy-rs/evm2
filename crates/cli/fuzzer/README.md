@@ -81,6 +81,34 @@ Use `--jobs` and `--slice` to adjust concurrency and the per-target time slice.
 For example, `scripts/fuzz_round_robin.sh --jobs 4 --slice 900 *_amsterdam` runs
 four Amsterdam targets at a time for fifteen minutes each.
 
+Build and audit every target against the currently locked revm revision:
+
+```sh
+LLVM_SYS_221_PREFIX=/usr/lib/llvm-22 cargo +nightly fuzz build --features jit
+scripts/fuzz_round_robin.sh --jobs 4 --slice 60
+```
+
+The one-minute slices are intended for a complete smoke pass. For sustained
+coverage, increase the slice after the smoke pass, for example:
+
+```sh
+scripts/fuzz_round_robin.sh --jobs 8 --slice 3600
+```
+
+Replay every saved crash artifact against the current binaries without network
+access:
+
+```sh
+ASAN_OPTIONS=detect_leaks=0:detect_odr_violation=0 \
+  CARGO_TARGET_DIR="$PWD/fuzz/target" \
+  CARGO_NET_OFFLINE=true \
+  scripts/fuzz_replay_artifacts.sh --keep-going
+```
+
+Leak detection is disabled for fixed-input replay because cargo-fuzz runs the
+target under a debugger wrapper, which prevents LeakSanitizer from attaching.
+AddressSanitizer's other checks remain enabled.
+
 Fuzzer corpora, artifacts, target directories, logs, and lockfiles are ignored
 by the repository-level `.gitignore`.
 
