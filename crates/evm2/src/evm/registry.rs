@@ -147,6 +147,8 @@ pub enum HandlerError {
 /// Request passed to a typed transaction handler.
 #[derive(Debug)]
 pub struct TxRequest<'a, 'host, T: EvmTypesHost, Tx> {
+    /// Full transaction envelope passed to the registry.
+    pub envelope: &'a T::Tx,
     /// Concrete transaction extracted from the envelope.
     pub tx: Recovered<&'a Tx>,
     /// Mutable host used by this handler.
@@ -231,6 +233,7 @@ where
         let tx = (self.extract)(env.inner())
             .ok_or(HandlerError::WrongTransactionType { expected: self.type_id })?;
         self.handler.call(TxRequest {
+            envelope: env.inner(),
             tx: Recovered::new_unchecked(tx, env.signer()),
             host,
             _non_exhaustive: (),
@@ -456,6 +459,7 @@ mod tests {
     }
 
     fn handle_transfer(req: TxRequest<'_, '_, TestTypes, TransferTx>) -> HandlerResult<Receipt> {
+        assert!(matches!(req.envelope, Envelope::Transfer(_)));
         let gas_used = 21_000 + req.tx.amount;
         Ok(receipt(gas_used))
     }
