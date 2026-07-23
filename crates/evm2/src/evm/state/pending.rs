@@ -1,10 +1,14 @@
 //! Owned pending transaction state detached from the EVM.
 
 use super::{
-    Account, AccountChangeRef, AccountInfoRef, StateChangeSink, StateChangeSource, StorageChange,
-    StorageOverlay,
+    Account, AccountChangeRef, AccountInfo, AccountInfoRef, StateChangeSink, StateChangeSource,
+    StorageChange, StorageOverlay, StorageSlot, Tracked,
 };
-use alloy_primitives::map::{AddressMap, AddressSet};
+use crate::interpreter::Word;
+use alloy_primitives::{
+    Address,
+    map::{AddressMap, AddressSet},
+};
 
 /// A transaction's finalized-but-uncommitted state, moved out of the EVM.
 ///
@@ -42,6 +46,39 @@ impl PendingState {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.accounts.is_empty() && self.storage.is_empty()
+    }
+
+    /// Returns the current account information when the account is present in pending state.
+    #[inline]
+    pub fn account_info(&self, address: &Address) -> Option<&AccountInfo> {
+        self.accounts.get(address).and_then(|account| account.present.as_ref())
+    }
+
+    /// Inserts an account's transaction-boundary original and current values.
+    pub fn insert_account(
+        &mut self,
+        address: Address,
+        original: Option<AccountInfo>,
+        current: Option<AccountInfo>,
+    ) {
+        let code_changed = original.as_ref().map(|account| account.code_hash)
+            != current.as_ref().map(|account| account.code_hash);
+        self.accounts.insert(
+            address,
+            Account { original, present: current, code_changed, ..Account::default() },
+        );
+    }
+
+    /// Inserts a storage slot's transaction-boundary original and current values.
+    pub fn insert_storage(&mut self, address: Address, key: Word, original: Word, current: Word) {
+        self.storage.entry(address).or_default().slots.insert(
+            key,
+            StorageSlot {
+                value: Tracked::from_parts(original, current),
+                is_warm: false,
+                _non_exhaustive: (),
+            },
+        );
     }
 
     /// Returns whether the transaction contains any account or storage change.
@@ -106,5 +143,30 @@ impl StateChangeSource for PendingState {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inserts_account_and_storage() {
+        let address = Address::with_last_byte(0xaa);
+        let key = Word::from(1);
+        let original = AccountInfo { nonce: 1, ..AccountInfo::default() };
+        let current = AccountInfo { nonce: 2, ..AccountInfo::default() };
+        let mut state = PendingState::default();
+
+        state.insert_account(address, Some(original.clone()), Some(current.clone()));
+        state.insert_storage(address, key, Word::from(2), Word::from(3));
+
+        assert_eq!(state.account_info(&address), Some(&current));
+        assert_eq!(state.accounts[&address].original, Some(original));
+        assert_eq!(state.accounts[&address].present, Some(current));
+        assert_eq!(
+            state.storage[&address].slots[&key].value,
+            Tracked::from_parts(Word::from(2), Word::from(3))
+        );
     }
 }
