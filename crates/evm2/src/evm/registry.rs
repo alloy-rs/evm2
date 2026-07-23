@@ -11,7 +11,7 @@ use crate::{ErrorCode, EvmTypesHost};
 use alloc::{string::String, sync::Arc};
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, U256, map::HashMap};
-use core::{fmt, marker::PhantomData};
+use core::{any::Any, error::Error, fmt, marker::PhantomData};
 use thiserror::Error;
 
 /// Convenience result type used by the registry and handlers.
@@ -26,6 +26,9 @@ pub enum HandlerError {
     /// Custom error from a handler or fatal extension boundary.
     #[error("{0}")]
     Custom(String),
+    /// Typed error supplied by a custom transaction handler.
+    #[error(transparent)]
+    External(AnyHandlerError),
     /// No handler is registered for the transaction type byte.
     #[error("unsupported transaction type 0x{0:02x}")]
     UnsupportedTransactionType(u8),
@@ -143,6 +146,72 @@ pub enum HandlerError {
     #[error("unsupported caller {0}")]
     UnsupportedCaller(Address),
 }
+
+impl HandlerError {
+    /// Wraps a typed custom transaction handler error.
+    pub fn external(error: impl Error + Send + Sync + 'static) -> Self {
+        Self::External(AnyHandlerError::new(error))
+    }
+
+    /// Returns the typed custom error when it has type `E`.
+    pub fn external_ref<E: Error + 'static>(&self) -> Option<&E> {
+        match self {
+            Self::External(error) => error.downcast_ref(),
+            _ => None,
+        }
+    }
+}
+
+trait ErasedHandlerError: Error + Send + Sync + 'static {
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<E> ErasedHandlerError for E
+where
+    E: Error + Send + Sync + 'static,
+{
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// A typed error supplied by a custom transaction handler.
+#[derive(Clone)]
+pub struct AnyHandlerError(Arc<dyn ErasedHandlerError>);
+
+impl AnyHandlerError {
+    /// Erases a custom handler error while preserving it for downcasting.
+    pub fn new(error: impl Error + Send + Sync + 'static) -> Self {
+        Self(Arc::new(error))
+    }
+
+    /// Returns the original error when it has type `E`.
+    pub fn downcast_ref<E: Error + 'static>(&self) -> Option<&E> {
+        self.0.as_ref().as_any().downcast_ref()
+    }
+}
+
+impl fmt::Debug for AnyHandlerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Display for AnyHandlerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl Error for AnyHandlerError {}
+
+impl PartialEq for AnyHandlerError {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for AnyHandlerError {}
 
 /// Request passed to a typed transaction handler.
 #[derive(Debug)]
@@ -315,6 +384,16 @@ mod tests {
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256, Log};
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("typed handler error")]
+    struct TestHandlerError;
+
+    #[test]
+    fn preserves_typed_external_errors() {
+        let error = HandlerError::external(TestHandlerError);
+        assert!(error.external_ref::<TestHandlerError>().is_some());
+    }
 
     #[derive(Clone, Debug)]
     struct TransferTx {
