@@ -664,33 +664,60 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         version.gas_params.get(GasId::Create).into()
     };
     ecx.gas.spend(create_cost)?;
-    if ecx.enables(EvmFeatures::EIP8037) {
-        ecx.gas.spend_state(version.gas_params.create_state_gas())?;
-    }
-
-    let mut gas_limit = ecx.gas.remaining();
-    if ecx.enables(EvmFeatures::EIP150) {
-        gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
-    }
-    ecx.gas.spend(gas_limit)?;
     let salt = if is_create2 {
         pop!(sp; salt);
         B256::from(salt.to_be_bytes())
     } else {
         B256::ZERO
     };
-
+    let value = value.to_u256();
     let current = ecx.message();
+    let current_destination = current.destination;
+    let depth = current.depth.saturating_add(1);
+
+    let charged_create_state_gas = if ecx.enables(EvmFeatures::EIP8037) {
+        let caller_account = ecx.host().load_account(&current_destination, false, false)?;
+        if caller_account.balance < value || caller_account.nonce == u64::MAX {
+            unsafe {
+                sp.write(EvmWord::ZERO);
+            }
+            ecx.set_return_data(Bytes::new());
+            return Ok(());
+        }
+
+        let destination = if is_create2 {
+            current_destination.create2(salt, keccak256(code.as_ref()))
+        } else {
+            current_destination.create(caller_account.nonce)
+        };
+        let destination_account = ecx.host().load_account(&destination, false, false)?;
+        if destination_account.is_empty {
+            let create_state_gas = version.gas_params.create_state_gas();
+            ecx.gas.spend_state(create_state_gas)?;
+            create_state_gas
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let mut gas_limit = ecx.gas.remaining();
+    if ecx.enables(EvmFeatures::EIP150) {
+        gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
+    }
+    ecx.gas.spend(gas_limit)?;
+
     let mut message = Message {
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
-        depth: current.depth.saturating_add(1),
+        depth,
         gas_limit,
         reservoir: ecx.gas.reservoir(),
-        destination: current.destination,
-        caller: current.destination,
+        destination: current_destination,
+        caller: current_destination,
         input: code,
-        value: value.to_u256(),
-        code_address: current.destination,
+        value,
+        code_address: current_destination,
         disable_precompiles: false,
         caller_is_static: false,
         salt,
@@ -702,8 +729,8 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     let mut result = ecx.host().execute_message(tx_env, bytecode, &mut message);
     ecx.gas.merge_child_gas(result.gas, result.stop);
     let create_failed = result.created_address.is_none() || !result.stop.is_success();
-    if (create_failed || result.created_target_was_alive) && ecx.enables(EvmFeatures::EIP8037) {
-        ecx.gas.refill_reservoir(ecx.gas_params().create_state_gas());
+    if create_failed && charged_create_state_gas != 0 {
+        ecx.gas.refill_reservoir(charged_create_state_gas);
     }
 
     let address = EvmWord::from(result.created_address_for_parent());
