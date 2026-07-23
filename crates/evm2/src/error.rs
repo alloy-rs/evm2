@@ -19,10 +19,23 @@ impl Error for AnyError {
     }
 }
 
+impl PartialEq for AnyError {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for AnyError {}
+
 impl AnyError {
     /// Creates a new [`AnyError`] from any error type.
     pub fn new(err: impl Error + Send + Sync + 'static) -> Self {
         Self(Arc::new(err))
+    }
+
+    /// Returns the original error when it has type `E`.
+    pub fn downcast_ref<E: Error + 'static>(&self) -> Option<&E> {
+        self.0.downcast_ref()
     }
 }
 

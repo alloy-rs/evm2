@@ -7,11 +7,11 @@
 //! it does not force a particular transaction or receipt representation onto
 //! the rest of the crate.
 
-use crate::{ErrorCode, EvmTypesHost};
-use alloc::{string::String, sync::Arc};
+use crate::{AnyError, ErrorCode, EvmTypesHost};
+use alloc::sync::Arc;
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, U256, map::HashMap};
-use core::{fmt, marker::PhantomData};
+use core::{error::Error, fmt, marker::PhantomData};
 use thiserror::Error;
 
 /// Convenience result type used by the registry and handlers.
@@ -23,9 +23,9 @@ pub enum HandlerError {
     /// Host error propagated as a transaction handler failure.
     #[error("fatal error {0:?}")]
     Fatal(ErrorCode),
-    /// Custom error from a handler or fatal extension boundary.
-    #[error("{0}")]
-    Custom(String),
+    /// Typed error supplied by a custom transaction handler.
+    #[error(transparent)]
+    External(AnyError),
     /// No handler is registered for the transaction type byte.
     #[error("unsupported transaction type 0x{0:02x}")]
     UnsupportedTransactionType(u8),
@@ -142,6 +142,21 @@ pub enum HandlerError {
     /// Unsupported caller for this handler.
     #[error("unsupported caller {0}")]
     UnsupportedCaller(Address),
+}
+
+impl HandlerError {
+    /// Wraps a typed custom transaction handler error.
+    pub fn external(error: impl Error + Send + Sync + 'static) -> Self {
+        Self::External(AnyError::new(error))
+    }
+
+    /// Returns the typed custom error when it has type `E`.
+    pub fn external_ref<E: Error + 'static>(&self) -> Option<&E> {
+        match self {
+            Self::External(error) => error.downcast_ref(),
+            _ => None,
+        }
+    }
 }
 
 /// Request passed to a typed transaction handler.
@@ -318,6 +333,16 @@ mod tests {
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256, Log};
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("typed handler error")]
+    struct TestHandlerError;
+
+    #[test]
+    fn preserves_typed_external_errors() {
+        let error = HandlerError::external(TestHandlerError);
+        assert!(error.external_ref::<TestHandlerError>().is_some());
+    }
 
     #[derive(Clone, Debug)]
     struct TransferTx {
