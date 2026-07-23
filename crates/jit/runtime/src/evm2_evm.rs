@@ -74,12 +74,13 @@ mod tests {
     use alloy_primitives::Address;
     use alloy_primitives::Bytes;
     use evm2::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Inspector, Precompiles,
+        SpecId,
         bytecode::Bytecode,
         env::{BlockEnv, TxEnv},
         ethereum::ethereum_tx_registry,
         evm::EmptyDB,
-        interpreter::{Message, op},
+        interpreter::{Interpreter, Message, MessageResult, op},
     };
     #[cfg(feature = "llvm")]
     use evm2::{
@@ -278,6 +279,87 @@ mod tests {
         );
         assert_eq!(interpreter.output().len(), 32);
         assert_eq!(interpreter.output()[31], 0x42);
+    }
+
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn compiled_nested_delegated_call_keeps_target_code_address() {
+        #[derive(Default)]
+        struct CodeAddressInspector {
+            nested_call: Option<(Address, Address)>,
+        }
+
+        impl Inspector<BaseEvmTypes> for CodeAddressInspector {
+            fn call(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth > 0 {
+                    self.nested_call = Some((message.destination, message.code_address));
+                }
+                None
+            }
+        }
+
+        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
+            SpecId::PRAGUE,
+        );
+        let outer = Address::from([0x11; 20]);
+        let target = Address::from([0x22; 20]);
+        let delegated = Address::from([0x33; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&outer, AccountInfo::default());
+        database.insert_account_info(
+            &target,
+            AccountInfo::default().with_code(Bytecode::new_eip7702(delegated)),
+        );
+        database.insert_account_info(
+            &delegated,
+            AccountInfo::default()
+                .with_code(Bytecode::new_legacy(Bytes::copy_from_slice(BYTECODE_RET42))),
+        );
+        let backend = blocking_backend();
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::PRAGUE,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::PRAGUE),
+            database,
+            Precompiles::base(SpecId::PRAGUE),
+        );
+        host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
+        host.set_inspector(CodeAddressInspector::default());
+        let tx_env = TxEnv::default();
+        let message = Message {
+            gas_limit: 1_000_000,
+            destination: outer,
+            code_address: outer,
+            ..Message::default()
+        };
+        let mut code = vec![op::PUSH1, 0x20, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0];
+        push20(&mut code, target);
+        code.extend([
+            op::PUSH2,
+            0x27,
+            0x10,
+            op::CALL,
+            op::POP,
+            op::PUSH1,
+            0x20,
+            op::PUSH0,
+            op::RETURN,
+        ]);
+        let mut interpreter =
+            Interpreter::<BaseEvmTypes>::new(Bytecode::new_legacy(code.into()), &tx_env, &message);
+
+        assert_eq!(
+            run_interpreter(&backend, &config, &mut interpreter, &mut host),
+            Some(InstrStop::Return),
+        );
+        assert_eq!(interpreter.output().len(), 32);
+        assert_eq!(interpreter.output()[31], 0x42);
+        let inspector = host.clear_inspector_as::<CodeAddressInspector>().unwrap();
+        assert_eq!(inspector.nested_call, Some((target, target)));
     }
 
     #[test]

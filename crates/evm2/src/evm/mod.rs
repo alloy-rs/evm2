@@ -388,7 +388,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline]
     fn contains_precompile(&self, message: &Message<T>) -> bool {
-        !message.disable_precompiles && self.precompiles.contains(&message.code_address)
+        self.precompiles.contains(&message.code_address)
     }
 
     #[inline]
@@ -1263,7 +1263,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return Self::error_message_result(stop, message.gas_limit, message.reservoir);
         }
         message.code_address = message.destination;
-        message.disable_precompiles = false;
         let input = core::mem::take(&mut message.input);
 
         // Creates pay their NEW_ACCOUNT-equivalent state gas upfront via the tx-level
@@ -2195,7 +2194,6 @@ mod tests {
             input: Bytes::new(),
             value: U256::ZERO,
             code_address: address,
-            disable_precompiles: false,
             caller_is_static: false,
             salt: B256::ZERO,
             ext: (),
@@ -2855,7 +2853,6 @@ mod tests {
             assert_eq!(message.input, Bytes::from_static(b"message input"));
             assert_eq!(message.value, U256::from(99));
             assert_eq!(message.code_address, TEST_PRECOMPILE);
-            assert!(!message.disable_precompiles);
             Ok(PrecompileOutput::new(Bytes::copy_from_slice(&evm.block.number.to_be_bytes::<32>())))
         })]);
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -2875,7 +2872,6 @@ mod tests {
             input: Bytes::from_static(b"message input"),
             value: U256::from(99),
             code_address: address,
-            disable_precompiles: false,
             caller_is_static: false,
             salt: B256::ZERO,
             ext: (),

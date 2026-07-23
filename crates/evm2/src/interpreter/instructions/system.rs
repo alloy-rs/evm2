@@ -77,7 +77,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
-) -> Result<(u64, u64, Bytecode, Address, bool)> {
+) -> Result<(u64, u64, Bytecode)> {
     if transfers_value {
         gas.spend(state.gas_params().get(GasId::TransferValueCost).into())?;
     }
@@ -92,7 +92,6 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         cost += additional_cold_cost;
     }
     let mut code = account.code;
-    let mut code_address = to;
     if state.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
@@ -107,7 +106,6 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
             cost += additional_cold_cost;
         }
         code = delegated_account.code;
-        code_address = delegated_address;
     }
     let features = state.version().features;
     let mut new_account_state_gas = 0;
@@ -139,8 +137,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend).into());
     }
 
-    let disable_precompiles = code_address != to;
-    Ok((gas_limit, new_account_state_gas, code, code_address, disable_precompiles))
+    Ok((gas_limit, new_account_state_gas, code))
 }
 
 #[inline(never)]
@@ -176,27 +173,22 @@ fn prepare_call<T: EvmTypesHost>(
         return_offset,
         return_len,
     )?;
-    let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address, disable_precompiles) =
-        load_acc_and_calc_gas(
-            gas,
-            state,
-            to,
-            has_transfer,
-            kind == MessageKind::Call,
-            local_gas_limit,
-        )?;
+    let (gas_limit, new_account_state_gas, loaded_code) = load_acc_and_calc_gas(
+        gas,
+        state,
+        to,
+        has_transfer,
+        kind == MessageKind::Call,
+        local_gas_limit,
+    )?;
     let input = memory_range_bytes(state, input_range)?;
 
     let current = state.message();
-    let (destination, caller, call_value, code_address) = match kind {
-        MessageKind::Call => (to, current.destination, value, resolved_code_address),
-        MessageKind::CallCode => {
-            (current.destination, current.destination, value, resolved_code_address)
-        }
-        MessageKind::DelegateCall => {
-            (current.destination, current.caller, current.value, resolved_code_address)
-        }
-        MessageKind::StaticCall => (to, current.destination, Word::ZERO, resolved_code_address),
+    let (destination, caller, call_value) = match kind {
+        MessageKind::Call => (to, current.destination, value),
+        MessageKind::CallCode => (current.destination, current.destination, value),
+        MessageKind::DelegateCall => (current.destination, current.caller, current.value),
+        MessageKind::StaticCall => (to, current.destination, Word::ZERO),
         _ => unreachable!("invalid call message kind"),
     };
     *message = Message {
@@ -208,8 +200,7 @@ fn prepare_call<T: EvmTypesHost>(
         caller,
         input,
         value: call_value,
-        code_address,
-        disable_precompiles,
+        code_address: to,
         caller_is_static: state.is_static(),
         salt: B256::ZERO,
         ext: T::MessageExt::default(),
@@ -339,7 +330,6 @@ fn create_inner<T: EvmTypesHost>(
         input,
         value,
         code_address: current.destination,
-        disable_precompiles: false,
         // CREATE is rejected in a static context (see `require_non_staticcall`).
         caller_is_static: false,
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),

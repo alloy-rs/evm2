@@ -525,8 +525,7 @@ pub fn initial_message<'a, T: EvmTypes>(
                 caller,
                 input: input.clone(),
                 value,
-                code_address: initial_code.code_address,
-                disable_precompiles: initial_code.disable_precompiles,
+                code_address: to,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
@@ -546,7 +545,6 @@ pub fn initial_message<'a, T: EvmTypes>(
                 input: input.clone(),
                 value,
                 code_address: address,
-                disable_precompiles: false,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
@@ -561,8 +559,6 @@ pub fn initial_message<'a, T: EvmTypes>(
 
 struct InitialCallCode {
     code: Bytecode,
-    code_address: Address,
-    disable_precompiles: bool,
 }
 
 fn initial_call_code<'a, T: EvmTypes>(
@@ -582,13 +578,9 @@ fn initial_call_code<'a, T: EvmTypes>(
             host.state.account(&delegated_address, false).map_err(error_handler!(host))?;
         account.warm();
         let delegated_code = account.load_code().map_err(error_handler!(host))?;
-        return Ok(InitialCallCode {
-            code: delegated_code,
-            code_address: delegated_address,
-            disable_precompiles: true,
-        });
+        return Ok(InitialCallCode { code: delegated_code });
     }
-    Ok(InitialCallCode { code, code_address: to, disable_precompiles: false })
+    Ok(InitialCallCode { code })
 }
 
 /// Rolls back failed top-level execution and normalizes halt gas.
@@ -1098,7 +1090,57 @@ mod tests {
     }
 
     #[test]
-    fn initial_delegated_call_uses_delegated_code_address() {
+    fn initial_delegated_call_keeps_target_code_address() {
+        let caller = Address::with_last_byte(0xaa);
+        let target = Address::with_last_byte(0x42);
+        let delegated = Address::with_last_byte(0x33);
+        let delegated_code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH1,
+            0x2a,
+            op::PUSH0,
+            op::MSTORE,
+            op::PUSH1,
+            0x20,
+            op::PUSH0,
+            op::RETURN,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &target,
+            AccountInfo::default().with_code(Bytecode::new_eip7702(delegated)),
+        );
+        database.insert_account_info(&delegated, AccountInfo::default().with_code(delegated_code));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::PRAGUE,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::PRAGUE),
+        );
+
+        let (bytecode, mut message) = initial_message(
+            &mut evm,
+            caller,
+            0,
+            TxKind::Call(target),
+            &Bytes::new(),
+            U256::ZERO,
+            100_000,
+            0,
+        )
+        .unwrap();
+        assert_eq!(message.destination, target);
+        assert_eq!(message.code_address, target);
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(result.output.len(), 32);
+        assert_eq!(result.output[31], 0x2a);
+    }
+
+    #[test]
+    fn initial_delegated_precompile_keeps_precompile_precedence() {
         let caller = Address::with_last_byte(0xaa);
         let target = Address::with_last_byte(0x02);
         let delegated = Address::with_last_byte(0x33);
@@ -1137,15 +1179,17 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!(message.destination, target);
-        assert_eq!(message.code_address, delegated);
-        assert!(message.disable_precompiles);
-
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::Return);
-        assert_eq!(result.output.len(), 32);
-        assert_eq!(result.output[31], 0x2a);
+        assert_eq!(
+            result.output,
+            Bytes::from_static(&[
+                0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+                0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+                0x78, 0x52, 0xb8, 0x55,
+            ])
+        );
     }
 
     #[test]
