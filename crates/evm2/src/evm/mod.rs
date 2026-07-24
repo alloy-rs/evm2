@@ -1178,6 +1178,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             };
             message.destination = Self::derive_create_address(&bytecode, message, nonce);
         }
+        if !is_create && let Err(stop) = self.preflight_first_frame_call_runtime_gas(message) {
+            let mut result = Self::error_message_result(stop, message.gas_limit, message.reservoir);
+            result.gas.settle_gas(result.stop);
+            return result;
+        }
 
         let mut top_frame: Option<Box<Interpreter<'frame, 'a, T>>> = None;
         let frame = match self.current_frame {
@@ -1332,6 +1337,27 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             Ok(account) => Ok(account.get().is_some_and(|info| !info.is_empty())),
             Err(code) => Err(store_error!(self, code)),
         }
+    }
+
+    fn preflight_first_frame_call_runtime_gas(
+        &mut self,
+        message: &Message<T>,
+    ) -> Result<(), InstrStop> {
+        if message.depth != 0 || !self.feature(EvmFeatures::EIP2780) {
+            return Ok(());
+        }
+
+        let checkpoint = self.state.checkpoint();
+        let (regular, state) = self.eip2780_call_charges(message);
+        let mut gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let result = if gas.spend(regular).is_err() || gas.spend_state(state).is_err() {
+            Err(InstrStop::OutOfGas)
+        } else {
+            Ok(())
+        };
+        self.state.rollback(checkpoint, self.features);
+        result
     }
 
     #[inline(never)]
@@ -3592,6 +3618,72 @@ mod tests {
                 .balance,
             U256::from(7)
         );
+    }
+
+    #[test]
+    fn amsterdam_runtime_oog_call_value_is_not_inspected() {
+        #[derive(Default)]
+        struct RuntimeOogInspector {
+            calls: usize,
+            call_ends: usize,
+            logs: usize,
+        }
+
+        impl<T: EvmTypesHost> Inspector<T> for RuntimeOogInspector {
+            fn call(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, T>,
+                _message: &mut Message<T>,
+            ) -> Option<MessageResult<T>> {
+                self.calls += 1;
+                None
+            }
+
+            fn call_end(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, T>,
+                _message: &Message<T>,
+                _result: &mut MessageResult<T>,
+            ) {
+                self.call_ends += 1;
+            }
+
+            fn log(&mut self, _log: &Log, _host: &mut T::Host<'_>) {
+                self.logs += 1;
+            }
+        }
+
+        let caller = Address::from([0x01; 20]);
+        let target = Address::from([0x02; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(10)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        evm.set_inspector(RuntimeOogInspector::default());
+        let mut message = Message {
+            kind: MessageKind::Call,
+            destination: target,
+            code_address: target,
+            caller,
+            value: U256::from(7),
+            gas_limit: 23_204,
+            ..Message::default()
+        };
+
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
+        let inspector = evm.clear_inspector_as::<RuntimeOogInspector>().unwrap();
+
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert_eq!(inspector.calls, 0);
+        assert_eq!(inspector.call_ends, 0);
+        assert_eq!(inspector.logs, 0);
+        assert!(evm.logs().is_empty());
     }
 
     #[test]
