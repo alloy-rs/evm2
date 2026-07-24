@@ -28,10 +28,10 @@ mod memory;
 pub use memory::Memory;
 
 mod message;
-pub use message::{Message, MessageKind};
+pub use message::{Message, MessageExt, MessageKind};
 
 mod host;
-pub use host::{Host, MessageResult};
+pub use host::{Host, MessageResult, MessageResultExt};
 
 mod runtime;
 pub(crate) use runtime::InterpreterPool;

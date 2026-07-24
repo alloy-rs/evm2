@@ -108,7 +108,7 @@ impl<T: EvmTypesHost> Inspector<T> for TransferInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.on_transfer(message, interp.host());
+        self.on_transfer::<T>(message, interp.host());
         None
     }
 
@@ -117,7 +117,7 @@ impl<T: EvmTypesHost> Inspector<T> for TransferInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.on_transfer(message, interp.host());
+        self.on_transfer::<T>(message, interp.host());
         None
     }
 

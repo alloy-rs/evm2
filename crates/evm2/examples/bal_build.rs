@@ -13,7 +13,7 @@ use alloy_primitives::{Address, Bytes, TxKind, U256};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
-    env::BlockEnv,
+    env::BlockEnvExt,
     ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo, BlockAccessIndex, InMemoryDB, SystemTx},
     interpreter::op,
@@ -138,7 +138,7 @@ fn block_evm() -> Evm<'static, BaseEvmTypes> {
     let spec = SpecId::AMSTERDAM;
     Evm::new(
         spec,
-        BlockEnv::default(),
+        BlockEnvExt::default(),
         ethereum_tx_registry(spec),
         database,
         Precompiles::base(spec),

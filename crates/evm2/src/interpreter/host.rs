@@ -6,16 +6,18 @@ use crate::{
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
 };
 use alloy_primitives::{Address, B256, Bytes, Log};
-use derive_where::derive_where;
 
-/// Result of executing a call/create message.
+/// Result of executing a call/create message for an EVM type family.
+pub type MessageResult<T = BaseEvmTypes> = MessageResultExt<<T as EvmTypesHost>::MessageResultExt>;
+
+/// Result of executing a call/create message, parameterized by extension data.
 ///
 /// [`Self::gas`] is normalized for the frame's [`stop`](Self::stop) reason by the executor
 /// before it is returned, so applying a child result to its caller is just
 /// [`GasTracker::merge_child_gas`]. Use [`Self::gas_remaining_after_final_refund`] or
 /// [`Self::gas_used_after_final_refund`] for top-level transaction accounting.
-#[derive_where(Clone, Debug, Default, PartialEq, Eq; T::MessageResultExt)]
-pub struct MessageResult<T: EvmTypesHost = BaseEvmTypes> {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageResultExt<E = ()> {
     /// Interpreter stop reason.
     pub stop: InstrStop,
     /// Gas accounting for the child frame.
@@ -30,12 +32,12 @@ pub struct MessageResult<T: EvmTypesHost = BaseEvmTypes> {
     /// for call messages and fresh-target creates.
     pub created_target_was_alive: bool,
     /// EVM type-specific extension data.
-    pub ext: T::MessageResultExt,
+    pub ext: E,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
-impl<T: EvmTypesHost> MessageResult<T> {
+impl<E> MessageResultExt<E> {
     /// Returns whether the message committed state changes.
     #[inline]
     pub const fn is_success(&self) -> bool {

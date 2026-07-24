@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult,
-    env::TxEnv,
+    env::TxEnvExt,
     evm::error_handler,
     interpreter::Host,
     registry::{HandlerError, HandlerResult, TxRequest},
@@ -78,11 +78,11 @@ pub fn handle<T: EvmTypes>(
         initial_state_gas,
         state_refund,
     );
-    let tx_env = TxEnv {
+    let tx_env = TxEnvExt {
         origin: caller,
         gas_price,
         chain_id: U256::from(req.host.version().chain_id),
-        ..TxEnv::default()
+        ..TxEnvExt::default()
     };
     let (bytecode, mut message) = initial_message(
         req.host,

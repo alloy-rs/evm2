@@ -5,7 +5,7 @@ use alloy_primitives::{B256, TxKind, U256};
 use evm2::{
     SpecId, Version,
     bytecode::Bytecode,
-    env::BlockEnv,
+    env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, TxEnvelope},
     evm::{AccountInfo, InMemoryDB},
 };
@@ -92,7 +92,7 @@ pub(crate) struct Case<'a> {
 impl Case<'_> {
     pub(crate) fn block(&self) -> BlockEnv {
         let env = &self.unit.env;
-        BlockEnv {
+        BlockEnvExt {
             number: env.current_number,
             beneficiary: env.current_coinbase,
             timestamp: env.current_timestamp,
@@ -101,7 +101,7 @@ impl Case<'_> {
             difficulty: env.current_difficulty,
             prevrandao: env.current_random.map_or(U256::ZERO, b256_to_u256),
             slot_num: env.slot_number.unwrap_or_default(),
-            ..BlockEnv::default()
+            ..BlockEnvExt::default()
         }
     }
 

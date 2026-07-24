@@ -131,7 +131,7 @@ fn log_common<T: EvmTypesHost>(
 mod tests {
     use crate::{
         SpecId,
-        interpreter::{InstrStop, Message, MessageKind, Word, op},
+        interpreter::{InstrStop, MessageExt, MessageKind, Word, op},
         storage_key::StorageKey,
         test_utils::{RunConfig, TestHost, push, run},
     };
@@ -200,7 +200,7 @@ mod tests {
         push(&mut code, 1);
         code.extend([op::SSTORE, op::STOP]);
         let message =
-            Message { kind: MessageKind::StaticCall, gas_limit: 10_000, ..Default::default() };
+            MessageExt { kind: MessageKind::StaticCall, gas_limit: 10_000, ..Default::default() };
 
         let interp = run(RunConfig::new(code).host(&mut host).message(message));
 
@@ -382,7 +382,7 @@ mod tests {
     fn log0_opcode() {
         let mut host = TestHost::default();
         let address = Address::from([0x11; 20]);
-        let message = Message { destination: address, gas_limit: 10_000, ..Default::default() };
+        let message = MessageExt { destination: address, gas_limit: 10_000, ..Default::default() };
         let interp = run(RunConfig::new(log_code(30, 2, [])).host(&mut host).message(message));
         assert_matches!(interp.err, InstrStop::Stop);
         assert!(interp.stack().is_empty());

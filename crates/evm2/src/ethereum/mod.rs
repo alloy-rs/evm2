@@ -15,11 +15,11 @@ pub mod legacy;
 pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
-    Evm, EvmFeatures, EvmTypes, EvmTypesHost, SpecId, TxResult, Version,
+    Evm, EvmFeatures, EvmTypes, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
     evm::{AccountInfo, StateCheckpoint, error_handler},
     interpreter::{
-        Message, MessageKind, MessageResult, Word,
+        Message, MessageExt, MessageKind, MessageResult, MessageResultExt, Word,
         gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS},
     },
     registry::{HandlerError, HandlerResult, TxRegistry},
@@ -516,7 +516,7 @@ pub fn initial_message<'a, T: EvmTypes>(
     let r = match to {
         TxKind::Call(to) => {
             let initial_code = initial_call_code(host, to)?;
-            let message = Message {
+            let message = MessageExt {
                 kind: MessageKind::Call,
                 depth: 0,
                 gas_limit,
@@ -536,7 +536,7 @@ pub fn initial_message<'a, T: EvmTypes>(
         }
         TxKind::Create => {
             let address = caller.create(nonce);
-            let message = Message {
+            let message = MessageExt {
                 kind: MessageKind::Create,
                 depth: 0,
                 gas_limit,
@@ -615,10 +615,7 @@ pub fn rollback_failed_execution<'a, T: EvmTypes>(
 /// never actually consumed) or when it succeeded at a pre-existing alive (balance-only) target (no
 /// new leaf was created — execution-specs `created_target_alive`). No-op when `create_state_gas` is
 /// zero (non-create or pre-Amsterdam).
-pub const fn refund_create_state_gas<T: EvmTypesHost>(
-    result: &mut MessageResult<T>,
-    create_state_gas: u64,
-) {
+pub const fn refund_create_state_gas<E>(result: &mut MessageResultExt<E>, create_state_gas: u64) {
     if create_state_gas != 0 && (!result.stop.is_success() || result.created_target_was_alive) {
         let reservoir = result.gas.reservoir().saturating_add(create_state_gas);
         result.gas.set_reservoir(reservoir);
@@ -696,7 +693,7 @@ pub fn settle_gas<'a, T: EvmTypes>(
             .map_err(error_handler!(host))?
             .add_balance(beneficiary_reward);
     }
-    Ok(TxResult {
+    Ok(TxResultExt {
         status: result.stop.is_success(),
         total_gas_spent,
         state_gas_spent,
@@ -706,12 +703,12 @@ pub fn settle_gas<'a, T: EvmTypes>(
         output: result.output,
         created_address: result.created_address,
         ext: T::TxResultExt::default(),
-        ..TxResult::default()
+        ..TxResultExt::default()
     })
 }
 
-const fn final_tx_gas<T: EvmTypesHost>(
-    result: &MessageResult<T>,
+const fn final_tx_gas<E>(
+    result: &MessageResultExt<E>,
     tx_gas_limit: u64,
     max_refund_quotient: u64,
     floor_gas: u64,
@@ -838,7 +835,7 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmTypes, ExecutionConfig, Precompiles,
-        env::{BlockEnv, TxEnv},
+        env::{BlockEnvExt, TxEnvExt},
         evm::InMemoryDB,
         interpreter::{GasTracker, Host, InstrStop, op},
         registry::TxRegistry,
@@ -936,7 +933,7 @@ mod tests {
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::BERLIN,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::BERLIN),
             database,
             Precompiles::base(SpecId::BERLIN),
@@ -1030,7 +1027,7 @@ mod tests {
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -1058,7 +1055,7 @@ mod tests {
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::OSAKA),
@@ -1120,7 +1117,7 @@ mod tests {
         database.insert_account_info(&delegated, AccountInfo::default().with_code(delegated_code));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::PRAGUE,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::PRAGUE),
@@ -1141,7 +1138,7 @@ mod tests {
         assert_eq!(message.code_address, delegated);
         assert!(message.disable_precompiles);
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::Return);
         assert_eq!(result.output.len(), 32);

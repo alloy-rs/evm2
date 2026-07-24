@@ -2,7 +2,7 @@ use super::*;
 use evm2::{
     BaseEvmConfigSelector, BaseEvmTypes, Evm, Precompiles,
     bytecode::Bytecode,
-    env::{BlockEnv, TxEnv},
+    env::{BlockEnv, BlockEnvExt, TxEnv},
     ethereum::ethereum_tx_registry,
     evm::{AccountInfo, InMemoryDB},
     interpreter::{Gas, InstrStop, Interpreter, Message},
@@ -232,7 +232,7 @@ pub fn def_codemap() -> &'static HashMap<Address, Bytecode> {
 
 fn def_block_env() -> BlockEnv<BaseEvmTypes> {
     let env = def_env();
-    BlockEnv {
+    BlockEnvExt {
         number: env.block.number,
         beneficiary: env.block.coinbase,
         timestamp: env.block.timestamp,

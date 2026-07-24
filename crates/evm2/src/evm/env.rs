@@ -3,11 +3,13 @@
 use crate::{BaseEvmTypes, EvmTypesHost};
 use alloc::{vec, vec::Vec};
 use alloy_primitives::{Address, U256};
-use derive_where::derive_where;
 
-/// Transaction-global environment values visible to opcodes.
-#[derive_where(Clone, Debug, PartialEq, Eq; T::TxEnvExt)]
-pub struct TxEnv<T: EvmTypesHost = BaseEvmTypes> {
+/// Transaction-global environment values visible to opcodes for an EVM type family.
+pub type TxEnv<T = BaseEvmTypes> = TxEnvExt<<T as EvmTypesHost>::TxEnvExt>;
+
+/// Transaction-global environment values visible to opcodes, parameterized by extension data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxEnvExt<E = ()> {
     /// Transaction origin.
     pub origin: Address,
     /// Effective gas price.
@@ -17,12 +19,12 @@ pub struct TxEnv<T: EvmTypesHost = BaseEvmTypes> {
     /// Transaction blob versioned hashes.
     pub blob_hashes: Vec<U256>,
     /// EVM type-specific extension data.
-    pub ext: T::TxEnvExt,
+    pub ext: E,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
-impl<T: EvmTypesHost> Default for TxEnv<T> {
+impl<E: Default> Default for TxEnvExt<E> {
     #[inline]
     fn default() -> Self {
         Self {
@@ -30,15 +32,18 @@ impl<T: EvmTypesHost> Default for TxEnv<T> {
             gas_price: U256::ZERO,
             chain_id: U256::ONE,
             blob_hashes: vec![],
-            ext: T::TxEnvExt::default(),
+            ext: E::default(),
             _non_exhaustive: (),
         }
     }
 }
 
-/// Block environment values visible to opcodes.
-#[derive_where(Clone, Copy, Debug, PartialEq, Eq; T::BlockEnvExt)]
-pub struct BlockEnv<T: EvmTypesHost = BaseEvmTypes> {
+/// Block environment values visible to opcodes for an EVM type family.
+pub type BlockEnv<T = BaseEvmTypes> = BlockEnvExt<<T as EvmTypesHost>::BlockEnvExt>;
+
+/// Block environment values visible to opcodes, parameterized by extension data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockEnvExt<E = ()> {
     /// Block number.
     pub number: U256,
     /// Block beneficiary.
@@ -58,12 +63,12 @@ pub struct BlockEnv<T: EvmTypesHost = BaseEvmTypes> {
     /// Beacon slot number.
     pub slot_num: U256,
     /// EVM type-specific extension data.
-    pub ext: T::BlockEnvExt,
+    pub ext: E,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
-impl<T: EvmTypesHost> Default for BlockEnv<T> {
+impl<E: Default> Default for BlockEnvExt<E> {
     #[inline]
     fn default() -> Self {
         Self {
@@ -76,7 +81,7 @@ impl<T: EvmTypesHost> Default for BlockEnv<T> {
             prevrandao: U256::ZERO,
             blob_basefee: U256::ONE,
             slot_num: U256::ZERO,
-            ext: T::BlockEnvExt::default(),
+            ext: E::default(),
             _non_exhaustive: (),
         }
     }
