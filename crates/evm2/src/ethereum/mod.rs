@@ -17,7 +17,7 @@ pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 use crate::{
     Evm, EvmFeatures, EvmTypes, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
-    evm::{AccountInfo, StateCheckpoint, error_handler},
+    evm::{AccountInfo, StateCheckpoint, error_handler, handler::GasSettlement},
     interpreter::{
         Message, MessageExt, MessageKind, MessageResult, MessageResultExt, Word,
         gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS},
@@ -622,30 +622,61 @@ pub const fn refund_create_state_gas<E>(result: &mut MessageResultExt<E>, create
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-/// Applies Ethereum gas refunds, sender reimbursement, and beneficiary rewards.
-pub fn settle_gas<'a, T: EvmTypes>(
+/// Applies the default Ethereum gas refund, sender reimbursement, and beneficiary reward rules.
+pub fn default_settle_gas<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
-    caller: Address,
-    gas_price: U256,
-    tx_gas_limit: u64,
-    floor_gas: u64,
-    initial_state_gas: u64,
-    state_refund: u64,
-    is_create: bool,
-    result: MessageResult<T>,
+    settlement: GasSettlement<T>,
 ) -> HandlerResult<TxResult<T>> {
+    let caller = settlement.caller;
+    let gas_price = settlement.gas_price;
+    let gas_limit = settlement.gas_limit;
+    let result = finalize_gas(host, settlement)?;
+    if host.feature(EvmFeatures::FEE_CHARGE) {
+        let gas_used = result.tx_gas_used();
+        let gas_remaining = gas_limit.saturating_sub(gas_used);
+        let caller_refund = U256::from(gas_remaining) * gas_price;
+        host.state
+            .account(&caller, false)
+            .map_err(error_handler!(host))?
+            .add_balance(caller_refund);
+        let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
+            gas_price.saturating_sub(host.block.basefee)
+        } else {
+            gas_price
+        };
+        let beneficiary = host.block.beneficiary;
+        let beneficiary_reward = U256::from(gas_used) * beneficiary_gas_price;
+        host.state
+            .account(&beneficiary, false)
+            .map_err(error_handler!(host))?
+            .add_balance(beneficiary_reward);
+    }
+    Ok(result)
+}
+
+/// Finalizes transaction gas accounting.
+pub fn finalize_gas<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
+    settlement: GasSettlement<T>,
+) -> HandlerResult<TxResult<T>> {
+    let GasSettlement {
+        caller: _,
+        gas_price: _,
+        gas_limit: tx_gas_limit,
+        floor_gas,
+        initial_state_gas,
+        state_refund,
+        is_create,
+        result,
+    } = settlement;
     if let Some(code) = host.error_code {
         return Err(HandlerError::Fatal(code));
     }
 
     let max_refund_quotient = u64::from(host.version().gas_params.get(GasId::MaxRefundQuotient));
-    let (gas_remaining, gas_used) =
-        final_tx_gas(&result, tx_gas_limit, max_refund_quotient, floor_gas);
     // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
-    // `TxResult::tx_gas_used` reproduces the local `gas_used` (used here for the beneficiary
-    // reward). State gas is execution state gas plus the upfront `initial_state_gas`, less the
-    // EIP-7702 per-authorization `state_refund`.
+    // `TxResult::tx_gas_used` reproduces the finalized gas used. State gas is execution state gas
+    // plus the upfront `initial_state_gas`, less the EIP-7702 per-authorization `state_refund`.
     let total_gas_spent =
         tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(result.gas.reservoir());
     let refunded = result.final_refund(tx_gas_limit, max_refund_quotient);
@@ -675,24 +706,6 @@ pub fn settle_gas<'a, T: EvmTypes>(
     let state_gas_spent = (exec_state_gas.saturating_add_unsigned(initial_state_gas).max(0) as u64)
         .saturating_sub(state_refund)
         .saturating_sub(alive_create_refund);
-    if host.feature(EvmFeatures::FEE_CHARGE) {
-        let caller_refund = U256::from(gas_remaining) * gas_price;
-        host.state
-            .account(&caller, false)
-            .map_err(error_handler!(host))?
-            .add_balance(caller_refund);
-        let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
-            gas_price.saturating_sub(host.block.basefee)
-        } else {
-            gas_price
-        };
-        let beneficiary = host.block.beneficiary;
-        let beneficiary_reward = U256::from(gas_used) * beneficiary_gas_price;
-        host.state
-            .account(&beneficiary, false)
-            .map_err(error_handler!(host))?
-            .add_balance(beneficiary_reward);
-    }
     Ok(TxResultExt {
         status: result.stop.is_success(),
         total_gas_spent,
@@ -705,21 +718,6 @@ pub fn settle_gas<'a, T: EvmTypes>(
         ext: T::TxResultExt::default(),
         ..TxResultExt::default()
     })
-}
-
-const fn final_tx_gas<E>(
-    result: &MessageResultExt<E>,
-    tx_gas_limit: u64,
-    max_refund_quotient: u64,
-    floor_gas: u64,
-) -> (u64, u64) {
-    let gas_remaining = result.gas_remaining_after_final_refund(tx_gas_limit, max_refund_quotient);
-    let gas_used = result.gas_used_after_final_refund(tx_gas_limit, max_refund_quotient);
-    // EIP-7623 charges at least the calldata floor after applying refunds.
-    if gas_used < floor_gas {
-        return (tx_gas_limit.saturating_sub(floor_gas), floor_gas);
-    }
-    (gas_remaining, gas_used)
 }
 
 /// Returns the account and storage-key counts in an access list.
@@ -837,7 +835,7 @@ mod tests {
         BaseEvmTypes, ExecutionConfig, Precompiles,
         env::{BlockEnvExt, TxEnvExt},
         evm::InMemoryDB,
-        interpreter::{GasTracker, Host, InstrStop, op},
+        interpreter::{Host, InstrStop, op},
         registry::TxRegistry,
     };
     use alloc::vec;
@@ -1066,32 +1064,6 @@ mod tests {
             evm.state.account_info_untracked(&caller).unwrap().unwrap().balance,
             U256::from(100)
         );
-    }
-
-    #[test]
-    fn final_tx_gas_charges_calldata_floor_after_refund() {
-        let result = MessageResult::<BaseEvmTypes> {
-            stop: crate::interpreter::InstrStop::Return,
-            gas: {
-                let mut gas = GasTracker::new_used_gas(100_000, 50_000, 0);
-                gas.set_refunded(10_000);
-                gas
-            },
-            ..MessageResult::<BaseEvmTypes>::default()
-        };
-
-        assert_eq!(final_tx_gas(&result, 100_000, 5, 60_000), (40_000, 60_000));
-    }
-
-    #[test]
-    fn final_tx_gas_preserves_higher_actual_usage() {
-        let result = MessageResult::<BaseEvmTypes> {
-            stop: crate::interpreter::InstrStop::Return,
-            gas: GasTracker::new_used_gas(100_000, 70_000, 0),
-            ..MessageResult::<BaseEvmTypes>::default()
-        };
-
-        assert_eq!(final_tx_gas(&result, 100_000, 5, 60_000), (30_000, 70_000));
     }
 
     #[test]
