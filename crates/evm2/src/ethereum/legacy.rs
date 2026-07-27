@@ -1,14 +1,17 @@
 use super::{
-    charge_upfront, create_initial_state_gas, floor_gas, initial_gas_and_reservoir,
-    initial_message, intrinsic_gas, refund_create_state_gas, rollback_failed_execution, settle_gas,
-    validate_block_gas_limit, validate_chain_id, validate_create_initcode, validate_floor_gas,
-    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
-    validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_base_accounts,
+    create_initial_state_gas, floor_gas, initial_gas_and_reservoir, initial_message, intrinsic_gas,
+    refund_create_state_gas, rollback_failed_execution, validate_block_gas_limit,
+    validate_chain_id, validate_create_initcode, validate_floor_gas, validate_gas_price,
+    validate_intrinsic_gas, validate_nonce_not_overflow, validate_regular_gas_limit_cap,
+    validate_sender, validate_tx_gas_limit_cap, warm_base_accounts,
 };
 use crate::{
     EvmTypes, TxResult,
     env::TxEnvExt,
-    evm::error_handler,
+    evm::{
+        error_handler,
+        handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
+    },
     interpreter::Host,
     registry::{HandlerResult, TxRequest},
 };
@@ -17,6 +20,13 @@ use alloy_primitives::U256;
 
 /// Executes a legacy transaction using Ethereum rules.
 pub fn handle<T: EvmTypes>(req: TxRequest<'_, '_, T, TxLegacy>) -> HandlerResult<TxResult<T>> {
+    handle_with_hooks::<T, DefaultTxHandlerHooks>(req)
+}
+
+/// Executes a legacy transaction using Ethereum rules and custom handler hooks.
+pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
+    req: TxRequest<'_, '_, T, TxLegacy>,
+) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let gas_price = U256::from(tx.gas_price);
@@ -27,8 +37,9 @@ pub fn handle<T: EvmTypes>(req: TxRequest<'_, '_, T, TxLegacy>) -> HandlerResult
     validate_block_gas_limit(req.host.version(), tx.gas_limit, req.host.block.gas_limit)?;
     validate_create_initcode(req.host.version(), tx.to, &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
-    let intrinsic = intrinsic_gas(req.host.version(), caller, tx.to, &tx.input, 0, 0, tx.value);
-    let initial_state_gas = create_initial_state_gas(req.host.version(), tx.to.is_create());
+    let mut intrinsic = intrinsic_gas(req.host.version(), caller, tx.to, &tx.input, 0, 0, tx.value);
+    let mut initial_state_gas = create_initial_state_gas(req.host.version(), tx.to.is_create());
+    H::adjust_intrinsic_gas(req.host, req.envelope, &mut intrinsic, &mut initial_state_gas)?;
     validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
     let floor_gas = floor_gas(req.host.version(), &tx.input, 0, 0);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
@@ -39,8 +50,8 @@ pub fn handle<T: EvmTypes>(req: TxRequest<'_, '_, T, TxLegacy>) -> HandlerResult
 
     warm_base_accounts(req.host, caller, tx.to);
 
-    charge_upfront(req.host, caller, max_gas_cost)?;
     req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
+    H::before_execution(req.host, req.envelope, caller, max_gas_cost)?;
     let execution_checkpoint = req.host.state.checkpoint();
 
     let (gas_limit, reservoir) = initial_gas_and_reservoir(
@@ -63,15 +74,18 @@ pub fn handle<T: EvmTypes>(req: TxRequest<'_, '_, T, TxLegacy>) -> HandlerResult
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
     refund_create_state_gas(&mut result, initial_state_gas);
 
-    settle_gas(
+    H::settle_transaction(
         req.host,
-        caller,
-        gas_price,
-        tx.gas_limit,
-        floor_gas,
-        initial_state_gas,
-        0,
-        tx.to.is_create(),
-        result,
+        req.envelope,
+        GasSettlement {
+            caller,
+            gas_price,
+            gas_limit: tx.gas_limit,
+            floor_gas,
+            initial_state_gas,
+            state_refund: 0,
+            is_create: tx.to.is_create(),
+            result,
+        },
     )
 }

@@ -25,7 +25,7 @@ pub use evm::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
         ExecutionConfig,
     },
-    env, inspector, precompile, registry,
+    env, handler, inspector, precompile, registry,
 };
 pub use inspector::{Inspector, NoopInspector};
 

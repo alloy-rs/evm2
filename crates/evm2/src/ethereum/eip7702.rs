@@ -1,15 +1,17 @@
 use super::{
-    access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_gas_and_reservoir,
-    initial_message, intrinsic_gas, rollback_failed_execution, settle_gas,
-    validate_block_gas_limit, validate_chain_id, validate_create_initcode, validate_floor_gas,
-    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
-    validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
-    warm_base_accounts,
+    access_list_counts, effective_gas_price, floor_gas, initial_gas_and_reservoir, initial_message,
+    intrinsic_gas, rollback_failed_execution, validate_block_gas_limit, validate_chain_id,
+    validate_create_initcode, validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
+    validate_nonce_not_overflow, validate_priority_fee, validate_regular_gas_limit_cap,
+    validate_sender, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult,
     env::TxEnvExt,
-    evm::error_handler,
+    evm::{
+        error_handler,
+        handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
+    },
     interpreter::Host,
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
@@ -18,6 +20,13 @@ use alloy_primitives::U256;
 
 /// Executes an EIP-7702 transaction using Ethereum rules.
 pub fn handle<T: EvmTypes>(
+    req: TxRequest<'_, '_, T, super::LazyTxEip7702>,
+) -> HandlerResult<TxResult<T>> {
+    handle_with_hooks::<T, DefaultTxHandlerHooks>(req)
+}
+
+/// Executes an EIP-7702 transaction using Ethereum rules and custom handler hooks.
+pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     req: TxRequest<'_, '_, T, super::LazyTxEip7702>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
@@ -38,7 +47,7 @@ pub fn handle<T: EvmTypes>(
     validate_create_initcode(req.host.version(), tx.to.into(), &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
     let (access_list_accounts, access_list_storage_keys) = access_list_counts(&tx.access_list);
-    let intrinsic = intrinsic_gas(
+    let mut intrinsic = intrinsic_gas(
         req.host.version(),
         caller,
         tx.to.into(),
@@ -49,7 +58,9 @@ pub fn handle<T: EvmTypes>(
     ) + eip7702_authorization_gas(req.host, tx.authorization_list.len());
     // EIP-8037: per-auth state gas (account + bytecode) is charged before execution. Zero before
     // Amsterdam.
-    let initial_state_gas = eip7702_authorization_state_gas(req.host, tx.authorization_list.len());
+    let mut initial_state_gas =
+        eip7702_authorization_state_gas(req.host, tx.authorization_list.len());
+    H::adjust_intrinsic_gas(req.host, req.envelope, &mut intrinsic, &mut initial_state_gas)?;
     validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
     let floor_gas =
         floor_gas(req.host.version(), &tx.input, access_list_accounts, access_list_storage_keys);
@@ -63,11 +74,11 @@ pub fn handle<T: EvmTypes>(
     warm_access_list(req.host, &tx.access_list);
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    charge_upfront(req.host, caller, effective_gas_cost)?;
     req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
     let chain_id = req.host.version().chain_id;
     let (state_refund, regular_refund) =
         apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
+    H::before_execution(req.host, req.envelope, caller, effective_gas_cost)?;
     let execution_checkpoint = req.host.state.checkpoint();
 
     // EIP-7702 transactions are always calls, never creates.
@@ -100,16 +111,19 @@ pub fn handle<T: EvmTypes>(
         result.gas.refunded().saturating_add(i64::try_from(regular_refund).unwrap_or(i64::MAX)),
     );
 
-    settle_gas(
+    H::settle_transaction(
         req.host,
-        caller,
-        gas_price,
-        tx.gas_limit,
-        floor_gas,
-        initial_state_gas,
-        state_refund,
-        false,
-        result,
+        req.envelope,
+        GasSettlement {
+            caller,
+            gas_price,
+            gas_limit: tx.gas_limit,
+            floor_gas,
+            initial_state_gas,
+            state_refund,
+            is_create: false,
+            result,
+        },
     )
 }
 

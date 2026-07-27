@@ -142,6 +142,7 @@ use derive_where::derive_where;
 pub mod r#async;
 pub mod config;
 pub mod env;
+pub mod handler;
 pub mod inspector;
 pub mod precompile;
 pub mod registry;
