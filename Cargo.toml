@@ -124,7 +124,7 @@ tracing-subscriber = "0.3"
 tracing-tracy = "0.11"
 walkdir = { version = "2.5", default-features = false }
 wait-timeout = "0.2"
-wincode = { version = "0.5.4", features = ["derive"] }
+wincode = { version = "0.6.0", features = ["derive"] }
 zstd = "0.13"
 
 # Precompiles
@@ -149,7 +149,7 @@ sha2 = { version = "0.11.0", default-features = false }
 
 proc-macro2 = "1.0"
 quote = "1.0"
-syn = "2.0"
+syn = "3.0"
 
 # testing
 criterion = { package = "codspeed-criterion-compat", version = "4", default-features = false, features = [
