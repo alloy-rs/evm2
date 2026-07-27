@@ -6,7 +6,7 @@ use alloy_primitives::Address;
 
 /// State checkpoint for reverting state changes.
 #[allow(missing_copy_implementations)]
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StateCheckpoint {
     /// Revert journal length at the checkpoint.
     pub(crate) journal_len: usize,

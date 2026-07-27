@@ -85,6 +85,11 @@ pub struct TransactionParts {
     /// Explicit transaction type.
     #[serde(rename = "type")]
     pub tx_type: Option<u8>,
+    /// Explicit transaction chain id. When present it overrides the environment chain id, so a
+    /// fixture can model a transaction whose chain id differs from the network's (expected to be
+    /// rejected with `INVALID_CHAINID`), including for type-0 transactions.
+    #[serde(default)]
+    pub chain_id: Option<U256>,
     /// Input data variants.
     pub data: Vec<Bytes>,
     /// Gas limit variants.

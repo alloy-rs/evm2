@@ -315,11 +315,35 @@ fn create_inner<T: EvmTypesHost>(
         state.gas_params().get(GasId::Create).into()
     };
     gas.spend(create_cost)?;
-    // EIP-8037: charge the upfront CREATE state gas on this frame before the
-    // child gas/reservoir split. Refunded via `refill_reservoir` if the child
-    // fails to deploy (see the create-failure path after `execute_message`).
+    // EIP-8037 (ethereum/EIPs#11858): charge the CREATE account-creation state gas on this frame
+    // before the child gas/reservoir split, conditional on the destination not already existing.
+    // The single destination read decides the charge (and warms the address); a create at a
+    // pre-existing leaf pays nothing, so its child is not shortchanged by an unneeded spill. The
+    // charge is refunded via `refill_reservoir` if the create fails to deploy (see the
+    // create-failure path after `execute_message`).
+    let mut charged_create_state_gas = false;
     if state.feature(EvmFeatures::EIP8037) {
-        gas.spend_state(state.gas_params().create_state_gas())?;
+        let caller = state.message().destination;
+        let caller_info = state.host().load_account(&caller, false, false)?;
+        // Only decide the account-creation charge once the endowment and nonce pre-checks pass: a
+        // create that early-fails on those never accesses the destination, so reading it here would
+        // leak it into the EIP-7928 block access list. The early-fail itself (pushing 0) is handled
+        // by the child frame below.
+        if caller_info.balance >= value && caller_info.nonce != u64::MAX {
+            let created_address = if is_create2 {
+                let init_code_hash =
+                    crate::bytecode::Bytecode::new_legacy(input.clone()).hash_slow();
+                let salt = B256::from(salt.expect("create2 salt").to_be_bytes());
+                caller.create2(salt, init_code_hash)
+            } else {
+                caller.create(caller_info.nonce)
+            };
+            let features = state.version().features;
+            if state.host().target_is_empty_for_new_account_gas(&created_address, features)? {
+                gas.spend_state(state.gas_params().create_state_gas())?;
+                charged_create_state_gas = true;
+            }
+        }
     }
     let gas_limit = if state.feature(EvmFeatures::EIP150) {
         state.gas_params().call_stipend_reduction(gas.remaining())
@@ -354,14 +378,13 @@ fn create_inner<T: EvmTypesHost>(
     }
     gas.merge_child_gas(result.gas, result.stop);
 
-    // EIP-8037: the CREATE/CREATE2 opcode charged `create_state_gas` upfront on
-    // this frame's tracker. Refund it to the reservoir via `refill_reservoir`
-    // (matching 0→x→0 storage restoration) when no new account leaf ends up
-    // created: either the create failed to deploy (revert, halt, or early-fail
-    // paths that leave `created_address == None` — depth, out-of-funds, nonce
-    // overflow), or it succeeded at a pre-existing alive (balance-only) target.
+    // EIP-8037 (ethereum/EIPs#11858): when the opcode charged the conditional `create_state_gas`
+    // and the create then fails to deploy (revert, halt, or an early-fail leaving
+    // `created_address == None` — depth, out-of-funds, nonce overflow), no new account leaf is
+    // created, so refund the charge to the reservoir via `refill_reservoir` (matching 0→x→0 storage
+    // restoration). A successful deployment keeps the charge; an alive target was never charged.
     let create_failed = result.created_address.is_none() || !result.stop.is_success();
-    if (create_failed || result.created_target_was_alive) && state.feature(EvmFeatures::EIP8037) {
+    if charged_create_state_gas && create_failed {
         gas.refill_reservoir(state.gas_params().create_state_gas());
     }
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.

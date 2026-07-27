@@ -602,7 +602,9 @@ fn build_tx(
         gas_limit,
         nonce,
         value,
-        chain_id,
+        // An explicit per-transaction chain id overrides the environment chain id (v7 fixtures set
+        // it, including for type-0 transactions, to exercise `INVALID_CHAINID`).
+        chain_id: raw.chain_id.or(chain_id),
         gas_price: raw.gas_price,
         max_fee_per_gas: raw.max_fee_per_gas,
         max_priority_fee_per_gas: raw.max_priority_fee_per_gas,

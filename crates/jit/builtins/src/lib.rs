@@ -664,8 +664,32 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         version.gas_params.get(GasId::Create).into()
     };
     ecx.gas.spend(create_cost)?;
+    let salt = if is_create2 {
+        pop!(sp; salt);
+        B256::from(salt.to_be_bytes())
+    } else {
+        B256::ZERO
+    };
+    // EIP-8037 (ethereum/EIPs#11858): charge the CREATE account-creation state gas before the child
+    // gas split, conditional on the destination not already existing (and on the endowment/nonce
+    // pre-checks passing, so an early-failing create leaves the destination out of the block access
+    // list). Mirrors the interpreter's `create` opcode.
+    let mut charged_create_state_gas = false;
     if ecx.enables(EvmFeatures::EIP8037) {
-        ecx.gas.spend_state(version.gas_params.create_state_gas())?;
+        let caller = ecx.message().destination;
+        let caller_info = ecx.host().load_account(&caller, false, false)?;
+        if caller_info.balance >= value.to_u256() && caller_info.nonce != u64::MAX {
+            let created_address = if is_create2 {
+                let init_code_hash = Bytecode::new_legacy(code.clone()).hash_slow();
+                caller.create2(salt, init_code_hash)
+            } else {
+                caller.create(caller_info.nonce)
+            };
+            if ecx.host().target_is_empty_for_new_account_gas(&created_address, version.features)? {
+                ecx.gas.spend_state(version.gas_params.create_state_gas())?;
+                charged_create_state_gas = true;
+            }
+        }
     }
 
     let mut gas_limit = ecx.gas.remaining();
@@ -673,12 +697,6 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
     }
     ecx.gas.spend(gas_limit)?;
-    let salt = if is_create2 {
-        pop!(sp; salt);
-        B256::from(salt.to_be_bytes())
-    } else {
-        B256::ZERO
-    };
 
     let current = ecx.message();
     let mut message = Message {
@@ -701,9 +719,11 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     let tx_env = ecx.tx_env();
     let mut result = ecx.host().execute_message(tx_env, bytecode, &mut message);
     ecx.gas.merge_child_gas(result.gas, result.stop);
+    // EIP-8037 (ethereum/EIPs#11858): refund the conditional create state gas when the create fails
+    // to deploy (no new account leaf is created).
     let create_failed = result.created_address.is_none() || !result.stop.is_success();
-    if (create_failed || result.created_target_was_alive) && ecx.enables(EvmFeatures::EIP8037) {
-        ecx.gas.refill_reservoir(ecx.gas_params().create_state_gas());
+    if charged_create_state_gas && create_failed {
+        ecx.gas.refill_reservoir(version.gas_params.create_state_gas());
     }
 
     let address = EvmWord::from(result.created_address_for_parent());

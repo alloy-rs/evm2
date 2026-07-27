@@ -1,20 +1,20 @@
 use super::{
     access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_gas_and_reservoir,
-    initial_message, intrinsic_gas, rollback_failed_execution, settle_gas,
-    validate_block_gas_limit, validate_chain_id, validate_create_initcode, validate_floor_gas,
-    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
-    validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
-    warm_base_accounts,
+    initial_message, intrinsic_gas, settle_gas, validate_block_gas_limit, validate_chain_id,
+    validate_create_initcode, validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
+    validate_nonce_not_overflow, validate_priority_fee, validate_regular_gas_limit_cap,
+    validate_sender, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult,
     env::TxEnv,
     evm::error_handler,
-    interpreter::Host,
+    interpreter::{GasTracker, Host, InstrStop, MessageResult, gas::EIP8038_ACCOUNT_WRITE},
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
 };
-use alloy_primitives::U256;
+use alloc::vec::Vec;
+use alloy_primitives::{Address, U256};
 
 /// Executes an EIP-7702 transaction using Ethereum rules.
 pub fn handle<T: EvmTypes>(
@@ -47,12 +47,20 @@ pub fn handle<T: EvmTypes>(
         access_list_storage_keys,
         tx.value,
     ) + eip7702_authorization_gas(req.host, tx.authorization_list.len());
-    // EIP-8037: per-auth state gas (account + bytecode) is charged before execution. Zero before
-    // Amsterdam.
-    let initial_state_gas = eip7702_authorization_state_gas(req.host, tx.authorization_list.len());
-    validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
-    let floor_gas =
-        floor_gas(req.host.version(), &tx.input, access_list_accounts, access_list_storage_keys);
+    // EIP-2780 (ethereum/EIPs#11844): the per-auth state-dependent charges are applied at the
+    // runtime gas phase, so no state gas is charged at the intrinsic phase (pre-Amsterdam there is
+    // none either). A transaction that passes the intrinsic check but cannot afford the runtime
+    // charges is included as an out-of-gas halt rather than rejected.
+    validate_intrinsic_gas(tx.gas_limit, intrinsic, 0)?;
+    let floor_gas = floor_gas(
+        req.host.version(),
+        caller,
+        tx.to.into(),
+        &tx.input,
+        access_list_accounts,
+        access_list_storage_keys,
+        tx.value,
+    );
     validate_floor_gas(tx.gas_limit, floor_gas)?;
     validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
@@ -66,24 +74,90 @@ pub fn handle<T: EvmTypes>(
     charge_upfront(req.host, caller, effective_gas_cost)?;
     req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
     let chain_id = req.host.version().chain_id;
+    let tx_env =
+        TxEnv { origin: caller, gas_price, chain_id: U256::from(chain_id), ..TxEnv::default() };
+
+    if req.host.feature(EvmFeatures::EIP2780) {
+        // EIP-2780 runtime gas phase (ethereum/EIPs#11844): the authorization charges are metered on
+        // a transaction-level gas tracker as the delegations are applied, stopping at the first
+        // unaffordable charge — later authorities are never loaded, keeping them out of the EIP-7928
+        // block access list. The delegations span `auth_checkpoint` so a runtime out-of-gas can drop
+        // them, and the recipient is read only afterwards (at first-frame creation), so it too stays
+        // out of the block access list on an authorization out-of-gas.
+        let (regular_gas_limit, reservoir) =
+            initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, 0, 0);
+        let mut tx_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(regular_gas_limit, reservoir);
+        let auth_checkpoint = req.host.state.checkpoint();
+
+        // Includes the transaction as an out-of-gas halt when the runtime gas phase (the
+        // authorization charges or the first-frame recipient charge) runs out of gas: reverts the
+        // authorization checkpoint to drop the applied delegations, then consumes all regular gas
+        // and returns the reservoir. Called at either out-of-gas exit.
+        let tx_gas_limit = tx.gas_limit;
+        let oog_halt = |host: &mut Evm<'_, T>| -> HandlerResult<TxResult<T>> {
+            let features = host.version().features;
+            host.state.rollback(auth_checkpoint, features);
+            let result = MessageResult {
+                stop: InstrStop::OutOfGas,
+                gas: GasTracker::new_spent_with_reservoir(regular_gas_limit, reservoir),
+                ..MessageResult::default()
+            };
+            settle_gas(host, caller, gas_price, tx_gas_limit, floor_gas, 0, 0, result)
+        };
+
+        if apply_auth_list_runtime(
+            req.host,
+            chain_id,
+            &tx.authorization_list,
+            caller,
+            tx.to,
+            tx.value,
+            &mut tx_gas,
+        )? {
+            return oog_halt(req.host);
+        }
+
+        // State gas charged for the authorizations, carried into the block state-gas accounting.
+        let auth_state_gas = tx_gas.state_gas_spent().max(0) as u64;
+        let (bytecode, mut message) = initial_message(
+            req.host,
+            caller,
+            tx.nonce,
+            tx.to.into(),
+            &tx.input,
+            tx.value,
+            tx_gas.remaining(),
+            tx_gas.reservoir(),
+        )?;
+        // Failed execution has already been rolled back to the message's own checkpoint (past the
+        // applied delegations, which stay) inside `execute_message`.
+        let result = req.host.execute_message(&tx_env, bytecode, &mut message);
+
+        // A depth-0 recipient charge that ran out of gas is part of the runtime gas phase, so it
+        // drops the delegations too.
+        if result.runtime_gas_oog {
+            return oog_halt(req.host);
+        }
+
+        return settle_gas(
+            req.host,
+            caller,
+            gas_price,
+            tx.gas_limit,
+            floor_gas,
+            auth_state_gas,
+            0,
+            result,
+        );
+    }
+
+    // Pre-Amsterdam (no EIP-2780): the pessimistic per-auth intrinsic charge with a regular refund
+    // for each already-existing authority.
     let (state_refund, regular_refund) =
         apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
-    let execution_checkpoint = req.host.state.checkpoint();
-
-    // EIP-7702 transactions are always calls, never creates.
-    let (gas_limit, reservoir) = initial_gas_and_reservoir(
-        req.host.version(),
-        tx.gas_limit,
-        intrinsic,
-        initial_state_gas,
-        state_refund,
-    );
-    let tx_env = TxEnv {
-        origin: caller,
-        gas_price,
-        chain_id: U256::from(req.host.version().chain_id),
-        ..TxEnv::default()
-    };
+    let (gas_limit, reservoir) =
+        initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, 0, state_refund);
     let (bytecode, mut message) = initial_message(
         req.host,
         caller,
@@ -94,23 +168,14 @@ pub fn handle<T: EvmTypes>(
         gas_limit,
         reservoir,
     )?;
+    // Failed execution has already been rolled back to the message's own checkpoint inside
+    // `execute_message`.
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message);
-    rollback_failed_execution(req.host, execution_checkpoint, &mut result);
     result.gas.set_refunded(
         result.gas.refunded().saturating_add(i64::try_from(regular_refund).unwrap_or(i64::MAX)),
     );
 
-    settle_gas(
-        req.host,
-        caller,
-        gas_price,
-        tx.gas_limit,
-        floor_gas,
-        initial_state_gas,
-        state_refund,
-        false,
-        result,
-    )
+    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, 0, state_refund, result)
 }
 
 fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations: usize) -> u64 {
@@ -118,17 +183,8 @@ fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations:
     (authorizations as u64).saturating_mul(per_auth)
 }
 
-/// EIP-8037 per-authorization state gas (account + bytecode) charged before execution. Zero before
-/// Amsterdam.
-const fn eip7702_authorization_state_gas<'a, T: EvmTypes>(
-    host: &Evm<'a, T>,
-    authorizations: usize,
-) -> u64 {
-    (authorizations as u64).saturating_mul(host.version().gas_params.eip7702_auth_state_gas())
-}
-
-/// Outcome of applying one accepted EIP-7702 authorization, carrying the facts needed to compute
-/// its gas refunds (execution-specs `set_delegation`).
+/// Outcome of validating one EIP-7702 authorization, carrying the facts needed to compute its gas
+/// charges (execution-specs `set_delegation`).
 struct AppliedAuth {
     /// Whether the authority account already existed when this authorization was processed.
     existed: bool,
@@ -141,15 +197,14 @@ struct AppliedAuth {
     clearing: bool,
 }
 
-/// Validates one authorization against current state and, if accepted, applies the delegation
-/// (setting code and bumping the nonce). Returns `Some` for an accepted authorization or `None` for
-/// a rejected one. Mirrors execution-specs `validate_authorization` + the per-auth body of
-/// `set_delegation`.
-fn apply_one_auth<'a, T: EvmTypes>(
+/// Validates one authorization against current state without applying it. Returns
+/// `Some((authority, facts))` for an accepted authorization or `None` for a rejected one. Mirrors
+/// execution-specs `validate_authorization`.
+fn validate_one_auth<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     chain_id: u64,
     authorization: &super::LazyAuthorization,
-) -> HandlerResult<Option<AppliedAuth>> {
+) -> HandlerResult<Option<(Address, AppliedAuth)>> {
     if !authorization.chain_id().is_zero() && authorization.chain_id() != &U256::from(chain_id) {
         return Ok(None);
     }
@@ -175,8 +230,100 @@ fn apply_one_auth<'a, T: EvmTypes>(
     }
     let delegated_before_tx = account.original_code().map_err(error_handler!(host))?.is_eip7702();
     let clearing = authorization.address().is_zero();
-    account.set_delegation(*authorization.address());
-    Ok(Some(AppliedAuth { existed, delegated_before_tx, delegated_now, clearing }))
+    Ok(Some((authority, AppliedAuth { existed, delegated_before_tx, delegated_now, clearing })))
+}
+
+/// Validates and, if accepted, applies one authorization (setting code and bumping the nonce).
+/// Returns `Some` for an accepted authorization or `None` for a rejected one.
+fn apply_one_auth<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
+    chain_id: u64,
+    authorization: &super::LazyAuthorization,
+) -> HandlerResult<Option<AppliedAuth>> {
+    let Some((authority, auth)) = validate_one_auth(host, chain_id, authorization)? else {
+        return Ok(None);
+    };
+    host.state
+        .account(&authority, false)
+        .map_err(error_handler!(host))?
+        .set_delegation(*authorization.address());
+    Ok(Some(auth))
+}
+
+/// Applies the EIP-7702 authorization list under EIP-2780, metering the state-dependent charges on
+/// the transaction-level `gas` as the delegations are applied (ethereum/EIPs#11844, #11891).
+///
+/// Per accepted authority: the new-account state gas when the authority does not exist,
+/// `ACCOUNT_WRITE` regular gas on the first write to the authority's leaf (unless already paid — the
+/// sender at inclusion, the recipient of a value-bearing transaction, or a preceding valid
+/// authorization on the same authority), and the net-new delegation-indicator state gas.
+///
+/// The charges are recorded as the authorizations are applied, so the phase stops at the first
+/// unaffordable charge without loading the remaining authorities. Rejected authorizations charge
+/// nothing (the intrinsic `REGULAR_PER_AUTH_BASE_COST` already covers their work) and are not
+/// refunded. Returns whether the authorization processing ran out of gas.
+#[allow(clippy::too_many_arguments)]
+fn apply_auth_list_runtime<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
+    chain_id: u64,
+    authorizations: &[super::LazyAuthorization],
+    caller: Address,
+    recipient: Address,
+    value: U256,
+    gas: &mut GasTracker,
+) -> HandlerResult<bool> {
+    let new_account_state_gas = host.version().gas_params.new_account_state_gas();
+    let delegation_bytes_state_gas =
+        u64::from(host.version().gas_params.get(GasId::TxEip7702PerAuthState));
+    let account_write_cost = u64::from(EIP8038_ACCOUNT_WRITE);
+
+    // Accounts whose leaf write this transaction has already paid for: the sender at inclusion
+    // (priced into `TX_BASE`) and the recipient of a value-bearing transaction (priced into
+    // `TX_VALUE_COST`).
+    let mut written = Vec::new();
+    written.push(caller);
+    if !value.is_zero() {
+        written.push(recipient);
+    }
+    // Net-new delegation bytes are charged at most once per authority (covering a set-clear-set
+    // sequence within one transaction).
+    let mut charged_delegation_bytes: Vec<Address> = Vec::new();
+
+    for authorization in authorizations {
+        let Some((authority, auth)) = validate_one_auth(host, chain_id, authorization)? else {
+            continue;
+        };
+
+        // Non-existent authority: pay for the new account leaf's state bytes.
+        if !auth.existed && gas.spend_state(new_account_state_gas).is_err() {
+            return Ok(true);
+        }
+        // First write to the authority's leaf within the transaction pays `ACCOUNT_WRITE`.
+        if !written.contains(&authority) {
+            if gas.spend(account_write_cost).is_err() {
+                return Ok(true);
+            }
+            written.push(authority);
+        }
+        // Net-new delegation bytes: the 23-byte designator written into a previously empty slot.
+        if !auth.clearing
+            && !auth.delegated_now
+            && !auth.delegated_before_tx
+            && !charged_delegation_bytes.contains(&authority)
+        {
+            if gas.spend_state(delegation_bytes_state_gas).is_err() {
+                return Ok(true);
+            }
+            charged_delegation_bytes.push(authority);
+        }
+
+        host.state
+            .account(&authority, false)
+            .map_err(error_handler!(host))?
+            .set_delegation(*authorization.address());
+    }
+
+    Ok(false)
 }
 
 /// Applies the EIP-7702 authorization list and returns `(state_refund, regular_refund)`.

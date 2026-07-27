@@ -17,7 +17,7 @@ pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 use crate::{
     Evm, EvmFeatures, EvmTypes, EvmTypesHost, SpecId, TxResult, Version,
     bytecode::Bytecode,
-    evm::{AccountInfo, StateCheckpoint, error_handler},
+    evm::{AccountInfo, error_handler},
     interpreter::{
         Message, MessageKind, MessageResult, Word,
         gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS},
@@ -444,21 +444,6 @@ pub fn charge_upfront<'a, T: EvmTypes>(
     Ok(())
 }
 
-/// Returns the EIP-8037 `initial_state_gas` charged before execution for `is_create` transactions
-/// (the top-level create's `create_state_gas`). Zero without EIP-8037 or for non-create calls.
-///
-/// This is the create transaction's contribution to execution-specs `IntrinsicGas.state`; the
-/// EIP-7702 authorization contribution is computed separately in the EIP-7702 handler. Keeping the
-/// state-gas intrinsic distinct from the regular intrinsic ([`intrinsic_gas`]) mirrors the spec,
-/// which tracks `IntrinsicGas.regular` and `.state` separately.
-pub const fn create_initial_state_gas(version: &Version, is_create: bool) -> u64 {
-    if version.feature(EvmFeatures::EIP8037) && is_create {
-        version.gas_params.create_state_gas()
-    } else {
-        0
-    }
-}
-
 /// Returns `(regular_gas_limit, reservoir)` for the first frame.
 ///
 /// `initial_state_gas` is the EIP-8037 state gas charged before execution (top-level create state
@@ -578,6 +563,14 @@ fn initial_call_code<'a, T: EvmTypes>(
     if host.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
+        // Under EIP-2780 the delegation resolution is deferred to the frame
+        // (`apply_eip2780_call_charges`), which meters the delegation-target access and gates its
+        // load on gas so a cold, unafforded target stays out of the EIP-7928 block access list. The
+        // frame swaps in the delegate's code and code_address after the charge; loading the target
+        // here would leak it into the block access list on a runtime out-of-gas.
+        if host.feature(EvmFeatures::EIP2780) {
+            return Ok(InitialCallCode { code, code_address: to, disable_precompiles: true });
+        }
         let mut account =
             host.state.account(&delegated_address, false).map_err(error_handler!(host))?;
         account.warm();
@@ -591,40 +584,6 @@ fn initial_call_code<'a, T: EvmTypes>(
     Ok(InitialCallCode { code, code_address: to, disable_precompiles: false })
 }
 
-/// Rolls back failed top-level execution and normalizes halt gas.
-pub fn rollback_failed_execution<'a, T: EvmTypes>(
-    host: &mut Evm<'a, T>,
-    checkpoint: StateCheckpoint,
-    result: &mut MessageResult<T>,
-) {
-    if !result.stop.is_success() {
-        let features = host.version().features;
-        host.state.rollback(checkpoint, features);
-        if result.stop.is_halt() {
-            result.gas.set_remaining(0);
-        }
-    }
-}
-
-/// EIP-8037: refunds a top-level CREATE's intrinsic `create_state_gas` back to the reservoir when
-/// no new account leaf ends up created.
-///
-/// The charge was deducted upfront in [`initial_gas_and_reservoir`] (an unbalanced reservoir
-/// reduction, not a `spend_state`), so the inverse is an unbalanced reservoir add. It is refunded
-/// when the deployment failed (a reverted or halted deployment is rolled back, so the state gas was
-/// never actually consumed) or when it succeeded at a pre-existing alive (balance-only) target (no
-/// new leaf was created — execution-specs `created_target_alive`). No-op when `create_state_gas` is
-/// zero (non-create or pre-Amsterdam).
-pub const fn refund_create_state_gas<T: EvmTypesHost>(
-    result: &mut MessageResult<T>,
-    create_state_gas: u64,
-) {
-    if create_state_gas != 0 && (!result.stop.is_success() || result.created_target_was_alive) {
-        let reservoir = result.gas.reservoir().saturating_add(create_state_gas);
-        result.gas.set_reservoir(reservoir);
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 /// Applies Ethereum gas refunds, sender reimbursement, and beneficiary rewards.
 pub fn settle_gas<'a, T: EvmTypes>(
@@ -635,7 +594,6 @@ pub fn settle_gas<'a, T: EvmTypes>(
     floor_gas: u64,
     initial_state_gas: u64,
     state_refund: u64,
-    is_create: bool,
     result: MessageResult<T>,
 ) -> HandlerResult<TxResult<T>> {
     if let Some(code) = host.error_code {
@@ -647,8 +605,9 @@ pub fn settle_gas<'a, T: EvmTypes>(
         final_tx_gas(&result, tx_gas_limit, max_refund_quotient, floor_gas);
     // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
     // `TxResult::tx_gas_used` reproduces the local `gas_used` (used here for the beneficiary
-    // reward). State gas is execution state gas plus the upfront `initial_state_gas`, less the
-    // EIP-7702 per-authorization `state_refund`.
+    // reward). State gas is execution state gas plus the upfront `initial_state_gas` (the EIP-7702
+    // authorization state gas charged before the first frame), less the pre-Amsterdam per-auth
+    // `state_refund`.
     let total_gas_spent =
         tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(result.gas.reservoir());
     let refunded = result.final_refund(tx_gas_limit, max_refund_quotient);
@@ -656,28 +615,13 @@ pub fn settle_gas<'a, T: EvmTypes>(
     // resolves to the floor. `total_gas_spent` stays pre-refund and pre-floor: block-level
     // regular gas (EIP-7778/EIP-8037) accumulates `tx_gas_used_before_refund` per
     // execution-specs, without the floor clamp.
+    //
     // Execution state gas contributes only on success: a revert/halt rolls back its state changes.
-    // A failed top-level CREATE additionally unwinds its intrinsic `create_state_gas` (refunded to
-    // the reservoir by `refund_create_state_gas`), so it nets out of the block state gas.
-    let exec_state_gas = if result.stop.is_success() {
-        result.gas.state_gas_spent()
-    } else if is_create {
-        -(initial_state_gas as i64)
-    } else {
-        0
-    };
-    // A top-level CREATE that succeeds at a pre-existing alive target refunds its upfront
-    // `create_state_gas` (already credited to the reservoir by `refund_create_state_gas`), so it
-    // must not count toward block state gas either.
-    let alive_create_refund =
-        if is_create && result.stop.is_success() && result.created_target_was_alive {
-            initial_state_gas
-        } else {
-            0
-        };
+    // The upfront `initial_state_gas` is added unconditionally — an EIP-7702 execution failure
+    // still leaves the applied delegations (and their state gas) in place.
+    let exec_state_gas = if result.stop.is_success() { result.gas.state_gas_spent() } else { 0 };
     let state_gas_spent = (exec_state_gas.saturating_add_unsigned(initial_state_gas).max(0) as u64)
-        .saturating_sub(state_refund)
-        .saturating_sub(alive_create_refund);
+        .saturating_sub(state_refund);
     if host.feature(EvmFeatures::FEE_CHARGE) {
         let caller_refund = U256::from(gas_remaining) * gas_price;
         host.state
@@ -731,11 +675,20 @@ pub fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
 }
 
 /// Calculates transaction calldata floor gas.
+///
+/// `caller`/`to`/`value` feed the EIP-2780 floor base (ethereum/EIPs#11836):
+/// under EIP-2780 the floor is anchored on the decomposed regular-gas intrinsic
+/// base (`TX_BASE` + `to`-based + `value`-based, the same sum
+/// [`intrinsic_gas`] charges) instead of the flat `TxFloorCostBase`, so the
+/// floor never undercuts the transaction's own intrinsic base.
 pub fn floor_gas(
     version: &Version,
+    caller: Address,
+    to: TxKind,
     input: &Bytes,
     access_list_accounts: u64,
     access_list_storage_keys: u64,
+    value: U256,
 ) -> u64 {
     if !version.feature(EvmFeatures::EIP7623) {
         return 0;
@@ -759,7 +712,15 @@ pub fn floor_gas(
     let non_zero_data_len = input.len() as u64 - zero_data_len;
     tokens += zero_data_len * zero_multiplier + non_zero_data_len * non_zero_multiplier;
 
-    params.get(GasId::TxFloorCostBase) as u64 + tokens * floor_cost_per_token
+    // EIP-2780 (ethereum/EIPs#11836): anchor the floor on the decomposed
+    // intrinsic base instead of the flat `TxFloorCostBase`.
+    let base = if version.feature(EvmFeatures::EIP2780) {
+        let is_self_transfer = matches!(to, TxKind::Call(t) if t == caller);
+        eip2780_base_to_value_gas(version, to.is_create(), is_self_transfer, value)
+    } else {
+        params.get(GasId::TxFloorCostBase) as u64
+    };
+    base + tokens * floor_cost_per_token
 }
 
 /// Calculates intrinsic transaction gas.
@@ -951,33 +912,49 @@ mod tests {
     #[test]
     fn floor_gas_charges_prague_calldata_tokens() {
         let input = Bytes::from_static(&[0, 1, 2]);
+        let sender = Address::with_last_byte(0xaa);
+        let to = TxKind::Call(Address::ZERO);
         let mut prague_without_eip7623 = Version::new(SpecId::PRAGUE);
         prague_without_eip7623.features.remove(EvmFeatures::EIP7623);
 
-        assert_eq!(floor_gas(Version::base(SpecId::SHANGHAI), &input, 0, 0), 0);
-        assert_eq!(floor_gas(Version::base(SpecId::PRAGUE), &input, 0, 0), 21_000 + 9 * 10);
-        assert_eq!(floor_gas(&prague_without_eip7623, &input, 0, 0), 0);
+        assert_eq!(
+            floor_gas(Version::base(SpecId::SHANGHAI), sender, to, &input, 0, 0, U256::ZERO),
+            0
+        );
+        assert_eq!(
+            floor_gas(Version::base(SpecId::PRAGUE), sender, to, &input, 0, 0, U256::ZERO),
+            21_000 + 9 * 10
+        );
+        assert_eq!(floor_gas(&prague_without_eip7623, sender, to, &input, 0, 0, U256::ZERO), 0);
     }
 
     #[test]
     fn floor_gas_charges_amsterdam_access_list_tokens() {
         let input = Bytes::from(vec![1; 1000]);
+        let sender = Address::with_last_byte(0xaa);
+        // A plain value-less call to a different address: EIP-2780
+        // (ethereum/EIPs#11836) anchors the floor base on the decomposed
+        // intrinsic base `TX_BASE + COLD_ACCOUNT_ACCESS` (12,000 + 3,000)
+        // instead of the flat `TxFloorCostBase`.
+        let to = TxKind::Call(Address::ZERO);
 
         assert_eq!(
-            floor_gas(Version::base(SpecId::AMSTERDAM), &input, 1, 1),
-            // EIP-2780: the floor base drops from 21,000 to TX_BASE (12,000).
-            12_000 + (1000 * 4 + 80 + 128) * 16
+            floor_gas(Version::base(SpecId::AMSTERDAM), sender, to, &input, 1, 1, U256::ZERO),
+            15_000 + (1000 * 4 + 80 + 128) * 16
         );
 
         // EIP-7976: amsterdam weights zero calldata bytes the same as non-zero
         // bytes in the floor (4 tokens each), unlike EIP-7623 (zero = 1 token).
         let zero_input = Bytes::from(vec![0; 1000]);
         assert_eq!(
-            floor_gas(Version::base(SpecId::AMSTERDAM), &zero_input, 1, 1),
-            12_000 + (1000 * 4 + 80 + 128) * 16
+            floor_gas(Version::base(SpecId::AMSTERDAM), sender, to, &zero_input, 1, 1, U256::ZERO),
+            15_000 + (1000 * 4 + 80 + 128) * 16
         );
         // Prague keeps the EIP-7623 split: zero bytes count as one token each.
-        assert_eq!(floor_gas(Version::base(SpecId::PRAGUE), &zero_input, 0, 0), 21_000 + 1000 * 10);
+        assert_eq!(
+            floor_gas(Version::base(SpecId::PRAGUE), sender, to, &zero_input, 0, 0, U256::ZERO),
+            21_000 + 1000 * 10
+        );
     }
 
     #[test]

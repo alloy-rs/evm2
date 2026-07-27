@@ -775,11 +775,13 @@ evm_versions! {
             // EIP-7702 under EIP-8037: per-authorization regular-gas refund. The
             // intrinsic per-auth regular charge bundles a worst-case
             // `ACCOUNT_WRITE`; when the authority leaf already exists (or the auth
-            // is rejected) that account write is not needed and is refunded to the
-            // regular refund counter (execution-specs `set_delegation`). The
-            // state-gas portions come from `NewAccountState` (per-account) and
-            // `TxEip7702PerAuthState` (per-bytecode, AUTH_BASE_BYTES × CPSB).
-            TxEip7702AuthRefund: EIP8038_ACCOUNT_WRITE,
+            // EIP-2780 (ethereum/EIPs#11844): the per-auth `ACCOUNT_WRITE` and
+            // state gas are charged conditionally at the runtime gas phase, per
+            // authority that incurs them, so the pessimistic per-auth intrinsic
+            // refund no longer applies. `TxEip7702PerAuthState` (per-bytecode,
+            // AUTH_BASE_BYTES × CPSB) is the runtime net-new delegation-bytes
+            // charge; the new-account state gas comes from `NewAccountState`.
+            TxEip7702AuthRefund: 0,
             TxEip7702PerAuthState: 23 * AMSTERDAM_CPSB,
 
             // EIP-8038: State-access gas cost update (ethereum/EIPs#11802;
@@ -831,9 +833,11 @@ evm_versions! {
             // sets each per-item base to COLD_*_ACCESS (3,000).
             TxAccessListAddressCost: EIP8038_ACCESS_LIST_ADDRESS_COST + 20 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
             TxAccessListStorageKeyCost: EIP8038_ACCESS_LIST_STORAGE_KEY_COST + 32 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
-            // EIP-7702 regular-gas per-auth cost shifts with ACCOUNT_WRITE /
-            // COLD_ACCOUNT_ACCESS (7,500 -> 9,200).
-            TxEip7702PerEmptyAccountCost: EIP8038_EIP7702_PER_EMPTY_ACCOUNT_REGULAR,
+            // EIP-2780 (ethereum/EIPs#11844): the intrinsic per-auth charge is
+            // the state-independent `REGULAR_PER_AUTH_BASE_COST` (7,816) only;
+            // the ACCOUNT_WRITE and state-gas remainder is charged at the runtime
+            // gas phase per authority.
+            TxEip7702PerEmptyAccountCost: EIP8038_EIP7702_PER_AUTH_BASE_REGULAR,
 
             // EIP-2780: Reduce intrinsic transaction gas. The `to`- and
             // `value`-based intrinsic charges. ACCOUNT_WRITE / CREATE_ACCESS

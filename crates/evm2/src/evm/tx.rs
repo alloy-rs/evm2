@@ -55,14 +55,17 @@ impl<T: EvmTypesHost> TxResult<T> {
         if spent_sub_refunded > self.floor_gas { spent_sub_refunded } else { self.floor_gas }
     }
 
-    /// Returns this transaction's regular (non-state) gas: `total_gas_spent - state_gas_spent`,
-    /// pre-refund (refund and floor only affect [`Self::tx_gas_used`]).
+    /// Returns this transaction's regular (non-state) block gas:
+    /// `max(total_gas_spent - state_gas_spent, floor_gas)`, pre-refund.
     ///
     /// Together with [`Self::state_gas_spent()`] this is the per-transaction split that callers add
-    /// to the block's separate regular- and state-gas counters (EIP-8037 + EIP-7778).
+    /// to the block's separate regular- and state-gas counters (EIP-8037 + EIP-7778). The EIP-7623
+    /// calldata floor is not discounted by state gas, so it binds against the regular component
+    /// (ethereum/EIPs#11836); the refund still only affects [`Self::tx_gas_used`].
     #[inline]
     pub const fn regular_gas_spent(&self) -> u64 {
-        self.total_gas_spent.saturating_sub(self.state_gas_spent)
+        let regular = self.total_gas_spent.saturating_sub(self.state_gas_spent);
+        if regular > self.floor_gas { regular } else { self.floor_gas }
     }
 
     /// Returns this transaction's state gas (EIP-8037) — the stored `state_gas_spent` field,
