@@ -282,7 +282,7 @@ impl GasTracker {
         self.remaining = self.gas_limit.saturating_sub(spent);
     }
 
-    /// Spends regular gas.
+    /// Spends regular gas, leaving the counter unchanged if there is not enough.
     #[doc(alias = "record_cost")]
     #[doc(alias = "record_regular_cost")]
     #[doc(alias = "record_cost_unsafe")]
@@ -290,11 +290,11 @@ impl GasTracker {
     #[inline]
     pub const fn spend(&mut self, cost: u64) -> Result {
         let remaining = self.remaining;
-        self.remaining = remaining.wrapping_sub(cost);
         if remaining < cost {
             cold_path();
             Err(InstrStop::OutOfGas)
         } else {
+            self.remaining = remaining - cost;
             Ok(())
         }
     }
@@ -711,6 +711,16 @@ mod tests {
     use core::assert_matches;
 
     #[test]
+    fn test_spend_oog_preserves_remaining_gas() {
+        let mut gas = GasTracker::new(100);
+        assert_matches!(gas.spend(101), Err(InstrStop::OutOfGas));
+        assert_eq!(gas.remaining(), 100);
+
+        assert!(gas.spend(100).is_ok());
+        assert_eq!(gas.remaining(), 0);
+    }
+
+    #[test]
     fn test_spend_state() {
         let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 500);
         assert!(gas.spend_state(200).is_ok());
@@ -753,13 +763,27 @@ mod tests {
     #[test]
     fn test_spend_state_oog_does_not_inflate_state_gas_spent() {
         let mut gas = Gas::new(30);
+        let gas_before = gas;
         assert_matches!(gas.spend_state(100), Err(InstrStop::OutOfGas));
-        assert_eq!(gas.state_gas_spent(), 0);
+        assert_eq!(gas, gas_before);
 
         let mut gas = Gas::new_with_regular_gas_and_reservoir(30, 20);
+        let gas_before = gas;
         assert_matches!(gas.spend_state(100), Err(InstrStop::OutOfGas));
-        assert_eq!(gas.state_gas_spent(), 0);
-        assert_eq!(gas.reservoir(), 20);
+        assert_eq!(gas, gas_before);
+    }
+
+    #[test]
+    fn test_settle_gas_consumes_halt_but_not_revert() {
+        let mut gas = GasTracker::new(100);
+        assert_matches!(gas.spend(101), Err(InstrStop::OutOfGas));
+        gas.settle_gas(InstrStop::OutOfGas);
+        assert_eq!(gas.remaining(), 0);
+
+        let mut gas = GasTracker::new(100);
+        assert!(gas.spend(40).is_ok());
+        gas.settle_gas(InstrStop::Revert);
+        assert_eq!(gas.remaining(), 60);
     }
 
     #[test]
