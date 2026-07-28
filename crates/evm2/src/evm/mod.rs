@@ -1157,27 +1157,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // replacement while the hooks are running.
         let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
 
+        // `destination` already holds the create's contract address (set when the message was
+        // constructed), so the create hook observes it directly.
         let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
-        if is_create {
-            // Derive the destination early so that the create hook can observe it; execution
-            // re-derives it together with its semantic checks.
-            let nonce = if message.depth > 0 {
-                match self.state.account_info_untracked(&message.caller) {
-                    Ok(info) => info.map_or(0, |info| info.nonce),
-                    Err(code) => {
-                        let stop = self.store_error(code);
-                        return Self::error_message_result(
-                            stop,
-                            message.gas_limit,
-                            message.reservoir,
-                        );
-                    }
-                }
-            } else {
-                0
-            };
-            message.destination = Self::derive_create_address(&bytecode, message, nonce);
-        }
 
         let mut top_frame: Option<Box<Interpreter<'frame, 'a, T>>> = None;
         let frame = match self.current_frame {
@@ -1241,11 +1223,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 message.reservoir,
             );
         }
-        if let Err(stop) = self.prepare_create_message(&bytecode, message) {
+        if let Err(stop) = self.prepare_create_message(message) {
             return Self::error_message_result(stop, message.gas_limit, message.reservoir);
         }
         let checkpoint = self.state.checkpoint();
-        // EIP-2780 (ethereum/EIPs#11858): capture whether the target leaf is already alive
+        // EIP-2780: capture whether the target leaf is already alive
         // (existing, non-empty) before creation, so a top-level create at a pre-existing
         // balance-only account is not charged the account-creation state gas below (no new leaf is
         // created — execution-specs `created_target_alive`).
@@ -1267,7 +1249,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         message.disable_precompiles = false;
         let input = core::mem::take(&mut message.input);
 
-        // EIP-2780 (ethereum/EIPs#11858): a top-level create (depth 0) charges the
+        // EIP-2780: a top-level create (depth 0) charges the
         // account-creation state gas at frame entry, conditional on the destination not already
         // existing (`!target_alive`). Nested creates are charged on the parent frame by the CREATE
         // opcode instead. The charge is state gas on this frame's tracker, refilled by the frame's
@@ -1294,11 +1276,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     #[inline(never)]
-    fn prepare_create_message(
-        &mut self,
-        bytecode: &Bytecode,
-        message: &mut Message<T>,
-    ) -> Result<(), InstrStop> {
+    fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), InstrStop> {
         let info = if message.value > 0 || message.depth > 0 {
             self.state
                 .account_info_untracked(&message.caller)
@@ -1317,13 +1295,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return Err(InstrStop::Return);
         }
 
-        // When an inspector is installed, the destination is already derived for the create hook,
-        // and inspector mutations of it are respected.
-        if self.inspector.is_none() {
-            message.destination =
-                Self::derive_create_address(bytecode, message, info.map_or(0, |info| info.nonce));
-        }
-
+        // `destination` already holds the contract address (derived when the message was
+        // constructed); warm it before running the initcode.
         let _ = self.state.account(&message.destination, false).map(|mut a| a.warm());
 
         if message.depth > 0
@@ -1441,16 +1414,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             }
         }
         Ok(())
-    }
-
-    /// Derives the destination address for a create message.
-    fn derive_create_address(bytecode: &Bytecode, message: &Message<T>, nonce: u64) -> Address {
-        match message.kind {
-            MessageKind::Create if message.depth == 0 => message.destination,
-            MessageKind::Create => message.caller.create(nonce),
-            MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
-            _ => unreachable!("invalid create message kind"),
-        }
     }
 
     #[inline(never)]

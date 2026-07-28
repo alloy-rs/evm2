@@ -670,41 +670,15 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     } else {
         B256::ZERO
     };
-    // EIP-8037 (ethereum/EIPs#11858): charge the CREATE account-creation state gas before the child
-    // gas split, conditional on the destination not already existing (and on the endowment/nonce
-    // pre-checks passing, so an early-failing create leaves the destination out of the block access
-    // list). Mirrors the interpreter's `create` opcode.
-    let mut charged_create_state_gas = false;
-    if ecx.enables(EvmFeatures::EIP8037) {
-        let caller = ecx.message().destination;
-        let caller_info = ecx.host().load_account(&caller, false, false)?;
-        if caller_info.balance >= value.to_u256() && caller_info.nonce != u64::MAX {
-            let created_address = if is_create2 {
-                let init_code_hash = Bytecode::new_legacy(code.clone()).hash_slow();
-                caller.create2(salt, init_code_hash)
-            } else {
-                caller.create(caller_info.nonce)
-            };
-            if ecx.host().target_is_empty_for_new_account_gas(&created_address, version.features)? {
-                ecx.gas.spend_state(version.gas_params.create_state_gas())?;
-                charged_create_state_gas = true;
-            }
-        }
-    }
-
-    let mut gas_limit = ecx.gas.remaining();
-    if ecx.enables(EvmFeatures::EIP150) {
-        gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
-    }
-    ecx.gas.spend(gas_limit)?;
-
+    // Build the message up front (minus the child gas split, filled in below).
     let current = ecx.message();
     let mut message = Message {
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
-        gas_limit,
-        reservoir: ecx.gas.reservoir(),
-        destination: current.destination,
+        gas_limit: 0,
+        reservoir: 0,
+        // Derived below into the yet-to-be-created contract address.
+        destination: Address::ZERO,
         caller: current.destination,
         input: code,
         value: value.to_u256(),
@@ -715,6 +689,40 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         ext: (),
         _non_exhaustive: (),
     };
+
+    // Derive the created contract address once and record it in `destination` (mirrors the
+    // interpreter's `create` opcode). CREATE needs the creator's (pre-bump) nonce; the caller is the
+    // currently-executing contract, already warm. CREATE2 needs no nonce. The same load feeds the
+    // EIP-8037 balance/nonce checks below, so it is only performed when one of the two needs it.
+    let caller_info = if is_create2 && !ecx.enables(EvmFeatures::EIP8037) {
+        None
+    } else {
+        Some(ecx.host().load_account(&message.caller, false, false)?)
+    };
+    message.destination = message.created_address(caller_info.as_ref().map_or(0, |info| info.nonce));
+
+    // EIP-8037 (ethereum/EIPs#11858): charge the CREATE account-creation state gas before the child
+    // gas split, conditional on the destination not already existing (and on the endowment/nonce
+    // pre-checks passing, so an early-failing create leaves the destination out of the block access
+    // list).
+    let mut charged_create_state_gas = false;
+    if let Some(caller_info) = caller_info.filter(|_| ecx.enables(EvmFeatures::EIP8037))
+        && caller_info.balance >= message.value
+        && caller_info.nonce != u64::MAX
+        && ecx.host().target_is_empty_for_new_account_gas(&message.destination, version.features)?
+    {
+        ecx.gas.spend_state(version.gas_params.create_state_gas())?;
+        charged_create_state_gas = true;
+    }
+
+    let mut gas_limit = ecx.gas.remaining();
+    if ecx.enables(EvmFeatures::EIP150) {
+        gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
+    }
+    ecx.gas.spend(gas_limit)?;
+    message.gas_limit = gas_limit;
+    message.reservoir = ecx.gas.reservoir();
+
     let bytecode = Bytecode::new_legacy(message.input.clone());
     let tx_env = ecx.tx_env();
     let mut result = ecx.host().execute_message(tx_env, bytecode, &mut message);

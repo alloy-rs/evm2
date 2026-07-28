@@ -315,50 +315,16 @@ fn create_inner<T: EvmTypesHost>(
         state.gas_params().get(GasId::Create).into()
     };
     gas.spend(create_cost)?;
-    // EIP-8037 (ethereum/EIPs#11858): charge the CREATE account-creation state gas on this frame
-    // before the child gas/reservoir split, conditional on the destination not already existing.
-    // The single destination read decides the charge (and warms the address); a create at a
-    // pre-existing leaf pays nothing, so its child is not shortchanged by an unneeded spill. The
-    // charge is refunded via `refill_reservoir` if the create fails to deploy (see the
-    // create-failure path after `execute_message`).
-    let mut charged_create_state_gas = false;
-    if state.feature(EvmFeatures::EIP8037) {
-        let caller = state.message().destination;
-        let caller_info = state.host().load_account(&caller, false, false)?;
-        // Only decide the account-creation charge once the endowment and nonce pre-checks pass: a
-        // create that early-fails on those never accesses the destination, so reading it here would
-        // leak it into the EIP-7928 block access list. The early-fail itself (pushing 0) is handled
-        // by the child frame below.
-        if caller_info.balance >= value && caller_info.nonce != u64::MAX {
-            let created_address = if is_create2 {
-                let init_code_hash =
-                    crate::bytecode::Bytecode::new_legacy(input.clone()).hash_slow();
-                let salt = B256::from(salt.expect("create2 salt").to_be_bytes());
-                caller.create2(salt, init_code_hash)
-            } else {
-                caller.create(caller_info.nonce)
-            };
-            let features = state.version().features;
-            if state.host().target_is_empty_for_new_account_gas(&created_address, features)? {
-                gas.spend_state(state.gas_params().create_state_gas())?;
-                charged_create_state_gas = true;
-            }
-        }
-    }
-    let gas_limit = if state.feature(EvmFeatures::EIP150) {
-        state.gas_params().call_stipend_reduction(gas.remaining())
-    } else {
-        gas.remaining()
-    };
-    gas.spend(gas_limit)?;
 
+    // Build the message up front (minus the child gas split, filled in below).
     let current = state.message();
     let mut message = Message {
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
-        gas_limit,
-        reservoir: gas.reservoir(),
-        destination: current.destination,
+        gas_limit: 0,
+        reservoir: 0,
+        // Derived below into the yet-to-be-created contract address.
+        destination: Address::ZERO,
         caller: current.destination,
         input,
         value,
@@ -370,6 +336,48 @@ fn create_inner<T: EvmTypesHost>(
         ext: T::MessageExt::default(),
         _non_exhaustive: (),
     };
+
+    // Derive the created contract address once and record it in `destination`. CREATE needs the
+    // creator's (pre-bump) nonce; the caller is the currently-executing contract, already warm and
+    // in the access list, so this read is neutral. CREATE2 needs no nonce. The same load feeds the
+    // EIP-8037 balance/nonce checks below, so it is only performed when one of the two needs it.
+    let caller_info = if is_create2 && !state.feature(EvmFeatures::EIP8037) {
+        None
+    } else {
+        Some(state.host().load_account(&message.caller, false, false)?)
+    };
+    message.destination =
+        message.created_address(caller_info.as_ref().map_or(0, |info| info.nonce));
+
+    // EIP-8037 (ethereum/EIPs#11858): charge the CREATE account-creation state gas on this frame
+    // before the child gas/reservoir split, conditional on the destination not already existing.
+    // The single destination read decides the charge (and warms the address); a create at a
+    // pre-existing leaf pays nothing, so its child is not shortchanged by an unneeded spill. The
+    // charge is refunded via `refill_reservoir` if the create fails to deploy (see the
+    // create-failure path after `execute_message`).
+    let mut charged_create_state_gas = false;
+    if let Some(caller_info) = caller_info.filter(|_| state.feature(EvmFeatures::EIP8037)) {
+        // Only decide the account-creation charge once the endowment and nonce pre-checks pass: a
+        // create that early-fails on those never accesses the destination, so reading it here would
+        // leak it into the EIP-7928 block access list. The early-fail itself (pushing 0) is handled
+        // by the child frame below.
+        if caller_info.balance >= message.value && caller_info.nonce != u64::MAX {
+            let features = state.version().features;
+            if state.host().target_is_empty_for_new_account_gas(&message.destination, features)? {
+                gas.spend_state(state.gas_params().create_state_gas())?;
+                charged_create_state_gas = true;
+            }
+        }
+    }
+    let gas_limit = if state.feature(EvmFeatures::EIP150) {
+        state.gas_params().call_stipend_reduction(gas.remaining())
+    } else {
+        gas.remaining()
+    };
+    gas.spend(gas_limit)?;
+    message.gas_limit = gas_limit;
+    message.reservoir = gas.reservoir();
+
     let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
     let tx_env = state.tx();
     let mut result = state.host().execute_message(tx_env, bytecode, &mut message);
