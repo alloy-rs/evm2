@@ -29,8 +29,8 @@ use evm2::{
     env::BlockEnv,
     evm::DynDatabase,
     interpreter::{
-        GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word,
-        opcode::OpCode,
+        GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
+        Word, opcode::OpCode,
     },
 };
 
@@ -733,9 +733,9 @@ pub enum JsInspectorError {
 
 /// Converts a JavaScript error into a [InstrStop::Revert] [MessageResult].
 #[inline]
-fn js_error_to_revert<T: EvmTypesHost>(err: JsError) -> MessageResult<T> {
+fn js_error_to_revert<E: Default>(err: JsError) -> MessageResultExt<E> {
     let output = err.to_string().as_bytes().to_vec();
-    MessageResult {
+    MessageResultExt {
         stop: InstrStop::Revert,
         output: output.into(),
         gas: GasTracker::new(0),
@@ -810,7 +810,7 @@ mod tests {
         let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::CANCUN,
-            evm2::env::BlockEnv::default(),
+            evm2::env::BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::CANCUN),
             db,
             Precompiles::base(SpecId::CANCUN),

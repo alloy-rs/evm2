@@ -327,7 +327,7 @@ mod tests {
     use crate::{
         BaseEvmConfigSelector, EvmFeatures, EvmTypesHost, SpecId,
         bytecode::Bytecode,
-        env::{BlockEnv, TxEnv},
+        env::{BlockEnv, BlockEnvExt, TxEnv},
         evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
         interpreter::{Host, InstrStop, Message, MessageResult, Word},
     };
@@ -501,7 +501,7 @@ mod tests {
     ) -> HandlerResult<Receipt> {
         registry.try_get_by_type(type_id)?.call(
             &Recovered::new_unchecked(env.clone(), Address::ZERO),
-            &mut TestHost { block: BlockEnv::default() },
+            &mut TestHost { block: BlockEnvExt::default() },
         )
     }
 

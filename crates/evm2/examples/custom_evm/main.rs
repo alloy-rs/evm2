@@ -206,9 +206,9 @@ fn custom_evm_with_database(database: InMemoryDB) -> Evm<'static, CustomTypes> {
     Evm::<CustomTypes>::new_with_execution_config(
         custom_execution_config(),
         CustomSpecId::CustomOsaka,
-        BlockEnv {
+        BlockEnv::<CustomTypes> {
             ext: CustomBlockEnvExt { l1_block_number: CUSTOM_L1_BLOCK_NUMBER },
-            ..BlockEnv::default()
+            ..BlockEnv::<CustomTypes>::default()
         },
         custom_registry(),
         database,
@@ -219,9 +219,9 @@ fn custom_evm_with_database(database: InMemoryDB) -> Evm<'static, CustomTypes> {
 fn mainnet_evm() -> Evm<'static, CustomTypes> {
     Evm::<CustomTypes>::new(
         CustomSpecId::MainnetOsaka,
-        BlockEnv {
+        BlockEnv::<CustomTypes> {
             ext: CustomBlockEnvExt { l1_block_number: MAINNET_L1_BLOCK_NUMBER },
-            ..BlockEnv::default()
+            ..BlockEnv::<CustomTypes>::default()
         },
         custom_registry(),
         InMemoryDB::default(),

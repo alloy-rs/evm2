@@ -138,7 +138,7 @@ impl Context {
         Self {
             db: CacheDB::new(EmptyDB::default()),
             tx: TxEnv::default(),
-            block: evm_env::BlockEnv::default(),
+            block: evm_env::BlockEnvExt::default(),
             spec: SpecId::OSAKA,
         }
     }

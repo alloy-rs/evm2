@@ -1,8 +1,8 @@
 use crate::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
-    env::{BlockEnv, TxEnv},
+    env::{BlockEnvExt, TxEnvExt},
     evm::{AccountInfo, InMemoryDB},
-    interpreter::{Host, InstrStop, Message, Word, op},
+    interpreter::{Host, InstrStop, MessageExt, Word, op},
     registry::TxRegistry,
     test_utils::{legacy_bytecode, push},
 };
@@ -12,13 +12,14 @@ use alloy_primitives::Address;
 type TestEvm = Evm<'static, BaseEvmTypes>;
 
 fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
-    let mut message = Message {
+    let mut message = MessageExt {
         destination,
         code_address: destination,
         gas_limit: 100_000,
         ..Default::default()
     };
-    let result = Host::execute_message(evm, &TxEnv::default(), legacy_bytecode(code), &mut message);
+    let result =
+        Host::execute_message(evm, &TxEnvExt::default(), legacy_bytecode(code), &mut message);
     assert!(result.stop.is_success());
 }
 
@@ -27,7 +28,7 @@ fn evm_executes_storage_transaction() {
     let contract = Address::from([0x11; 20]);
     let mut evm = TestEvm::new(
         SpecId::OSAKA,
-        BlockEnv::default(),
+        BlockEnvExt::default(),
         TxRegistry::new(),
         InMemoryDB::default(),
         Precompiles::base(SpecId::OSAKA),
@@ -56,7 +57,7 @@ fn evm_runs_transactions_against_initial_state() {
     database.insert_account_storage(&contract, &Word::from(1), &Word::from(40));
     let mut evm = TestEvm::new(
         SpecId::OSAKA,
-        BlockEnv::default(),
+        BlockEnvExt::default(),
         TxRegistry::new(),
         database,
         Precompiles::base(SpecId::OSAKA),
@@ -106,7 +107,7 @@ fn evm_propagates_child_sstore_negative_refund() {
     database.insert_account_storage(&contract, &Word::from(0), &Word::from(5));
     let mut evm = TestEvm::new(
         SpecId::LONDON,
-        BlockEnv::default(),
+        BlockEnvExt::default(),
         TxRegistry::new(),
         database,
         Precompiles::base(SpecId::LONDON),
@@ -125,7 +126,7 @@ fn evm_propagates_child_sstore_negative_refund() {
     push(&mut parent_code, 50_000); // gas
     parent_code.extend([op::CALL, op::STOP]);
 
-    let mut message = Message {
+    let mut message = MessageExt {
         destination: contract,
         code_address: contract,
         gas_limit: 100_000,
@@ -133,7 +134,7 @@ fn evm_propagates_child_sstore_negative_refund() {
     };
     let result = Host::execute_message(
         &mut evm,
-        &TxEnv::default(),
+        &TxEnvExt::default(),
         legacy_bytecode(parent_code),
         &mut message,
     );
@@ -147,12 +148,12 @@ fn evm_reports_invalid_transaction_execution() {
     let contract = Address::from([0x33; 20]);
     let mut evm = TestEvm::new(
         SpecId::OSAKA,
-        BlockEnv::default(),
+        BlockEnvExt::default(),
         TxRegistry::new(),
         InMemoryDB::default(),
         Precompiles::base(SpecId::OSAKA),
     );
-    let mut message = Message {
+    let mut message = MessageExt {
         destination: contract,
         code_address: contract,
         gas_limit: 100_000,
@@ -160,7 +161,7 @@ fn evm_reports_invalid_transaction_execution() {
     };
     let result = Host::execute_message(
         &mut evm,
-        &TxEnv::default(),
+        &TxEnvExt::default(),
         legacy_bytecode([op::PUSH1, 0x01, op::SSTORE]),
         &mut message,
     );

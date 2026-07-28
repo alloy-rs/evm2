@@ -15,10 +15,10 @@ use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use core::mem;
 use evm2::{
-    Evm, EvmTypes, EvmTypesHost, Inspector, SpecId,
+    Evm, EvmTypes, Inspector, SpecId,
     evm::JournalEntry,
     interpreter::{
-        Interpreter, Message, MessageKind, MessageResult,
+        Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
     },
 };
@@ -373,7 +373,7 @@ impl TracingInspector {
     /// # Panics
     ///
     /// This expects an existing trace [Self::start_trace_on_call]
-    fn fill_trace_on_call_end<T: EvmTypesHost>(&mut self, result: &MessageResult<T>) {
+    fn fill_trace_on_call_end<E>(&mut self, result: &MessageResultExt<E>) {
         let trace_idx = self.pop_trace_idx();
         let trace = &mut self.traces.arena[trace_idx].trace;
 

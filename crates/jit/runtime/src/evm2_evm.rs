@@ -76,10 +76,10 @@ mod tests {
     use evm2::{
         BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
         bytecode::Bytecode,
-        env::{BlockEnv, TxEnv},
+        env::{BlockEnvExt, TxEnvExt},
         ethereum::ethereum_tx_registry,
         evm::EmptyDB,
-        interpreter::{Message, op},
+        interpreter::{MessageExt, op},
     };
     #[cfg(feature = "llvm")]
     use evm2::{
@@ -206,8 +206,8 @@ mod tests {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,
         );
-        let tx_env = TxEnv::default();
-        let message = Message { gas_limit: 1_000_000, ..Default::default() };
+        let tx_env = TxEnvExt::default();
+        let message = MessageExt { gas_limit: 1_000_000, ..Default::default() };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(
             Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             &tx_env,
@@ -215,7 +215,7 @@ mod tests {
         );
         let mut host = Evm::<BaseEvmTypes>::new(
             SpecId::CANCUN,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::CANCUN),
             EmptyDB::default(),
             Precompiles::base(SpecId::CANCUN),
@@ -245,14 +245,15 @@ mod tests {
         let backend = blocking_backend();
         let mut host = Evm::<BaseEvmTypes>::new(
             SpecId::CANCUN,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::CANCUN),
             database,
             Precompiles::base(SpecId::CANCUN),
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
-        let tx_env = TxEnv::default();
-        let message = Message { gas_limit: 1_000_000, destination: caller, ..Message::default() };
+        let tx_env = TxEnvExt::default();
+        let message =
+            MessageExt { gas_limit: 1_000_000, destination: caller, ..MessageExt::default() };
         let mut code = vec![op::PUSH1, 0x20, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0];
         push20(&mut code, target);
         code.extend([
@@ -292,14 +293,15 @@ mod tests {
         let backend = blocking_backend();
         let mut host = Evm::<BaseEvmTypes>::new(
             SpecId::CANCUN,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::CANCUN),
             database,
             Precompiles::base(SpecId::CANCUN),
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
-        let tx_env = TxEnv::default();
-        let message = Message { gas_limit: 1_000_000, destination: creator, ..Message::default() };
+        let tx_env = TxEnvExt::default();
+        let message =
+            MessageExt { gas_limit: 1_000_000, destination: creator, ..MessageExt::default() };
         let code = [
             op::PUSH10,
             0x60,
@@ -368,18 +370,18 @@ mod tests {
         let backend = blocking_backend();
         let mut host = Evm::<BaseEvmTypes>::new(
             SpecId::CANCUN,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::CANCUN),
             database,
             Precompiles::base(SpecId::CANCUN),
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
-        let tx_env = TxEnv::default();
-        let message = Message {
+        let tx_env = TxEnvExt::default();
+        let message = MessageExt {
             gas_limit: 1_000_000,
             destination: caller,
             value: Word::from(30),
-            ..Message::default()
+            ..MessageExt::default()
         };
         let code = vec![
             op::PUSH1,
@@ -447,18 +449,18 @@ mod tests {
         let backend = blocking_backend();
         let mut host = Evm::<BaseEvmTypes>::new(
             SpecId::CANCUN,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::CANCUN),
             database,
             Precompiles::base(SpecId::CANCUN),
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
-        let tx_env = TxEnv::default();
-        let message = Message {
+        let tx_env = TxEnvExt::default();
+        let message = MessageExt {
             gas_limit: 1_000_000,
             destination: caller,
             value: Word::from(30),
-            ..Message::default()
+            ..MessageExt::default()
         };
         let code = vec![
             op::PUSH1,
@@ -505,16 +507,16 @@ mod tests {
         let outer_code = dynamic_call_outer_code();
         let mut input = [0u8; 32];
         input[12..].copy_from_slice(middle.as_slice());
-        let message = Message {
+        let message = MessageExt {
             gas_limit: 0xcd79195900 - 21_368,
             destination: outer,
             caller,
             input: Bytes::copy_from_slice(&input),
             value: Word::from(10),
             code_address: outer,
-            ..Message::default()
+            ..MessageExt::default()
         };
-        let tx_env = TxEnv { gas_price: Word::from(10), ..TxEnv::default() };
+        let tx_env = TxEnvExt { gas_price: Word::from(10), ..TxEnvExt::default() };
 
         let run = |with_jit: bool| {
             let mut database = InMemoryDB::default();
@@ -536,7 +538,7 @@ mod tests {
             let backend = blocking_backend();
             let mut host = Evm::<BaseEvmTypes>::new(
                 SpecId::CANCUN,
-                BlockEnv::default(),
+                BlockEnvExt::default(),
                 ethereum_tx_registry(SpecId::CANCUN),
                 database,
                 Precompiles::base(SpecId::CANCUN),

@@ -24,7 +24,7 @@ use alloy_trie::{
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
     BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
-    env::BlockEnv,
+    env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
         AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, DbStats, DbStatsCounts,
@@ -540,7 +540,7 @@ fn parse_state(pre: &BTreeMap<Address, AccountInfo>) -> Result<InMemoryDB, TestE
 }
 
 fn parse_block(env: &Env, spec: SpecId) -> BlockEnv {
-    BlockEnv {
+    BlockEnvExt {
         number: env.current_number,
         beneficiary: env.current_coinbase,
         timestamp: env.current_timestamp,

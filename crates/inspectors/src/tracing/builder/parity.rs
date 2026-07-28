@@ -11,7 +11,7 @@ use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
 use core::iter::Peekable;
 use evm2::{
-    AccountInfo, EvmTypesHost, SpecId, TxResult, TxResultWithState,
+    AccountInfo, EvmTypesHost, SpecId, TxResultExt, TxResultWithState,
     evm::{DbResult, DynDatabase, PendingState},
 };
 
@@ -148,9 +148,9 @@ impl ParityTraceBuilder {
     /// be filled. Use [ParityTraceBuilder::into_trace_results_with_state] or
     /// [populate_state_diff] to populate the balance and nonce changes for the [StateDiff]
     /// using the database.
-    pub fn into_trace_results<T: EvmTypesHost>(
+    pub fn into_trace_results<E>(
         self,
-        res: &TxResult<T>,
+        res: &TxResultExt<E>,
         trace_types: &HashSet<TraceType>,
     ) -> TraceResults {
         let output = res.output.clone();

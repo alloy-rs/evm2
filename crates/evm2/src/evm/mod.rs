@@ -123,7 +123,7 @@ use crate::{
     error::error_unavailable,
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
-        MessageResult, Word, gas::WARM_STORAGE_READ_COST,
+        MessageResult, MessageResultExt, Word, gas::WARM_STORAGE_READ_COST,
     },
     registry::{HandlerError, HandlerResult, TxRegistry},
     trustme,
@@ -142,6 +142,7 @@ use derive_where::derive_where;
 pub mod r#async;
 pub mod config;
 pub mod env;
+pub mod handler;
 pub mod inspector;
 pub mod precompile;
 pub mod registry;
@@ -169,7 +170,7 @@ pub use db::{
 };
 
 mod tx;
-pub use tx::{ExecutedTx, TxResult, TxResultWithState};
+pub use tx::{ExecutedTx, TxResult, TxResultExt, TxResultWithState};
 
 mod state;
 pub use state::{
@@ -1342,7 +1343,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         if stop.is_success() {
             if let Err(stop) = self.validate_create_output(&mut gas, &mut output) {
                 self.state.rollback(checkpoint, self.features);
-                return MessageResult {
+                return MessageResultExt {
                     stop,
                     gas: *gas.tracker(),
                     output,
@@ -1366,7 +1367,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             self.state.rollback(checkpoint, self.features);
         }
 
-        MessageResult {
+        MessageResultExt {
             stop,
             gas: *gas.tracker(),
             output,
@@ -1589,7 +1590,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         if !stop.is_success() {
             self.state.rollback(checkpoint, self.features);
         }
-        MessageResult {
+        MessageResultExt {
             stop,
             gas,
             output,
@@ -1613,7 +1614,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             self.state.rollback(checkpoint, self.features);
         }
 
-        MessageResult {
+        MessageResultExt {
             stop,
             gas: *child_gas.tracker(),
             output,
@@ -1630,10 +1631,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         gas_remaining: u64,
         reservoir: u64,
     ) -> MessageResult<T> {
-        MessageResult {
+        MessageResultExt {
             stop,
             gas: GasTracker::new_with_regular_gas_and_reservoir(gas_remaining, reservoir),
-            ..MessageResult::default()
+            ..MessageResultExt::default()
         }
     }
 
@@ -2033,9 +2034,9 @@ mod tests {
     use crate::{
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
-        env::TxEnv,
+        env::{BlockEnvExt, TxEnvExt},
         ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
-        interpreter::{GasTracker, Interpreter, MessageKind, op},
+        interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileMap},
         registry::{HandlerError, TxRequest},
         test_utils::{legacy_bytecode, push_address},
@@ -2073,7 +2074,7 @@ mod tests {
     fn stores_typed_evm_extension_state() {
         let mut evm = Evm::<ExtensionTestTypes>::new_with_ext(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompile::NoPrecompiles::default(),
@@ -2094,7 +2095,11 @@ mod tests {
 
     fn handle_test_tx(req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
-        Ok(TxResult { status: true, total_gas_spent: req.tx.nonce + 1, ..TxResult::default() })
+        Ok(TxResultExt {
+            status: true,
+            total_gas_spent: req.tx.nonce + 1,
+            ..TxResultExt::default()
+        })
     }
 
     #[derive(Debug)]
@@ -2119,14 +2124,14 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_interpreter_runner(TestInterpreterRunner { stop, calls: Arc::clone(&calls) });
-        let tx_env = TxEnv::default();
-        let message = Message { gas_limit: 30_000, ..Default::default() };
+        let tx_env = TxEnvExt::default();
+        let message = MessageExt { gas_limit: 30_000, ..Default::default() };
 
         let frame_gas =
             GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
@@ -2158,7 +2163,7 @@ mod tests {
             address: LIFECYCLE_ACCOUNT,
             data: LogData::new_unchecked(vec![], Bytes::new()),
         });
-        Ok(TxResult { status: true, total_gas_spent: req.tx.nonce, ..TxResult::default() })
+        Ok(TxResultExt { status: true, total_gas_spent: req.tx.nonce, ..TxResultExt::default() })
     }
 
     fn empty_precompiles() -> Precompiles<BaseEvmTypes> {
@@ -2183,7 +2188,7 @@ mod tests {
     }
 
     fn precompile_message(address: Address) -> Message {
-        Message {
+        MessageExt {
             kind: MessageKind::Call,
             depth: 0,
             gas_limit: 30_000,
@@ -2221,7 +2226,7 @@ mod tests {
         })]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompiles,
@@ -2231,7 +2236,7 @@ mod tests {
 
         let result = Host::execute_message(
             &mut evm,
-            &TxEnv::default(),
+            &TxEnvExt::default(),
             Bytecode::new_legacy(Bytes::new()),
             &mut message,
         );
@@ -2256,7 +2261,7 @@ mod tests {
         database.insert_account_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY, &Word::from(1));
         Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             database,
             Precompiles::base(SpecId::OSAKA),
@@ -2302,20 +2307,20 @@ mod tests {
         ));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompiles,
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
             gas_limit: 200_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::FatalPrecompileError);
         assert_eq!(evm.error_code(), Some(ErrorCode::FATAL_PRECOMPILE));
@@ -2357,20 +2362,20 @@ mod tests {
         ));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompiles,
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
             gas_limit: 200_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::Stop);
         assert!(evm.error_code().is_none());
@@ -2416,7 +2421,7 @@ mod tests {
         ));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::OSAKA),
             InMemoryDB::default(),
             precompiles,
@@ -2459,7 +2464,7 @@ mod tests {
         )]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompiles,
@@ -2487,7 +2492,7 @@ mod tests {
         evm.state.enable_bal_builder();
         evm.state.set_bal_index(BlockAccessIndex::new(57));
 
-        let block = BlockEnv { number: Word::from(58), ..BlockEnv::default() };
+        let block = BlockEnvExt { number: Word::from(58), ..BlockEnvExt::default() };
         evm.set_block(block);
 
         assert!(core::ptr::eq(state, core::ptr::addr_of!(evm.state)));
@@ -2560,7 +2565,7 @@ mod tests {
         })]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompiles,
@@ -2621,14 +2626,14 @@ mod tests {
 
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(AccessingInspector { access });
-        let message = Message::default();
-        let tx_env = TxEnv::default();
+        let message = MessageExt::default();
+        let tx_env = TxEnvExt::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let frame_gas =
             GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
@@ -2647,14 +2652,14 @@ mod tests {
 
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(ReadingInspector {});
-        let message = Message::default();
-        let tx_env = TxEnv::default();
+        let message = MessageExt::default();
+        let tx_env = TxEnvExt::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
 
         let frame_gas =
@@ -2693,10 +2698,10 @@ mod tests {
         impl Inspector<BaseEvmTypes> for BlockReplacingInspector {
             fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 let host = interp.host();
-                host.set_block(BlockEnv {
+                host.set_block(BlockEnvExt {
                     number: Word::from(123),
                     timestamp: Word::from(124),
-                    ..BlockEnv::default()
+                    ..BlockEnvExt::default()
                 });
                 assert_eq!(host.block().number, Word::from(123));
                 assert_eq!(host.block().timestamp, Word::from(124));
@@ -2705,14 +2710,14 @@ mod tests {
 
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(BlockReplacingInspector);
-        let message = Message::default();
-        let tx_env = TxEnv::default();
+        let message = MessageExt::default();
+        let tx_env = TxEnvExt::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let frame_gas =
             GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
@@ -2740,14 +2745,14 @@ mod tests {
 
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(ConfigReplacingInspector);
-        let message = Message::default();
-        let tx_env = TxEnv::default();
+        let message = MessageExt::default();
+        let tx_env = TxEnvExt::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let frame_gas =
             GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
@@ -2790,7 +2795,7 @@ mod tests {
 
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -2803,19 +2808,19 @@ mod tests {
                 Log { address: Address::ZERO, data: LogData::new_unchecked(vec![], Bytes::new()) },
             ),
             TopLevelInspectorHook::Call => {
-                let mut message = Message { kind: MessageKind::Call, ..Default::default() };
+                let mut message = MessageExt { kind: MessageKind::Call, ..Default::default() };
                 let _ = Host::execute_message(
                     &mut evm,
-                    &TxEnv::default(),
+                    &TxEnvExt::default(),
                     Bytecode::default(),
                     &mut message,
                 );
             }
             TopLevelInspectorHook::Create => {
-                let mut message = Message { kind: MessageKind::Create, ..Default::default() };
+                let mut message = MessageExt { kind: MessageKind::Create, ..Default::default() };
                 let _ = Host::execute_message(
                     &mut evm,
-                    &TxEnv::default(),
+                    &TxEnvExt::default(),
                     Bytecode::default(),
                     &mut message,
                 );
@@ -2844,7 +2849,7 @@ mod tests {
     #[test]
     fn passes_evm_to_precompile_provider() {
         let address = TEST_PRECOMPILE;
-        let block = BlockEnv { number: U256::from(17), ..BlockEnv::default() };
+        let block = BlockEnvExt { number: U256::from(17), ..BlockEnvExt::default() };
         let precompiles = precompiles_with([test_precompile(address, |evm, message, _| {
             assert_eq!(message.kind, MessageKind::Call);
             assert_eq!(message.depth, 67);
@@ -2863,7 +2868,7 @@ mod tests {
             InMemoryDB::default(),
             precompiles,
         );
-        let message = Message {
+        let message = MessageExt {
             kind: MessageKind::Call,
             depth: 67,
             gas_limit: 30_000,
@@ -2899,7 +2904,7 @@ mod tests {
         ]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompiles,
@@ -2919,7 +2924,7 @@ mod tests {
             TxRegistry::new().with_handler(TEST_TX_TYPE, TxEnvelope::as_legacy, handle_test_tx);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -2936,7 +2941,7 @@ mod tests {
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA),
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -2964,10 +2969,10 @@ mod tests {
         fn handle_test_tx_version(
             req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
         ) -> HandlerResult<TxResult> {
-            Ok(TxResult {
+            Ok(TxResultExt {
                 status: true,
                 total_gas_spent: req.host.version().tx_gas_limit_cap,
-                ..TxResult::default()
+                ..TxResultExt::default()
             })
         }
 
@@ -2981,7 +2986,7 @@ mod tests {
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -2997,7 +3002,7 @@ mod tests {
             TxRegistry::new().with_handler(TEST_TX_TYPE, TxEnvelope::as_legacy, handle_test_tx);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -3215,22 +3220,22 @@ mod tests {
     fn host_executes_message() {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
         let contract = Address::from([0x11; 20]);
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::STOP]));
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
             gas_limit: 50_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), bytecode, &mut message);
         assert!(result.stop.is_success());
     }
 
@@ -3279,22 +3284,22 @@ mod tests {
 
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             Db::new(FailingStorageDb),
             Precompiles::base(SpecId::OSAKA),
         );
         let contract = Address::from([0x11; 20]);
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH0, op::SLOAD]));
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
             gas_limit: 50_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::FatalExternalError);
         let error_code = evm.error_code().unwrap();
@@ -3306,7 +3311,7 @@ mod tests {
     fn cold_storage_oog_rolls_back_warmth() {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -3315,15 +3320,15 @@ mod tests {
         let key = Word::ZERO;
         let bytecode =
             Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
             gas_limit: 500,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
         assert!(!evm.state.storage(&contract).is_warm(&key));
@@ -3392,22 +3397,22 @@ mod tests {
         let database = SelfdestructTargetLoadDb { target, target_reads: Arc::clone(&target_reads) };
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::BERLIN,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             Db::new(database),
             Precompiles::base(SpecId::BERLIN),
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
             gas_limit: 6_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
         let result = Host::execute_message(
             &mut evm,
-            &TxEnv::default(),
+            &TxEnvExt::default(),
             selfdestruct_to_code(&target),
             &mut message,
         );
@@ -3424,22 +3429,22 @@ mod tests {
         database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::FRONTIER,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::FRONTIER),
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Create,
             destination: created,
             caller,
             gas_limit: 50,
-            ..Message::default()
+            ..MessageExt::default()
         };
         let code =
             Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), code, &mut message);
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
@@ -3457,22 +3462,22 @@ mod tests {
         database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::HOMESTEAD,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::HOMESTEAD),
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Create,
             destination: created,
             caller,
             gas_limit: 50,
-            ..Message::default()
+            ..MessageExt::default()
         };
         let code =
             Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), code, &mut message);
         assert_eq!(result.stop, InstrStop::OutOfGas);
 
         evm.state.finalize_transaction_(Version::base(SpecId::HOMESTEAD));
@@ -3488,21 +3493,25 @@ mod tests {
         database.insert_account_storage(&target, &Word::ZERO, &Word::from(1));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::SPURIOUS_DRAGON,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::SPURIOUS_DRAGON),
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::StaticCall,
             destination: target,
             code_address: target,
             gas_limit: 50_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result =
-            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnvExt::default(),
+            Bytecode::default(),
+            &mut message,
+        );
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
@@ -3524,21 +3533,25 @@ mod tests {
         database.insert_account_storage(&code_address, &Word::ZERO, &Word::from(1));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::SPURIOUS_DRAGON,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::SPURIOUS_DRAGON),
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::DelegateCall,
             destination,
             code_address,
             gas_limit: 50_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result =
-            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnvExt::default(),
+            Bytecode::default(),
+            &mut message,
+        );
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
@@ -3588,12 +3601,12 @@ mod tests {
         database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(10)));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::AMSTERDAM,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::AMSTERDAM),
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: target,
             caller,
@@ -3601,11 +3614,15 @@ mod tests {
             // Covers the EIP-2780 depth-0 `new_account_state_gas` charge for the
             // value transfer to the empty target account.
             gas_limit: 300_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result =
-            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnvExt::default(),
+            Bytecode::default(),
+            &mut message,
+        );
         assert!(result.stop.is_success());
 
         let version = *evm.version();

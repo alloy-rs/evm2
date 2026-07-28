@@ -147,10 +147,13 @@ mod tests {
         SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
-        env::{BlockEnv, TxEnv},
+        env::{BlockEnvExt, TxEnvExt},
         ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
-        interpreter::{GasTracker, Host, InstrStop, Interpreter, Message, MessageResult, Word, op},
+        interpreter::{
+            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageResult,
+            MessageResultExt, Word, op,
+        },
         registry::TxRegistry,
         test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all},
         utils::address_to_word,
@@ -272,7 +275,7 @@ mod tests {
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.create_depth = Some(message.depth);
-            Some(MessageResult {
+            Some(MessageResultExt {
                 stop: InstrStop::Return,
                 gas: GasTracker::new(message.gas_limit),
                 created_address: Some(self.created),
@@ -370,13 +373,13 @@ mod tests {
     ) -> (MessageResult<BaseEvmTypes>, Box<I>, Evm<'static, BaseEvmTypes>) {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             db,
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(inspector);
-        let tx_env = TxEnv::default();
+        let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
         let mut message = message.clone();
         message.gas_limit = gas_limit;
@@ -433,7 +436,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::STOP]),
-            &Message::default(),
+            &MessageExt::default(),
             10_000,
             StepInspector::default(),
         );
@@ -469,7 +472,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::PUSH1, 1, op::PUSH1, 2, op::ADD, op::STOP]),
-            &Message::default(),
+            &MessageExt::default(),
             10_000,
             StopOnStepInspector { opcode: op::ADD, ..Default::default() },
         );
@@ -508,7 +511,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::PUSH1, 1, op::PUSH1, 2, op::ADD, op::STOP]),
-            &Message::default(),
+            &MessageExt::default(),
             10_000,
             StopOnStepEndInspector { opcode: op::PUSH1, ..Default::default() },
         );
@@ -527,7 +530,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
+            &MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() },
             50_000,
             HookInspector::default(),
         );
@@ -541,7 +544,7 @@ mod tests {
     fn call_inspector_override_skips_execution_and_still_calls_end() {
         let target = Address::from([0x22; 20]);
         let inspector = OverrideCallInspector {
-            result: MessageResult {
+            result: MessageResultExt {
                 stop: InstrStop::Return,
                 output: Bytes::from_static(&[0xaa, 0xbb, 0xcc]),
                 ..Default::default()
@@ -555,7 +558,7 @@ mod tests {
         return_top_word(&mut code);
 
         let (result, inspector, _) =
-            run_evm_with_inspector(code, &Message::default(), 50_000, inspector);
+            run_evm_with_inspector(code, &MessageExt::default(), 50_000, inspector);
 
         assert_matches!(result.stop, InstrStop::Return);
         // The override output is observed by the parent frame's RETURNDATASIZE.
@@ -568,7 +571,7 @@ mod tests {
     fn call_inspector_override_wins_at_max_depth() {
         let target = Address::from([0x22; 20]);
         let inspector = OverrideCallInspector {
-            result: MessageResult { stop: InstrStop::Return, ..Default::default() },
+            result: MessageResultExt { stop: InstrStop::Return, ..Default::default() },
             min_depth: CALL_DEPTH_LIMIT + 1,
             call_depth: None,
             call_end_stop: None,
@@ -579,7 +582,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
+            &MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() },
             50_000,
             inspector,
         );
@@ -635,15 +638,15 @@ mod tests {
 
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             db,
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(MutateCallInspector { destination: replacement });
-        let tx_env = TxEnv::default();
+        let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
-        let mut message = Message { gas_limit: 100_000, ..Default::default() };
+        let mut message = MessageExt { gas_limit: 100_000, ..Default::default() };
         let result = Host::execute_message(&mut evm, &tx_env, bytecode, &mut message);
 
         assert_matches!(result.stop, InstrStop::Stop);
@@ -671,7 +674,7 @@ mod tests {
                 if message.depth == 0 {
                     return None;
                 }
-                Some(MessageResult {
+                Some(MessageResultExt {
                     stop: InstrStop::Revert,
                     gas: GasTracker::new(message.gas_limit),
                     ..Default::default()
@@ -697,7 +700,7 @@ mod tests {
         return_top_word(&mut code);
 
         let (result, _, _) =
-            run_evm_with_inspector(code, &Message::default(), 50_000, CallEndInspector);
+            run_evm_with_inspector(code, &MessageExt::default(), 50_000, CallEndInspector);
 
         assert_matches!(result.stop, InstrStop::Return);
         // `call_end` upgraded the override from a revert to a 2-byte return.
@@ -711,7 +714,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
+            &MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() },
             50_000,
             HookInspector::default(),
         );
@@ -731,7 +734,7 @@ mod tests {
         return_top_word(&mut code);
 
         let (result, inspector, _) =
-            run_evm_with_inspector(code, &Message::default(), 50_000, inspector);
+            run_evm_with_inspector(code, &MessageExt::default(), 50_000, inspector);
 
         assert_matches!(result.stop, InstrStop::Return);
         assert_eq!(Word::from_be_slice(&result.output), address_to_word(&created));
@@ -748,7 +751,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &Message { destination: contract, ..Default::default() },
+            &MessageExt { destination: contract, ..Default::default() },
             50_000,
             HookInspector::default(),
         );
@@ -768,7 +771,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
+            &MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() },
             50_000,
             inspector,
         );
@@ -791,7 +794,7 @@ mod tests {
                 _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
-                Some(MessageResult {
+                Some(MessageResultExt {
                     stop: InstrStop::Revert,
                     gas: GasTracker::new(message.gas_limit),
                     ..Default::default()
@@ -816,7 +819,7 @@ mod tests {
 
         let (result, _, _) = run_evm_with_inspector(
             code,
-            &Message::default(),
+            &MessageExt::default(),
             50_000,
             CreateEndInspector { created },
         );
@@ -832,7 +835,7 @@ mod tests {
 
         let (result, inspector, evm) = run_evm_with_inspector(
             code,
-            &Message { destination: contract, ..Default::default() },
+            &MessageExt { destination: contract, ..Default::default() },
             10_000,
             LogInspector::default(),
         );
@@ -848,7 +851,7 @@ mod tests {
         let code = Vec::from([op::PUSH1, 0, op::PUSH1, 0, op::LOG0, op::STOP]);
 
         let (result, inspector, evm) =
-            run_evm_with_inspector(code, &Message::default(), 6, LogInspector::default());
+            run_evm_with_inspector(code, &MessageExt::default(), 6, LogInspector::default());
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
         assert!(inspector.logs.is_empty());
@@ -876,7 +879,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::INVALID]),
-            &Message::default(),
+            &MessageExt::default(),
             10_000,
             FailingStepInspector::default(),
         );
@@ -900,7 +903,7 @@ mod tests {
         let (result, inspector, _) = run_evm_with_inspector_db(
             db,
             code,
-            &Message { destination: contract, ..Default::default() },
+            &MessageExt { destination: contract, ..Default::default() },
             50_000,
             SelfdestructInspector::default(),
         );
@@ -922,7 +925,7 @@ mod tests {
         let (result, inspector, _) = run_evm_with_inspector_db(
             db,
             code,
-            &Message { destination: contract, ..Default::default() },
+            &MessageExt { destination: contract, ..Default::default() },
             7_000,
             SelfdestructInspector::default(),
         );
@@ -944,7 +947,7 @@ mod tests {
         push(&mut code, address_to_word(&target));
         code.push(op::SELFDESTRUCT);
 
-        let tx_env = TxEnv::default();
+        let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
         let message = Message::<TestTypes> { gas_limit: 10_000, ..Default::default() };
         let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
@@ -975,7 +978,7 @@ mod tests {
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::OSAKA),
             database,
             Precompiles::base(SpecId::OSAKA),
@@ -1015,7 +1018,7 @@ mod tests {
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::AMSTERDAM,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::AMSTERDAM),
             database,
             Precompiles::base(SpecId::AMSTERDAM),
@@ -1051,7 +1054,7 @@ mod tests {
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::OSAKA),
             database,
             Precompiles::base(SpecId::OSAKA),

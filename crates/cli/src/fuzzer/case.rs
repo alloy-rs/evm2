@@ -14,7 +14,7 @@ use alloy_eips::{
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
     SpecId,
-    env::BlockEnv,
+    env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, TxEnvelope},
     interpreter::op,
 };
@@ -230,13 +230,13 @@ impl CaseBlock {
     }
 
     pub(crate) fn evm2(&self) -> BlockEnv {
-        BlockEnv {
+        BlockEnvExt {
             number: self.number,
             beneficiary: BENEFICIARY,
             timestamp: self.timestamp,
             gas_limit: U256::from(self.gas_limit),
             basefee: U256::from(self.basefee),
-            ..BlockEnv::default()
+            ..BlockEnvExt::default()
         }
     }
 

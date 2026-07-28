@@ -4,7 +4,7 @@ use clap::ValueEnum;
 use evm2::{
     BaseEvmTypes, Evm, ExecutionConfig, InterpreterRunner, Precompiles, SpecId, Version,
     bytecode::Bytecode,
-    env::BlockEnv,
+    env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo, InMemoryDB},
     interpreter::{InstrStop, Interpreter},
@@ -713,7 +713,7 @@ fn parse_bytecode_bench(bench: &Bench, bytecode: &[u8]) -> eyre::Result<Prepared
     Ok((
         bench.name.clone(),
         vec![ParsedAccount { bytecode, code_hash }],
-        BlockEnv::default(),
+        BlockEnvExt::default(),
         db,
         Recovered::new_unchecked(TxEnvelope::Legacy(tx), BENCH_CALLER),
     ))
@@ -750,7 +750,7 @@ fn select_case<'a>(
 }
 
 fn parse_block(env: &evm2_eest::StateTestEnv) -> BlockEnv {
-    BlockEnv {
+    BlockEnvExt {
         number: env.current_number,
         beneficiary: env.current_coinbase,
         timestamp: env.current_timestamp,
@@ -759,7 +759,7 @@ fn parse_block(env: &evm2_eest::StateTestEnv) -> BlockEnv {
         difficulty: env.current_difficulty,
         prevrandao: env.current_random.map_or(U256::ZERO, |value| U256::from_be_bytes(value.0)),
         slot_num: env.slot_number.unwrap_or_default(),
-        ..BlockEnv::default()
+        ..BlockEnvExt::default()
     }
 }
 

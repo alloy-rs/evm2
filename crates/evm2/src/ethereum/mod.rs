@@ -15,11 +15,11 @@ pub mod legacy;
 pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
-    Evm, EvmFeatures, EvmTypes, EvmTypesHost, SpecId, TxResult, Version,
+    Evm, EvmFeatures, EvmTypes, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
-    evm::{AccountInfo, error_handler},
+    evm::{AccountInfo, error_handler, handler::GasSettlement},
     interpreter::{
-        Message, MessageKind, MessageResult, Word,
+        Message, MessageExt, MessageKind, Word,
         gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS},
     },
     registry::{HandlerError, HandlerResult, TxRegistry},
@@ -501,7 +501,7 @@ pub fn initial_message<'a, T: EvmTypes>(
     let r = match to {
         TxKind::Call(to) => {
             let initial_code = initial_call_code(host, to)?;
-            let message = Message {
+            let message = MessageExt {
                 kind: MessageKind::Call,
                 depth: 0,
                 gas_limit,
@@ -521,7 +521,7 @@ pub fn initial_message<'a, T: EvmTypes>(
         }
         TxKind::Create => {
             let address = caller.create(nonce);
-            let message = Message {
+            let message = MessageExt {
                 kind: MessageKind::Create,
                 depth: 0,
                 gas_limit,
@@ -584,45 +584,18 @@ fn initial_call_code<'a, T: EvmTypes>(
     Ok(InitialCallCode { code, code_address: to, disable_precompiles: false })
 }
 
-#[allow(clippy::too_many_arguments)]
-/// Applies Ethereum gas refunds, sender reimbursement, and beneficiary rewards.
-pub fn settle_gas<'a, T: EvmTypes>(
+/// Applies the default Ethereum gas refund, sender reimbursement, and beneficiary reward rules.
+pub fn default_settle_gas<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
-    caller: Address,
-    gas_price: U256,
-    tx_gas_limit: u64,
-    floor_gas: u64,
-    initial_state_gas: u64,
-    state_refund: u64,
-    result: MessageResult<T>,
+    settlement: GasSettlement<T>,
 ) -> HandlerResult<TxResult<T>> {
-    if let Some(code) = host.error_code {
-        return Err(HandlerError::Fatal(code));
-    }
-
-    let max_refund_quotient = u64::from(host.version().gas_params.get(GasId::MaxRefundQuotient));
-    let (gas_remaining, gas_used) =
-        final_tx_gas(&result, tx_gas_limit, max_refund_quotient, floor_gas);
-    // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
-    // `TxResult::tx_gas_used` reproduces the local `gas_used` (used here for the beneficiary
-    // reward). State gas is execution state gas plus the upfront `initial_state_gas` (the EIP-7702
-    // authorization state gas charged before the first frame), less the pre-Amsterdam per-auth
-    // `state_refund`.
-    let total_gas_spent =
-        tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(result.gas.reservoir());
-    let refunded = result.final_refund(tx_gas_limit, max_refund_quotient);
-    // EIP-7623: when the calldata floor exceeds spent-minus-refund, `TxResult::tx_gas_used`
-    // resolves to the floor. `total_gas_spent` stays pre-refund and pre-floor: block-level
-    // regular gas (EIP-7778/EIP-8037) accumulates `tx_gas_used_before_refund` per
-    // execution-specs, without the floor clamp.
-    //
-    // Execution state gas contributes only on success: a revert/halt rolls back its state changes.
-    // The upfront `initial_state_gas` is added unconditionally — an EIP-7702 execution failure
-    // still leaves the applied delegations (and their state gas) in place.
-    let exec_state_gas = if result.stop.is_success() { result.gas.state_gas_spent() } else { 0 };
-    let state_gas_spent = (exec_state_gas.saturating_add_unsigned(initial_state_gas).max(0) as u64)
-        .saturating_sub(state_refund);
+    let caller = settlement.caller;
+    let gas_price = settlement.gas_price;
+    let gas_limit = settlement.gas_limit;
+    let result = finalize_gas(host, settlement)?;
     if host.feature(EvmFeatures::FEE_CHARGE) {
+        let gas_used = result.tx_gas_used();
+        let gas_remaining = gas_limit.saturating_sub(gas_used);
         let caller_refund = U256::from(gas_remaining) * gas_price;
         host.state
             .account(&caller, false)
@@ -640,7 +613,46 @@ pub fn settle_gas<'a, T: EvmTypes>(
             .map_err(error_handler!(host))?
             .add_balance(beneficiary_reward);
     }
-    Ok(TxResult {
+    Ok(result)
+}
+
+/// Finalizes transaction gas accounting.
+pub fn finalize_gas<'a, T: EvmTypes>(
+    host: &mut Evm<'a, T>,
+    settlement: GasSettlement<T>,
+) -> HandlerResult<TxResult<T>> {
+    let GasSettlement {
+        caller: _,
+        gas_price: _,
+        gas_limit: tx_gas_limit,
+        floor_gas,
+        initial_state_gas,
+        state_refund,
+        result,
+    } = settlement;
+    if let Some(code) = host.error_code {
+        return Err(HandlerError::Fatal(code));
+    }
+
+    let max_refund_quotient = u64::from(host.version().gas_params.get(GasId::MaxRefundQuotient));
+    // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
+    // `TxResult::tx_gas_used` reproduces the finalized gas used. State gas is execution state gas
+    // plus the upfront `initial_state_gas`, less the EIP-7702 per-authorization `state_refund`.
+    let total_gas_spent =
+        tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(result.gas.reservoir());
+    let refunded = result.final_refund(tx_gas_limit, max_refund_quotient);
+    // EIP-7623: when the calldata floor exceeds spent-minus-refund, `TxResult::tx_gas_used`
+    // resolves to the floor. `total_gas_spent` stays pre-refund and pre-floor: block-level
+    // regular gas (EIP-7778/EIP-8037) accumulates `tx_gas_used_before_refund` per
+    // execution-specs, without the floor clamp.
+    //
+    // Execution state gas contributes only on success: a revert/halt rolls back its state changes.
+    // The upfront `initial_state_gas` is added unconditionally — an EIP-7702 execution failure
+    // still leaves the applied delegations (and their state gas) in place.
+    let exec_state_gas = if result.stop.is_success() { result.gas.state_gas_spent() } else { 0 };
+    let state_gas_spent = (exec_state_gas.saturating_add_unsigned(initial_state_gas).max(0) as u64)
+        .saturating_sub(state_refund);
+    Ok(TxResultExt {
         status: result.stop.is_success(),
         total_gas_spent,
         state_gas_spent,
@@ -650,23 +662,8 @@ pub fn settle_gas<'a, T: EvmTypes>(
         output: result.output,
         created_address: result.created_address,
         ext: T::TxResultExt::default(),
-        ..TxResult::default()
+        ..TxResultExt::default()
     })
-}
-
-const fn final_tx_gas<T: EvmTypesHost>(
-    result: &MessageResult<T>,
-    tx_gas_limit: u64,
-    max_refund_quotient: u64,
-    floor_gas: u64,
-) -> (u64, u64) {
-    let gas_remaining = result.gas_remaining_after_final_refund(tx_gas_limit, max_refund_quotient);
-    let gas_used = result.gas_used_after_final_refund(tx_gas_limit, max_refund_quotient);
-    // EIP-7623 charges at least the calldata floor after applying refunds.
-    if gas_used < floor_gas {
-        return (tx_gas_limit.saturating_sub(floor_gas), floor_gas);
-    }
-    (gas_remaining, gas_used)
 }
 
 /// Returns the account and storage-key counts in an access list.
@@ -799,9 +796,9 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmTypes, ExecutionConfig, Precompiles,
-        env::{BlockEnv, TxEnv},
+        env::{BlockEnvExt, TxEnvExt},
         evm::InMemoryDB,
-        interpreter::{GasTracker, Host, InstrStop, op},
+        interpreter::{Host, InstrStop, op},
         registry::TxRegistry,
     };
     use alloc::vec;
@@ -897,7 +894,7 @@ mod tests {
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::BERLIN,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::BERLIN),
             database,
             Precompiles::base(SpecId::BERLIN),
@@ -1007,7 +1004,7 @@ mod tests {
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -1035,7 +1032,7 @@ mod tests {
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::OSAKA),
@@ -1046,32 +1043,6 @@ mod tests {
             evm.state.account_info_untracked(&caller).unwrap().unwrap().balance,
             U256::from(100)
         );
-    }
-
-    #[test]
-    fn final_tx_gas_charges_calldata_floor_after_refund() {
-        let result = MessageResult::<BaseEvmTypes> {
-            stop: crate::interpreter::InstrStop::Return,
-            gas: {
-                let mut gas = GasTracker::new_used_gas(100_000, 50_000, 0);
-                gas.set_refunded(10_000);
-                gas
-            },
-            ..MessageResult::<BaseEvmTypes>::default()
-        };
-
-        assert_eq!(final_tx_gas(&result, 100_000, 5, 60_000), (40_000, 60_000));
-    }
-
-    #[test]
-    fn final_tx_gas_preserves_higher_actual_usage() {
-        let result = MessageResult::<BaseEvmTypes> {
-            stop: crate::interpreter::InstrStop::Return,
-            gas: GasTracker::new_used_gas(100_000, 70_000, 0),
-            ..MessageResult::<BaseEvmTypes>::default()
-        };
-
-        assert_eq!(final_tx_gas(&result, 100_000, 5, 60_000), (30_000, 70_000));
     }
 
     #[test]
@@ -1097,7 +1068,7 @@ mod tests {
         database.insert_account_info(&delegated, AccountInfo::default().with_code(delegated_code));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::PRAGUE,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::PRAGUE),
@@ -1118,7 +1089,7 @@ mod tests {
         assert_eq!(message.code_address, delegated);
         assert!(message.disable_precompiles);
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::Return);
         assert_eq!(result.output.len(), 32);

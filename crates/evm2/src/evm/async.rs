@@ -544,9 +544,9 @@ impl<D: AsyncDatabase + fmt::Debug> fmt::Debug for AsyncDb<D> {
 mod tests {
     use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
-        BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult,
+        BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult, TxResultExt,
         bytecode::Bytecode,
-        env::BlockEnv,
+        env::BlockEnvExt,
         evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider, SystemTx},
         interpreter::{GasTracker, Message, Word, op},
         precompile::PrecompileOutput,
@@ -683,7 +683,7 @@ mod tests {
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -704,7 +704,7 @@ mod tests {
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -726,7 +726,7 @@ mod tests {
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -745,7 +745,7 @@ mod tests {
     fn transaction_async_send_panics_with_non_send_erased_fields() {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -766,7 +766,7 @@ mod tests {
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -790,7 +790,7 @@ mod tests {
         let precompiles = NonSendPrecompiles { marker: Rc::clone(&marker) };
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             database,
             precompiles,
@@ -810,7 +810,7 @@ mod tests {
         let precompiles = NonSendPrecompiles { marker: Rc::clone(&marker) };
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             precompiles,
@@ -829,7 +829,7 @@ mod tests {
     fn transaction_async_flattens_handler_error() {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -866,7 +866,7 @@ mod tests {
         let contract = Address::from([0x42; 20]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -885,7 +885,7 @@ mod tests {
         let contract = Address::from([0x42; 20]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -907,7 +907,7 @@ mod tests {
         let contract = Address::from([0x42; 20]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             crate::ethereum::ethereum_tx_registry(SpecId::OSAKA),
             Db::new(FailOnceAccountDb { fail_next_account: true }),
             Precompiles::base(SpecId::OSAKA),
@@ -938,7 +938,7 @@ mod tests {
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             crate::ethereum::ethereum_tx_registry(SpecId::OSAKA),
             AsyncDb::new(CancellingDb { contract, code }),
             Precompiles::base(SpecId::OSAKA),
@@ -991,7 +991,11 @@ mod tests {
 
     fn handle_test_tx(req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
-        Ok(TxResult { status: true, total_gas_spent: req.tx.nonce + 1, ..TxResult::default() })
+        Ok(TxResultExt {
+            status: true,
+            total_gas_spent: req.tx.nonce + 1,
+            ..TxResultExt::default()
+        })
     }
 
     fn poll_ready<F: Future>(future: F) -> F::Output {

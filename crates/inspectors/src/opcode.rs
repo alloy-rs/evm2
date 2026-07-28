@@ -173,8 +173,8 @@ mod tests {
 
         let bytecode = Bytecode::new_legacy(Bytes::from(opcodes));
         let tx_env = TxEnv::<BaseEvmTypes>::default();
-        let message = Message::default();
-        let mut interp = Interpreter::new(bytecode, &tx_env, &message);
+        let message = Message::<BaseEvmTypes>::default();
+        let mut interp = Interpreter::<BaseEvmTypes>::new(bytecode, &tx_env, &message);
 
         for _ in &opcodes {
             opcode_counter.step(&mut interp);
@@ -189,8 +189,8 @@ mod tests {
 
         let bytecode = Bytecode::new_legacy(Bytes::from(opcodes));
         let tx_env = TxEnv::<BaseEvmTypes>::default();
-        let message = Message::default();
-        let mut interp = Interpreter::new(bytecode, &tx_env, &message);
+        let message = Message::<BaseEvmTypes>::default();
+        let mut interp = Interpreter::<BaseEvmTypes>::new(bytecode, &tx_env, &message);
 
         for _ in &opcodes {
             opcode_counter.step(&mut interp);

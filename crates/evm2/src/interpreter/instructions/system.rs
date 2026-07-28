@@ -4,7 +4,8 @@ use crate::{
     EvmFeatures, EvmTypesHost,
     bytecode::Bytecode,
     interpreter::{
-        Gas, Host, InstrStop, InterpreterState, Message, MessageKind, Result, StackMut, Word,
+        Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Result, StackMut,
+        Word,
     },
     utils::{word_to_address, word_to_usize},
     version::GasId,
@@ -199,7 +200,7 @@ fn prepare_call<T: EvmTypesHost>(
         MessageKind::StaticCall => (to, current.destination, Word::ZERO, resolved_code_address),
         _ => unreachable!("invalid call message kind"),
     };
-    *message = Message {
+    *message = MessageExt {
         kind,
         depth: current.depth.saturating_add(1),
         gas_limit,
@@ -318,7 +319,7 @@ fn create_inner<T: EvmTypesHost>(
 
     // Build the message up front (minus the child gas split, filled in below).
     let current = state.message();
-    let mut message = Message {
+    let mut message = MessageExt {
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
         gas_limit: 0,
@@ -434,7 +435,7 @@ mod tests {
     use crate::{
         SpecId,
         constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
-        interpreter::{InstrStop, Message, MessageKind, MessageResult, Word, op},
+        interpreter::{InstrStop, MessageExt, MessageKind, MessageResultExt, Word, op},
         test_utils::{RunConfig, TestHost, push, push_all, run},
         utils::address_to_word,
     };
@@ -462,7 +463,7 @@ mod tests {
         );
         code.extend([op::CALL, op::STOP]);
 
-        let interp = run(RunConfig::new(code).host(&mut host).message(Message {
+        let interp = run(RunConfig::new(code).host(&mut host).message(MessageExt {
             destination: caller,
             gas_limit: 10_000,
             ..Default::default()
@@ -479,9 +480,9 @@ mod tests {
     fn call_propagates_fatal_child_result() {
         let target = Address::from([0x22; 20]);
         let mut host = TestHost {
-            execute_result: MessageResult {
+            execute_result: MessageResultExt {
                 stop: InstrStop::FatalPrecompileError,
-                ..MessageResult::default()
+                ..MessageResultExt::default()
             },
             ..Default::default()
         };
@@ -554,7 +555,7 @@ mod tests {
         let interp = run(RunConfig::new(code)
             .host(&mut host)
             .spec(SpecId::BERLIN)
-            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .message(MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [Word::ZERO]);
@@ -588,7 +589,7 @@ mod tests {
         let interp = run(RunConfig::new(code)
             .host(&mut host)
             .spec(SpecId::TANGERINE)
-            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .message(MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.gas_remaining(), 42_553);
@@ -617,7 +618,7 @@ mod tests {
         let interp = run(RunConfig::new(code)
             .host(&mut host)
             .spec(SpecId::TANGERINE)
-            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .message(MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [Word::ZERO]);
@@ -648,7 +649,7 @@ mod tests {
         let interp = run(RunConfig::new(code)
             .host(&mut host)
             .spec(SpecId::TANGERINE)
-            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .message(MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [Word::ZERO]);
@@ -705,7 +706,7 @@ mod tests {
 
         let interp = run(RunConfig::new(code)
             .host(&mut host)
-            .message(Message { destination, ..Default::default() })
+            .message(MessageExt { destination, ..Default::default() })
             .gas_limit(20_000));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [Word::from(1)]);
@@ -734,7 +735,7 @@ mod tests {
         );
         code.extend([op::DELEGATECALL, op::STOP]);
 
-        let interp = run(RunConfig::new(code).host(&mut host).message(Message {
+        let interp = run(RunConfig::new(code).host(&mut host).message(MessageExt {
             caller,
             value: Word::from(9),
             gas_limit: 10_000,
@@ -813,10 +814,10 @@ mod tests {
     fn create_opcode() {
         let created = Address::from([0x77; 20]);
         let mut host = TestHost {
-            execute_result: MessageResult {
+            execute_result: MessageResultExt {
                 stop: InstrStop::Return,
                 created_address: Some(created),
-                ..MessageResult::default()
+                ..MessageResultExt::default()
             },
             ..Default::default()
         };
@@ -834,9 +835,9 @@ mod tests {
     #[test]
     fn create_propagates_fatal_child_result() {
         let mut host = TestHost {
-            execute_result: MessageResult {
+            execute_result: MessageResultExt {
                 stop: InstrStop::FatalPrecompileError,
-                ..MessageResult::default()
+                ..MessageResultExt::default()
             },
             ..Default::default()
         };
@@ -854,11 +855,11 @@ mod tests {
     fn create_clears_return_data_on_success() {
         let created = Address::from([0x77; 20]);
         let mut host = TestHost {
-            execute_result: MessageResult {
+            execute_result: MessageResultExt {
                 stop: InstrStop::Return,
                 output: Bytes::from_static(&[0xaa, 0xbb, 0xcc]),
                 created_address: Some(created),
-                ..MessageResult::default()
+                ..MessageResultExt::default()
             },
             ..Default::default()
         };
@@ -874,10 +875,10 @@ mod tests {
     #[test]
     fn create_sets_return_data_on_revert() {
         let mut host = TestHost {
-            execute_result: MessageResult {
+            execute_result: MessageResultExt {
                 stop: InstrStop::Revert,
                 output: Bytes::from_static(&[0xaa, 0xbb]),
-                ..MessageResult::default()
+                ..MessageResultExt::default()
             },
             ..Default::default()
         };
@@ -900,7 +901,7 @@ mod tests {
         let interp = run(RunConfig::new(code)
             .host(&mut host)
             .spec(SpecId::BERLIN)
-            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .message(MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
         assert_matches!(interp.err, InstrStop::Stop);
         assert_eq!(interp.stack(), [Word::ZERO]);
@@ -925,10 +926,10 @@ mod tests {
     fn create2_opcode() {
         let created = Address::from([0x88; 20]);
         let mut host = TestHost {
-            execute_result: MessageResult {
+            execute_result: MessageResultExt {
                 stop: InstrStop::Return,
                 created_address: Some(created),
-                ..MessageResult::default()
+                ..MessageResultExt::default()
             },
             ..Default::default()
         };
@@ -965,7 +966,7 @@ mod tests {
         push(&mut code, address_to_word(&target));
         code.push(op::SELFDESTRUCT);
 
-        let interp = run(RunConfig::new(code).host(&mut host).message(Message {
+        let interp = run(RunConfig::new(code).host(&mut host).message(MessageExt {
             destination: contract,
             gas_limit: 10_000,
             ..Default::default()

@@ -18,7 +18,7 @@ use alloy_eip7928::BalanceChange;
 use alloy_primitives::{Address, TxKind, U256};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId, TxResultWithState,
-    env::BlockEnv,
+    env::BlockEnvExt,
     ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo, Bal, BlockAccessIndex, InMemoryDB},
 };
@@ -124,7 +124,7 @@ fn pre_block_evm() -> Evm<'static, BaseEvmTypes> {
     let spec = SpecId::AMSTERDAM;
     Evm::new(
         spec,
-        BlockEnv::default(),
+        BlockEnvExt::default(),
         ethereum_tx_registry(spec),
         database,
         Precompiles::base(spec),

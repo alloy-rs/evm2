@@ -1,15 +1,18 @@
 use super::{
-    access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_gas_and_reservoir,
-    initial_message, intrinsic_gas, settle_gas, validate_block_gas_limit, validate_chain_id,
-    validate_create_initcode, validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
-    validate_nonce_not_overflow, validate_priority_fee, validate_regular_gas_limit_cap,
-    validate_sender, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
+    access_list_counts, effective_gas_price, floor_gas, initial_gas_and_reservoir, initial_message,
+    intrinsic_gas, validate_block_gas_limit, validate_chain_id, validate_create_initcode,
+    validate_floor_gas, validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
+    validate_priority_fee, validate_regular_gas_limit_cap, validate_sender,
+    validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult,
-    env::TxEnv,
-    evm::error_handler,
-    interpreter::{GasTracker, Host, InstrStop, MessageResult, gas::EIP8038_ACCOUNT_WRITE},
+    env::TxEnvExt,
+    evm::{
+        error_handler,
+        handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
+    },
+    interpreter::{GasTracker, Host, InstrStop, MessageResultExt, gas::EIP8038_ACCOUNT_WRITE},
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
 };
@@ -20,8 +23,16 @@ use alloy_primitives::{Address, U256};
 pub fn handle<T: EvmTypes>(
     req: TxRequest<'_, '_, T, super::LazyTxEip7702>,
 ) -> HandlerResult<TxResult<T>> {
+    handle_with_hooks::<T, DefaultTxHandlerHooks>(req)
+}
+
+/// Executes an EIP-7702 transaction using Ethereum rules and custom handler hooks.
+pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
+    req: TxRequest<'_, '_, T, super::LazyTxEip7702>,
+) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
+    let envelope = req.envelope;
     if tx.authorization_list.is_empty() {
         return Err(HandlerError::EmptyAuthorizationList);
     }
@@ -38,7 +49,7 @@ pub fn handle<T: EvmTypes>(
     validate_create_initcode(req.host.version(), tx.to.into(), &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
     let (access_list_accounts, access_list_storage_keys) = access_list_counts(&tx.access_list);
-    let intrinsic = intrinsic_gas(
+    let mut intrinsic = intrinsic_gas(
         req.host.version(),
         caller,
         tx.to.into(),
@@ -51,7 +62,9 @@ pub fn handle<T: EvmTypes>(
     // runtime gas phase, so no state gas is charged at the intrinsic phase (pre-Amsterdam there is
     // none either). A transaction that passes the intrinsic check but cannot afford the runtime
     // charges is included as an out-of-gas halt rather than rejected.
-    validate_intrinsic_gas(tx.gas_limit, intrinsic, 0)?;
+    let mut initial_state_gas = 0;
+    H::adjust_intrinsic_gas(req.host, envelope, &mut intrinsic, &mut initial_state_gas)?;
+    validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
     let floor_gas = floor_gas(
         req.host.version(),
         caller,
@@ -71,11 +84,15 @@ pub fn handle<T: EvmTypes>(
     warm_access_list(req.host, &tx.access_list);
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    charge_upfront(req.host, caller, effective_gas_cost)?;
     req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
+    H::before_execution(req.host, envelope, caller, effective_gas_cost)?;
     let chain_id = req.host.version().chain_id;
-    let tx_env =
-        TxEnv { origin: caller, gas_price, chain_id: U256::from(chain_id), ..TxEnv::default() };
+    let tx_env = TxEnvExt {
+        origin: caller,
+        gas_price,
+        chain_id: U256::from(chain_id),
+        ..TxEnvExt::default()
+    };
 
     if req.host.feature(EvmFeatures::EIP2780) {
         // EIP-2780 runtime gas phase (ethereum/EIPs#11844): the authorization charges are metered on
@@ -84,8 +101,13 @@ pub fn handle<T: EvmTypes>(
         // block access list. The delegations span `auth_checkpoint` so a runtime out-of-gas can drop
         // them, and the recipient is read only afterwards (at first-frame creation), so it too stays
         // out of the block access list on an authorization out-of-gas.
-        let (regular_gas_limit, reservoir) =
-            initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, 0, 0);
+        let (regular_gas_limit, reservoir) = initial_gas_and_reservoir(
+            req.host.version(),
+            tx.gas_limit,
+            intrinsic,
+            initial_state_gas,
+            0,
+        );
         let mut tx_gas =
             GasTracker::new_with_regular_gas_and_reservoir(regular_gas_limit, reservoir);
         let auth_checkpoint = req.host.state.checkpoint();
@@ -98,12 +120,24 @@ pub fn handle<T: EvmTypes>(
         let oog_halt = |host: &mut Evm<'_, T>| -> HandlerResult<TxResult<T>> {
             let features = host.version().features;
             host.state.rollback(auth_checkpoint, features);
-            let result = MessageResult {
+            let result = MessageResultExt {
                 stop: InstrStop::OutOfGas,
                 gas: GasTracker::new_spent_with_reservoir(regular_gas_limit, reservoir),
-                ..MessageResult::default()
+                ..MessageResultExt::default()
             };
-            settle_gas(host, caller, gas_price, tx_gas_limit, floor_gas, 0, 0, result)
+            H::settle_transaction(
+                host,
+                envelope,
+                GasSettlement {
+                    caller,
+                    gas_price,
+                    gas_limit: tx_gas_limit,
+                    floor_gas,
+                    initial_state_gas: 0,
+                    state_refund: 0,
+                    result,
+                },
+            )
         };
 
         if apply_auth_list_runtime(
@@ -140,15 +174,18 @@ pub fn handle<T: EvmTypes>(
             return oog_halt(req.host);
         }
 
-        return settle_gas(
+        return H::settle_transaction(
             req.host,
-            caller,
-            gas_price,
-            tx.gas_limit,
-            floor_gas,
-            auth_state_gas,
-            0,
-            result,
+            envelope,
+            GasSettlement {
+                caller,
+                gas_price,
+                gas_limit: tx.gas_limit,
+                floor_gas,
+                initial_state_gas: auth_state_gas,
+                state_refund: 0,
+                result,
+            },
         );
     }
 
@@ -156,8 +193,13 @@ pub fn handle<T: EvmTypes>(
     // for each already-existing authority.
     let (state_refund, regular_refund) =
         apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
-    let (gas_limit, reservoir) =
-        initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, 0, state_refund);
+    let (gas_limit, reservoir) = initial_gas_and_reservoir(
+        req.host.version(),
+        tx.gas_limit,
+        intrinsic,
+        initial_state_gas,
+        state_refund,
+    );
     let (bytecode, mut message) = initial_message(
         req.host,
         caller,
@@ -175,7 +217,19 @@ pub fn handle<T: EvmTypes>(
         result.gas.refunded().saturating_add(i64::try_from(regular_refund).unwrap_or(i64::MAX)),
     );
 
-    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, 0, state_refund, result)
+    H::settle_transaction(
+        req.host,
+        envelope,
+        GasSettlement {
+            caller,
+            gas_price,
+            gas_limit: tx.gas_limit,
+            floor_gas,
+            initial_state_gas: 0,
+            state_refund,
+            result,
+        },
+    )
 }
 
 fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations: usize) -> u64 {
