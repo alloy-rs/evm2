@@ -346,8 +346,7 @@ fn create_inner<T: EvmTypesHost>(
     } else {
         Some(state.host().load_account(&message.caller, false, false)?)
     };
-    message.destination =
-        message.created_address(caller_info.as_ref().map_or(0, |info| info.nonce));
+    message.derive_destination(caller_info.as_ref().map_or(0, |info| info.nonce));
 
     // EIP-8037 (ethereum/EIPs#11858): charge the CREATE account-creation state gas on this frame
     // before the child gas/reservoir split, conditional on the destination not already existing.

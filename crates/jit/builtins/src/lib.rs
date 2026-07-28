@@ -699,7 +699,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     } else {
         Some(ecx.host().load_account(&message.caller, false, false)?)
     };
-    message.destination = message.created_address(caller_info.as_ref().map_or(0, |info| info.nonce));
+    message.derive_destination(caller_info.as_ref().map_or(0, |info| info.nonce));
 
     // EIP-8037 (ethereum/EIPs#11858): charge the CREATE account-creation state gas before the child
     // gas split, conditional on the destination not already existing (and on the endowment/nonce

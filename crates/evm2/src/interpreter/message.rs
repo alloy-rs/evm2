@@ -80,20 +80,20 @@ impl<T: EvmTypesHost> Message<T> {
     ///
     /// Only meaningful for create messages, where `input` holds the initcode.
     #[inline]
-    pub fn init_code_hash(&self) -> B256 {
+    pub fn init_code_hash_slow(&self) -> B256 {
         keccak256(self.input.as_ref())
     }
 
-    /// Derives the address that this create message deploys to.
+    /// Derives this create message's contract address and stores it in [`Message::destination`].
     ///
     /// `nonce` is the creator's nonce and is only used by the `CREATE` scheme; `CREATE2` derives
-    /// the address from the salt and [`Message::init_code_hash`]. The result is written into
-    /// [`Message::destination`] when the message is constructed.
+    /// the address from the salt and [`Message::init_code_hash_slow`]. Called once when the create
+    /// message is constructed.
     #[inline]
-    pub fn created_address(&self, nonce: u64) -> Address {
-        match self.kind {
-            MessageKind::Create2 => self.caller.create2(self.salt, self.init_code_hash()),
+    pub fn derive_destination(&mut self, nonce: u64) {
+        self.destination = match self.kind {
+            MessageKind::Create2 => self.caller.create2(self.salt, self.init_code_hash_slow()),
             _ => self.caller.create(nonce),
-        }
+        };
     }
 }
