@@ -183,6 +183,10 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     "frontier/validation/header/block_gas_limit_below_minimum.json",
     "london/validation/header/invalid_header.json",
     "shanghai/eip4895_withdrawals/withdrawals/withdrawals_root.json",
+    // The same tests under the EEST main suite's flat `test_*` naming.
+    "frontier/validation/test_gas_limit_below_minimum.json",
+    "london/validation/test_invalid_header.json",
+    "shanghai/eip4895_withdrawals/test_withdrawals_root.json",
 
     // Prague request/deposit fixtures validate EL request extraction and system-contract block processing.
     "prague/eip6110_deposits",
