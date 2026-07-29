@@ -1760,7 +1760,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         }
     }
 
-    fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop> {
+    fn block_hash(&mut self, number: &Word) -> Result<B256, InstrStop> {
         self.state.block_hash(number).map_err(|code| self.store_error(code))
     }
 
@@ -3279,8 +3279,8 @@ mod tests {
                 Err(FailingDbError)
             }
 
-            fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
-                Ok(None)
+            fn get_block_hash(&mut self, _number: &Word) -> Result<B256, Self::Error> {
+                Ok(B256::ZERO)
             }
         }
 
@@ -3381,8 +3381,8 @@ mod tests {
                 Ok(Word::ZERO)
             }
 
-            fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
-                Ok(None)
+            fn get_block_hash(&mut self, _number: &Word) -> Result<B256, Self::Error> {
+                Ok(B256::ZERO)
             }
         }
 

@@ -405,7 +405,7 @@ mod tests {
             unimplemented!()
         }
 
-        fn block_hash(&mut self, _number: &Word) -> Result<Option<B256>, InstrStop> {
+        fn block_hash(&mut self, _number: &Word) -> Result<B256, InstrStop> {
             unimplemented!()
         }
 

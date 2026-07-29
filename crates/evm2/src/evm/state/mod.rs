@@ -232,7 +232,7 @@ impl<'a> State<'a> {
 
     /// Loads a historical block hash.
     #[inline]
-    pub(crate) fn block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+    pub(crate) fn block_hash(&mut self, number: &Word) -> DbResult<B256> {
         self.database.get_block_hash(number)
     }
 

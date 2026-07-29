@@ -345,15 +345,10 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
         match self.cache.block_hashes.entry(*number) {
-            Entry::Occupied(entry) => Ok(Some(*entry.get())),
-            Entry::Vacant(entry) => {
-                let Some(hash) = self.db.get_block_hash(number)? else {
-                    return Ok(None);
-                };
-                Ok(Some(*entry.insert(hash)))
-            }
+            Entry::Occupied(entry) => Ok(*entry.get()),
+            Entry::Vacant(entry) => Ok(*entry.insert(self.db.get_block_hash(number)?)),
         }
     }
 
@@ -391,7 +386,7 @@ mod typed {
         }
 
         #[inline]
-        fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error> {
+        fn get_block_hash(&mut self, number: &Word) -> Result<B256, Self::Error> {
             DynDatabase::get_block_hash(self, number).map_err(|code| DynDatabase::error(self, code))
         }
     }
@@ -412,7 +407,7 @@ mod tests {
     struct CountingDB {
         account: Option<AccountInfo>,
         storage: Word,
-        block_hash: Option<B256>,
+        block_hash: B256,
         account_loads: usize,
         code_loads: usize,
         storage_loads: usize,
@@ -442,7 +437,7 @@ mod tests {
             Ok(self.storage)
         }
 
-        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
+        fn get_block_hash(&mut self, _number: &Word) -> Result<B256, Self::Error> {
             self.block_hash_loads += 1;
             Ok(self.block_hash)
         }
@@ -457,7 +452,7 @@ mod tests {
         let db = CountingDB {
             account: Some(AccountInfo::default().with_code(code.clone())),
             storage: Word::from(4),
-            block_hash: Some(block_hash),
+            block_hash,
             ..CountingDB::default()
         };
         let mut cache = CacheDB::new(crate::evm::Db::new(db));
@@ -476,8 +471,8 @@ mod tests {
         assert_eq!(cache.get_storage(&address, &key).unwrap(), Word::from(4));
         assert_eq!(cache.db.inner().storage_loads, 1);
 
-        assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), Some(block_hash));
-        assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), Some(block_hash));
+        assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), block_hash);
+        assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), block_hash);
         assert_eq!(cache.db.inner().block_hash_loads, 1);
     }
 

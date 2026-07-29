@@ -126,11 +126,11 @@ impl Host<TestTypes> for TestHost {
         Ok(!self.exists && !self.is_touched)
     }
 
-    fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop> {
+    fn block_hash(&mut self, number: &Word) -> Result<B256, InstrStop> {
         if self.missing_block_hash {
-            return Ok(None);
+            return Err(InstrStop::FatalExternalError);
         }
-        Ok(Some(B256::with_last_byte(number.wrapping_to::<u8>())))
+        Ok(B256::with_last_byte(number.wrapping_to::<u8>()))
     }
 
     fn sload(
