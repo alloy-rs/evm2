@@ -402,6 +402,20 @@ fn execute_block(
     }
 
     let result = (|| -> Result<BlockResolution, TestError> {
+        if let Some(header) = block_header(block)
+            && let Some(expected) = *parent_block_hash
+            && header.parent_hash != expected
+        {
+            if should_fail {
+                return Ok(BlockResolution::Discard);
+            }
+            return Err(TestError::case(
+                path,
+                name,
+                TestErrorKind::ParentBlockHashMismatch { got: header.parent_hash, expected },
+            ));
+        }
+
         if let Err(err) = pre_block_system_calls(
             &mut evm,
             &mut block_state,
@@ -1339,6 +1353,117 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error.kind, super::TestErrorKind::ReceiptRootMismatch { .. }));
+    }
+
+    #[test]
+    fn rejects_block_with_wrong_parent_hash() {
+        use super::{
+            super::types::{
+                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
+            },
+            ExecuteConfig, NoopHook, execute_str,
+        };
+        use crate::filter::NameFilter;
+        use alloy_primitives::{B256, U256};
+        use std::{collections::BTreeMap, path::Path};
+
+        let genesis_hash = B256::with_last_byte(1);
+        let block_hash = B256::with_last_byte(2);
+        let suite = BlockchainTest(BTreeMap::from([(
+            "wrong-parent-hash".to_string(),
+            BlockchainTestCase {
+                genesis_block_header: BlockHeader {
+                    hash: genesis_hash,
+                    gas_limit: U256::from(30_000_000),
+                    ..Default::default()
+                },
+                blocks: vec![Block {
+                    block_header: Some(BlockHeader {
+                        parent_hash: B256::with_last_byte(3),
+                        hash: block_hash,
+                        number: U256::ONE,
+                        gas_limit: U256::from(30_000_000),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                post_state: None,
+                pre: State(BTreeMap::new()),
+                block_hashes: Vec::new(),
+                lastblockhash: block_hash,
+                network: ForkSpec::Cancun,
+                seal_engine: SealEngine::NoProof,
+                genesis_rlp: None,
+            },
+        )]));
+        let input = serde_json::to_string(&suite).unwrap();
+        let error = execute_str(
+            Path::new("wrong-parent-hash.json"),
+            &input,
+            ExecuteConfig::default(),
+            &NameFilter::default(),
+            &mut NoopHook,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error.kind,
+            super::TestErrorKind::ParentBlockHashMismatch { got, expected }
+                if got == B256::with_last_byte(3) && expected == genesis_hash
+        ));
+    }
+
+    #[test]
+    fn discards_expected_block_with_wrong_parent_hash() {
+        use super::{
+            super::types::{
+                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
+            },
+            ExecuteConfig, NoopHook, execute_str,
+        };
+        use crate::filter::NameFilter;
+        use alloy_primitives::{B256, U256};
+        use std::{collections::BTreeMap, path::Path};
+
+        let genesis_hash = B256::with_last_byte(1);
+        let suite = BlockchainTest(BTreeMap::from([(
+            "expected-wrong-parent-hash".to_string(),
+            BlockchainTestCase {
+                genesis_block_header: BlockHeader {
+                    hash: genesis_hash,
+                    gas_limit: U256::from(30_000_000),
+                    ..Default::default()
+                },
+                blocks: vec![Block {
+                    block_header: Some(BlockHeader {
+                        parent_hash: B256::with_last_byte(3),
+                        hash: B256::with_last_byte(2),
+                        number: U256::ONE,
+                        gas_limit: U256::from(30_000_000),
+                        ..Default::default()
+                    }),
+                    expect_exception: Some("invalid parent hash".to_string()),
+                    ..Default::default()
+                }],
+                post_state: None,
+                pre: State(BTreeMap::new()),
+                block_hashes: Vec::new(),
+                lastblockhash: genesis_hash,
+                network: ForkSpec::Cancun,
+                seal_engine: SealEngine::NoProof,
+                genesis_rlp: None,
+            },
+        )]));
+        let input = serde_json::to_string(&suite).unwrap();
+
+        execute_str(
+            Path::new("expected-wrong-parent-hash.json"),
+            &input,
+            ExecuteConfig::default(),
+            &NameFilter::default(),
+            &mut NoopHook,
+        )
+        .unwrap();
     }
 
     #[cfg(feature = "jit")]

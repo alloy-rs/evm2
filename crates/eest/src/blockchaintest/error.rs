@@ -72,6 +72,14 @@ pub(crate) enum TestErrorKind {
         /// Gas used computed from executing the block's transactions.
         actual: u64,
     },
+    /// Block header does not link to the previously accepted block.
+    #[error("parent block hash mismatch: header {got}, expected {expected}")]
+    ParentBlockHashMismatch {
+        /// Parent hash declared in the block header.
+        got: alloy_primitives::B256,
+        /// Hash of the previously accepted block.
+        expected: alloy_primitives::B256,
+    },
     /// Recomputed post-block state root does not match the block header.
     #[error("state root mismatch: got {got}, expected {expected}")]
     StateRootMismatch {
