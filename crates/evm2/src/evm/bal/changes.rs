@@ -247,6 +247,15 @@ impl<T: BalChange> BalChanges<T> {
     ) where
         F: Fn(&T::Value) -> &K,
     {
+        // A no-op update at an index that already contains a change must preserve the recorded
+        // value. The original subvalue is the value before this update, not necessarily the value
+        // before the index, so using it as the baseline below could incorrectly remove the change.
+        if self.changes.last().is_some_and(|last| last.block_access_index() == index)
+            && original_subvalue == f(&value)
+        {
+            return;
+        }
+
         // if index is different, we push the new value.
         if let Some(last) = self.changes.last_mut()
             && last.block_access_index() != index
@@ -335,5 +344,25 @@ mod tests {
         get_binary_search(5);
         get_binary_search(6);
         get_binary_search(7);
+    }
+
+    #[test]
+    fn update_preserves_existing_change_for_noop_at_same_index() {
+        let mut changes = BalChanges::<NonceChange>::default();
+
+        changes.update(idx(1), &0, 1);
+        changes.update(idx(1), &1, 1);
+
+        assert_eq!(changes.changes, vec![NonceChange::new(idx(1), 1)]);
+    }
+
+    #[test]
+    fn update_overwrites_existing_change_at_same_index() {
+        let mut changes = BalChanges::<NonceChange>::default();
+
+        changes.update(idx(1), &0, 1);
+        changes.update(idx(1), &1, 2);
+
+        assert_eq!(changes.changes, vec![NonceChange::new(idx(1), 2)]);
     }
 }
