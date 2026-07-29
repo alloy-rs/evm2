@@ -585,6 +585,7 @@ fn execute_block(
             &mut block_state,
             spec,
             next_block_env,
+            block_ommers(block),
             block_withdrawals(block),
         ) {
             // A failed post-block system call (e.g. SYSTEM_CONTRACT_CALL_FAILED) invalidates the
@@ -742,6 +743,15 @@ fn block_withdrawals(block: &Block) -> &[Withdrawal] {
     block.rlp_decoded.as_ref().map(|decoded| decoded.withdrawals.as_slice()).unwrap_or_default()
 }
 
+fn block_ommers(block: &Block) -> &[BlockHeader] {
+    if let Some(ommers) = &block.uncle_headers
+        && !ommers.is_empty()
+    {
+        return ommers;
+    }
+    block.rlp_decoded.as_ref().map(|decoded| decoded.uncle_headers.as_slice()).unwrap_or_default()
+}
+
 fn pre_block_system_calls(
     evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
@@ -783,11 +793,30 @@ fn post_block_transition(
     block_state: &mut BlockStateAccumulator,
     spec: SpecId,
     block: BlockEnv,
+    ommers: &[BlockHeader],
     withdrawals: &[Withdrawal],
 ) -> Result<(), TestErrorKind> {
-    let reward = block_reward(spec, 0);
+    let reward = block_reward(spec, ommers.len());
     if reward != 0 {
         increment_balance(evm, block_state, block.beneficiary, U256::from(reward))?;
+
+        let base_reward = U256::from(base_block_reward(spec));
+        for ommer in ommers {
+            let Some(age) = block.number.checked_sub(ommer.number) else {
+                return Err(TestErrorKind::InvalidOmmerAge {
+                    block_number: block.number,
+                    ommer_number: ommer.number,
+                });
+            };
+            if age.is_zero() || age > U256::from(6) {
+                return Err(TestErrorKind::InvalidOmmerAge {
+                    block_number: block.number,
+                    ommer_number: ommer.number,
+                });
+            }
+            let reward = (U256::from(8) - age) * base_reward / U256::from(8);
+            increment_balance(evm, block_state, ommer.coinbase, reward)?;
+        }
     }
 
     if spec.enables(SpecId::SHANGHAI) {
@@ -999,17 +1028,20 @@ fn access_list(raw: &Transaction) -> Result<Option<RpcAccessList>, TestErrorKind
 }
 
 const fn block_reward(spec: SpecId, ommers: usize) -> u128 {
+    let reward = base_block_reward(spec);
+    reward + (reward >> 5) * ommers as u128
+}
+
+const fn base_block_reward(spec: SpecId) -> u128 {
     if spec.enables(SpecId::MERGE) {
-        return 0;
-    }
-    let reward = if spec.enables(SpecId::PETERSBURG) {
+        0
+    } else if spec.enables(SpecId::PETERSBURG) {
         ONE_ETHER * 2
     } else if spec.enables(SpecId::BYZANTIUM) {
         ONE_ETHER * 3
     } else {
         ONE_ETHER * 5
-    };
-    reward + (reward >> 5) * ommers as u128
+    }
 }
 
 fn increment_balance(
@@ -1276,6 +1308,104 @@ mod tests {
 
     #[cfg(feature = "jit")]
     const BYTECODE_STORE42: &[u8] = &[op::PUSH1, 0x42, op::PUSH0, op::SSTORE, op::STOP];
+
+    #[test]
+    fn blockchain_tests_apply_ommer_rewards_before_merge() {
+        use super::{
+            super::types::{
+                Account, Block, BlockHeader, BlockchainTest, BlockchainTestCase, DecodedBlock,
+                ForkSpec, SealEngine, State,
+            },
+            ExecuteConfig, NoopHook, ONE_ETHER, execute_suite,
+        };
+        use crate::filter::NameFilter;
+        use alloy_primitives::{Address, B256, U256};
+        use std::{collections::BTreeMap, path::Path};
+
+        let miner = Address::with_last_byte(1);
+        let ommer_miner = Address::with_last_byte(2);
+        let genesis_hash = B256::with_last_byte(1);
+        let block_hash = B256::with_last_byte(2);
+
+        for (fork, base_reward) in [
+            (ForkSpec::Homestead, 5 * ONE_ETHER),
+            (ForkSpec::Byzantium, 3 * ONE_ETHER),
+            (ForkSpec::ConstantinopleFix, 2 * ONE_ETHER),
+            (ForkSpec::Paris, 0),
+        ] {
+            let mut post_state = BTreeMap::new();
+            if base_reward != 0 {
+                post_state.insert(
+                    miner,
+                    Account {
+                        balance: U256::from(base_reward + base_reward / 32),
+                        ..Default::default()
+                    },
+                );
+                post_state.insert(
+                    ommer_miner,
+                    Account { balance: U256::from(base_reward * 7 / 8), ..Default::default() },
+                );
+            }
+
+            let block_header = BlockHeader {
+                parent_hash: genesis_hash,
+                hash: block_hash,
+                coinbase: miner,
+                number: U256::ONE,
+                gas_limit: U256::from(30_000_000),
+                timestamp: U256::ONE,
+                ..Default::default()
+            };
+            let ommer_header =
+                BlockHeader { coinbase: ommer_miner, number: U256::ZERO, ..Default::default() };
+            let block = if fork == ForkSpec::Byzantium {
+                Block {
+                    rlp_decoded: Some(DecodedBlock {
+                        block_header: Some(block_header),
+                        uncle_headers: vec![ommer_header],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }
+            } else {
+                Block {
+                    block_header: Some(block_header),
+                    uncle_headers: Some(vec![ommer_header]),
+                    ..Default::default()
+                }
+            };
+
+            let suite = BlockchainTest(BTreeMap::from([(
+                "ommer-rewards".to_string(),
+                BlockchainTestCase {
+                    genesis_block_header: BlockHeader {
+                        hash: genesis_hash,
+                        gas_limit: U256::from(30_000_000),
+                        ..Default::default()
+                    },
+                    blocks: vec![block],
+                    post_state: Some(post_state),
+                    pre: State(BTreeMap::new()),
+                    block_hashes: Vec::new(),
+                    lastblockhash: block_hash,
+                    network: fork,
+                    seal_engine: SealEngine::NoProof,
+                    genesis_rlp: None,
+                },
+            )]));
+
+            let summary = execute_suite(
+                Path::new("ommer-rewards.json"),
+                &suite,
+                ExecuteConfig::default(),
+                &NameFilter::default(),
+                &mut NoopHook,
+            )
+            .unwrap();
+            assert_eq!(summary.executed, 1, "fork {fork:?}");
+        }
+    }
 
     #[test]
     fn receipt_root_check_rejects_invalid_empty_block_root() {
