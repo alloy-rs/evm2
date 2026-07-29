@@ -49,6 +49,14 @@ pub(crate) enum TestErrorKind {
     /// Sender is required in blockchain tests.
     #[error("transaction sender is required")]
     MissingSender,
+    /// An ommer is not old enough, or is too old, to receive a block reward.
+    #[error("invalid ommer age: block {block_number}, ommer {ommer_number}")]
+    InvalidOmmerAge {
+        /// Canonical block number.
+        block_number: alloy_primitives::U256,
+        /// Ommer block number.
+        ommer_number: alloy_primitives::U256,
+    },
     /// Transaction request could not be converted to a consensus transaction.
     #[error("could not build consensus transaction: {0}")]
     BuildTransaction(String),
