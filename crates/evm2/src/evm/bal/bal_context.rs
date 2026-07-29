@@ -3,12 +3,16 @@
 use super::{AccountBal, Bal, BalError, BlockAccessIndex};
 use crate::{
     AnyError, ErrorCode,
-    evm::state::{Account, AccountInfo, PendingState, StorageOverlay},
+    evm::state::{
+        Account, AccountChangeRef, AccountInfo, AccountInfoRef, PendingState, StateChangeSink,
+        StorageChange, StorageOverlay,
+    },
     interpreter::Word,
 };
 use alloc::sync::Arc;
 use alloy_eip7928::BlockAccessList;
 use alloy_primitives::{Address, map::AddressMap};
+use core::convert::Infallible;
 
 /// Result of an EIP-7928 BAL lookup during a read.
 type BalResult<T> = Result<T, BalError>;
@@ -186,27 +190,6 @@ impl BalContext {
         }
     }
 
-    /// Records an account-info-only change (no storage) into the BAL builder at the current index.
-    ///
-    /// Used for post-block balance updates -- block rewards and withdrawals -- that mutate the
-    /// accepted overlay directly instead of flowing through a transaction commit, so they are not
-    /// captured by the transaction-commit fold. No-op when BAL construction is disabled.
-    #[inline]
-    pub fn commit_account_change(
-        &mut self,
-        address: Address,
-        original: Option<&AccountInfo>,
-        current: Option<&AccountInfo>,
-    ) {
-        let index = self.bal_index;
-        if let Some(bal) = self.bal_builder.as_mut() {
-            let account = bal.accounts.entry(address).or_default();
-            let original = original.cloned().unwrap_or_default();
-            let current = current.cloned().unwrap_or_default();
-            account.account_info.update(index, &original, &current);
-        }
-    }
-
     /// Takes the built BAL, resetting the block access index. Returns `None` when BAL construction
     /// is disabled.
     #[inline]
@@ -304,5 +287,73 @@ impl BalContext {
             return None;
         }
         self.bal_error.take().map(AnyError::new)
+    }
+}
+
+/// Folds streamed state changes into the BAL builder at the current [`BalContext::bal_index`].
+///
+/// This is the sink shape of the [`Self::commit_pending`] fold: changed accounts and storage
+/// slots are
+/// recorded as writes, loaded-but-unchanged ones -- the read callbacks -- as reads. The bytecode
+/// and storage-wipe callbacks need no BAL action: code changes surface through
+/// [`StateChangeSink::account`], and a wiped account's storage surfaces through the storage
+/// callbacks. Every callback is a no-op when BAL construction is disabled.
+impl StateChangeSink for BalContext {
+    type Error = Infallible;
+
+    #[inline]
+    fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+        let index = self.bal_index;
+        if let Some(bal) = self.bal_builder.as_mut() {
+            let original = change.original.map(AccountInfoRef::to_account_info).unwrap_or_default();
+            let current = change.current.map(AccountInfoRef::to_account_info).unwrap_or_default();
+            bal.accounts
+                .entry(change.address)
+                .or_default()
+                .account_info
+                .update(index, &original, &current);
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+        let index = self.bal_index;
+        if let Some(bal) = self.bal_builder.as_mut() {
+            bal.accounts
+                .entry(change.address)
+                .or_default()
+                .storage
+                .storage
+                .entry(change.key)
+                .or_default()
+                .update(index, &change.original, change.current);
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn account_read(
+        &mut self,
+        address: Address,
+        _info: Option<AccountInfoRef<'_>>,
+    ) -> Result<(), Self::Error> {
+        if let Some(bal) = self.bal_builder.as_mut() {
+            bal.accounts.entry(address).or_default();
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn storage_read(
+        &mut self,
+        address: Address,
+        key: Word,
+        _value: Word,
+    ) -> Result<(), Self::Error> {
+        if let Some(bal) = self.bal_builder.as_mut() {
+            bal.accounts.entry(address).or_default().storage.storage.entry(key).or_default();
+        }
+        Ok(())
     }
 }
