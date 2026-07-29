@@ -80,6 +80,14 @@ pub(crate) enum TestErrorKind {
         /// State root declared in the block header.
         expected: alloy_primitives::B256,
     },
+    /// Recomputed receipt trie root does not match the block header.
+    #[error("receipt root mismatch: got {got}, expected {expected}")]
+    ReceiptRootMismatch {
+        /// Receipt trie root recomputed from transaction execution results.
+        got: alloy_primitives::B256,
+        /// Receipt trie root declared in the block header.
+        expected: alloy_primitives::B256,
+    },
     /// Execution resource initialization failed.
     #[error(transparent)]
     ExecutionResource(#[from] ExecutionResourceError),
