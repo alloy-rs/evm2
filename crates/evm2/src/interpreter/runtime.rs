@@ -146,11 +146,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     ///
     /// # Panics
     ///
-    /// Panics if `pc` is greater than the active bytecode length.
+    /// Panics if `pc` is out of bounds of the active bytecode.
     #[inline]
     pub fn set_pc(&mut self, pc: usize) {
         let bytecode = self.bytecode.bytes_slice();
-        assert!(pc <= bytecode.len());
+        assert!(pc < bytecode.len());
         self.pc = unsafe { bytecode.as_ptr().add(pc) };
     }
 
