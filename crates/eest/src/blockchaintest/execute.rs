@@ -22,9 +22,9 @@ use crate::{
     trace::{self, Eip3155Tracer},
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
 };
-use alloy_consensus::Transaction as _;
+use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, Transaction as _, TxType};
 use alloy_eip7928::BlockAccessList;
-use alloy_eips::eip7840::BlobParams;
+use alloy_eips::{eip2718::Typed2718, eip7840::BlobParams};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
@@ -56,6 +56,9 @@ pub struct ExecuteConfig {
     /// Whether to recompute each committed block's state root and compare it to
     /// the block header's `stateRoot`.
     pub compare_state_root: bool,
+    /// Whether to recompute each block's receipt trie root and compare it to
+    /// the block header's `receiptTrie`.
+    pub compare_receipt_root: bool,
     /// Whether to stream EIP-3155 struct logs to stdout during execution.
     ///
     /// Only observable under [`ExecutionMode::Interpreter`]; the JIT/AOT runners
@@ -78,6 +81,7 @@ impl Default for ExecuteConfig {
         Self {
             validate_post_state: true,
             compare_state_root: false,
+            compare_receipt_root: false,
             trace: false,
             print_json_outcome: false,
             dump_state: false,
@@ -268,6 +272,7 @@ fn execute_case(
             resources,
             config.trace,
             config.compare_state_root,
+            config.compare_receipt_root,
             if config.db_stats { Some(&mut db_stats_counts) } else { None },
         ) {
             Ok(()) => hook.block_finished(BlockFinished {
@@ -340,6 +345,7 @@ fn execute_block(
     resources: &ExecutionResources,
     trace: bool,
     compare_state_root: bool,
+    compare_receipt_root: bool,
     db_stats_counts: Option<&mut DbStatsCounts>,
 ) -> Result<(), TestError> {
     let db_stats = db_stats_counts.is_some();
@@ -359,6 +365,8 @@ fn execute_block(
     }
 
     let initial_database = mem::take(database);
+    let receipt_base = (compare_receipt_root && !spec.enables(SpecId::BYZANTIUM))
+        .then(|| initial_database.clone());
     let mut evm = if db_stats {
         Evm::<BaseEvmTypes>::new(
             spec,
@@ -415,6 +423,7 @@ fn execute_block(
         let mut cumulative_tx_gas_used = 0u64;
         let mut block_regular_gas_used = 0u64;
         let mut block_state_gas_used = 0u64;
+        let mut receipts = Vec::with_capacity(transactions.len());
         for (transaction_index, raw_tx) in transactions.iter().enumerate() {
             hook.transaction_started(TransactionStarted {
                 block_index,
@@ -481,6 +490,27 @@ fn execute_block(
                         block_regular_gas_used.saturating_add(result.regular_gas_spent());
                     block_state_gas_used =
                         block_state_gas_used.saturating_add(result.state_gas_spent());
+                    if compare_receipt_root {
+                        let status = if spec.enables(SpecId::BYZANTIUM) {
+                            Eip658Value::Eip658(result.status)
+                        } else {
+                            let mut post_state = receipt_base
+                                .as_ref()
+                                .expect("pre-Byzantium receipt base should be available")
+                                .clone();
+                            post_state.commit_source(&block_state);
+                            Eip658Value::PostState(state_root_from_database(&post_state))
+                        };
+                        let receipt = Receipt {
+                            status,
+                            cumulative_gas_used: cumulative_tx_gas_used,
+                            logs: result.logs,
+                        }
+                        .with_bloom();
+                        let tx_type = TxType::try_from(tx.inner().ty())
+                            .expect("executor only builds supported Ethereum transaction types");
+                        receipts.push(ReceiptEnvelope::from_typed(tx_type, receipt));
+                    }
                     hook.transaction_finished(TransactionFinished {
                         block_index,
                         total_blocks,
@@ -527,6 +557,20 @@ fn execute_block(
                     path,
                     name,
                     TestErrorKind::BlockGasUsedMismatch { expected, actual },
+                ));
+            }
+        }
+
+        if compare_receipt_root && let Some(header) = block_header(block) {
+            let got = alloy_consensus::proofs::calculate_receipt_root(&receipts);
+            if got != header.receipt_trie {
+                if should_fail {
+                    return Ok(BlockResolution::Discard);
+                }
+                return Err(TestError::case(
+                    path,
+                    name,
+                    TestErrorKind::ReceiptRootMismatch { got, expected: header.receipt_trie },
                 ));
             }
         }
@@ -1238,6 +1282,64 @@ mod tests {
 
     #[cfg(feature = "jit")]
     const BYTECODE_STORE42: &[u8] = &[op::PUSH1, 0x42, op::PUSH0, op::SSTORE, op::STOP];
+
+    #[test]
+    fn receipt_root_check_rejects_invalid_empty_block_root() {
+        use super::{
+            super::types::{
+                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
+            },
+            ExecuteConfig, ExecutionMode, NoopHook, execute_str,
+        };
+        use crate::filter::NameFilter;
+        use alloy_primitives::{B256, U256};
+        use std::{collections::BTreeMap, path::Path};
+
+        let genesis_hash = B256::with_last_byte(1);
+        let suite = BlockchainTest(BTreeMap::from([(
+            "invalid-receipt-root".to_string(),
+            BlockchainTestCase {
+                genesis_block_header: BlockHeader {
+                    hash: genesis_hash,
+                    gas_limit: U256::from(30_000_000),
+                    ..Default::default()
+                },
+                blocks: vec![Block {
+                    block_header: Some(BlockHeader {
+                        parent_hash: genesis_hash,
+                        hash: B256::with_last_byte(2),
+                        number: U256::ONE,
+                        gas_limit: U256::from(30_000_000),
+                        receipt_trie: B256::ZERO,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                post_state: None,
+                pre: State(BTreeMap::new()),
+                block_hashes: Vec::new(),
+                lastblockhash: B256::with_last_byte(2),
+                network: ForkSpec::Cancun,
+                seal_engine: SealEngine::NoProof,
+                genesis_rlp: None,
+            },
+        )]));
+        let input = serde_json::to_string(&suite).unwrap();
+        let error = execute_str(
+            Path::new("invalid-receipt-root.json"),
+            &input,
+            ExecuteConfig {
+                compare_receipt_root: true,
+                mode: ExecutionMode::Interpreter,
+                ..Default::default()
+            },
+            &NameFilter::default(),
+            &mut NoopHook,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error.kind, super::TestErrorKind::ReceiptRootMismatch { .. }));
+    }
 
     #[cfg(feature = "jit")]
     fn execute_simple_storage_block(mode: ExecutionMode) -> ExecuteSummary {
