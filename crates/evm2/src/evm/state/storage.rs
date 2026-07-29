@@ -194,7 +194,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     pub fn wipe(&mut self) {
         self.storage.wiped = true;
         self.storage.slots.iter_mut().for_each(|(_, slot)| {
-            slot.value = Tracked::new(Word::ZERO);
+            slot.value.set_current(Word::ZERO);
         });
     }
 }
