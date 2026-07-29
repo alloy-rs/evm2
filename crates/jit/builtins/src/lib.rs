@@ -396,7 +396,7 @@ pub unsafe extern "C" fn __revmc_builtin_blockhash(
 
     if diff <= BLOCK_HASH_HISTORY {
         let requested_number = U256::from(word_to_u64_saturated(requested_number));
-        let hash = ecx.host().block_hash(&requested_number).ok().flatten().ok_or_fatal()?;
+        let hash = ecx.host().block_hash(&requested_number)?;
         *number_ptr = EvmWord::from_be_bytes(hash);
     } else {
         // Too old, return 0

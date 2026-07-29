@@ -30,18 +30,6 @@ impl From<InstrStop> for BuiltinError {
     }
 }
 
-/// Extension trait to convert `Option<T>` to `BuiltinResult`.
-pub(crate) trait OkOrFatal<T> {
-    fn ok_or_fatal(self) -> Result<T, BuiltinError>;
-}
-
-impl<T> OkOrFatal<T> for Option<T> {
-    #[inline]
-    fn ok_or_fatal(self) -> Result<T, BuiltinError> {
-        self.ok_or_else(|| InstrStop::FatalExternalError.into())
-    }
-}
-
 #[inline]
 pub(crate) fn require_non_staticcall(ecx: &EvmContext<'_, '_, '_>) -> BuiltinResult {
     if ecx.is_static() {

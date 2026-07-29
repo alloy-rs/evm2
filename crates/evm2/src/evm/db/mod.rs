@@ -29,7 +29,10 @@ pub trait Database: NonStaticAny {
     fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error>;
 
     /// Loads a historical block hash.
-    fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error>;
+    ///
+    /// Callers only request numbers inside the `BLOCKHASH` window, so a hash the database cannot
+    /// provide is a database failure reported through the error, never a benign miss.
+    fn get_block_hash(&mut self, number: &Word) -> Result<B256, Self::Error>;
 }
 
 /// Object-safe database adapter for typed database implementations.
@@ -107,7 +110,7 @@ impl<T: Database> DynDatabase for Db<T> {
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
         self.db.get_block_hash(number).map_err(|err| self.store_error(err))
     }
 
@@ -135,7 +138,10 @@ pub trait DynDatabase: NonStaticAny {
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word>;
 
     /// Loads a historical block hash.
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>>;
+    ///
+    /// Callers only request numbers inside the `BLOCKHASH` window, so a hash the database cannot
+    /// provide is a database failure reported through the error, never a benign miss.
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256>;
 
     /// Retrieves the full error for a previously returned error code.
     fn error(&mut self, code: ErrorCode) -> AnyError {
@@ -265,7 +271,7 @@ impl<D: DynDatabase> DynDatabase for DbStats<D> {
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
         self.counts.get_block_hash += 1;
         self.db.get_block_hash(number)
     }
@@ -321,8 +327,8 @@ impl Database for EmptyDB {
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error> {
-        Ok(Some(keccak256(number.to_string().as_bytes())))
+    fn get_block_hash(&mut self, number: &Word) -> Result<B256, Self::Error> {
+        Ok(keccak256(number.to_string().as_bytes()))
     }
 }
 
@@ -343,7 +349,7 @@ impl DynDatabase for EmptyDB {
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
         Db::new(*self).get_block_hash(number)
     }
 }
@@ -369,8 +375,8 @@ mod tests {
             Ok(Word::ZERO)
         }
 
-        fn get_block_hash(&mut self, _number: &Word) -> DbResult<Option<B256>> {
-            Ok(Some(B256::from([*self.value; 32])))
+        fn get_block_hash(&mut self, _number: &Word) -> DbResult<B256> {
+            Ok(B256::from([*self.value; 32]))
         }
     }
 
@@ -379,7 +385,7 @@ mod tests {
         let value = 1;
         let mut erased = boxed_dyn_database(BorrowingDb { value: &value });
 
-        assert_eq!(erased.get_block_hash(&Word::ZERO).unwrap(), Some(B256::from([value; 32])));
+        assert_eq!(erased.get_block_hash(&Word::ZERO).unwrap(), B256::from([value; 32]));
     }
 
     #[test]

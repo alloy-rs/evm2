@@ -427,10 +427,13 @@ pub trait AsyncDatabase: NonStaticAny {
     ) -> impl Future<Output = Result<Word, Self::Error>> + Send + '_;
 
     /// Loads a historical block hash.
+    ///
+    /// Callers only request numbers inside the `BLOCKHASH` window, so a hash the database cannot
+    /// provide is a database failure reported through the error, never a benign miss.
     fn get_block_hash(
         &mut self,
         number: Word,
-    ) -> impl Future<Output = Result<Option<B256>, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<B256, Self::Error>> + Send + '_;
 }
 
 /// Adapter that exposes an [`AsyncDatabase`] through the synchronous [`DynDatabase`] interface.
@@ -514,7 +517,7 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
         let result = {
             let Self { db, .. } = self;
             block_on_current_result(db.get_block_hash(*number))
@@ -1037,8 +1040,8 @@ mod tests {
             Ok(Word::from(9))
         }
 
-        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        fn get_block_hash(&mut self, _number: &Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
@@ -1068,8 +1071,8 @@ mod tests {
             Ok(Word::ZERO)
         }
 
-        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        fn get_block_hash(&mut self, _number: &Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
@@ -1158,8 +1161,8 @@ mod tests {
             Ok(Word::from(9))
         }
 
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        async fn get_block_hash(&mut self, _number: Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
@@ -1190,8 +1193,8 @@ mod tests {
             Ok(Word::from(9))
         }
 
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        async fn get_block_hash(&mut self, _number: Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
@@ -1226,8 +1229,8 @@ mod tests {
             Ok(Word::ZERO)
         }
 
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        async fn get_block_hash(&mut self, _number: Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
@@ -1272,8 +1275,8 @@ mod tests {
             Err(TestError)
         }
 
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        async fn get_block_hash(&mut self, _number: Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 

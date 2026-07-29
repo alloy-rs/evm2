@@ -1619,8 +1619,8 @@ mod tests {
             Ok(if *address == self.address && *key == self.slot { self.value } else { Word::ZERO })
         }
 
-        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        fn get_block_hash(&mut self, _number: &Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
