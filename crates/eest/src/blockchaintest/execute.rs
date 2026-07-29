@@ -986,12 +986,6 @@ fn increment_balance(
 
     let change = AccountStateChange { address, original, current: Some(current) };
     commit_state_changes(evm, block_state, &change);
-    // Post-block balance updates bypass transaction commit, so record them in the BAL directly.
-    evm.overlay_db_mut().bal_context.commit_account_change(
-        change.address,
-        change.original.as_ref(),
-        change.current.as_ref(),
-    );
     Ok(())
 }
 
