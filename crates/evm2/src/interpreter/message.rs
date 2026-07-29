@@ -50,9 +50,9 @@ pub struct MessageExt<E = ()> {
     /// The account this message targets.
     ///
     /// Its meaning depends on [`MessageExt::kind`]: for call-family messages it is the account
-    /// whose context is executed; for `CREATE`/`CREATE2` it is the address of the yet-to-be-created
-    /// contract, derived when the message is constructed (from the creator and nonce, or from the
-    /// salt and init-code hash).
+    /// whose context is executed; for `CREATE`/`CREATE2` it is the address of the
+    /// yet-to-be-created contract, derived when the message is constructed (from the creator
+    /// and nonce, or from the salt and init-code hash).
     pub destination: Address,
     /// Immediate caller.
     pub caller: Address,

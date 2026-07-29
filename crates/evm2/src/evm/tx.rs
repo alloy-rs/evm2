@@ -62,9 +62,10 @@ impl<E> TxResultExt<E> {
     /// `max(total_gas_spent - state_gas_spent, floor_gas)`, pre-refund.
     ///
     /// Together with [`Self::state_gas_spent()`] this is the per-transaction split that callers add
-    /// to the block's separate regular- and state-gas counters (EIP-8037 + EIP-7778). The EIP-7623
-    /// calldata floor is not discounted by state gas, so it binds against the regular component
-    /// (ethereum/EIPs#11836); the refund still only affects [`Self::tx_gas_used`].
+    /// to the block's separate regular- and state-gas counters (EIP-8037 + EIP-7778). The
+    /// EIP-7623 calldata floor is not discounted by state gas, so it binds against the
+    /// regular component (ethereum/EIPs#11836); the refund still only affects
+    /// [`Self::tx_gas_used`].
     #[inline]
     pub const fn regular_gas_spent(&self) -> u64 {
         let regular = self.total_gas_spent.saturating_sub(self.state_gas_spent);
@@ -72,8 +73,8 @@ impl<E> TxResultExt<E> {
     }
 
     /// Returns this transaction's state gas (EIP-8037) — the stored `state_gas_spent` field,
-    /// exposed as the counterpart to [`Self::regular_gas_spent`] for the per-transaction block-gas
-    /// split.
+    /// exposed as the counterpart to [`Self::regular_gas_spent`] for the per-transaction
+    /// block-gas split.
     #[inline]
     pub const fn state_gas_spent(&self) -> u64 {
         self.state_gas_spent

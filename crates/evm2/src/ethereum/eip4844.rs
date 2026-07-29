@@ -94,7 +94,7 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     H::before_execution(req.host, req.envelope, caller, effective_gas_cost + blob_basefee_cost)?;
 
     let (gas_limit, reservoir) =
-        initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, initial_state_gas, 0);
+        initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, initial_state_gas);
     let tx_env = TxEnvExt {
         origin: caller,
         gas_price,

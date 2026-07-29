@@ -16,6 +16,7 @@ use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256
 use core::cmp::min;
 use evm2::{
     bytecode::Bytecode,
+    constants::BLOCK_HASH_HISTORY,
     interpreter::{Host, MessageExt, MessageKind, Word, i256},
     utils::{word_to_usize, word_to_usize_saturated},
     version::{EvmFeatures, GasId},
@@ -390,9 +391,6 @@ pub unsafe extern "C" fn __revmc_builtin_blockhash(
         *number_ptr = EvmWord::ZERO;
         return Ok(());
     }
-
-    // BLOCK_HASH_HISTORY is 256
-    const BLOCK_HASH_HISTORY: u64 = 256;
 
     if diff <= BLOCK_HASH_HISTORY {
         let requested_number = U256::from(word_to_u64_saturated(requested_number));

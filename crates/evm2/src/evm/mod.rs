@@ -1436,8 +1436,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // precompile/interpreter split. Read from the recipient's pre-call state (before the value
         // transfer below) and applied inside the checkpoint, so the delegated-target load it
         // performs is unwound if the frame later rolls back. For a delegated recipient this also
-        // resolves the delegation (gating the target load on gas), returning the delegate's code and
-        // address so the frame runs the delegate's code.
+        // resolves the delegation (gating the target load on gas), returning the delegate's code
+        // and address so the frame runs the delegate's code.
         let mut frame_gas =
             GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
         let mut bytecode = bytecode;
@@ -1502,12 +1502,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// - the delegation-target access following the EIP-2929 warm/cold model when the recipient
     ///   carries an EIP-7702 delegation.
     ///
-    /// The delegation-target access is charged as a warm access first and the cold premium after the
-    /// target is loaded, and the load is gated on `skip_cold_load` (as nested calls do): a frame
-    /// that cannot afford the cold access never loads the target, so it stays out of the EIP-7928
-    /// block access list. On success the delegated recipient's resolved code and address are
-    /// returned so the caller runs the delegate's code; `Err(())` signals a runtime out-of-gas.
-    /// A no-op returning `Ok(None)` off the depth-0 EIP-2780 path.
+    /// The delegation-target access is charged as a warm access first and the cold premium after
+    /// the target is loaded, and the load is gated on `skip_cold_load` (as nested calls do): a
+    /// frame that cannot afford the cold access never loads the target, so it stays out of the
+    /// EIP-7928 block access list. On success the delegated recipient's resolved code and
+    /// address are returned so the caller runs the delegate's code; `Err(())` signals a runtime
+    /// out-of-gas. A no-op returning `Ok(None)` off the depth-0 EIP-2780 path.
     fn apply_eip2780_call_charges(
         &mut self,
         message: &Message<T>,
@@ -1785,7 +1785,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
-        // EIP-8037 (ethereum/EIPs#11854): SSTORE must cover the slot's access cost before the
+        // EIP-8037: SSTORE must cover the slot's access cost before the
         // implicit storage read. When the cold access is unaffordable the read is skipped, so the
         // slot stays out of the EIP-7928 block access list (the warm-read cost has already been
         // paid by the instruction, so an affordable warm slot is still read on OOG).

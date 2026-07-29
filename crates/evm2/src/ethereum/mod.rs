@@ -446,22 +446,18 @@ pub fn charge_upfront<'a, T: EvmTypes>(
 
 /// Returns `(regular_gas_limit, reservoir)` for the first frame.
 ///
-/// `initial_state_gas` is the EIP-8037 state gas charged before execution (top-level create state
-/// gas and EIP-7702 authorization state gas). It is deducted from the reservoir, spilling into the
-/// regular budget when the reservoir is insufficient. `state_refund` is the EIP-7702 state-gas
-/// refund, credited directly back to the reservoir so it stays state gas. Both are zero without
-/// EIP-8037.
-///
-/// `initial_state_gas` and `state_refund` are kept as separate arguments deliberately: per
-/// execution-specs the state refund is added to the state-gas reservoir (`set_delegation` does
-/// `state_gas_reservoir += refund`), not applied to regular gas first. Folding them into a single
-/// regular-first refund — as an earlier note suggested — would diverge from the spec.
+/// `initial_state_gas` is the EIP-8037 state gas charged at the intrinsic phase (the pre-EIP-2780
+/// pessimistic EIP-7702 authorization state gas, or hook-added charges). It is deducted from the
+/// reservoir, spilling into the regular budget when the reservoir is insufficient. It is zero
+/// without EIP-8037; under EIP-2780 the state-dependent charges are metered at the runtime gas
+/// phase instead. The pre-EIP-2780 EIP-7702 state-gas refund is not an input here: per
+/// execution-specs it is credited directly back to the reservoir after the authorizations are
+/// applied, not applied to regular gas first.
 pub fn initial_gas_and_reservoir(
     version: &Version,
     tx_gas_limit: u64,
     intrinsic: u64,
     initial_state_gas: u64,
-    state_refund: u64,
 ) -> (u64, u64) {
     if !version.feature(EvmFeatures::EIP8037) {
         return (tx_gas_limit - intrinsic, 0);
@@ -478,10 +474,6 @@ pub fn initial_gas_and_reservoir(
         regular_gas_limit -= initial_state_gas - reservoir;
         reservoir = 0;
     }
-
-    // EIP-7702 state-gas refund for existing authorities goes directly to the reservoir so it
-    // stays state gas rather than being routed through the capped regular refund counter.
-    reservoir += state_refund;
 
     (regular_gas_limit, reservoir)
 }
