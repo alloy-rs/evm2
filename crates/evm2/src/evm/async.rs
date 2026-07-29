@@ -427,9 +427,6 @@ pub trait AsyncDatabase: NonStaticAny {
     ) -> impl Future<Output = Result<Word, Self::Error>> + Send + '_;
 
     /// Loads a historical block hash.
-    ///
-    /// Callers only request numbers inside the `BLOCKHASH` window, so a hash the database cannot
-    /// provide is a database failure reported through the error, never a benign miss.
     fn get_block_hash(
         &mut self,
         number: Word,
