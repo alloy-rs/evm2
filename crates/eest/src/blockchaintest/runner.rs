@@ -63,9 +63,12 @@ fn run_file(path: PathBuf) -> Result<(), Failed> {
 }
 
 fn run_file_with_mode(path: PathBuf, mode: ExecutionMode) -> Result<(), Failed> {
-    execute_test_suite(&path, ExecuteConfig { mode, ..Default::default() })
-        .map(|_| ())
-        .map_err(|err| err.to_string().into())
+    execute_test_suite(
+        &path,
+        ExecuteConfig { mode, compare_state_root: true, ..Default::default() },
+    )
+    .map(|_| ())
+    .map_err(|err| err.to_string().into())
 }
 
 #[cfg(feature = "jit")]
@@ -95,9 +98,16 @@ fn run_compiled_file(path: PathBuf, mode: CompiledMode) -> Result<(), Failed> {
 
 #[cfg(feature = "jit")]
 fn run_compiled_files(paths: Vec<PathBuf>, mode: CompiledMode) -> Result<(), Failed> {
-    execute_test_suites(&paths, ExecuteConfig { mode: mode.execution_mode(), ..Default::default() })
-        .map(|_| ())
-        .map_err(|err| err.to_string().into())
+    execute_test_suites(
+        &paths,
+        ExecuteConfig {
+            mode: mode.execution_mode(),
+            compare_state_root: true,
+            ..Default::default()
+        },
+    )
+    .map(|_| ())
+    .map_err(|err| err.to_string().into())
 }
 
 fn should_descend(path: &Path) -> bool {
