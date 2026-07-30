@@ -414,6 +414,14 @@ fn stack_setup(inputs: &[Pat], outputs: &[Ident]) -> TokenStream2 {
 }
 
 fn stack_bindings(inputs: &[Pat], outputs: &[Ident]) -> TokenStream2 {
+    if outputs.len() > 1 {
+        return syn::Error::new(
+            outputs.iter().map(|i| i.span()).reduce(|a, b| a.join(b).unwrap_or(a)).unwrap(),
+            "multiple outputs not supported",
+        )
+        .into_compile_error();
+    }
+
     let count = inputs.len().max(outputs.len());
     let mut bindings = Vec::with_capacity(count);
     for i in 0..count {
