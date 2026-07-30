@@ -128,8 +128,9 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     };
 
     // Applies the pre-Amsterdam authorization regular refund (zero under EIP-2780) and settles
-    // the transaction with the given authorization state gas. Every exit below funnels through
-    // here.
+    // the transaction with the given authorization state gas on top of the hook-provided
+    // intrinsic state gas (charged upfront, before `runtime_checkpoint`, so it persists on every
+    // exit). Every exit below funnels through here.
     let settle = |host: &mut Evm<'_, T>, mut result: MessageResult<T>, auth_state_gas: u64| {
         result.gas.set_refunded(
             result.gas.refunded().saturating_add(i64::try_from(regular_refund).unwrap_or(i64::MAX)),
@@ -142,7 +143,7 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
                 gas_price,
                 gas_limit: tx.gas_limit,
                 floor_gas,
-                initial_state_gas: auth_state_gas,
+                initial_state_gas: initial_state_gas.saturating_add(auth_state_gas),
                 state_refund,
                 result,
             },
