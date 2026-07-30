@@ -162,7 +162,9 @@ fn finish_run<T: EvmTypesHost>(
     loop_state: imp::LoopState,
 ) -> InstrStop {
     cold_path();
-    state.set_pc_stack_len(pc.as_ptr(), stack_len);
+    // The NULL `pc` is only a loop-exit sentinel; never publish it.
+    let pc = if pc.as_ptr().is_null() { state.bytecode().as_slice().as_ptr() } else { pc.as_ptr() };
+    state.set_pc_stack_len(pc, stack_len);
     imp::finish_loop(state.gas_mut(), loop_state);
     state.result().unwrap_err()
 }
