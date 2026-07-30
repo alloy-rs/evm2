@@ -1094,26 +1094,27 @@ impl InstData {
     /// Returns `true` if this instruction requires to know `gasleft()`.
     #[inline]
     pub(crate) const fn requires_gasleft(&self, spec_id: SpecId) -> bool {
-        matches!(
-            self.opcode,
-            op::GAS
-                | op::CREATE
-                | op::CALL
-                | op::CALLCODE
-                | op::DELEGATECALL
-                | op::CREATE2
-                | op::STATICCALL
-        ) || (spec_id.enables(SpecId::ISTANBUL) && self.opcode == op::SSTORE)
-            || (spec_id.enables(SpecId::BERLIN)
-                && matches!(
-                    self.opcode,
-                    op::BALANCE
-                        | op::EXTCODESIZE
-                        | op::EXTCODECOPY
-                        | op::EXTCODEHASH
-                        | op::SLOAD
-                        | op::SELFDESTRUCT
-                ))
+        match self.opcode {
+            // GAS pushes the remaining gas after paying its own base cost.
+            op::GAS => true,
+            // Calls and contract creation cap the gas forwarded based on the remaining gas.
+            op::CREATE
+            | op::CALL
+            | op::CALLCODE
+            | op::DELEGATECALL
+            | op::CREATE2
+            | op::STATICCALL => true,
+            // EIP-2200 rejects SSTORE when the remaining gas is at most the call stipend.
+            op::SSTORE => spec_id.enables(SpecId::ISTANBUL),
+            // EIP-2929 skips cold host loads when the remaining gas cannot cover their cost.
+            op::BALANCE
+            | op::EXTCODESIZE
+            | op::EXTCODECOPY
+            | op::EXTCODEHASH
+            | op::SLOAD
+            | op::SELFDESTRUCT => spec_id.enables(SpecId::BERLIN),
+            _ => false,
+        }
     }
 
     /// Returns `true` if execution can fall through to the next sequential instruction.
