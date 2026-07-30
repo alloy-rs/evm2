@@ -885,8 +885,8 @@ fn run_system_call(
     let executed = evm.system_call(SystemTx::new(address, data))?;
     if !executed.result().status {
         let _ = executed.discard();
-        let has_code = match evm.account_code(&address) {
-            Ok(code) => !code.is_empty(),
+        let has_code = match evm.read_account_info(&address) {
+            Ok(info) => info.is_some_and(|info| info.code_hash != KECCAK256_EMPTY),
             Err(code) => return Err(database_error(evm, code)),
         };
         if has_code {
