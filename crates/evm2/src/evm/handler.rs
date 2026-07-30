@@ -19,8 +19,6 @@ pub struct GasSettlement<T: EvmTypes> {
     pub initial_state_gas: u64,
     /// State gas refunded by pre-execution processing.
     pub state_refund: u64,
-    /// Whether this is a top-level create transaction.
-    pub is_create: bool,
     /// Result of executing the top-level message.
     pub result: MessageResult<T>,
 }

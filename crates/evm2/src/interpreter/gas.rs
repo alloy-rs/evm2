@@ -97,19 +97,20 @@ pub(crate) const EIP7702_AUTH_TUPLE_BYTES: u32 = 101;
 /// ecRecover precompile base cost, charged once per EIP-7702 authorization to
 /// recover the authority. Matches `secp256k1::ECRECOVER_BASE`.
 pub(crate) const EIP7702_ECRECOVER_COST: u32 = 3000;
-/// Regular-gas portion of the EIP-7702 per-auth cost under EIP-8038/Amsterdam.
+/// `REGULAR_PER_AUTH_BASE_COST`: the state-independent regular-gas base charged per EIP-7702
+/// authorization at the intrinsic phase under EIP-2780 (ethereum/EIPs#11844).
 ///
-/// Per execution-specs, the regular per-auth charge is
-/// `ACCOUNT_WRITE + REGULAR_PER_AUTH_BASE_COST`, where
-/// `REGULAR_PER_AUTH_BASE_COST = AUTH_TUPLE_BYTES * TX_DATA_TOKEN_FLOOR
-/// + PRECOMPILE_ECRECOVER + COLD_ACCOUNT_ACCESS + 2 * WARM_ACCESS`.
-/// Evaluates to `8,000 + (101*16 + 3,000 + 3,000 + 200) = 8,000 + 7,816 = 15,816`.
-/// (The per-auth state gas — `NEW_ACCOUNT + AUTH_BASE` — is charged separately.)
-pub(crate) const EIP8038_EIP7702_PER_EMPTY_ACCOUNT_REGULAR: u32 = EIP8038_ACCOUNT_WRITE
-    + (EIP7702_AUTH_TUPLE_BYTES * TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM
-        + EIP7702_ECRECOVER_COST
-        + EIP8038_COLD_ACCOUNT_ACCESS
-        + 2 * WARM_STORAGE_READ_COST);
+/// Equals `AUTH_TUPLE_BYTES * TX_DATA_TOKEN_FLOOR + PRECOMPILE_ECRECOVER + COLD_ACCOUNT_ACCESS +
+/// 2 * WARM_ACCESS` = `101*16 + 3,000 + 3,000 + 200 = 7,816`. Covers the authorization's calldata,
+/// the ECDSA recovery, the authority's cold access, and the warm writes every authorization
+/// performs. The state-dependent remainder (`ACCOUNT_WRITE` and the new-account and
+/// delegation-bytes state gas) is charged at the runtime gas phase, only for the authorities that
+/// incur it.
+pub(crate) const EIP8038_EIP7702_PER_AUTH_BASE_REGULAR: u32 = EIP7702_AUTH_TUPLE_BYTES
+    * TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM
+    + EIP7702_ECRECOVER_COST
+    + EIP8038_COLD_ACCOUNT_ACCESS
+    + 2 * WARM_STORAGE_READ_COST;
 
 // EIP-2780: Reduce intrinsic transaction gas. Replaces the legacy 21,000 base
 // with a decomposed model (sender base + `tx.to`-based + `tx.value`-based).

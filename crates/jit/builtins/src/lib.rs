@@ -16,6 +16,7 @@ use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256
 use core::cmp::min;
 use evm2::{
     bytecode::Bytecode,
+    constants::BLOCK_HASH_HISTORY,
     interpreter::{Host, MessageExt, MessageKind, Word, i256},
     utils::{word_to_usize, word_to_usize_saturated},
     version::{EvmFeatures, GasId},
@@ -391,9 +392,6 @@ pub unsafe extern "C" fn __revmc_builtin_blockhash(
         return Ok(());
     }
 
-    // BLOCK_HASH_HISTORY is 256
-    const BLOCK_HASH_HISTORY: u64 = 256;
-
     if diff <= BLOCK_HASH_HISTORY {
         let requested_number = U256::from(word_to_u64_saturated(requested_number));
         let hash = ecx.host().block_hash(&requested_number)?;
@@ -664,29 +662,21 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         version.gas_params.get(GasId::Create).into()
     };
     ecx.gas.spend(create_cost)?;
-    if ecx.enables(EvmFeatures::EIP8037) {
-        ecx.gas.spend_state(version.gas_params.create_state_gas())?;
-    }
-
-    let mut gas_limit = ecx.gas.remaining();
-    if ecx.enables(EvmFeatures::EIP150) {
-        gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
-    }
-    ecx.gas.spend(gas_limit)?;
     let salt = if is_create2 {
         pop!(sp; salt);
         B256::from(salt.to_be_bytes())
     } else {
         B256::ZERO
     };
-
+    // Build the message up front (minus the child gas split, filled in below).
     let current = ecx.message();
     let mut message = MessageExt {
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
-        gas_limit,
-        reservoir: ecx.gas.reservoir(),
-        destination: current.destination,
+        gas_limit: 0,
+        reservoir: 0,
+        // Derived below into the yet-to-be-created contract address.
+        destination: Address::ZERO,
         caller: current.destination,
         input: code,
         value: value.to_u256(),
@@ -697,13 +687,49 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         ext: (),
         _non_exhaustive: (),
     };
+
+    // Derive the created contract address once and record it in `destination` (mirrors the
+    // interpreter's `create` opcode). CREATE needs the creator's (pre-bump) nonce; the caller is the
+    // currently-executing contract, already warm. CREATE2 needs no nonce. The same load feeds the
+    // EIP-8037 balance/nonce checks below, so it is only performed when one of the two needs it.
+    let caller_info = if is_create2 && !ecx.enables(EvmFeatures::EIP8037) {
+        None
+    } else {
+        Some(ecx.host().load_account(&message.caller, false, false)?)
+    };
+    message.derive_destination(caller_info.as_ref().map_or(0, |info| info.nonce));
+
+    // EIP-8037 (ethereum/EIPs#11858): charge the CREATE account-creation state gas before the child
+    // gas split, conditional on the destination not already existing (and on the endowment/nonce
+    // pre-checks passing, so an early-failing create leaves the destination out of the block access
+    // list).
+    let mut charged_create_state_gas = false;
+    if let Some(caller_info) = caller_info.filter(|_| ecx.enables(EvmFeatures::EIP8037))
+        && caller_info.balance >= message.value
+        && caller_info.nonce != u64::MAX
+        && ecx.host().target_is_empty_for_new_account_gas(&message.destination, version.features)?
+    {
+        ecx.gas.spend_state(version.gas_params.create_state_gas())?;
+        charged_create_state_gas = true;
+    }
+
+    let mut gas_limit = ecx.gas.remaining();
+    if ecx.enables(EvmFeatures::EIP150) {
+        gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
+    }
+    ecx.gas.spend(gas_limit)?;
+    message.gas_limit = gas_limit;
+    message.reservoir = ecx.gas.reservoir();
+
     let bytecode = Bytecode::new_legacy(message.input.clone());
     let tx_env = ecx.tx_env();
     let mut result = ecx.host().execute_message(tx_env, bytecode, &mut message);
     ecx.gas.merge_child_gas(result.gas, result.stop);
+    // EIP-8037 (ethereum/EIPs#11858): refund the conditional create state gas when the create fails
+    // to deploy (no new account leaf is created).
     let create_failed = result.created_address.is_none() || !result.stop.is_success();
-    if (create_failed || result.created_target_was_alive) && ecx.enables(EvmFeatures::EIP8037) {
-        ecx.gas.refill_reservoir(ecx.gas_params().create_state_gas());
+    if charged_create_state_gas && create_failed {
+        ecx.gas.refill_reservoir(version.gas_params.create_state_gas());
     }
 
     let address = EvmWord::from(result.created_address_for_parent());

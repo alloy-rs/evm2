@@ -123,7 +123,7 @@ use crate::{
     error::error_unavailable,
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
-        MessageResult, MessageResultExt, Word, gas::EIP8038_COLD_ACCOUNT_ACCESS,
+        MessageResult, MessageResultExt, Word, gas::WARM_STORAGE_READ_COST,
     },
     registry::{HandlerError, HandlerResult, TxRegistry},
     trustme,
@@ -1158,27 +1158,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // replacement while the hooks are running.
         let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
 
+        // `destination` already holds the create's contract address (set when the message was
+        // constructed), so the create hook observes it directly.
         let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
-        if is_create {
-            // Derive the destination early so that the create hook can observe it; execution
-            // re-derives it together with its semantic checks.
-            let nonce = if message.depth > 0 {
-                match self.state.account_info_untracked(&message.caller) {
-                    Ok(info) => info.map_or(0, |info| info.nonce),
-                    Err(code) => {
-                        let stop = self.store_error(code);
-                        return Self::error_message_result(
-                            stop,
-                            message.gas_limit,
-                            message.reservoir,
-                        );
-                    }
-                }
-            } else {
-                0
-            };
-            message.destination = Self::derive_create_address(&bytecode, message, nonce);
-        }
 
         let mut top_frame: Option<Box<Interpreter<'frame, 'a, T>>> = None;
         let frame = match self.current_frame {
@@ -1242,13 +1224,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 message.reservoir,
             );
         }
-        if let Err(stop) = self.prepare_create_message(&bytecode, message) {
+        if let Err(stop) = self.prepare_create_message(message) {
             return Self::error_message_result(stop, message.gas_limit, message.reservoir);
         }
         let checkpoint = self.state.checkpoint();
-        // EIP-8037: capture whether the target leaf was already alive (existing, non-empty) before
-        // creation, so a successful create at a pre-existing balance-only account can refund the
-        // upfront NEW_ACCOUNT state gas (execution-specs `created_target_alive`).
+        // EIP-2780: capture whether the target leaf is already alive
+        // (existing, non-empty) before creation, so a top-level create at a pre-existing
+        // balance-only account is not charged the account-creation state gas below (no new leaf is
+        // created — execution-specs `created_target_alive`).
         let target_alive = if self.feature(EvmFeatures::EIP8037) {
             match self.account_is_alive(&message.destination) {
                 Ok(alive) => alive,
@@ -1267,28 +1250,34 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         message.disable_precompiles = false;
         let input = core::mem::take(&mut message.input);
 
-        // Creates pay their NEW_ACCOUNT-equivalent state gas upfront via the tx-level
-        // `initial_state_gas`, so the create frame starts from the inherited gas as-is.
-        let frame_gas =
+        // EIP-2780: a top-level create (depth 0) charges the
+        // account-creation state gas at frame entry, conditional on the destination not already
+        // existing (`!target_alive`). Nested creates are charged on the parent frame by the CREATE
+        // opcode instead. The charge is state gas on this frame's tracker, refilled by the frame's
+        // own settle on failure; an unaffordable charge halts the create out-of-gas without running
+        // the initcode, returning the reservoir.
+        let mut frame_gas =
             GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        if message.depth == 0
+            && !target_alive
+            && self.feature(EvmFeatures::EIP8037)
+            && frame_gas.spend_state(self.version().gas_params.create_state_gas()).is_err()
+        {
+            self.state.rollback(checkpoint, self.features);
+            return Self::error_message_result(
+                InstrStop::OutOfGas,
+                message.gas_limit,
+                message.reservoir,
+            );
+        }
         let stop = self.run_interpreter(bytecode, tx_env, message, frame_gas);
         message.input = input;
 
-        self.finish_create_message_run(
-            checkpoint,
-            &message.destination,
-            message.gas_limit,
-            stop,
-            target_alive,
-        )
+        self.finish_create_message_run(checkpoint, &message.destination, message.gas_limit, stop)
     }
 
     #[inline(never)]
-    fn prepare_create_message(
-        &mut self,
-        bytecode: &Bytecode,
-        message: &mut Message<T>,
-    ) -> Result<(), InstrStop> {
+    fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), InstrStop> {
         let info = if message.value > 0 || message.depth > 0 {
             self.state
                 .account_info_untracked(&message.caller)
@@ -1307,13 +1296,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return Err(InstrStop::Return);
         }
 
-        // When an inspector is installed, the destination is already derived for the create hook,
-        // and inspector mutations of it are respected.
-        if self.inspector.is_none() {
-            message.destination =
-                Self::derive_create_address(bytecode, message, info.map_or(0, |info| info.nonce));
-        }
-
+        // `destination` already holds the contract address (derived when the message was
+        // constructed); warm it before running the initcode.
         let _ = self.state.account(&message.destination, false).map(|mut a| a.warm());
 
         if message.depth > 0
@@ -1352,7 +1336,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         address: &Address,
         gas_limit: u64,
         stop: InstrStop,
-        target_alive: bool,
     ) -> MessageResult<T> {
         let interp = self.interpreter_pool.last_mut().unwrap();
         let mut gas = interp.gas();
@@ -1365,7 +1348,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                     gas: *gas.tracker(),
                     output: Bytes::new(),
                     created_address: None,
-                    created_target_was_alive: false,
+                    runtime_gas_oog: false,
                     ext: T::MessageResultExt::default(),
                     _non_exhaustive: (),
                 };
@@ -1392,7 +1375,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             gas: *gas.tracker(),
             output,
             created_address: stop.is_success().then_some(*address),
-            created_target_was_alive: stop.is_success() && target_alive,
+            runtime_gas_oog: false,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
         }
@@ -1437,16 +1420,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         Ok(())
     }
 
-    /// Derives the destination address for a create message.
-    fn derive_create_address(bytecode: &Bytecode, message: &Message<T>, nonce: u64) -> Address {
-        match message.kind {
-            MessageKind::Create if message.depth == 0 => message.destination,
-            MessageKind::Create => message.caller.create(nonce),
-            MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
-            _ => unreachable!("invalid create message kind"),
-        }
-    }
-
     #[inline(never)]
     fn execute_call_message(
         &mut self,
@@ -1462,12 +1435,35 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             );
         }
         let checkpoint = self.state.checkpoint();
-        // EIP-2780 top-level execution charges, computed from the recipient's
-        // pre-call state (before the value transfer below) and applied to the frame
-        // gas before the precompile/interpreter split. Computed inside the checkpoint
-        // so the delegated-target warming it performs is unwound if the frame later
-        // rolls back.
-        let eip2780_charges = self.eip2780_call_charges(message);
+        // EIP-2780 top-level (depth-0) execution charges, metered on the frame gas before the
+        // precompile/interpreter split. Read from the recipient's pre-call state (before the value
+        // transfer below) and applied inside the checkpoint, so the delegated-target load it
+        // performs is unwound if the frame later rolls back. For a delegated recipient this also
+        // resolves the delegation (gating the target load on gas), returning the delegate's code
+        // and address so the frame runs the delegate's code.
+        let mut frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let mut bytecode = bytecode;
+        match self.apply_eip2780_call_charges(message, &mut frame_gas) {
+            Ok(Some((delegate_code, delegate_address))) => {
+                message.code_address = delegate_address;
+                message.disable_precompiles = true;
+                bytecode = delegate_code;
+            }
+            Ok(None) => {}
+            Err(()) => {
+                self.state.rollback(checkpoint, self.features);
+                let mut result = Self::error_message_result(
+                    InstrStop::OutOfGas,
+                    message.gas_limit,
+                    message.reservoir,
+                );
+                // Signal a runtime gas-phase out-of-gas so the EIP-7702 handler can revert the
+                // delegations applied before the frame (ethereum/EIPs#11844).
+                result.runtime_gas_oog = true;
+                return result;
+            }
+        }
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
         let transfers_balance = matches!(
             message.kind,
@@ -1492,28 +1488,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         }
 
-        // EIP-2780: apply the depth-0 execution charges to the frame gas here, before the
-        // precompile/interpreter split, so both paths share one charge site (mirroring
-        // execution-specs `process_message`, where the top-frame charge precedes the
-        // code-vs-precompile dispatch). The charge is frame-level state gas: it is recorded
-        // on the tracker for EIP-8037 block accounting and refilled on failure by
-        // `settle_gas`. A frame that cannot afford it halts before running; the rollback
-        // unwinds the value transfer and its EIP-7708 log. Off the depth-0 path the charges
-        // are zero, so this is a no-op spend.
-        let mut frame_gas =
-            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
-        let (eip2780_regular, eip2780_state) = eip2780_charges;
-        if frame_gas.spend(eip2780_regular).is_err()
-            || frame_gas.spend_state(eip2780_state).is_err()
-        {
-            self.state.rollback(checkpoint, self.features);
-            return Self::error_message_result(
-                InstrStop::OutOfGas,
-                message.gas_limit,
-                message.reservoir,
-            );
-        }
-
         if self.contains_precompile(message) {
             return self.execute_call_precompile(checkpoint, message, frame_gas);
         }
@@ -1523,51 +1497,69 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.finish_call_message_run(checkpoint, stop)
     }
 
-    /// Computes the EIP-2780 top-level (depth-0) execution charges for a call to
-    /// `message.destination`, from the recipient's pre-call state:
-    /// - a regular-gas `COLD_ACCOUNT_ACCESS` surcharge when the recipient carries an EIP-7702
-    ///   delegation, and
+    /// Applies the EIP-2780 top-level (depth-0) execution charges for a call to
+    /// `message.destination`, metered on the frame `gas`:
     /// - `new_account_state_gas` of state gas when the recipient is empty (EIP-161) and the call
-    ///   transfers value.
+    ///   transfers value (charged before delegation resolution, per execution-specs
+    ///   `prepare_dispatch`), and
+    /// - the delegation-target access following the EIP-2929 warm/cold model when the recipient
+    ///   carries an EIP-7702 delegation.
     ///
-    /// Returns `(regular, state)`, both zero unless EIP-2780 is active at depth 0.
-    fn eip2780_call_charges(&mut self, message: &Message<T>) -> (u64, u64) {
+    /// The delegation-target access is charged as a warm access first and the cold premium after
+    /// the target is loaded, and the load is gated on `skip_cold_load` (as nested calls do): a
+    /// frame that cannot afford the cold access never loads the target, so it stays out of the
+    /// EIP-7928 block access list. On success the delegated recipient's resolved code and
+    /// address are returned so the caller runs the delegate's code; `Err(())` signals a runtime
+    /// out-of-gas. A no-op returning `Ok(None)` off the depth-0 EIP-2780 path.
+    fn apply_eip2780_call_charges(
+        &mut self,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+    ) -> Result<Option<(Bytecode, Address)>, ()> {
         if message.depth != 0 || !self.feature(EvmFeatures::EIP2780) {
-            return (0, 0);
+            return Ok(None);
         }
         let dest = message.destination;
         // A nonexistent recipient reads as an empty account (EIP-161).
         let recipient_is_empty = match self.state.account_info_untracked(&dest) {
             Ok(info) => info.as_ref().is_none_or(AccountInfo::is_empty),
-            Err(_) => return (0, 0),
+            Err(_) => return Ok(None),
         };
-        // EIP-2780: a delegated recipient is charged an extra COLD_ACCOUNT_ACCESS
-        // of regular gas, and the delegation target is warmed for subsequent
-        // access (matching execution-specs' `accessed_addresses.add`). The
-        // recipient's stored code must be loaded — the warmed tx-target overlay
-        // entry may not carry the code bytes needed to read the designator. An
-        // empty recipient is never delegated, so skip the load to avoid touching
-        // an otherwise-untouched account.
-        let delegated = if recipient_is_empty {
-            None
-        } else {
-            match self.state.account(&dest, false) {
-                Ok(mut acc) => acc.load_code().ok().and_then(|code| code.eip7702_address()),
-                Err(_) => None,
+        // Empty recipient + value transfer: pay the new account leaf's state gas. Checked before
+        // the delegation resolution, matching the spec's `prepare_dispatch` order.
+        if !message.value.is_zero() && recipient_is_empty {
+            if gas.spend_state(self.version().gas_params.new_account_state_gas()).is_err() {
+                return Err(());
             }
+            // An empty recipient is never delegated.
+            return Ok(None);
+        }
+        if recipient_is_empty {
+            return Ok(None);
+        }
+        // Resolve the recipient's delegation designator (the recipient is the warm tx target; its
+        // stored code must be loaded to read the designator).
+        let delegated = match self.state.account(&dest, false) {
+            Ok(mut acc) => acc.load_code().ok().and_then(|code| code.eip7702_address()),
+            Err(_) => None,
         };
-        let regular = if let Some(delegated) = delegated {
-            let _ = self.state.account(&delegated, false).map(|mut a| a.warm());
-            u64::from(EIP8038_COLD_ACCOUNT_ACCESS)
-        } else {
-            0
+        let Some(delegated) = delegated else {
+            return Ok(None);
         };
-        let state = if !message.value.is_zero() && recipient_is_empty {
-            self.version().gas_params.new_account_state_gas()
-        } else {
-            0
-        };
-        (regular, state)
+        // Delegation-target access, EIP-2929 warm/cold: charge the warm access first (covered → the
+        // target is loaded and enters the block access list), then the cold premium after the load.
+        // The load is skipped when the cold premium is unaffordable, keeping a cold, unafforded
+        // target out of the block access list.
+        let cold_additional = self.version().gas_params.cold_account_additional_cost();
+        if gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
+            return Err(());
+        }
+        let skip_cold_load = gas.remaining() < cold_additional;
+        let load = self.load_account(&delegated, true, skip_cold_load).map_err(|_| ())?;
+        if load.is_cold && gas.spend(cold_additional).is_err() {
+            return Err(());
+        }
+        Ok(Some((load.code, delegated)))
     }
 
     #[inline(never)]
@@ -1606,7 +1598,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             gas,
             output,
             created_address: None,
-            created_target_was_alive: false,
+            runtime_gas_oog: false,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
         }
@@ -1630,7 +1622,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             gas: *child_gas.tracker(),
             output,
             created_address: None,
-            created_target_was_alive: false,
+            runtime_gas_oog: false,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
         }
@@ -1743,6 +1735,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         };
         Ok(AccountLoad {
             balance: info.balance,
+            nonce: info.nonce,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
             code,
             exists,
@@ -1792,11 +1785,14 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         address: &Address,
         key: &Word,
         value: &Word,
-        _skip_cold_load: bool,
+        skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
-        // TODO: glam-devnet-7 fix this and we should use skip_cold_load.
-        let mut slot = match self.state.storage(address).into_slot(*key, false) {
+        // EIP-8037: SSTORE must cover the slot's access cost before the
+        // implicit storage read. When the cold access is unaffordable the read is skipped, so the
+        // slot stays out of the EIP-7928 block access list (the warm-read cost has already been
+        // paid by the instruction, so an affordable warm slot is still read on OOG).
+        let mut slot = match self.state.storage(address).into_slot(*key, skip_cold_load) {
             Ok(slot) => slot,
             Err(ErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
             Err(code) => return Err(self.store_error(code)),
@@ -1916,6 +1912,8 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
 pub struct AccountLoad {
     /// Account balance.
     pub balance: Word,
+    /// Account nonce.
+    pub nonce: u64,
     /// Account code hash.
     pub code_hash: B256,
     /// Account bytecode.

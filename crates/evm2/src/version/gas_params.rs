@@ -534,9 +534,11 @@ mod tests {
         assert_eq!(amsterdam.get(GasId::NewAccountCost), 0);
         assert_eq!(amsterdam.get(GasId::SstoreSetWithoutLoadCost), 10_000);
         assert_eq!(amsterdam.get(GasId::SstoreClearingSlotRefund), 12_480);
-        // EIP-8038/Amsterdam per-auth regular gas: ACCOUNT_WRITE + REGULAR_PER_AUTH_BASE_COST
-        // = 8000 + (101*16 + 3000 + 3000 + 2*100) = 15_816.
-        assert_eq!(amsterdam.get(GasId::TxEip7702PerEmptyAccountCost), 15_816);
+        // EIP-2780/Amsterdam intrinsic per-auth regular gas: the state-independent
+        // REGULAR_PER_AUTH_BASE_COST = 101*16 + 3000 + 3000 + 2*100 = 7_816 (the ACCOUNT_WRITE
+        // and state-gas remainder is charged at the runtime gas phase).
+        assert_eq!(amsterdam.get(GasId::TxEip7702PerEmptyAccountCost), 7_816);
+        assert_eq!(amsterdam.get(GasId::TxEip7702AuthRefund), 0);
         assert_eq!(amsterdam.get(GasId::SstoreSetState), 64 * 1530);
         assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthState), 23 * 1530);
         assert_eq!(amsterdam.get(GasId::TxAccessListAddressCost), 3000 + 20 * 64);

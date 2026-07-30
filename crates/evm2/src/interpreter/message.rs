@@ -1,5 +1,5 @@
 use crate::{BaseEvmTypes, EvmTypesHost};
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 
 /// EVM message kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -47,7 +47,12 @@ pub struct MessageExt<E = ()> {
     /// [`GasTracker::merge_child_gas`](crate::interpreter::GasTracker::merge_child_gas).
     /// Zero for non-Amsterdam execution.
     pub reservoir: u64,
-    /// Account whose context is being executed.
+    /// The account this message targets.
+    ///
+    /// Its meaning depends on [`MessageExt::kind`]: for call-family messages it is the account
+    /// whose context is executed; for `CREATE`/`CREATE2` it is the address of the
+    /// yet-to-be-created contract, derived when the message is constructed (from the creator
+    /// and nonce, or from the salt and init-code hash).
     pub destination: Address,
     /// Immediate caller.
     pub caller: Address,
@@ -70,4 +75,27 @@ pub struct MessageExt<E = ()> {
     pub ext: E,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
+}
+
+impl<E> MessageExt<E> {
+    /// Returns the keccak256 hash of the init code ([`MessageExt::input`]).
+    ///
+    /// Only meaningful for create messages, where `input` holds the initcode.
+    #[inline]
+    pub fn init_code_hash_slow(&self) -> B256 {
+        keccak256(self.input.as_ref())
+    }
+
+    /// Derives this create message's contract address and stores it in [`MessageExt::destination`].
+    ///
+    /// `nonce` is the creator's nonce and is only used by the `CREATE` scheme; `CREATE2` derives
+    /// the address from the salt and [`MessageExt::init_code_hash_slow`]. Called once when the
+    /// create message is constructed.
+    #[inline]
+    pub fn derive_destination(&mut self, nonce: u64) {
+        self.destination = match self.kind {
+            MessageKind::Create2 => self.caller.create2(self.salt, self.init_code_hash_slow()),
+            _ => self.caller.create(nonce),
+        };
+    }
 }

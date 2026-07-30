@@ -1,10 +1,9 @@
 use super::{
-    access_list_counts, create_initial_state_gas, effective_gas_price, floor_gas,
-    initial_gas_and_reservoir, initial_message, intrinsic_gas, rollback_failed_execution,
-    validate_block_gas_limit, validate_chain_id, validate_create_initcode, validate_floor_gas,
-    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
-    validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
-    warm_base_accounts,
+    access_list_counts, effective_gas_price, floor_gas, initial_gas_and_reservoir, initial_message,
+    intrinsic_gas, validate_block_gas_limit, validate_chain_id, validate_create_initcode,
+    validate_floor_gas, validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
+    validate_priority_fee, validate_regular_gas_limit_cap, validate_sender,
+    validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
     EvmTypes, TxResult,
@@ -59,11 +58,20 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         access_list_storage_keys,
         tx.value,
     );
-    let mut initial_state_gas = create_initial_state_gas(req.host.version(), false);
+    // Blob transactions are always calls; EIP-2780 charges any state-dependent gas at the runtime
+    // gas phase, so no state gas is charged at the intrinsic phase.
+    let mut initial_state_gas = 0;
     H::adjust_intrinsic_gas(req.host, req.envelope, &mut intrinsic, &mut initial_state_gas)?;
     validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
-    let floor_gas =
-        floor_gas(req.host.version(), &tx.input, access_list_accounts, access_list_storage_keys);
+    let floor_gas = floor_gas(
+        req.host.version(),
+        caller,
+        tx.to.into(),
+        &tx.input,
+        access_list_accounts,
+        access_list_storage_keys,
+        tx.value,
+    );
     validate_floor_gas(tx.gas_limit, floor_gas)?;
     validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
@@ -84,16 +92,9 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let blob_basefee_cost = blob_gas_cost * req.host.block.blob_basefee;
     req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
     H::before_execution(req.host, req.envelope, caller, effective_gas_cost + blob_basefee_cost)?;
-    let execution_checkpoint = req.host.state.checkpoint();
 
-    // Blob transactions are always calls, never creates.
-    let (gas_limit, reservoir) = initial_gas_and_reservoir(
-        req.host.version(),
-        tx.gas_limit,
-        intrinsic,
-        initial_state_gas,
-        0,
-    );
+    let (gas_limit, reservoir) =
+        initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, initial_state_gas);
     let tx_env = TxEnvExt {
         origin: caller,
         gas_price,
@@ -112,9 +113,9 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         gas_limit,
         reservoir,
     )?;
-    let mut result = req.host.execute_message(&tx_env, bytecode, &mut message);
-    rollback_failed_execution(req.host, execution_checkpoint, &mut result);
-
+    // Failed execution has already been rolled back to the message's own checkpoint (and halt gas
+    // zeroed) inside `execute_message`, so the result settles directly.
+    let result = req.host.execute_message(&tx_env, bytecode, &mut message);
     H::settle_transaction(
         req.host,
         req.envelope,
@@ -125,7 +126,6 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
             floor_gas,
             initial_state_gas,
             state_refund: 0,
-            is_create: false,
             result,
         },
     )
