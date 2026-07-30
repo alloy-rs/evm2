@@ -1356,14 +1356,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ) -> MessageResult<T> {
         let interp = self.interpreter_pool.last_mut().unwrap();
         let mut gas = interp.gas();
-        let mut output = Bytes::copy_from_slice(interp.output());
-        if stop.is_success() {
+        let output = if stop.is_success() {
+            let mut output = Bytes::copy_from_slice(interp.output());
             if let Err(stop) = self.validate_create_output(&mut gas, &mut output) {
                 self.state.rollback(checkpoint, self.features);
                 return MessageResultExt {
                     stop,
                     gas: *gas.tracker(),
-                    output,
+                    output: Bytes::new(),
                     created_address: None,
                     created_target_was_alive: false,
                     ext: T::MessageResultExt::default(),
@@ -1380,9 +1380,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 let stop = self.store_error(code);
                 return Self::error_message_result(stop, gas_limit, gas.reservoir());
             }
+
+            output
         } else {
             self.state.rollback(checkpoint, self.features);
-        }
+            Bytes::copy_from_slice(interp.output())
+        };
 
         MessageResultExt {
             stop,
@@ -3481,10 +3484,85 @@ mod tests {
 
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), code, &mut message);
         assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert!(result.output.is_empty());
 
         evm.state.finalize_transaction_(Version::base(SpecId::HOMESTEAD));
         let pending = evm.state.take_pending_state();
         assert!(pending.accounts.get(&created).is_none_or(|entry| entry.present.is_none()));
+    }
+
+    #[test]
+    fn create_validation_failure_clears_output() {
+        let caller = Address::from([0x11; 20]);
+        let created = Address::from([0x22; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::LONDON,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::LONDON),
+        );
+        let mut message = MessageExt {
+            kind: MessageKind::Create,
+            destination: created,
+            caller,
+            gas_limit: 50_000,
+            ..MessageExt::default()
+        };
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH1,
+            0xef,
+            op::PUSH1,
+            0,
+            op::MSTORE8,
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            0,
+            op::RETURN,
+        ]));
+
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), code, &mut message);
+
+        assert_eq!(result.stop, InstrStop::CreateContractStartingWithEF);
+        assert!(result.output.is_empty());
+    }
+
+    #[test]
+    fn create_size_limit_failure_clears_output() {
+        let caller = Address::from([0x11; 20]);
+        let created = Address::from([0x22; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::SPURIOUS_DRAGON,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::SPURIOUS_DRAGON),
+        );
+        let mut message = MessageExt {
+            kind: MessageKind::Create,
+            destination: created,
+            caller,
+            gas_limit: 100_000,
+            ..MessageExt::default()
+        };
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH2,
+            0x60,
+            0x01,
+            op::PUSH1,
+            0,
+            op::RETURN,
+        ]));
+
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), code, &mut message);
+
+        assert_eq!(result.stop, InstrStop::CreateContractSizeLimit);
+        assert!(result.output.is_empty());
     }
 
     #[test]
