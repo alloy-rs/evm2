@@ -46,7 +46,8 @@ crate::bytecode::impl_index_display!(ConstSetIdx, "{}");
 /// Per-instruction snapshot of abstract operand values.
 ///
 /// Stored in stack order: index 0 is the deepest operand, last element is TOS.
-/// Only the instruction's inputs are stored, not the entire stack.
+/// Reached instructions have one entry per input; operands outside the tracked abstract
+/// stack are stored as `Top`. Only the instruction's inputs are stored, not the entire stack.
 pub(crate) type OperandSnapshot = SmallVec<[AbsValue; 4]>;
 
 /// Bundles input and output snapshots for recording during abstract interpretation.
@@ -65,6 +66,12 @@ impl Snapshots {
             self.inputs[inst].clone_from(&saved.inputs[inst]);
             self.outputs[inst] = saved.outputs[inst];
         }
+    }
+
+    /// Returns an input operand by stack depth, where depth zero is TOS.
+    pub(crate) fn input(&self, inst: Inst, depth: usize) -> Option<AbsValue> {
+        let snapshot = &self.inputs[inst];
+        snapshot.get(snapshot.len().checked_sub(1 + depth)?).copied()
     }
 }
 
@@ -160,8 +167,8 @@ impl ConstSetInterner {
 
 /// Maximum abstract stack depth tracked by the analysis. Top-aligned joins across paths with
 /// differing stack heights pad the shorter stack with `Top` at the bottom; on CFG cycles this
-/// padding can grow without bound. Clamping discards only those bottom `Top` entries, so no
-/// precision is lost.
+/// padding can grow without bound. Clamping loses precision for deeper entries, which operand
+/// snapshots represent as `Top`.
 ///
 /// Instructions that access deeper than this (e.g. Amsterdam DUPN/SWAPN up to depth 236)
 /// treat the out-of-range slot as `Top` rather than aborting block interpretation.
@@ -194,9 +201,7 @@ impl BlockState {
                 let new_len = existing.len().max(incoming.len());
                 let mut changed = false;
 
-                // Clamp to MAX_ABS_STACK_DEPTH by only joining the top portion;
-                // elements below that are unreachable by any EVM instruction and
-                // discarding them preserves soundness.
+                // Clamp to MAX_ABS_STACK_DEPTH by only joining the top portion.
                 let join_len = new_len.min(MAX_ABS_STACK_DEPTH);
 
                 // Resize existing to join_len: pad at bottom with Top or truncate.
@@ -757,10 +762,10 @@ impl Bytecode<'_> {
     }
 
     fn resolve_jump(&self, jump_inst: Inst, const_sets: &ConstSetInterner) -> JumpResolution {
-        let snap = &self.snapshots.inputs[jump_inst];
         let condition = if self.insts[jump_inst].opcode == op::JUMPI {
-            snap.first()
-                .map(|&value| self.resolve_jump_condition(value, const_sets))
+            self.snapshots
+                .input(jump_inst, 1)
+                .map(|value| self.resolve_jump_condition(value, const_sets))
                 .unwrap_or_default()
         } else {
             JumpCondition::Unknown
@@ -771,8 +776,8 @@ impl Bytecode<'_> {
                 .with_condition(JumpCondition::AlwaysFalse);
         }
 
-        match snap.last() {
-            Some(&operand) => {
+        match self.snapshots.input(jump_inst, 0) {
+            Some(operand) => {
                 self.resolve_jump_operand(operand, const_sets).with_condition(condition)
             }
             None => {
@@ -856,7 +861,7 @@ impl Bytecode<'_> {
         if self.insts[jump_inst].opcode != op::JUMPI {
             return JumpCondition::Unknown;
         }
-        let Some(condition) = local_snapshots.inputs[jump_inst].first().copied() else {
+        let Some(condition) = local_snapshots.input(jump_inst, 1) else {
             return JumpCondition::Unknown;
         };
         let Some(imm) = condition.as_const() else {
@@ -1025,7 +1030,7 @@ impl Bytecode<'_> {
             let term = &self.insts[term_inst];
             if term.is_jump()
                 && !term.flags.contains(InstFlags::STATIC_JUMP)
-                && let Some(&operand) = self.snapshots.inputs[term_inst].last()
+                && let Some(operand) = self.snapshots.input(term_inst, 0)
             {
                 self.discover_jump_edges(
                     operand,
@@ -1077,7 +1082,9 @@ impl Bytecode<'_> {
                 let start = stack.len().saturating_sub(inp);
                 let snap = &mut self.snapshots.inputs[i];
                 snap.clear();
+                snap.resize(inp.saturating_sub(stack.len()), AbsValue::Top);
                 snap.extend_from_slice(&stack[start..]);
+                debug_assert_eq!(snap.len(), inp);
             }
 
             match inst.opcode {
@@ -2369,6 +2376,48 @@ mod tests_edge_cases {
             bytecode.cfg.inst_to_block[jump_inst + 1].is_none(),
             "always-taken dynamic JUMPI fallthrough should be dead"
         );
+    }
+
+    #[test]
+    fn truncated_stack_does_not_make_jumpi_unconditional() {
+        let src = format!(
+            "
+            {}
+            PUSH0
+            PUSH %taken
+            {}
+            PUSH %body
+            JUMP
+        body:
+            JUMPDEST
+            {}
+            JUMPI
+            PUSH1 0x01
+            PUSH1 0x01
+            SSTORE
+            STOP
+        taken:
+            JUMPDEST
+            PUSH1 0x02
+            PUSH1 0x02
+            SSTORE
+            STOP
+            ",
+            "PUSH1 0x11\n".repeat(5),
+            "PUSH1 0x11\n".repeat(63),
+            "POP\n".repeat(63),
+        );
+        let bytecode = analyze_asm(&src);
+
+        let (jump_inst, jumpi) =
+            bytecode.iter_insts().find(|(_, data)| data.opcode == op::JUMPI).unwrap();
+        assert_eq!(bytecode.snapshots.inputs[jump_inst].len(), 2);
+        assert!(jumpi.flags.contains(InstFlags::STATIC_JUMP));
+        assert!(!jumpi.has_const_jumpi_condition());
+
+        let (_, fallthrough_store) =
+            bytecode.iter_all_insts().find(|(_, data)| data.opcode == op::SSTORE).unwrap();
+        assert!(!fallthrough_store.is_dead_code());
     }
 
     /// A third caller reaches the function entry with a known callee (static
