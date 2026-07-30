@@ -1103,7 +1103,17 @@ impl InstData {
                 | op::DELEGATECALL
                 | op::CREATE2
                 | op::STATICCALL
-        ) || (self.opcode == op::SSTORE && spec_id.enables(SpecId::ISTANBUL))
+        ) || (spec_id.enables(SpecId::ISTANBUL) && self.opcode == op::SSTORE)
+            || (spec_id.enables(SpecId::BERLIN)
+                && matches!(
+                    self.opcode,
+                    op::BALANCE
+                        | op::EXTCODESIZE
+                        | op::EXTCODECOPY
+                        | op::EXTCODEHASH
+                        | op::SLOAD
+                        | op::SELFDESTRUCT
+                ))
     }
 
     /// Returns `true` if execution can fall through to the next sequential instruction.
