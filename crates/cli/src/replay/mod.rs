@@ -151,6 +151,7 @@ fn replay_file(path: &Path, options: &ReplayOptions) -> Result<FileReplay> {
                 print_json_outcome: options.print_json_outcome,
                 dump_state: options.dump_state,
                 compare_state_root: true,
+                compare_receipt_root: true,
                 ..Default::default()
             },
             &options.test_filter,
@@ -194,6 +195,7 @@ fn replay_file(path: &Path, options: &ReplayOptions) -> Result<FileReplay> {
                     print_json_outcome: options.print_json_outcome,
                     dump_state: options.dump_state,
                     compare_state_root: true,
+                    compare_receipt_root: true,
                     ..Default::default()
                 },
                 &options.test_filter,

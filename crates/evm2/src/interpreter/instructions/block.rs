@@ -1,7 +1,7 @@
 use crate::{
     EvmFeatures,
     constants::BLOCK_HASH_HISTORY,
-    interpreter::{Host, InstrStop, Word},
+    interpreter::{Host, Word},
     utils::{address_to_word, b256_to_word, word_to_usize_saturated},
 };
 use evm2_macros::instruction;
@@ -12,11 +12,7 @@ pub(crate) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
         } else {
-            cx.state
-                .host()
-                .block_hash(number)?
-                .map(b256_to_word)
-                .ok_or(InstrStop::FatalExternalError)?
+            b256_to_word(cx.state.host().block_hash(number)?)
         }
     } else {
         Word::ZERO

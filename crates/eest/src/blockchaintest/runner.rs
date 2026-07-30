@@ -65,7 +65,12 @@ fn run_file(path: PathBuf) -> Result<(), Failed> {
 fn run_file_with_mode(path: PathBuf, mode: ExecutionMode) -> Result<(), Failed> {
     execute_test_suite(
         &path,
-        ExecuteConfig { mode, compare_state_root: true, ..Default::default() },
+        ExecuteConfig {
+            mode,
+            compare_state_root: true,
+            compare_receipt_root: true,
+            ..Default::default()
+        },
     )
     .map(|_| ())
     .map_err(|err| err.to_string().into())
@@ -103,6 +108,7 @@ fn run_compiled_files(paths: Vec<PathBuf>, mode: CompiledMode) -> Result<(), Fai
         ExecuteConfig {
             mode: mode.execution_mode(),
             compare_state_root: true,
+            compare_receipt_root: true,
             ..Default::default()
         },
     )

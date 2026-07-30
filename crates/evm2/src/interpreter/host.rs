@@ -125,7 +125,7 @@ pub trait Host<T: EvmTypesHost> {
     ) -> Result<bool, InstrStop>;
 
     /// Returns a historical block hash.
-    fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop>;
+    fn block_hash(&mut self, number: &Word) -> Result<B256, InstrStop>;
 
     /// Loads a persistent storage slot.
     fn sload(

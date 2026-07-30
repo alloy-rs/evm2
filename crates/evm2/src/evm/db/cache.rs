@@ -112,6 +112,9 @@ impl<ExtDB> CacheDB<ExtDB> {
     }
 
     /// Applies borrowed state changes to this cache.
+    ///
+    /// When BAL construction is enabled, the visited changes and reads are also folded into the
+    /// BAL builder at the current block access index, matching [`Self::commit_pending`].
     #[inline]
     pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
         let Ok(()) = source.visit(self);
@@ -225,23 +228,29 @@ impl<ExtDB> CacheDB<ExtDB> {
     }
 }
 
+/// Applies streamed changes to the cache and forwards every callback to [`BalContext`]'s own sink
+/// impl, so a visited source folds into the BAL builder exactly like [`CacheDB::commit_pending`]
+/// when construction is enabled.
 impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     type Error = Infallible;
 
     #[inline]
     fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
+        self.bal_context.bytecode(code_hash, code)?;
         self.cache.contracts.insert(code_hash, code.clone());
         Ok(())
     }
 
     #[inline]
     fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
+        self.bal_context.storage_wipe(address)?;
         self.cache.storage.entry(address).or_default().wipe();
         Ok(())
     }
 
     #[inline]
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+        self.bal_context.storage(change)?;
         let storage = self.cache.storage.entry(change.address).or_default();
         if storage.wiped && change.current.is_zero() {
             storage.slots.remove(&change.key);
@@ -253,6 +262,7 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
 
     #[inline]
     fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+        self.bal_context.account(change)?;
         match change.current {
             Some(info) => self.insert_account_info(&change.address, info.to_account_info()),
             None => {
@@ -261,6 +271,25 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
             }
         }
         Ok(())
+    }
+
+    #[inline]
+    fn account_read(
+        &mut self,
+        address: Address,
+        info: Option<AccountInfoRef<'_>>,
+    ) -> Result<(), Self::Error> {
+        self.bal_context.account_read(address, info)
+    }
+
+    #[inline]
+    fn storage_read(
+        &mut self,
+        address: Address,
+        key: Word,
+        value: Word,
+    ) -> Result<(), Self::Error> {
+        self.bal_context.storage_read(address, key, value)
     }
 }
 
@@ -345,15 +374,10 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
         match self.cache.block_hashes.entry(*number) {
-            Entry::Occupied(entry) => Ok(Some(*entry.get())),
-            Entry::Vacant(entry) => {
-                let Some(hash) = self.db.get_block_hash(number)? else {
-                    return Ok(None);
-                };
-                Ok(Some(*entry.insert(hash)))
-            }
+            Entry::Occupied(entry) => Ok(*entry.get()),
+            Entry::Vacant(entry) => Ok(*entry.insert(self.db.get_block_hash(number)?)),
         }
     }
 
@@ -391,7 +415,7 @@ mod typed {
         }
 
         #[inline]
-        fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error> {
+        fn get_block_hash(&mut self, number: &Word) -> Result<B256, Self::Error> {
             DynDatabase::get_block_hash(self, number).map_err(|code| DynDatabase::error(self, code))
         }
     }
@@ -405,14 +429,14 @@ mod tests {
         interpreter::op,
     };
     use alloc::{string::ToString, sync::Arc, vec};
-    use alloy_eip7928::{BalanceChange, StorageChange};
+    use alloy_eip7928::{BalanceChange, NonceChange, StorageChange};
     use alloy_primitives::Bytes;
 
     #[derive(Debug, Default)]
     struct CountingDB {
         account: Option<AccountInfo>,
         storage: Word,
-        block_hash: Option<B256>,
+        block_hash: B256,
         account_loads: usize,
         code_loads: usize,
         storage_loads: usize,
@@ -442,7 +466,7 @@ mod tests {
             Ok(self.storage)
         }
 
-        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
+        fn get_block_hash(&mut self, _number: &Word) -> Result<B256, Self::Error> {
             self.block_hash_loads += 1;
             Ok(self.block_hash)
         }
@@ -457,7 +481,7 @@ mod tests {
         let db = CountingDB {
             account: Some(AccountInfo::default().with_code(code.clone())),
             storage: Word::from(4),
-            block_hash: Some(block_hash),
+            block_hash,
             ..CountingDB::default()
         };
         let mut cache = CacheDB::new(crate::evm::Db::new(db));
@@ -476,8 +500,8 @@ mod tests {
         assert_eq!(cache.get_storage(&address, &key).unwrap(), Word::from(4));
         assert_eq!(cache.db.inner().storage_loads, 1);
 
-        assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), Some(block_hash));
-        assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), Some(block_hash));
+        assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), block_hash);
+        assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), block_hash);
         assert_eq!(cache.db.inner().block_hash_loads, 1);
     }
 
@@ -561,6 +585,60 @@ mod tests {
         let missing = Address::with_last_byte(2);
         let account = cache.get_account(&missing).unwrap().unwrap();
         assert_eq!(account.balance, Word::from(100));
+    }
+
+    #[test]
+    fn sink_visit_folds_changes_into_bal_builder() {
+        let address = Address::with_last_byte(1);
+        let read_address = Address::with_last_byte(2);
+
+        let mut cache = InMemoryDB::default();
+        cache.bal_context.enable_bal_builder();
+        cache.bal_context.set_bal_index(BlockAccessIndex::new(3));
+
+        // One changed account with a changed slot and a loaded-but-unchanged slot, plus one
+        // loaded-but-unchanged account.
+        let mut pending = PendingState::default();
+        pending.insert_account(
+            address,
+            None,
+            Some(AccountInfo::default().with_nonce(1).with_balance(Word::from(100))),
+        );
+        pending.insert_storage(address, Word::from(5), Word::ZERO, Word::from(42));
+        pending.insert_storage(address, Word::from(6), Word::from(7), Word::from(7));
+        pending.insert_account(
+            read_address,
+            Some(AccountInfo::default()),
+            Some(AccountInfo::default()),
+        );
+
+        cache.commit_source(&pending);
+
+        // The visit applied the changes to the cache...
+        assert_eq!(cache.account_info(&address).unwrap().nonce, 1);
+        assert_eq!(cache.cache.storage[&address].slots[&Word::from(5)], Word::from(42));
+
+        // ...and folded the same writes and reads into the BAL builder.
+        let bal = cache.bal_context.take_bal_builder().unwrap();
+        let account = bal.accounts.get(&address).unwrap();
+        assert_eq!(
+            account.account_info.nonce.changes,
+            vec![NonceChange::new(BlockAccessIndex::new(3), 1)]
+        );
+        assert_eq!(
+            account.account_info.balance.changes,
+            vec![BalanceChange::new(BlockAccessIndex::new(3), Word::from(100))]
+        );
+        assert_eq!(
+            account.storage.storage.get(&Word::from(5)).unwrap().changes,
+            vec![StorageChange::new(BlockAccessIndex::new(3), Word::from(42))]
+        );
+        // Loaded-but-unchanged entries surface as reads: present, with no writes.
+        assert!(account.storage.storage.get(&Word::from(6)).unwrap().is_empty());
+        let read_account = bal.accounts.get(&read_address).unwrap();
+        assert!(read_account.account_info.nonce.is_empty());
+        assert!(read_account.account_info.balance.is_empty());
+        assert!(read_account.storage.storage.is_empty());
     }
 
     #[test]

@@ -602,7 +602,7 @@ mod tests {
             Err(self.error)
         }
 
-        fn get_block_hash(&mut self, _number: &Word) -> DbResult<Option<B256>> {
+        fn get_block_hash(&mut self, _number: &Word) -> DbResult<B256> {
             Err(self.error)
         }
     }
