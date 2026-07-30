@@ -1073,8 +1073,12 @@ fn increment_balance(
     if current.code_hash.is_zero() {
         current.code_hash = KECCAK256_EMPTY;
     }
+    // EELS `modify_state` destroys an account left empty by the modification, so a zero-amount
+    // withdrawal neither creates its recipient nor keeps a pre-existing empty one alive. The
+    // BAL commit below still runs to record the touched address.
+    let current = (!current.is_empty()).then_some(current);
 
-    let change = AccountStateChange { address, original, current: Some(current) };
+    let change = AccountStateChange { address, original, current };
     commit_state_changes(evm, block_state, &change);
     Ok(())
 }
