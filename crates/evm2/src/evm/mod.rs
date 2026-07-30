@@ -1356,8 +1356,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ) -> MessageResult<T> {
         let interp = self.interpreter_pool.last_mut().unwrap();
         let mut gas = interp.gas();
-        let mut output = Bytes::copy_from_slice(interp.output());
-        if stop.is_success() {
+        let output = if stop.is_success() {
+            let mut output = Bytes::copy_from_slice(interp.output());
             if let Err(stop) = self.validate_create_output(&mut gas, &mut output) {
                 self.state.rollback(checkpoint, self.features);
                 return MessageResultExt {
@@ -1380,9 +1380,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 let stop = self.store_error(code);
                 return Self::error_message_result(stop, gas_limit, gas.reservoir());
             }
+
+            output
         } else {
             self.state.rollback(checkpoint, self.features);
-        }
+            Bytes::copy_from_slice(interp.output())
+        };
 
         MessageResultExt {
             stop,
