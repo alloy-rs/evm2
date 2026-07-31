@@ -628,12 +628,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.state.account_info_untracked(address)
     }
 
-    /// Returns account bytecode visible through the accepted state overlay.
-    #[inline]
-    pub fn account_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        self.state.account(address, false)?.load_code()
-    }
-
     /// Applies borrowed changes to the accepted state overlay.
     #[inline]
     pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
