@@ -79,9 +79,9 @@ const fn macro_opcode_config() -> OpcodeConfig<TestTypes> {
 fn run(config: RunConfig<'_>) -> TestInterpreter {
     let execution_config = ExecutionConfig::<TestTypes>::for_config::<MacroConfig>();
     let RunConfig { code, host, spec_id, tx_env, mut message, gas_limit, return_data } = config;
-    let bytecode = legacy_bytecode(code);
+    message.code = legacy_bytecode(code);
     message.gas_limit = gas_limit;
-    let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
+    let mut inner = Interpreter::<TestTypes>::new(&tx_env, &message);
     *inner.return_data_mut() = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);

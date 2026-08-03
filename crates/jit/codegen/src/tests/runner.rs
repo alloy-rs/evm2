@@ -393,11 +393,8 @@ fn with_evm_context_and_host_mut<
     if let Some(modify_message) = modify_message {
         modify_message(&mut message);
     }
-    let mut interpreter = Interpreter::<BaseEvmTypes>::new(
-        Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
-        &tx_env,
-        &message,
-    );
+    message.code = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
+    let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
     interpreter.prepare_run(config.base_spec_id(), config.version(), host);
 
     let (mut ecx, stack, stack_len) = EvmContext::from_interpreter_with_stack(&mut interpreter);
@@ -511,11 +508,8 @@ fn run_compiled_test_case_with_context(
         modify_message(&mut message);
     }
     message.caller_is_static = is_static;
-    let mut interpreter = Interpreter::<BaseEvmTypes>::new(
-        Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
-        &tx_env,
-        &message,
-    );
+    message.code = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
+    let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
     let mut int_host = prepare_host(spec_id);
     let int_stop = interpreter.run(&config, &mut int_host);
     let int_result = int_stop;
