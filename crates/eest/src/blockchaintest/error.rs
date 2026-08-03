@@ -88,6 +88,14 @@ pub(crate) enum TestErrorKind {
         /// Hash of the previously accepted block.
         expected: alloy_primitives::B256,
     },
+    /// Final accepted block hash does not match the fixture's last block hash.
+    #[error("last block hash mismatch: got {got}, expected {expected}")]
+    LastBlockHashMismatch {
+        /// Hash of the final accepted block.
+        got: alloy_primitives::B256,
+        /// Last block hash declared by the fixture.
+        expected: alloy_primitives::B256,
+    },
     /// Recomputed post-block state root does not match the block header.
     #[error("state root mismatch: got {got}, expected {expected}")]
     StateRootMismatch {
