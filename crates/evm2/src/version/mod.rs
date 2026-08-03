@@ -4,8 +4,8 @@ use crate::{
     EvmConfig, EvmTypesHost, SpecId,
     constants::{
         BLOB_BASE_FEE_UPDATE_FRACTION_AMSTERDAM, BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN,
-        BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE, MAX_CODE_SIZE,
-        MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
+        BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE, MAX_CODE_SIZE, MAX_CODE_SIZE_AMSTERDAM,
+        MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
     },
     interpreter::{instructions as instr, op},
 };
@@ -294,7 +294,10 @@ mod tests {
         assert_eq!(amsterdam.max_code_size, MAX_CODE_SIZE_AMSTERDAM);
         assert_eq!(amsterdam.max_initcode_size, MAX_INITCODE_SIZE_AMSTERDAM);
         assert_eq!(amsterdam.max_blobs_per_tx, MAX_BLOBS_PER_BLOCK_DENCUN);
-        assert_eq!(amsterdam.blob_base_fee_update_fraction, BLOB_BASE_FEE_UPDATE_FRACTION_AMSTERDAM);
+        assert_eq!(
+            amsterdam.blob_base_fee_update_fraction,
+            BLOB_BASE_FEE_UPDATE_FRACTION_AMSTERDAM
+        );
 
         let cancun = Version::base(SpecId::CANCUN);
         assert_eq!(cancun.max_blobs_per_tx, MAX_BLOBS_PER_BLOCK_DENCUN);
