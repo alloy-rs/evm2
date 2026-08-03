@@ -16,8 +16,8 @@ use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256
 use core::cmp::min;
 use evm2::{
     bytecode::Bytecode,
-    constants::BLOCK_HASH_HISTORY,
-    interpreter::{Host, MessageExt, MessageKind, Word, i256},
+    constants::{BLOCK_HASH_HISTORY, CALL_DEPTH_LIMIT},
+    interpreter::{Host, MessageExt, MessageKind, Word, derive_create_destination, i256},
     utils::{word_to_usize, word_to_usize_saturated},
     version::{EvmFeatures, GasId},
 };
@@ -668,46 +668,39 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     } else {
         B256::ZERO
     };
-    // Build the message up front (minus the child gas split, filled in below).
+    let kind = if is_create2 { MessageKind::Create2 } else { MessageKind::Create };
     let current = ecx.message();
-    let mut message = MessageExt {
-        kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
-        depth: current.depth.saturating_add(1),
-        gas_limit: 0,
-        reservoir: 0,
-        // Derived below into the yet-to-be-created contract address.
-        destination: Address::ZERO,
-        caller: current.destination,
-        input: code,
-        value: value.to_u256(),
-        code_address: current.destination,
-        disable_precompiles: false,
-        caller_is_static: false,
-        salt,
-        ext: (),
-        _non_exhaustive: (),
-    };
+    let caller = current.destination;
+    let depth = current.depth.saturating_add(1);
+    let value = value.to_u256();
 
-    // Derive the created contract address once and record it in `destination` (mirrors the
-    // interpreter's `create` opcode). CREATE needs the creator's (pre-bump) nonce; the caller is the
-    // currently-executing contract, already warm. CREATE2 needs no nonce. The same load feeds the
-    // EIP-8037 balance/nonce checks below, so it is only performed when one of the two needs it.
+    // Derive the created contract address once (mirrors the interpreter's `create` opcode). CREATE
+    // needs the creator's (pre-bump) nonce; the caller is the currently-executing contract, already
+    // warm. CREATE2 needs no nonce. The same load feeds the EIP-8037 balance/nonce checks below, so
+    // it is only performed when one of the two needs it.
     let caller_info = if is_create2 && !ecx.enables(EvmFeatures::EIP8037) {
         None
     } else {
-        Some(ecx.host().load_account(&message.caller, false, false)?)
+        Some(ecx.host().load_account(&caller, false, false)?)
     };
-    message.derive_destination(caller_info.as_ref().map_or(0, |info| info.nonce));
+    let destination = derive_create_destination(
+        kind,
+        &caller,
+        &salt,
+        &code,
+        caller_info.as_ref().map_or(0, |info| info.nonce),
+    );
 
-    // EIP-8037 (ethereum/EIPs#11858): charge the CREATE account-creation state gas before the child
-    // gas split, conditional on the destination not already existing (and on the endowment/nonce
-    // pre-checks passing, so an early-failing create leaves the destination out of the block access
-    // list).
+    // EIP-8037: charge the CREATE account-creation state gas before the child
+    // gas split, conditional on the destination not already existing (and on the depth, endowment,
+    // and nonce pre-checks passing, so an early-failing create leaves the destination out of the
+    // block access list).
     let mut charged_create_state_gas = false;
     if let Some(caller_info) = caller_info.filter(|_| ecx.enables(EvmFeatures::EIP8037))
-        && caller_info.balance >= message.value
+        && depth <= CALL_DEPTH_LIMIT
+        && caller_info.balance >= value
         && caller_info.nonce != u64::MAX
-        && ecx.host().target_is_empty_for_new_account_gas(&message.destination, version.features)?
+        && ecx.host().target_is_empty_for_new_account_gas(&destination, version.features)?
     {
         ecx.gas.spend_state(version.gas_params.create_state_gas())?;
         charged_create_state_gas = true;
@@ -718,14 +711,28 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
     }
     ecx.gas.spend(gas_limit)?;
-    message.gas_limit = gas_limit;
-    message.reservoir = ecx.gas.reservoir();
 
-    let bytecode = Bytecode::new_legacy(message.input.clone());
     let tx_env = ecx.tx_env();
-    let mut result = ecx.host().execute_message(tx_env, bytecode, &mut message);
+    let mut message = MessageExt {
+        kind,
+        depth,
+        gas_limit,
+        reservoir: ecx.gas.reservoir(),
+        destination,
+        caller,
+        code: Bytecode::new_legacy(code.clone()),
+        input: code,
+        value,
+        code_address: caller,
+        disable_precompiles: false,
+        caller_is_static: false,
+        salt,
+        ext: (),
+        _non_exhaustive: (),
+    };
+    let mut result = ecx.host().execute_message(tx_env, &mut message);
     ecx.gas.merge_child_gas(result.gas, result.stop);
-    // EIP-8037 (ethereum/EIPs#11858): refund the conditional create state gas when the create fails
+    // EIP-8037: refund the conditional create state gas when the create fails
     // to deploy (no new account leaf is created).
     let create_failed = result.created_address.is_none() || !result.stop.is_success();
     if charged_create_state_gas && create_failed {
@@ -819,6 +826,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         caller,
         input,
         value: call_value,
+        code: loaded_code,
         code_address,
         disable_precompiles,
         caller_is_static: ecx.is_static(),
@@ -828,7 +836,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
     };
 
     let tx_env = ecx.tx_env();
-    let mut result = ecx.host().execute_message(tx_env, loaded_code, &mut message);
+    let mut result = ecx.host().execute_message(tx_env, &mut message);
     ecx.gas.merge_child_gas(result.gas, result.stop);
     if new_account_state_gas != 0 && !result.stop.is_success() {
         ecx.gas.refill_reservoir(new_account_state_gas);
@@ -1142,13 +1150,14 @@ mod tests {
             ..MessageInspector::default()
         });
         let tx_env = TxEnvExt::default();
-        let message =
-            MessageExt { gas_limit: 1_000_000, destination: caller, ..MessageExt::default() };
-        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
-            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
-            &tx_env,
-            &message,
-        );
+        let message = MessageExt {
+            gas_limit: 1_000_000,
+            destination: caller,
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            ..MessageExt::default()
+        };
+        let mut interpreter =
+            evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
@@ -1199,13 +1208,11 @@ mod tests {
             destination,
             caller,
             value: Word::from(0x99),
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
-            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
-            &tx_env,
-            &message,
-        );
+        let mut interpreter =
+            evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
@@ -1241,13 +1248,11 @@ mod tests {
             destination,
             caller,
             value: current_value,
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
-            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
-            &tx_env,
-            &message,
-        );
+        let mut interpreter =
+            evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
@@ -1282,13 +1287,11 @@ mod tests {
             destination,
             caller,
             value: Word::from(0x99),
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
-            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
-            &tx_env,
-            &message,
-        );
+        let mut interpreter =
+            evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
@@ -1325,12 +1328,13 @@ mod tests {
             ..MessageInspector::default()
         });
         let tx_env = TxEnvExt::default();
-        let message = MessageExt { gas_limit: 1_000_000, ..MessageExt::default() };
-        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
-            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
-            &tx_env,
-            &message,
-        );
+        let message = MessageExt {
+            gas_limit: 1_000_000,
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            ..MessageExt::default()
+        };
+        let mut interpreter =
+            evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
@@ -1369,12 +1373,13 @@ mod tests {
             ..MessageInspector::default()
         });
         let tx_env = TxEnvExt::default();
-        let message = MessageExt { gas_limit: 1_000_000, ..MessageExt::default() };
-        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(
-            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
-            &tx_env,
-            &message,
-        );
+        let message = MessageExt {
+            gas_limit: 1_000_000,
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            ..MessageExt::default()
+        };
+        let mut interpreter =
+            evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);

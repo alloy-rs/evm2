@@ -171,10 +171,12 @@ mod tests {
 
         let opcodes = [op::ADD, op::ADD, op::ADD, op::BYTE];
 
-        let bytecode = Bytecode::new_legacy(Bytes::from(opcodes));
         let tx_env = TxEnv::<BaseEvmTypes>::default();
-        let message = Message::<BaseEvmTypes>::default();
-        let mut interp = Interpreter::<BaseEvmTypes>::new(bytecode, &tx_env, &message);
+        let message = Message::<BaseEvmTypes> {
+            code: Bytecode::new_legacy(Bytes::from(opcodes)),
+            ..Message::<BaseEvmTypes>::default()
+        };
+        let mut interp = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
         for _ in &opcodes {
             opcode_counter.step(&mut interp);
@@ -187,10 +189,12 @@ mod tests {
 
         let opcodes = [op::PUSH1, op::PUSH1, op::ADD, op::PUSH1, op::SSTORE, op::STOP];
 
-        let bytecode = Bytecode::new_legacy(Bytes::from(opcodes));
         let tx_env = TxEnv::<BaseEvmTypes>::default();
-        let message = Message::<BaseEvmTypes>::default();
-        let mut interp = Interpreter::<BaseEvmTypes>::new(bytecode, &tx_env, &message);
+        let message = Message::<BaseEvmTypes> {
+            code: Bytecode::new_legacy(Bytes::from(opcodes)),
+            ..Message::<BaseEvmTypes>::default()
+        };
+        let mut interp = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
         for _ in &opcodes {
             opcode_counter.step(&mut interp);

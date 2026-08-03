@@ -1,9 +1,9 @@
 use super::{
-    access_list_counts, floor_gas, initial_gas_and_reservoir, initial_message, intrinsic_gas,
-    validate_block_gas_limit, validate_chain_id, validate_create_initcode, validate_floor_gas,
-    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
-    validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
-    warm_base_accounts,
+    InitialFrame, access_list_counts, floor_gas, initial_gas_and_reservoir, intrinsic_gas,
+    prepare_initial_frame, runtime_oog_result, settle_initial_frame_gas, validate_block_gas_limit,
+    validate_chain_id, validate_create_initcode, validate_execution_gas_limit_cap,
+    validate_floor_gas, validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
+    validate_sender, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
     EvmTypes, TxResult,
@@ -12,7 +12,7 @@ use crate::{
         error_handler,
         handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
     },
-    interpreter::Host,
+    interpreter::{GasTracker, Host},
     registry::{HandlerResult, TxRequest},
 };
 use alloy_consensus::TxEip2930;
@@ -61,7 +61,7 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         tx.value,
     );
     validate_floor_gas(tx.gas_limit, floor_gas)?;
-    validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
+    validate_execution_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * gas_price;
     validate_sender(req.host, caller, tx.nonce, max_gas_cost.saturating_add(tx.value))?;
@@ -72,7 +72,7 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
     H::before_execution(req.host, req.envelope, caller, max_gas_cost)?;
 
-    let (gas_limit, reservoir) =
+    let (execution_gas_limit, reservoir) =
         initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, initial_state_gas);
     let tx_env = TxEnvExt {
         origin: caller,
@@ -80,12 +80,26 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         chain_id: U256::from(req.host.version().chain_id),
         ..TxEnvExt::default()
     };
-    let (bytecode, mut message) = initial_message(
-        req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, gas_limit, reservoir,
-    )?;
-    // Failed execution has already been rolled back to the message's own checkpoint (and halt gas
-    // zeroed) inside `execute_message`, so the result settles directly.
-    let result = req.host.execute_message(&tx_env, bytecode, &mut message);
+    let mut tx_gas =
+        GasTracker::new_with_execution_gas_and_reservoir(execution_gas_limit, reservoir);
+    let result = match prepare_initial_frame(
+        req.host,
+        caller,
+        tx.nonce,
+        tx.to,
+        &tx.input,
+        tx.value,
+        &mut tx_gas,
+    )? {
+        Some(InitialFrame { mut message, charged_state_gas }) => {
+            // Failed execution has already been rolled back to the message's own checkpoint inside
+            // `execute_message`; the settle merges the frame gas into the transaction-level gas.
+            let mut result = req.host.execute_message(&tx_env, &mut message);
+            settle_initial_frame_gas(&mut tx_gas, &mut result, charged_state_gas);
+            result
+        }
+        None => runtime_oog_result(execution_gas_limit, reservoir),
+    };
     H::settle_transaction(
         req.host,
         req.envelope,

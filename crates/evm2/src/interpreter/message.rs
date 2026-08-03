@@ -1,4 +1,4 @@
-use crate::{BaseEvmTypes, EvmTypesHost};
+use crate::{BaseEvmTypes, EvmTypesHost, bytecode::Bytecode};
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 
 /// EVM message kind.
@@ -60,6 +60,12 @@ pub struct MessageExt<E = ()> {
     pub input: Bytes,
     /// Value transferred with the message.
     pub value: U256,
+    /// Bytecode this frame executes: the code at [`MessageExt::code_address`] (the resolved
+    /// delegate's code for an EIP-7702 delegated call), or the initcode for create messages.
+    ///
+    /// Resolved by the message's producer when it is constructed, so frames never load accounts
+    /// for code.
+    pub code: Bytecode,
     /// Address whose code is being executed. This can differ from `destination` for `CALLCODE`,
     /// `DELEGATECALL`, and EIP-7702 delegated-code execution.
     pub code_address: Address,
@@ -77,25 +83,21 @@ pub struct MessageExt<E = ()> {
     pub _non_exhaustive: (),
 }
 
-impl<E> MessageExt<E> {
-    /// Returns the keccak256 hash of the init code ([`MessageExt::input`]).
-    ///
-    /// Only meaningful for create messages, where `input` holds the initcode.
-    #[inline]
-    pub fn init_code_hash_slow(&self) -> B256 {
-        keccak256(self.input.as_ref())
-    }
-
-    /// Derives this create message's contract address and stores it in [`MessageExt::destination`].
-    ///
-    /// `nonce` is the creator's nonce and is only used by the `CREATE` scheme; `CREATE2` derives
-    /// the address from the salt and [`MessageExt::init_code_hash_slow`]. Called once when the
-    /// create message is constructed.
-    #[inline]
-    pub fn derive_destination(&mut self, nonce: u64) {
-        self.destination = match self.kind {
-            MessageKind::Create2 => self.caller.create2(self.salt, self.init_code_hash_slow()),
-            _ => self.caller.create(nonce),
-        };
+/// Derives the contract address a create message deploys to, i.e. its
+/// [`destination`](MessageExt::destination).
+///
+/// `nonce` is the creator's (pre-bump) nonce and is only used by the `CREATE` scheme; `CREATE2`
+/// derives the address from `salt` and the initcode hash instead.
+#[inline]
+pub fn derive_create_destination(
+    kind: MessageKind,
+    caller: &Address,
+    salt: &B256,
+    init_code: &[u8],
+    nonce: u64,
+) -> Address {
+    match kind {
+        MessageKind::Create2 => caller.create2(salt, keccak256(init_code)),
+        _ => caller.create(nonce),
     }
 }

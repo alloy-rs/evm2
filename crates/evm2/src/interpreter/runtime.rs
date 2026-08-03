@@ -75,27 +75,23 @@ impl<T: EvmTypesHost> Default for Interpreter<'_, '_, T> {
 }
 
 impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
-    /// Creates an interpreter from analyzed bytecode, a transaction-global environment, and a
-    /// frame-local message.
-    pub fn new(bytecode: Bytecode, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) -> Self {
+    /// Creates an interpreter from a transaction-global environment and a frame-local message,
+    /// which carries the bytecode to run.
+    pub fn new(tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) -> Self {
         let mut interp = Self::default();
-        interp.init(bytecode, tx_env, message);
+        interp.init(tx_env, message);
         interp
     }
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.
-    pub(crate) fn init(
-        &mut self,
-        bytecode: Bytecode,
-        tx_env: &'frame TxEnv<T>,
-        message: &'frame Message<T>,
-    ) {
+    pub(crate) fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
+        let bytecode = message.code.clone();
         let gas_limit = message.gas_limit;
         let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
         self.pc = bytecode.original_byte_slice().as_ptr();
         self.bytecode = bytecode;
         self.stack_len = 0;
-        self.gas = Gas::new_with_regular_gas_and_reservoir(gas_limit, message.reservoir);
+        self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
         self.memory.clear();
         self.result = Ok(());
         self.output = 0..0;

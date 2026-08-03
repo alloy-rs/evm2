@@ -18,8 +18,8 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
         gas_limit: 100_000,
         ..Default::default()
     };
-    let result =
-        Host::execute_message(evm, &TxEnvExt::default(), legacy_bytecode(code), &mut message);
+    message.code = legacy_bytecode(code);
+    let result = Host::execute_message(evm, &TxEnvExt::default(), &mut message);
     assert!(result.stop.is_success());
 }
 
@@ -132,12 +132,8 @@ fn evm_propagates_child_sstore_negative_refund() {
         gas_limit: 100_000,
         ..Default::default()
     };
-    let result = Host::execute_message(
-        &mut evm,
-        &TxEnvExt::default(),
-        legacy_bytecode(parent_code),
-        &mut message,
-    );
+    message.code = legacy_bytecode(parent_code);
+    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
 
     assert!(result.stop.is_success());
     assert_eq!(result.gas.refunded(), 0);
@@ -159,12 +155,8 @@ fn evm_reports_invalid_transaction_execution() {
         gas_limit: 100_000,
         ..Default::default()
     };
-    let result = Host::execute_message(
-        &mut evm,
-        &TxEnvExt::default(),
-        legacy_bytecode([op::PUSH1, 0x01, op::SSTORE]),
-        &mut message,
-    );
+    message.code = legacy_bytecode([op::PUSH1, 0x01, op::SSTORE]);
+    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
 
     assert_eq!(result.stop, InstrStop::StackUnderflow);
 }

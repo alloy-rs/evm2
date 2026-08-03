@@ -17,16 +17,16 @@ const SUBCALL_TARGET: Address = Address::with_last_byte(0xca);
 
 fn main() {
     let mut evm = evm_with_custom_precompile();
-    let parent_code = Bytecode::new_legacy(parent_code());
     let mut message = MessageExt {
         kind: MessageKind::Call,
         gas_limit: 200_000,
         destination: PARENT,
+        code: Bytecode::new_legacy(parent_code()),
         code_address: PARENT,
         ..MessageExt::default()
     };
 
-    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), parent_code, &mut message);
+    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
     assert_eq!(result.stop, InstrStop::Return);
     assert_eq!(result.output.len(), 32);
 
@@ -77,13 +77,14 @@ fn staticcall_precompile(
         caller: message.destination,
         input: message.input.clone(),
         value: U256::ZERO,
+        code: loaded.code,
         code_address: SUBCALL_TARGET,
         caller_is_static: message.caller_is_static
             || matches!(message.kind, MessageKind::StaticCall),
         ..MessageExt::default()
     };
 
-    let result = Host::execute_message(evm, &TxEnvExt::default(), loaded.code, &mut child);
+    let result = Host::execute_message(evm, &TxEnvExt::default(), &mut child);
     gas.merge_child_gas(result.gas, result.stop);
 
     match result.stop {

@@ -167,11 +167,11 @@ gas_ids! {
     /// EIP-7702 transaction state gas per authorization.
     TxEip7702PerAuthState;
 
-    /// EIP-2780 regular gas cost of the EIP-7708 transfer log on a nonzero-value transfer.
+    /// EIP-2780 execution gas cost of the EIP-7708 transfer log on a nonzero-value transfer.
     TxTransferLogCost;
     /// EIP-2780 additional intrinsic charge for a value-bearing non-create, non-self transaction.
     TxValueCost;
-    /// EIP-2780/EIP-8038 regular gas cost of a top-level CREATE access.
+    /// EIP-2780/EIP-8038 execution gas cost of a top-level CREATE access.
     TxCreateAccessCost;
 
     // Reserved custom gas parameter slots.
@@ -530,11 +530,11 @@ mod tests {
         assert_eq!(amsterdam.get(GasId::ColdAccountAdditionalCost), 2900);
         assert_eq!(amsterdam.get(GasId::TransferValueCost), 10_300);
         // CALL folds the account-write surcharge into CALL_VALUE, so a new target
-        // adds no extra regular gas (only NEW_ACCOUNT state gas).
+        // adds no extra execution gas (only NEW_ACCOUNT state gas).
         assert_eq!(amsterdam.get(GasId::NewAccountCost), 0);
         assert_eq!(amsterdam.get(GasId::SstoreSetWithoutLoadCost), 10_000);
         assert_eq!(amsterdam.get(GasId::SstoreClearingSlotRefund), 12_480);
-        // EIP-2780/Amsterdam intrinsic per-auth regular gas: the state-independent
+        // EIP-2780/Amsterdam intrinsic per-auth execution gas: the state-independent
         // REGULAR_PER_AUTH_BASE_COST = 101*16 + 3000 + 3000 + 2*100 = 7_816 (the ACCOUNT_WRITE
         // and state-gas remainder is charged at the runtime gas phase).
         assert_eq!(amsterdam.get(GasId::TxEip7702PerEmptyAccountCost), 7_816);

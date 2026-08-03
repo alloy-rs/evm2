@@ -19,13 +19,14 @@ pub struct GasSettlement<T: EvmTypes> {
     pub initial_state_gas: u64,
     /// State gas refunded by pre-execution processing.
     pub state_refund: u64,
-    /// Result of executing the top-level message.
+    /// Result of executing the top-level message, carrying the settled transaction-level gas
+    /// ([`settle_initial_frame_gas`](crate::ethereum::settle_initial_frame_gas)).
     pub result: MessageResult<T>,
 }
 
 /// Static extension points shared by transaction handlers.
 pub trait TxHandlerHooks<T: EvmTypes>: Sized {
-    /// Adjusts the intrinsic regular and state gas calculated by the standard handler.
+    /// Adjusts the intrinsic execution and state gas calculated by the standard handler.
     fn adjust_intrinsic_gas(
         _host: &mut Evm<'_, T>,
         _envelope: &T::Tx,

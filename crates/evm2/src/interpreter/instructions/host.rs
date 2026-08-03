@@ -62,7 +62,7 @@ pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
 
     // EIP-8037 / Amsterdam: creating a new storage slot (original == present == 0,
     // new != 0) also consumes state gas from the reservoir before spilling into
-    // regular gas.
+    // execution gas.
     if cx.state.feature(EvmFeatures::EIP8037) {
         cx.gas.spend_state(cx.state.gas_params().sstore_state_gas(&state_load))?;
 
@@ -296,7 +296,7 @@ mod tests {
         assert_matches!(interp.err, InstrStop::Stop);
         // Regular: PUSH1(3)·2 + SSTORE warm (100 static + EIP-8038 STORAGE_WRITE
         // 10_000 set) = 10_106.
-        // State gas (64 × 1530 = 97_920) spills into regular gas (no reservoir).
+        // State gas (64 × 1530 = 97_920) spills into execution gas (no reservoir).
         assert_eq!(interp.state_gas_spent(), 97_920);
         assert_eq!(interp.gas_remaining(), 200_000 - 10_106 - 97_920);
     }
