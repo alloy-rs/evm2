@@ -27,6 +27,9 @@ pub const BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN: u64 = 3_338_477;
 /// Prague blob base fee update fraction.
 pub const BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE: u64 = 5_007_716;
 
+/// Amsterdam blob base fee update fraction (BPO2 blob schedule).
+pub const BLOB_BASE_FEE_UPDATE_FRACTION_AMSTERDAM: u64 = 11_684_671;
+
 /// Maximum message call depth.
 pub const CALL_DEPTH_LIMIT: u16 = 1024;
 

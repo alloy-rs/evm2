@@ -562,8 +562,14 @@ fn parse_block(env: &Env, spec: SpecId) -> BlockEnv {
 fn blob_basefee(excess_blob_gas: U256, spec: SpecId) -> u128 {
     let excess_blob_gas = excess_blob_gas.saturating_to::<u64>();
     // EIP-4844 defines blob base fee with fake exponential; EIP-7691 changes the
-    // update fraction from Prague.
-    if spec.enables(SpecId::PRAGUE) {
+    // update fraction from Prague, and the Amsterdam (BPO2) blob schedule changes it again.
+    if spec.enables(SpecId::AMSTERDAM) {
+        eip4844::fake_exponential(
+            eip4844::BLOB_TX_MIN_BLOB_GASPRICE,
+            excess_blob_gas as u128,
+            evm2::constants::BLOB_BASE_FEE_UPDATE_FRACTION_AMSTERDAM as u128,
+        )
+    } else if spec.enables(SpecId::PRAGUE) {
         eip7691::calc_blob_gasprice(excess_blob_gas)
     } else {
         eip4844::fake_exponential(
