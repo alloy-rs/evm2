@@ -724,6 +724,9 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     let bytecode = Bytecode::new_legacy(message.input.clone());
     let tx_env = ecx.tx_env();
     let mut result = ecx.host().execute_message(tx_env, bytecode, &mut message);
+    if result.stop.is_fatal() {
+        return Err(result.stop.into());
+    }
     ecx.gas.merge_child_gas(result.gas, result.stop);
     // EIP-8037 (ethereum/EIPs#11858): refund the conditional create state gas when the create fails
     // to deploy (no new account leaf is created).
@@ -829,6 +832,9 @@ pub unsafe extern "C" fn __revmc_builtin_call(
 
     let tx_env = ecx.tx_env();
     let mut result = ecx.host().execute_message(tx_env, loaded_code, &mut message);
+    if result.stop.is_fatal() {
+        return Err(result.stop.into());
+    }
     ecx.gas.merge_child_gas(result.gas, result.stop);
     if new_account_state_gas != 0 && !result.stop.is_success() {
         ecx.gas.refill_reservoir(new_account_state_gas);
