@@ -826,13 +826,14 @@ impl<'a> State<'a> {
     /// Accepts the current transaction's state transition into the accepted overlay.
     ///
     /// This advances the in-memory accepted overlay by the transaction's write-set and clears the
-    /// transaction account/storage layers. It does not take logs or write to the wrapped backing
-    /// database.
+    /// transaction account/storage layers and selfdestruct markers. It does not take logs or write
+    /// to the wrapped backing database.
     pub fn commit_transaction(&mut self) {
         // The transaction overlay is folded into the accepted-overlay database directly, without
         // detaching it.
         self.inner.database.commit(&self.accounts, &self.storage);
         self.accounts.clear();
         self.storage.clear();
+        self.inner.selfdestructs.clear();
     }
 }
