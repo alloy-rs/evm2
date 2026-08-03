@@ -3745,6 +3745,24 @@ mod tests {
     }
 
     #[test]
+    fn commit_transaction_clears_detached_selfdestructs() {
+        let contract = Address::from([0x44; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut state = State::new(database);
+
+        state.account(&contract, false).unwrap().mark_destructed();
+        state.finalize_transaction_(Version::base(SpecId::AMSTERDAM));
+        let pending = state.take_pending_state();
+
+        state.set_pending_state(pending);
+        state.commit_transaction();
+
+        assert!(!state.account(&contract, false).unwrap().is_destructed());
+    }
+
+    #[test]
     fn eip8246_selfdestruct_zero_balance_is_deleted() {
         let contract = Address::from([0x22; 20]);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
