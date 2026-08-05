@@ -22,7 +22,7 @@ pub use tracked::Tracked;
 
 use super::{
     PrewarmSet,
-    bal::{Bal, BlockAccessIndex},
+    bal::{Bal, BalError, BlockAccessIndex},
     db::{CacheDB, DbResult, DynDatabase, boxed_dyn_database},
 };
 use crate::{
@@ -171,6 +171,22 @@ impl<'a> State<'a> {
     #[inline]
     pub const fn bal(&self) -> Option<&Arc<Bal>> {
         self.inner.database.bal_context.bal()
+    }
+
+    /// Detaches the read BAL, so reads resolve from the cache/database again.
+    #[inline]
+    pub fn clear_bal(&mut self) {
+        self.inner.database.bal_context.clear_bal();
+    }
+
+    /// Takes the stashed BAL lookup error, if a read left one.
+    ///
+    /// Lets a caller report which address or slot a refused read wanted, which the
+    /// [`ErrorCode::BAL_NOT_COVERED`](crate::ErrorCode::BAL_NOT_COVERED) sentinel
+    /// on the returned error does not carry.
+    #[inline]
+    pub const fn take_bal_error(&mut self) -> Option<BalError> {
+        self.inner.database.bal_context.take_bal_error()
     }
 
     /// Sets whether reads not covered by the attached BAL fall back to the cache/database instead
