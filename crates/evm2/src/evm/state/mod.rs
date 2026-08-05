@@ -329,13 +329,19 @@ impl<'a> State<'a> {
 
     /// Clears transaction-scoped substate.
     pub fn clear_transaction_state(&mut self) {
-        self.accounts.clear();
-        self.prewarm_set.clear();
-        self.storage.clear();
-        self.journal.clear();
-        self.selfdestructs.clear();
-        self.transient_storage.clear();
-        self.logs.clear();
+        let Self {
+            accounts,
+            storage,
+            transient_storage,
+            inner: StateInner { prewarm_set, journal, selfdestructs, logs, database: _ },
+        } = self;
+        accounts.clear();
+        storage.clear();
+        transient_storage.clear();
+        prewarm_set.clear();
+        journal.clear();
+        selfdestructs.clear();
+        logs.clear();
     }
 
     /// Ensures the account is present in the transaction overlay, loading it from the backing
