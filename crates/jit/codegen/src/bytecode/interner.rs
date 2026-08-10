@@ -67,6 +67,8 @@ impl<I: Idx, T: std::fmt::Debug, S> std::fmt::Debug for Interner<I, T, S> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(deprecated)]
+
     use super::*;
 
     oxc_index::define_index_type! {
