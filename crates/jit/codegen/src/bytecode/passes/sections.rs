@@ -348,6 +348,28 @@ mod tests {
         assert!(after_call.is_stack_section_head());
     }
 
+    #[test]
+    fn cold_load_requires_gasleft_ends_section() {
+        let cases = [
+            ("PUSH0 BALANCE PUSH0 STOP", op::BALANCE),
+            ("PUSH0 EXTCODESIZE PUSH0 STOP", op::EXTCODESIZE),
+            ("PUSH0 PUSH0 PUSH0 PUSH0 EXTCODECOPY PUSH0 STOP", op::EXTCODECOPY),
+            ("PUSH0 EXTCODEHASH PUSH0 STOP", op::EXTCODEHASH),
+            ("PUSH0 SLOAD PUSH0 STOP", op::SLOAD),
+        ];
+
+        for (src, opcode) in cases {
+            let bytecode = analyze_asm_spec(src, SpecId::AMSTERDAM);
+            let (inst, data) =
+                bytecode.iter_insts().find(|(_, data)| data.opcode == opcode).unwrap();
+            assert!(data.requires_gasleft(SpecId::AMSTERDAM));
+
+            let after = bytecode.inst(inst + 1);
+            assert!(after.is_stack_section_head());
+            assert_eq!(after.gas_section.gas_cost, 2);
+        }
+    }
+
     /// Disabled opcodes must not contribute stack I/O or gas to the preceding section.
     /// Otherwise the section-head underflow check fires before the disabled opcode's
     /// `NotActivated` guard, producing a divergent `StackUnderflow`.
