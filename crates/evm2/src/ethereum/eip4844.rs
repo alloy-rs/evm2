@@ -1,10 +1,9 @@
 use super::{
-    access_list_counts, effective_gas_price, execute_initial_frame, floor_gas,
-    initial_gas_and_reservoir, intrinsic_gas, prepare_initial_frame, validate_block_gas_limit,
-    validate_chain_id, validate_create_initcode, validate_floor_gas, validate_gas_price,
-    validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
-    validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
-    warm_base_accounts,
+    access_list_counts, effective_gas_price, floor_gas, initial_gas_and_reservoir, initial_message,
+    intrinsic_gas, validate_block_gas_limit, validate_chain_id, validate_create_initcode,
+    validate_floor_gas, validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
+    validate_priority_fee, validate_regular_gas_limit_cap, validate_sender,
+    validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
     EvmTypes, TxResult,
@@ -13,7 +12,7 @@ use crate::{
         error_handler,
         handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
     },
-    interpreter::GasTracker,
+    interpreter::Host,
     registry::{HandlerError, HandlerResult, TxRequest},
     utils::b256_to_word,
 };
@@ -104,17 +103,19 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         ext: T::TxEnvExt::default(),
         _non_exhaustive: (),
     };
-    let mut tx_gas = GasTracker::new_with_regular_gas_and_reservoir(gas_limit, reservoir);
-    let frame = prepare_initial_frame(
+    let mut message = initial_message(
         req.host,
         caller,
         tx.nonce,
         tx.to.into(),
         &tx.input,
         tx.value,
-        &mut tx_gas,
+        gas_limit,
+        reservoir,
     )?;
-    let result = execute_initial_frame(req.host, &tx_env, frame, &mut tx_gas, gas_limit, reservoir);
+    // Failed execution has already been rolled back to the message's own checkpoint (and halt gas
+    // zeroed) inside `execute_message`, so the result settles directly.
+    let result = req.host.execute_message(&tx_env, &mut message);
     H::settle_transaction(
         req.host,
         req.envelope,

@@ -19,8 +19,7 @@ pub struct GasSettlement<T: EvmTypes> {
     pub initial_state_gas: u64,
     /// State gas refunded by pre-execution processing.
     pub state_refund: u64,
-    /// Result of executing the top-level message, carrying the settled transaction-level gas
-    /// ([`settle_initial_frame_gas`](crate::ethereum::settle_initial_frame_gas)).
+    /// Result of executing the top-level message.
     pub result: MessageResult<T>,
 }
 

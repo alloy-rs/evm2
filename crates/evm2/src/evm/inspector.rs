@@ -380,8 +380,8 @@ mod tests {
         );
         evm.set_inspector(inspector);
         let tx_env = TxEnvExt::default();
-        let bytecode = legacy_bytecode(code);
-        let mut message = MessageExt { gas_limit, code: bytecode, ..message.clone() };
+        let mut message =
+            Message::<BaseEvmTypes> { gas_limit, code: legacy_bytecode(code), ..message.clone() };
         let result = Host::execute_message(&mut evm, &tx_env, &mut message);
         let inspector = evm.clear_inspector_as::<I>().unwrap();
         (result, inspector, evm)
@@ -644,8 +644,8 @@ mod tests {
         );
         evm.set_inspector(MutateCallInspector { destination: replacement });
         let tx_env = TxEnvExt::default();
-        let bytecode = legacy_bytecode(code);
-        let mut message = MessageExt { gas_limit: 100_000, code: bytecode, ..Default::default() };
+        let mut message =
+            MessageExt { gas_limit: 100_000, code: legacy_bytecode(code), ..Default::default() };
         let result = Host::execute_message(&mut evm, &tx_env, &mut message);
 
         assert_matches!(result.stop, InstrStop::Stop);
