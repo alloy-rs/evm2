@@ -19,8 +19,8 @@
 //! - [`ExecutedTx::commit_with`] streams writes to a [`StateChangeSink`] and then accepts them;
 //! - [`ExecutedTx::discard`] drops the writes and returns only the result;
 //! - [`ExecutedTx::discard_with`] streams writes to a [`StateChangeSink`] and then drops them;
-//! - [`ExecutedTx::detach`] materializes an owned [`TxResultWithState`] without accepting the
-//!   writes.
+//! - [`ExecutedTx::detach`] moves the pending transaction overlay out as an owned
+//!   [`TxResultWithState`] without accepting the writes.
 //!
 //! Dropping an unresolved [`ExecutedTx`] is equivalent to [`ExecutedTx::discard`], so transaction
 //! scratch cannot leak into later execution.
@@ -41,21 +41,20 @@
 //! The accepted overlay is for execution correctness between transactions. The block accumulator
 //! is for final block output.
 //!
-//! ## Outcomes, logs, and materialized state
+//! ## Outcomes, logs, and detached state
 //!
 //! [`TxResult`] is the cheap result-only shape: status, gas used, output, stop reason, logs,
 //! host error code, and extension data. Logs live in [`TxResult`] because logs are
 //! execution output, not database state.
 //!
-//! [`StateChanges`] is the owned materialized write-set. It is produced only by
-//! [`ExecutedTx::detach`]. Normal serial block execution can build receipts from [`TxResult`] and
-//! stream state directly into a
-//! [`BlockStateAccumulator`] without first allocating a per-transaction [`StateChanges`] map.
+//! [`PendingState`] is the owned transaction overlay, moved out by [`ExecutedTx::detach`]. Normal
+//! serial block execution can build receipts from [`TxResult`] and stream state directly into a
+//! [`BlockStateAccumulator`] without detaching a per-transaction [`PendingState`].
 //!
 //! ## Source and sink API
 //!
 //! [`StateChangeSource`] and [`StateChangeSink`] provide borrowed state-change streaming. Sources
-//! include transaction scratch, [`StateChanges`], and [`BlockStateAccumulator`]. Sinks include
+//! include transaction scratch, [`PendingState`], and [`BlockStateAccumulator`]. Sinks include
 //! [`BlockStateAccumulator`], [`CacheDB`], [`Tee`], and custom consumers such as trie updaters,
 //! witnesses, execution caches, or test recorders.
 //!
@@ -80,8 +79,7 @@
 //! serial block:          transact -> commit
 //! block output:          transact -> commit_to -> BlockStateAccumulator
 //! traced simulation:     transact -> discard_with -> Sink
-//! materialized tx diff:  transact -> detach -> TxResultWithState
-//! parallel worker:       transact -> detach -> send owned diff
+//! parallel worker:       transact -> detach -> send owned TxResultWithState
 //! ```
 //!
 //! Result-only execution:
@@ -113,60 +111,73 @@
 //! ```
 
 use self::{
-    inspector::Inspector,
-    precompile::{PrecompileOutput, PrecompileProvider},
+    inspector::{Inspector, boxed_inspector},
+    precompile::{PrecompileOutput, PrecompileProvider, boxed_precompile_provider},
 };
 use crate::{
-    AnyError, ErrorCode, EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError,
-    PrecompileHalt, SpecId,
+    AnyError, ErrorCode, EvmConfigSelector, EvmTypes, EvmTypesHost, ExecutionConfig,
+    PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
     constants::{CALL_DEPTH_LIMIT, EIP7708_TRANSFER_TOPIC},
     env::{BlockEnv, TxEnv},
     error::error_unavailable,
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
-        MessageResult, Word,
+        MessageResult, MessageResultExt, Word, gas::WARM_STORAGE_READ_COST,
     },
     registry::{HandlerError, HandlerResult, TxRegistry},
     trustme,
     version::{EvmFeatures, GasId},
 };
 use alloc::{boxed::Box, sync::Arc, vec};
+use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 #[cfg(feature = "async")]
 use core::future::Future;
-use core::{any::TypeId, ptr::NonNull};
+use core::ptr::NonNull;
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
 pub mod r#async;
 pub mod config;
 pub mod env;
+pub mod handler;
 pub mod inspector;
 pub mod precompile;
 pub mod registry;
 mod system;
 pub use system::{
-    BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, SYSTEM_ADDRESS,
-    SYSTEM_CALL_GAS_LIMIT, SystemTx, WITHDRAWAL_REQUEST_ADDRESS,
+    BEACON_ROOTS_ADDRESS, BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS,
+    CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, SYSTEM_ADDRESS, SYSTEM_CALL_GAS_LIMIT,
+    SYSTEM_MAX_SSTORES_PER_CALL, SystemTx, WITHDRAWAL_REQUEST_ADDRESS,
+};
+
+mod any;
+pub use any::NonStaticAny;
+
+pub mod bal;
+pub use bal::{
+    AccountBal, AccountInfoBal, Bal, BalChange, BalChanges, BalCodeChange, BalContext, BalError,
+    BlockAccessIndex, StorageBal,
 };
 
 mod db;
+use db::boxed_dyn_database;
 pub use db::{
     AccountStorageCache, Cache, CacheDB, Database, Db, DbResult, DbStats, DbStatsCounts,
     DynDatabase, EmptyDB, InMemoryDB,
 };
 
 mod tx;
-pub use tx::{ExecutedTx, TxResult, TxResultWithState};
+pub use tx::{ExecutedTx, TxResult, TxResultExt, TxResultWithState};
 
 mod state;
 pub use state::{
-    AccountChange, AccountChangeRef, AccountHandle, AccountInfo, AccountInfoRef,
-    BlockStateAccumulator, JournalEntry, NoopChangeSink, State, StateChangeSink, StateChangeSource,
-    StateChanges, StateCheckpoint, StateInner, StorageChange, StorageHandle, StorageOverlay,
-    StorageSlot, StorageSlotHandle, Tee, Tracked,
+    AccountChangeRef, AccountHandle, AccountInfo, AccountInfoRef, BlockStateAccumulator,
+    JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource,
+    StateCheckpoint, StateInner, StorageChange, StorageHandle, StorageOverlay, StorageSlot,
+    StorageSlotHandle, Tee, Tracked,
 };
 
 mod prewarm_set;
@@ -207,19 +218,19 @@ macro_rules! store_error {
 ///
 /// Returning `Some(stop)` means the runner executed the frame. Returning `None` makes the EVM run
 /// the regular interpreter for the same frame.
-pub trait InterpreterRunner<T: EvmTypes>: core::fmt::Debug + Send + Sync + 'static {
+pub trait InterpreterRunner<T: EvmTypesHost>: core::fmt::Debug + Send + Sync + 'static {
     /// Attempts to execute `interpreter` with an external backend.
-    fn run(
+    fn run<'frame, 'host>(
         &self,
         config: &ExecutionConfig<T>,
-        interpreter: &mut Interpreter<'_, T>,
-        host: &mut T::Host,
+        interpreter: &mut Interpreter<'frame, 'host, T>,
+        host: &mut T::Host<'host>,
     ) -> Option<InstrStop>;
 }
 
 /// EVM host and transaction dispatcher.
 #[derive_where(Debug)]
-pub struct Evm<T: EvmTypes> {
+pub struct Evm<'a, T: EvmTypesHost> {
     #[derive_where(skip)]
     spec_id: T::SpecId,
     #[derive_where(skip)]
@@ -228,20 +239,22 @@ pub struct Evm<T: EvmTypes> {
     pub(crate) block: BlockEnv<T>,
     registry: TxRegistry<T, TxResult<T>>,
     #[derive_where(skip)]
-    pub(crate) state: State,
+    pub(crate) state: State<'a>,
     #[derive_where(skip)]
-    precompiles: Box<dyn PrecompileProvider<T>>,
+    ext: T::EvmExt,
+    #[derive_where(skip)]
+    precompiles: Box<dyn PrecompileProvider<T> + 'a>,
     #[derive_where(skip)]
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
-    inspector: Option<Box<dyn Inspector<T>>>,
+    inspector: Option<Box<dyn Inspector<T> + 'a>>,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
     /// The currently running interpreter frame, if any.
     ///
     /// This is passed to the inspector call and create hooks as the parent frame.
     #[derive_where(skip)]
-    current_frame: Option<NonNull<Interpreter<'static, T>>>,
+    current_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
     #[derive_where(skip)]
     running: bool,
     #[cfg(feature = "async")]
@@ -253,7 +266,7 @@ pub struct Evm<T: EvmTypes> {
     error: Option<AnyError>,
 }
 
-impl<T: EvmTypes<Host = Self>> Evm<T> {
+impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Creates an EVM for `spec_id` with the provided transaction registry, database, and
     /// precompile provider.
     #[inline]
@@ -261,16 +274,33 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv<T>,
         registry: TxRegistry<T, TxResult<T>>,
-        database: impl DynDatabase,
-        precompiles: impl PrecompileProvider<T>,
+        database: impl DynDatabase + 'a,
+        precompiles: impl PrecompileProvider<T> + 'a,
+    ) -> Self
+    where
+        T::EvmExt: Default,
+    {
+        Self::new_with_ext(spec_id, block, registry, database, precompiles, T::EvmExt::default())
+    }
+
+    /// Creates an EVM with explicit instance-specific extension state.
+    #[inline]
+    pub fn new_with_ext(
+        spec_id: T::SpecId,
+        block: BlockEnv<T>,
+        registry: TxRegistry<T, TxResult<T>>,
+        database: impl DynDatabase + 'a,
+        precompiles: impl PrecompileProvider<T> + 'a,
+        ext: T::EvmExt,
     ) -> Self {
-        Self::new_with_execution_config(
+        Self::new_with_execution_config_and_ext(
             <T::ConfigSelector as EvmConfigSelector<T>>::execution_config(spec_id),
             spec_id,
             block,
             registry,
             database,
             precompiles,
+            ext,
         )
     }
 
@@ -281,16 +311,42 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv<T>,
         registry: TxRegistry<T, TxResult<T>>,
-        database: impl DynDatabase,
-        precompiles: impl PrecompileProvider<T>,
+        database: impl DynDatabase + 'a,
+        precompiles: impl PrecompileProvider<T> + 'a,
+    ) -> Self
+    where
+        T::EvmExt: Default,
+    {
+        Self::new_with_execution_config_and_ext(
+            execution_config,
+            spec_id,
+            block,
+            registry,
+            database,
+            precompiles,
+            T::EvmExt::default(),
+        )
+    }
+
+    /// Creates an EVM with an execution config and explicit instance-specific extension state.
+    #[inline]
+    pub fn new_with_execution_config_and_ext(
+        execution_config: ExecutionConfig<T>,
+        spec_id: T::SpecId,
+        block: BlockEnv<T>,
+        registry: TxRegistry<T, TxResult<T>>,
+        database: impl DynDatabase + 'a,
+        precompiles: impl PrecompileProvider<T> + 'a,
+        ext: T::EvmExt,
     ) -> Self {
         Self::new_mono(
             execution_config,
             spec_id,
             block,
             registry,
-            Box::new(database),
-            Box::new(precompiles),
+            boxed_dyn_database(database),
+            boxed_precompile_provider(precompiles),
+            ext,
         )
     }
 
@@ -300,8 +356,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv<T>,
         registry: TxRegistry<T, TxResult<T>>,
-        database: Box<dyn DynDatabase>,
-        precompiles: Box<dyn PrecompileProvider<T>>,
+        database: Box<dyn DynDatabase + 'a>,
+        precompiles: Box<dyn PrecompileProvider<T> + 'a>,
+        ext: T::EvmExt,
     ) -> Self {
         assert_eq!(
             spec_id.into(),
@@ -315,6 +372,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             block,
             registry,
             state: State::new_mono(database),
+            ext,
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
@@ -359,6 +417,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     #[inline]
+    fn assert_precompiles_downcast_mutable(&self) {
+        self.assert_precompiles_mutable();
+    }
+
+    #[inline]
     fn assert_inspector_mutable(&self) {
         assert!(!self.running, "inspector cannot be modified during EVM execution");
     }
@@ -366,6 +429,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     fn assert_interpreter_runner_mutable(&self) {
         assert!(!self.running, "interpreter runner cannot be modified during EVM execution");
+    }
+
+    #[inline]
+    fn assert_execution_config_mutable(&self) {
+        assert!(!self.running, "execution config cannot be modified during EVM execution");
     }
 
     #[inline]
@@ -381,13 +449,131 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &self.registry
     }
 
+    /// Returns the EVM instance-specific extension state.
+    #[inline]
+    pub const fn ext(&self) -> &T::EvmExt {
+        &self.ext
+    }
+
+    /// Returns the EVM instance-specific extension state mutably.
+    #[inline]
+    pub const fn ext_mut(&mut self) -> &mut T::EvmExt {
+        &mut self.ext
+    }
+
+    /// Returns the active block environment.
+    #[inline]
+    pub const fn block(&self) -> &BlockEnv<T> {
+        &self.block
+    }
+
+    /// Replaces the active block environment, including during execution.
+    ///
+    /// This changes only the block fields visible to execution. The [`State`] object is kept in
+    /// place: its accepted account and storage overlay, backing database, cached block hashes,
+    /// attached BAL, BAL builder, and current BAL index all remain unchanged. Transaction
+    /// scratch is also left untouched.
+    ///
+    /// A live replacement is intentional context mutation for testing and simulation hosts. The
+    /// current frame and nested frames observe the new environment on subsequent host reads, so
+    /// callers can implement controls such as changing the block number or timestamp during a
+    /// call. This does not change the active execution specification or its gas rules; use
+    /// [`Self::set_execution_config`] only at a frame boundary for a fork transition.
+    ///
+    /// For normal block execution, call this at a segment boundary so a transaction observes one
+    /// coherent block context. The caller is responsible for the resulting semantics when it is
+    /// called from an inspector or precompile.
+    #[inline]
+    pub const fn set_block(&mut self, block: BlockEnv<T>) {
+        self.block = block;
+    }
+
+    /// Replaces the active execution specification and its fork-dependent dispatch state.
+    ///
+    /// `execution_config` must have the same base specification as `spec_id`. The transaction
+    /// registry and precompile provider are supplied together with the new config so a hardfork
+    /// transition cannot silently retain handlers or precompiles from the previous fork.
+    ///
+    /// The existing [`State`] is preserved in place. In particular, the accepted account and
+    /// storage overlay, backing database, cached block hashes, attached BAL, BAL builder, and
+    /// current BAL index are not recreated or cleared. The derived feature set is refreshed from
+    /// `execution_config.version()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an interpreter frame is currently executing or if `spec_id` does not match
+    /// `execution_config`.
+    #[inline]
+    pub fn set_execution_config(
+        &mut self,
+        execution_config: ExecutionConfig<T>,
+        spec_id: T::SpecId,
+        registry: TxRegistry<T, TxResult<T>>,
+        precompiles: impl PrecompileProvider<T> + 'a,
+    ) {
+        self.assert_execution_config_mutable();
+        assert_eq!(
+            spec_id.into(),
+            execution_config.base_spec_id(),
+            "execution config spec mismatch"
+        );
+        let precompiles = boxed_precompile_provider(precompiles);
+        self.replace_execution_config(execution_config, spec_id, registry, precompiles);
+    }
+
+    /// Replaces the block environment and execution specification as one segment-boundary update.
+    ///
+    /// This is equivalent to [`Self::set_block`] and [`Self::set_execution_config`] performed as
+    /// one atomic update. The state, database/cache, block-hash cache, and BAL context are kept in
+    /// place; only the supplied block/config/registry/precompile fields are replaced.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an interpreter frame is currently executing or if `spec_id` does not match
+    /// `execution_config`.
+    #[inline]
+    pub fn set_block_and_execution_config(
+        &mut self,
+        block: BlockEnv<T>,
+        execution_config: ExecutionConfig<T>,
+        spec_id: T::SpecId,
+        registry: TxRegistry<T, TxResult<T>>,
+        precompiles: impl PrecompileProvider<T> + 'a,
+    ) {
+        self.assert_execution_config_mutable();
+        assert_eq!(
+            spec_id.into(),
+            execution_config.base_spec_id(),
+            "execution config spec mismatch"
+        );
+        let precompiles = boxed_precompile_provider(precompiles);
+        self.block = block;
+        self.replace_execution_config(execution_config, spec_id, registry, precompiles);
+    }
+
+    #[inline]
+    fn replace_execution_config(
+        &mut self,
+        execution_config: ExecutionConfig<T>,
+        spec_id: T::SpecId,
+        registry: TxRegistry<T, TxResult<T>>,
+        precompiles: Box<dyn PrecompileProvider<T> + 'a>,
+    ) {
+        self.spec_id = spec_id;
+        self.features = execution_config.version().features;
+        self.execution_config = execution_config;
+        self.registry = registry;
+        self.precompiles = precompiles;
+        self.evm_send = false;
+    }
+
     /// Returns the accepted-state overlay database.
     ///
     /// This cache contains state changes committed through transaction lifecycle methods or
     /// [`Self::commit_source`]. The wrapped backing database is available through
     /// [`Self::database`].
     #[inline]
-    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase>> {
+    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase + 'a>> {
         self.state.overlay_db()
     }
 
@@ -397,19 +583,19 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// overlay with a [`Tee`] or another [`StateChangeSink`]. The wrapped backing database is
     /// available through [`Self::database_mut`].
     #[inline]
-    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase>> {
+    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase + 'a>> {
         self.state.overlay_db_mut()
     }
 
     /// Returns the backing database.
     #[inline]
-    pub fn database(&self) -> &dyn DynDatabase {
+    pub fn database(&self) -> &(dyn DynDatabase + 'a) {
         self.state.initial()
     }
 
     /// Returns the backing database mutably.
     #[inline]
-    pub fn database_mut(&mut self) -> &mut dyn DynDatabase {
+    pub fn database_mut(&mut self) -> &mut (dyn DynDatabase + 'a) {
         self.state.initial_mut()
     }
 
@@ -442,12 +628,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         self.state.account_info_untracked(address)
     }
 
-    /// Returns account bytecode visible through the accepted state overlay.
-    #[inline]
-    pub fn account_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        self.state.account(address, false)?.load_code()
-    }
-
     /// Applies borrowed changes to the accepted state overlay.
     #[inline]
     pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
@@ -456,7 +636,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Replaces the backing database.
     #[inline]
-    pub fn set_database(&mut self, database: impl DynDatabase) {
+    pub fn set_database(&mut self, database: impl DynDatabase + 'a) {
         self.state.set_initial(database);
         self.evm_send = false;
     }
@@ -484,8 +664,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     pub fn evm_is_send<D, P>(&mut self) -> &mut Self
     where
-        D: DynDatabase + Send,
-        P: PrecompileProvider<T> + Send,
+        D: DynDatabase + Send + 'static,
+        P: PrecompileProvider<T> + Send + 'static,
+        'a: 'static,
     {
         self.assert_database_type::<D>();
         self.assert_precompiles_type::<P>();
@@ -498,9 +679,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     pub fn evm_is_send_with_inspector<D, P, I>(&mut self) -> &mut Self
     where
-        D: DynDatabase + Send,
-        P: PrecompileProvider<T> + Send,
-        I: Inspector<T> + Send,
+        D: DynDatabase + Send + 'static,
+        P: PrecompileProvider<T> + Send + 'static,
+        I: Inspector<T> + Send + 'static,
+        'a: 'static,
     {
         self.assert_database_type::<D>();
         self.assert_precompiles_type::<P>();
@@ -510,48 +692,61 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     #[inline]
-    fn assert_database_type<D: DynDatabase>(&self) {
-        assert_eq!(self.database().type_id(), TypeId::of::<D>(), "database type mismatch");
+    fn assert_database_type<D: DynDatabase + 'static>(&self)
+    where
+        'a: 'static,
+    {
+        assert_eq!(self.database().type_id(), typeid::of::<D>(), "database type mismatch");
     }
 
     #[inline]
-    fn assert_precompiles_type<P: PrecompileProvider<T>>(&self) {
+    fn assert_precompiles_type<P: PrecompileProvider<T> + 'static>(&self)
+    where
+        'a: 'static,
+    {
         assert_eq!(
             self.precompiles().type_id(),
-            TypeId::of::<P>(),
+            typeid::of::<P>(),
             "precompile provider type mismatch"
         );
     }
 
     #[inline]
-    fn assert_inspector_type<I: Inspector<T>>(&self) {
-        let Some(inspector) = self.inspector() else {
-            panic!("inspector type mismatch");
-        };
-        assert_eq!(inspector.type_id(), TypeId::of::<I>(), "inspector type mismatch");
+    fn assert_inspector_type<I: Inspector<T> + 'static>(&self)
+    where
+        'a: 'static,
+    {
+        let inspector = self.inspector().expect("inspector type mismatch");
+        assert_eq!(inspector.type_id(), typeid::of::<I>(), "inspector type mismatch");
     }
 
     /// Returns the backing database as `D` if it has that concrete type.
     #[inline]
-    pub fn database_as<D: DynDatabase>(&self) -> Option<&D> {
+    pub fn database_as<D: DynDatabase + 'static>(&self) -> Option<&D>
+    where
+        'a: 'static,
+    {
         self.database().downcast_ref()
     }
 
     /// Returns the backing database mutably as `D` if it has that concrete type.
     #[inline]
-    pub fn database_as_mut<D: DynDatabase>(&mut self) -> Option<&mut D> {
+    pub fn database_as_mut<D: DynDatabase + 'static>(&mut self) -> Option<&mut D>
+    where
+        'a: 'static,
+    {
         self.database_mut().downcast_mut()
     }
 
     /// Returns the mutable EVM state.
     #[inline]
-    pub const fn state(&self) -> &State {
+    pub const fn state(&self) -> &State<'a> {
         &self.state
     }
 
     /// Returns the mutable EVM state.
     #[inline]
-    pub const fn state_mut(&mut self) -> &mut State {
+    pub const fn state_mut(&mut self) -> &mut State<'a> {
         &mut self.state
     }
 
@@ -563,7 +758,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Returns the precompile provider.
     #[inline]
-    pub fn precompiles(&self) -> &dyn PrecompileProvider<T> {
+    pub fn precompiles(&self) -> &(dyn PrecompileProvider<T> + 'a) {
         self.precompiles.as_ref()
     }
 
@@ -581,50 +776,57 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Returns the precompile provider mutably.
     #[inline]
-    pub fn precompiles_mut(&mut self) -> &mut dyn PrecompileProvider<T> {
+    pub fn precompiles_mut(&mut self) -> &mut (dyn PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
         self.precompiles.as_mut()
     }
 
     /// Replaces the precompile provider.
     #[inline]
-    pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T>) {
+    pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
-        self.precompiles = Box::new(precompiles);
+        self.precompiles = boxed_precompile_provider(precompiles);
         self.evm_send = false;
     }
 
     /// Returns the precompile provider as `P` if it has that concrete type.
     #[inline]
-    pub fn precompiles_as<P: PrecompileProvider<T>>(&self) -> Option<&P> {
-        <dyn core::any::Any>::downcast_ref(self.precompiles())
+    pub fn precompiles_as<P: PrecompileProvider<T> + 'static>(&self) -> Option<&P>
+    where
+        'a: 'static,
+    {
+        self.precompiles().downcast_ref()
     }
 
     /// Returns the precompile provider mutably as `P` if it has that concrete type.
     #[inline]
-    pub fn precompiles_as_mut<P: PrecompileProvider<T>>(&mut self) -> Option<&mut P> {
-        self.assert_precompiles_mutable();
-        <dyn core::any::Any>::downcast_mut(self.precompiles_mut())
+    pub fn precompiles_as_mut<P: PrecompileProvider<T> + 'static>(&mut self) -> Option<&mut P>
+    where
+        'a: 'static,
+    {
+        self.assert_precompiles_downcast_mutable();
+        self.precompiles.as_mut().downcast_mut()
     }
 
     /// Returns the active execution inspector.
     #[inline]
-    pub fn inspector(&self) -> Option<&dyn Inspector<T>> {
+    pub fn inspector(&self) -> Option<&(dyn Inspector<T> + 'a)> {
         self.inspector.as_deref()
     }
 
     /// Returns the active execution inspector mutably.
     #[inline]
-    pub fn inspector_mut(&mut self) -> Option<&mut dyn Inspector<T>> {
+    pub fn inspector_mut(&mut self) -> Option<&mut (dyn Inspector<T> + 'a)> {
         self.assert_inspector_mutable();
         self.inspector.as_deref_mut()
     }
 
     #[inline]
     fn inspect_log(&mut self, log: &Log) {
+        let _guard = self.enter_execution();
         if let Some(inspector) = self.inspector.as_deref_mut() {
-            // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
-            // hook.
+            // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
+            // replacement while the hook is running.
             let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
             inspector.log(log, self);
         }
@@ -650,7 +852,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     #[inline]
-    fn finish_executed_tx(&mut self, mut result: TxResult<T>) -> ExecutedTx<'_, T> {
+    fn finish_executed_tx(&mut self, mut result: TxResult<T>) -> ExecutedTx<'_, 'a, T> {
         let has_pending_state = if let Err(stop) = self.finalize_transaction() {
             result.status = false;
             result.stop = stop;
@@ -677,15 +879,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Sets the active execution inspector.
     #[inline]
-    pub fn set_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
+    pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.assert_inspector_mutable();
-        self.inspector = Some(Box::new(inspector));
+        self.inspector = Some(boxed_inspector(inspector));
         self.evm_send = false;
     }
 
     /// Sets the active boxed execution inspector.
     #[inline]
-    pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T>>) {
+    pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T> + 'a>) {
         self.assert_inspector_mutable();
         self.inspector = Some(inspector);
         self.evm_send = false;
@@ -693,7 +895,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Removes the active execution inspector.
     #[inline]
-    pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T>>> {
+    pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T> + 'a>> {
         self.assert_inspector_mutable();
         self.evm_send = false;
         self.inspector.take()
@@ -701,10 +903,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Removes the active execution inspector if it has type `I`.
     #[inline]
-    pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>> {
+    pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>>
+    where
+        'a: 'static,
+    {
         self.assert_inspector_mutable();
         let i = self.inspector.take_if(|i| i.is::<I>())?;
-        (i as Box<dyn core::any::Any>).downcast().ok()
+        Some(unsafe { Box::from_raw(Box::into_raw(i).cast::<I>()) })
     }
 
     /// Sets the optional external interpreter runner.
@@ -776,18 +981,19 @@ impl Drop for ExecutionGuard {
 }
 
 #[cfg(feature = "async")]
-struct SendEvmRef<'a, T: EvmTypes> {
-    evm: &'a mut Evm<T>,
+struct SendEvmRef<'a, 'evm, T: EvmTypesHost> {
+    evm: &'a mut Evm<'evm, T>,
 }
 
 #[cfg(feature = "async")]
 // SAFETY: `SendEvmRef` is only constructed by async entrypoints after `Evm::evm_is_send` has
 // verified the concrete erased field types as `Send`.
-unsafe impl<T> Send for SendEvmRef<'_, T>
+unsafe impl<T> Send for SendEvmRef<'_, '_, T>
 where
-    T: EvmTypes,
+    T: EvmTypesHost,
     T::SpecId: Send,
     T::Tx: Send,
+    T::EvmExt: Send,
     T::MessageExt: Send,
     T::MessageResultExt: Send,
     T::TxEnvExt: Send,
@@ -796,7 +1002,7 @@ where
 {
 }
 
-impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
+impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// Dispatches the transaction to its handler and returns an executed transaction handle.
     ///
     /// The returned [`ExecutedTx`] keeps post-finalization writes in the transaction scratch layer.
@@ -805,7 +1011,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// [`ExecutedTx::detach`] before
     /// another transaction can be executed. Dropping the handle is equivalent to
     /// [`ExecutedTx::discard`].
-    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<ExecutedTx<'_, T>> {
+    pub fn transact(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         self.clear_top_level_error_state();
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let result = handler.call(tx, self);
@@ -825,9 +1031,9 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// Executes a transaction for its outcome and discards its state changes.
     ///
     /// This is the cheapest convenience entrypoint for `eth_call`-style simulations: execution
-    /// output and logs are returned, but transaction writes are not accepted and no owned
-    /// [`StateChanges`] is materialized.
-    pub fn call_tx(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
+    /// output and logs are returned, but transaction writes are not accepted and the transaction
+    /// overlay is not detached.
+    pub fn call_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         self.transact(tx).map(ExecutedTx::discard)
     }
 
@@ -843,10 +1049,10 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// or optional inspector to be `Send`. Use [`Self::transact_async_send`] when the returned
     /// future must be `Send`.
     #[cfg(feature = "async")]
-    pub fn transact_async<'a>(
-        &'a mut self,
-        tx: &'a T::Tx,
-    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'a, T>, registry::HandlerError>> + 'a
+    pub fn transact_async<'fut>(
+        &'fut mut self,
+        tx: &'fut Recovered<T::Tx>,
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'fut, 'a, T>, registry::HandlerError>> + 'fut
     where
         T::Tx: Sync,
     {
@@ -862,10 +1068,12 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// Before calling it, the current erased database, precompile provider, and optional inspector
     /// must be verified with [`Self::evm_is_send`] or [`Self::evm_is_send_with_inspector`].
     #[cfg(feature = "async")]
-    pub fn transact_async_send<'a>(
-        &'a mut self,
-        tx: &'a T::Tx,
-    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'a, T>, registry::HandlerError>> + Send + 'a
+    pub fn transact_async_send<'fut>(
+        &'fut mut self,
+        tx: &'fut Recovered<T::Tx>,
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'fut, 'a, T>, registry::HandlerError>>
+    + Send
+    + 'fut
     where
         T::Tx: Sync,
     {
@@ -887,21 +1095,21 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     ///
     /// Use [`Self::transact`] directly when the caller wants to choose between commit, discard,
     /// detach, and accumulator/sink commits for each transaction.
-    pub fn transact_iter<'a, I>(
-        &'a mut self,
+    pub fn transact_iter<'txs, I>(
+        &'txs mut self,
         txs: I,
-    ) -> impl Iterator<Item = HandlerResult<TxResult<T>>> + 'a
+    ) -> impl Iterator<Item = HandlerResult<TxResult<T>>> + 'txs
     where
-        I: IntoIterator<Item = &'a T::Tx>,
-        I::IntoIter: 'a,
-        T::Tx: 'a,
-        Self: 'a,
+        I: IntoIterator<Item = &'txs Recovered<T::Tx>>,
+        I::IntoIter: 'txs,
+        T::Tx: 'txs,
+        Self: 'txs,
     {
         txs.into_iter().map(move |tx| self.transact(tx).map(ExecutedTx::commit))
     }
 }
 
-impl<T: EvmTypes<Host = Self>> Evm<T> {
+impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn execute_message_impl(
         &mut self,
@@ -909,7 +1117,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: Bytecode,
         message: &mut Message<T>,
     ) -> MessageResult<T> {
-        match message.kind {
+        let mut result = match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
                 self.execute_create_message(tx_env, bytecode, message)
             }
@@ -917,7 +1125,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             | MessageKind::CallCode
             | MessageKind::DelegateCall
             | MessageKind::StaticCall => self.execute_call_message(tx_env, bytecode, message),
-        }
+        };
+        // Settle the returning frame's gas for its stop reason at this single exit,
+        // rather than in each result builder, so every consumer (parent
+        // `merge_child_gas`, top-level accounting, inspectors) reads the settled gas.
+        result.gas.settle_gas(result.stop);
+        result
     }
 
     /// Fires the inspector call/create hooks around message execution.
@@ -925,42 +1138,34 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// This is invoked for every message when an inspector is installed; hook overrides skip
     /// execution entirely, including the call depth check.
     #[inline(never)]
-    fn execute_message_inspected(
+    fn execute_message_inspected<'frame>(
         &mut self,
-        tx_env: &TxEnv<T>,
+        tx_env: &'frame TxEnv<T>,
         bytecode: Bytecode,
-        message: &mut Message<T>,
+        message: &'frame mut Message<T>,
     ) -> MessageResult<T> {
+        let _guard = self.enter_execution();
         let Some(inspector) = self.inspector.as_deref_mut() else {
             return self.execute_message_impl(tx_env, bytecode, message);
         };
-        // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
-        // message execution.
+        // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
+        // replacement while the hooks are running.
         let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
 
+        // `destination` already holds the create's contract address (set when the message was
+        // constructed), so the create hook observes it directly.
         let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
-        if is_create {
-            // Derive the destination early so that the create hook can observe it; execution
-            // re-derives it together with its semantic checks.
-            let nonce = if message.depth > 0 {
-                match self.state.account_info_untracked(&message.caller) {
-                    Ok(info) => info.map_or(0, |info| info.nonce),
-                    Err(code) => {
-                        let stop = self.store_error(code);
-                        return Self::error_message_result(stop, message.gas_limit);
-                    }
-                }
-            } else {
-                0
-            };
-            message.destination = Self::derive_create_address(&bytecode, message, nonce);
-        }
 
-        let mut top_frame = None;
+        let mut top_frame: Option<Box<Interpreter<'frame, 'a, T>>> = None;
         let frame = match self.current_frame {
             // SAFETY: The parent frame is suspended on this call stack for the duration of the
             // message execution.
-            Some(mut frame) => unsafe { frame.as_mut() },
+            Some(mut frame) => unsafe {
+                core::mem::transmute::<
+                    &mut Interpreter<'static, 'static, T>,
+                    &mut Interpreter<'frame, 'a, T>,
+                >(frame.as_mut())
+            },
             None => {
                 let frame = top_frame.insert(self.interpreter_pool.pop());
                 // SAFETY: The message outlives the frame, which is returned to the pool below.
@@ -1007,32 +1212,66 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &mut Message<T>,
     ) -> MessageResult<T> {
         if message.depth > CALL_DEPTH_LIMIT {
-            return Self::error_message_result(InstrStop::CallTooDeep, message.gas_limit);
+            return Self::error_message_result(
+                InstrStop::CallTooDeep,
+                message.gas_limit,
+                message.reservoir,
+            );
         }
-        if let Err(stop) = self.prepare_create_message(&bytecode, message) {
-            return Self::error_message_result(stop, message.gas_limit);
+        if let Err(stop) = self.prepare_create_message(message) {
+            return Self::error_message_result(stop, message.gas_limit, message.reservoir);
         }
         let checkpoint = self.state.checkpoint();
+        // EIP-2780: capture whether the target leaf is already alive
+        // (existing, non-empty) before creation, so a top-level create at a pre-existing
+        // balance-only account is not charged the account-creation state gas below (no new leaf is
+        // created — execution-specs `created_target_alive`).
+        let target_alive = if self.feature(EvmFeatures::EIP8037) {
+            match self.account_is_alive(&message.destination) {
+                Ok(alive) => alive,
+                Err(stop) => {
+                    return Self::error_message_result(stop, message.gas_limit, message.reservoir);
+                }
+            }
+        } else {
+            false
+        };
         if let Err(stop) = self.create_message_account(message) {
             self.state.rollback(checkpoint, self.features);
-            return Self::error_message_result(stop, message.gas_limit);
+            return Self::error_message_result(stop, message.gas_limit, message.reservoir);
         }
         message.code_address = message.destination;
         message.disable_precompiles = false;
         let input = core::mem::take(&mut message.input);
 
-        let stop = self.run_interpreter(bytecode, tx_env, message);
+        // EIP-2780: a top-level create (depth 0) charges the
+        // account-creation state gas at frame entry, conditional on the destination not already
+        // existing (`!target_alive`). Nested creates are charged on the parent frame by the CREATE
+        // opcode instead. The charge is state gas on this frame's tracker, refilled by the frame's
+        // own settle on failure; an unaffordable charge halts the create out-of-gas without running
+        // the initcode, returning the reservoir.
+        let mut frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        if message.depth == 0
+            && !target_alive
+            && self.feature(EvmFeatures::EIP8037)
+            && frame_gas.spend_state(self.version().gas_params.create_state_gas()).is_err()
+        {
+            self.state.rollback(checkpoint, self.features);
+            return Self::error_message_result(
+                InstrStop::OutOfGas,
+                message.gas_limit,
+                message.reservoir,
+            );
+        }
+        let stop = self.run_interpreter(bytecode, tx_env, message, frame_gas);
         message.input = input;
 
         self.finish_create_message_run(checkpoint, &message.destination, message.gas_limit, stop)
     }
 
     #[inline(never)]
-    fn prepare_create_message(
-        &mut self,
-        bytecode: &Bytecode,
-        message: &mut Message<T>,
-    ) -> Result<(), InstrStop> {
+    fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), InstrStop> {
         let info = if message.value > 0 || message.depth > 0 {
             self.state
                 .account_info_untracked(&message.caller)
@@ -1051,13 +1290,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             return Err(InstrStop::Return);
         }
 
-        // When an inspector is installed, the destination is already derived for the create hook,
-        // and inspector mutations of it are respected.
-        if self.inspector.is_none() {
-            message.destination =
-                Self::derive_create_address(bytecode, message, info.map_or(0, |info| info.nonce));
-        }
-
+        // `destination` already holds the contract address (derived when the message was
+        // constructed); warm it before running the initcode.
         let _ = self.state.account(&message.destination, false).map(|mut a| a.warm());
 
         if message.depth > 0
@@ -1068,6 +1302,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
 
         Ok(())
+    }
+
+    /// Returns whether the account is alive (exists and is non-empty), matching execution-specs
+    /// `is_account_alive`. Used by EIP-8037 to detect a create at a pre-existing leaf.
+    fn account_is_alive(&mut self, address: &Address) -> Result<bool, InstrStop> {
+        match self.state.account(address, false) {
+            Ok(account) => Ok(account.get().is_some_and(|info| !info.is_empty())),
+            Err(code) => Err(store_error!(self, code)),
+        }
     }
 
     #[inline(never)]
@@ -1090,15 +1333,16 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ) -> MessageResult<T> {
         let interp = self.interpreter_pool.last_mut().unwrap();
         let mut gas = interp.gas();
-        let mut output = Bytes::copy_from_slice(interp.output());
-        if stop.is_success() {
+        let output = if stop.is_success() {
+            let mut output = Bytes::copy_from_slice(interp.output());
             if let Err(stop) = self.validate_create_output(&mut gas, &mut output) {
                 self.state.rollback(checkpoint, self.features);
-                return MessageResult {
+                return MessageResultExt {
                     stop,
-                    gas: Self::message_gas(*gas.tracker(), stop),
-                    output,
+                    gas: *gas.tracker(),
+                    output: Bytes::new(),
                     created_address: None,
+                    runtime_gas_oog: false,
                     ext: T::MessageResultExt::default(),
                     _non_exhaustive: (),
                 };
@@ -1110,17 +1354,22 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 .map(|mut a| a.set_code_slow(Bytecode::new_legacy(output.clone())))
             {
                 self.state.rollback(checkpoint, self.features);
-                return Self::error_message_result(self.store_error(code), gas_limit);
+                let stop = self.store_error(code);
+                return Self::error_message_result(stop, gas_limit, gas.reservoir());
             }
+
+            output
         } else {
             self.state.rollback(checkpoint, self.features);
-        }
+            Bytes::copy_from_slice(interp.output())
+        };
 
-        MessageResult {
+        MessageResultExt {
             stop,
-            gas: Self::message_gas(*gas.tracker(), stop),
+            gas: *gas.tracker(),
             output,
             created_address: stop.is_success().then_some(*address),
+            runtime_gas_oog: false,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
         }
@@ -1139,26 +1388,30 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             .len()
             .saturating_mul(self.version().gas_params.get(GasId::CodeDepositCost) as usize);
         let code_deposit_gas = u64::try_from(code_deposit_gas).unwrap_or(u64::MAX);
-        if gas.remaining() >= code_deposit_gas {
-            return gas.spend(code_deposit_gas);
+        if gas.remaining() < code_deposit_gas {
+            if self.feature(EvmFeatures::EIP2) {
+                // EIP-2 makes code-deposit OOG fail contract creation; Frontier instead
+                // creates the account with empty code.
+                return Err(InstrStop::OutOfGas);
+            }
+            *output = Bytes::new();
+            return Ok(());
         }
-        if self.feature(EvmFeatures::EIP2) {
-            // EIP-2 makes code-deposit OOG fail contract creation; Frontier instead creates the
-            // account with empty code.
-            return Err(InstrStop::OutOfGas);
-        }
-        *output = Bytes::new();
-        Ok(())
-    }
+        gas.spend(code_deposit_gas)?;
 
-    /// Derives the destination address for a create message.
-    fn derive_create_address(bytecode: &Bytecode, message: &Message<T>, nonce: u64) -> Address {
-        match message.kind {
-            MessageKind::Create if message.depth == 0 => message.destination,
-            MessageKind::Create => message.caller.create(nonce),
-            MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
-            _ => unreachable!("invalid create message kind"),
+        // EIP-8037: hashing the deployed bytecode to compute its code_hash costs
+        // regular keccak word gas, and depositing the code costs state gas. The
+        // state-gas charge must be the last spend before the journal commit so
+        // that any 0→x→0 reservoir refills earlier in the frame are not disturbed.
+        if self.feature(EvmFeatures::EIP8037) {
+            let params = &self.version().gas_params;
+            gas.spend(params.keccak256_word_cost(output.len()))?;
+            let code_deposit_state_gas = params.code_deposit_state_gas(output.len());
+            if code_deposit_state_gas > 0 {
+                gas.spend_state(code_deposit_state_gas)?;
+            }
         }
+        Ok(())
     }
 
     #[inline(never)]
@@ -1169,9 +1422,42 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &mut Message<T>,
     ) -> MessageResult<T> {
         if message.depth > CALL_DEPTH_LIMIT {
-            return Self::error_message_result(InstrStop::CallTooDeep, message.gas_limit);
+            return Self::error_message_result(
+                InstrStop::CallTooDeep,
+                message.gas_limit,
+                message.reservoir,
+            );
         }
         let checkpoint = self.state.checkpoint();
+        // EIP-2780 top-level (depth-0) execution charges, metered on the frame gas before the
+        // precompile/interpreter split. Read from the recipient's pre-call state (before the value
+        // transfer below) and applied inside the checkpoint, so the delegated-target load it
+        // performs is unwound if the frame later rolls back. For a delegated recipient this also
+        // resolves the delegation (gating the target load on gas), returning the delegate's code
+        // and address so the frame runs the delegate's code.
+        let mut frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let mut bytecode = bytecode;
+        match self.apply_eip2780_call_charges(message, &mut frame_gas) {
+            Ok(Some((delegate_code, delegate_address))) => {
+                message.code_address = delegate_address;
+                message.disable_precompiles = true;
+                bytecode = delegate_code;
+            }
+            Ok(None) => {}
+            Err(()) => {
+                self.state.rollback(checkpoint, self.features);
+                let mut result = Self::error_message_result(
+                    InstrStop::OutOfGas,
+                    message.gas_limit,
+                    message.reservoir,
+                );
+                // Signal a runtime gas-phase out-of-gas so the EIP-7702 handler can revert the
+                // delegations applied before the frame (ethereum/EIPs#11844).
+                result.runtime_gas_oog = true;
+                return result;
+            }
+        }
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
         let transfers_balance = matches!(
             message.kind,
@@ -1181,23 +1467,93 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             || match self.state.transfer(&message.caller, &message.destination, &message.value) {
                 Ok(result) => result,
                 Err(code) => {
-                    return Self::error_message_result(self.store_error(code), message.gas_limit);
+                    let stop = self.store_error(code);
+                    return Self::error_message_result(stop, message.gas_limit, message.reservoir);
                 }
             };
         if transfers_balance && !transfer_succeeded {
-            return Self::error_message_result(InstrStop::OutOfFunds, message.gas_limit);
+            return Self::error_message_result(
+                InstrStop::OutOfFunds,
+                message.gas_limit,
+                message.reservoir,
+            );
         }
         if transfers_balance {
             self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         }
 
         if self.contains_precompile(message) {
-            return self.execute_call_precompile(checkpoint, message);
+            return self.execute_call_precompile(checkpoint, message, frame_gas);
         }
 
-        let stop = self.run_interpreter(bytecode, tx_env, message);
+        let stop = self.run_interpreter(bytecode, tx_env, message, frame_gas);
 
         self.finish_call_message_run(checkpoint, stop)
+    }
+
+    /// Applies the EIP-2780 top-level (depth-0) execution charges for a call to
+    /// `message.destination`, metered on the frame `gas`:
+    /// - `new_account_state_gas` of state gas when the recipient is empty (EIP-161) and the call
+    ///   transfers value (charged before delegation resolution, per execution-specs
+    ///   `prepare_dispatch`), and
+    /// - the delegation-target access following the EIP-2929 warm/cold model when the recipient
+    ///   carries an EIP-7702 delegation.
+    ///
+    /// The delegation-target access is charged as a warm access first and the cold premium after
+    /// the target is loaded, and the load is gated on `skip_cold_load` (as nested calls do): a
+    /// frame that cannot afford the cold access never loads the target, so it stays out of the
+    /// EIP-7928 block access list. On success the delegated recipient's resolved code and
+    /// address are returned so the caller runs the delegate's code; `Err(())` signals a runtime
+    /// out-of-gas. A no-op returning `Ok(None)` off the depth-0 EIP-2780 path.
+    fn apply_eip2780_call_charges(
+        &mut self,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+    ) -> Result<Option<(Bytecode, Address)>, ()> {
+        if message.depth != 0 || !self.feature(EvmFeatures::EIP2780) {
+            return Ok(None);
+        }
+        let dest = message.destination;
+        // A nonexistent recipient reads as an empty account (EIP-161).
+        let recipient_is_empty = match self.state.account_info_untracked(&dest) {
+            Ok(info) => info.as_ref().is_none_or(AccountInfo::is_empty),
+            Err(_) => return Ok(None),
+        };
+        // Empty recipient + value transfer: pay the new account leaf's state gas. Checked before
+        // the delegation resolution, matching the spec's `prepare_dispatch` order.
+        if !message.value.is_zero() && recipient_is_empty {
+            if gas.spend_state(self.version().gas_params.new_account_state_gas()).is_err() {
+                return Err(());
+            }
+            // An empty recipient is never delegated.
+            return Ok(None);
+        }
+        if recipient_is_empty {
+            return Ok(None);
+        }
+        // Resolve the recipient's delegation designator (the recipient is the warm tx target; its
+        // stored code must be loaded to read the designator).
+        let delegated = match self.state.account(&dest, false) {
+            Ok(mut acc) => acc.load_code().ok().and_then(|code| code.eip7702_address()),
+            Err(_) => None,
+        };
+        let Some(delegated) = delegated else {
+            return Ok(None);
+        };
+        // Delegation-target access, EIP-2929 warm/cold: charge the warm access first (covered → the
+        // target is loaded and enters the block access list), then the cold premium after the load.
+        // The load is skipped when the cold premium is unaffordable, keeping a cold, unafforded
+        // target out of the block access list.
+        let cold_additional = self.version().gas_params.cold_account_additional_cost();
+        if gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
+            return Err(());
+        }
+        let skip_cold_load = gas.remaining() < cold_additional;
+        let load = self.load_account(&delegated, true, skip_cold_load).map_err(|_| ())?;
+        if load.is_cold && gas.spend(cold_additional).is_err() {
+            return Err(());
+        }
+        Ok(Some((load.code, delegated)))
     }
 
     #[inline(never)]
@@ -1205,10 +1561,17 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &mut self,
         checkpoint: StateCheckpoint,
         message: &Message<T>,
+        mut gas: GasTracker,
     ) -> MessageResult<T> {
-        let mut gas = GasTracker::new(message.gas_limit);
-        let result = self.execute_precompile(message, &mut gas);
-        let (stop, output) = match result {
+        // `gas` is the frame tracker built by the caller with the inherited reservoir and
+        // any EIP-2780 depth-0 charge already applied; the precompile only adds regular gas.
+        let logs_len = self.state.logs().len();
+        let execution = self.execute_precompile(message, &mut gas);
+        let logs = self.state.logs()[logs_len..].to_vec();
+        for log in &logs {
+            self.inspect_log(log);
+        }
+        let (stop, output) = match execution {
             Ok(output) => (InstrStop::Return, output.into_bytes()),
             Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
             Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
@@ -1224,11 +1587,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         if !stop.is_success() {
             self.state.rollback(checkpoint, self.features);
         }
-        MessageResult {
+        MessageResultExt {
             stop,
-            gas: Self::message_gas(gas, stop),
+            gas,
             output,
             created_address: None,
+            runtime_gas_oog: false,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
         }
@@ -1247,30 +1611,28 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             self.state.rollback(checkpoint, self.features);
         }
 
-        MessageResult {
+        MessageResultExt {
             stop,
-            gas: Self::message_gas(*child_gas.tracker(), stop),
+            gas: *child_gas.tracker(),
             output,
             created_address: None,
+            runtime_gas_oog: false,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
         }
     }
 
     #[inline]
-    fn error_message_result(stop: InstrStop, gas_remaining: u64) -> MessageResult<T> {
-        MessageResult { stop, gas: GasTracker::new(gas_remaining), ..MessageResult::default() }
-    }
-
-    #[inline]
-    const fn message_gas(mut gas: GasTracker, stop: InstrStop) -> GasTracker {
-        if stop.is_halt() {
-            gas.set_remaining(0);
+    fn error_message_result(
+        stop: InstrStop,
+        gas_remaining: u64,
+        reservoir: u64,
+    ) -> MessageResult<T> {
+        MessageResultExt {
+            stop,
+            gas: GasTracker::new_with_regular_gas_and_reservoir(gas_remaining, reservoir),
+            ..MessageResultExt::default()
         }
-        if !stop.is_success() {
-            gas.set_refunded(0);
-        }
-        gas
     }
 
     #[inline(never)]
@@ -1279,11 +1641,18 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: Bytecode,
         tx_env: &'frame TxEnv<T>,
         message: &'frame Message<T>,
+        frame_gas: GasTracker,
     ) -> InstrStop {
-        let mut interp = self.interpreter_pool.pop();
+        let mut interp: Box<Interpreter<'frame, 'a, T>> = self.interpreter_pool.pop();
         let _guard = self.enter_execution();
         let interp_ref = interp.as_mut();
         interp_ref.init(bytecode, tx_env, message);
+        // Adopt the caller's frame tracker, which carries the EIP-2780 depth-0 charges
+        // already applied; it is otherwise identical to the one `init` derived (same
+        // regular limit and inherited reservoir). A later revert/halt unwinds the state
+        // charge via the existing `rollback_state_gas` reconciliation, like any in-frame
+        // state gas.
+        *interp_ref.gas_mut().tracker_mut() = frame_gas;
         // SAFETY: `execution_config` points to a private field that host execution does not
         // replace or mutate, so the pointee remains valid here.
         let execution_config = unsafe { trustme::decouple_lt(&self.execution_config) };
@@ -1295,7 +1664,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         });
         let prev_frame = self
             .current_frame
-            .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, T>>());
+            .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
         let interpreter_runner = self.interpreter_runner.clone();
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(execution_config, self, inspector)
@@ -1311,7 +1680,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         stop
     }
 
-    fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, 'a, T>) {
         if let Some(inspector) = self.inspector.as_deref_mut() {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // hook.
@@ -1327,7 +1696,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 }
 
-impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
+impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     fn spec_id(&self) -> SpecId {
         self.spec_id()
     }
@@ -1360,6 +1729,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         };
         Ok(AccountLoad {
             balance: info.balance,
+            nonce: info.nonce,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
             code,
             exists,
@@ -1380,7 +1750,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         }
     }
 
-    fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop> {
+    fn block_hash(&mut self, number: &Word) -> Result<B256, InstrStop> {
         self.state.block_hash(number).map_err(|code| self.store_error(code))
     }
 
@@ -1393,6 +1763,9 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
         let mut slot = match self.state.storage(address).into_slot(*key, skip_cold_load) {
             Ok(slot) => slot,
+            // SLOAD's out-of-gas is the cold-access charge itself, so the slot was never accessed
+            // and is not recorded in the block access list (unlike SSTORE, which first pays the
+            // warm-read cost, accessing the slot, before the cold/dynamic charge can run out).
             Err(ErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
             Err(code) => return Err(self.store_error(code)),
         };
@@ -1409,11 +1782,16 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
+        // EIP-8037: SSTORE must cover the slot's access cost before the
+        // implicit storage read. When the cold access is unaffordable the read is skipped, so the
+        // slot stays out of the EIP-7928 block access list (the warm-read cost has already been
+        // paid by the instruction, so an affordable warm slot is still read on OOG).
         let mut slot = match self.state.storage(address).into_slot(*key, skip_cold_load) {
             Ok(slot) => slot,
             Err(ErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
             Err(code) => return Err(self.store_error(code)),
         };
+
         let is_cold = eip2929 && slot.warm();
         let (original_value, present_value) = slot.write(*value);
         Ok(SStore {
@@ -1528,6 +1906,8 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
 pub struct AccountLoad {
     /// Account balance.
     pub balance: Word,
+    /// Account nonce.
+    pub nonce: u64,
     /// Account code hash.
     pub code_hash: B256,
     /// Account bytecode.
@@ -1651,16 +2031,17 @@ mod tests {
     use crate::{
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
-        env::TxEnv,
-        ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-        interpreter::{GasTracker, Interpreter, MessageKind, op},
+        env::{BlockEnvExt, TxEnvExt},
+        ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+        interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileMap},
         registry::{HandlerError, TxRequest},
         test_utils::{legacy_bytecode, push_address},
     };
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, TxKind, U256};
+    use alloy_eip7928::{BlockAccessList, StorageChange};
+    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, Log, LogData, TxKind, U256};
     use core::{
         error::Error,
         fmt,
@@ -1671,18 +2052,51 @@ mod tests {
     const TEST_PRECOMPILE: Address = Address::with_last_byte(0x42);
     const INNER_TEST_PRECOMPILE: Address = Address::with_last_byte(0x43);
 
-    fn test_tx(value: u64) -> RecoveredTxEnvelope {
-        RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy { nonce: value, ..TxLegacy::default() },
-            Address::ZERO,
-        ))
+    struct ExtensionTestTypes;
+
+    impl EvmTypesHost for ExtensionTestTypes {
+        type ConfigSelector = BaseEvmConfigSelector;
+        type SpecId = SpecId;
+        type Tx = ();
+        type EvmExt = u64;
+        type MessageExt = ();
+        type MessageResultExt = ();
+        type TxEnvExt = ();
+        type TxResultExt = ();
+        type BlockEnvExt = ();
+        type Host<'a> = Evm<'a, Self>;
     }
 
-    fn handle_test_tx(
-        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
-    ) -> HandlerResult<TxResult> {
+    #[test]
+    fn stores_typed_evm_extension_state() {
+        let mut evm = Evm::<ExtensionTestTypes>::new_with_ext(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompile::NoPrecompiles::default(),
+            41,
+        );
+
+        assert_eq!(*evm.ext(), 41);
+        *evm.ext_mut() += 1;
+        assert_eq!(*evm.ext(), 42);
+    }
+
+    fn test_tx(value: u64) -> RecoveredTxEnvelope {
+        Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy { nonce: value, ..TxLegacy::default() }),
+            Address::ZERO,
+        )
+    }
+
+    fn handle_test_tx(req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
-        Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
+        Ok(TxResultExt {
+            status: true,
+            total_gas_spent: req.tx.nonce + 1,
+            ..TxResultExt::default()
+        })
     }
 
     #[derive(Debug)]
@@ -1692,11 +2106,11 @@ mod tests {
     }
 
     impl InterpreterRunner<BaseEvmTypes> for TestInterpreterRunner {
-        fn run(
+        fn run<'frame, 'host>(
             &self,
             _config: &ExecutionConfig<BaseEvmTypes>,
-            _interpreter: &mut Interpreter<'_, BaseEvmTypes>,
-            _host: &mut Evm<BaseEvmTypes>,
+            _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            _host: &mut Evm<'host, BaseEvmTypes>,
         ) -> Option<InstrStop> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.stop
@@ -1707,19 +2121,22 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_interpreter_runner(TestInterpreterRunner { stop, calls: Arc::clone(&calls) });
-        let tx_env = TxEnv::default();
-        let message = Message { gas_limit: 30_000, ..Default::default() };
+        let tx_env = TxEnvExt::default();
+        let message = MessageExt { gas_limit: 30_000, ..Default::default() };
 
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
         let stop = evm.run_interpreter(
             Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
             &tx_env,
             &message,
+            frame_gas,
         );
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -1728,6 +2145,23 @@ mod tests {
 
     const LIFECYCLE_ACCOUNT: Address = Address::with_last_byte(0x7a);
     const LIFECYCLE_STORAGE_KEY: Word = Word::from_limbs([1, 0, 0, 0]);
+
+    fn handle_lifecycle_tx(
+        req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
+    ) -> HandlerResult<TxResult> {
+        let value = Word::from(req.tx.nonce);
+        req.host
+            .state
+            .storage(&LIFECYCLE_ACCOUNT)
+            .into_slot(LIFECYCLE_STORAGE_KEY, false)
+            .map_err(registry::HandlerError::Fatal)?
+            .write(value);
+        req.host.state.log(Log {
+            address: LIFECYCLE_ACCOUNT,
+            data: LogData::new_unchecked(vec![], Bytes::new()),
+        });
+        Ok(TxResultExt { status: true, total_gas_spent: req.tx.nonce, ..TxResultExt::default() })
+    }
 
     fn empty_precompiles() -> Precompiles<BaseEvmTypes> {
         Precompiles::new(Cow::Owned(PrecompileMap::new()))
@@ -1751,10 +2185,11 @@ mod tests {
     }
 
     fn precompile_message(address: Address) -> Message {
-        Message {
+        MessageExt {
             kind: MessageKind::Call,
             depth: 0,
             gas_limit: 30_000,
+            reservoir: 0,
             destination: address,
             caller: Address::ZERO,
             input: Bytes::new(),
@@ -1768,27 +2203,51 @@ mod tests {
         }
     }
 
-    fn lifecycle_evm() -> Evm<BaseEvmTypes> {
-        fn handle_lifecycle_tx(
-            req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
-        ) -> HandlerResult<TxResult> {
-            let value = Word::from(req.tx.nonce);
-            req.host
-                .state
-                .storage(&LIFECYCLE_ACCOUNT)
-                .into_slot(LIFECYCLE_STORAGE_KEY, false)
-                .map_err(registry::HandlerError::Fatal)?
-                .write(value);
-            req.host.state.log(Log {
-                address: LIFECYCLE_ACCOUNT,
-                data: LogData::new_unchecked(vec![], Bytes::new()),
-            });
-            Ok(TxResult { status: true, gas_used: req.tx.nonce, ..TxResult::default() })
+    #[test]
+    fn precompile_logs_are_inspected() {
+        #[derive(Default)]
+        struct LogInspector(Vec<Log>);
+
+        impl Inspector<BaseEvmTypes> for LogInspector {
+            fn log(&mut self, log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
+                self.0.push(log.clone());
+            }
         }
 
+        let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
+            evm.state_mut().log(Log {
+                address: TEST_PRECOMPILE,
+                data: LogData::new_unchecked(Vec::new(), Bytes::from_static(b"precompile")),
+            });
+            Ok(PrecompileOutput::new(Bytes::new()))
+        })]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+        evm.set_inspector(LogInspector::default());
+        let mut message = precompile_message(TEST_PRECOMPILE);
+
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnvExt::default(),
+            Bytecode::new_legacy(Bytes::new()),
+            &mut message,
+        );
+
+        assert_eq!(result.stop, InstrStop::Return);
+        let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
+        assert_eq!(inspector.0.len(), 1);
+        assert_eq!(inspector.0.as_slice(), evm.logs());
+    }
+
+    fn lifecycle_evm() -> Evm<'static, BaseEvmTypes> {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            RecoveredTxEnvelope::as_legacy,
+            TxEnvelope::as_legacy,
             handle_lifecycle_tx,
         );
         let mut database = InMemoryDB::default();
@@ -1799,7 +2258,7 @@ mod tests {
         database.insert_account_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY, &Word::from(1));
         Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             database,
             Precompiles::base(SpecId::OSAKA),
@@ -1845,30 +2304,30 @@ mod tests {
         ));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompiles,
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
             gas_limit: 200_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::FatalPrecompileError);
         assert_eq!(evm.error_code(), Some(ErrorCode::FATAL_PRECOMPILE));
         evm.state.finalize_transaction_(Version::base(SpecId::OSAKA));
-        let changes = evm.state.build_state_changes();
+        let pending = evm.state.take_pending_state();
         assert!(
-            !changes
-                .accounts
+            !pending
+                .storage
                 .get(&contract)
-                .is_some_and(|account| account.storage.contains_key(&Word::from(1)))
+                .is_some_and(|overlay| overlay.slots.contains_key(&Word::from(1)))
         );
     }
 
@@ -1900,30 +2359,30 @@ mod tests {
         ));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompiles,
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
             gas_limit: 200_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::Stop);
         assert!(evm.error_code().is_none());
         evm.state.finalize_transaction_(Version::base(SpecId::OSAKA));
-        let changes = evm.state.build_state_changes();
+        let pending = evm.state.take_pending_state();
         assert!(
-            changes
-                .accounts
+            pending
+                .storage
                 .get(&contract)
-                .is_some_and(|account| account.storage.contains_key(&Word::from(1)))
+                .is_some_and(|overlay| overlay.slots.contains_key(&Word::from(1)))
         );
     }
 
@@ -1943,14 +2402,14 @@ mod tests {
         impl Error for TestPrecompileError {}
 
         let caller = Address::from([0xaa; 20]);
-        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy {
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
                 gas_limit: 50_000,
                 to: TxKind::Call(FATAL_PRECOMPILE_ADDRESS),
                 ..TxLegacy::default()
-            },
+            }),
             caller,
-        ));
+        );
         let mut precompiles = Precompiles::base(SpecId::OSAKA);
         precompiles.as_map_mut().insert(Precompile::new(
             FATAL_PRECOMPILE_ADDRESS,
@@ -1959,7 +2418,7 @@ mod tests {
         ));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::OSAKA),
             InMemoryDB::default(),
             precompiles,
@@ -1991,7 +2450,7 @@ mod tests {
                     Ok(PrecompileOutput::new(Bytes::new()))
                 },
                 PrecompileAccess::AsMut => |evm, _, _| {
-                    let _ = evm.precompiles_as_mut::<Precompiles<BaseEvmTypes>>();
+                    evm.assert_precompiles_downcast_mutable();
                     Ok(PrecompileOutput::new(Bytes::new()))
                 },
                 PrecompileAccess::Set => |evm, _, _| {
@@ -2002,7 +2461,7 @@ mod tests {
         )]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompiles,
@@ -2012,15 +2471,98 @@ mod tests {
     }
 
     #[test]
+    fn replacing_block_preserves_state_and_bal_context() {
+        let mut evm = lifecycle_evm();
+        let state = core::ptr::addr_of!(evm.state);
+        let account = Address::with_last_byte(0x51);
+        let storage_key = Word::from(0x52);
+        let block_number = Word::from(0x53);
+        let block_hash = B256::with_last_byte(0x54);
+
+        evm.overlay_db_mut()
+            .insert_account_info(&account, AccountInfo::default().with_balance(Word::from(55)));
+        evm.overlay_db_mut().insert_account_storage(&account, &storage_key, &Word::from(56));
+        evm.overlay_db_mut().insert_block_hash(&block_number, &block_hash);
+
+        let bal = Arc::new(Bal::new());
+        evm.state.set_bal(Arc::clone(&bal));
+        evm.state.enable_bal_builder();
+        evm.state.set_bal_index(BlockAccessIndex::new(57));
+
+        let block = BlockEnvExt { number: Word::from(58), ..BlockEnvExt::default() };
+        evm.set_block(block);
+
+        assert!(core::ptr::eq(state, core::ptr::addr_of!(evm.state)));
+        assert_eq!(evm.block(), &block);
+        assert_eq!(evm.overlay_db().account_info(&account).unwrap().balance, Word::from(55));
+        assert_eq!(
+            evm.overlay_db()
+                .cache
+                .storage
+                .get(&account)
+                .and_then(|storage| storage.slots.get(&storage_key)),
+            Some(&Word::from(56))
+        );
+        assert_eq!(evm.overlay_db().cache.block_hashes.get(&block_number), Some(&block_hash));
+        assert!(Arc::ptr_eq(evm.state.bal().unwrap(), &bal));
+        assert!(evm.state.bal_builder().is_some());
+        assert_eq!(evm.state.bal_index(), BlockAccessIndex::new(57));
+    }
+
+    #[test]
+    fn replacing_execution_config_preserves_state_and_rebuilds_fork_state() {
+        let mut evm = lifecycle_evm();
+        let state = core::ptr::addr_of!(evm.state);
+        let account = Address::with_last_byte(0x61);
+        let storage_key = Word::from(0x62);
+        let block_number = Word::from(0x63);
+        let block_hash = B256::with_last_byte(0x64);
+        evm.overlay_db_mut()
+            .insert_account_info(&account, AccountInfo::default().with_balance(Word::from(65)));
+        evm.overlay_db_mut().insert_account_storage(&account, &storage_key, &Word::from(66));
+        evm.overlay_db_mut().insert_block_hash(&block_number, &block_hash);
+
+        let bal = Arc::new(Bal::new());
+        evm.state.set_bal(Arc::clone(&bal));
+        evm.state.enable_bal_builder();
+        evm.state.set_bal_index(BlockAccessIndex::new(67));
+
+        let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::PRAGUE);
+        evm.set_execution_config(
+            config,
+            SpecId::PRAGUE,
+            crate::ethereum::ethereum_tx_registry(SpecId::PRAGUE),
+            Precompiles::base(SpecId::PRAGUE),
+        );
+
+        assert!(core::ptr::eq(state, core::ptr::addr_of!(evm.state)));
+        assert_eq!(evm.spec_id(), SpecId::PRAGUE);
+        assert_eq!(evm.config_spec_id(), SpecId::PRAGUE);
+        assert_eq!(evm.version().features, config.version().features);
+        assert!(evm.feature(EvmFeatures::EIP7702));
+        assert!(evm.registry().contains(4));
+        assert!(
+            evm.precompiles_as::<Precompiles>()
+                .unwrap()
+                .as_map()
+                .contains(&Address::with_last_byte(0x0b))
+        );
+        assert_eq!(evm.overlay_db().account_info(&account).unwrap().balance, Word::from(65));
+        assert_eq!(evm.overlay_db().cache.block_hashes.get(&block_number), Some(&block_hash));
+        assert!(Arc::ptr_eq(evm.state.bal().unwrap(), &bal));
+        assert!(evm.state.bal_builder().is_some());
+        assert_eq!(evm.state.bal_index(), BlockAccessIndex::new(67));
+    }
+
+    #[test]
     fn immutable_precompile_access_is_allowed_during_execution() {
         let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
             let _ = evm.precompiles();
-            let _ = evm.precompiles_as::<Precompiles<BaseEvmTypes>>();
             Ok(PrecompileOutput::new(Bytes::new()))
         })]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompiles,
@@ -2062,7 +2604,7 @@ mod tests {
         }
 
         impl Inspector<BaseEvmTypes> for AccessingInspector {
-            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 let evm = interp.host();
                 match self.access {
                     InspectorAccess::Mut => {
@@ -2081,16 +2623,18 @@ mod tests {
 
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(AccessingInspector { access });
-        let message = Message::default();
-        let tx_env = TxEnv::default();
+        let message = MessageExt::default();
+        let tx_env = TxEnvExt::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
-        let _ = evm.run_interpreter(bytecode, &tx_env, &message);
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message, frame_gas);
     }
 
     #[test]
@@ -2098,24 +2642,26 @@ mod tests {
         struct ReadingInspector {}
 
         impl Inspector<BaseEvmTypes> for ReadingInspector {
-            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 let _ = interp.host().inspector();
             }
         }
 
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(ReadingInspector {});
-        let message = Message::default();
-        let tx_env = TxEnv::default();
+        let message = MessageExt::default();
+        let tx_env = TxEnvExt::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
 
-        let _ = evm.run_interpreter(bytecode, &tx_env, &message);
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message, frame_gas);
     }
 
     #[test]
@@ -2143,9 +2689,164 @@ mod tests {
     }
 
     #[test]
+    fn set_block_during_execution_updates_live_context() {
+        struct BlockReplacingInspector;
+
+        impl Inspector<BaseEvmTypes> for BlockReplacingInspector {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                let host = interp.host();
+                host.set_block(BlockEnvExt {
+                    number: Word::from(123),
+                    timestamp: Word::from(124),
+                    ..BlockEnvExt::default()
+                });
+                assert_eq!(host.block().number, Word::from(123));
+                assert_eq!(host.block().timestamp, Word::from(124));
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(BlockReplacingInspector);
+        let message = MessageExt::default();
+        let tx_env = TxEnvExt::default();
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message, frame_gas);
+        assert_eq!(evm.block().number, Word::from(123));
+        assert_eq!(evm.block().timestamp, Word::from(124));
+    }
+
+    #[test]
+    #[should_panic(expected = "execution config cannot be modified during EVM execution")]
+    fn set_execution_config_panics_during_execution() {
+        struct ConfigReplacingInspector;
+
+        impl Inspector<BaseEvmTypes> for ConfigReplacingInspector {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                let host = interp.host();
+                host.set_execution_config(
+                    ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::PRAGUE),
+                    SpecId::PRAGUE,
+                    crate::ethereum::ethereum_tx_registry(SpecId::PRAGUE),
+                    Precompiles::base(SpecId::PRAGUE),
+                );
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(ConfigReplacingInspector);
+        let message = MessageExt::default();
+        let tx_env = TxEnvExt::default();
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let frame_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message, frame_gas);
+    }
+
+    #[derive(Clone, Copy)]
+    enum TopLevelInspectorHook {
+        Log,
+        Call,
+        Create,
+    }
+
+    fn run_top_level_inspector_clear(hook: TopLevelInspectorHook) {
+        struct ClearingInspector;
+
+        impl Inspector<BaseEvmTypes> for ClearingInspector {
+            fn log(&mut self, _log: &Log, host: &mut Evm<'_, BaseEvmTypes>) {
+                let _ = host.clear_inspector();
+            }
+
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &mut Message,
+            ) -> Option<MessageResult> {
+                let _ = interp.host().clear_inspector();
+                None
+            }
+
+            fn create(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &mut Message,
+            ) -> Option<MessageResult> {
+                let _ = interp.host().clear_inspector();
+                None
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(ClearingInspector);
+
+        match hook {
+            TopLevelInspectorHook::Log => Host::log(
+                &mut evm,
+                Log { address: Address::ZERO, data: LogData::new_unchecked(vec![], Bytes::new()) },
+            ),
+            TopLevelInspectorHook::Call => {
+                let mut message = MessageExt { kind: MessageKind::Call, ..Default::default() };
+                let _ = Host::execute_message(
+                    &mut evm,
+                    &TxEnvExt::default(),
+                    Bytecode::default(),
+                    &mut message,
+                );
+            }
+            TopLevelInspectorHook::Create => {
+                let mut message = MessageExt { kind: MessageKind::Create, ..Default::default() };
+                let _ = Host::execute_message(
+                    &mut evm,
+                    &TxEnvExt::default(),
+                    Bytecode::default(),
+                    &mut message,
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn top_level_log_inspector_clear_panics_during_execution() {
+        run_top_level_inspector_clear(TopLevelInspectorHook::Log);
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn top_level_call_inspector_clear_panics_during_execution() {
+        run_top_level_inspector_clear(TopLevelInspectorHook::Call);
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn top_level_create_inspector_clear_panics_during_execution() {
+        run_top_level_inspector_clear(TopLevelInspectorHook::Create);
+    }
+
+    #[test]
     fn passes_evm_to_precompile_provider() {
         let address = TEST_PRECOMPILE;
-        let block = BlockEnv { number: U256::from(17), ..BlockEnv::default() };
+        let block = BlockEnvExt { number: U256::from(17), ..BlockEnvExt::default() };
         let precompiles = precompiles_with([test_precompile(address, |evm, message, _| {
             assert_eq!(message.kind, MessageKind::Call);
             assert_eq!(message.depth, 67);
@@ -2164,10 +2865,11 @@ mod tests {
             InMemoryDB::default(),
             precompiles,
         );
-        let message = Message {
+        let message = MessageExt {
             kind: MessageKind::Call,
             depth: 67,
             gas_limit: 30_000,
+            reservoir: 0,
             destination: address,
             caller: Address::with_last_byte(0x7a),
             input: Bytes::from_static(b"message input"),
@@ -2199,7 +2901,7 @@ mod tests {
         ]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompiles,
@@ -2215,41 +2917,35 @@ mod tests {
 
     #[test]
     fn dispatches_transaction_by_typed_2718_type() {
-        let registry = TxRegistry::new().with_handler(
-            TEST_TX_TYPE,
-            RecoveredTxEnvelope::as_legacy,
-            handle_test_tx,
-        );
+        let registry =
+            TxRegistry::new().with_handler(TEST_TX_TYPE, TxEnvelope::as_legacy, handle_test_tx);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
         let tx = test_tx(41);
 
-        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
     }
 
     #[test]
     fn dispatches_transaction_without_evm_config() {
-        let registry = TxRegistry::new().with_handler(
-            TEST_TX_TYPE,
-            RecoveredTxEnvelope::as_legacy,
-            handle_test_tx,
-        );
+        let registry =
+            TxRegistry::new().with_handler(TEST_TX_TYPE, TxEnvelope::as_legacy, handle_test_tx);
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA),
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
         let tx = test_tx(41);
 
-        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
     }
 
     #[test]
@@ -2268,18 +2964,18 @@ mod tests {
     #[test]
     fn dispatches_transaction_with_dynamic_version() {
         fn handle_test_tx_version(
-            req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
+            req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
         ) -> HandlerResult<TxResult> {
-            Ok(TxResult {
+            Ok(TxResultExt {
                 status: true,
-                gas_used: req.host.version().tx_gas_limit_cap,
-                ..TxResult::default()
+                total_gas_spent: req.host.version().tx_gas_limit_cap,
+                ..TxResultExt::default()
             })
         }
 
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            RecoveredTxEnvelope::as_legacy,
+            TxEnvelope::as_legacy,
             handle_test_tx_version,
         );
         let mut version = crate::Version::new(SpecId::OSAKA);
@@ -2287,26 +2983,23 @@ mod tests {
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
         let tx = test_tx(0);
 
-        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().tx_gas_used()), Ok(42));
     }
 
     #[test]
     fn dispatches_transaction_iter() {
-        let registry = TxRegistry::new().with_handler(
-            TEST_TX_TYPE,
-            RecoveredTxEnvelope::as_legacy,
-            handle_test_tx,
-        );
+        let registry =
+            TxRegistry::new().with_handler(TEST_TX_TYPE, TxEnvelope::as_legacy, handle_test_tx);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -2314,7 +3007,7 @@ mod tests {
         let txs = [test_tx(1), test_tx(2)];
         let gas_used = evm
             .transact_iter(&txs)
-            .map(|result| result.map(|result| result.gas_used()))
+            .map(|result| result.map(|result| result.tx_gas_used()))
             .collect::<HandlerResult<Vec<_>>>();
 
         assert_eq!(gas_used, Ok(vec![2, 3]));
@@ -2326,7 +3019,7 @@ mod tests {
         let outcome =
             evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").discard();
 
-        assert_eq!(outcome.gas_used(), 7);
+        assert_eq!(outcome.tx_gas_used(), 7);
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
@@ -2345,7 +3038,7 @@ mod tests {
             .discard_with(&mut sink)
             .expect("block accumulator is infallible");
 
-        assert_eq!(outcome.gas_used(), 7);
+        assert_eq!(outcome.tx_gas_used(), 7);
         assert_eq!(outcome.logs.len(), 1);
         let storage = sink.storage_sorted();
         assert_eq!(storage.len(), 1);
@@ -2358,23 +3051,46 @@ mod tests {
     }
 
     #[test]
-    fn executed_transaction_detach_materializes_without_committing() {
+    fn executed_transaction_detach_moves_pending_state_without_committing() {
         let mut evm = lifecycle_evm();
         let result =
             evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").detach();
 
         assert_eq!(result.result.logs.len(), 1);
-        let account_change = result
-            .state_changes
-            .accounts
+        let overlay = result
+            .pending_state
+            .storage
             .get(&LIFECYCLE_ACCOUNT)
             .expect("storage change should be present");
-        let slot = account_change
-            .storage
-            .get(&LIFECYCLE_STORAGE_KEY)
-            .expect("storage slot should be present");
-        assert_eq!(slot.original, Word::from(1));
-        assert_eq!(slot.current, Word::from(7));
+        let slot =
+            overlay.slots.get(&LIFECYCLE_STORAGE_KEY).expect("storage slot should be present");
+        assert_eq!(slot.value.original, Word::from(1));
+        assert_eq!(slot.value.current, Word::from(7));
+        assert_eq!(
+            evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
+            Word::from(1)
+        );
+    }
+
+    #[test]
+    fn executed_transaction_detach_matches_commit_fold() {
+        // Commit with the builder enabled: the reference BAL fold.
+        let mut evm = lifecycle_evm();
+        evm.state.enable_bal_builder();
+        evm.state.set_bal_index(BlockAccessIndex::new(1));
+        let _ = evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").commit();
+        let committed_bal = evm.state.take_bal_builder().expect("builder was enabled");
+
+        // The same execution detached as a pending state.
+        let mut evm = lifecycle_evm();
+        let TxResultWithState { pending_state: pending, .. } =
+            evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").detach();
+
+        // Folding the pending state into a fresh BAL matches the commit-built BAL.
+        let mut rebuilt = Bal::new();
+        rebuilt.commit(BlockAccessIndex::new(1), pending);
+        assert_eq!(rebuilt, committed_bal);
+        // Detaching accepted nothing into this EVM's overlay.
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
             Word::from(1)
@@ -2425,6 +3141,51 @@ mod tests {
     }
 
     #[test]
+    fn committed_transactions_build_block_access_list_on_cache_db() {
+        let mut evm = lifecycle_evm();
+        evm.state.enable_bal_builder();
+        evm.state.reset_bal_index();
+
+        // Transaction 0 maps to block access index 1: it writes 7 to the lifecycle slot (was 1).
+        evm.state.bump_bal_index();
+        assert_eq!(evm.state.bal_index(), BlockAccessIndex::new(1));
+        let _ = evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").commit();
+
+        // Transaction 1 maps to index 2: it overwrites the slot with 9.
+        evm.state.bump_bal_index();
+        let _ = evm.transact(&test_tx(9)).expect("lifecycle transaction should execute").commit();
+
+        let bal = evm.state.bal_builder().expect("bal construction is enabled");
+        let account =
+            bal.accounts.get(&LIFECYCLE_ACCOUNT).expect("lifecycle account is in the bal");
+        let slot = account
+            .storage
+            .storage
+            .get(&LIFECYCLE_STORAGE_KEY)
+            .expect("lifecycle slot is in the bal");
+        assert_eq!(
+            slot.changes,
+            vec![
+                StorageChange::new(BlockAccessIndex::new(1), Word::from(7)),
+                StorageChange::new(BlockAccessIndex::new(2), Word::from(9)),
+            ]
+        );
+        // The account's info never changed, so it is recorded as reads (no info writes).
+        assert!(account.account_info.balance.is_empty());
+        assert!(account.account_info.nonce.is_empty());
+
+        // Taking the BAL yields a canonical EIP-7928 list and resets the index.
+        let alloy = BlockAccessList::from(evm.state.take_bal_builder().expect("bal is present"));
+        assert_eq!(alloy.len(), 1);
+        assert_eq!(alloy[0].address, LIFECYCLE_ACCOUNT);
+        assert_eq!(alloy[0].storage_changes.len(), 1);
+        assert_eq!(alloy[0].storage_changes[0].slot, LIFECYCLE_STORAGE_KEY);
+        assert_eq!(alloy[0].storage_changes[0].changes.len(), 2);
+        assert_eq!(evm.state.bal_index(), BlockAccessIndex::PRE_EXECUTION);
+        assert!(evm.state.bal_builder().is_none());
+    }
+
+    #[test]
     fn executed_transaction_commit_with_tee_fans_out_changes() {
         let mut evm = lifecycle_evm();
         let mut left = BlockStateAccumulator::new();
@@ -2456,22 +3217,22 @@ mod tests {
     fn host_executes_message() {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
         let contract = Address::from([0x11; 20]);
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::STOP]));
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
             gas_limit: 50_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), bytecode, &mut message);
         assert!(result.stop.is_success());
     }
 
@@ -2513,29 +3274,29 @@ mod tests {
                 Err(FailingDbError)
             }
 
-            fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
-                Ok(None)
+            fn get_block_hash(&mut self, _number: &Word) -> Result<B256, Self::Error> {
+                Ok(B256::ZERO)
             }
         }
 
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             Db::new(FailingStorageDb),
             Precompiles::base(SpecId::OSAKA),
         );
         let contract = Address::from([0x11; 20]);
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH0, op::SLOAD]));
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
             gas_limit: 50_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::FatalExternalError);
         let error_code = evm.error_code().unwrap();
@@ -2547,7 +3308,7 @@ mod tests {
     fn cold_storage_oog_rolls_back_warmth() {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -2556,15 +3317,15 @@ mod tests {
         let key = Word::ZERO;
         let bytecode =
             Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
             gas_limit: 500,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), bytecode, &mut message);
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
         assert!(!evm.state.storage(&contract).is_warm(&key));
@@ -2615,8 +3376,8 @@ mod tests {
                 Ok(Word::ZERO)
             }
 
-            fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
-                Ok(None)
+            fn get_block_hash(&mut self, _number: &Word) -> Result<B256, Self::Error> {
+                Ok(B256::ZERO)
             }
         }
 
@@ -2633,22 +3394,22 @@ mod tests {
         let database = SelfdestructTargetLoadDb { target, target_reads: Arc::clone(&target_reads) };
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::BERLIN,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             Db::new(database),
             Precompiles::base(SpecId::BERLIN),
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
             gas_limit: 6_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
         let result = Host::execute_message(
             &mut evm,
-            &TxEnv::default(),
+            &TxEnvExt::default(),
             selfdestruct_to_code(&target),
             &mut message,
         );
@@ -2665,28 +3426,28 @@ mod tests {
         database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::FRONTIER,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::FRONTIER),
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Create,
             destination: created,
             caller,
             gas_limit: 50,
-            ..Message::default()
+            ..MessageExt::default()
         };
         let code =
             Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), code, &mut message);
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
-        let changes = evm.state.build_state_changes();
+        let pending = evm.state.take_pending_state();
         let account =
-            changes.accounts.get(&created).and_then(|change| change.current.as_ref()).unwrap();
+            pending.accounts.get(&created).and_then(|entry| entry.present.as_ref()).unwrap();
         assert_eq!(account.code_hash, KECCAK256_EMPTY);
     }
 
@@ -2698,27 +3459,102 @@ mod tests {
         database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::HOMESTEAD,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::HOMESTEAD),
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Create,
             destination: created,
             caller,
             gas_limit: 50,
-            ..Message::default()
+            ..MessageExt::default()
         };
         let code =
             Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), code, &mut message);
         assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert!(result.output.is_empty());
 
         evm.state.finalize_transaction_(Version::base(SpecId::HOMESTEAD));
-        let changes = evm.state.build_state_changes();
-        assert!(changes.accounts.get(&created).is_none_or(|change| change.current.is_none()));
+        let pending = evm.state.take_pending_state();
+        assert!(pending.accounts.get(&created).is_none_or(|entry| entry.present.is_none()));
+    }
+
+    #[test]
+    fn create_validation_failure_clears_output() {
+        let caller = Address::from([0x11; 20]);
+        let created = Address::from([0x22; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::LONDON,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::LONDON),
+        );
+        let mut message = MessageExt {
+            kind: MessageKind::Create,
+            destination: created,
+            caller,
+            gas_limit: 50_000,
+            ..MessageExt::default()
+        };
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH1,
+            0xef,
+            op::PUSH1,
+            0,
+            op::MSTORE8,
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            0,
+            op::RETURN,
+        ]));
+
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), code, &mut message);
+
+        assert_eq!(result.stop, InstrStop::CreateContractStartingWithEF);
+        assert!(result.output.is_empty());
+    }
+
+    #[test]
+    fn create_size_limit_failure_clears_output() {
+        let caller = Address::from([0x11; 20]);
+        let created = Address::from([0x22; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::SPURIOUS_DRAGON,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::SPURIOUS_DRAGON),
+        );
+        let mut message = MessageExt {
+            kind: MessageKind::Create,
+            destination: created,
+            caller,
+            gas_limit: 100_000,
+            ..MessageExt::default()
+        };
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH2,
+            0x60,
+            0x01,
+            op::PUSH1,
+            0,
+            op::RETURN,
+        ]));
+
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), code, &mut message);
+
+        assert_eq!(result.stop, InstrStop::CreateContractSizeLimit);
+        assert!(result.output.is_empty());
     }
 
     #[test]
@@ -2729,29 +3565,33 @@ mod tests {
         database.insert_account_storage(&target, &Word::ZERO, &Word::from(1));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::SPURIOUS_DRAGON,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::SPURIOUS_DRAGON),
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::StaticCall,
             destination: target,
             code_address: target,
             gas_limit: 50_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result =
-            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnvExt::default(),
+            Bytecode::default(),
+            &mut message,
+        );
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
-        let changes = evm.state.build_state_changes();
-        let account = changes.accounts.get(&target).expect("empty destination should be deleted");
+        let pending = evm.state.take_pending_state();
+        let account = pending.accounts.get(&target).expect("empty destination should be deleted");
         assert!(account.original.is_some());
-        assert_eq!(account.current, None);
-        assert!(account.is_storage_wiped());
+        assert_eq!(account.present, None);
+        assert!(pending.storage.get(&target).is_some_and(|overlay| overlay.wiped));
     }
 
     #[test]
@@ -2765,26 +3605,30 @@ mod tests {
         database.insert_account_storage(&code_address, &Word::ZERO, &Word::from(1));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::SPURIOUS_DRAGON,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::SPURIOUS_DRAGON),
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::DelegateCall,
             destination,
             code_address,
             gas_limit: 50_000,
-            ..Message::default()
+            ..MessageExt::default()
         };
 
-        let result =
-            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnvExt::default(),
+            Bytecode::default(),
+            &mut message,
+        );
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
-        let changes = evm.state.build_state_changes();
-        assert!(changes.accounts.get(&code_address).is_none_or(|change| !change.is_changed()));
+        let pending = evm.state.take_pending_state();
+        assert!(pending.accounts.get(&code_address).is_none_or(|entry| !entry.is_changed()));
     }
 
     #[test]
@@ -2829,28 +3673,33 @@ mod tests {
         database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(10)));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::AMSTERDAM,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::AMSTERDAM),
         );
-        let mut message = Message {
+        let mut message = MessageExt {
             kind: MessageKind::Call,
             destination: target,
             caller,
             value: U256::from(7),
-            gas_limit: 50_000,
-            ..Message::default()
+            // Covers the EIP-2780 depth-0 `new_account_state_gas` charge for the
+            // value transfer to the empty target account.
+            gas_limit: 300_000,
+            ..MessageExt::default()
         };
 
-        let result =
-            Host::execute_message(&mut evm, &TxEnv::default(), Bytecode::default(), &mut message);
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnvExt::default(),
+            Bytecode::default(),
+            &mut message,
+        );
         assert!(result.stop.is_success());
 
         let version = *evm.version();
         evm.state.finalize_transaction_(&version);
         let logs = evm.state.take_logs();
-        let _changes = evm.state.build_state_changes();
         assert_eq!(logs.len(), 1);
         let log = &logs[0];
         assert_eq!(log.address, SYSTEM_ADDRESS);
@@ -2890,10 +3739,27 @@ mod tests {
         assert_eq!(info.nonce, 0);
         assert_eq!(info.code_hash, KECCAK256_EMPTY);
 
-        let changes = state.build_state_changes();
-        assert!(
-            changes.accounts.get(&contract).expect("account change recorded").is_selfdestructed()
-        );
+        let pending = state.take_pending_state();
+        assert!(pending.accounts.contains_key(&contract), "account change recorded");
+        assert!(pending.selfdestructs.contains(&contract));
+    }
+
+    #[test]
+    fn commit_transaction_clears_detached_selfdestructs() {
+        let contract = Address::from([0x44; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut state = State::new(database);
+
+        state.account(&contract, false).unwrap().mark_destructed();
+        state.finalize_transaction_(Version::base(SpecId::AMSTERDAM));
+        let pending = state.take_pending_state();
+
+        state.set_pending_state(pending);
+        state.commit_transaction();
+
+        assert!(!state.account(&contract, false).unwrap().is_destructed());
     }
 
     #[test]

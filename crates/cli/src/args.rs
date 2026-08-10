@@ -16,9 +16,9 @@ pub(crate) enum Command {
     Capture(Capture),
     /// Run the differential fuzzer against revm.
     Fuzzer(crate::fuzzer::Options),
-    /// List replay entrypoints in an EEST fixture.
+    /// List the test/case names in an EEST fixture (usable with `--filter-test`).
     List(List),
-    /// Replay an EEST JSON fixture.
+    /// Replay an EEST JSON fixture, or every `.json` fixture under a folder.
     Replay(Replay),
     /// Compile and/or run EVM bytecode.
     #[cfg(feature = "jit")]
@@ -46,9 +46,13 @@ pub(crate) struct Capture {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct Replay {
-    /// Logical EEST test or case name glob to run.
-    #[arg(long)]
-    pub(crate) entrypoint: Option<String>,
+    /// Only replay tests whose EEST test/case name matches this glob.
+    #[arg(long, value_name = "GLOB")]
+    pub(crate) filter_test: Option<String>,
+    /// When replaying a folder, only replay `.json` files whose path or file
+    /// name matches this glob.
+    #[arg(long, value_name = "GLOB")]
+    pub(crate) filter_file: Option<String>,
     /// Replay through the evm2 JIT runtime.
     #[cfg(feature = "jit")]
     #[arg(long, conflicts_with = "aot")]
@@ -60,7 +64,18 @@ pub(crate) struct Replay {
     /// Print database method call counts after execution.
     #[arg(long)]
     pub(crate) db_stats: bool,
-    /// EEST JSON fixture to replay.
+    /// Stream EIP-3155 execution traces (JSON struct logs) to stdout.
+    ///
+    /// Requires the interpreter backend; incompatible with `--jit`/`--aot`.
+    #[arg(long)]
+    pub(crate) json_traces: bool,
+    /// Print each executed test's outcome (pass/fail, state root, gas) as JSON.
+    #[arg(long)]
+    pub(crate) json_output: bool,
+    /// Dump the post-execution state (accounts and storage) to stdout.
+    #[arg(long)]
+    pub(crate) dump_state: bool,
+    /// EEST JSON fixture to replay, or a folder to replay every `.json` under it.
     #[arg(value_name = "PATH")]
     pub(crate) path: PathBuf,
 }

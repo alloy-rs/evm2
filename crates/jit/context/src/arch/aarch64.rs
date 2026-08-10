@@ -10,7 +10,7 @@ use core::ptr::NonNull;
 /// returns the `exit_result` stored in `EvmContext`.
 #[unsafe(naked)]
 pub(crate) unsafe extern "C" fn evm2_jit_entry(
-    ecx: NonNull<EvmContext<'_>>,
+    ecx: NonNull<EvmContext<'_, '_, '_>>,
     stack: NonNull<EvmStack>,
     stack_len: NonNull<usize>,
     f: RawEvmCompilerFn,
@@ -68,7 +68,7 @@ pub(crate) unsafe extern "C" fn evm2_jit_entry(
 ///
 /// Must only be called from a builtin that was invoked through `evm2_jit_entry`.
 #[unsafe(naked)]
-pub unsafe extern "C" fn evm2_jit_exit(ecx: *const EvmContext<'_>) -> ! {
+pub unsafe extern "C" fn evm2_jit_exit(ecx: *const EvmContext<'_, '_, '_>) -> ! {
     core::arch::naked_asm!(
         // Restore the saved SP (must read before clobbering x0).
         "ldr x9, [x0, {exit_sp}]",

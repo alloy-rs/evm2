@@ -5,7 +5,7 @@ use std::{env, sync::OnceLock};
 pub(crate) const SKIP_FORKS_ENV: &str = "EVM2_SKIP_FORKS";
 
 /// Hardforks skipped by default because evm2 does not support them yet.
-const UNSUPPORTED_FORKS: &[SpecId] = &[SpecId::AMSTERDAM];
+const UNSUPPORTED_FORKS: &[SpecId] = &[];
 
 /// Returns whether all test cases targeting `spec` should be skipped.
 #[inline]
@@ -54,12 +54,5 @@ mod tests {
         assert_eq!(parse_fork("Osaka"), Some(SpecId::OSAKA));
         assert_eq!(parse_fork("SPURIOUS_DRAGON"), Some(SpecId::SPURIOUS_DRAGON));
         assert_eq!(parse_fork("atlantis"), None);
-    }
-
-    #[test]
-    fn unsupported_forks_are_skipped() {
-        assert!(is_fork_skipped(SpecId::AMSTERDAM));
-        assert!(!is_fork_skipped(SpecId::OSAKA));
-        assert!(!is_fork_skipped(SpecId::FRONTIER));
     }
 }

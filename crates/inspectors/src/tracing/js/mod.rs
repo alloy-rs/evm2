@@ -11,6 +11,7 @@ use crate::tracing::{
         },
         builtins::{PrecompileList, register_builtins, to_serde_value},
     },
+    tx_state::TxState,
     types::CallKind,
     utils,
 };
@@ -19,17 +20,17 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
 pub use boa_engine::vm::RuntimeLimits;
 use boa_engine::{Context, JsError, JsObject, JsResult, JsValue, Source, js_string};
 use evm2::{
-    Evm, EvmTypes, Inspector, TxResultWithState,
+    Evm, EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
     env::BlockEnv,
-    ethereum::RecoveredTxEnvelope,
     evm::DynDatabase,
     interpreter::{
-        GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word,
-        opcode::OpCode,
+        GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
+        Word, opcode::OpCode,
     },
 };
 
@@ -68,6 +69,8 @@ struct PendingStep {
     refund: u64,
     /// Contract info
     contract: Contract,
+    /// Memory before opcode execution.
+    memory: MemorySnapshot,
     /// Total gas spent before this opcode (to compute delta in step_end)
     gas_spent_before: u64,
 }
@@ -118,12 +121,14 @@ pub struct JsInspector {
     call_stack: Vec<CallStackItem>,
     /// Marker to track whether the precompiles have been registered.
     precompiles_registered: bool,
-    /// Pre-execution state captured in `step()` to be processed in `step_end()`.
-    pending_step: Option<PendingStep>,
+    /// Pre-execution states captured in `step()` to be processed in `step_end()`.
+    pending_steps: Vec<PendingStep>,
     /// Cached memory snapshot, only updated when the previous opcode modifies memory.
     cached_memory: MemorySnapshot,
     /// The opcode from the previous step, used to decide whether to re-snapshot memory.
     prev_op: Option<OpCode>,
+    /// The call depth from the previous step, used to refresh memory across frames.
+    prev_depth: Option<u16>,
 }
 
 impl JsInspector {
@@ -237,9 +242,10 @@ impl JsInspector {
             reusable_db,
             call_stack: Default::default(),
             precompiles_registered: false,
-            pending_step: None,
+            pending_steps: Vec::new(),
             cached_memory: MemorySnapshot::default(),
             prev_op: None,
+            prev_depth: None,
         })
     }
 
@@ -273,11 +279,11 @@ impl JsInspector {
     /// Calls the result function and returns the result as [serde_json::Value].
     ///
     /// Note: This is supposed to be called after the inspection has finished.
-    pub fn json_result<T: EvmTypes>(
+    pub fn json_result<T: EvmTypesHost<Tx: Transaction>>(
         &mut self,
         res: &TxResultWithState<T>,
-        tx: &RecoveredTxEnvelope,
-        block: &BlockEnv,
+        tx: &Recovered<T::Tx>,
+        block: &BlockEnv<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<serde_json::Value, JsInspectorError> {
         let result = self.result(res, tx, block, db)?;
@@ -285,15 +291,16 @@ impl JsInspector {
     }
 
     /// Calls the result function and returns the result.
-    pub fn result<T: EvmTypes>(
+    pub fn result<T: EvmTypesHost<Tx: Transaction>>(
         &mut self,
         res: &TxResultWithState<T>,
-        tx: &RecoveredTxEnvelope,
-        block: &BlockEnv,
+        tx: &Recovered<T::Tx>,
+        block: &BlockEnv<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<JsValue, JsInspectorError> {
-        let TxResultWithState { result, state_changes: state, .. } = res;
-        let (db, _db_guard) = EvmDbRef::new_changes(state, db);
+        let TxResultWithState { result, pending_state, .. } = res;
+        let state = TxState::from_pending(pending_state);
+        let (db, _db_guard) = EvmDbRef::new_changes(&state, db);
 
         let mut to = None;
         let mut output_bytes = None;
@@ -326,7 +333,7 @@ impl JsInspector {
             to,
             input: tx.input().clone(),
             gas: tx.gas_limit(),
-            gas_used: result.gas_used,
+            gas_used: result.tx_gas_used(),
             gas_price: tx.effective_gas_price(Some(base_fee)).try_into().unwrap_or(u64::MAX),
             value: tx.value(),
             block: block.number.try_into().unwrap_or(u64::MAX),
@@ -441,7 +448,7 @@ impl JsInspector {
     }
 
     /// Registers the precompiles in the JS context
-    fn register_precompiles<T: EvmTypes<Host = Evm<T>>>(&mut self, host: &Evm<T>) {
+    fn register_precompiles<T: EvmTypes>(&mut self, host: &Evm<'_, T>) {
         if self.precompiles_registered {
             return;
         }
@@ -453,25 +460,28 @@ impl JsInspector {
     }
 }
 
-impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+impl<T: EvmTypes> Inspector<T> for JsInspector {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if self.step_fn.is_none() {
             return;
         }
 
-        // Update the cached memory snapshot only if the previous opcode modified memory.
+        let message = interp.message();
+
+        // Update the cached memory snapshot only if the previous opcode modified memory or
+        // execution moved to a different frame.
         // This avoids an expensive Vec<u8> clone on every single step.
-        let should_update_memory = self.prev_op.is_none_or(|prev| prev.modifies_memory());
+        let should_update_memory = self.prev_op.is_none_or(|prev| prev.modifies_memory())
+            || self.prev_depth != Some(message.depth);
         if should_update_memory {
             self.cached_memory = MemorySnapshot::new(interp.memory());
         }
 
         let op = interp.opcode();
         self.prev_op = OpCode::new(op);
-
+        self.prev_depth = Some(message.depth);
         let active_call = self.active_call();
-        let message = interp.message();
-        self.pending_step = Some(PendingStep {
+        self.pending_steps.push(PendingStep {
             stack: interp.stack().as_slice().to_vec(),
             pc: interp.pc() as u64,
             op,
@@ -484,16 +494,17 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
                 value: active_call.contract.value,
                 input: active_call.contract.input.clone(),
             },
+            memory: self.cached_memory.clone(),
             gas_spent_before: interp.gas().spent(),
         });
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if self.step_fn.is_none() {
             return;
         }
 
-        let Some(pending) = self.pending_step.take() else {
+        let Some(pending) = self.pending_steps.pop() else {
             return;
         };
 
@@ -503,7 +514,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
 
         let (db, db_guard) = EvmDbRef::new_state(interp.host().state_mut());
         let (stack, stack_guard) = StackRef::new_owned(pending.stack);
-        let (memory, memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
+        let (memory, memory_guard) = MemoryRef::new_owned(pending.memory);
 
         let stop = if is_revert {
             let step = StepLog {
@@ -549,7 +560,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
 
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         self.register_precompiles(interp.host());
@@ -587,7 +598,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
 
     fn call_end(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -607,7 +618,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
 
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         self.register_precompiles(interp.host());
@@ -634,7 +645,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
 
     fn create_end(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -657,7 +668,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         _contract: &Address,
         _target: &Address,
         _value: &U256,
-        _host: &mut T::Host,
+        _host: &mut T::Host<'_>,
     ) {
         // This is exempt from the root call constraint, because selfdestruct is treated as a
         // new scope that is entered and immediately exited.
@@ -722,9 +733,9 @@ pub enum JsInspectorError {
 
 /// Converts a JavaScript error into a [InstrStop::Revert] [MessageResult].
 #[inline]
-fn js_error_to_revert<T: EvmTypes>(err: JsError) -> MessageResult<T> {
+fn js_error_to_revert<E: Default>(err: JsError) -> MessageResultExt<E> {
     let output = err.to_string().as_bytes().to_vec();
-    MessageResult {
+    MessageResultExt {
         stop: InstrStop::Revert,
         output: output.into(),
         gas: GasTracker::new(0),
@@ -741,7 +752,7 @@ mod tests {
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId,
         bytecode::Bytecode,
-        ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+        ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, CacheDB, EmptyDB},
         interpreter::Host,
     };
@@ -799,22 +810,22 @@ mod tests {
         let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::CANCUN,
-            evm2::env::BlockEnv::default(),
+            evm2::env::BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::CANCUN),
             db,
             Precompiles::base(SpecId::CANCUN),
         );
         evm.set_inspector(insp);
 
-        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy {
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
                 gas_price: 1024,
                 gas_limit: 1_000_000,
                 to: TxKind::Call(addr),
                 ..Default::default()
-            },
+            }),
             Address::ZERO,
-        ));
+        );
         let res = evm.transact(&tx).expect("pass without error").detach();
 
         assert_eq!(res.result.status, success);

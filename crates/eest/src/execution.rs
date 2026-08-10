@@ -81,7 +81,7 @@ impl ExecutionResources {
 
     #[cfg(feature = "jit")]
     #[inline]
-    pub(crate) fn configure_evm(&self, _evm: &mut Evm<BaseEvmTypes>) {
+    pub(crate) fn configure_evm(&self, _evm: &mut Evm<'_, BaseEvmTypes>) {
         if let Some(backend) = &self.backend {
             _evm.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
         }
@@ -100,7 +100,7 @@ impl ExecutionResources {
 
     #[cfg(not(feature = "jit"))]
     #[inline]
-    pub(crate) const fn configure_evm(&self, _evm: &mut Evm<BaseEvmTypes>) {
+    pub(crate) const fn configure_evm(&self, _evm: &mut Evm<'_, BaseEvmTypes>) {
         let _ = self;
     }
 }

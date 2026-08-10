@@ -603,7 +603,6 @@ impl<'a> Bytecode<'a> {
 
     /// Returns the value of a PUSH instruction, right-padding truncated EOF immediates with zeros
     /// per EVM spec.
-    #[cfg(test)]
     pub(crate) fn get_push_value(&self, data: &InstData) -> U256 {
         debug_assert!(matches!(data.opcode, op::PUSH0..=op::PUSH32));
         data.imm().get(&self.u256_interner.borrow())
@@ -655,8 +654,7 @@ impl<'a> Bytecode<'a> {
     /// Returns `None` if the value is unknown or the analysis didn't cover this instruction.
     #[allow(dead_code)]
     pub(crate) fn const_operand(&self, inst: Inst, depth: usize) -> Option<U256> {
-        let snap = &self.snapshots.inputs[inst];
-        let imm = snap.get(snap.len().checked_sub(1 + depth)?)?.as_const()?;
+        let imm = self.snapshots.input(inst, depth)?.as_const()?;
         Some(imm.get(&self.u256_interner.borrow()))
     }
 

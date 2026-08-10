@@ -194,7 +194,8 @@ impl<'a> Bytecode<'a> {
 /// raw bytecode.
 ///
 /// For each non-dead instruction in the block, encodes the opcode followed by the immediate
-/// payload (interned U256Idx for `PUSH*`, immediate byte for `DUPN`/`SWAPN`/`EXCHANGE`).
+/// payload as a fixed-width little-endian `u32` (interned U256Idx for `PUSH*`, immediate byte for
+/// `DUPN`/`SWAPN`/`EXCHANGE`). The fixed width makes instruction boundaries unambiguous.
 /// JUMP/JUMPI carry no immediate and so contribute only their opcode; jump targets are
 /// already factored into the surrounding `DedupKey` via the block's CFG successors.
 fn block_fingerprint(insts: &IndexVec<Inst, InstData>, block: &BlockData) -> SmallVec<[u8; 32]> {
@@ -203,11 +204,7 @@ fn block_fingerprint(insts: &IndexVec<Inst, InstData>, block: &BlockData) -> Sma
         let data = &insts[i];
         buf.push(data.opcode);
         if data.imm_len() > 0 {
-            let mut imm = &data.data.to_ne_bytes()[..];
-            while let [0, rest @ ..] = imm {
-                imm = rest;
-            }
-            buf.extend_from_slice(imm);
+            buf.extend_from_slice(&data.data.to_le_bytes());
         }
     }
     buf
@@ -279,6 +276,74 @@ mod tests {
         );
 
         assert!(bytecode.redirects.is_empty(), "should not dedup different blocks");
+    }
+
+    #[test]
+    fn dedup_distinguishes_immediate_from_opcodes() {
+        let bytecode = analyze_asm_with(
+            "
+            CALLDATASIZE
+            PUSH %block_a
+            JUMPI
+
+            PUSH1 0x2A
+            PUSH %block_b
+            JUMP
+
+        block_a:
+            JUMPDEST
+            PUSH3 0x000000
+            DUP1
+            PUSH %tail
+            JUMP
+
+        block_b:
+            JUMPDEST
+            PUSH3 0x800000
+            PUSH %tail
+            JUMP
+
+        tail:
+            JUMPDEST
+            SSTORE
+            STOP
+        ",
+            AnalysisConfig::DEDUP,
+        );
+
+        assert!(
+            bytecode.redirects.is_empty(),
+            "should not confuse an opcode with part of another instruction's immediate",
+        );
+    }
+
+    #[test]
+    fn dedup_distinguishes_sstore_from_immediate() {
+        let bytecode = analyze_asm_with(
+            "
+            CALLDATASIZE
+            PUSH %block_b
+            JUMPI
+
+        block_a:
+            JUMPDEST
+            PUSH4 0x00000000
+            SSTORE
+            DUP1
+            STOP
+
+        block_b:
+            JUMPDEST
+            PUSH4 0x00558000
+            STOP
+        ",
+            AnalysisConfig::DEDUP,
+        );
+
+        assert!(
+            bytecode.redirects.is_empty(),
+            "should not confuse SSTORE and DUP1 with part of a PUSH immediate",
+        );
     }
 
     #[test]

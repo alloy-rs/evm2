@@ -4,7 +4,7 @@ use alloc::{vec, vec::Vec};
 use alloy_primitives::{Address, B256, Log, LogData, U256, address, b256};
 use alloy_sol_types::SolValue;
 use evm2::{
-    EvmTypes, Inspector,
+    EvmTypesHost, Inspector,
     interpreter::{Host, Interpreter, Message, MessageKind, MessageResult},
 };
 
@@ -66,7 +66,7 @@ impl TransferInspector {
         self.transfers.iter()
     }
 
-    fn on_transfer<T: EvmTypes>(&mut self, message: &Message<T>, host: &mut T::Host) {
+    fn on_transfer<T: EvmTypesHost>(&mut self, message: &Message<T>, host: &mut T::Host<'_>) {
         let kind = match message.kind {
             MessageKind::Call | MessageKind::CallCode => TransferKind::Call,
             MessageKind::Create => TransferKind::Create,
@@ -102,25 +102,22 @@ impl TransferInspector {
     }
 }
 
-impl<T: EvmTypes> Inspector<T> for TransferInspector
-where
-    T::Host: Host<T>,
-{
+impl<T: EvmTypesHost> Inspector<T> for TransferInspector {
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.on_transfer(message, interp.host());
+        self.on_transfer::<T>(message, interp.host());
         None
     }
 
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.on_transfer(message, interp.host());
+        self.on_transfer::<T>(message, interp.host());
         None
     }
 
@@ -129,7 +126,7 @@ where
         contract: &Address,
         target: &Address,
         value: &U256,
-        _host: &mut T::Host,
+        _host: &mut T::Host<'_>,
     ) {
         self.transfers.push(TransferOperation {
             kind: TransferKind::SelfDestruct,

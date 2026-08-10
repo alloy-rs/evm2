@@ -289,9 +289,13 @@ impl<'a> StackMut<'a> {
     #[inline(always)]
     pub(crate) fn instr_stack_setup(&mut self, input: usize, output: usize) -> Result<*mut Word> {
         let len = self.len();
-        // SAFETY: Assumes that the stack is never used after execution fails.
-        *self.len = len.wrapping_sub(input).wrapping_add(output);
+        // Validate before committing the new length. On failure the length must stay intact:
+        // the dispatch loop still fires `step_end` (and exposes `Interpreter::stack()`) with this
+        // length live before it observes the error, so a wrapped length would be read by
+        // inspectors. `check_bounds_` guarantees `len >= input` and `len - input + output <=
+        // CAPACITY`, so the update below neither underflows nor overflows.
         Self::check_bounds_(len, input, output)?;
+        *self.len = len - input + output;
         debug_assert!(*self.len <= Self::CAPACITY);
         Ok(unsafe { self.as_word_mut_ptr().add(len).sub(input) })
     }
@@ -525,6 +529,26 @@ mod tests {
         run_with_len(StackMut::CAPACITY, |stack| {
             assert!(stack.check_bounds(1, 1).is_ok());
             assert_matches!(stack.check_bounds(0, 1), Err(InstrStop::StackOverflow));
+        });
+    }
+
+    #[test]
+    fn instr_stack_setup_preserves_len_on_failure() {
+        // A failed setup must leave the length untouched: the dispatch loop reads it (and exposes
+        // it through `Interpreter::stack()` to inspectors) before it observes the error.
+        run_with_len(1, |stack| {
+            assert_matches!(stack.instr_stack_setup(2, 1), Err(InstrStop::StackUnderflow));
+            assert_eq!(stack.len(), 1);
+        });
+
+        run_with_len(StackMut::CAPACITY, |stack| {
+            assert_matches!(stack.instr_stack_setup(0, 1), Err(InstrStop::StackOverflow));
+            assert_eq!(stack.len(), StackMut::CAPACITY);
+        });
+
+        run_with_len(3, |stack| {
+            assert!(stack.instr_stack_setup(2, 1).is_ok());
+            assert_eq!(stack.len(), 2);
         });
     }
 

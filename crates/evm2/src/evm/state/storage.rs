@@ -22,6 +22,20 @@ pub struct StorageOverlay {
     pub _non_exhaustive: (),
 }
 
+impl StorageOverlay {
+    /// Returns the changed storage slots.
+    ///
+    /// A slot is changed when its current value differs from its transaction-boundary original,
+    /// except slots of a wiped overlay whose current value is zero: the wipe already deletes them.
+    #[inline]
+    pub fn changed_slots(&self) -> impl Iterator<Item = (&Word, &Tracked<Word>)> {
+        self.slots.iter().filter_map(|(key, slot)| {
+            (slot.value.is_changed() && (!self.wiped || !slot.value.current.is_zero()))
+                .then_some((key, &slot.value))
+        })
+    }
+}
+
 /// Persistent storage slot cached by [`super::State`].
 ///
 /// A slot is held in the overlay only once it has been loaded or written, so its value is always
@@ -58,24 +72,24 @@ impl StorageSlot {
 /// [`Self::is_warm`] / [`Self::is_loaded`], so callers can make EIP-2929 cold/warm decisions before
 /// paying for a cold database read.
 #[derive_where(Debug)]
-pub struct StorageHandle<'a> {
+pub struct StorageHandle<'a, 'db> {
     /// Address of the account whose storage this handle exposes.
     address: Address,
     /// Transaction overlay entry: the per-account storage slots plus the wipe flag.
     storage: &'a mut StorageOverlay,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
-    inner: &'a mut StateInner,
+    inner: &'a mut StateInner<'db>,
 }
 
-impl<'a> StorageHandle<'a> {
+impl<'a, 'db> StorageHandle<'a, 'db> {
     /// Creates a handle over an account's storage overlay and the shared inner state (backing
     /// database, revert journal, and transaction-initial base warm set).
     #[inline]
     pub(crate) const fn new(
         address: Address,
         storage: &'a mut StorageOverlay,
-        inner: &'a mut StateInner,
+        inner: &'a mut StateInner<'db>,
     ) -> Self {
         Self { address, storage, inner }
     }
@@ -131,7 +145,11 @@ impl<'a> StorageHandle<'a> {
     /// place by [`State::rollback`](super::State::rollback) as a harmless cache. Used by
     /// [`State::storage_slot`](super::State::storage_slot) to reach a single slot directly.
     #[inline]
-    pub fn into_slot(self, key: Word, skip_cold_load: bool) -> DbResult<StorageSlotHandle<'a>> {
+    pub fn into_slot(
+        self,
+        key: Word,
+        skip_cold_load: bool,
+    ) -> DbResult<StorageSlotHandle<'a, 'db>> {
         let Self { address, storage, inner } = self;
         let slot = match storage.slots.entry(key) {
             hash_map::Entry::Occupied(entry) => {
@@ -166,20 +184,18 @@ impl<'a> StorageHandle<'a> {
 
     /// Marks all of the account's prior persistent storage as deleted.
     ///
-    /// Loaded slot values are reset to zero so wiped slots resolve to zero on re-load, while warm
-    /// slots keep their entry so EIP-2929 warmth survives the wipe; cold slots are dropped. A
-    /// [`JournalEntry::StorageWipe`] snapshot of the prior overlay is recorded so the wipe is
-    /// undone by [`State::rollback`](super::State::rollback).
+    /// Only called during transaction finalization (selfdestruct and EIP-161 dead-account
+    /// deletion), after the last revertible scope, so the wipe is not journaled. Loaded slot
+    /// entries are kept with their values reset to zero: wiped slots resolve to zero on re-load,
+    /// and resetting `original` alongside `current` turns the transaction's prior writes into
+    /// unchanged reads, which keeps a destroyed account's storage accesses visible to the EIP-7928
+    /// block access list (execution-specs `destroy_storage` converts writes to reads).
     #[inline]
     pub fn wipe(&mut self) {
-        let previous = self.storage.clone();
         self.storage.wiped = true;
         self.storage.slots.iter_mut().for_each(|(_, slot)| {
-            slot.value = Tracked::new(Word::ZERO);
+            slot.value.set_current(Word::ZERO);
         });
-        self.inner
-            .journal
-            .push(JournalEntry::StorageWipe { address: self.address, previous: Some(previous) });
     }
 }
 
@@ -195,7 +211,7 @@ impl<'a> StorageHandle<'a> {
 /// [`StateInner`] (backing database, revert journal, and base warm set) needed to journal effects
 /// and answer warm-access queries.
 #[derive_where(Debug)]
-pub struct StorageSlotHandle<'a> {
+pub struct StorageSlotHandle<'a, 'db> {
     /// Address of the account that owns the slot.
     address: Address,
     /// Storage key of the slot.
@@ -204,10 +220,10 @@ pub struct StorageSlotHandle<'a> {
     slot: &'a mut StorageSlot,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
-    inner: &'a mut StateInner,
+    inner: &'a mut StateInner<'db>,
 }
 
-impl StorageSlotHandle<'_> {
+impl StorageSlotHandle<'_, '_> {
     /// Returns the account address.
     #[inline]
     pub const fn address(&self) -> Address {
@@ -302,6 +318,7 @@ mod tests {
             state::{AccountInfo, State},
         },
     };
+    use alloc::vec;
     use alloy_primitives::Address;
 
     #[test]
@@ -342,6 +359,23 @@ mod tests {
     }
 
     #[test]
+    fn take_transient_storage_only_drains_requested_account() {
+        let address = Address::from([0x22; 20]);
+        let other = Address::from([0x23; 20]);
+        let mut state = State::new(CacheDB::default());
+
+        state.tstore(&address, &Word::from(1), &Word::from(10));
+        state.tstore(&address, &Word::from(2), &Word::from(20));
+        state.tstore(&other, &Word::from(1), &Word::from(30));
+
+        let mut slots = state.take_transient_storage(&address);
+        slots.sort_unstable_by_key(|(key, _)| *key);
+        assert_eq!(slots, vec![(Word::from(1), Word::from(10)), (Word::from(2), Word::from(20))]);
+        assert_eq!(state.tload(&address, &Word::from(1)), Word::ZERO);
+        assert_eq!(state.tload(&other, &Word::from(1)), Word::from(30));
+    }
+
+    #[test]
     fn storage_wipe_preserves_warm_slots_in_merged_storage_map() {
         let account = Address::with_last_byte(0x19);
         let warm_key = Word::from(1);
@@ -361,34 +395,10 @@ mod tests {
         assert_eq!(state.storage_slot(&account, warm_key, false).unwrap().current(), Word::ZERO);
         assert_eq!(state.storage_slot(&account, cold_key, false).unwrap().current(), Word::ZERO);
 
-        let changes = state.build_state_changes();
-        let account_change = changes.accounts.get(&account).expect("wipe must be emitted");
-        assert!(account_change.is_storage_wiped());
-        assert!(account_change.changed_storage().next().is_none());
-    }
-
-    #[test]
-    fn storage_wipe_rolls_back_to_checkpoint() {
-        // A wipe performed inside a revertible scope (as `create_account` does for contract
-        // re-incarnation) must be undone by rollback: the cleared slots resolve to their real
-        // database values again and no spurious wipe marker is emitted.
-        let address = Address::from([0x49; 20]);
-        let key = Word::from(1);
-        let mut database = CacheDB::default();
-        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        database.insert_account_storage(&address, &key, &Word::from(7));
-        let mut state = State::new(database);
-
-        let checkpoint = state.checkpoint();
-        assert_eq!(state.storage_slot(&address, key, false).unwrap().current(), Word::from(7));
-        state.storage(&address).wipe();
-        assert!(state.storage(&address).is_wiped());
-        assert_eq!(state.storage_slot(&address, key, false).unwrap().current(), Word::ZERO);
-
-        state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.storage(&address).is_wiped());
-        assert_eq!(state.storage_slot(&address, key, false).unwrap().current(), Word::from(7));
-        assert!(!state.build_state_changes().is_changed());
+        let pending = state.take_pending_state();
+        let overlay = pending.storage.get(&account).expect("wipe must be emitted");
+        assert!(overlay.wiped);
+        assert!(overlay.changed_slots().next().is_none());
     }
 
     #[test]
@@ -417,7 +427,7 @@ mod tests {
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(!state.storage_slot(&address, key, false).unwrap().is_warm());
         assert_eq!(state.storage_slot(&address, key, false).unwrap().current(), Word::from(10));
-        assert!(!state.build_state_changes().is_changed());
+        assert!(!state.take_pending_state().is_changed());
     }
 
     #[test]
@@ -436,7 +446,7 @@ mod tests {
         }
         // Loading caches the value but a read-only handle records no transition.
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.build_state_changes().is_changed());
+        assert!(!state.take_pending_state().is_changed());
     }
 
     #[test]

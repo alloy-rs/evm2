@@ -3,6 +3,7 @@
 #![allow(missing_docs, clippy::missing_const_for_fn)]
 
 use crate::config::CustomConfigSelector;
+use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use config::{CustomBlockEnvExt, CustomSpecId, CustomTypes, custom_version};
@@ -55,12 +56,12 @@ fn custom_opcode() -> HandlerResult<()> {
         tx.ty(),
         result.status,
         result.stop,
-        result.gas_used(),
+        result.tx_gas_used(),
     );
 
     assert_eq!(result.stop, InstrStop::Stop);
     assert!(result.status);
-    assert_eq!(result.gas_used(), expected_gas);
+    assert_eq!(result.tx_gas_used(), expected_gas);
     assert!(result.ext.handled_custom_tx);
     Ok(())
 }
@@ -71,11 +72,20 @@ fn state_change_consumer() -> HandlerResult<()> {
     database.insert_account_info(&target, AccountInfo::default().with_nonce(1));
     let mut evm = custom_evm_with_database(database);
     let mut consumer = ExampleStateConsumer::default();
-    let tx = CustomEnvelope::ExecuteCode(ExecuteCodeTx {
-        target,
-        gas_limit: 100_000,
-        code: Bytes::from_static(&[opcode::CUSTOM_OPCODE, op::PUSH1, 0x01, op::SSTORE, op::STOP]),
-    });
+    let tx = Recovered::new_unchecked(
+        CustomEnvelope::ExecuteCode(ExecuteCodeTx {
+            target,
+            gas_limit: 100_000,
+            code: Bytes::from_static(&[
+                opcode::CUSTOM_OPCODE,
+                op::PUSH1,
+                0x01,
+                op::SSTORE,
+                op::STOP,
+            ]),
+        }),
+        Address::ZERO,
+    );
 
     let Ok(result) = evm.transact(&tx)?.commit_with(&mut consumer);
     let storage_change = consumer.storage_changes.first().expect("storage change observed");
@@ -188,17 +198,17 @@ fn inspector() -> HandlerResult<()> {
 const CUSTOM_L1_BLOCK_NUMBER: u64 = 42;
 const MAINNET_L1_BLOCK_NUMBER: u64 = 1;
 
-fn custom_evm() -> Evm<CustomTypes> {
+fn custom_evm() -> Evm<'static, CustomTypes> {
     custom_evm_with_database(InMemoryDB::default())
 }
 
-fn custom_evm_with_database(database: InMemoryDB) -> Evm<CustomTypes> {
+fn custom_evm_with_database(database: InMemoryDB) -> Evm<'static, CustomTypes> {
     Evm::<CustomTypes>::new_with_execution_config(
         custom_execution_config(),
         CustomSpecId::CustomOsaka,
-        BlockEnv {
+        BlockEnv::<CustomTypes> {
             ext: CustomBlockEnvExt { l1_block_number: CUSTOM_L1_BLOCK_NUMBER },
-            ..BlockEnv::default()
+            ..BlockEnv::<CustomTypes>::default()
         },
         custom_registry(),
         database,
@@ -206,12 +216,12 @@ fn custom_evm_with_database(database: InMemoryDB) -> Evm<CustomTypes> {
     )
 }
 
-fn mainnet_evm() -> Evm<CustomTypes> {
+fn mainnet_evm() -> Evm<'static, CustomTypes> {
     Evm::<CustomTypes>::new(
         CustomSpecId::MainnetOsaka,
-        BlockEnv {
+        BlockEnv::<CustomTypes> {
             ext: CustomBlockEnvExt { l1_block_number: MAINNET_L1_BLOCK_NUMBER },
-            ..BlockEnv::default()
+            ..BlockEnv::<CustomTypes>::default()
         },
         custom_registry(),
         InMemoryDB::default(),
@@ -224,12 +234,15 @@ fn custom_execution_config() -> ExecutionConfig<CustomTypes> {
         .with_version(configured_custom_version())
 }
 
-fn custom_opcode_tx(code: Bytes) -> CustomEnvelope {
-    CustomEnvelope::ExecuteCode(ExecuteCodeTx {
-        target: Address::from([0xcc; 20]),
-        gas_limit: 100_000,
-        code,
-    })
+fn custom_opcode_tx(code: Bytes) -> Recovered<CustomEnvelope> {
+    Recovered::new_unchecked(
+        CustomEnvelope::ExecuteCode(ExecuteCodeTx {
+            target: Address::from([0xcc; 20]),
+            gas_limit: 100_000,
+            code,
+        }),
+        Address::ZERO,
+    )
 }
 
 pub fn configured_custom_version() -> Version {
@@ -286,26 +299,26 @@ struct ExampleInspector {
 }
 
 impl Inspector<CustomTypes> for ExampleInspector {
-    fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, CustomTypes>) {
+    fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, '_, CustomTypes>) {
         self.state.initialized += 1;
     }
 
-    fn step(&mut self, interp: &mut Interpreter<'_, CustomTypes>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, CustomTypes>) {
         self.state.steps += 1;
         self.state.opcodes.push(interp.opcode());
     }
 
-    fn step_end(&mut self, _interp: &mut Interpreter<'_, CustomTypes>) {
+    fn step_end(&mut self, _interp: &mut Interpreter<'_, '_, CustomTypes>) {
         self.state.step_ends += 1;
     }
 
-    fn log(&mut self, _log: &alloy_primitives::Log, _host: &mut Evm<CustomTypes>) {
+    fn log(&mut self, _log: &alloy_primitives::Log, _host: &mut Evm<'_, CustomTypes>) {
         self.state.logs += 1;
     }
 
     fn call(
         &mut self,
-        _interp: &mut Interpreter<'_, CustomTypes>,
+        _interp: &mut Interpreter<'_, '_, CustomTypes>,
         _message: &mut Message<CustomTypes>,
     ) -> Option<MessageResult<CustomTypes>> {
         self.state.calls += 1;

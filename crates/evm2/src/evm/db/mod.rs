@@ -1,10 +1,11 @@
 //! Database helpers for the EVM state overlay.
 
-use super::state::AccountInfo;
+use super::{NonStaticAny, state::AccountInfo};
 use crate::{AnyError, ErrorCode, bytecode::Bytecode, error::error_unavailable, interpreter::Word};
 use alloc::{boxed::Box, string::ToString};
 use alloy_primitives::{Address, B256, keccak256};
-use core::{any::Any, error::Error};
+use auto_impl::auto_impl;
+use core::error::Error;
 
 mod cache;
 pub use cache::{AccountStorageCache, Cache, CacheDB, InMemoryDB};
@@ -13,7 +14,8 @@ pub use cache::{AccountStorageCache, Cache, CacheDB, InMemoryDB};
 pub type DbResult<T> = Result<T, ErrorCode>;
 
 /// Backing database implementation with a concrete error type.
-pub trait Database: Any {
+#[auto_impl(&mut, Box)]
+pub trait Database: NonStaticAny {
     /// Database error type.
     type Error: Error + Send + Sync + 'static;
 
@@ -27,7 +29,10 @@ pub trait Database: Any {
     fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error>;
 
     /// Loads a historical block hash.
-    fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error>;
+    ///
+    /// Callers only request numbers inside the `BLOCKHASH` window, so a hash the database cannot
+    /// provide is a database failure reported through the error, never a benign miss.
+    fn get_block_hash(&mut self, number: &Word) -> Result<B256, Self::Error>;
 }
 
 /// Object-safe database adapter for typed database implementations.
@@ -105,7 +110,7 @@ impl<T: Database> DynDatabase for Db<T> {
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
         self.db.get_block_hash(number).map_err(|err| self.store_error(err))
     }
 
@@ -121,7 +126,8 @@ impl<T: Database> DynDatabase for Db<T> {
 }
 
 /// Backing database view used to initialize mutable [`super::State`].
-pub trait DynDatabase: Any {
+#[auto_impl(&mut, Box)]
+pub trait DynDatabase: NonStaticAny {
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
 
@@ -132,7 +138,10 @@ pub trait DynDatabase: Any {
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word>;
 
     /// Loads a historical block hash.
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>>;
+    ///
+    /// Callers only request numbers inside the `BLOCKHASH` window, so a hash the database cannot
+    /// provide is a database failure reported through the error, never a benign miss.
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256>;
 
     /// Retrieves the full error for a previously returned error code.
     fn error(&mut self, code: ErrorCode) -> AnyError {
@@ -262,7 +271,7 @@ impl<D: DynDatabase> DynDatabase for DbStats<D> {
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
         self.counts.get_block_hash += 1;
         self.db.get_block_hash(number)
     }
@@ -274,8 +283,8 @@ impl<D: DynDatabase> DynDatabase for DbStats<D> {
     }
 }
 
-impl core::ops::Deref for dyn DynDatabase + '_ {
-    type Target = dyn Any;
+impl<'a> core::ops::Deref for dyn DynDatabase + 'a {
+    type Target = dyn NonStaticAny + 'a;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -283,38 +292,16 @@ impl core::ops::Deref for dyn DynDatabase + '_ {
     }
 }
 
-impl core::ops::DerefMut for dyn DynDatabase + '_ {
+impl<'a> core::ops::DerefMut for dyn DynDatabase + 'a {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self
     }
 }
 
-impl<T: DynDatabase + ?Sized> DynDatabase for Box<T> {
-    #[inline]
-    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        self.as_mut().get_account(address)
-    }
-
-    #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
-        self.as_mut().get_code_by_hash(code_hash)
-    }
-
-    #[inline]
-    fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        self.as_mut().get_storage(address, key)
-    }
-
-    #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
-        self.as_mut().get_block_hash(number)
-    }
-
-    #[inline]
-    fn error(&mut self, code: ErrorCode) -> AnyError {
-        self.as_mut().error(code)
-    }
+#[inline]
+pub(crate) fn boxed_dyn_database<'a>(database: impl DynDatabase + 'a) -> Box<dyn DynDatabase + 'a> {
+    Box::new(database)
 }
 
 /// Empty backing database.
@@ -340,8 +327,8 @@ impl Database for EmptyDB {
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error> {
-        Ok(Some(keccak256(number.to_string().as_bytes())))
+    fn get_block_hash(&mut self, number: &Word) -> Result<B256, Self::Error> {
+        Ok(keccak256(number.to_string().as_bytes()))
     }
 }
 
@@ -362,7 +349,49 @@ impl DynDatabase for EmptyDB {
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
         Db::new(*self).get_block_hash(number)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct BorrowingDb<'a> {
+        value: &'a u8,
+    }
+
+    impl DynDatabase for BorrowingDb<'_> {
+        fn get_account(&mut self, _address: &Address) -> DbResult<Option<AccountInfo>> {
+            Ok(None)
+        }
+
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> DbResult<Bytecode> {
+            Ok(Bytecode::default())
+        }
+
+        fn get_storage(&mut self, _address: &Address, _key: &Word) -> DbResult<Word> {
+            Ok(Word::ZERO)
+        }
+
+        fn get_block_hash(&mut self, _number: &Word) -> DbResult<B256> {
+            Ok(B256::from([*self.value; 32]))
+        }
+    }
+
+    #[test]
+    fn borrowed_database_can_be_erased() {
+        let value = 1;
+        let mut erased = boxed_dyn_database(BorrowingDb { value: &value });
+
+        assert_eq!(erased.get_block_hash(&Word::ZERO).unwrap(), B256::from([value; 32]));
+    }
+
+    #[test]
+    fn static_database_can_be_downcast() {
+        let erased: Box<dyn DynDatabase + 'static> = boxed_dyn_database(EmptyDB::default());
+
+        assert!(erased.downcast_ref::<EmptyDB>().is_some());
     }
 }

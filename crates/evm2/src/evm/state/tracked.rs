@@ -3,12 +3,13 @@
 /// A value tracked together with the value it had at an aggregation boundary.
 ///
 /// `Tracked` is used by [`State`](super::State) to keep a transaction overlay over the backing
-/// database, by [`StateChanges`](super::StateChanges) to describe transaction transitions, and by
+/// database, by [`PendingState`](super::PendingState) to describe transaction transitions, and by
 /// [`BlockStateAccumulator`](super::BlockStateAccumulator) to describe block transitions.
 /// `original` is the value at the start of the current transaction or block, while `current` is the
 /// value after all observed mutations in that boundary. When a transaction is accepted, `current`
 /// becomes the next transaction's `original` without writing anything to the backing database.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Tracked<T> {
     /// Value at the start of the aggregation boundary.
     pub original: T,

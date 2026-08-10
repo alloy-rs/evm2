@@ -19,10 +19,23 @@ impl Error for AnyError {
     }
 }
 
+impl PartialEq for AnyError {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for AnyError {}
+
 impl AnyError {
     /// Creates a new [`AnyError`] from any error type.
     pub fn new(err: impl Error + Send + Sync + 'static) -> Self {
         Self(Arc::new(err))
+    }
+
+    /// Returns the original error when it has type `E`.
+    pub fn downcast_ref<E: Error + 'static>(&self) -> Option<&E> {
+        self.0.downcast_ref()
     }
 }
 
@@ -71,6 +84,10 @@ impl ErrorCode {
 
     /// Reserved code signalling that precompile execution stopped on a fatal error.
     pub const FATAL_PRECOMPILE: Self = Self::new_reserved(3);
+
+    /// Reserved code signalling that a read is not covered by the attached EIP-7928 Block Access
+    /// List and database fallback is disabled, so the BAL is invalid for this access.
+    pub const BAL_NOT_COVERED: Self = Self::new_reserved(4);
 
     #[inline]
     const fn new_reserved(code: usize) -> Self {

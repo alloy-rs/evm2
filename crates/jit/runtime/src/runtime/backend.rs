@@ -118,7 +118,7 @@ impl JitObjectLinker {
         &mut self,
         _success: &JitObjectSuccess,
     ) -> eyre::Result<(EvmCompilerFn, Arc<JitCodeBacking>)> {
-        eyre::bail!("LLVM backend not available")
+        eyre::bail!("LLVM backend not available");
     }
 }
 

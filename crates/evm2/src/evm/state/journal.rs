@@ -1,17 +1,37 @@
 //! Revert journal and checkpoint types.
 
-use super::{AccountInfo, StorageOverlay};
+use super::AccountInfo;
 use crate::interpreter::Word;
 use alloy_primitives::Address;
 
 /// State checkpoint for reverting state changes.
 #[allow(missing_copy_implementations)]
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StateCheckpoint {
     /// Revert journal length at the checkpoint.
     pub(crate) journal_len: usize,
     /// Emitted log count at the checkpoint.
     pub(crate) logs_len: usize,
+}
+
+impl StateCheckpoint {
+    /// Creates a checkpoint from journal and log cursors.
+    #[inline]
+    pub const fn new(journal_len: usize, logs_len: usize) -> Self {
+        Self { journal_len, logs_len }
+    }
+
+    /// Returns the revert-journal cursor captured by this checkpoint.
+    #[inline]
+    pub const fn journal_len(&self) -> usize {
+        self.journal_len
+    }
+
+    /// Returns the emitted-log cursor captured by this checkpoint.
+    #[inline]
+    pub const fn logs_len(&self) -> usize {
+        self.logs_len
+    }
 }
 
 /// Compact journal entry for reverting state changes.
@@ -45,17 +65,6 @@ pub enum JournalEntry {
         key: Word,
         /// Previous current storage value.
         previous: Word,
-    },
-    /// Account storage wipe snapshot.
-    ///
-    /// Required for rollback: `create_account` wipes the overlay for contract re-incarnation
-    /// inside a revertible scope, so a reverted CREATE must restore the pre-wipe overlay (its
-    /// loaded slots and cleared wipe flag). See the `storage_wipe_rolls_back_to_checkpoint` test.
-    StorageWipe {
-        /// Account address.
-        address: Address,
-        /// Previous storage overlay.
-        previous: Option<StorageOverlay>,
     },
     /// Transient storage changed.
     TransientStorageChange {
@@ -189,8 +198,8 @@ mod tests {
         state.prewarm(&account);
         state.prewarm_storage_slot(&storage_account, key);
 
-        let changes = state.build_state_changes();
-        assert!(changes.is_empty());
+        let pending = state.take_pending_state();
+        assert!(pending.is_empty());
         assert!(state.account(&account, false).unwrap().is_warm());
         assert!(state.storage_slot(&storage_account, key, false).unwrap().is_warm());
 
@@ -216,7 +225,7 @@ mod tests {
         // non-revertible base warm set, and the unchanged cached entry emits no state change.
         assert!(state.prewarm_set().is_warm(&account));
         assert!(state.account(&account, false).unwrap().is_warm());
-        assert!(!state.build_state_changes().is_changed());
+        assert!(!state.take_pending_state().is_changed());
     }
 
     #[test]
@@ -234,7 +243,7 @@ mod tests {
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(state.storage_slot(&account, key, false).unwrap().is_warm());
-        assert!(!state.build_state_changes().is_changed());
+        assert!(!state.take_pending_state().is_changed());
     }
 
     #[test]
@@ -254,7 +263,7 @@ mod tests {
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(!state.storage_slot(&account, key, false).unwrap().is_warm());
         assert_eq!(state.storage_slot(&account, key, false).unwrap().current(), value);
-        assert!(!state.build_state_changes().is_changed());
+        assert!(!state.take_pending_state().is_changed());
 
         assert!(state.storage_slot(&account, key, false).unwrap().warm());
     }

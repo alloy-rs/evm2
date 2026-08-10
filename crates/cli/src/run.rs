@@ -4,8 +4,8 @@ use clap::ValueEnum;
 use evm2::{
     BaseEvmTypes, Evm, ExecutionConfig, InterpreterRunner, Precompiles, SpecId, Version,
     bytecode::Bytecode,
-    env::BlockEnv,
-    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+    env::{BlockEnv, BlockEnvExt},
+    ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo, InMemoryDB},
     interpreter::{InstrStop, Interpreter},
 };
@@ -621,7 +621,7 @@ impl PreparedBench {
         Ok(())
     }
 
-    fn new_evm(&self) -> Evm<BaseEvmTypes> {
+    fn new_evm(&self) -> Evm<'static, BaseEvmTypes> {
         Evm::new(
             self.spec_id,
             self.block,
@@ -638,11 +638,11 @@ struct FixedJitRunner {
 }
 
 impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
-    fn run(
+    fn run<'frame, 'host>(
         &self,
         config: &ExecutionConfig<BaseEvmTypes>,
-        interpreter: &mut Interpreter<'_, BaseEvmTypes>,
-        host: &mut Evm<BaseEvmTypes>,
+        interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+        host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
         let code = interpreter.original_bytecode();
         let func = *self.functions.get(&keccak256(&code))?;
@@ -713,9 +713,9 @@ fn parse_bytecode_bench(bench: &Bench, bytecode: &[u8]) -> eyre::Result<Prepared
     Ok((
         bench.name.clone(),
         vec![ParsedAccount { bytecode, code_hash }],
-        BlockEnv::default(),
+        BlockEnvExt::default(),
         db,
-        RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(tx, BENCH_CALLER)),
+        Recovered::new_unchecked(TxEnvelope::Legacy(tx), BENCH_CALLER),
     ))
 }
 
@@ -750,7 +750,7 @@ fn select_case<'a>(
 }
 
 fn parse_block(env: &evm2_eest::StateTestEnv) -> BlockEnv {
-    BlockEnv {
+    BlockEnvExt {
         number: env.current_number,
         beneficiary: env.current_coinbase,
         timestamp: env.current_timestamp,
@@ -759,7 +759,7 @@ fn parse_block(env: &evm2_eest::StateTestEnv) -> BlockEnv {
         difficulty: env.current_difficulty,
         prevrandao: env.current_random.map_or(U256::ZERO, |value| U256::from_be_bytes(value.0)),
         slot_num: env.slot_number.unwrap_or_default(),
-        ..BlockEnv::default()
+        ..BlockEnvExt::default()
     }
 }
 
@@ -798,7 +798,7 @@ fn build_fixture_tx(
         value,
         input: data,
     };
-    Ok(RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(tx, caller)))
+    Ok(Recovered::new_unchecked(TxEnvelope::Legacy(tx), caller))
 }
 
 impl Bench {
@@ -857,7 +857,7 @@ fn read_code_string(contents: &[u8], ext: Option<&str>) -> eyre::Result<Vec<u8>>
             }
         })
     } else {
-        eyre::bail!("could not determine bytecode type")
+        eyre::bail!("could not determine bytecode type");
     }
 }
 

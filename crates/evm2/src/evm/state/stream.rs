@@ -3,6 +3,7 @@
 use super::AccountInfo;
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256};
+use auto_impl::auto_impl;
 use core::convert::Infallible;
 
 /// Borrowed account information exposed to change sinks.
@@ -62,20 +63,16 @@ pub struct AccountChangeRef<'a> {
     pub original: Option<AccountInfoRef<'a>>,
     /// Account after the change. `None` is an explicit deletion.
     pub current: Option<AccountInfoRef<'a>>,
-}
-
-impl AccountChangeRef<'_> {
-    /// Returns whether this change creates an account.
-    #[inline]
-    pub const fn created(&self) -> bool {
-        self.original.is_none() && self.current.is_some()
-    }
-
-    /// Returns whether this change deletes an account.
-    #[inline]
-    pub const fn deleted(&self) -> bool {
-        self.original.is_some() && self.current.is_none()
-    }
+    /// Whether the account was created during the transaction.
+    ///
+    /// Only transaction-level sources report this; block-level aggregation loses per-transaction
+    /// lifecycle flags and reports `false`.
+    pub created: bool,
+    /// Whether the account was selfdestructed during the transaction.
+    ///
+    /// Only transaction-level sources report this; block-level aggregation loses per-transaction
+    /// lifecycle flags and reports `false`.
+    pub selfdestructed: bool,
 }
 
 /// Storage slot change passed to [`StateChangeSink`].
@@ -92,6 +89,7 @@ pub struct StorageChange {
 }
 
 /// Consumer of borrowed transaction or block state changes.
+#[auto_impl(&mut, Box)]
 pub trait StateChangeSink {
     /// Error returned by this sink.
     type Error;
@@ -122,44 +120,47 @@ pub trait StateChangeSink {
     fn storage(&mut self, _change: StorageChange) -> Result<(), Self::Error> {
         Ok(())
     }
-}
 
-impl<S> StateChangeSink for &mut S
-where
-    S: StateChangeSink + ?Sized,
-{
-    type Error = S::Error;
-
+    /// Observes an account the transaction loaded but left unchanged. `None` means the account
+    /// was loaded as non-existent.
+    ///
+    /// Only transaction-level sources report reads; sinks that persist changes can ignore them.
     #[inline]
-    fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
-        (**self).bytecode(code_hash, code)
+    fn account_read(
+        &mut self,
+        _address: Address,
+        _info: Option<AccountInfoRef<'_>>,
+    ) -> Result<(), Self::Error> {
+        Ok(())
     }
 
+    /// Observes a storage slot the transaction loaded but left unchanged.
+    ///
+    /// Only transaction-level sources report reads; sinks that persist changes can ignore them.
     #[inline]
-    fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
-        (**self).account(change)
-    }
-
-    #[inline]
-    fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
-        (**self).storage_wipe(address)
-    }
-
-    #[inline]
-    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
-        (**self).storage(change)
+    fn storage_read(
+        &mut self,
+        _address: Address,
+        _key: Word,
+        _value: Word,
+    ) -> Result<(), Self::Error> {
+        Ok(())
     }
 }
 
 /// Source of borrowed state changes.
 pub trait StateChangeSource {
-    /// Visits all changes in deterministic application order.
+    /// Visits all changes. Ordering is source-defined and not guaranteed to be deterministic.
+    ///
+    /// Sources that track reads also report loaded-but-unchanged entries through
+    /// [`StateChangeSink::account_read`] and [`StateChangeSink::storage_read`].
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error>;
 }
 
 /// Sink that ignores all changes.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NoopChangeSink;
+#[derive(Clone, Debug, Default)]
+#[allow(missing_copy_implementations)]
+pub struct NoopChangeSink(());
 
 impl StateChangeSink for NoopChangeSink {
     type Error = Infallible;
@@ -209,5 +210,26 @@ where
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
         self.a.storage(change)?;
         self.b.storage(change)
+    }
+
+    #[inline]
+    fn account_read(
+        &mut self,
+        address: Address,
+        info: Option<AccountInfoRef<'_>>,
+    ) -> Result<(), Self::Error> {
+        self.a.account_read(address, info)?;
+        self.b.account_read(address, info)
+    }
+
+    #[inline]
+    fn storage_read(
+        &mut self,
+        address: Address,
+        key: Word,
+        value: Word,
+    ) -> Result<(), Self::Error> {
+        self.a.storage_read(address, key, value)?;
+        self.b.storage_read(address, key, value)
     }
 }

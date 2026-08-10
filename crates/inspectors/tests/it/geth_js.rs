@@ -195,6 +195,68 @@ fn test_geth_jstracer_proxy_contract() {
 }
 
 #[test]
+fn test_geth_jstracer_records_call_step_after_nested_execution() {
+    let child = address!("0000000000000000000000000000000000001234");
+    let parent = address!("0000000000000000000000000000000000000022");
+
+    let child_code =
+        Bytecode::new_legacy([0x60, 1, 0x60, 0x40, 0x52, 0x60, 1, 0x60, 1, 0x01, 0x00].into());
+    let parent_code = Bytecode::new_legacy(
+        [
+            0x60, 1, 0x60, 0, 0x52, 0x60, 0, 0x60, 0, 0x60, 0, 0x60, 0, 0x60, 0, 0x61, 0x12, 0x34,
+            0x61, 0xff, 0xff, 0xf1, 0x00,
+        ]
+        .into(),
+    );
+
+    let context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            db.insert_account_info(
+                &child,
+                AccountInfo { code: Some(child_code), ..Default::default() },
+            );
+            db.insert_account_info(
+                &parent,
+                AccountInfo { code: Some(parent_code), ..Default::default() },
+            );
+        });
+
+    let code = r#"
+{
+    ops: [],
+    step: function(log) {
+        this.ops.push({ op: log.op.toString(), depth: log.getDepth(), mem: log.memory.length() });
+    },
+    fault: function() {},
+    result: function() { return this.ops; }
+}"#;
+    let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
+    let mut evm = context.build_mainnet().with_inspector(insp);
+    let res = evm
+        .inspect_tx(TxEnv {
+            caller: Address::ZERO,
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(parent),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let (context, insp) = evm.ctx_inspector();
+    let result = js_result(insp, &res, context);
+    let ops = result.as_array().unwrap();
+    let call = ops.iter().position(|step| step["op"] == "CALL").expect("missing CALL step");
+    let add = ops.iter().position(|step| step["op"] == "ADD").expect("missing child ADD step");
+    assert!(add < call, "CALL step_end should be observed after child execution: {ops:?}");
+
+    let parent_stop = ops
+        .iter()
+        .find(|step| step["op"] == "STOP" && step["depth"].as_u64() == Some(0))
+        .expect("missing parent STOP step");
+    assert_eq!(parent_stop["mem"].as_u64(), Some(32));
+}
+
+#[test]
 fn test_geth_debug_inspector_jstracer() {
     let account = address!("1000000000000000000000000000000000000001");
     let caller = address!("1000000000000000000000000000000000000002");

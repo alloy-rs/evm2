@@ -12,9 +12,9 @@
 use crate::EvmContext;
 
 /// Offset of `EvmContext::exit_result`.
-const EXIT_RESULT_OFFSET: usize = core::mem::offset_of!(EvmContext<'_>, exit_result);
+const EXIT_RESULT_OFFSET: usize = core::mem::offset_of!(EvmContext<'_, '_, '_>, exit_result);
 /// Offset of `EvmContext::exit_sp`.
-const EXIT_SP_OFFSET: usize = core::mem::offset_of!(EvmContext<'_>, exit_sp);
+const EXIT_SP_OFFSET: usize = core::mem::offset_of!(EvmContext<'_, '_, '_>, exit_sp);
 
 #[cfg(target_arch = "x86_64")]
 mod x86_64;

@@ -7,7 +7,7 @@
 use crate::{
     blockchaintest::{ExecuteConfig as BlockchainConfig, NoopHook, execute_str},
     execute::{self, ExecuteConfig as StateConfig},
-    filter::EntryPoint,
+    filter::NameFilter,
     fixture_io,
     harness::{TestRoot, TestSuite, descend_all},
 };
@@ -43,8 +43,8 @@ fn run_file(path: PathBuf) -> Result<(), Failed> {
         Some(FixtureKind::Blockchain) => execute_str(
             &path,
             &input,
-            BlockchainConfig::default(),
-            &EntryPoint::default(),
+            BlockchainConfig { compare_state_root: true, ..Default::default() },
+            &NameFilter::default(),
             &mut NoopHook,
         )
         .map(|_| ())

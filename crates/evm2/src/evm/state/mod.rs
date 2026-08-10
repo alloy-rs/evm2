@@ -2,17 +2,17 @@
 
 mod account;
 mod block;
-mod changes;
 mod journal;
+mod pending;
 mod storage;
 mod stream;
 mod tracked;
 
-use account::Account;
+pub(crate) use account::Account;
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
-pub use changes::{AccountChange, StateChanges};
 pub use journal::{JournalEntry, StateCheckpoint};
+pub use pending::PendingState;
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
 pub use stream::{
     AccountChangeRef, AccountInfoRef, NoopChangeSink, StateChangeSink, StateChangeSource,
@@ -22,7 +22,8 @@ pub use tracked::Tracked;
 
 use super::{
     PrewarmSet,
-    db::{CacheDB, DbResult, DynDatabase},
+    bal::{Bal, BlockAccessIndex},
+    db::{CacheDB, DbResult, DynDatabase, boxed_dyn_database},
 };
 use crate::{
     ErrorCode, EvmFeatures, Version,
@@ -30,10 +31,10 @@ use crate::{
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap},
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
-    map::{AddressMap, AddressSet, U256Map, hash_map},
+    map::{AddressMap, AddressSet, hash_map},
 };
 use core::{
     mem,
@@ -44,7 +45,7 @@ use derive_where::derive_where;
 /// Mutable EVM state with an accepted-state cache, transaction layer, and reversible journal.
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct State {
+pub struct State<'a> {
     /// Account writes plus touch and warm-access metadata for the current transaction.
     accounts: AddressMap<Account>,
     /// Persistent storage writes plus warm slot metadata for the current transaction.
@@ -52,18 +53,18 @@ pub struct State {
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
     transient_storage: StorageKeyMap<Word>,
     /// Inner state.
-    inner: StateInner,
+    inner: StateInner<'a>,
 }
 
-impl Deref for State {
-    type Target = StateInner;
+impl<'a> Deref for State<'a> {
+    type Target = StateInner<'a>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl DerefMut for State {
+impl<'a> DerefMut for State<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
@@ -78,10 +79,10 @@ impl DerefMut for State {
 /// derefs to this type, so its fields and methods are reachable directly on a [`State`].
 #[derive_where(Debug)]
 #[non_exhaustive]
-pub struct StateInner {
+pub struct StateInner<'a> {
     /// Database plus accepted transaction-boundary state overlay.
     #[derive_where(skip)]
-    database: CacheDB<Box<dyn DynDatabase>>,
+    database: CacheDB<Box<dyn DynDatabase + 'a>>,
     /// Pre-warmed set: precompiles, coinbase, and the EIP-2930 access list.
     prewarm_set: PrewarmSet,
     /// Revert journal.
@@ -92,13 +93,13 @@ pub struct StateInner {
     selfdestructs: AddressSet,
 }
 
-impl State {
+impl<'a> State<'a> {
     /// Creates a new state over an initial database.
-    pub fn new(initial: impl DynDatabase) -> Self {
-        Self::new_mono(Box::new(initial))
+    pub fn new(initial: impl DynDatabase + 'a) -> Self {
+        Self::new_mono(boxed_dyn_database(initial))
     }
 
-    pub(crate) fn new_mono(initial: Box<dyn DynDatabase>) -> Self {
+    pub(crate) fn new_mono(initial: Box<dyn DynDatabase + 'a>) -> Self {
         Self {
             accounts: AddressMap::default(),
             storage: AddressMap::default(),
@@ -116,37 +117,37 @@ impl State {
     /// Returns a checkpoint for later rollback.
     #[inline]
     pub const fn checkpoint(&self) -> StateCheckpoint {
-        StateCheckpoint { journal_len: self.inner.journal.len(), logs_len: self.inner.logs.len() }
+        StateCheckpoint::new(self.inner.journal.len(), self.inner.logs.len())
     }
 
     /// Returns the initial database.
     #[inline]
-    pub fn initial(&self) -> &dyn DynDatabase {
+    pub fn initial(&self) -> &(dyn DynDatabase + 'a) {
         self.database.db.as_ref()
     }
 
     /// Returns the initial database mutably.
     #[inline]
-    pub fn initial_mut(&mut self) -> &mut dyn DynDatabase {
+    pub fn initial_mut(&mut self) -> &mut (dyn DynDatabase + 'a) {
         self.database.db.as_mut()
     }
 
     /// Replaces the initial database and clears all in-memory state layers.
     #[inline]
-    pub fn set_initial(&mut self, initial: impl DynDatabase) {
-        self.database = CacheDB::new(Box::new(initial));
+    pub fn set_initial(&mut self, initial: impl DynDatabase + 'a) {
+        self.database = CacheDB::new(boxed_dyn_database(initial));
         self.clear_transaction_state();
     }
 
     /// Returns the accepted-state overlay database.
     #[inline]
-    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase>> {
+    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase + 'a>> {
         &self.inner.database
     }
 
     /// Returns the accepted-state overlay database mutably.
     #[inline]
-    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase>> {
+    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase + 'a>> {
         &mut self.inner.database
     }
 
@@ -156,9 +157,82 @@ impl State {
         self.inner.database.commit_source(source);
     }
 
+    /// Attaches an EIP-7928 BAL that the accepted-overlay database consults on reads.
+    ///
+    /// Once attached, account-info and storage reads are served from the BAL at the current block
+    /// access index (layered over the cache/database). Reads not covered by the BAL error unless
+    /// [`Self::set_allow_bal_db_fallback`] is enabled.
+    #[inline]
+    pub fn set_bal(&mut self, bal: Arc<Bal>) {
+        self.inner.database.bal_context.set_bal(bal);
+    }
+
+    /// Returns the attached read BAL, or `None` when no BAL is attached.
+    #[inline]
+    pub const fn bal(&self) -> Option<&Arc<Bal>> {
+        self.inner.database.bal_context.bal()
+    }
+
+    /// Sets whether reads not covered by the attached BAL fall back to the cache/database instead
+    /// of erroring.
+    #[inline]
+    pub const fn set_allow_bal_db_fallback(&mut self, allow: bool) {
+        self.inner.database.bal_context.set_allow_db_fallback(allow);
+    }
+
+    /// Enables EIP-7928 Block Access List construction on the accepted-overlay database.
+    ///
+    /// Once enabled, every committed transaction is folded into the builder at the current block
+    /// access index. Bump the index once per transaction with [`Self::bump_bal_index`]. The BAL
+    /// state lives in the accepted-overlay [`CacheDB`]'s
+    /// [`BalContext`](crate::evm::BalContext).
+    #[inline]
+    pub fn enable_bal_builder(&mut self) {
+        self.inner.database.bal_context.enable_bal_builder();
+    }
+
+    /// Returns the in-progress BAL builder, or `None` when BAL construction is disabled.
+    #[inline]
+    pub const fn bal_builder(&self) -> Option<&Bal> {
+        self.inner.database.bal_context.bal_builder()
+    }
+
+    /// Returns the current EIP-7928 block access index.
+    #[inline]
+    pub const fn bal_index(&self) -> BlockAccessIndex {
+        self.inner.database.bal_context.bal_index()
+    }
+
+    /// Resets the BAL block access index to the pre-execution slot. Call before a block's
+    /// transactions.
+    #[inline]
+    pub const fn reset_bal_index(&mut self) {
+        self.inner.database.bal_context.reset_bal_index();
+    }
+
+    /// Sets the BAL block access index to the given value. Use to position reads at an arbitrary
+    /// transaction index, e.g. when executing on top of a read BAL mid-block.
+    #[inline]
+    pub const fn set_bal_index(&mut self, index: BlockAccessIndex) {
+        self.inner.database.bal_context.set_bal_index(index);
+    }
+
+    /// Bumps the BAL block access index by one. Call once per transaction.
+    #[inline]
+    pub const fn bump_bal_index(&mut self) {
+        self.inner.database.bal_context.bump_bal_index();
+    }
+
+    /// Takes the built BAL, resetting the block access index. Returns `None` when BAL construction
+    /// is disabled.
+    #[inline]
+    pub const fn take_bal_builder(&mut self) -> Option<Bal> {
+        self.inner.database.bal_context.take_bal_builder()
+    }
+
     /// Loads a historical block hash.
     #[inline]
-    pub(crate) fn block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+    pub(crate) fn block_hash(&mut self, number: &Word) -> DbResult<B256> {
         self.database.get_block_hash(number)
     }
 
@@ -255,13 +329,19 @@ impl State {
 
     /// Clears transaction-scoped substate.
     pub fn clear_transaction_state(&mut self) {
-        self.accounts.clear();
-        self.prewarm_set.clear();
-        self.storage.clear();
-        self.journal.clear();
-        self.selfdestructs.clear();
-        self.transient_storage.clear();
-        self.logs.clear();
+        let Self {
+            accounts,
+            storage,
+            transient_storage,
+            inner: StateInner { prewarm_set, journal, selfdestructs, logs, database: _ },
+        } = self;
+        accounts.clear();
+        storage.clear();
+        transient_storage.clear();
+        prewarm_set.clear();
+        journal.clear();
+        selfdestructs.clear();
+        logs.clear();
     }
 
     /// Ensures the account is present in the transaction overlay, loading it from the backing
@@ -279,12 +359,12 @@ impl State {
     /// harmless read cache that [`Self::rollback`] leaves in place. Only later warmth and value
     /// changes are journaled and reverted.
     #[inline(always)]
-    fn account_raw<'a>(
-        inner: &mut StateInner,
-        accounts: &'a mut AddressMap<Account>,
+    fn account_raw<'h>(
+        inner: &mut StateInner<'a>,
+        accounts: &'h mut AddressMap<Account>,
         address: &Address,
         skip_cold: bool,
-    ) -> DbResult<&'a mut Account> {
+    ) -> DbResult<&'h mut Account> {
         match accounts.entry(*address) {
             hash_map::Entry::Occupied(entry) => {
                 // An already-loaded account has no cold database read to skip, so the skip only
@@ -325,7 +405,7 @@ impl State {
         &mut self,
         address: &Address,
         skip_cold_load: bool,
-    ) -> DbResult<AccountHandle<'_>> {
+    ) -> DbResult<AccountHandle<'_, 'a>> {
         Self::account_raw(&mut self.inner, &mut self.accounts, address, skip_cold_load)
             .map(|tracked| AccountHandle::new(*address, tracked, &mut self.inner))
     }
@@ -339,7 +419,7 @@ impl State {
     ///
     /// This does not load or touch the owning account; callers that need the account materialized
     /// must do so separately via [`Self::account`].
-    pub fn storage(&mut self, address: &Address) -> StorageHandle<'_> {
+    pub fn storage(&mut self, address: &Address) -> StorageHandle<'_, 'a> {
         let storage = self.storage.entry(*address).or_default();
         StorageHandle::new(*address, storage, &mut self.inner)
     }
@@ -355,7 +435,7 @@ impl State {
         address: &Address,
         key: Word,
         skip_cold_load: bool,
-    ) -> DbResult<StorageSlotHandle<'_>> {
+    ) -> DbResult<StorageSlotHandle<'_, 'a>> {
         self.storage(address).into_slot(key, skip_cold_load)
     }
 
@@ -455,8 +535,6 @@ impl State {
             caller_account.set_balance(new_caller_balance);
         }
 
-        self.storage(address).wipe();
-
         let mut target = self.account(address, false)?;
         // Preserve any balance the address already held (e.g. funds sent before creation) and add
         // the endowment.
@@ -512,6 +590,28 @@ impl State {
         }
     }
 
+    /// Removes and returns every transient storage slot owned by `address`.
+    ///
+    /// This is intended for transaction-finalization policies that encode per-account pending
+    /// work in EIP-1153 storage and must consume it before transaction scratch is cleared.
+    pub fn take_transient_storage(&mut self, address: &Address) -> Vec<(Word, Word)> {
+        let keys = self
+            .transient_storage
+            .keys()
+            .copied()
+            .filter(|key| key.address() == *address)
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .map(|key| {
+                let value = self
+                    .transient_storage
+                    .remove(&key)
+                    .expect("collected transient storage key must exist");
+                (key.key(), value)
+            })
+            .collect()
+    }
+
     /// Reverts state changes after the checkpoint.
     #[inline(never)]
     pub fn rollback(&mut self, checkpoint: StateCheckpoint, features: EvmFeatures) {
@@ -561,14 +661,6 @@ impl State {
                         slot.value.current = previous;
                     }
                 }
-                JournalEntry::StorageWipe { address, previous } => match previous {
-                    Some(storage) => {
-                        self.storage.insert(address, storage);
-                    }
-                    None => {
-                        self.storage.remove(&address);
-                    }
-                },
                 JournalEntry::TransientStorageChange { address, key, previous } => match previous {
                     Some(previous) if !previous.is_zero() => {
                         self.transient_storage.insert(StorageKey::new(address, key), previous);
@@ -607,8 +699,8 @@ impl State {
 
     /// Applies transaction-finalization account-lifetime rules to the overlay.
     ///
-    /// This mutates the in-memory post-transaction state before it is serialized
-    /// by [`Self::build_state_changes`]. Runtime records
+    /// This mutates the in-memory post-transaction state before it is streamed to a
+    /// [`StateChangeSink`] or detached as a [`PendingState`]. Runtime records
     /// transaction substate such as touches and selfdestructs, while finalization
     /// turns that substate into account deletions, storage wipes, balance-only
     /// selfdestruct resets (EIP-8246), or pre-EIP-161 empty-account materialization.
@@ -655,9 +747,9 @@ impl State {
             }
         }
 
-        // Restore the selfdestruct set without clearing it: `build_state_changes` reads it to flag
-        // selfdestructed accounts, and `clear_transaction_state` clears it at the end of the
-        // transaction lifecycle.
+        // Restore the selfdestruct set without clearing it: `take_pending_state` moves it into the
+        // detached [`PendingState`] to flag selfdestructed accounts, and `clear_transaction_state`
+        // clears it at the end of the transaction lifecycle.
         self.selfdestructs = selfdestructs;
 
         for address in touched {
@@ -668,44 +760,16 @@ impl State {
         Ok(())
     }
 
-    #[inline]
-    fn account_changed(original: Option<&AccountInfo>, current: Option<&AccountInfo>) -> bool {
-        match (original, current) {
-            (Some(original), Some(current)) => {
-                original.balance != current.balance
-                    || original.nonce != current.nonce
-                    || original.code_hash != current.code_hash
-            }
-            (None, None) => false,
-            _ => true,
-        }
-    }
-
-    #[inline]
-    fn changed_code(code_changed: bool, account: &AccountInfo) -> Option<(B256, &Bytecode)> {
-        let code = account.code.as_ref()?;
-        let code_hash = account.code_hash;
-        (code_changed && !code.is_empty() && !code_hash.is_zero() && code_hash != KECCAK256_EMPTY)
-            .then_some((code_hash, code))
-    }
-
-    #[inline]
-    fn storage_slot_changed(storage_wiped: bool, slot: &Tracked<Word>) -> bool {
-        slot.is_changed() && (!storage_wiped || !slot.current.is_zero())
-    }
-
     /// Visits transaction state changes in database application order.
     ///
-    /// This borrows changes directly from the transaction layer. It does not materialize
-    /// [`StateChanges`] and does not mutate the accepted overlay.
+    /// This borrows changes directly from the transaction layer without detaching it and does not
+    /// mutate the accepted overlay.
     pub(crate) fn visit_transaction_changes<S: StateChangeSink>(
         &self,
         sink: &mut S,
     ) -> Result<(), S::Error> {
         for entry in self.accounts.values() {
-            if let Some(account) = entry.present.as_ref()
-                && let Some((code_hash, code)) = Self::changed_code(entry.code_changed, account)
-            {
+            if let Some((code_hash, code)) = entry.changed_code() {
                 sink.bytecode(code_hash, code)?;
             }
         }
@@ -714,25 +778,24 @@ impl State {
             if storage.wiped {
                 sink.storage_wipe(address)?;
             }
-            for (&key, slot) in &storage.slots {
-                let tracked = &slot.value;
-                if Self::storage_slot_changed(storage.wiped, tracked) {
-                    sink.storage(StorageChange {
-                        address,
-                        key,
-                        original: tracked.original,
-                        current: tracked.current,
-                    })?;
-                }
+            for (&key, slot) in storage.changed_slots() {
+                sink.storage(StorageChange {
+                    address,
+                    key,
+                    original: slot.original,
+                    current: slot.current,
+                })?;
             }
         }
 
         for (&address, entry) in self.accounts.iter() {
-            if Self::account_changed(entry.original.as_ref(), entry.present.as_ref()) {
+            if entry.is_changed() {
                 sink.account(AccountChangeRef {
                     address,
                     original: entry.original.as_ref().map(AccountInfoRef::from_info),
                     current: entry.present.as_ref().map(AccountInfoRef::from_info),
+                    created: entry.is_created(),
+                    selfdestructed: self.selfdestructs.contains(&address),
                 })?;
             }
         }
@@ -740,98 +803,43 @@ impl State {
         Ok(())
     }
 
-    /// Builds the state transition for the current transaction.
+    /// Detaches the transaction overlay into an owned [`PendingState`].
     ///
-    /// This does not apply changes to the backing database, apply transaction-finalization rules,
-    /// take logs, or advance the overlay to the next transaction. Logs are execution output and are
-    /// exposed through [`crate::TxResult`] and [`crate::TxResultWithState`].
-    pub(crate) fn build_state_changes(&mut self) -> StateChanges {
-        let mut changes = StateChanges::default();
-
-        for (&address, entry) in self.accounts.iter() {
-            changes.accounts.insert(
-                address,
-                AccountChange {
-                    original: entry.original.clone(),
-                    current: entry.present.clone(),
-                    storage: U256Map::default(),
-                    wipe_storage: false,
-                    // `just_created` is preserved across selfdestruct finalization, so it also
-                    // covers accounts that were created and then destroyed in the same transaction.
-                    created: entry.just_created,
-                    selfdestructed: self.selfdestructs.contains(&address),
-                },
-            );
-            if let Some(account) = entry.present.as_ref()
-                && let Some((code_hash, code)) = Self::changed_code(entry.code_changed, account)
-            {
-                changes.code.entry(code_hash).or_insert_with(|| code.clone());
-            }
+    /// The remaining transaction scratch (journal, logs, warm sets, transient storage) is left for
+    /// [`Self::clear_transaction_state`].
+    pub(crate) fn take_pending_state(&mut self) -> PendingState {
+        PendingState {
+            accounts: mem::take(&mut self.accounts),
+            storage: mem::take(&mut self.storage),
+            selfdestructs: mem::take(&mut self.inner.selfdestructs),
         }
+    }
 
-        // Fold per-account storage in, materializing an entry for any storage-only account whose
-        // info is unchanged by resolving it from the backing database.
-        let database = &self.inner.database;
-        for (&address, storage) in &self.storage {
-            let entry = changes.accounts.entry(address).or_insert_with(|| {
-                let info = database.account_info(&address).cloned();
-                AccountChange { original: info.clone(), current: info, ..AccountChange::default() }
-            });
-            entry.wipe_storage = storage.wiped;
-            entry.storage = storage.slots.iter().map(|(&key, slot)| (key, slot.value)).collect();
-        }
-
-        changes
+    /// Reattaches a detached [`PendingState`] as the current transaction overlay, replacing it.
+    ///
+    /// This is the inverse of the detach performed by
+    /// [`ExecutedTx::detach`](crate::ExecutedTx::detach): the pending accounts, storage, and
+    /// selfdestruct set become the transaction layer again, as if the transaction had just been
+    /// finalized. Other transaction scratch (journal, logs, warm sets, transient storage) is not
+    /// affected.
+    pub fn set_pending_state(&mut self, pending: PendingState) {
+        let PendingState { accounts, storage, selfdestructs } = pending;
+        self.accounts = accounts;
+        self.storage = storage;
+        self.inner.selfdestructs = selfdestructs;
     }
 
     /// Accepts the current transaction's state transition into the accepted overlay.
     ///
     /// This advances the in-memory accepted overlay by the transaction's write-set and clears the
-    /// transaction account/storage layers. It does not materialize [`StateChanges`], take logs, or
-    /// write to the wrapped backing database.
-    pub(crate) fn commit_transaction(&mut self) {
-        for (&address, storage) in &self.storage {
-            if storage.wiped {
-                self.inner.database.cache.storage.entry(address).or_default().wipe();
-            }
-            for (&key, slot) in &storage.slots {
-                let tracked = &slot.value;
-                if !Self::storage_slot_changed(storage.wiped, tracked) {
-                    continue;
-                }
-                self.inner
-                    .database
-                    .cache
-                    .storage
-                    .entry(address)
-                    .or_default()
-                    .slots
-                    .insert(key, tracked.current);
-            }
-        }
-
-        for (&address, entry) in self.accounts.iter() {
-            if let Some(account) = entry.present.as_ref()
-                && let Some((code_hash, code)) = Self::changed_code(entry.code_changed, account)
-            {
-                self.inner.database.cache.contracts.insert(code_hash, code.clone());
-            }
-            if !Self::account_changed(entry.original.as_ref(), entry.present.as_ref()) {
-                continue;
-            }
-            match entry.present.as_ref() {
-                Some(account) => self.inner.database.insert_account_info(
-                    &address,
-                    AccountInfoRef::from_info(account).to_account_info_without_code(),
-                ),
-                None => {
-                    self.inner.database.cache.accounts.insert(address, None);
-                    self.inner.database.cache.storage.entry(address).or_default().wipe();
-                }
-            }
-        }
-
+    /// transaction account/storage layers and selfdestruct markers. It does not take logs or write
+    /// to the wrapped backing database.
+    pub fn commit_transaction(&mut self) {
+        // The transaction overlay is folded into the accepted-overlay database directly, without
+        // detaching it.
+        self.inner.database.commit(&self.accounts, &self.storage);
         self.accounts.clear();
         self.storage.clear();
+        self.inner.selfdestructs.clear();
     }
 }

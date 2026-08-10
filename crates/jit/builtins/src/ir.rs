@@ -76,7 +76,8 @@ impl<B: Backend> Builtins<B> {
         // GEP/bitcast). Builtins that take a writable `EvmContext` mutate state through
         // `ecx.host`, `ecx.gas`, etc., which are loaded from `ecx` and thus outside
         // `argmem`. Apply `ArgMemOnly` only when no parameter is a writable `EvmContext`.
-        let evm_ctx_size = core::mem::size_of::<evm2_jit_context::EvmContext<'static>>() as u64;
+        let evm_ctx_size =
+            core::mem::size_of::<evm2_jit_context::EvmContext<'static, 'static, 'static>>() as u64;
         let writes_ecx = param_attrs.iter().any(|p| {
             let writable = p.iter().any(|a| matches!(a, Attribute::Writable));
             let is_ecx =
@@ -239,7 +240,7 @@ builtins! {
             (0, 0)
         };
 
-        let ecx_base = size_and_align::<evm2_jit_context::EvmContext<'static>>();
+        let ecx_base = size_and_align::<evm2_jit_context::EvmContext<'static, 'static, 'static>>();
         let mut ecx = ecx_base.clone();
         ecx.push(Attribute::Writable);
         let mut ecx_ro = ecx_base;

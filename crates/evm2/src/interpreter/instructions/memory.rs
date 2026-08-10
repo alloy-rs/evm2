@@ -43,8 +43,8 @@ pub(crate) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
 mod tests {
     use crate::{
         ExecutionConfig, SpecId, Version,
-        env::TxEnv,
-        interpreter::{InstrStop, Interpreter, Message, Word, op},
+        env::TxEnvExt,
+        interpreter::{InstrStop, Interpreter, MessageExt, Word, op},
         test_utils::{RunConfig, TestHost, TestTypes, legacy_bytecode, push, run, run_stack},
         version::GasId,
     };
@@ -101,8 +101,8 @@ mod tests {
         code.push(op::MSTORE);
         code.push(op::STOP);
 
-        let tx_env = TxEnv::default();
-        let message = Message { gas_limit: 10_000, ..Message::default() };
+        let tx_env = TxEnvExt::default();
+        let message = MessageExt { gas_limit: 10_000, ..MessageExt::default() };
         let bytecode = legacy_bytecode(code);
         let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
         let mut host = TestHost::default();
@@ -123,8 +123,8 @@ mod tests {
         code.push(op::MSTORE);
         code.push(op::STOP);
 
-        let tx_env = TxEnv::default();
-        let message = Message { gas_limit: 17, ..Message::default() };
+        let tx_env = TxEnvExt::default();
+        let message = MessageExt { gas_limit: 17, ..MessageExt::default() };
         let bytecode = legacy_bytecode(code);
         let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
         let mut host = TestHost::default();

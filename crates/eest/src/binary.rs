@@ -5,6 +5,7 @@ use crate::{
     },
     tx::{AccessListItem, TestAuthorization},
 };
+use alloy_eip7928::BlockAccessList;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -64,6 +65,7 @@ struct BlockRef<'a> {
     transactions: Option<Vec<TransactionWire>>,
     uncle_headers: &'a Option<Vec<BlockHeader>>,
     withdrawals: &'a Option<Vec<Withdrawal>>,
+    block_access_list: &'a Option<BlockAccessList>,
 }
 
 impl<'a> BlockRef<'a> {
@@ -79,6 +81,7 @@ impl<'a> BlockRef<'a> {
                 .map(|transactions| transactions.iter().map(TransactionWire::new).collect()),
             uncle_headers: &block.uncle_headers,
             withdrawals: &block.withdrawals,
+            block_access_list: &block.block_access_list,
         }
     }
 }
@@ -89,6 +92,7 @@ struct DecodedBlockRef<'a> {
     transactions: Vec<TransactionWire>,
     uncle_headers: &'a Vec<BlockHeader>,
     withdrawals: &'a Vec<Withdrawal>,
+    block_access_list: &'a Option<BlockAccessList>,
 }
 
 impl<'a> DecodedBlockRef<'a> {
@@ -98,6 +102,7 @@ impl<'a> DecodedBlockRef<'a> {
             transactions: block.transactions.iter().map(TransactionWire::new).collect(),
             uncle_headers: &block.uncle_headers,
             withdrawals: &block.withdrawals,
+            block_access_list: &block.block_access_list,
         }
     }
 }
@@ -260,6 +265,7 @@ struct BlockWire {
     transactions: Option<Vec<TransactionWire>>,
     uncle_headers: Option<Vec<BlockHeader>>,
     withdrawals: Option<Vec<Withdrawal>>,
+    block_access_list: Option<BlockAccessList>,
 }
 
 impl From<BlockWire> for Block {
@@ -274,7 +280,7 @@ impl From<BlockWire> for Block {
                 .map(|transactions| transactions.into_iter().map(Into::into).collect()),
             uncle_headers: value.uncle_headers,
             withdrawals: value.withdrawals,
-            block_access_list: None,
+            block_access_list: value.block_access_list,
         }
     }
 }
@@ -285,6 +291,7 @@ struct DecodedBlockWire {
     transactions: Vec<TransactionWire>,
     uncle_headers: Vec<BlockHeader>,
     withdrawals: Vec<Withdrawal>,
+    block_access_list: Option<BlockAccessList>,
 }
 
 impl From<DecodedBlockWire> for DecodedBlock {
@@ -294,6 +301,7 @@ impl From<DecodedBlockWire> for DecodedBlock {
             transactions: value.transactions.into_iter().map(Into::into).collect(),
             uncle_headers: value.uncle_headers,
             withdrawals: value.withdrawals,
+            block_access_list: value.block_access_list,
         }
     }
 }

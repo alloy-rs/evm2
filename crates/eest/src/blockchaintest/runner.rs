@@ -63,9 +63,17 @@ fn run_file(path: PathBuf) -> Result<(), Failed> {
 }
 
 fn run_file_with_mode(path: PathBuf, mode: ExecutionMode) -> Result<(), Failed> {
-    execute_test_suite(&path, ExecuteConfig { mode, ..Default::default() })
-        .map(|_| ())
-        .map_err(|err| err.to_string().into())
+    execute_test_suite(
+        &path,
+        ExecuteConfig {
+            mode,
+            compare_state_root: true,
+            compare_receipt_root: true,
+            ..Default::default()
+        },
+    )
+    .map(|_| ())
+    .map_err(|err| err.to_string().into())
 }
 
 #[cfg(feature = "jit")]
@@ -95,9 +103,17 @@ fn run_compiled_file(path: PathBuf, mode: CompiledMode) -> Result<(), Failed> {
 
 #[cfg(feature = "jit")]
 fn run_compiled_files(paths: Vec<PathBuf>, mode: CompiledMode) -> Result<(), Failed> {
-    execute_test_suites(&paths, ExecuteConfig { mode: mode.execution_mode(), ..Default::default() })
-        .map(|_| ())
-        .map_err(|err| err.to_string().into())
+    execute_test_suites(
+        &paths,
+        ExecuteConfig {
+            mode: mode.execution_mode(),
+            compare_state_root: true,
+            compare_receipt_root: true,
+            ..Default::default()
+        },
+    )
+    .map(|_| ())
+    .map_err(|err| err.to_string().into())
 }
 
 fn should_descend(path: &Path) -> bool {
@@ -183,13 +199,10 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     "frontier/validation/header/block_gas_limit_below_minimum.json",
     "london/validation/header/invalid_header.json",
     "shanghai/eip4895_withdrawals/withdrawals/withdrawals_root.json",
-
-    // These validate block access list format/content/hash and belong to consensus-level block validation.
-    "amsterdam/eip7928_block_level_access_lists/block_access_lists_invalid/",
-
-    // These validate block/transaction gas allowance rules, not EVM execution.
-    "amsterdam/eip8037_state_creation_gas_cost_increase/block_2d_gas_accounting/tx_rejected_when_regular_gas_exceeds_block_limit_small.json",
-    "amsterdam/eip8037_state_creation_gas_cost_increase/state_gas_reservoir/creation_tx_state_check_exceeded.json",
+    // The same tests under the EEST main suite's flat `test_*` naming.
+    "frontier/validation/test_gas_limit_below_minimum.json",
+    "london/validation/test_invalid_header.json",
+    "shanghai/eip4895_withdrawals/test_withdrawals_root.json",
 
     // Prague request/deposit fixtures validate EL request extraction and system-contract block processing.
     "prague/eip6110_deposits",

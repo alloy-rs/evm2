@@ -6,6 +6,7 @@ use crate::tracing::{
         address_to_uint8_array, address_to_uint8_array_value, bytes_from_value, bytes_to_address,
         bytes_to_b256, to_bigint, to_uint8_array, to_uint8_array_value,
     },
+    tx_state::TxState,
     types::CallKind,
 };
 use alloc::{
@@ -25,7 +26,7 @@ use boa_gc::{Finalize, Trace, empty_trace};
 use core::cell::RefCell;
 use evm2::{
     bytecode::Bytecode,
-    evm::{AccountInfo, DbResult, DynDatabase, State, StateChanges},
+    evm::{AccountInfo, DbResult, DynDatabase, State},
     interpreter::{
         Memory, Word,
         opcode::{OpCode, op},
@@ -1152,13 +1153,14 @@ impl core::fmt::Debug for EvmDbRef {
 
 impl EvmDbRef {
     /// Creates a new evm and db JS object over the in-flight state.
-    pub(crate) fn new_state(state: &mut State) -> (Self, EvmDbGuard<'_>) {
+    pub(crate) fn new_state<'a, 'db>(state: &'a mut State<'db>) -> (Self, EvmDbGuard<'a>) {
         Self::new_reader(StateDbReader { state })
     }
 
-    /// Creates a new evm and db JS object over transaction changes and a backing database.
+    /// Creates a new evm and db JS object over a transaction's materialized state and a backing
+    /// database.
     pub(crate) fn new_changes<'a>(
-        changes: &'a StateChanges,
+        changes: &'a TxState,
         db: &'a mut dyn DynDatabase,
     ) -> (Self, EvmDbGuard<'a>) {
         Self::new_reader(ChangesDbReader { changes, db })
@@ -1332,11 +1334,11 @@ impl core::fmt::Debug for dyn EvmDbReader {
     }
 }
 
-struct StateDbReader<'a> {
-    state: &'a mut State,
+struct StateDbReader<'a, 'db> {
+    state: &'a mut State<'db>,
 }
 
-impl EvmDbReader for StateDbReader<'_> {
+impl EvmDbReader for StateDbReader<'_, '_> {
     fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         self.state.account_info_untracked(address)
     }
@@ -1351,7 +1353,7 @@ impl EvmDbReader for StateDbReader<'_> {
 }
 
 struct ChangesDbReader<'a> {
-    changes: &'a StateChanges,
+    changes: &'a TxState,
     db: &'a mut dyn DynDatabase,
 }
 
@@ -1617,8 +1619,8 @@ mod tests {
             Ok(if *address == self.address && *key == self.slot { self.value } else { Word::ZERO })
         }
 
-        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        fn get_block_hash(&mut self, _number: &Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
@@ -1635,7 +1637,7 @@ mod tests {
             .with_nonce(9)
             .with_code(code.clone());
         let mut db = Db::new(BackingDb { address, account, slot, value });
-        let changes = StateChanges::default();
+        let changes = TxState::default();
         let (db_ref, _guard) = EvmDbRef::new_changes(&changes, &mut db);
         let js_db = db_ref.into_js_object(&mut context).unwrap();
         let js_addr = JsValue::from(js_string!(address.to_string()));

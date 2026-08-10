@@ -1,14 +1,16 @@
 #[cfg(feature = "jit")]
 use crate::compiled::{self, FileSummary};
 use crate::{
+    dump,
     error::{TestError, TestErrorKind},
     execution::ExecutionResources,
-    filter::EntryPoint,
+    filter::NameFilter,
     fixture_io,
     forks::is_fork_skipped,
     state::{
         insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
     },
+    trace::{self, Eip3155Tracer},
     tx::{TxFields, build_recovered_tx, recover_address, rpc_access_list, signed_authorizations},
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
@@ -22,7 +24,7 @@ use alloy_trie::{
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
     BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
-    env::BlockEnv,
+    env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
         AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, DbStats, DbStatsCounts,
@@ -52,11 +54,26 @@ pub(crate) struct SpecOutcome {
     pub(crate) evm_result: String,
 }
 
+/// Transaction-level failure paired with the outcome over the untouched
+/// pre-state, so JSON outcome/trace consumers still see the real state root.
+#[derive(Debug)]
+struct SpecFailure {
+    error: HandlerError,
+    outcome: SpecOutcome,
+}
+
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ExecuteConfig {
     /// Whether to print JSON outcome records.
     pub print_json_outcome: bool,
+    /// Whether to stream EIP-3155 struct logs to stdout during execution.
+    ///
+    /// Only observable under [`ExecutionMode::Interpreter`]; the JIT/AOT runners
+    /// bypass instruction-level dispatch.
+    pub trace: bool,
+    /// Whether to dump the post-execution state (accounts and storage) to stdout.
+    pub dump_state: bool,
     /// Execution backend.
     pub mode: ExecutionMode,
     /// Whether to print database method call counts.
@@ -68,7 +85,7 @@ pub struct ExecuteConfig {
 pub struct ExecuteSummary {
     /// Number of executed test units.
     pub executed: usize,
-    /// Number of test units skipped by the entrypoint filter.
+    /// Number of test units skipped by the test-name filter.
     pub skipped: usize,
 }
 
@@ -96,7 +113,7 @@ pub(crate) fn execute_test_suites(
             &path,
             &input,
             config,
-            &EntryPoint::default(),
+            &NameFilter::default(),
             &resources,
             &mut db_stats_counts,
         )?;
@@ -120,15 +137,15 @@ pub fn execute_str_with_config(
     input: &str,
     config: ExecuteConfig,
 ) -> Result<ExecuteSummary, TestError> {
-    execute_str_with_filter(path, input, config, &EntryPoint::default())
+    execute_str_with_filter(path, input, config, &NameFilter::default())
 }
 
-/// Executes a loaded state test JSON file, selecting test units by entrypoint.
+/// Executes a loaded state test JSON file, selecting test units by name filter.
 pub fn execute_str_with_filter(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
 ) -> Result<ExecuteSummary, TestError> {
     let resources =
         ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
@@ -137,7 +154,7 @@ pub fn execute_str_with_filter(
         path,
         input,
         config,
-        entrypoint,
+        test_filter,
         &resources,
         &mut db_stats_counts,
     )?;
@@ -151,7 +168,7 @@ fn execute_str_with_resources(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
     resources: &ExecutionResources,
     db_stats_counts: &mut DbStatsCounts,
 ) -> Result<ExecuteSummary, TestError> {
@@ -159,7 +176,7 @@ fn execute_str_with_resources(
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
     for (name, unit) in suite.0 {
-        if !entrypoint.matches(&name) {
+        if !test_filter.matches(&name) {
             summary.skipped += 1;
             continue;
         }
@@ -201,6 +218,8 @@ fn execute_unit(
                 &tx,
                 &unit.env,
                 resources,
+                config.trace,
+                config.dump_state,
                 if config.db_stats { Some(&mut *db_stats_counts) } else { None },
             );
             validate_result(path, name, &unit, post, result, spec, config)?;
@@ -214,14 +233,14 @@ fn validate_result(
     name: &str,
     unit: &TestUnit,
     post: &Test,
-    result: Result<SpecOutcome, HandlerError>,
+    result: Result<SpecOutcome, Box<SpecFailure>>,
     spec: SpecId,
     config: ExecuteConfig,
 ) -> Result<(), TestError> {
     let error = match (&post.expect_exception, result) {
-        (Some(_), Err(_)) => {
+        (Some(_), Err(failure)) => {
             if config.print_json_outcome {
-                print_json_outcome(post, name, None, spec, None);
+                print_json_outcome(post, name, Some(&failure.outcome), spec, None);
             }
             return Ok(());
         }
@@ -234,13 +253,13 @@ fn validate_result(
                 print_json_outcome(post, name, Some(&outcome), spec, Some(err));
             }
         }),
-        (None, Err(err)) => Some(TestErrorKind::UnexpectedException {
+        (None, Err(failure)) => Some(TestErrorKind::UnexpectedException {
             expected_exception: None,
-            got_exception: Some(err.to_string()),
+            got_exception: Some(failure.error.to_string()),
         })
         .inspect(|kind| {
             if config.print_json_outcome {
-                print_json_outcome(post, name, None, spec, Some(kind));
+                print_json_outcome(post, name, Some(&failure.outcome), spec, Some(kind));
             }
         }),
         (None, Ok(outcome)) => {
@@ -313,9 +332,10 @@ fn print_json_outcome(
         "g": test.indexes.gas,
         "v": test.indexes.value,
     });
-    eprintln!("{value}");
+    println!("{value}");
 }
 
+#[expect(clippy::too_many_arguments)]
 fn execute_spec(
     spec: SpecId,
     block: BlockEnv,
@@ -323,8 +343,10 @@ fn execute_spec(
     tx: &RecoveredTxEnvelope,
     env: &Env,
     resources: &ExecutionResources,
+    trace: bool,
+    dump_state: bool,
     db_stats_counts: Option<&mut DbStatsCounts>,
-) -> Result<SpecOutcome, HandlerError> {
+) -> Result<SpecOutcome, Box<SpecFailure>> {
     let db_stats = db_stats_counts.is_some();
     let mut evm = if db_stats {
         Evm::<BaseEvmTypes>::new(
@@ -344,15 +366,47 @@ fn execute_spec(
         )
     };
     resources.configure_evm(&mut evm);
+    if trace {
+        evm.set_inspector(Eip3155Tracer::to_stdout());
+    }
     let mut post = database;
     pre_block_system_calls(&mut evm, &mut post, spec, env);
-    let Ok(result) = evm.transact(tx)?.commit_with(&mut post);
+    let result = match evm.transact(tx) {
+        Ok(pending) => {
+            let Ok(result) = pending.commit_with(&mut post);
+            result
+        }
+        Err(error) => {
+            let outcome = failed_spec_outcome(&post);
+            if trace {
+                trace::write_summary(
+                    &mut std::io::stdout(),
+                    &outcome.output,
+                    outcome.gas_used,
+                    outcome.state_root,
+                );
+            }
+            return Err(Box::new(SpecFailure { error, outcome }));
+        }
+    };
     if let Some(counts) = db_stats_counts
         && let Some(stats) = evm.database_as::<DbStats<InMemoryDB>>()
     {
         *counts += stats.counts();
     }
-    Ok(spec_outcome(post, result))
+    if dump_state {
+        dump::dump_state(&mut std::io::stdout(), &post, state_root_from_database(&post));
+    }
+    let outcome = spec_outcome(post, result);
+    if trace {
+        trace::write_summary(
+            &mut std::io::stdout(),
+            &outcome.output,
+            outcome.gas_used,
+            outcome.state_root,
+        );
+    }
+    Ok(outcome)
 }
 
 fn print_db_stats(counts: DbStatsCounts) {
@@ -377,18 +431,31 @@ const fn db_stats_style() -> Style {
     Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightCyan))).bold()
 }
 
+/// Outcome for a transaction that failed before execution: the state (and thus
+/// the state root) is the untouched pre-state, with no output, logs, or gas.
+fn failed_spec_outcome(post: &InMemoryDB) -> SpecOutcome {
+    SpecOutcome {
+        state_root: state_root_from_database(post),
+        logs_root: logs_hash(&[]),
+        output: Bytes::new(),
+        gas_used: 0,
+        evm_result: "Error".to_string(),
+    }
+}
+
 fn spec_outcome(post: InMemoryDB, result: TxResult) -> SpecOutcome {
+    let gas_used = result.tx_gas_used();
     SpecOutcome {
         state_root: state_root_from_database(&post),
         logs_root: logs_hash(&result.logs),
         output: result.output,
-        gas_used: result.gas_used,
+        gas_used,
         evm_result: format!("{:?}", result.stop),
     }
 }
 
-fn pre_block_system_calls<T: EvmTypes<Host = Evm<T>>>(
-    evm: &mut Evm<T>,
+fn pre_block_system_calls<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
     post: &mut InMemoryDB,
     spec: SpecId,
     env: &Env,
@@ -421,8 +488,8 @@ fn pre_block_system_calls<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
-fn commit_system_call<T: EvmTypes<Host = Evm<T>>>(
-    evm: &mut Evm<T>,
+fn commit_system_call<T: EvmTypes>(
+    evm: &mut Evm<'_, T>,
     post: &mut InMemoryDB,
     address: Address,
     data: Bytes,
@@ -438,7 +505,7 @@ fn logs_hash(logs: &[Log]) -> B256 {
     keccak256(out)
 }
 
-fn state_root_from_database(state: &InMemoryDB) -> B256 {
+pub(crate) fn state_root_from_database(state: &InMemoryDB) -> B256 {
     let accounts = state.cache.accounts.iter().filter_map(|(&address, info)| {
         let info = info.as_ref()?;
         let storage = storage_for_root(state, address);
@@ -473,7 +540,7 @@ fn parse_state(pre: &BTreeMap<Address, AccountInfo>) -> Result<InMemoryDB, TestE
 }
 
 fn parse_block(env: &Env, spec: SpecId) -> BlockEnv {
-    BlockEnv {
+    BlockEnvExt {
         number: env.current_number,
         beneficiary: env.current_coinbase,
         timestamp: env.current_timestamp,
@@ -495,8 +562,14 @@ fn parse_block(env: &Env, spec: SpecId) -> BlockEnv {
 fn blob_basefee(excess_blob_gas: U256, spec: SpecId) -> u128 {
     let excess_blob_gas = excess_blob_gas.saturating_to::<u64>();
     // EIP-4844 defines blob base fee with fake exponential; EIP-7691 changes the
-    // update fraction from Prague.
-    if spec.enables(SpecId::PRAGUE) {
+    // update fraction from Prague, and the Amsterdam (BPO2) blob schedule changes it again.
+    if spec.enables(SpecId::AMSTERDAM) {
+        eip4844::fake_exponential(
+            eip4844::BLOB_TX_MIN_BLOB_GASPRICE,
+            excess_blob_gas as u128,
+            evm2::constants::BLOB_BASE_FEE_UPDATE_FRACTION_AMSTERDAM as u128,
+        )
+    } else if spec.enables(SpecId::PRAGUE) {
         eip7691::calc_blob_gasprice(excess_blob_gas)
     } else {
         eip4844::fake_exponential(
@@ -535,7 +608,7 @@ fn build_tx(
         gas_limit,
         nonce,
         value,
-        chain_id,
+        chain_id: raw.chain_id.or(chain_id),
         gas_price: raw.gas_price,
         max_fee_per_gas: raw.max_fee_per_gas,
         max_priority_fee_per_gas: raw.max_priority_fee_per_gas,
@@ -570,6 +643,36 @@ mod tests {
     const BYTECODE_RET42: &[u8] =
         &[op::PUSH1, 0x42, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH0, op::RETURN];
 
+    #[cfg(feature = "jit")]
+    fn call_value_to(to: Address) -> Bytes {
+        let mut code = Vec::with_capacity(33);
+        code.extend([op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH1, 1, op::PUSH20]);
+        code.extend_from_slice(to.as_slice());
+        code.extend([op::PUSH2, 0xc3, 0x50, op::CALL, op::STOP]);
+        Bytes::from(code)
+    }
+
+    #[cfg(feature = "jit")]
+    fn create_value() -> Bytes {
+        Bytes::from_static(&[op::PUSH0, op::PUSH0, op::PUSH1, 1, op::CREATE, op::STOP])
+    }
+
+    #[cfg(feature = "jit")]
+    fn sstore_restore() -> Bytes {
+        Bytes::from_static(&[
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            1,
+            op::SSTORE,
+            op::PUSH0,
+            op::PUSH1,
+            1,
+            op::SSTORE,
+            op::STOP,
+        ])
+    }
+
     #[test]
     fn logs_hash_matches_empty_logs() {
         assert_eq!(logs_hash(&[]), keccak256([alloy_rlp::EMPTY_LIST_CODE]));
@@ -600,11 +703,11 @@ mod tests {
 
         let tx = build_tx(&raw, &TxPartIndices { data: 0, gas: 0, value: 0 }, None).unwrap();
 
-        let RecoveredTxEnvelope::Legacy(tx) = tx else {
+        let evm2::ethereum::TxEnvelope::Legacy(inner) = tx.inner() else {
             panic!("expected legacy transaction");
         };
         assert_eq!(tx.signer(), caller);
-        assert_eq!(tx.inner().gas_price, 7);
+        assert_eq!(inner.gas_price, 7);
     }
 
     #[test]
@@ -628,11 +731,11 @@ mod tests {
 
         let tx = build_tx(&raw, &TxPartIndices { data: 0, gas: 0, value: 0 }, None).unwrap();
 
-        let RecoveredTxEnvelope::Eip2930(tx) = tx else {
+        let evm2::ethereum::TxEnvelope::Eip2930(inner) = tx.inner() else {
             panic!("expected EIP-2930 transaction");
         };
         assert_eq!(tx.signer(), caller);
-        assert_eq!(tx.inner().access_list[0].address, access_address);
+        assert_eq!(inner.access_list[0].address, access_address);
     }
 
     #[test]
@@ -663,10 +766,10 @@ mod tests {
 
         let tx = build_tx(&raw, &TxPartIndices { data: 1, gas: 0, value: 0 }, None).unwrap();
 
-        let RecoveredTxEnvelope::Eip2930(tx) = tx else {
+        let evm2::ethereum::TxEnvelope::Eip2930(inner) = tx.inner() else {
             panic!("expected EIP-2930 transaction");
         };
-        assert_eq!(tx.inner().access_list[0].address, second_address);
+        assert_eq!(inner.access_list[0].address, second_address);
     }
 
     #[cfg(feature = "jit")]
@@ -729,9 +832,94 @@ mod tests {
             &tx,
             &env,
             &resources,
+            false,
+            false,
             None,
         )
         .unwrap()
+    }
+
+    #[cfg(feature = "jit")]
+    fn execute_amsterdam_target(mode: ExecutionMode, target_code: Bytes) -> SpecOutcome {
+        let caller = Address::from([0x11; 20]);
+        let target = Address::from([0x22; 20]);
+        let coinbase = Address::from([0xcb; 20]);
+        let env = Env {
+            current_chain_id: Some(U256::ONE),
+            current_coinbase: coinbase,
+            current_difficulty: U256::ZERO,
+            current_gas_limit: U256::from(30_000_000),
+            current_number: U256::ZERO,
+            current_timestamp: U256::ZERO,
+            current_base_fee: Some(U256::ZERO),
+            previous_hash: None,
+            current_random: None,
+            current_beacon_root: None,
+            current_withdrawals_root: None,
+            current_excess_blob_gas: None,
+            slot_number: None,
+        };
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            caller,
+            AccountInfo {
+                balance: U256::from(1_000_000_000),
+                code: Bytes::new(),
+                nonce: 0,
+                storage: BTreeMap::new(),
+            },
+        );
+        pre.insert(
+            target,
+            AccountInfo {
+                balance: U256::from(10),
+                code: target_code,
+                nonce: 0,
+                storage: BTreeMap::new(),
+            },
+        );
+        let tx = build_tx(
+            &TransactionParts {
+                data: vec![Bytes::new()],
+                gas_limit: vec![U256::from(200_000)],
+                gas_price: Some(U256::ONE),
+                sender: Some(caller),
+                to: Some(target),
+                value: vec![U256::ZERO],
+                ..TransactionParts::default()
+            },
+            &TxPartIndices { data: 0, gas: 0, value: 0 },
+            env.current_chain_id,
+        )
+        .unwrap();
+        let resources = ExecutionResources::new(mode).unwrap();
+        execute_spec(
+            SpecId::AMSTERDAM,
+            parse_block(&env, SpecId::AMSTERDAM),
+            parse_state(&pre).unwrap(),
+            &tx,
+            &env,
+            &resources,
+            false,
+            false,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "jit")]
+    fn execute_amsterdam_value_call_to_empty_coinbase(mode: ExecutionMode) -> SpecOutcome {
+        execute_amsterdam_target(mode, call_value_to(Address::from([0xcb; 20])))
+    }
+
+    #[cfg(feature = "jit")]
+    fn execute_amsterdam_value_create(mode: ExecutionMode) -> SpecOutcome {
+        execute_amsterdam_target(mode, create_value())
+    }
+
+    #[cfg(feature = "jit")]
+    fn execute_amsterdam_sstore_restore(mode: ExecutionMode) -> SpecOutcome {
+        execute_amsterdam_target(mode, sstore_restore())
     }
 
     #[cfg(feature = "jit")]
@@ -751,5 +939,63 @@ mod tests {
         assert_eq!(aot.gas_used, interpreter.gas_used);
         assert_eq!(interpreter.output.len(), 32);
         assert_eq!(interpreter.output[31], 0x42);
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_and_aot_modes_match_interpreter_for_amsterdam_value_call_to_empty_coinbase() {
+        let interpreter =
+            execute_amsterdam_value_call_to_empty_coinbase(ExecutionMode::Interpreter);
+        let jit = execute_amsterdam_value_call_to_empty_coinbase(ExecutionMode::Jit);
+        let aot = execute_amsterdam_value_call_to_empty_coinbase(ExecutionMode::Aot);
+
+        assert_eq!(jit.output, interpreter.output);
+        assert_eq!(aot.output, interpreter.output);
+        assert_eq!(jit.state_root, interpreter.state_root);
+        assert_eq!(aot.state_root, interpreter.state_root);
+        assert_eq!(jit.logs_root, interpreter.logs_root);
+        assert_eq!(aot.logs_root, interpreter.logs_root);
+        assert_eq!(jit.gas_used, interpreter.gas_used);
+        assert_eq!(aot.gas_used, interpreter.gas_used);
+        assert_eq!(jit.evm_result, interpreter.evm_result);
+        assert_eq!(aot.evm_result, interpreter.evm_result);
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_and_aot_modes_match_interpreter_for_amsterdam_value_create() {
+        let interpreter = execute_amsterdam_value_create(ExecutionMode::Interpreter);
+        let jit = execute_amsterdam_value_create(ExecutionMode::Jit);
+        let aot = execute_amsterdam_value_create(ExecutionMode::Aot);
+
+        assert_eq!(jit.output, interpreter.output);
+        assert_eq!(aot.output, interpreter.output);
+        assert_eq!(jit.state_root, interpreter.state_root);
+        assert_eq!(aot.state_root, interpreter.state_root);
+        assert_eq!(jit.logs_root, interpreter.logs_root);
+        assert_eq!(aot.logs_root, interpreter.logs_root);
+        assert_eq!(jit.gas_used, interpreter.gas_used);
+        assert_eq!(aot.gas_used, interpreter.gas_used);
+        assert_eq!(jit.evm_result, interpreter.evm_result);
+        assert_eq!(aot.evm_result, interpreter.evm_result);
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_and_aot_modes_match_interpreter_for_amsterdam_sstore_restore() {
+        let interpreter = execute_amsterdam_sstore_restore(ExecutionMode::Interpreter);
+        let jit = execute_amsterdam_sstore_restore(ExecutionMode::Jit);
+        let aot = execute_amsterdam_sstore_restore(ExecutionMode::Aot);
+
+        assert_eq!(jit.output, interpreter.output);
+        assert_eq!(aot.output, interpreter.output);
+        assert_eq!(jit.state_root, interpreter.state_root);
+        assert_eq!(aot.state_root, interpreter.state_root);
+        assert_eq!(jit.logs_root, interpreter.logs_root);
+        assert_eq!(aot.logs_root, interpreter.logs_root);
+        assert_eq!(jit.gas_used, interpreter.gas_used);
+        assert_eq!(aot.gas_used, interpreter.gas_used);
+        assert_eq!(jit.evm_result, interpreter.evm_result);
+        assert_eq!(aot.evm_result, interpreter.evm_result);
     }
 }

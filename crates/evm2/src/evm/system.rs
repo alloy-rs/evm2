@@ -6,15 +6,16 @@
 //! before calling [`Evm::system_call`]. Calling an address without code succeeds as an empty call
 //! and produces no state changes.
 
-use super::{Evm, ExecutedTx, TxResult};
+use super::{Evm, ExecutedTx, TxResult, TxResultExt};
 #[cfg(feature = "async")]
 use super::{SendEvmRef, r#async};
 use crate::{
     EvmTypes,
-    env::TxEnv,
+    env::TxEnvExt,
     ethereum::initial_message,
     interpreter::Host,
     registry::{HandlerError, HandlerResult},
+    version::{EvmFeatures, GasId},
 };
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, TxKind, U256, address};
@@ -26,6 +27,12 @@ pub const SYSTEM_ADDRESS: Address = address!("0xffffffffffffffffffffffffffffffff
 
 /// Gas limit used by execution-layer system calls.
 pub const SYSTEM_CALL_GAS_LIMIT: u64 = 30_000_000;
+
+/// Upper bound on the number of new storage slots a single system call is expected to write.
+///
+/// EIP-8037 (Amsterdam) sizes the system-call state-gas reservoir as this many `SSTORE` new-slot
+/// state charges; state gas beyond the reservoir spills into the regular gas budget.
+pub const SYSTEM_MAX_SSTORES_PER_CALL: u64 = 16;
 
 /// EIP-4788 beacon roots system contract address.
 pub const BEACON_ROOTS_ADDRESS: Address = address!("0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02");
@@ -40,6 +47,14 @@ pub const WITHDRAWAL_REQUEST_ADDRESS: Address =
 /// EIP-7251 consolidation request system contract address.
 pub const CONSOLIDATION_REQUEST_ADDRESS: Address =
     address!("0x0000BBdDc7CE488642fb579F8B00f3a590007251");
+
+/// EIP-8282 builder deposit request system contract address (request type `0x03`).
+pub const BUILDER_DEPOSIT_REQUEST_ADDRESS: Address =
+    address!("0x0000BFF46984E3725691FA540A8C7589300D8282");
+
+/// EIP-8282 builder exit request system contract address (request type `0x04`).
+pub const BUILDER_EXIT_REQUEST_ADDRESS: Address =
+    address!("0x000064D678505AD48F8CCB093BC65613800E8282");
 
 /// System transaction input for [`Evm::system_call`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,7 +96,7 @@ impl SystemTx {
     }
 }
 
-impl<T: EvmTypes<Host = Self>> Evm<T> {
+impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Executes a system call.
     ///
     /// System calls bypass normal transaction validation, nonce updates, fee charging, gas refunds,
@@ -90,11 +105,30 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ///
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
-    pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, T>> {
-        let SystemTx { caller, system_contract_address, data, .. } = tx;
+    pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         self.clear_top_level_error_state();
+        // System calls are not inspected.
+        let inspector = self.inspector.take();
+        let result = self.execute_system_call(tx);
+        self.inspector = inspector;
+        match result {
+            Ok(outcome) => Ok(self.finish_executed_tx(outcome)),
+            Err(error) => {
+                self.state.clear_transaction_state();
+                Err(error)
+            }
+        }
+    }
+
+    /// Executes a system call without finalizing transaction state.
+    ///
+    /// This is the handler-level counterpart to [`Self::system_call`]. It allows a transaction
+    /// registry handler to execute system-call semantics and return the outcome to the outer
+    /// transaction lifecycle for finalization.
+    pub fn execute_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
+        let SystemTx { caller, system_contract_address, data, .. } = tx;
         self.state.prewarm(&system_contract_address);
-        let tx_env = TxEnv {
+        let tx_env = TxEnvExt {
             origin: caller,
             gas_price: U256::ZERO,
             chain_id: U256::from(self.version().chain_id),
@@ -102,7 +136,16 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             ext: T::TxEnvExt::default(),
             _non_exhaustive: (),
         };
-        let (bytecode, mut message) = match initial_message(
+        // EIP-8037: system calls start with a state-gas reservoir sized for
+        // `SYSTEM_MAX_SSTORES_PER_CALL` new-slot writes (execution-specs
+        // `process_unchecked_system_transaction`).
+        let reservoir = if self.feature(EvmFeatures::EIP8037) {
+            self.version().gas_params.get(GasId::SstoreSetState) as u64
+                * SYSTEM_MAX_SSTORES_PER_CALL
+        } else {
+            0
+        };
+        let (bytecode, mut message) = initial_message(
             self,
             caller,
             0,
@@ -110,19 +153,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             &data,
             U256::ZERO,
             SYSTEM_CALL_GAS_LIMIT,
-        ) {
-            Ok(result) => result,
-            Err(error) => {
-                self.state.clear_transaction_state();
-                return Err(error);
-            }
-        };
-        // System calls are not inspected.
-        let inspector = self.inspector.take();
+            reservoir,
+        )?;
         let result = Host::execute_message(self, &tx_env, bytecode, &mut message);
-        self.inspector = inspector;
         if let Some(code) = self.error_code {
-            self.state.clear_transaction_state();
             return Err(HandlerError::Fatal(code));
         }
         let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());
@@ -131,16 +165,16 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         } else {
             0
         };
-        let gas_used = gas_spent.saturating_sub(gas_refunded);
-        let outcome = TxResult {
+        Ok(TxResultExt {
             status: result.stop.is_success(),
-            gas_used,
+            total_gas_spent: gas_spent,
+            state_gas_spent: result.gas.state_gas_spent().max(0) as u64,
+            refunded: gas_refunded,
+            floor_gas: 0,
             stop: result.stop,
             output: result.output,
-            ..TxResult::default()
-        };
-
-        Ok(self.finish_executed_tx(outcome))
+            ..TxResultExt::default()
+        })
     }
 
     /// Executes a system call on an async fiber.
@@ -158,7 +192,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     pub fn system_call_async(
         &mut self,
         tx: SystemTx,
-    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, HandlerError>> + '_ {
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, 'a, T>, HandlerError>> + '_ {
         let stack = self.async_stack();
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
         // access the EVM stack slot until that future is dropped.
@@ -174,7 +208,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     pub fn system_call_async_send(
         &mut self,
         tx: SystemTx,
-    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, T>, HandlerError>> + Send + '_
+    ) -> impl Future<Output = r#async::AsyncResult<ExecutedTx<'_, 'a, T>, HandlerError>> + Send + '_
     {
         self.assert_erased_send();
         let stack = self.async_stack();
@@ -197,14 +231,14 @@ mod tests {
     use crate::{
         BaseEvmTypes, ErrorCode, Precompiles, SpecId,
         bytecode::Bytecode,
-        env::BlockEnv,
+        env::BlockEnvExt,
         evm::{AccountInfo, InMemoryDB},
         interpreter::{GasTracker, InstrStop, Message, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileResult},
         registry::{HandlerError, TxRegistry},
     };
 
-    type TestEvm = Evm<BaseEvmTypes>;
+    type TestEvm = Evm<'static, BaseEvmTypes>;
 
     #[test]
     fn system_call_uses_system_sender_without_fee_accounting() {
@@ -223,7 +257,7 @@ mod tests {
         ]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
-        let block = BlockEnv { beneficiary, basefee: U256::from(7), ..BlockEnv::default() };
+        let block = BlockEnvExt { beneficiary, basefee: U256::from(7), ..BlockEnvExt::default() };
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
             block,
@@ -235,17 +269,16 @@ mod tests {
         let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
 
         assert!(result.result.status);
-        assert!(result.result.gas_used < SYSTEM_CALL_GAS_LIMIT);
+        assert!(result.result.tx_gas_used() < SYSTEM_CALL_GAS_LIMIT);
         let unchanged = |address| {
-            result.state_changes.accounts.get(address).is_none_or(|change| !change.is_changed())
+            result.pending_state.accounts.get(address).is_none_or(|entry| !entry.is_changed())
         };
         assert!(unchanged(&SYSTEM_ADDRESS));
         assert!(unchanged(&beneficiary));
-        let storage =
-            &result.state_changes.accounts.get(&contract).expect("storage changed").storage;
+        let storage = &result.pending_state.storage.get(&contract).expect("storage changed").slots;
         let system_address = U256::from_be_slice(SYSTEM_ADDRESS.as_slice());
-        assert_eq!(storage.get(&U256::ZERO).map(|slot| slot.current), Some(system_address));
-        assert_eq!(storage.get(&U256::ONE).map(|slot| slot.current), Some(system_address));
+        assert_eq!(storage.get(&U256::ZERO).map(|slot| slot.value.current), Some(system_address));
+        assert_eq!(storage.get(&U256::ONE).map(|slot| slot.value.current), Some(system_address));
     }
 
     #[test]
@@ -267,7 +300,7 @@ mod tests {
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::OSAKA),
@@ -279,11 +312,10 @@ mod tests {
             .detach();
 
         assert!(result.result.status);
-        let storage =
-            &result.state_changes.accounts.get(&contract).expect("storage changed").storage;
+        let storage = &result.pending_state.storage.get(&contract).expect("storage changed").slots;
         let caller = U256::from_be_slice(caller.as_slice());
-        assert_eq!(storage.get(&U256::ZERO).map(|slot| slot.current), Some(caller));
-        assert_eq!(storage.get(&U256::ONE).map(|slot| slot.current), Some(caller));
+        assert_eq!(storage.get(&U256::ZERO).map(|slot| slot.value.current), Some(caller));
+        assert_eq!(storage.get(&U256::ONE).map(|slot| slot.value.current), Some(caller));
     }
 
     #[test]
@@ -295,7 +327,7 @@ mod tests {
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::OSAKA),
@@ -305,9 +337,9 @@ mod tests {
 
         assert!(outcome.status);
         assert!(
-            outcome.gas_used < 1_000,
+            outcome.tx_gas_used() < 1_000,
             "system contract should be warm before execution, got {} gas used",
-            outcome.gas_used
+            outcome.tx_gas_used()
         );
     }
 
@@ -316,7 +348,7 @@ mod tests {
         let contract = Address::from([0x42; 20]);
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -325,8 +357,8 @@ mod tests {
         let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().detach();
 
         assert!(result.result.status);
-        assert_eq!(result.result.gas_used, 0);
-        assert!(!result.state_changes.is_changed());
+        assert_eq!(result.result.tx_gas_used(), 0);
+        assert!(!result.pending_state.is_changed());
     }
 
     #[test]
@@ -348,7 +380,7 @@ mod tests {
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             Precompiles::base(SpecId::OSAKA),
@@ -358,7 +390,7 @@ mod tests {
 
         assert!(!result.result.status);
         assert_eq!(result.result.stop, InstrStop::Revert);
-        assert!(!result.state_changes.is_changed());
+        assert!(!result.pending_state.is_changed());
     }
 
     #[test]
@@ -377,7 +409,7 @@ mod tests {
         impl core::error::Error for TestPrecompileError {}
 
         fn fatal_precompile(
-            _evm: &mut Evm<BaseEvmTypes>,
+            _evm: &mut Evm<'_, BaseEvmTypes>,
             _message: &Message,
             _gas: &mut GasTracker,
         ) -> PrecompileResult {
@@ -393,7 +425,7 @@ mod tests {
 
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             precompiles,

@@ -25,7 +25,7 @@ use alloc::format;
 use alloy_primitives::{Selector, hex, map::HashMap};
 use alloy_rpc_types_trace::geth::FourByteFrame;
 use evm2::{
-    EvmTypes, Inspector,
+    EvmTypesHost, Inspector,
     interpreter::{Interpreter, Message, MessageResult},
 };
 
@@ -43,10 +43,10 @@ impl FourByteInspector {
     }
 }
 
-impl<T: EvmTypes> Inspector<T> for FourByteInspector {
+impl<T: EvmTypesHost> Inspector<T> for FourByteInspector {
     fn call(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        _interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         if message.input.len() >= 4 {

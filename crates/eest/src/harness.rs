@@ -197,12 +197,19 @@ const CI_AOT_STATE_DIRS: &[&str] = &[
 
 const CI_SMOKE_STATE_FILES: &[&str] = &[
     "frontier/create/test_create_suicide_store.json",
+    "frontier/create/create_suicide_store/create_suicide_store.json",
     "frontier/opcodes/test_push.json",
+    "frontier/opcodes/push/push.json",
     "berlin/eip2930_access_list/test_tx_intrinsic_gas.json",
+    "berlin/eip2930_access_list/tx_intrinsic_gas/tx_intrinsic_gas.json",
     "shanghai/eip3855_push0/test_push0_contracts.json",
+    "shanghai/eip3855_push0/push0/push0_contracts.json",
     "cancun/eip5656_mcopy/test_valid_mcopy_operations.json",
+    "cancun/eip5656_mcopy/mcopy/valid_mcopy_operations.json",
     "prague/eip7702_set_code_tx/test_eip_7702.json",
+    "prague/eip7702_set_code_tx/set_code_txs/address_from_set_code.json",
     "osaka/eip7939_count_leading_zeros/test_clz_gas_cost.json",
+    "osaka/eip7939_count_leading_zeros/count_leading_zeros/clz_gas_cost.json",
 ];
 
 fn test_name(root_name: &str, root: &Path, path: &Path) -> String {

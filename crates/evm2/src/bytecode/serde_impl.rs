@@ -1,6 +1,10 @@
 use super::Bytecode;
 use alloy_primitives::{Address, Bytes};
-use serde::{Deserialize, Serialize};
+use core::fmt;
+use serde::{
+    Deserialize, Deserializer, Serialize, Serializer,
+    de::{Error, Visitor},
+};
 
 // TODO: eventually remove `BytecodeSerdeOld`.
 
@@ -18,31 +22,53 @@ enum BytecodeSerdeOld {
 }
 
 impl Serialize for Bytecode {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.original_bytes().serialize(serializer)
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            self.original_bytes().serialize(serializer)
+        } else {
+            serializer.serialize_bytes(self.original_byte_slice())
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for Bytecode {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match BytecodeSerde::deserialize(deserializer)? {
-            BytecodeSerde::New(bytes) => {
-                Self::new_raw_checked(bytes).map_err(serde::de::Error::custom)
-            }
-            BytecodeSerde::Old(bytecode_serde_old) => match bytecode_serde_old {
-                BytecodeSerdeOld::LegacyAnalyzed { bytecode, original_len } => {
-                    if original_len > bytecode.len() {
-                        return Err(serde::de::Error::custom(
-                            "original_len is greater than bytecode length",
-                        ));
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if deserializer.is_human_readable() {
+            match BytecodeSerde::deserialize(deserializer)? {
+                BytecodeSerde::New(bytes) => {
+                    Self::new_raw_checked(bytes).map_err(serde::de::Error::custom)
+                }
+                BytecodeSerde::Old(bytecode_serde_old) => match bytecode_serde_old {
+                    BytecodeSerdeOld::LegacyAnalyzed { bytecode, original_len } => {
+                        if original_len > bytecode.len() {
+                            return Err(serde::de::Error::custom(
+                                "original_len is greater than bytecode length",
+                            ));
+                        }
+                        Ok(Self::new_legacy(bytecode.slice(..original_len)))
                     }
-                    Ok(Self::new_legacy(bytecode.slice(..original_len)))
-                }
-                BytecodeSerdeOld::Eip7702 { delegated_address } => {
-                    Ok(Self::new_eip7702(delegated_address))
-                }
-            },
+                    BytecodeSerdeOld::Eip7702 { delegated_address } => {
+                        Ok(Self::new_eip7702(delegated_address))
+                    }
+                },
+            }
+        } else {
+            deserializer.deserialize_bytes(BytecodeVisitor)
         }
+    }
+}
+
+struct BytecodeVisitor;
+
+impl Visitor<'_> for BytecodeVisitor {
+    type Value = Bytecode;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("EVM bytecode")
+    }
+
+    fn visit_bytes<E: Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+        Bytecode::new_raw_checked(Bytes::copy_from_slice(value)).map_err(Error::custom)
     }
 }
 
@@ -75,6 +101,19 @@ mod tests {
 
         assert_eq!(deserialized.kind(), BytecodeKind::Eip7702);
         assert_eq!(deserialized.eip7702_address(), Some(delegated_address));
+    }
+
+    #[test]
+    fn serde_binary_roundtrip() {
+        for bytes in [&hex!()[..], &hex!("0x1234")[..]] {
+            let bytecode = Bytecode::new_raw_checked(bytes.to_vec().into()).unwrap();
+            let encoded = postcard::to_allocvec(&bytecode).unwrap();
+            let deserialized: Bytecode = postcard::from_bytes(&encoded).unwrap();
+
+            assert_eq!(deserialized.kind(), BytecodeKind::Legacy);
+            assert_eq!(deserialized.eip7702_address(), None);
+            assert_eq!(deserialized.original_byte_slice(), bytes);
+        }
     }
 
     #[test]

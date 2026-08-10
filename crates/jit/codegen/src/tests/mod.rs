@@ -605,6 +605,38 @@ tests! {
             expected_stack: &[0_U256, 1_U256, 69_U256, 4_U256, 0_U256, 6_U256],
             expected_gas: 2 + 2 + 3 + 2 + 2 + 2,
         }),
+        pc_after_dupn_swapn_exchange(@raw {
+            bytecode: &{
+                let mut code = [0u8; 101];
+                let mut i = 0;
+                let mut value = 0;
+                while value <= 29 {
+                    code[i] = op::PUSH1;
+                    code[i + 1] = value;
+                    i += 2;
+                    value += 1;
+                }
+                code[i] = op::PC;
+                code[i + 1] = op::DUPN;
+                code[i + 2] = 0x80;
+                code[i + 3] = op::SWAPN;
+                code[i + 4] = 0x81;
+                code[i + 5] = op::EXCHANGE;
+                code[i + 6] = 0x8b;
+                code[i + 7] = op::PC;
+                i += 8;
+                let mut pops = 0;
+                while pops < 33 {
+                    code[i] = op::POP;
+                    i += 1;
+                    pops += 1;
+                }
+                code
+            },
+            spec_id: SpecId::AMSTERDAM,
+            inspect_stack: Some(false),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
 
     }
 

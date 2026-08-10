@@ -12,6 +12,7 @@ use derive_where::derive_where;
 /// [`Self::code_hash`]; [`Self::code`] is a cache keyed by the code hash and may or may not be
 /// populated.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AccountInfo {
     /// Account balance.
     pub balance: Word,
@@ -22,6 +23,7 @@ pub struct AccountInfo {
     /// Bytecode associated with this account.
     pub code: Option<Bytecode>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub _non_exhaustive: (),
 }
 
@@ -115,6 +117,10 @@ impl AccountInfo {
 /// `just_created` and `code_changed` track creation and code-modification state of the present
 /// overlay account, driving transaction-finalization and change-emission rules. They are meaningful
 /// only while `present` is `Some`.
+///
+/// Detached from the EVM as part of a [`PendingState`](super::PendingState), the entry describes
+/// the account's transaction transition: `original` against `present`, with
+/// [`Self::is_created`] flagging in-transaction creation.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Account {
     /// Account info at the start of the transaction. `None` means the account did not exist.
@@ -131,6 +137,53 @@ pub(crate) struct Account {
     pub(crate) just_created: bool,
     /// Whether the present overlay account's code has been modified.
     pub(crate) code_changed: bool,
+}
+
+impl Account {
+    /// Creates an account overlay entry from its transaction-boundary original info and its
+    /// present info.
+    #[cfg(test)]
+    pub(crate) fn new(original: Option<AccountInfo>, present: Option<AccountInfo>) -> Self {
+        Self { original, present, ..Self::default() }
+    }
+
+    /// Marks the account as created during the transaction, which also flags its code as changed.
+    #[inline]
+    pub(crate) const fn mark_created(&mut self) {
+        self.just_created = true;
+        self.code_changed = true;
+    }
+
+    /// Returns whether the account was created during the transaction.
+    ///
+    /// Creation is preserved across selfdestruct finalization, so it also covers accounts that
+    /// were created and then destroyed in the same transaction.
+    #[inline]
+    pub(crate) const fn is_created(&self) -> bool {
+        self.just_created
+    }
+
+    /// Returns whether the account's info changed during the transaction.
+    ///
+    /// This compares balance, nonce, code hash, and existence; it does not consider storage.
+    #[inline]
+    pub(crate) fn is_changed(&self) -> bool {
+        self.original != self.present
+    }
+
+    /// Returns the account's new bytecode keyed by code hash when its code changed during the
+    /// transaction to non-empty code.
+    #[inline]
+    pub(crate) fn changed_code(&self) -> Option<(B256, &Bytecode)> {
+        let account = self.present.as_ref()?;
+        let code = account.code.as_ref()?;
+        let code_hash = account.code_hash;
+        (self.code_changed
+            && !code.is_empty()
+            && !code_hash.is_zero()
+            && code_hash != KECCAK256_EMPTY)
+            .then_some((code_hash, code))
+    }
 }
 
 /// A mutable, journaled handle to an account loaded into the transaction overlay.
@@ -151,21 +204,21 @@ pub(crate) struct Account {
 /// warm-access queries without going back through [`State`](super::State), mirroring the database
 /// and access-list references revm's `AccountHandle` holds.
 #[derive_where(Debug)]
-pub struct AccountHandle<'a> {
+pub struct AccountHandle<'a, 'db> {
     /// Address of the account.
     address: Address,
     /// Transaction overlay entry: account overlay plus warm/touched access metadata.
     tracked: &'a mut Account,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
-    inner: &'a mut StateInner,
+    inner: &'a mut StateInner<'db>,
     /// Revert entry capturing the overlay as it was before the first mutation made through this
     /// handle. `Some` once a change has been recorded; on drop it is pushed onto the journal as a
     /// single [`JournalEntry::AccountChange`].
     snapshot: Option<JournalEntry>,
 }
 
-impl Drop for AccountHandle<'_> {
+impl Drop for AccountHandle<'_, '_> {
     #[inline]
     fn drop(&mut self) {
         if let Some(entry) = self.snapshot.take() {
@@ -180,14 +233,14 @@ fn empty_account() -> AccountInfo {
     AccountInfo::default()
 }
 
-impl<'a> AccountHandle<'a> {
+impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Creates a handle over a loaded account overlay slot and the shared inner state (backing
     /// database, revert journal, and transaction-initial base warm set).
     #[inline]
     pub(crate) const fn new(
         address: Address,
         tracked: &'a mut Account,
-        inner: &'a mut StateInner,
+        inner: &'a mut StateInner<'db>,
     ) -> Self {
         Self { address, tracked, inner, snapshot: None }
     }
@@ -302,6 +355,29 @@ impl<'a> AccountHandle<'a> {
     #[inline]
     pub fn load_code(&mut self) -> DbResult<Bytecode> {
         let Some(account) = self.tracked.present.as_ref() else {
+            return Ok(Bytecode::default());
+        };
+        if account.code_hash == KECCAK256_EMPTY {
+            return Ok(Bytecode::default());
+        }
+        if let Some(code) = account.code.as_ref()
+            && !code.is_empty()
+        {
+            return Ok(code.clone());
+        }
+        let code_hash = account.code_hash;
+        self.inner.database.get_code_by_hash(&code_hash)
+    }
+
+    /// Loads the account's bytecode as it stood at the start of the transaction.
+    ///
+    /// Used by EIP-7702 to tell whether an authority was already delegated before this transaction
+    /// (distinct from [`Self::load_code`], which reflects delegations applied by earlier
+    /// authorizations in the same transaction). Returns empty bytecode when the account was absent
+    /// or had empty code at the transaction boundary.
+    #[inline]
+    pub fn original_code(&mut self) -> DbResult<Bytecode> {
+        let Some(account) = self.tracked.original.as_ref() else {
             return Ok(Bytecode::default());
         };
         if account.code_hash == KECCAK256_EMPTY {
@@ -448,8 +524,7 @@ impl<'a> AccountHandle<'a> {
     #[inline]
     pub(crate) fn mark_created(&mut self) {
         self.record_change();
-        self.tracked.just_created = true;
-        self.tracked.code_changed = true;
+        self.tracked.mark_created();
     }
 
     /// Records a revert snapshot and returns the live account, materializing an empty one when it
@@ -535,7 +610,7 @@ mod tests {
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(!state.account(&address, false).unwrap().is_warm());
         assert!(state.account_info_untracked(&address).unwrap().is_none());
-        assert!(!state.build_state_changes().is_changed());
+        assert!(!state.take_pending_state().is_changed());
     }
 
     #[test]
@@ -577,7 +652,7 @@ mod tests {
         assert_eq!(info.balance, Word::from(10));
         assert_eq!(info.nonce, 2);
         assert_eq!(info.code_hash, original_code_hash);
-        assert!(!state.build_state_changes().is_changed());
+        assert!(!state.take_pending_state().is_changed());
     }
 
     #[test]
@@ -595,7 +670,7 @@ mod tests {
         }
         // Loading preserves the account but a read-only handle records no transition.
         state.rollback(checkpoint, crate::Version::base(crate::SpecId::FRONTIER).features);
-        assert!(!state.build_state_changes().is_changed());
+        assert!(!state.take_pending_state().is_changed());
     }
 
     #[test]

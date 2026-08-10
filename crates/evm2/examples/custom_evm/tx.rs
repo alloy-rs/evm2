@@ -7,8 +7,8 @@ use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, Bytes};
 use evm2::{
     bytecode::Bytecode,
-    env::TxEnv,
-    interpreter::{Host, Message},
+    env::TxEnvExt,
+    interpreter::{Host, MessageExt},
     registry::{HandlerResult, TxRegistry, TxRequest},
 };
 
@@ -49,23 +49,23 @@ impl ExecuteCodeTx {
 }
 
 pub fn execute_code(
-    req: TxRequest<'_, CustomTypes, ExecuteCodeTx>,
+    req: TxRequest<'_, '_, CustomTypes, ExecuteCodeTx>,
 ) -> HandlerResult<evm2::TxResult<CustomTypes>> {
     // The transaction handler owns policy; the interpreter still executes a normal message.
-    let mut message = Message {
+    let mut message = MessageExt {
         gas_limit: req.tx.gas_limit,
         destination: req.tx.target,
         code_address: req.tx.target,
         ext: CustomMessageExt { is_system: false },
-        ..Message::default()
+        ..MessageExt::default()
     };
-    let tx_env = TxEnv { ext: CustomTxEnvExt { label: "execute-code" }, ..TxEnv::default() };
+    let tx_env = TxEnvExt { ext: CustomTxEnvExt { label: "execute-code" }, ..TxEnvExt::default() };
     let mut result =
         req.host.execute_message(&tx_env, Bytecode::new_legacy(req.tx.code.clone()), &mut message);
     result.ext = CustomMessageResultExt { handled_custom_message: true };
     Ok(evm2::TxResult::<CustomTypes> {
         status: result.stop.is_success(),
-        gas_used: req.tx.gas_limit - result.gas.remaining(),
+        total_gas_spent: req.tx.gas_limit - result.gas.remaining(),
         stop: result.stop,
         output: result.output,
         ext: CustomTxResultExt { handled_custom_tx: result.ext.handled_custom_message },

@@ -94,14 +94,14 @@ pub(crate) fn verify_signature(msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) ->
         } else {
             use p256::{
                 ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey},
-                EncodedPoint};
+                Sec1Point};
 
             // Can fail only if the input is not exact length.
             let signature = Signature::from_slice(sig).ok()?;
-            // Decode the public key bytes (x,y coordinates) using EncodedPoint
-            let encoded_point = EncodedPoint::from_untagged_bytes(&(*pk).into());
-            // Create VerifyingKey from the encoded point
-            let public_key = VerifyingKey::from_encoded_point(&encoded_point).ok()?;
+            // Decode the public key bytes (x,y coordinates) using Sec1Point.
+            let sec1_point = Sec1Point::from_untagged_bytes(&(*pk).into());
+            // Create VerifyingKey from the SEC1 point.
+            let public_key = VerifyingKey::from_sec1_point(&sec1_point).ok()?;
 
             public_key.verify_prehash(msg, &signature).ok()
         }

@@ -8,7 +8,7 @@ extern crate self as evm2;
 extern crate alloc;
 
 pub mod bytecode;
-pub(crate) mod constants;
+pub mod constants;
 mod error;
 pub mod ethereum;
 pub mod interpreter;
@@ -16,14 +16,16 @@ pub mod utils;
 pub use error::{AnyError, ErrorCode};
 
 pub mod evm;
+#[doc(hidden)]
+pub use evm::config::EvmTypesHost;
 pub use evm::{
-    AccountInfo, BlockStateAccumulator, Evm, ExecutedTx, InterpreterRunner, JournalEntry, TxResult,
-    TxResultWithState, config,
+    AccountInfo, BlockStateAccumulator, Evm, ExecutedTx, InterpreterRunner, JournalEntry,
+    PendingState, TxResult, TxResultExt, TxResultWithState, config,
     config::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
         ExecutionConfig,
     },
-    env, inspector, precompile, registry,
+    env, handler, inspector, precompile, registry,
 };
 pub use inspector::{Inspector, NoopInspector};
 

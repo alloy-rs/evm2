@@ -49,6 +49,14 @@ pub(crate) enum TestErrorKind {
     /// Sender is required in blockchain tests.
     #[error("transaction sender is required")]
     MissingSender,
+    /// An ommer is not old enough, or is too old, to receive a block reward.
+    #[error("invalid ommer age: block {block_number}, ommer {ommer_number}")]
+    InvalidOmmerAge {
+        /// Canonical block number.
+        block_number: alloy_primitives::U256,
+        /// Ommer block number.
+        ommer_number: alloy_primitives::U256,
+    },
     /// Transaction request could not be converted to a consensus transaction.
     #[error("could not build consensus transaction: {0}")]
     BuildTransaction(String),
@@ -64,9 +72,57 @@ pub(crate) enum TestErrorKind {
     /// A system call failed.
     #[error("system call failed: {0}")]
     SystemCall(&'static str),
+    /// Block gas used in the header does not match the executed transactions.
+    #[error("block gas used mismatch: header {expected}, computed {actual}")]
+    BlockGasUsedMismatch {
+        /// Gas used declared in the block header.
+        expected: u64,
+        /// Gas used computed from executing the block's transactions.
+        actual: u64,
+    },
+    /// Block header does not link to the previously accepted block.
+    #[error("parent block hash mismatch: header {got}, expected {expected}")]
+    ParentBlockHashMismatch {
+        /// Parent hash declared in the block header.
+        got: alloy_primitives::B256,
+        /// Hash of the previously accepted block.
+        expected: alloy_primitives::B256,
+    },
+    /// Final accepted block hash does not match the fixture's last block hash.
+    #[error("last block hash mismatch: got {got}, expected {expected}")]
+    LastBlockHashMismatch {
+        /// Hash of the final accepted block.
+        got: alloy_primitives::B256,
+        /// Last block hash declared by the fixture.
+        expected: alloy_primitives::B256,
+    },
+    /// Recomputed post-block state root does not match the block header.
+    #[error("state root mismatch: got {got}, expected {expected}")]
+    StateRootMismatch {
+        /// State root recomputed from the post-block database.
+        got: alloy_primitives::B256,
+        /// State root declared in the block header.
+        expected: alloy_primitives::B256,
+    },
+    /// Recomputed receipt trie root does not match the block header.
+    #[error("receipt root mismatch: got {got}, expected {expected}")]
+    ReceiptRootMismatch {
+        /// Receipt trie root recomputed from transaction execution results.
+        got: alloy_primitives::B256,
+        /// Receipt trie root declared in the block header.
+        expected: alloy_primitives::B256,
+    },
     /// Execution resource initialization failed.
     #[error(transparent)]
     ExecutionResource(#[from] ExecutionResourceError),
+    /// The built EIP-7928 block access list does not match the block header's.
+    #[error("block access list mismatch at block {block_index}:{details}")]
+    BlockAccessListMismatch {
+        /// Index of the block whose access list mismatched.
+        block_index: usize,
+        /// Human-readable summary of the differing accounts.
+        details: String,
+    },
 }
 
 impl From<TxBuildError> for TestErrorKind {

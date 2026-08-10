@@ -16,6 +16,7 @@ pub type StorageKeySet = HashSet<StorageKey, FbBuildHasher<52>>;
 
 /// Storage key for account-address and storage-slot pairs.
 #[derive(Clone, Copy, Debug, Default, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(C)]
 pub struct StorageKey {
     address: Address,

@@ -8,13 +8,11 @@ use crate::{
     AnyError, ErrorCode,
     bytecode::Bytecode,
     error::error_unavailable,
-    evm::{AccountInfo, DbResult, DynDatabase},
+    evm::{AccountInfo, DbResult, DynDatabase, NonStaticAny},
     interpreter::Word,
 };
 use alloy_primitives::{Address, B256};
-use core::{
-    any::Any, fmt, future::Future, marker::PhantomData, pin::Pin, ptr::NonNull, task::Poll,
-};
+use core::{fmt, future::Future, marker::PhantomData, pin::Pin, ptr::NonNull, task::Poll};
 use corosensei::{Coroutine, CoroutineResult, Yielder, stack::DefaultStack};
 use std::{cell::Cell, error::Error, io, task::Context};
 
@@ -405,7 +403,7 @@ unsafe fn restore_context_lifetime<'a>(cx: &'a mut Context<'static>) -> &'a mut 
 /// async EVM entrypoints such as [`crate::Evm::transact_async`]. Calling synchronous EVM
 /// entrypoints with an [`AsyncDb`] fails because the adapter can only poll futures from inside an
 /// async EVM fiber.
-pub trait AsyncDatabase: Any {
+pub trait AsyncDatabase: NonStaticAny {
     /// Database error type.
     type Error: Error + Send + Sync + 'static;
 
@@ -432,7 +430,7 @@ pub trait AsyncDatabase: Any {
     fn get_block_hash(
         &mut self,
         number: Word,
-    ) -> impl Future<Output = Result<Option<B256>, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<B256, Self::Error>> + Send + '_;
 }
 
 /// Adapter that exposes an [`AsyncDatabase`] through the synchronous [`DynDatabase`] interface.
@@ -516,7 +514,7 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
         let result = {
             let Self { db, .. } = self;
             block_on_current_result(db.get_block_hash(*number))
@@ -546,9 +544,9 @@ impl<D: AsyncDatabase + fmt::Debug> fmt::Debug for AsyncDb<D> {
 mod tests {
     use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
-        BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult,
+        BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult, TxResultExt,
         bytecode::Bytecode,
-        env::BlockEnv,
+        env::BlockEnvExt,
         evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider, SystemTx},
         interpreter::{GasTracker, Message, Word, op},
         precompile::PrecompileOutput,
@@ -680,12 +678,12 @@ mod tests {
     fn dispatches_transaction_async_by_typed_2718_type() {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            crate::ethereum::TxEnvelope::as_legacy,
             handle_test_tx,
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -694,19 +692,19 @@ mod tests {
 
         let result = poll_ready(evm.transact_async(&tx)).unwrap();
 
-        assert_eq!(result.result().gas_used(), 42);
+        assert_eq!(result.result().tx_gas_used(), 42);
     }
 
     #[test]
     fn transaction_async_send_future_is_send_with_send_erased_fields() {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            crate::ethereum::TxEnvelope::as_legacy,
             handle_test_tx,
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -716,19 +714,19 @@ mod tests {
 
         let result = poll_ready(assert_send(evm.transact_async_send(&tx))).unwrap();
 
-        assert_eq!(result.result().gas_used(), 42);
+        assert_eq!(result.result().tx_gas_used(), 42);
     }
 
     #[test]
     fn transaction_async_send_future_is_send_after_type_check() {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            crate::ethereum::TxEnvelope::as_legacy,
             handle_test_tx,
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -739,7 +737,7 @@ mod tests {
 
         let result = poll_ready(assert_send(evm.transact_async_send(&tx))).unwrap();
 
-        assert_eq!(result.result().gas_used(), 42);
+        assert_eq!(result.result().tx_gas_used(), 42);
     }
 
     #[test]
@@ -747,7 +745,7 @@ mod tests {
     fn transaction_async_send_panics_with_non_send_erased_fields() {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -763,12 +761,12 @@ mod tests {
         let marker = Rc::new(());
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            crate::ethereum::TxEnvelope::as_legacy,
             handle_test_tx,
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -785,14 +783,14 @@ mod tests {
         let marker = Rc::new(());
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
-            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            crate::ethereum::TxEnvelope::as_legacy,
             handle_test_tx,
         );
         let database = Db::new(NonSendDb { marker: Rc::clone(&marker) });
         let precompiles = NonSendPrecompiles { marker: Rc::clone(&marker) };
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             registry,
             database,
             precompiles,
@@ -802,7 +800,7 @@ mod tests {
 
         let result = poll_ready(evm.transact_async(&tx)).unwrap();
 
-        assert_eq!(result.result().gas_used(), 42);
+        assert_eq!(result.result().tx_gas_used(), 42);
     }
 
     #[test]
@@ -812,7 +810,7 @@ mod tests {
         let precompiles = NonSendPrecompiles { marker: Rc::clone(&marker) };
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             database,
             precompiles,
@@ -831,7 +829,7 @@ mod tests {
     fn transaction_async_flattens_handler_error() {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -868,7 +866,7 @@ mod tests {
         let contract = Address::from([0x42; 20]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -879,7 +877,7 @@ mod tests {
             .discard();
 
         assert!(result.status);
-        assert_eq!(result.gas_used, 0);
+        assert_eq!(result.tx_gas_used(), 0);
     }
 
     #[test]
@@ -887,7 +885,7 @@ mod tests {
         let contract = Address::from([0x42; 20]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
@@ -901,7 +899,7 @@ mod tests {
         .discard();
 
         assert!(result.status);
-        assert_eq!(result.gas_used, 0);
+        assert_eq!(result.tx_gas_used(), 0);
     }
 
     #[test]
@@ -909,15 +907,18 @@ mod tests {
         let contract = Address::from([0x42; 20]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             crate::ethereum::ethereum_tx_registry(SpecId::OSAKA),
             Db::new(FailOnceAccountDb { fail_next_account: true }),
             Precompiles::base(SpecId::OSAKA),
         );
-        let tx = crate::ethereum::RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy { gas_limit: 100_000, ..TxLegacy::default() },
+        let tx = Recovered::new_unchecked(
+            crate::ethereum::TxEnvelope::Legacy(TxLegacy {
+                gas_limit: 100_000,
+                ..TxLegacy::default()
+            }),
             Address::ZERO,
-        ));
+        );
 
         assert_matches!(evm.transact(&tx), Err(HandlerError::Fatal(_)));
         assert!(evm.error_code().is_some());
@@ -937,16 +938,20 @@ mod tests {
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             crate::ethereum::ethereum_tx_registry(SpecId::OSAKA),
             AsyncDb::new(CancellingDb { contract, code }),
             Precompiles::base(SpecId::OSAKA),
         );
         evm.evm_is_send::<AsyncDb<CancellingDb>, Precompiles<BaseEvmTypes>>();
-        let tx = crate::ethereum::RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy { to: TxKind::Call(contract), gas_limit: 100_000, ..TxLegacy::default() },
+        let tx = Recovered::new_unchecked(
+            crate::ethereum::TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(contract),
+                gas_limit: 100_000,
+                ..TxLegacy::default()
+            }),
             caller,
-        ));
+        );
         {
             let mut future = core::pin::pin!(evm.transact_async(&tx));
             let waker = Waker::noop();
@@ -978,17 +983,19 @@ mod tests {
     const TEST_TX_TYPE: u8 = 0x00;
 
     fn test_tx(value: u64) -> crate::ethereum::RecoveredTxEnvelope {
-        crate::ethereum::RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy { nonce: value, ..TxLegacy::default() },
+        Recovered::new_unchecked(
+            crate::ethereum::TxEnvelope::Legacy(TxLegacy { nonce: value, ..TxLegacy::default() }),
             Address::ZERO,
-        ))
+        )
     }
 
-    fn handle_test_tx(
-        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
-    ) -> HandlerResult<TxResult> {
+    fn handle_test_tx(req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
-        Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
+        Ok(TxResultExt {
+            status: true,
+            total_gas_spent: req.tx.nonce + 1,
+            ..TxResultExt::default()
+        })
     }
 
     fn poll_ready<F: Future>(future: F) -> F::Output {
@@ -1030,8 +1037,8 @@ mod tests {
             Ok(Word::from(9))
         }
 
-        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        fn get_block_hash(&mut self, _number: &Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
@@ -1061,8 +1068,8 @@ mod tests {
             Ok(Word::ZERO)
         }
 
-        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        fn get_block_hash(&mut self, _number: &Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
@@ -1078,7 +1085,7 @@ mod tests {
 
         fn execute(
             &mut self,
-            _evm: &mut Evm<BaseEvmTypes>,
+            _evm: &mut Evm<'_, BaseEvmTypes>,
             _message: &Message<BaseEvmTypes>,
             _gas: &mut GasTracker,
         ) -> Option<Result<PrecompileOutput, PrecompileError>> {
@@ -1091,7 +1098,7 @@ mod tests {
     }
 
     impl crate::evm::Inspector<BaseEvmTypes> for NonSendInspector {
-        fn step(&mut self, _interp: &mut crate::interpreter::Interpreter<'_, BaseEvmTypes>) {
+        fn step(&mut self, _interp: &mut crate::interpreter::Interpreter<'_, '_, BaseEvmTypes>) {
             let _ = Rc::strong_count(&self.marker);
         }
     }
@@ -1151,8 +1158,8 @@ mod tests {
             Ok(Word::from(9))
         }
 
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        async fn get_block_hash(&mut self, _number: Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
@@ -1183,8 +1190,8 @@ mod tests {
             Ok(Word::from(9))
         }
 
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        async fn get_block_hash(&mut self, _number: Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
@@ -1219,8 +1226,8 @@ mod tests {
             Ok(Word::ZERO)
         }
 
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        async fn get_block_hash(&mut self, _number: Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 
@@ -1265,8 +1272,8 @@ mod tests {
             Err(TestError)
         }
 
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        async fn get_block_hash(&mut self, _number: Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
         }
     }
 

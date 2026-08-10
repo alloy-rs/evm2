@@ -106,6 +106,8 @@ pub struct BlockHeader {
     pub target_blobs_per_block: Option<U256>,
     /// Slot number.
     pub slot_number: Option<U256>,
+    /// EIP-7928 block access list hash.
+    pub block_access_list_hash: Option<B256>,
 }
 
 /// Block structure containing header and transactions.
@@ -153,6 +155,9 @@ pub struct DecodedBlock {
     /// Withdrawals in the block.
     #[serde(default)]
     pub withdrawals: Vec<Withdrawal>,
+    /// Block access list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_access_list: Option<BlockAccessList>,
 }
 
 /// Transaction structure.

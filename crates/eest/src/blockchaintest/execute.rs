@@ -12,23 +12,28 @@ use super::{
 #[cfg(feature = "jit")]
 use crate::compiled::{self, FileSummary};
 use crate::{
+    dump,
+    execute::state_root_from_database,
     execution::ExecutionResources,
-    filter::EntryPoint,
+    filter::NameFilter,
     fixture_io,
     forks::is_fork_skipped,
     state::{insert_account_with_storage, parse_bytecode},
+    trace::{self, Eip3155Tracer},
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
 };
-use alloy_eips::eip7840::BlobParams;
+use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, Transaction as _, TxType};
+use alloy_eip7928::BlockAccessList;
+use alloy_eips::{eip2718::Typed2718, eip7840::BlobParams};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
     BaseEvmTypes, ErrorCode, Evm, Precompiles, SpecId, TxResult,
-    env::BlockEnv,
+    env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
-        AccountChangeRef, AccountInfo as EvmAccountInfo, AccountInfoRef, BEACON_ROOTS_ADDRESS,
+        AccountChangeRef, AccountInfo as EvmAccountInfo, AccountInfoRef, BEACON_ROOTS_ADDRESS, Bal,
         BlockStateAccumulator, DbStats, DbStatsCounts, HISTORY_STORAGE_ADDRESS, InMemoryDB,
         StateChangeSink, StateChangeSource, SystemTx, Tee, WITHDRAWAL_REQUEST_ADDRESS,
     },
@@ -48,6 +53,23 @@ const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
 pub struct ExecuteConfig {
     /// Whether to validate final post-state when fixtures contain it.
     pub validate_post_state: bool,
+    /// Whether to recompute each committed block's state root and compare it to
+    /// the block header's `stateRoot`.
+    pub compare_state_root: bool,
+    /// Whether to recompute each block's receipt trie root and compare it to
+    /// the block header's `receiptTrie`.
+    pub compare_receipt_root: bool,
+    /// Whether to stream EIP-3155 struct logs to stdout during execution.
+    ///
+    /// Only observable under [`ExecutionMode::Interpreter`]; the JIT/AOT runners
+    /// bypass instruction-level dispatch.
+    pub trace: bool,
+    /// Whether to print a JSON outcome record per executed case (pass/fail,
+    /// fork, and final state root).
+    pub print_json_outcome: bool,
+    /// Whether to dump the final post-execution state (accounts and storage) to
+    /// stdout after the last block.
+    pub dump_state: bool,
     /// Execution backend.
     pub mode: ExecutionMode,
     /// Whether to print database method call counts.
@@ -56,7 +78,16 @@ pub struct ExecuteConfig {
 
 impl Default for ExecuteConfig {
     fn default() -> Self {
-        Self { validate_post_state: true, mode: ExecutionMode::Interpreter, db_stats: false }
+        Self {
+            validate_post_state: true,
+            compare_state_root: false,
+            compare_receipt_root: false,
+            trace: false,
+            print_json_outcome: false,
+            dump_state: false,
+            mode: ExecutionMode::Interpreter,
+            db_stats: false,
+        }
     }
 }
 
@@ -76,9 +107,9 @@ pub(crate) fn execute_test_suite(
 ) -> Result<ExecuteSummary, TestError> {
     let suite =
         fixture_io::read_blockchain(path).map_err(|err| TestError::unknown(path, err.into()))?;
-    let entrypoint = EntryPoint::default();
+    let test_filter = NameFilter::default();
     let mut hook = NoopHook;
-    execute_suite(path, &suite, config, &entrypoint, &mut hook)
+    execute_suite(path, &suite, config, &test_filter, &mut hook)
 }
 
 /// Executes multiple blockchain test JSON files using one shared execution resource set.
@@ -93,13 +124,13 @@ pub(crate) fn execute_test_suites(
     let summary = compiled::run_files(paths.to_vec(), resources, move |path, resources| {
         let suite = fixture_io::read_blockchain(&path)
             .map_err(|err| TestError::unknown(path.as_path(), err.into()))?;
-        let entrypoint = EntryPoint::default();
+        let test_filter = NameFilter::default();
         let mut hook = NoopHook;
         let file_summary = execute_suite_with_resources(
             &path,
             &suite,
             config,
-            &entrypoint,
+            &test_filter,
             &mut hook,
             &resources,
         )?;
@@ -118,12 +149,12 @@ pub fn execute_str(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
     hook: &mut dyn Hook,
 ) -> Result<ExecuteSummary, TestError> {
     let suite: BlockchainTest =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
-    execute_suite(path, &suite, config, entrypoint, hook)
+    execute_suite(path, &suite, config, test_filter, hook)
 }
 
 /// Executes a parsed blockchain test suite.
@@ -131,35 +162,63 @@ pub fn execute_suite(
     path: &Path,
     suite: &BlockchainTest,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
     hook: &mut dyn Hook,
 ) -> Result<ExecuteSummary, TestError> {
     let resources =
         ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
-    execute_suite_with_resources(path, suite, config, entrypoint, hook, &resources)
+    execute_suite_with_resources(path, suite, config, test_filter, hook, &resources)
 }
 
 fn execute_suite_with_resources(
     path: &Path,
     suite: &BlockchainTest,
     config: ExecuteConfig,
-    entrypoint: &EntryPoint,
+    test_filter: &NameFilter,
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
 ) -> Result<ExecuteSummary, TestError> {
     let mut summary = ExecuteSummary::default();
     for (name, test_case) in &suite.0 {
-        if !entrypoint.matches(name)
+        if !test_filter.matches(name)
             || test_case.network.is_transition()
-            || is_fork_skipped(fork_to_spec_id(test_case.network))
+            || is_blockchain_fork_skipped(fork_to_spec_id(test_case.network))
         {
             summary.skipped += 1;
             continue;
         }
-        execute_case(path, name, test_case, config, hook, resources)?;
+        let outcome = execute_case(path, name, test_case, config, hook, resources);
+        if config.print_json_outcome {
+            print_json_outcome(name, test_case.network, &outcome);
+        }
+        outcome?;
         summary.executed += 1;
     }
     Ok(summary)
+}
+
+/// Emits one JSON outcome record for a finished case (pass/fail, fork, root).
+fn print_json_outcome(name: &str, network: ForkSpec, outcome: &Result<Option<B256>, TestError>) {
+    println!("{}", json_outcome_value(name, network, outcome));
+}
+
+/// Builds the per-case JSON outcome record.
+fn json_outcome_value(
+    name: &str,
+    network: ForkSpec,
+    outcome: &Result<Option<B256>, TestError>,
+) -> serde_json::Value {
+    let (pass, state_root, error) = match outcome {
+        Ok(state_root) => (true, state_root.unwrap_or(B256::ZERO), String::new()),
+        Err(err) => (false, B256::ZERO, err.to_string()),
+    };
+    serde_json::json!({
+        "test": name,
+        "fork": network,
+        "pass": pass,
+        "stateRoot": state_root,
+        "errorMsg": error,
+    })
 }
 
 fn execute_case(
@@ -169,7 +228,7 @@ fn execute_case(
     config: ExecuteConfig,
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
-) -> Result<(), TestError> {
+) -> Result<Option<B256>, TestError> {
     let mut database =
         parse_state(&test_case.pre.0).map_err(|err| TestError::case(path, name, err))?;
     seed_block_hashes(&mut database, test_case);
@@ -211,6 +270,9 @@ fn execute_case(
             &mut parent_excess_blob_gas,
             hook,
             resources,
+            config.trace,
+            config.compare_state_root,
+            config.compare_receipt_root,
             if config.db_stats { Some(&mut db_stats_counts) } else { None },
         ) {
             Ok(()) => hook.block_finished(BlockFinished {
@@ -232,15 +294,33 @@ fn execute_case(
         }
     }
 
+    let final_block_hash = parent_block_hash.expect("genesis block hash should be available");
+    if final_block_hash != test_case.lastblockhash {
+        return Err(TestError::case(
+            path,
+            name,
+            TestErrorKind::LastBlockHashMismatch {
+                got: final_block_hash,
+                expected: test_case.lastblockhash,
+            },
+        ));
+    }
+
     if config.validate_post_state
         && let Some(expected) = &test_case.post_state
     {
         validate_post_state(&database, expected).map_err(|err| TestError::case(path, name, err))?;
     }
+    // Recompute the final state root only when a consumer needs it.
+    let state_root = (config.print_json_outcome || config.dump_state)
+        .then(|| state_root_from_database(&database));
+    if config.dump_state {
+        dump::dump_state(&mut std::io::stdout(), &database, state_root.unwrap_or_default());
+    }
     if config.db_stats {
         print_db_stats(db_stats_counts);
     }
-    Ok(())
+    Ok(state_root)
 }
 
 fn seed_block_hashes(database: &mut InMemoryDB, test_case: &BlockchainTestCase) {
@@ -275,6 +355,9 @@ fn execute_block(
     parent_excess_blob_gas: &mut u64,
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
+    trace: bool,
+    compare_state_root: bool,
+    compare_receipt_root: bool,
     db_stats_counts: Option<&mut DbStatsCounts>,
 ) -> Result<(), TestError> {
     let db_stats = db_stats_counts.is_some();
@@ -282,6 +365,7 @@ fn execute_block(
     let mut block_hash = None;
     let mut beacon_root = None;
     let mut this_excess_blob_gas = None;
+    let mut expected_state_root = None;
 
     let mut next_block_env = *block_env;
     if let Some(header) = block_header(block) {
@@ -289,9 +373,12 @@ fn execute_block(
         beacon_root = header.parent_beacon_block_root;
         next_block_env = block_env_from_header(header, *parent_excess_blob_gas, spec);
         this_excess_blob_gas = header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>());
+        expected_state_root = Some(header.state_root);
     }
 
     let initial_database = mem::take(database);
+    let receipt_base = (compare_receipt_root && !spec.enables(SpecId::BYZANTIUM))
+        .then(|| initial_database.clone());
     let mut evm = if db_stats {
         Evm::<BaseEvmTypes>::new(
             spec,
@@ -310,20 +397,59 @@ fn execute_block(
         )
     };
     resources.configure_evm(&mut evm);
+    if trace {
+        evm.set_inspector(Eip3155Tracer::to_stdout());
+    }
     let mut block_state = BlockStateAccumulator::new();
 
+    // When the fixture declares an EIP-7928 block access list, build one alongside execution and
+    // validate it against the fixture. The block access index follows the EIP-7928 layout: index 0
+    // for pre-block system calls, `i + 1` for transaction `i`, and the final index for post-block
+    // rewards/withdrawals. Only Amsterdam+ fixtures carry a block access list, so pre-Amsterdam
+    // blocks pay nothing.
+    let build_bal = block_access_list(block).is_some();
+    if build_bal {
+        evm.state_mut().enable_bal_builder();
+        evm.state_mut().reset_bal_index();
+    }
+
     let result = (|| -> Result<BlockResolution, TestError> {
-        pre_block_system_calls(
+        if let Some(header) = block_header(block)
+            && let Some(expected) = *parent_block_hash
+            && header.parent_hash != expected
+        {
+            if should_fail {
+                return Ok(BlockResolution::Discard);
+            }
+            return Err(TestError::case(
+                path,
+                name,
+                TestErrorKind::ParentBlockHashMismatch { got: header.parent_hash, expected },
+            ));
+        }
+
+        if let Err(err) = pre_block_system_calls(
             &mut evm,
             &mut block_state,
             spec,
             next_block_env,
             *parent_block_hash,
             beacon_root,
-        )
-        .map_err(|err| TestError::case(path, name, err))?;
+        ) {
+            // A failed pre-block system call invalidates the block only when the fixture expects
+            // an exception; otherwise it is a test failure.
+            if should_fail {
+                return Ok(BlockResolution::Discard);
+            }
+            return Err(TestError::case(path, name, err));
+        }
 
         let transactions = block_transactions(block);
+        // EIP-8037: track regular and state gas separately for the block-header gas check.
+        let mut cumulative_tx_gas_used = 0u64;
+        let mut block_regular_gas_used = 0u64;
+        let mut block_state_gas_used = 0u64;
+        let mut receipts = Vec::with_capacity(transactions.len());
         for (transaction_index, raw_tx) in transactions.iter().enumerate() {
             hook.transaction_started(TransactionStarted {
                 block_index,
@@ -350,8 +476,67 @@ fn execute_block(
                 }
             };
 
+            // EIP-8037: per-dimension block-level inclusion check (execution-specs
+            // `process_transaction`). A transaction is only includable when its gas limit --
+            // capped by the EIP-7825 limit on the regular dimension, uncapped on the state
+            // dimension -- still fits the block gas remaining on both dimensions.
+            if spec.enables(SpecId::AMSTERDAM)
+                && let Some(header) = block_header(block)
+            {
+                let block_gas_limit = header.gas_limit.saturating_to::<u64>();
+                let tx_gas_limit = tx.gas_limit();
+                let regular_gas_available = block_gas_limit.saturating_sub(block_regular_gas_used);
+                let state_gas_available = block_gas_limit.saturating_sub(block_state_gas_used);
+                if tx_gas_limit.min(evm.version().tx_gas_limit_cap) > regular_gas_available
+                    || tx_gas_limit > state_gas_available
+                {
+                    if should_fail {
+                        return Ok(BlockResolution::Discard);
+                    }
+                    return Err(TestError::case(
+                        path,
+                        name,
+                        TestErrorKind::UnexpectedFailure(format!(
+                            "transaction gas limit {tx_gas_limit} exceeds available block gas \
+                             (regular {regular_gas_available}, state {state_gas_available})"
+                        )),
+                    ));
+                }
+            }
+
+            // Transaction `i` is recorded at block access index `i + 1`.
+            if build_bal {
+                evm.state_mut().bump_bal_index();
+            }
             match execute_tx(&mut evm, &mut block_state, &tx) {
-                Ok(_) => {
+                Ok(result) => {
+                    cumulative_tx_gas_used =
+                        cumulative_tx_gas_used.saturating_add(result.tx_gas_used());
+                    block_regular_gas_used =
+                        block_regular_gas_used.saturating_add(result.regular_gas_spent());
+                    block_state_gas_used =
+                        block_state_gas_used.saturating_add(result.state_gas_spent());
+                    if compare_receipt_root {
+                        let status = if spec.enables(SpecId::BYZANTIUM) {
+                            Eip658Value::Eip658(result.status)
+                        } else {
+                            let mut post_state = receipt_base
+                                .as_ref()
+                                .expect("pre-Byzantium receipt base should be available")
+                                .clone();
+                            post_state.commit_source(&block_state);
+                            Eip658Value::PostState(state_root_from_database(&post_state))
+                        };
+                        let receipt = Receipt {
+                            status,
+                            cumulative_gas_used: cumulative_tx_gas_used,
+                            logs: result.logs,
+                        }
+                        .with_bloom();
+                        let tx_type = TxType::try_from(tx.inner().ty())
+                            .expect("executor only builds supported Ethereum transaction types");
+                        receipts.push(ReceiptEnvelope::from_typed(tx_type, receipt));
+                    }
                     hook.transaction_finished(TransactionFinished {
                         block_index,
                         total_blocks,
@@ -378,22 +563,80 @@ fn execute_block(
             }
         }
 
-        if should_fail {
-            let expected = block.expect_exception.clone().unwrap_or_default();
-            return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
+        // Validate the block header's gas used against the executed transactions. Under EIP-8037
+        // (Amsterdam+) regular and state gas are tracked separately and the header records their
+        // max; earlier forks record the cumulative per-transaction gas used (refunds included).
+        // Block-validation failures on a block that expects an exception resolve to a discard,
+        // mirroring execution-specs raising `InvalidBlock`.
+        if let Some(expected) = block_gas_used(block) {
+            let expected = expected.saturating_to::<u64>();
+            let actual = if spec.enables(SpecId::AMSTERDAM) {
+                block_regular_gas_used.max(block_state_gas_used)
+            } else {
+                cumulative_tx_gas_used
+            };
+            if actual != expected {
+                if should_fail {
+                    return Ok(BlockResolution::Discard);
+                }
+                return Err(TestError::case(
+                    path,
+                    name,
+                    TestErrorKind::BlockGasUsedMismatch { expected, actual },
+                ));
+            }
         }
 
-        post_block_transition(
+        if compare_receipt_root && let Some(header) = block_header(block) {
+            let got = alloy_consensus::proofs::calculate_receipt_root(&receipts);
+            if got != header.receipt_trie {
+                if should_fail {
+                    return Ok(BlockResolution::Discard);
+                }
+                return Err(TestError::case(
+                    path,
+                    name,
+                    TestErrorKind::ReceiptRootMismatch { got, expected: header.receipt_trie },
+                ));
+            }
+        }
+
+        // Post-block rewards and withdrawals are recorded at the final (post-execution) index.
+        if build_bal {
+            evm.state_mut().bump_bal_index();
+        }
+
+        if let Err(err) = post_block_transition(
             &mut evm,
             &mut block_state,
             spec,
             next_block_env,
+            block_ommers(block),
             block_withdrawals(block),
-        )
-        .map_err(|err| TestError::case(path, name, err))?;
+        ) {
+            // A failed post-block system call (e.g. SYSTEM_CONTRACT_CALL_FAILED) invalidates the
+            // block, mirroring execution-specs raising `InvalidBlock`.
+            if should_fail {
+                return Ok(BlockResolution::Discard);
+            }
+            return Err(TestError::case(path, name, err));
+        }
 
-        if let Some(expected_bal) = &block.block_access_list {
-            assert_block_access_list(block_index, expected_bal);
+        if let Some(expected_bal) = block_access_list(block) {
+            let built = evm.state_mut().take_bal_builder().unwrap_or_default();
+            if let Err(kind) =
+                check_block_access_list(block_index, built, expected_bal, block_header(block))
+            {
+                if should_fail {
+                    return Ok(BlockResolution::Discard);
+                }
+                return Err(TestError::case(path, name, kind));
+            }
+        }
+
+        if should_fail {
+            let expected = block.expect_exception.clone().unwrap_or_default();
+            return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
         }
 
         Ok(BlockResolution::Commit)
@@ -431,6 +674,24 @@ fn execute_block(
             *parent_block_hash = block_hash;
             if let Some(excess_blob_gas) = this_excess_blob_gas {
                 *parent_excess_blob_gas = excess_blob_gas;
+            }
+            if trace || compare_state_root {
+                let got = state_root_from_database(database);
+                if trace {
+                    let gas_used =
+                        block_gas_used(block).map(|gas| gas.saturating_to::<u64>()).unwrap_or(0);
+                    trace::write_summary(&mut std::io::stdout(), &Bytes::new(), gas_used, got);
+                }
+                if compare_state_root
+                    && let Some(expected) = expected_state_root
+                    && got != expected
+                {
+                    return Err(TestError::case(
+                        path,
+                        name,
+                        TestErrorKind::StateRootMismatch { got, expected },
+                    ));
+                }
             }
             Ok(())
         }
@@ -482,6 +743,14 @@ fn block_header(block: &Block) -> Option<&BlockHeader> {
         .or_else(|| block.rlp_decoded.as_ref().and_then(|decoded| decoded.block_header.as_ref()))
 }
 
+/// Returns the block's EIP-7928 access list, falling back to the decoded RLP payload: invalid-BAL
+/// fixtures carry the corrupted list only under `rlp_decoded`.
+fn block_access_list(block: &Block) -> Option<&BlockAccessList> {
+    block.block_access_list.as_ref().or_else(|| {
+        block.rlp_decoded.as_ref().and_then(|decoded| decoded.block_access_list.as_ref())
+    })
+}
+
 fn block_transactions(block: &Block) -> &[Transaction] {
     if let Some(transactions) = &block.transactions
         && !transactions.is_empty()
@@ -500,8 +769,17 @@ fn block_withdrawals(block: &Block) -> &[Withdrawal] {
     block.rlp_decoded.as_ref().map(|decoded| decoded.withdrawals.as_slice()).unwrap_or_default()
 }
 
+fn block_ommers(block: &Block) -> &[BlockHeader] {
+    if let Some(ommers) = &block.uncle_headers
+        && !ommers.is_empty()
+    {
+        return ommers;
+    }
+    block.rlp_decoded.as_ref().map(|decoded| decoded.uncle_headers.as_slice()).unwrap_or_default()
+}
+
 fn pre_block_system_calls(
-    evm: &mut Evm<BaseEvmTypes>,
+    evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     spec: SpecId,
     block: BlockEnv,
@@ -537,15 +815,34 @@ fn pre_block_system_calls(
 }
 
 fn post_block_transition(
-    evm: &mut Evm<BaseEvmTypes>,
+    evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     spec: SpecId,
     block: BlockEnv,
+    ommers: &[BlockHeader],
     withdrawals: &[Withdrawal],
 ) -> Result<(), TestErrorKind> {
-    let reward = block_reward(spec, 0);
+    let reward = block_reward(spec, ommers.len());
     if reward != 0 {
         increment_balance(evm, block_state, block.beneficiary, U256::from(reward))?;
+
+        let base_reward = U256::from(base_block_reward(spec));
+        for ommer in ommers {
+            let Some(age) = block.number.checked_sub(ommer.number) else {
+                return Err(TestErrorKind::InvalidOmmerAge {
+                    block_number: block.number,
+                    ommer_number: ommer.number,
+                });
+            };
+            if age.is_zero() || age > U256::from(6) {
+                return Err(TestErrorKind::InvalidOmmerAge {
+                    block_number: block.number,
+                    ommer_number: ommer.number,
+                });
+            }
+            let reward = (U256::from(8) - age) * base_reward / U256::from(8);
+            increment_balance(evm, block_state, ommer.coinbase, reward)?;
+        }
     }
 
     if spec.enables(SpecId::SHANGHAI) {
@@ -569,11 +866,29 @@ fn post_block_transition(
             "eip7251",
         )?;
     }
+
+    // EIP-8282: builder deposit (request type 0x03) and builder exit (0x04) requests, Amsterdam+.
+    if spec.enables(SpecId::AMSTERDAM) {
+        run_system_call(
+            evm,
+            block_state,
+            evm2::evm::BUILDER_DEPOSIT_REQUEST_ADDRESS,
+            Bytes::new(),
+            "eip8282_deposit",
+        )?;
+        run_system_call(
+            evm,
+            block_state,
+            evm2::evm::BUILDER_EXIT_REQUEST_ADDRESS,
+            Bytes::new(),
+            "eip8282_exit",
+        )?;
+    }
     Ok(())
 }
 
 fn run_system_call(
-    evm: &mut Evm<BaseEvmTypes>,
+    evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     address: Address,
     data: Bytes,
@@ -582,8 +897,8 @@ fn run_system_call(
     let executed = evm.system_call(SystemTx::new(address, data))?;
     if !executed.result().status {
         let _ = executed.discard();
-        let has_code = match evm.account_code(&address) {
-            Ok(code) => !code.is_empty(),
+        let has_code = match evm.read_account_info(&address) {
+            Ok(info) => info.is_some_and(|info| info.code_hash != KECCAK256_EMPTY),
             Err(code) => return Err(database_error(evm, code)),
         };
         if has_code {
@@ -596,7 +911,7 @@ fn run_system_call(
 }
 
 fn execute_tx(
-    evm: &mut Evm<BaseEvmTypes>,
+    evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     tx: &RecoveredTxEnvelope,
 ) -> Result<TxResult, HandlerError> {
@@ -604,7 +919,7 @@ fn execute_tx(
 }
 
 fn commit_state_changes<S: StateChangeSource>(
-    evm: &mut Evm<BaseEvmTypes>,
+    evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     changes: &S,
 ) {
@@ -624,6 +939,8 @@ impl StateChangeSource for AccountStateChange {
             address: self.address,
             original: self.original.as_ref().map(account_info_ref),
             current: self.current.as_ref().map(account_info_ref),
+            created: false,
+            selfdestructed: false,
         })
     }
 }
@@ -637,7 +954,7 @@ const fn account_info_ref(info: &EvmAccountInfo) -> AccountInfoRef<'_> {
     }
 }
 
-fn database_error(evm: &mut Evm<BaseEvmTypes>, code: ErrorCode) -> TestErrorKind {
+fn database_error(evm: &mut Evm<'_, BaseEvmTypes>, code: ErrorCode) -> TestErrorKind {
     TestErrorKind::UnexpectedFailure(evm.database_mut().error(code).to_string())
 }
 
@@ -664,7 +981,7 @@ fn parse_state(
 fn block_env_from_header(header: &BlockHeader, excess_blob_gas: u64, spec: SpecId) -> BlockEnv {
     let excess_blob_gas =
         header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>()).unwrap_or(excess_blob_gas);
-    BlockEnv {
+    BlockEnvExt {
         number: header.number,
         beneficiary: header.coinbase,
         timestamp: header.timestamp,
@@ -689,7 +1006,7 @@ fn blob_params_for_timestamp(timestamp: U256, spec: SpecId) -> BlobParams {
     const MAINNET_BPO1_TIMESTAMP: u64 = 1_765_290_071;
     const MAINNET_BPO2_TIMESTAMP: u64 = 1_767_747_671;
 
-    if timestamp.to::<u64>() >= MAINNET_BPO2_TIMESTAMP {
+    if spec.enables(SpecId::AMSTERDAM) || timestamp.to::<u64>() >= MAINNET_BPO2_TIMESTAMP {
         BlobParams::bpo2()
     } else if timestamp.to::<u64>() >= MAINNET_BPO1_TIMESTAMP {
         BlobParams::bpo1()
@@ -737,21 +1054,24 @@ fn access_list(raw: &Transaction) -> Result<Option<RpcAccessList>, TestErrorKind
 }
 
 const fn block_reward(spec: SpecId, ommers: usize) -> u128 {
+    let reward = base_block_reward(spec);
+    reward + (reward >> 5) * ommers as u128
+}
+
+const fn base_block_reward(spec: SpecId) -> u128 {
     if spec.enables(SpecId::MERGE) {
-        return 0;
-    }
-    let reward = if spec.enables(SpecId::PETERSBURG) {
+        0
+    } else if spec.enables(SpecId::PETERSBURG) {
         ONE_ETHER * 2
     } else if spec.enables(SpecId::BYZANTIUM) {
         ONE_ETHER * 3
     } else {
         ONE_ETHER * 5
-    };
-    reward + (reward >> 5) * ommers as u128
+    }
 }
 
 fn increment_balance(
-    evm: &mut Evm<BaseEvmTypes>,
+    evm: &mut Evm<'_, BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     address: Address,
     amount: U256,
@@ -765,8 +1085,12 @@ fn increment_balance(
     if current.code_hash.is_zero() {
         current.code_hash = KECCAK256_EMPTY;
     }
+    // EELS `modify_state` destroys an account left empty by the modification, so a zero-amount
+    // withdrawal neither creates its recipient nor keeps a pre-existing empty one alive. The
+    // BAL commit below still runs to record the touched address.
+    let current = (!current.is_empty()).then_some(current);
 
-    let change = AccountStateChange { address, original, current: Some(current) };
+    let change = AccountStateChange { address, original, current };
     commit_state_changes(evm, block_state, &change);
     Ok(())
 }
@@ -834,8 +1158,132 @@ fn validate_post_state(
     Ok(())
 }
 
-fn assert_block_access_list(_block_index: usize, _expected: &alloy_eip7928::BlockAccessList) {
-    todo!("evm2 does not build block access lists yet")
+/// Validates the block access list built during execution: the EIP-7928 item-count bound, the
+/// header's block access list hash, and a comparison against the fixture's expected list.
+///
+/// Built and expected lists are canonicalized into EIP-7928 order (`From<Bal> for
+/// BlockAccessList`) before comparison so that map/insertion ordering never causes a spurious
+/// mismatch.
+fn check_block_access_list(
+    block_index: usize,
+    built: Bal,
+    expected: &BlockAccessList,
+    header: Option<&BlockHeader>,
+) -> Result<(), TestErrorKind> {
+    let built = BlockAccessList::from(built);
+
+    // EIP-7928: the total number of items (addresses + unique storage keys) is bounded by the
+    // block gas limit (execution-specs `validate_block_access_list_gas_limit`).
+    if let Some(header) = header {
+        let items: u64 = built
+            .iter()
+            .map(|account| {
+                1 + account.storage_changes.len() as u64 + account.storage_reads.len() as u64
+            })
+            .sum();
+        let max_items = header.gas_limit.saturating_to::<u64>() / alloy_eip7928::ITEM_COST as u64;
+        if items > max_items {
+            return Err(TestErrorKind::UnexpectedFailure(format!(
+                "block access list exceeds gas limit: {items} items exceeds limit of {max_items}"
+            )));
+        }
+    }
+
+    // The header commits to the computed list by hash (execution-specs compares
+    // `hash_block_access_list` against `header.block_access_list_hash`).
+    if let Some(expected_hash) = header.and_then(|header| header.block_access_list_hash) {
+        let computed_hash = alloy_eip7928::compute_block_access_list_hash(&built);
+        if computed_hash != expected_hash {
+            return Err(TestErrorKind::UnexpectedFailure(format!(
+                "block access list hash mismatch: computed {computed_hash}, header {expected_hash}"
+            )));
+        }
+    }
+
+    let expected = match Bal::try_from(expected.clone()) {
+        Ok(bal) => BlockAccessList::from(bal),
+        Err(_) => expected.clone(),
+    };
+    if built == expected {
+        return Ok(());
+    }
+    Err(TestErrorKind::BlockAccessListMismatch {
+        block_index,
+        details: format_bal_diff(&built, &expected),
+    })
+}
+
+/// Renders a compact per-account summary of how the built and expected block access lists differ.
+fn format_bal_diff(
+    built: &alloy_eip7928::BlockAccessList,
+    expected: &alloy_eip7928::BlockAccessList,
+) -> String {
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        fmt::Write,
+    };
+
+    let built: BTreeMap<_, _> = built.iter().map(|account| (account.address, account)).collect();
+    let expected: BTreeMap<_, _> =
+        expected.iter().map(|account| (account.address, account)).collect();
+    let addresses: BTreeSet<_> = built.keys().chain(expected.keys()).copied().collect();
+
+    let mut out = String::new();
+    for address in addresses {
+        match (built.get(&address), expected.get(&address)) {
+            (Some(_), None) => {
+                let _ = write!(out, "\n  {address}: only in built");
+            }
+            (None, Some(_)) => {
+                let _ = write!(out, "\n  {address}: only in expected");
+            }
+            (Some(built), Some(expected)) if built != expected => {
+                let _ = write!(out, "\n  {address}: differs");
+                if built.nonce_changes != expected.nonce_changes {
+                    let _ = write!(
+                        out,
+                        " nonce (built {:?}, expected {:?})",
+                        built.nonce_changes, expected.nonce_changes
+                    );
+                }
+                if built.balance_changes != expected.balance_changes {
+                    let _ = write!(
+                        out,
+                        " balance (built {:?}, expected {:?})",
+                        built.balance_changes, expected.balance_changes
+                    );
+                }
+                if built.code_changes != expected.code_changes {
+                    let _ = write!(out, " code");
+                }
+                if built.storage_changes != expected.storage_changes {
+                    let _ = write!(
+                        out,
+                        " storage_writes (built {:?}, expected {:?})",
+                        built.storage_changes, expected.storage_changes
+                    );
+                }
+                if built.storage_reads != expected.storage_reads {
+                    let _ = write!(
+                        out,
+                        " storage_reads (built {:?}, expected {:?})",
+                        built.storage_reads, expected.storage_reads
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Whether a blockchain test targeting `spec` should be skipped.
+///
+/// Only the globally unsupported forks ([`is_fork_skipped`]) are skipped. Amsterdam blockchain
+/// tests are executed: EIP-7928 block access lists are built and validated (see
+/// [`check_block_access_list`]) and EIP-8037 block-level gas is checked in [`execute_block`].
+fn is_blockchain_fork_skipped(spec: SpecId) -> bool {
+    is_fork_skipped(spec)
 }
 
 fn fork_to_spec_id(fork: ForkSpec) -> SpecId {
@@ -890,6 +1338,331 @@ mod tests {
 
     #[cfg(feature = "jit")]
     const BYTECODE_STORE42: &[u8] = &[op::PUSH1, 0x42, op::PUSH0, op::SSTORE, op::STOP];
+
+    #[test]
+    fn blockchain_tests_apply_ommer_rewards_before_merge() {
+        use super::{
+            super::types::{
+                Account, Block, BlockHeader, BlockchainTest, BlockchainTestCase, DecodedBlock,
+                ForkSpec, SealEngine, State,
+            },
+            ExecuteConfig, NoopHook, ONE_ETHER, execute_suite,
+        };
+        use crate::filter::NameFilter;
+        use alloy_primitives::{Address, B256, U256};
+        use std::{collections::BTreeMap, path::Path};
+
+        let miner = Address::with_last_byte(1);
+        let ommer_miner = Address::with_last_byte(2);
+        let genesis_hash = B256::with_last_byte(1);
+        let block_hash = B256::with_last_byte(2);
+
+        for (fork, base_reward) in [
+            (ForkSpec::Homestead, 5 * ONE_ETHER),
+            (ForkSpec::Byzantium, 3 * ONE_ETHER),
+            (ForkSpec::ConstantinopleFix, 2 * ONE_ETHER),
+            (ForkSpec::Paris, 0),
+        ] {
+            let mut post_state = BTreeMap::new();
+            if base_reward != 0 {
+                post_state.insert(
+                    miner,
+                    Account {
+                        balance: U256::from(base_reward + base_reward / 32),
+                        ..Default::default()
+                    },
+                );
+                post_state.insert(
+                    ommer_miner,
+                    Account { balance: U256::from(base_reward * 7 / 8), ..Default::default() },
+                );
+            }
+
+            let block_header = BlockHeader {
+                parent_hash: genesis_hash,
+                hash: block_hash,
+                coinbase: miner,
+                number: U256::ONE,
+                gas_limit: U256::from(30_000_000),
+                timestamp: U256::ONE,
+                ..Default::default()
+            };
+            let ommer_header =
+                BlockHeader { coinbase: ommer_miner, number: U256::ZERO, ..Default::default() };
+            let block = if fork == ForkSpec::Byzantium {
+                Block {
+                    rlp_decoded: Some(DecodedBlock {
+                        block_header: Some(block_header),
+                        uncle_headers: vec![ommer_header],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }
+            } else {
+                Block {
+                    block_header: Some(block_header),
+                    uncle_headers: Some(vec![ommer_header]),
+                    ..Default::default()
+                }
+            };
+
+            let suite = BlockchainTest(BTreeMap::from([(
+                "ommer-rewards".to_string(),
+                BlockchainTestCase {
+                    genesis_block_header: BlockHeader {
+                        hash: genesis_hash,
+                        gas_limit: U256::from(30_000_000),
+                        ..Default::default()
+                    },
+                    blocks: vec![block],
+                    post_state: Some(post_state),
+                    pre: State(BTreeMap::new()),
+                    block_hashes: Vec::new(),
+                    lastblockhash: block_hash,
+                    network: fork,
+                    seal_engine: SealEngine::NoProof,
+                    genesis_rlp: None,
+                },
+            )]));
+
+            let summary = execute_suite(
+                Path::new("ommer-rewards.json"),
+                &suite,
+                ExecuteConfig::default(),
+                &NameFilter::default(),
+                &mut NoopHook,
+            )
+            .unwrap();
+            assert_eq!(summary.executed, 1, "fork {fork:?}");
+        }
+    }
+
+    #[test]
+    fn receipt_root_check_rejects_invalid_empty_block_root() {
+        use super::{
+            super::types::{
+                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
+            },
+            ExecuteConfig, ExecutionMode, NoopHook, execute_str,
+        };
+        use crate::filter::NameFilter;
+        use alloy_primitives::{B256, U256};
+        use std::{collections::BTreeMap, path::Path};
+
+        let genesis_hash = B256::with_last_byte(1);
+        let suite = BlockchainTest(BTreeMap::from([(
+            "invalid-receipt-root".to_string(),
+            BlockchainTestCase {
+                genesis_block_header: BlockHeader {
+                    hash: genesis_hash,
+                    gas_limit: U256::from(30_000_000),
+                    ..Default::default()
+                },
+                blocks: vec![Block {
+                    block_header: Some(BlockHeader {
+                        parent_hash: genesis_hash,
+                        hash: B256::with_last_byte(2),
+                        number: U256::ONE,
+                        gas_limit: U256::from(30_000_000),
+                        receipt_trie: B256::ZERO,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                post_state: None,
+                pre: State(BTreeMap::new()),
+                block_hashes: Vec::new(),
+                lastblockhash: B256::with_last_byte(2),
+                network: ForkSpec::Cancun,
+                seal_engine: SealEngine::NoProof,
+                genesis_rlp: None,
+            },
+        )]));
+        let input = serde_json::to_string(&suite).unwrap();
+        let error = execute_str(
+            Path::new("invalid-receipt-root.json"),
+            &input,
+            ExecuteConfig {
+                compare_receipt_root: true,
+                mode: ExecutionMode::Interpreter,
+                ..Default::default()
+            },
+            &NameFilter::default(),
+            &mut NoopHook,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error.kind, super::TestErrorKind::ReceiptRootMismatch { .. }));
+    }
+
+    #[test]
+    fn rejects_block_with_wrong_parent_hash() {
+        use super::{
+            super::types::{
+                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
+            },
+            ExecuteConfig, NoopHook, execute_str,
+        };
+        use crate::filter::NameFilter;
+        use alloy_primitives::{B256, U256};
+        use std::{collections::BTreeMap, path::Path};
+
+        let genesis_hash = B256::with_last_byte(1);
+        let block_hash = B256::with_last_byte(2);
+        let suite = BlockchainTest(BTreeMap::from([(
+            "wrong-parent-hash".to_string(),
+            BlockchainTestCase {
+                genesis_block_header: BlockHeader {
+                    hash: genesis_hash,
+                    gas_limit: U256::from(30_000_000),
+                    ..Default::default()
+                },
+                blocks: vec![Block {
+                    block_header: Some(BlockHeader {
+                        parent_hash: B256::with_last_byte(3),
+                        hash: block_hash,
+                        number: U256::ONE,
+                        gas_limit: U256::from(30_000_000),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                post_state: None,
+                pre: State(BTreeMap::new()),
+                block_hashes: Vec::new(),
+                lastblockhash: block_hash,
+                network: ForkSpec::Cancun,
+                seal_engine: SealEngine::NoProof,
+                genesis_rlp: None,
+            },
+        )]));
+        let input = serde_json::to_string(&suite).unwrap();
+        let error = execute_str(
+            Path::new("wrong-parent-hash.json"),
+            &input,
+            ExecuteConfig::default(),
+            &NameFilter::default(),
+            &mut NoopHook,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error.kind,
+            super::TestErrorKind::ParentBlockHashMismatch { got, expected }
+                if got == B256::with_last_byte(3) && expected == genesis_hash
+        ));
+    }
+
+    #[test]
+    fn discards_expected_block_with_wrong_parent_hash() {
+        use super::{
+            super::types::{
+                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
+            },
+            ExecuteConfig, NoopHook, execute_str,
+        };
+        use crate::filter::NameFilter;
+        use alloy_primitives::{B256, U256};
+        use std::{collections::BTreeMap, path::Path};
+
+        let genesis_hash = B256::with_last_byte(1);
+        let suite = BlockchainTest(BTreeMap::from([(
+            "expected-wrong-parent-hash".to_string(),
+            BlockchainTestCase {
+                genesis_block_header: BlockHeader {
+                    hash: genesis_hash,
+                    gas_limit: U256::from(30_000_000),
+                    ..Default::default()
+                },
+                blocks: vec![Block {
+                    block_header: Some(BlockHeader {
+                        parent_hash: B256::with_last_byte(3),
+                        hash: B256::with_last_byte(2),
+                        number: U256::ONE,
+                        gas_limit: U256::from(30_000_000),
+                        ..Default::default()
+                    }),
+                    expect_exception: Some("invalid parent hash".to_string()),
+                    ..Default::default()
+                }],
+                post_state: None,
+                pre: State(BTreeMap::new()),
+                block_hashes: Vec::new(),
+                lastblockhash: genesis_hash,
+                network: ForkSpec::Cancun,
+                seal_engine: SealEngine::NoProof,
+                genesis_rlp: None,
+            },
+        )]));
+        let input = serde_json::to_string(&suite).unwrap();
+
+        execute_str(
+            Path::new("expected-wrong-parent-hash.json"),
+            &input,
+            ExecuteConfig::default(),
+            &NameFilter::default(),
+            &mut NoopHook,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_case_with_wrong_last_block_hash() {
+        use super::{
+            super::types::{
+                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
+            },
+            ExecuteConfig, NoopHook, execute_str,
+        };
+        use crate::filter::NameFilter;
+        use alloy_primitives::{B256, U256};
+        use std::{collections::BTreeMap, path::Path};
+
+        let genesis_hash = B256::with_last_byte(1);
+        let block_hash = B256::with_last_byte(2);
+        let suite = BlockchainTest(BTreeMap::from([(
+            "wrong-last-block-hash".to_string(),
+            BlockchainTestCase {
+                genesis_block_header: BlockHeader {
+                    hash: genesis_hash,
+                    gas_limit: U256::from(30_000_000),
+                    ..Default::default()
+                },
+                blocks: vec![Block {
+                    block_header: Some(BlockHeader {
+                        parent_hash: genesis_hash,
+                        hash: block_hash,
+                        number: U256::ONE,
+                        gas_limit: U256::from(30_000_000),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                post_state: None,
+                pre: State(BTreeMap::new()),
+                block_hashes: Vec::new(),
+                lastblockhash: genesis_hash,
+                network: ForkSpec::Cancun,
+                seal_engine: SealEngine::NoProof,
+                genesis_rlp: None,
+            },
+        )]));
+        let input = serde_json::to_string(&suite).unwrap();
+        let error = execute_str(
+            Path::new("wrong-last-block-hash.json"),
+            &input,
+            ExecuteConfig::default(),
+            &NameFilter::default(),
+            &mut NoopHook,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error.kind,
+            super::TestErrorKind::LastBlockHashMismatch { got, expected }
+                if got == block_hash && expected == genesis_hash
+        ));
+    }
 
     #[cfg(feature = "jit")]
     fn execute_simple_storage_block(mode: ExecutionMode) -> ExecuteSummary {
@@ -956,6 +1729,7 @@ mod tests {
                         hash: block_hash,
                         number: U256::ONE,
                         gas_limit: U256::from(30_000_000),
+                        gas_used: U256::from(43_105),
                         base_fee_per_gas: Some(U256::ZERO),
                         timestamp: U256::ONE,
                         ..BlockHeader::default()
@@ -997,7 +1771,7 @@ mod tests {
             Path::new("simple-storage.json"),
             &input,
             ExecuteConfig { validate_post_state: true, mode, ..ExecuteConfig::default() },
-            &EntryPoint::default(),
+            &NameFilter::default(),
             &mut hook,
         )
         .unwrap()
@@ -1015,5 +1789,34 @@ mod tests {
         assert_eq!(jit.skipped, interpreter.skipped);
         assert_eq!(aot.executed, interpreter.executed);
         assert_eq!(aot.skipped, interpreter.skipped);
+    }
+
+    #[test]
+    fn json_outcome_reports_pass_and_failure() {
+        use super::{
+            super::{
+                error::{TestError, TestErrorKind},
+                types::ForkSpec,
+            },
+            json_outcome_value,
+        };
+        use alloy_primitives::B256;
+
+        let root = B256::with_last_byte(7);
+        let pass = json_outcome_value("case-a", ForkSpec::Byzantium, &Ok(Some(root)));
+        assert_eq!(pass["pass"], true);
+        assert_eq!(pass["fork"], "Byzantium");
+        assert_eq!(pass["stateRoot"], serde_json::to_value(root).unwrap());
+        assert_eq!(pass["errorMsg"], "");
+
+        let failure: Result<Option<B256>, TestError> = Err(TestError::case(
+            std::path::Path::new("f.json"),
+            "case-b",
+            TestErrorKind::UnexpectedFailure("boom".to_string()),
+        ));
+        let fail = json_outcome_value("case-b", ForkSpec::Byzantium, &failure);
+        assert_eq!(fail["pass"], false);
+        assert_eq!(fail["stateRoot"], serde_json::to_value(B256::ZERO).unwrap());
+        assert!(fail["errorMsg"].as_str().unwrap().contains("boom"));
     }
 }

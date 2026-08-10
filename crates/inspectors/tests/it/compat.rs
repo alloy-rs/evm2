@@ -3,10 +3,10 @@
 use alloy_consensus::{TxEip4844, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, Inspector, NoopInspector, Precompiles, TxResult,
+    BaseEvmTypes, Evm, EvmTypesHost, Inspector, NoopInspector, Precompiles, TxResult,
     TxResultWithState, env as evm_env,
-    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::StateChanges,
+    ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+    evm::PendingState,
     interpreter::{Interpreter, Message, MessageResult},
     registry::HandlerError,
 };
@@ -138,7 +138,7 @@ impl Context {
         Self {
             db: CacheDB::new(EmptyDB::default()),
             tx: TxEnv::default(),
-            block: evm_env::BlockEnv::default(),
+            block: evm_env::BlockEnvExt::default(),
             spec: SpecId::OSAKA,
         }
     }
@@ -318,26 +318,28 @@ impl TxEnv {
     pub fn envelope(&self) -> RecoveredTxEnvelope {
         if !self.blob_hashes.is_empty() {
             let TxKind::Call(to) = self.kind else { panic!("blob transactions must be calls") };
-            return RecoveredTxEnvelope::Eip4844(Recovered::new_unchecked(
-                TxEip4844 {
-                    chain_id: self.chain_id.unwrap_or(1),
-                    nonce: self.nonce,
-                    gas_limit: self.gas_limit,
-                    max_fee_per_gas: self.gas_price,
-                    max_priority_fee_per_gas: self.gas_priority_fee.unwrap_or_default(),
-                    to,
-                    value: self.value,
-                    access_list: Default::default(),
-                    blob_versioned_hashes: self.blob_hashes.clone(),
-                    max_fee_per_blob_gas: self.max_fee_per_blob_gas,
-                    input: self.data.clone(),
-                }
-                .into(),
+            return Recovered::new_unchecked(
+                TxEnvelope::Eip4844(
+                    TxEip4844 {
+                        chain_id: self.chain_id.unwrap_or(1),
+                        nonce: self.nonce,
+                        gas_limit: self.gas_limit,
+                        max_fee_per_gas: self.gas_price,
+                        max_priority_fee_per_gas: self.gas_priority_fee.unwrap_or_default(),
+                        to,
+                        value: self.value,
+                        access_list: Default::default(),
+                        blob_versioned_hashes: self.blob_hashes.clone(),
+                        max_fee_per_blob_gas: self.max_fee_per_blob_gas,
+                        input: self.data.clone(),
+                    }
+                    .into(),
+                ),
                 self.caller,
-            ));
+            );
         }
-        RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy {
+        Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
                 chain_id: self.chain_id,
                 nonce: self.nonce,
                 gas_price: self.gas_price,
@@ -345,22 +347,22 @@ impl TxEnv {
                 to: self.kind,
                 value: self.value,
                 input: self.data.clone(),
-            },
+            }),
             self.caller,
-        ))
+        )
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct ResultAndState {
     pub result: ExecutionResult,
-    pub state: StateChanges,
+    pub state: PendingState,
     pub tx_result: TxResultWithState,
 }
 
 impl ResultAndState {
     fn new(result: TxResultWithState) -> Self {
-        let state = result.state_changes.clone();
+        let state = result.pending_state.clone();
         Self {
             result: ExecutionResult::from_tx_result(result.result.clone()),
             state,
@@ -378,17 +380,18 @@ pub enum ExecutionResult {
 
 impl ExecutionResult {
     fn from_tx_result(result: TxResult) -> Self {
+        let gas_used = result.tx_gas_used();
         if result.status {
             let output = if result.created_address.is_some() {
                 Output::Create(result.output, result.created_address)
             } else {
                 Output::Call(result.output)
             };
-            Self::Success { output, gas_used: result.gas_used }
+            Self::Success { output, gas_used }
         } else if result.stop.is_revert() {
-            Self::Revert { output: result.output, gas_used: result.gas_used }
+            Self::Revert { output: result.output, gas_used }
         } else {
-            Self::Halt { reason: result.stop, gas_used: result.gas_used }
+            Self::Halt { reason: result.stop, gas_used }
         }
     }
 
@@ -450,11 +453,11 @@ impl DeployResult {
 }
 
 pub trait DatabaseCommit {
-    fn commit(&mut self, changes: StateChanges);
+    fn commit(&mut self, changes: PendingState);
 }
 
 impl DatabaseCommit for CacheDB<EmptyDB> {
-    fn commit(&mut self, changes: StateChanges) {
+    fn commit(&mut self, changes: PendingState) {
         self.commit_source(&changes);
     }
 }
@@ -527,25 +530,29 @@ impl<I> RawInspector<I> {
 }
 
 impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
         self.inner().initialize_interp(interp);
     }
 
-    fn step(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
         self.inner().step(interp);
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
         self.inner().step_end(interp);
     }
 
-    fn log(&mut self, log: &alloy_primitives::Log, host: &mut <BaseEvmTypes as EvmTypes>::Host) {
+    fn log(
+        &mut self,
+        log: &alloy_primitives::Log,
+        host: &mut <BaseEvmTypes as EvmTypesHost>::Host<'_>,
+    ) {
         self.inner().log(log, host);
     }
 
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &mut Message<BaseEvmTypes>,
     ) -> Option<MessageResult<BaseEvmTypes>> {
         self.inner().call(interp, message)
@@ -553,7 +560,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
 
     fn call_end(
         &mut self,
-        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &Message<BaseEvmTypes>,
         result: &mut MessageResult<BaseEvmTypes>,
     ) {
@@ -562,7 +569,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
 
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &mut Message<BaseEvmTypes>,
     ) -> Option<MessageResult<BaseEvmTypes>> {
         self.inner().create(interp, message)
@@ -570,7 +577,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
 
     fn create_end(
         &mut self,
-        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &Message<BaseEvmTypes>,
         result: &mut MessageResult<BaseEvmTypes>,
     ) {
@@ -582,7 +589,7 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
         contract: &Address,
         target: &Address,
         value: &U256,
-        host: &mut <BaseEvmTypes as EvmTypes>::Host,
+        host: &mut <BaseEvmTypes as EvmTypesHost>::Host<'_>,
     ) {
         self.inner().selfdestruct(contract, target, value, host);
     }

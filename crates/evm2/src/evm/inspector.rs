@@ -1,35 +1,38 @@
 //! EVM execution inspection hooks.
 
 use crate::{
-    EvmTypes,
+    EvmTypesHost,
+    evm::NonStaticAny,
     interpreter::{Interpreter, Message, MessageResult},
 };
+use alloc::boxed::Box;
 use alloy_primitives::{Address, Log, U256};
-use core::any::Any;
+use auto_impl::auto_impl;
 
 /// EVM execution inspector.
-pub trait Inspector<T: EvmTypes>: Any {
+#[auto_impl(&mut, Box)]
+pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Called after a frame interpreter has been initialized.
     #[inline]
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
     }
 
     /// Called before each instruction executes.
     #[inline]
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
     }
 
     /// Called after each instruction executes.
     #[inline]
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
     }
 
     /// Called when a log is emitted.
     #[inline]
-    fn log(&mut self, log: &Log, host: &mut T::Host) {
+    fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {
         let _ = log;
         let _ = host;
     }
@@ -41,7 +44,7 @@ pub trait Inspector<T: EvmTypes>: Any {
     #[inline]
     fn call(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         let _ = interp;
@@ -53,7 +56,7 @@ pub trait Inspector<T: EvmTypes>: Any {
     #[inline]
     fn call_end(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -69,7 +72,7 @@ pub trait Inspector<T: EvmTypes>: Any {
     #[inline]
     fn create(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         let _ = interp;
@@ -81,7 +84,7 @@ pub trait Inspector<T: EvmTypes>: Any {
     #[inline]
     fn create_end(
         &mut self,
-        interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -97,7 +100,7 @@ pub trait Inspector<T: EvmTypes>: Any {
         contract: &Address,
         target: &Address,
         value: &U256,
-        host: &mut T::Host,
+        host: &mut T::Host<'_>,
     ) {
         let _ = contract;
         let _ = target;
@@ -106,15 +109,22 @@ pub trait Inspector<T: EvmTypes>: Any {
     }
 }
 
+#[inline]
+pub(crate) fn boxed_inspector<'a, T: EvmTypesHost>(
+    inspector: impl Inspector<T> + 'a,
+) -> Box<dyn Inspector<T> + 'a> {
+    Box::new(inspector)
+}
+
 /// Inspector that does nothing.
 #[allow(missing_copy_implementations)]
 #[derive(Clone, Debug, Default)]
 pub struct NoopInspector(());
 
-impl<T: EvmTypes> Inspector<T> for NoopInspector {}
+impl<T: EvmTypesHost> Inspector<T> for NoopInspector {}
 
-impl<T: EvmTypes> core::ops::Deref for dyn Inspector<T> + '_ {
-    type Target = dyn Any;
+impl<'a, T: EvmTypesHost> core::ops::Deref for dyn Inspector<T> + 'a {
+    type Target = dyn NonStaticAny + 'a;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
@@ -122,7 +132,7 @@ impl<T: EvmTypes> core::ops::Deref for dyn Inspector<T> + '_ {
     }
 }
 
-impl<T: EvmTypes> core::ops::DerefMut for dyn Inspector<T> + '_ {
+impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn Inspector<T> + 'a {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self
@@ -133,13 +143,17 @@ impl<T: EvmTypes> core::ops::DerefMut for dyn Inspector<T> + '_ {
 mod tests {
     use super::Inspector;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmTypes, ExecutionConfig, Precompiles, SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmTypesHost, ExecutionConfig, Precompiles,
+        SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
-        env::{BlockEnv, TxEnv},
-        ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+        env::{BlockEnvExt, TxEnvExt},
+        ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
-        interpreter::{GasTracker, Host, InstrStop, Interpreter, Message, MessageResult, Word, op},
+        interpreter::{
+            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageResult,
+            MessageResultExt, Word, op,
+        },
         registry::TxRegistry,
         test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all},
         utils::address_to_word,
@@ -154,13 +168,13 @@ mod tests {
         selfdestruct: Option<(Address, Address, Word)>,
     }
 
-    impl<T: EvmTypes> Inspector<T> for SelfdestructInspector {
+    impl<T: EvmTypesHost> Inspector<T> for SelfdestructInspector {
         fn selfdestruct(
             &mut self,
             contract: &Address,
             target: &Address,
             value: &Word,
-            _host: &mut T::Host,
+            _host: &mut T::Host<'_>,
         ) {
             self.selfdestruct = Some((*contract, *target, *value));
         }
@@ -178,7 +192,7 @@ mod tests {
     impl Inspector<BaseEvmTypes> for HookInspector {
         fn call(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.call_depths.push(message.depth);
@@ -187,7 +201,7 @@ mod tests {
 
         fn call_end(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             _message: &Message<BaseEvmTypes>,
             result: &mut MessageResult<BaseEvmTypes>,
         ) {
@@ -196,7 +210,7 @@ mod tests {
 
         fn create(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.create_depths.push(message.depth);
@@ -206,7 +220,7 @@ mod tests {
 
         fn create_end(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             _message: &Message<BaseEvmTypes>,
             result: &mut MessageResult<BaseEvmTypes>,
         ) {
@@ -224,7 +238,7 @@ mod tests {
     impl Inspector<BaseEvmTypes> for OverrideCallInspector {
         fn call(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             if message.depth < self.min_depth {
@@ -238,7 +252,7 @@ mod tests {
 
         fn call_end(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &Message<BaseEvmTypes>,
             result: &mut MessageResult<BaseEvmTypes>,
         ) {
@@ -257,11 +271,11 @@ mod tests {
     impl Inspector<BaseEvmTypes> for OverrideCreateInspector {
         fn create(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.create_depth = Some(message.depth);
-            Some(MessageResult {
+            Some(MessageResultExt {
                 stop: InstrStop::Return,
                 gas: GasTracker::new(message.gas_limit),
                 created_address: Some(self.created),
@@ -271,7 +285,7 @@ mod tests {
 
         fn create_end(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             _message: &Message<BaseEvmTypes>,
             result: &mut MessageResult<BaseEvmTypes>,
         ) {
@@ -284,8 +298,8 @@ mod tests {
         logs: Vec<Log>,
     }
 
-    impl<T: EvmTypes> Inspector<T> for LogInspector {
-        fn log(&mut self, log: &Log, _host: &mut T::Host) {
+    impl<T: EvmTypesHost> Inspector<T> for LogInspector {
+        fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
             self.logs.push(log.clone());
         }
     }
@@ -306,25 +320,25 @@ mod tests {
     }
 
     impl Inspector<BaseEvmTypes> for SharedE2eInspector {
-        fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
+        fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
             self.state.initialized += 1;
         }
 
-        fn step(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
+        fn step(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
             self.state.steps += 1;
         }
 
-        fn step_end(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
+        fn step_end(&mut self, _interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
             self.state.step_ends += 1;
         }
 
-        fn log(&mut self, log: &Log, _host: &mut Evm<BaseEvmTypes>) {
+        fn log(&mut self, log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
             self.state.logs.push(log.clone());
         }
 
         fn call(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             _message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.state.calls += 1;
@@ -333,7 +347,7 @@ mod tests {
 
         fn create(
             &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             _message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.state.creates += 1;
@@ -346,7 +360,7 @@ mod tests {
         message: &Message<BaseEvmTypes>,
         gas_limit: u64,
         inspector: I,
-    ) -> (MessageResult<BaseEvmTypes>, Box<I>, Evm<BaseEvmTypes>) {
+    ) -> (MessageResult<BaseEvmTypes>, Box<I>, Evm<'static, BaseEvmTypes>) {
         run_evm_with_inspector_db(InMemoryDB::default(), code, message, gas_limit, inspector)
     }
 
@@ -356,16 +370,16 @@ mod tests {
         message: &Message<BaseEvmTypes>,
         gas_limit: u64,
         inspector: I,
-    ) -> (MessageResult<BaseEvmTypes>, Box<I>, Evm<BaseEvmTypes>) {
+    ) -> (MessageResult<BaseEvmTypes>, Box<I>, Evm<'static, BaseEvmTypes>) {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             db,
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(inspector);
-        let tx_env = TxEnv::default();
+        let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
         let mut message = message.clone();
         message.gas_limit = gas_limit;
@@ -410,19 +424,19 @@ mod tests {
             step_ends: usize,
         }
 
-        impl<T: EvmTypes> Inspector<T> for StepInspector {
-            fn step(&mut self, _interp: &mut Interpreter<'_, T>) {
+        impl<T: EvmTypesHost> Inspector<T> for StepInspector {
+            fn step(&mut self, _interp: &mut Interpreter<'_, '_, T>) {
                 self.steps += 1;
             }
 
-            fn step_end(&mut self, _interp: &mut Interpreter<'_, T>) {
+            fn step_end(&mut self, _interp: &mut Interpreter<'_, '_, T>) {
                 self.step_ends += 1;
             }
         }
 
         let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::STOP]),
-            &Message::default(),
+            &MessageExt::default(),
             10_000,
             StepInspector::default(),
         );
@@ -442,8 +456,8 @@ mod tests {
             stack: Vec<Word>,
         }
 
-        impl<T: EvmTypes> Inspector<T> for StopOnStepInspector {
-            fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+        impl<T: EvmTypesHost> Inspector<T> for StopOnStepInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
                 self.steps += 1;
                 if interp.opcode() == self.opcode {
                     self.stack = interp.stack().to_vec();
@@ -451,14 +465,14 @@ mod tests {
                 }
             }
 
-            fn step_end(&mut self, _interp: &mut Interpreter<'_, T>) {
+            fn step_end(&mut self, _interp: &mut Interpreter<'_, '_, T>) {
                 self.step_ends += 1;
             }
         }
 
         let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::PUSH1, 1, op::PUSH1, 2, op::ADD, op::STOP]),
-            &Message::default(),
+            &MessageExt::default(),
             10_000,
             StopOnStepInspector { opcode: op::ADD, ..Default::default() },
         );
@@ -480,13 +494,13 @@ mod tests {
             stack: Vec<Word>,
         }
 
-        impl<T: EvmTypes> Inspector<T> for StopOnStepEndInspector {
-            fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+        impl<T: EvmTypesHost> Inspector<T> for StopOnStepEndInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
                 self.steps += 1;
                 self.last_opcode = Some(interp.opcode());
             }
 
-            fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+            fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
                 self.step_ends += 1;
                 if self.last_opcode == Some(self.opcode) {
                     self.stack = interp.stack().to_vec();
@@ -497,7 +511,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::PUSH1, 1, op::PUSH1, 2, op::ADD, op::STOP]),
-            &Message::default(),
+            &MessageExt::default(),
             10_000,
             StopOnStepEndInspector { opcode: op::PUSH1, ..Default::default() },
         );
@@ -516,7 +530,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
+            &MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() },
             50_000,
             HookInspector::default(),
         );
@@ -530,7 +544,7 @@ mod tests {
     fn call_inspector_override_skips_execution_and_still_calls_end() {
         let target = Address::from([0x22; 20]);
         let inspector = OverrideCallInspector {
-            result: MessageResult {
+            result: MessageResultExt {
                 stop: InstrStop::Return,
                 output: Bytes::from_static(&[0xaa, 0xbb, 0xcc]),
                 ..Default::default()
@@ -544,7 +558,7 @@ mod tests {
         return_top_word(&mut code);
 
         let (result, inspector, _) =
-            run_evm_with_inspector(code, &Message::default(), 50_000, inspector);
+            run_evm_with_inspector(code, &MessageExt::default(), 50_000, inspector);
 
         assert_matches!(result.stop, InstrStop::Return);
         // The override output is observed by the parent frame's RETURNDATASIZE.
@@ -557,7 +571,7 @@ mod tests {
     fn call_inspector_override_wins_at_max_depth() {
         let target = Address::from([0x22; 20]);
         let inspector = OverrideCallInspector {
-            result: MessageResult { stop: InstrStop::Return, ..Default::default() },
+            result: MessageResultExt { stop: InstrStop::Return, ..Default::default() },
             min_depth: CALL_DEPTH_LIMIT + 1,
             call_depth: None,
             call_end_stop: None,
@@ -568,7 +582,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
+            &MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() },
             50_000,
             inspector,
         );
@@ -589,7 +603,7 @@ mod tests {
         impl Inspector<BaseEvmTypes> for MutateCallInspector {
             fn call(
                 &mut self,
-                _interp: &mut Interpreter<'_, BaseEvmTypes>,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 if message.depth > 0 {
@@ -624,15 +638,15 @@ mod tests {
 
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             TxRegistry::new(),
             db,
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(MutateCallInspector { destination: replacement });
-        let tx_env = TxEnv::default();
+        let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
-        let mut message = Message { gas_limit: 100_000, ..Default::default() };
+        let mut message = MessageExt { gas_limit: 100_000, ..Default::default() };
         let result = Host::execute_message(&mut evm, &tx_env, bytecode, &mut message);
 
         assert_matches!(result.stop, InstrStop::Stop);
@@ -654,13 +668,13 @@ mod tests {
         impl Inspector<BaseEvmTypes> for CallEndInspector {
             fn call(
                 &mut self,
-                _interp: &mut Interpreter<'_, BaseEvmTypes>,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 if message.depth == 0 {
                     return None;
                 }
-                Some(MessageResult {
+                Some(MessageResultExt {
                     stop: InstrStop::Revert,
                     gas: GasTracker::new(message.gas_limit),
                     ..Default::default()
@@ -669,7 +683,7 @@ mod tests {
 
             fn call_end(
                 &mut self,
-                _interp: &mut Interpreter<'_, BaseEvmTypes>,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &Message<BaseEvmTypes>,
                 result: &mut MessageResult<BaseEvmTypes>,
             ) {
@@ -686,7 +700,7 @@ mod tests {
         return_top_word(&mut code);
 
         let (result, _, _) =
-            run_evm_with_inspector(code, &Message::default(), 50_000, CallEndInspector);
+            run_evm_with_inspector(code, &MessageExt::default(), 50_000, CallEndInspector);
 
         assert_matches!(result.stop, InstrStop::Return);
         // `call_end` upgraded the override from a revert to a 2-byte return.
@@ -700,7 +714,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
+            &MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() },
             50_000,
             HookInspector::default(),
         );
@@ -720,7 +734,7 @@ mod tests {
         return_top_word(&mut code);
 
         let (result, inspector, _) =
-            run_evm_with_inspector(code, &Message::default(), 50_000, inspector);
+            run_evm_with_inspector(code, &MessageExt::default(), 50_000, inspector);
 
         assert_matches!(result.stop, InstrStop::Return);
         assert_eq!(Word::from_be_slice(&result.output), address_to_word(&created));
@@ -737,7 +751,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &Message { destination: contract, ..Default::default() },
+            &MessageExt { destination: contract, ..Default::default() },
             50_000,
             HookInspector::default(),
         );
@@ -757,7 +771,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
+            &MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() },
             50_000,
             inspector,
         );
@@ -777,10 +791,10 @@ mod tests {
         impl Inspector<BaseEvmTypes> for CreateEndInspector {
             fn create(
                 &mut self,
-                _interp: &mut Interpreter<'_, BaseEvmTypes>,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 message: &mut Message<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
-                Some(MessageResult {
+                Some(MessageResultExt {
                     stop: InstrStop::Revert,
                     gas: GasTracker::new(message.gas_limit),
                     ..Default::default()
@@ -789,7 +803,7 @@ mod tests {
 
             fn create_end(
                 &mut self,
-                _interp: &mut Interpreter<'_, BaseEvmTypes>,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
                 _message: &Message<BaseEvmTypes>,
                 result: &mut MessageResult<BaseEvmTypes>,
             ) {
@@ -805,7 +819,7 @@ mod tests {
 
         let (result, _, _) = run_evm_with_inspector(
             code,
-            &Message::default(),
+            &MessageExt::default(),
             50_000,
             CreateEndInspector { created },
         );
@@ -821,7 +835,7 @@ mod tests {
 
         let (result, inspector, evm) = run_evm_with_inspector(
             code,
-            &Message { destination: contract, ..Default::default() },
+            &MessageExt { destination: contract, ..Default::default() },
             10_000,
             LogInspector::default(),
         );
@@ -837,7 +851,7 @@ mod tests {
         let code = Vec::from([op::PUSH1, 0, op::PUSH1, 0, op::LOG0, op::STOP]);
 
         let (result, inspector, evm) =
-            run_evm_with_inspector(code, &Message::default(), 6, LogInspector::default());
+            run_evm_with_inspector(code, &MessageExt::default(), 6, LogInspector::default());
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
         assert!(inspector.logs.is_empty());
@@ -852,12 +866,12 @@ mod tests {
             step_ends: usize,
         }
 
-        impl<T: EvmTypes> Inspector<T> for FailingStepInspector {
-            fn step(&mut self, _interp: &mut Interpreter<'_, T>) {
+        impl<T: EvmTypesHost> Inspector<T> for FailingStepInspector {
+            fn step(&mut self, _interp: &mut Interpreter<'_, '_, T>) {
                 self.steps += 1;
             }
 
-            fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+            fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
                 let _ = interp;
                 self.step_ends += 1;
             }
@@ -865,7 +879,7 @@ mod tests {
 
         let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::INVALID]),
-            &Message::default(),
+            &MessageExt::default(),
             10_000,
             FailingStepInspector::default(),
         );
@@ -889,7 +903,7 @@ mod tests {
         let (result, inspector, _) = run_evm_with_inspector_db(
             db,
             code,
-            &Message { destination: contract, ..Default::default() },
+            &MessageExt { destination: contract, ..Default::default() },
             50_000,
             SelfdestructInspector::default(),
         );
@@ -911,7 +925,7 @@ mod tests {
         let (result, inspector, _) = run_evm_with_inspector_db(
             db,
             code,
-            &Message { destination: contract, ..Default::default() },
+            &MessageExt { destination: contract, ..Default::default() },
             7_000,
             SelfdestructInspector::default(),
         );
@@ -933,7 +947,7 @@ mod tests {
         push(&mut code, address_to_word(&target));
         code.push(op::SELFDESTRUCT);
 
-        let tx_env = TxEnv::default();
+        let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
         let message = Message::<TestTypes> { gas_limit: 10_000, ..Default::default() };
         let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
@@ -964,16 +978,20 @@ mod tests {
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::OSAKA),
             database,
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(SharedE2eInspector::default());
-        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy { to: TxKind::Call(contract), gas_limit: 100_000, ..Default::default() },
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(contract),
+                gas_limit: 100_000,
+                ..Default::default()
+            }),
             caller,
-        ));
+        );
 
         let result = evm.transact(&tx).expect("transaction should execute").discard();
         let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
@@ -1000,21 +1018,21 @@ mod tests {
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::AMSTERDAM,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::AMSTERDAM),
             database,
             Precompiles::base(SpecId::AMSTERDAM),
         );
         evm.set_inspector(SharedE2eInspector::default());
-        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy {
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
                 to: TxKind::Call(target),
                 value: U256::from(7),
-                gas_limit: 100_000,
+                gas_limit: 300_000,
                 ..Default::default()
-            },
+            }),
             caller,
-        ));
+        );
 
         let result = evm.transact(&tx).expect("transaction should execute").detach();
         let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
@@ -1036,21 +1054,21 @@ mod tests {
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
-            BlockEnv::default(),
+            BlockEnvExt::default(),
             ethereum_tx_registry(SpecId::OSAKA),
             database,
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(SharedE2eInspector::default());
-        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-            TxLegacy {
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
                 to: TxKind::Create,
                 input: Bytes::from_static(&[op::STOP]),
                 gas_limit: 100_000,
                 ..Default::default()
-            },
+            }),
             caller,
-        ));
+        );
 
         let result = evm.transact(&tx).expect("transaction should execute").discard();
         let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();

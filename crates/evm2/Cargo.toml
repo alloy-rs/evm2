@@ -19,11 +19,14 @@ workspace = true
 evm2-macros.workspace = true
 
 alloy-consensus.workspace = true
+alloy-eip7928.workspace = true
 alloy-eips = { workspace = true, features = ["k256"] }
 alloy-primitives.workspace = true
+auto_impl.workspace = true
 bitvec = { workspace = true, features = ["alloc"] }
 derive-where.workspace = true
 thiserror.workspace = true
+typeid.workspace = true
 cfg-if.workspace = true
 
 # no_std
@@ -84,6 +87,7 @@ aws-lc-rs = { workspace = true, optional = true }
 alloy-primitives = { workspace = true, features = ["serde", "std"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
+postcard = { workspace = true, features = ["alloc"] }
 rand = { workspace = true, features = ["std"] }
 ark-std = { workspace = true }
 rstest.workspace = true
@@ -109,6 +113,7 @@ default = [
 ]
 std = [
     "alloy-consensus/std",
+    "alloy-eip7928/std",
     "alloy-eips/std",
     "alloy-primitives/std",
     "bitvec/std",
@@ -134,6 +139,7 @@ async = ["std", "dep:corosensei"]
 serde = [
     "dep:serde",
     "alloy-consensus/serde",
+    "alloy-eip7928/serde",
     "alloy-eips/serde",
     "alloy-primitives/serde",
     "ark-serialize/serde",

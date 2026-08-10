@@ -55,17 +55,17 @@ impl EvmBackend for Evm2Backend {
                     } else {
                         None
                     };
-                    evm.commit_source(&result.state_changes);
+                    evm.commit_source(&result.pending_state);
                     receipts.push(TxReceipt {
                         kind: if tx_result.status {
                             OutcomeKind::Success
                         } else {
                             OutcomeKind::RevertOrHalt
                         },
-                        gas_used: Some(tx_result.gas_used),
+                        gas_used: Some(tx_result.tx_gas_used()),
                         output,
                         logs: tx_result.logs.iter().map(canonical_log).collect(),
-                        state: state_from_evm2_changes(&result.state_changes),
+                        state: state_from_evm2_changes(&result.pending_state),
                         error: None,
                     });
                 }

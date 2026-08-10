@@ -1,6 +1,6 @@
 use super::{InspectMode, run_state};
 use crate::{
-    EvmConfig, EvmTypes,
+    EvmConfig, EvmTypesHost,
     interpreter::{
         InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, gas::RemainingGas,
         private::InstructionImplFn,
@@ -14,7 +14,7 @@ type TailInstrFn<T> = extern_table!(
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
+        state: &mut InterpreterState<'_, '_, T>,
         instructions: *const (),
     )
 );
@@ -27,8 +27,8 @@ pub(super) type RawInstrFn<T> = TailInstrFn<T>;
 pub(super) type RawInstrTable<T> = TailInstrTable<T>;
 
 #[inline(always)]
-pub(in crate::interpreter) fn run<T: EvmTypes>(
-    interpreter: &mut Interpreter<'_, T>,
+pub(in crate::interpreter) fn run<T: EvmTypesHost>(
+    interpreter: &mut Interpreter<'_, '_, T>,
     instructions: &RawInstrTable<T>,
 ) -> InstrStop {
     let remaining_gas = RemainingGas::new(interpreter.gas.remaining());
@@ -41,7 +41,7 @@ pub(in crate::interpreter) fn run<T: EvmTypes>(
 
 extern_table! {
     pub(super) fn dispatch<
-        T: EvmTypes,
+        T: EvmTypesHost,
         C: EvmConfig<T>,
         M: InspectMode<T>,
         const OP: u8,
@@ -49,7 +49,7 @@ extern_table! {
         mut pc: Pc,
         mut stack: Stack<'_>,
         mut remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
+        state: &mut InterpreterState<'_, '_, T>,
         instructions: *const (),
     ) {
         let instruction = C::OPCODE_CONFIG.instruction(OP);
@@ -104,11 +104,11 @@ extern_table! {
 extern_table! {
     #[inline(never)]
     #[cold]
-    fn tail_call_restore<T: EvmTypes>(
+    fn tail_call_restore<T: EvmTypesHost>(
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
+        state: &mut InterpreterState<'_, '_, T>,
         _instructions: *const (),
     ) {
         state.gas_mut().set_remaining(remaining_gas.get());
@@ -119,7 +119,7 @@ extern_table! {
 }
 
 #[inline(always)]
-const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
+const fn pre_step<T: EvmTypesHost, C: EvmConfig<T>>(
     remaining_gas: &mut RemainingGas,
     opcode: u8,
 ) -> Result {

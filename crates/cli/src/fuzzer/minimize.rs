@@ -66,6 +66,12 @@ fn minimize_target_code(backends: &[&dyn EvmBackend; 2], case: &mut EvmCase) {
     let mut len = case.accounts[target_index].code.len();
     while len > 1 {
         let next = len / 2;
+        // The candidate is `next` bytes plus an appended STOP, so it only shrinks the code when
+        // `next + 1 < len`. Without this guard a two-byte code (`next == 1`, `next + 1 == len`)
+        // would loop forever, re-testing an identical candidate and never making progress.
+        if next + 1 >= len {
+            break;
+        }
         let mut candidate = case.clone();
         let mut code = candidate.accounts[target_index].code.slice(..next).to_vec();
         code.push(op::STOP);
