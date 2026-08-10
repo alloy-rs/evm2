@@ -294,6 +294,18 @@ fn execute_case(
         }
     }
 
+    let final_block_hash = parent_block_hash.expect("genesis block hash should be available");
+    if final_block_hash != test_case.lastblockhash {
+        return Err(TestError::case(
+            path,
+            name,
+            TestErrorKind::LastBlockHashMismatch {
+                got: final_block_hash,
+                expected: test_case.lastblockhash,
+            },
+        ));
+    }
+
     if config.validate_post_state
         && let Some(expected) = &test_case.post_state
     {
@@ -885,8 +897,8 @@ fn run_system_call(
     let executed = evm.system_call(SystemTx::new(address, data))?;
     if !executed.result().status {
         let _ = executed.discard();
-        let has_code = match evm.account_code(&address) {
-            Ok(code) => !code.is_empty(),
+        let has_code = match evm.read_account_info(&address) {
+            Ok(info) => info.is_some_and(|info| info.code_hash != KECCAK256_EMPTY),
             Err(code) => return Err(database_error(evm, code)),
         };
         if has_code {
@@ -1592,6 +1604,64 @@ mod tests {
             &mut NoopHook,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn rejects_case_with_wrong_last_block_hash() {
+        use super::{
+            super::types::{
+                Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine, State,
+            },
+            ExecuteConfig, NoopHook, execute_str,
+        };
+        use crate::filter::NameFilter;
+        use alloy_primitives::{B256, U256};
+        use std::{collections::BTreeMap, path::Path};
+
+        let genesis_hash = B256::with_last_byte(1);
+        let block_hash = B256::with_last_byte(2);
+        let suite = BlockchainTest(BTreeMap::from([(
+            "wrong-last-block-hash".to_string(),
+            BlockchainTestCase {
+                genesis_block_header: BlockHeader {
+                    hash: genesis_hash,
+                    gas_limit: U256::from(30_000_000),
+                    ..Default::default()
+                },
+                blocks: vec![Block {
+                    block_header: Some(BlockHeader {
+                        parent_hash: genesis_hash,
+                        hash: block_hash,
+                        number: U256::ONE,
+                        gas_limit: U256::from(30_000_000),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                post_state: None,
+                pre: State(BTreeMap::new()),
+                block_hashes: Vec::new(),
+                lastblockhash: genesis_hash,
+                network: ForkSpec::Cancun,
+                seal_engine: SealEngine::NoProof,
+                genesis_rlp: None,
+            },
+        )]));
+        let input = serde_json::to_string(&suite).unwrap();
+        let error = execute_str(
+            Path::new("wrong-last-block-hash.json"),
+            &input,
+            ExecuteConfig::default(),
+            &NameFilter::default(),
+            &mut NoopHook,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error.kind,
+            super::TestErrorKind::LastBlockHashMismatch { got, expected }
+                if got == block_hash && expected == genesis_hash
+        ));
     }
 
     #[cfg(feature = "jit")]

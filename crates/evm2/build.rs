@@ -52,10 +52,10 @@ impl DispatchBackend {
     fn resolve(self, is_wasm: bool, target_pointer_width: Option<u32>, no_tco: bool) -> Self {
         match self {
             Self::Auto => {
-                if !no_tco && rustc_is_nightly() {
-                    Self::Tco
-                } else if is_wasm {
+                if is_wasm {
                     Self::SingleReturn
+                } else if !no_tco && rustc_is_nightly() {
+                    Self::Tco
                 } else if target_pointer_width == Some(64) {
                     Self::Packed
                 } else {

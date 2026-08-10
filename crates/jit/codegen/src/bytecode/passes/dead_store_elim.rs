@@ -11,8 +11,11 @@
 //! - EXCHANGE swaps two arbitrary non-TOS positions.
 //! - POP kills its input (makes the position dead) rather than reading it.
 
-use super::{StackSectionAnalysis, block_analysis::AbsValue};
-use crate::bytecode::{AnalysisConfig, Bytecode, InstFlags};
+use super::{
+    StackSectionAnalysis,
+    block_analysis::{AbsValue, Snapshots},
+};
+use crate::bytecode::{AnalysisConfig, Bytecode, Inst, InstFlags};
 use bitvec::vec::BitVec;
 use evm2::interpreter::op;
 
@@ -120,7 +123,8 @@ impl Bytecode<'_> {
                     inp as usize,
                     out as usize,
                     imm,
-                    &self.snapshots.inputs[inst],
+                    &self.snapshots,
+                    inst,
                     self.snapshots.outputs.get(inst).copied().flatten(),
                 );
             }
@@ -214,7 +218,7 @@ const fn can_skip_when_dead(opcode: u8) -> bool {
 ///
 /// `imm` carries the decoded immediate for DUPN/SWAPN/EXCHANGE; `None` for all other opcodes.
 ///
-/// `input_snap` and `output` carry abstract interpretation snapshots. When the output is a
+/// `snapshots` and `output` carry abstract interpretation snapshots. When the output is a
 /// known constant, codegen replaces the entire instruction with a constant push and none of
 /// the inputs need to be live. When individual inputs are known constants, codegen loads them
 /// as immediates (`const_operand`) so those stack positions don't need to be live either.
@@ -226,7 +230,8 @@ fn transfer_liveness(
     inp: usize,
     out: usize,
     imm: Option<DecodedImm>,
-    input_snap: &[AbsValue],
+    snapshots: &Snapshots,
+    inst: Inst,
     output: Option<AbsValue>,
 ) {
     match opcode {
@@ -269,7 +274,7 @@ fn transfer_liveness(
         op::POP => {
             live.set(h_before - 1, false);
         }
-        _ => generic_transfer(live, h_before, inp, out, input_snap, output),
+        _ => generic_transfer(live, h_before, inp, out, snapshots, inst, output),
     }
 }
 
@@ -285,7 +290,8 @@ fn generic_transfer(
     h_before: usize,
     inp: usize,
     out: usize,
-    input_snap: &[AbsValue],
+    snapshots: &Snapshots,
+    inst: Inst,
     output: Option<AbsValue>,
 ) {
     let write_base = h_before - inp;
@@ -304,8 +310,8 @@ fn generic_transfer(
     // Both paths ensure the value is available at runtime, so const inputs can be
     // killed for any opcode.
     for k in 0..inp {
-        // input_snap is in stack order: [deepest, ..., TOS].
-        if input_snap.get(k).is_some_and(|v| matches!(v, AbsValue::Const(_))) {
+        let depth = inp - 1 - k;
+        if matches!(snapshots.input(inst, depth), Some(AbsValue::Const(_))) {
             continue;
         }
         live.set(h_before - inp + k, true);
@@ -1026,6 +1032,38 @@ mod tests {
         assert!(
             bytecode.inst(Inst::from_usize(0)).flags.contains(InstFlags::NOOP),
             "PUSH 0 should be skipped (const input)"
+        );
+    }
+
+    #[test]
+    fn truncated_stack_keeps_dynamic_call_operand_live() {
+        let src = format!(
+            "
+            {}
+            PUSH %body
+            JUMP
+        body:
+            JUMPDEST
+            {}
+            CALLDATASIZE
+            PUSH1 0x20
+            CALL
+            STOP
+            ",
+            "PUSH1 0x11\n".repeat(70),
+            "POP\n".repeat(60),
+        );
+        let bytecode = analyze_asm(&src);
+
+        let (call_inst, _) =
+            bytecode.iter_insts().find(|(_, data)| data.opcode == op::CALL).unwrap();
+        assert_eq!(bytecode.snapshots.inputs[call_inst].len(), 7);
+
+        let (_, calldatasize) =
+            bytecode.iter_insts().find(|(_, data)| data.opcode == op::CALLDATASIZE).unwrap();
+        assert!(
+            !calldatasize.flags.contains(InstFlags::NOOP),
+            "CALLDATASIZE should remain live as CALL's address operand"
         );
     }
 }

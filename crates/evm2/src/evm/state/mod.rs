@@ -329,13 +329,19 @@ impl<'a> State<'a> {
 
     /// Clears transaction-scoped substate.
     pub fn clear_transaction_state(&mut self) {
-        self.accounts.clear();
-        self.prewarm_set.clear();
-        self.storage.clear();
-        self.journal.clear();
-        self.selfdestructs.clear();
-        self.transient_storage.clear();
-        self.logs.clear();
+        let Self {
+            accounts,
+            storage,
+            transient_storage,
+            inner: StateInner { prewarm_set, journal, selfdestructs, logs, database: _ },
+        } = self;
+        accounts.clear();
+        storage.clear();
+        transient_storage.clear();
+        prewarm_set.clear();
+        journal.clear();
+        selfdestructs.clear();
+        logs.clear();
     }
 
     /// Ensures the account is present in the transaction overlay, loading it from the backing
@@ -826,13 +832,14 @@ impl<'a> State<'a> {
     /// Accepts the current transaction's state transition into the accepted overlay.
     ///
     /// This advances the in-memory accepted overlay by the transaction's write-set and clears the
-    /// transaction account/storage layers. It does not take logs or write to the wrapped backing
-    /// database.
+    /// transaction account/storage layers and selfdestruct markers. It does not take logs or write
+    /// to the wrapped backing database.
     pub fn commit_transaction(&mut self) {
         // The transaction overlay is folded into the accepted-overlay database directly, without
         // detaching it.
         self.inner.database.commit(&self.accounts, &self.storage);
         self.accounts.clear();
         self.storage.clear();
+        self.inner.selfdestructs.clear();
     }
 }

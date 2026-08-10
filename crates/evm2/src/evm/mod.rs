@@ -628,12 +628,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.state.account_info_untracked(address)
     }
 
-    /// Returns account bytecode visible through the accepted state overlay.
-    #[inline]
-    pub fn account_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        self.state.account(address, false)?.load_code()
-    }
-
     /// Applies borrowed changes to the accepted state overlay.
     #[inline]
     pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
@@ -3748,6 +3742,24 @@ mod tests {
         let pending = state.take_pending_state();
         assert!(pending.accounts.contains_key(&contract), "account change recorded");
         assert!(pending.selfdestructs.contains(&contract));
+    }
+
+    #[test]
+    fn commit_transaction_clears_detached_selfdestructs() {
+        let contract = Address::from([0x44; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut state = State::new(database);
+
+        state.account(&contract, false).unwrap().mark_destructed();
+        state.finalize_transaction_(Version::base(SpecId::AMSTERDAM));
+        let pending = state.take_pending_state();
+
+        state.set_pending_state(pending);
+        state.commit_transaction();
+
+        assert!(!state.account(&contract, false).unwrap().is_destructed());
     }
 
     #[test]
