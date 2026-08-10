@@ -8,8 +8,6 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=build.rs");
 
-    link_mcl_cpp_stdlib();
-
     // Select interpreter backend.
     let is_wasm = target_is_wasm();
     let target_pointer_width = target_pointer_width();
@@ -67,18 +65,6 @@ impl DispatchBackend {
     }
 }
 
-fn link_mcl_cpp_stdlib() {
-    if env("CARGO_FEATURE_BN254_MCL").is_none() || target_is_wasm() {
-        return;
-    }
-
-    match target_os().as_deref() {
-        Some("macos" | "ios") => println!("cargo:rustc-link-lib=c++"),
-        Some("windows") => {}
-        _ => println!("cargo:rustc-link-lib=stdc++"),
-    }
-}
-
 fn target_is_wasm() -> bool {
     let target_arch =
         env("CARGO_CFG_TARGET_ARCH").and_then(|value| value.into_string().ok()).unwrap_or_default();
@@ -90,10 +76,6 @@ fn target_is_wasm() -> bool {
 
 fn target_pointer_width() -> Option<u32> {
     env("CARGO_CFG_TARGET_POINTER_WIDTH")?.to_str()?.parse().ok()
-}
-
-fn target_os() -> Option<String> {
-    env("CARGO_CFG_TARGET_OS")?.into_string().ok()
 }
 
 fn rustc_is_nightly() -> bool {
