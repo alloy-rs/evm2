@@ -89,6 +89,16 @@ impl BalContext {
         self.bal.as_ref()
     }
 
+    /// Detaches the read BAL, so reads resolve from the cache/database again.
+    ///
+    /// The counterpart to [`Self::set_bal`]: without it an attached BAL cannot be
+    /// removed, and a caller wanting unrestricted reads has to attach an empty one
+    /// with [`Self::set_allow_db_fallback`] enabled to get the same behavior.
+    #[inline]
+    pub fn clear_bal(&mut self) {
+        self.bal = None;
+    }
+
     /// Sets whether reads not covered by the attached BAL fall back to the cache/database instead
     /// of returning [`ErrorCode::BAL_NOT_COVERED`], and returns `self`.
     #[inline]
@@ -276,6 +286,18 @@ impl BalContext {
         ErrorCode::BAL_NOT_COVERED
     }
 
+    /// Takes the stashed BAL lookup error, if a read left one.
+    ///
+    /// [`Self::take_error`] resolves through the database's error hook, which is
+    /// reached only from inside execution. This exposes the same error to a caller
+    /// holding the [`Evm`](crate::Evm) afterwards, so a refused read can be
+    /// reported with the address or slot that was missing rather than the
+    /// [`ErrorCode::BAL_NOT_COVERED`] sentinel alone.
+    #[inline]
+    pub const fn take_bal_error(&mut self) -> Option<BalError> {
+        self.bal_error.take()
+    }
+
     /// Takes the stashed BAL error as an [`AnyError`] when `code` is
     /// [`ErrorCode::BAL_NOT_COVERED`].
     ///
@@ -355,5 +377,41 @@ impl StateChangeSink for BalContext {
             bal.accounts.entry(address).or_default().storage.storage.entry(key).or_default();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::Address;
+
+    const ADDRESS: Address = Address::repeat_byte(0xab);
+
+    #[test]
+    fn clear_bal_restores_database_reads() {
+        let mut context = BalContext::new().with_bal(Arc::new(Bal::new()));
+
+        // Attached and empty, so an uncovered account is an error.
+        assert!(context.get_bal_account(&ADDRESS).is_err());
+
+        context.clear_bal();
+
+        // Detached, so the read resolves from the cache/database instead.
+        assert_eq!(context.get_bal_account(&ADDRESS), Ok(None));
+        assert!(context.bal().is_none());
+    }
+
+    #[test]
+    fn take_bal_error_returns_the_stashed_lookup_failure() {
+        let mut context = BalContext::new().with_bal(Arc::new(Bal::new()));
+
+        let err = context.get_bal_account(&ADDRESS).unwrap_err();
+        let code = context.store_error(err);
+        assert_eq!(code, ErrorCode::BAL_NOT_COVERED);
+
+        // Names the address the refused read wanted, which the sentinel does not.
+        assert_eq!(context.take_bal_error(), Some(BalError::AccountNotFound { address: ADDRESS }));
+        // Taken once, so a later read does not see a stale failure.
+        assert_eq!(context.take_bal_error(), None);
     }
 }
