@@ -89,6 +89,18 @@ impl BlockStateAccumulator {
         storage.sort_by_key(|(key, _)| (key.address(), key.key()));
         storage
     }
+
+    /// Returns bytecode entries sorted by code hash.
+    ///
+    /// The counterpart to [`Self::accounts_sorted`], [`Self::storage_sorted`], and
+    /// [`Self::storage_wipes_sorted`]: [`Self::code`] iterates a map, so a consumer
+    /// that needs a deterministic enumeration of the whole accumulator would
+    /// otherwise have to sort this one collection itself.
+    pub fn code_sorted(&self) -> Vec<(&B256, &Bytecode)> {
+        let mut code = self.code().collect::<Vec<_>>();
+        code.sort_unstable_by_key(|(hash, _)| *hash);
+        code
+    }
 }
 
 impl StateChangeSink for BlockStateAccumulator {
@@ -235,14 +247,37 @@ mod tests {
     use crate::interpreter::Word;
     use alloy_primitives::{Address, map::U256Map};
 
-    #[cfg(feature = "serde")]
     use super::super::StateChangeSink;
     #[cfg(feature = "serde")]
     use crate::bytecode::Bytecode;
-    #[cfg(feature = "serde")]
-    use alloc::vec;
+    use alloc::{vec, vec::Vec};
     #[cfg(feature = "serde")]
     use alloy_primitives::B256;
+
+    #[test]
+    fn code_sorted_orders_by_hash() {
+        use crate::bytecode::Bytecode;
+        use alloy_primitives::{B256, Bytes};
+
+        let mut block = BlockStateAccumulator::new();
+        // Inserted descending, so map order cannot be mistaken for sorted order.
+        for byte in [0xcc_u8, 0x11, 0x77] {
+            block
+                .bytecode(
+                    B256::repeat_byte(byte),
+                    &Bytecode::new_raw_checked(Bytes::from(vec![byte])).unwrap(),
+                )
+                .unwrap();
+        }
+
+        let hashes: Vec<_> = block.code_sorted().iter().map(|(hash, _)| **hash).collect();
+        assert_eq!(
+            hashes,
+            vec![B256::repeat_byte(0x11), B256::repeat_byte(0x77), B256::repeat_byte(0xcc)]
+        );
+        // Same entries as the unsorted accessor, only ordered.
+        assert_eq!(block.code_sorted().len(), block.code().count());
+    }
 
     fn changes(
         address: Address,
