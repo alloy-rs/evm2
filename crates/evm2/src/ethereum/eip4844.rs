@@ -103,7 +103,7 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         ext: T::TxEnvExt::default(),
         _non_exhaustive: (),
     };
-    let (bytecode, mut message) = initial_message(
+    let mut message = initial_message(
         req.host,
         caller,
         tx.nonce,
@@ -115,7 +115,7 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     )?;
     // Failed execution has already been rolled back to the message's own checkpoint (and halt gas
     // zeroed) inside `execute_message`, so the result settles directly.
-    let result = req.host.execute_message(&tx_env, bytecode, &mut message);
+    let result = req.host.execute_message(&tx_env, &mut message);
     H::settle_transaction(
         req.host,
         req.envelope,

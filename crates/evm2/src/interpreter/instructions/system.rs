@@ -151,7 +151,6 @@ fn prepare_call<T: EvmTypesHost>(
     state: &mut InterpreterState<'_, '_, T>,
     kind: MessageKind,
     message: &mut Message<T>,
-    code: &mut Bytecode,
     return_memory_range: &mut Range<usize>,
 ) -> Result<u64> {
     let has_value = match kind {
@@ -209,6 +208,7 @@ fn prepare_call<T: EvmTypesHost>(
         caller,
         input,
         value: call_value,
+        code: loaded_code,
         code_address,
         disable_precompiles,
         caller_is_static: state.is_static(),
@@ -216,7 +216,6 @@ fn prepare_call<T: EvmTypesHost>(
         ext: T::MessageExt::default(),
         _non_exhaustive: (),
     };
-    *code = loaded_code;
     *return_memory_range = prepared_return_memory_range;
 
     Ok(new_account_state_gas)
@@ -230,20 +229,12 @@ fn call_inner<T: EvmTypesHost>(
     kind: MessageKind,
 ) -> Result {
     let mut message = Message::<T>::default();
-    let mut code = Bytecode::default();
     let mut return_memory_range = 0..0;
-    let new_account_state_gas = prepare_call(
-        stack.reborrow(),
-        gas,
-        state,
-        kind,
-        &mut message,
-        &mut code,
-        &mut return_memory_range,
-    )?;
+    let new_account_state_gas =
+        prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)?;
 
     let tx_env = state.tx();
-    let mut result = state.host().execute_message(tx_env, code, &mut message);
+    let mut result = state.host().execute_message(tx_env, &mut message);
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
@@ -319,6 +310,7 @@ fn create_inner<T: EvmTypesHost>(
 
     // Build the message up front (minus the child gas split, filled in below).
     let current = state.message();
+    let code = Bytecode::new_legacy(input.clone());
     let mut message = MessageExt {
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
@@ -329,6 +321,7 @@ fn create_inner<T: EvmTypesHost>(
         caller: current.destination,
         input,
         value,
+        code,
         code_address: current.destination,
         disable_precompiles: false,
         // CREATE is rejected in a static context (see `require_non_staticcall`).
@@ -378,9 +371,8 @@ fn create_inner<T: EvmTypesHost>(
     message.gas_limit = gas_limit;
     message.reservoir = gas.reservoir();
 
-    let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
     let tx_env = state.tx();
-    let mut result = state.host().execute_message(tx_env, bytecode, &mut message);
+    let mut result = state.host().execute_message(tx_env, &mut message);
     if result.stop.is_fatal() {
         return Err(result.stop);
     }

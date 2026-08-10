@@ -1,7 +1,6 @@
 use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
     BaseEvmTypes, EvmFeatures, EvmTypesHost, SpecId,
-    bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
 };
@@ -154,12 +153,7 @@ pub trait Host<T: EvmTypesHost> {
     fn log(&mut self, log: Log);
 
     /// Executes a message inside this host.
-    fn execute_message(
-        &mut self,
-        tx_env: &TxEnv<T>,
-        bytecode: Bytecode,
-        message: &mut Message<T>,
-    ) -> MessageResult<T>;
+    fn execute_message(&mut self, tx_env: &TxEnv<T>, message: &mut Message<T>) -> MessageResult<T>;
 
     /// Registers the current contract for self-destruction.
     fn selfdestruct(

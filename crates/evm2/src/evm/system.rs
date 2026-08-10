@@ -145,7 +145,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             0
         };
-        let (bytecode, mut message) = initial_message(
+        let mut message = initial_message(
             self,
             caller,
             0,
@@ -155,7 +155,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             SYSTEM_CALL_GAS_LIMIT,
             reservoir,
         )?;
-        let result = Host::execute_message(self, &tx_env, bytecode, &mut message);
+        let result = Host::execute_message(self, &tx_env, &mut message);
         if let Some(code) = self.error_code {
             return Err(HandlerError::Fatal(code));
         }

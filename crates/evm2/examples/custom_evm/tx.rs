@@ -55,13 +55,13 @@ pub fn execute_code(
     let mut message = MessageExt {
         gas_limit: req.tx.gas_limit,
         destination: req.tx.target,
+        code: Bytecode::new_legacy(req.tx.code.clone()),
         code_address: req.tx.target,
         ext: CustomMessageExt { is_system: false },
         ..MessageExt::default()
     };
     let tx_env = TxEnvExt { ext: CustomTxEnvExt { label: "execute-code" }, ..TxEnvExt::default() };
-    let mut result =
-        req.host.execute_message(&tx_env, Bytecode::new_legacy(req.tx.code.clone()), &mut message);
+    let mut result = req.host.execute_message(&tx_env, &mut message);
     result.ext = CustomMessageResultExt { handled_custom_message: true };
     Ok(evm2::TxResult::<CustomTypes> {
         status: result.stop.is_success(),

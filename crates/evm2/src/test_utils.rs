@@ -192,7 +192,6 @@ impl Host<TestTypes> for TestHost {
     fn execute_message(
         &mut self,
         _tx_env: &TxEnv<TestTypes>,
-        _bytecode: Bytecode,
         message: &mut Message<TestTypes>,
     ) -> MessageResult<TestTypes> {
         // Mimics the depth limit enforced by the real host.
@@ -324,10 +323,9 @@ impl Default for RunConfig<'_> {
 }
 
 pub(crate) fn run(config: RunConfig<'_>) -> TestInterpreter {
-    let RunConfig { code, host, spec_id, tx_env, mut message, gas_limit, return_data } = config;
-    let bytecode = legacy_bytecode(code);
-    message.gas_limit = gas_limit;
-    let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
+    let RunConfig { code, host, spec_id, tx_env, message, gas_limit, return_data } = config;
+    let message = Message::<TestTypes> { code: legacy_bytecode(code), gas_limit, ..message };
+    let mut inner = Interpreter::<TestTypes>::new(&tx_env, &message);
     *inner.return_data_mut() = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);

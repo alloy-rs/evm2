@@ -172,7 +172,7 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     }
     // State gas charged for the authorizations, carried into the block state-gas accounting.
     let auth_state_gas = tx_gas.state_gas_spent().max(0) as u64;
-    let (bytecode, mut message) = initial_message(
+    let mut message = initial_message(
         req.host,
         caller,
         tx.nonce,
@@ -184,7 +184,7 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     )?;
     // Failed execution has already been rolled back to the message's own checkpoint (past the
     // applied delegations, which stay) inside `execute_message`.
-    let result = req.host.execute_message(&tx_env, bytecode, &mut message);
+    let result = req.host.execute_message(&tx_env, &mut message);
     // A depth-0 recipient charge that ran out of gas is part of the runtime gas phase, so it
     // drops the delegations too.
     if result.runtime_gas_oog {

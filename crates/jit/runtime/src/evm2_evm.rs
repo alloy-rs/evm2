@@ -207,12 +207,12 @@ mod tests {
             SpecId::CANCUN,
         );
         let tx_env = TxEnvExt::default();
-        let message = MessageExt { gas_limit: 1_000_000, ..Default::default() };
-        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
-            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
-            &tx_env,
-            &message,
-        );
+        let message = MessageExt {
+            gas_limit: 1_000_000,
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            ..Default::default()
+        };
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
         let mut host = Evm::<BaseEvmTypes>::new(
             SpecId::CANCUN,
             BlockEnvExt::default(),
@@ -252,8 +252,6 @@ mod tests {
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
         let tx_env = TxEnvExt::default();
-        let message =
-            MessageExt { gas_limit: 1_000_000, destination: caller, ..MessageExt::default() };
         let mut code = vec![op::PUSH1, 0x20, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0];
         push20(&mut code, target);
         code.extend([
@@ -270,8 +268,13 @@ mod tests {
             op::PUSH0,
             op::RETURN,
         ]);
-        let mut interpreter =
-            Interpreter::<BaseEvmTypes>::new(Bytecode::new_legacy(code.into()), &tx_env, &message);
+        let message = MessageExt {
+            gas_limit: 1_000_000,
+            destination: caller,
+            code: Bytecode::new_legacy(code.into()),
+            ..MessageExt::default()
+        };
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
         assert_eq!(
             run_interpreter(&backend, &config, &mut interpreter, &mut host),
@@ -300,8 +303,6 @@ mod tests {
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
         let tx_env = TxEnvExt::default();
-        let message =
-            MessageExt { gas_limit: 1_000_000, destination: creator, ..MessageExt::default() };
         let code = [
             op::PUSH10,
             0x60,
@@ -331,11 +332,13 @@ mod tests {
             op::PUSH0,
             op::RETURN,
         ];
-        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
-            Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
-            &tx_env,
-            &message,
-        );
+        let message = MessageExt {
+            gas_limit: 1_000_000,
+            destination: creator,
+            code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            ..MessageExt::default()
+        };
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
         assert_eq!(
             run_interpreter(&backend, &config, &mut interpreter, &mut host),
@@ -377,12 +380,6 @@ mod tests {
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
         let tx_env = TxEnvExt::default();
-        let message = MessageExt {
-            gas_limit: 1_000_000,
-            destination: caller,
-            value: Word::from(30),
-            ..MessageExt::default()
-        };
         let code = vec![
             op::PUSH1,
             0x20,
@@ -401,11 +398,14 @@ mod tests {
             op::PUSH0,
             op::RETURN,
         ];
-        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
-            Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
-            &tx_env,
-            &message,
-        );
+        let message = MessageExt {
+            gas_limit: 1_000_000,
+            destination: caller,
+            value: Word::from(30),
+            code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            ..MessageExt::default()
+        };
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
         assert_eq!(
             run_interpreter(&backend, &config, &mut interpreter, &mut host),
@@ -456,12 +456,6 @@ mod tests {
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
         let tx_env = TxEnvExt::default();
-        let message = MessageExt {
-            gas_limit: 1_000_000,
-            destination: caller,
-            value: Word::from(30),
-            ..MessageExt::default()
-        };
         let code = vec![
             op::PUSH1,
             0x69,
@@ -480,11 +474,14 @@ mod tests {
             op::STATICCALL,
             op::STOP,
         ];
-        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
-            Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
-            &tx_env,
-            &message,
-        );
+        let message = MessageExt {
+            gas_limit: 1_000_000,
+            destination: caller,
+            value: Word::from(30),
+            code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            ..MessageExt::default()
+        };
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
         assert_eq!(
             run_interpreter(&backend, &config, &mut interpreter, &mut host),
@@ -513,6 +510,7 @@ mod tests {
             caller,
             input: Bytes::copy_from_slice(&input),
             value: Word::from(10),
+            code: Bytecode::new_legacy(Bytes::copy_from_slice(&outer_code)),
             code_address: outer,
             ..MessageExt::default()
         };
@@ -548,11 +546,7 @@ mod tests {
             if with_jit {
                 host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
             }
-            let mut interpreter = Interpreter::<BaseEvmTypes>::new(
-                Bytecode::new_legacy(Bytes::copy_from_slice(&outer_code)),
-                &tx_env,
-                &message,
-            );
+            let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
             let stop = if with_jit {
                 run_interpreter(&backend, &config, &mut interpreter, &mut host).unwrap()
             } else {

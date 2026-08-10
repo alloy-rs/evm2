@@ -479,7 +479,7 @@ pub fn initial_gas_and_reservoir(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Creates the bytecode and top-level message for a transaction call or create.
+/// Creates the top-level message and its bytecode for a transaction call or create.
 pub fn initial_message<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
@@ -489,11 +489,11 @@ pub fn initial_message<'a, T: EvmTypes>(
     value: U256,
     gas_limit: u64,
     reservoir: u64,
-) -> HandlerResult<(Bytecode, Message<T>)> {
-    let r = match to {
+) -> HandlerResult<Message<T>> {
+    let message = match to {
         TxKind::Call(to) => {
             let initial_code = initial_call_code(host, to)?;
-            let message = MessageExt {
+            MessageExt {
                 kind: MessageKind::Call,
                 depth: 0,
                 gas_limit,
@@ -502,18 +502,18 @@ pub fn initial_message<'a, T: EvmTypes>(
                 caller,
                 input: input.clone(),
                 value,
+                code: initial_code.code,
                 code_address: initial_code.code_address,
                 disable_precompiles: initial_code.disable_precompiles,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
                 _non_exhaustive: (),
-            };
-            (initial_code.code, message)
+            }
         }
         TxKind::Create => {
             let address = caller.create(nonce);
-            let message = MessageExt {
+            MessageExt {
                 kind: MessageKind::Create,
                 depth: 0,
                 gas_limit,
@@ -522,18 +522,18 @@ pub fn initial_message<'a, T: EvmTypes>(
                 caller,
                 input: input.clone(),
                 value,
+                code: Bytecode::new_legacy(input.clone()),
                 code_address: address,
                 disable_precompiles: false,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
                 _non_exhaustive: (),
-            };
-            (Bytecode::new_legacy(input.clone()), message)
+            }
         }
     };
-    debug_assert_eq!(r.1.depth, 0);
-    Ok(r)
+    debug_assert_eq!(message.depth, 0);
+    Ok(message)
 }
 
 struct InitialCallCode {
@@ -1066,7 +1066,7 @@ mod tests {
             Precompiles::base(SpecId::PRAGUE),
         );
 
-        let (bytecode, mut message) = initial_message(
+        let mut message = initial_message(
             &mut evm,
             caller,
             0,
@@ -1081,7 +1081,7 @@ mod tests {
         assert_eq!(message.code_address, delegated);
         assert!(message.disable_precompiles);
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), bytecode, &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
 
         assert_eq!(result.stop, InstrStop::Return);
         assert_eq!(result.output.len(), 32);
