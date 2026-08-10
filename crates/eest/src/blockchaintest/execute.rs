@@ -445,9 +445,9 @@ fn execute_block(
         }
 
         let transactions = block_transactions(block);
-        // EIP-8037: track regular and state gas separately for the block-header gas check.
+        // EIP-8037: track execution and state gas separately for the block-header gas check.
         let mut cumulative_tx_gas_used = 0u64;
-        let mut block_regular_gas_used = 0u64;
+        let mut block_execution_gas_used = 0u64;
         let mut block_state_gas_used = 0u64;
         let mut receipts = Vec::with_capacity(transactions.len());
         for (transaction_index, raw_tx) in transactions.iter().enumerate() {
@@ -478,16 +478,17 @@ fn execute_block(
 
             // EIP-8037: per-dimension block-level inclusion check (execution-specs
             // `process_transaction`). A transaction is only includable when its gas limit --
-            // capped by the EIP-7825 limit on the regular dimension, uncapped on the state
+            // capped by the EIP-7825 limit on the execution dimension, uncapped on the state
             // dimension -- still fits the block gas remaining on both dimensions.
             if spec.enables(SpecId::AMSTERDAM)
                 && let Some(header) = block_header(block)
             {
                 let block_gas_limit = header.gas_limit.saturating_to::<u64>();
                 let tx_gas_limit = tx.gas_limit();
-                let regular_gas_available = block_gas_limit.saturating_sub(block_regular_gas_used);
+                let execution_gas_available =
+                    block_gas_limit.saturating_sub(block_execution_gas_used);
                 let state_gas_available = block_gas_limit.saturating_sub(block_state_gas_used);
-                if tx_gas_limit.min(evm.version().tx_gas_limit_cap) > regular_gas_available
+                if tx_gas_limit.min(evm.version().tx_gas_limit_cap) > execution_gas_available
                     || tx_gas_limit > state_gas_available
                 {
                     if should_fail {
@@ -498,7 +499,7 @@ fn execute_block(
                         name,
                         TestErrorKind::UnexpectedFailure(format!(
                             "transaction gas limit {tx_gas_limit} exceeds available block gas \
-                             (regular {regular_gas_available}, state {state_gas_available})"
+                             (execution {execution_gas_available}, state {state_gas_available})"
                         )),
                     ));
                 }
@@ -512,8 +513,8 @@ fn execute_block(
                 Ok(result) => {
                     cumulative_tx_gas_used =
                         cumulative_tx_gas_used.saturating_add(result.tx_gas_used());
-                    block_regular_gas_used =
-                        block_regular_gas_used.saturating_add(result.regular_gas_spent());
+                    block_execution_gas_used =
+                        block_execution_gas_used.saturating_add(result.execution_gas_spent());
                     block_state_gas_used =
                         block_state_gas_used.saturating_add(result.state_gas_spent());
                     if compare_receipt_root {
@@ -564,14 +565,14 @@ fn execute_block(
         }
 
         // Validate the block header's gas used against the executed transactions. Under EIP-8037
-        // (Amsterdam+) regular and state gas are tracked separately and the header records their
+        // (Amsterdam+) execution and state gas are tracked separately and the header records their
         // max; earlier forks record the cumulative per-transaction gas used (refunds included).
         // Block-validation failures on a block that expects an exception resolve to a discard,
         // mirroring execution-specs raising `InvalidBlock`.
         if let Some(expected) = block_gas_used(block) {
             let expected = expected.saturating_to::<u64>();
             let actual = if spec.enables(SpecId::AMSTERDAM) {
-                block_regular_gas_used.max(block_state_gas_used)
+                block_execution_gas_used.max(block_state_gas_used)
             } else {
                 cumulative_tx_gas_used
             };

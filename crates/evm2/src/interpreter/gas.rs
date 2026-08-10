@@ -97,7 +97,7 @@ pub(crate) const EIP7702_AUTH_TUPLE_BYTES: u32 = 101;
 /// ecRecover precompile base cost, charged once per EIP-7702 authorization to
 /// recover the authority. Matches `secp256k1::ECRECOVER_BASE`.
 pub(crate) const EIP7702_ECRECOVER_COST: u32 = 3000;
-/// `REGULAR_PER_AUTH_BASE_COST`: the state-independent regular-gas base charged per EIP-7702
+/// `REGULAR_PER_AUTH_BASE_COST`: the state-independent execution-gas base charged per EIP-7702
 /// authorization at the intrinsic phase under EIP-2780 (ethereum/EIPs#11844).
 ///
 /// Equals `AUTH_TUPLE_BYTES * TX_DATA_TOKEN_FLOOR + PRECOMPILE_ECRECOVER + COLD_ACCOUNT_ACCESS +
@@ -117,16 +117,16 @@ pub(crate) const EIP8038_EIP7702_PER_AUTH_BASE_REGULAR: u32 = EIP7702_AUTH_TUPLE
 // Active alongside EIP-8037 / EIP-8038 starting at the Amsterdam hardfork.
 /// Reduced intrinsic base charged to `tx.sender` (execution-specs `TX_BASE`).
 pub(crate) const EIP2780_TX_BASE_COST: u32 = 12_000;
-/// Regular gas cost of the EIP-7708 transfer log emitted for every nonzero-value
+/// Execution gas cost of the EIP-7708 transfer log emitted for every nonzero-value
 /// transfer to a different account: `GAS_LOG + 3 * GAS_LOG_TOPIC + 32 *
 /// GAS_LOG_DATA_PER_BYTE = 375 + 1_125 + 256 = 1_756`.
 pub(crate) const EIP2780_TRANSFER_LOG_COST: u32 = 1_756;
-/// Additional intrinsic regular-gas charge for a value-bearing (non-create,
+/// Additional intrinsic execution-gas charge for a value-bearing (non-create,
 /// non-self) transaction (execution-specs `TX_VALUE_COST`), on top of
 /// [`EIP2780_TRANSFER_LOG_COST`].
 pub(crate) const EIP2780_TX_VALUE_COST: u32 = 4_244;
 
-/// Tracks regular, state, and refunded gas.
+/// Tracks execution, state, and refunded gas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GasTracker {
     remaining: u64,
@@ -139,11 +139,11 @@ pub struct GasTracker {
     /// previously charged the 0→x portion). The net is reconciled on frame
     /// return by [`Self::merge_child_gas`].
     state_gas_spent: i64,
-    /// State gas drawn from regular gas (`remaining`) because the reservoir was
+    /// State gas drawn from execution gas (`remaining`) because the reservoir was
     /// empty (EIP-8037's `state_gas_from_gas_left`).
     ///
     /// Incremented by [`Self::spend_state`] whenever a state-gas charge spills
-    /// out of the reservoir into regular gas. On frame rollback (revert or halt)
+    /// out of the reservoir into execution gas. On frame rollback (revert or halt)
     /// the spilled portion is credited back to `remaining` in last-in-first-out
     /// order by [`Self::rollback_state_gas`]; on success it is propagated to the
     /// parent frame so a later parent rollback can return it.
@@ -152,15 +152,15 @@ pub struct GasTracker {
 }
 
 impl GasTracker {
-    /// Creates a gas tracker with `limit` regular gas.
+    /// Creates a gas tracker with `limit` execution gas.
     #[inline]
     pub const fn new(limit: u64) -> Self {
         Self::from_parts(limit, limit, 0)
     }
 
-    /// Creates a gas tracker with regular gas and a state gas reservoir.
+    /// Creates a gas tracker with execution gas and a state gas reservoir.
     #[inline]
-    pub const fn new_with_regular_gas_and_reservoir(limit: u64, reservoir: u64) -> Self {
+    pub const fn new_with_execution_gas_and_reservoir(limit: u64, reservoir: u64) -> Self {
         Self::from_parts(limit, limit, reservoir)
     }
 
@@ -189,13 +189,13 @@ impl GasTracker {
         Self::from_parts(gas_limit, gas_limit - used_gas, reservoir)
     }
 
-    /// Returns remaining regular gas.
+    /// Returns remaining execution gas.
     #[inline]
     pub const fn remaining(&self) -> u64 {
         self.remaining
     }
 
-    /// Sets remaining regular gas.
+    /// Sets remaining execution gas.
     #[inline]
     pub const fn set_remaining(&mut self, val: u64) {
         self.remaining = val;
@@ -237,7 +237,7 @@ impl GasTracker {
         self.state_gas_spent = self.state_gas_spent.saturating_add(delta);
     }
 
-    /// Returns state gas drawn from regular gas because the reservoir was empty
+    /// Returns state gas drawn from execution gas because the reservoir was empty
     /// (EIP-8037's `state_gas_from_gas_left`). See the field docs.
     #[inline]
     pub const fn state_gas_spilled(&self) -> u64 {
@@ -247,7 +247,7 @@ impl GasTracker {
     /// Adds `delta` to the spilled state gas, saturating.
     ///
     /// Used to merge a successful child frame's spilled state gas into this
-    /// frame, since it is now backed by the merged regular gas.
+    /// frame, since it is now backed by the merged execution gas.
     #[inline]
     pub const fn add_state_gas_spilled(&mut self, delta: u64) {
         self.state_gas_spilled = self.state_gas_spilled.saturating_add(delta);
@@ -265,7 +265,7 @@ impl GasTracker {
         self.refunded = val;
     }
 
-    /// Returns spent regular gas.
+    /// Returns spent execution gas.
     #[inline]
     pub const fn spent(&self) -> u64 {
         self.gas_limit.saturating_sub(self.remaining)
@@ -277,13 +277,13 @@ impl GasTracker {
         self.spent().saturating_sub(self.refunded as u64)
     }
 
-    /// Sets spent regular gas.
+    /// Sets spent execution gas.
     #[inline]
     pub const fn set_spent(&mut self, spent: u64) {
         self.remaining = self.gas_limit.saturating_sub(spent);
     }
 
-    /// Spends regular gas.
+    /// Spends execution gas.
     #[doc(alias = "record_cost")]
     #[doc(alias = "record_regular_cost")]
     #[doc(alias = "record_cost_unsafe")]
@@ -350,7 +350,7 @@ impl GasTracker {
     /// slot restored to its original zero value (0→x→0), or a failed CREATE's
     /// upfront charge — the corresponding state gas is restored directly rather
     /// than routed through the capped refund counter. Because charges deduct from
-    /// the reservoir first and from regular gas (`remaining`) last, the refill
+    /// the reservoir first and from execution gas (`remaining`) last, the refill
     /// credits the pool charged last first: `remaining` is credited up to
     /// `state_gas_spilled` (decrementing it by the same amount) and any remainder
     /// tops up the reservoir.
@@ -385,7 +385,7 @@ impl GasTracker {
     ///
     /// A failing frame rolls back its state changes, so its state gas is refilled
     /// in LIFO order ([`Self::rollback_state_gas`]) and the execution refund counter
-    /// is dropped; an exceptional halt additionally consumes the frame's regular
+    /// is dropped; an exceptional halt additionally consumes the frame's execution
     /// gas. On success the gas is left as-is. Applied once when a frame returns, so
     /// every consumer — the parent [`Self::merge_child_gas`], top-level accounting,
     /// and inspectors — reads the same settled gas.
@@ -403,8 +403,8 @@ impl GasTracker {
     /// Merges a returning child frame's (already [settled](Self::settle_gas)) gas
     /// into this (parent) frame, per the child's `stop` reason.
     ///
-    /// - **Unused regular gas** returns to the parent only on success or revert; a halt consumes
-    ///   the child's regular gas (already zeroed when settled).
+    /// - **Unused execution gas** returns to the parent only on success or revert; a halt consumes
+    ///   the child's execution gas (already zeroed when settled).
     /// - **The reservoir** is a shared state-gas pool the child inherited at call time, so the
     ///   parent always adopts the child's value — which settling restored to the inherited amount
     ///   on revert/halt, leaving it untouched.
@@ -423,14 +423,14 @@ impl GasTracker {
         }
     }
 
-    /// Spends all remaining regular gas.
+    /// Spends all remaining execution gas.
     #[inline]
     pub const fn spend_all(&mut self) {
         self.remaining = 0;
     }
 }
 
-/// Remaining regular gas threaded through dispatch calls.
+/// Remaining execution gas threaded through dispatch calls.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(transparent)]
@@ -444,19 +444,19 @@ impl RemainingGas {
         Self(remaining)
     }
 
-    /// Returns remaining regular gas.
+    /// Returns remaining execution gas.
     #[inline]
     pub(crate) const fn get(self) -> u64 {
         self.0
     }
 
-    /// Sets remaining regular gas.
+    /// Sets remaining execution gas.
     #[inline]
     pub(crate) const fn set(&mut self, remaining: u64) {
         self.0 = remaining;
     }
 
-    /// Spends regular gas.
+    /// Spends execution gas.
     #[inline(always)]
     pub(crate) const fn spend(&mut self, cost: u64) -> Result {
         let remaining = self.0;
@@ -479,17 +479,17 @@ pub struct Gas {
 }
 
 impl Gas {
-    /// Creates gas with `limit` regular gas.
+    /// Creates gas with `limit` execution gas.
     #[inline]
     pub const fn new(limit: u64) -> Self {
         Self { tracker: GasTracker::new(limit), memory: MemoryGas::new() }
     }
 
-    /// Creates gas with regular gas and a state gas reservoir.
+    /// Creates gas with execution gas and a state gas reservoir.
     #[inline]
-    pub const fn new_with_regular_gas_and_reservoir(limit: u64, reservoir: u64) -> Self {
+    pub const fn new_with_execution_gas_and_reservoir(limit: u64, reservoir: u64) -> Self {
         Self {
-            tracker: GasTracker::new_with_regular_gas_and_reservoir(limit, reservoir),
+            tracker: GasTracker::new_with_execution_gas_and_reservoir(limit, reservoir),
             memory: MemoryGas::new(),
         }
     }
@@ -527,13 +527,13 @@ impl Gas {
         &mut self.memory
     }
 
-    /// Returns remaining regular gas.
+    /// Returns remaining execution gas.
     #[inline]
     pub const fn remaining(&self) -> u64 {
         self.tracker.remaining()
     }
 
-    /// Sets remaining regular gas.
+    /// Sets remaining execution gas.
     #[inline]
     pub const fn set_remaining(&mut self, remaining: u64) {
         self.tracker.set_remaining(remaining);
@@ -575,7 +575,7 @@ impl Gas {
         self.tracker.add_state_gas_spent(delta);
     }
 
-    /// Returns state gas drawn from regular gas because the reservoir was empty
+    /// Returns state gas drawn from execution gas because the reservoir was empty
     /// (EIP-8037). See [`GasTracker::state_gas_spilled`].
     #[inline]
     pub const fn state_gas_spilled(&self) -> u64 {
@@ -607,7 +607,7 @@ impl Gas {
         self.set_refunded(refund);
     }
 
-    /// Returns spent regular gas.
+    /// Returns spent execution gas.
     #[inline]
     pub const fn spent(&self) -> u64 {
         self.tracker.spent()
@@ -619,13 +619,13 @@ impl Gas {
         self.tracker.used()
     }
 
-    /// Sets spent regular gas.
+    /// Sets spent execution gas.
     #[inline]
     pub const fn set_spent(&mut self, spent: u64) {
         self.tracker.set_spent(spent);
     }
 
-    /// Spends regular gas or returns out of gas.
+    /// Spends execution gas or returns out of gas.
     #[doc(alias = "record_cost")]
     #[doc(alias = "record_regular_cost")]
     #[doc(alias = "record_cost_unsafe")]
@@ -668,7 +668,7 @@ impl Gas {
         self.tracker.merge_child_gas(child, stop);
     }
 
-    /// Spends all remaining regular gas.
+    /// Spends all remaining execution gas.
     #[inline]
     pub const fn spend_all(&mut self) {
         self.tracker.spend_all();
@@ -713,15 +713,15 @@ mod tests {
 
     #[test]
     fn test_spend_state() {
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 500);
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(1000, 500);
         assert!(gas.spend_state(200).is_ok());
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spent()), (300, 1000, 200));
 
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 500);
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(1000, 500);
         assert!(gas.spend_state(500).is_ok());
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spent()), (0, 1000, 500));
 
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 300);
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(1000, 300);
         assert!(gas.spend_state(500).is_ok());
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spent()), (0, 800, 500));
 
@@ -729,20 +729,20 @@ mod tests {
         assert!(gas.spend_state(200).is_ok());
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spent()), (0, 800, 200));
 
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(100, 50);
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(100, 50);
         assert!(gas.spend_state(0).is_ok());
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spent()), (50, 100, 0));
 
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(100, 50);
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(100, 50);
         assert_matches!(gas.spend_state(200), Err(InstrStop::OutOfGas));
 
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(2000, 1000);
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(2000, 1000);
         assert!(gas.spend_state(100).is_ok());
         assert!(gas.spend_state(200).is_ok());
         assert!(gas.spend_state(150).is_ok());
         assert_eq!(gas.state_gas_spent(), 450);
 
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(500, 300);
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(500, 300);
         assert!(gas.spend_state(150).is_ok());
         assert_eq!((gas.reservoir(), gas.remaining()), (150, 500));
         assert!(gas.spend_state(200).is_ok());
@@ -757,7 +757,7 @@ mod tests {
         assert_matches!(gas.spend_state(100), Err(InstrStop::OutOfGas));
         assert_eq!(gas.state_gas_spent(), 0);
 
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(30, 20);
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(30, 20);
         assert_matches!(gas.spend_state(100), Err(InstrStop::OutOfGas));
         assert_eq!(gas.state_gas_spent(), 0);
         assert_eq!(gas.reservoir(), 20);
@@ -766,11 +766,11 @@ mod tests {
     #[test]
     fn test_spend_state_tracks_spilled() {
         // No spill while the reservoir covers the charge.
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 500);
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(1000, 500);
         assert!(gas.spend_state(300).is_ok());
         assert_eq!((gas.state_gas_spilled(), gas.reservoir()), (0, 200));
 
-        // Spilling the remainder into regular gas records it.
+        // Spilling the remainder into execution gas records it.
         assert!(gas.spend_state(500).is_ok());
         assert_eq!((gas.state_gas_spilled(), gas.reservoir(), gas.remaining()), (300, 0, 700));
 
@@ -781,8 +781,8 @@ mod tests {
 
     #[test]
     fn test_rollback_state_gas_no_spill() {
-        // Pure-reservoir spend: unwind restores the reservoir, leaving regular gas alone.
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 500);
+        // Pure-reservoir spend: unwind restores the reservoir, leaving execution gas alone.
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(1000, 500);
         assert!(gas.spend_state(300).is_ok());
         gas.tracker_mut().rollback_state_gas();
         assert_eq!(
@@ -793,9 +793,9 @@ mod tests {
 
     #[test]
     fn test_rollback_state_gas_with_spill() {
-        // Reservoir exhausted then spilled: unwind returns the spill to regular gas
+        // Reservoir exhausted then spilled: unwind returns the spill to execution gas
         // and restores the reservoir to its frame-start value.
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 200);
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(1000, 200);
         assert!(gas.spend_state(500).is_ok());
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spilled()), (0, 700, 300));
         gas.tracker_mut().rollback_state_gas();
@@ -807,17 +807,17 @@ mod tests {
 
     #[test]
     fn test_refill_reservoir_lifo() {
-        // Refill credits the spilled (regular-gas) portion first, remainder to reservoir.
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 200);
+        // Refill credits the spilled (execution-gas) portion first, remainder to reservoir.
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(1000, 200);
         assert!(gas.spend_state(500).is_ok()); // spill 300, reservoir 0, remaining 700
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spilled()), (0, 700, 300));
-        // Refund 200: less than the 300 spilled, so it all returns to regular gas.
+        // Refund 200: less than the 300 spilled, so it all returns to execution gas.
         gas.refill_reservoir(200);
         assert_eq!(
             (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
             (0, 900, 300, 100)
         );
-        // Refund 250: 100 returns to regular gas (draining the spill), 150 to the reservoir.
+        // Refund 250: 100 returns to execution gas (draining the spill), 150 to the reservoir.
         gas.refill_reservoir(250);
         assert_eq!(
             (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
@@ -826,7 +826,7 @@ mod tests {
 
         // With no spill recorded, the refill lands entirely in the reservoir and may
         // drive `state_gas_spent` negative (charge made by a parent frame).
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 100);
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(1000, 100);
         gas.refill_reservoir(300);
         assert_eq!(
             (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
@@ -836,9 +836,9 @@ mod tests {
 
     #[test]
     fn test_rollback_state_gas_after_refill() {
-        // A partial refill returns part of the spill to regular gas; unwind still
+        // A partial refill returns part of the spill to execution gas; unwind still
         // restores the original split.
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(1000, 200);
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(1000, 200);
         assert!(gas.spend_state(500).is_ok()); // spill 300, reservoir 0, remaining 700
         gas.refill_reservoir(100); // LIFO: remaining 800, spilled 200, reservoir 0
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spilled()), (0, 800, 200));
@@ -851,7 +851,7 @@ mod tests {
 
     #[test]
     fn test_spend_state_zero_remaining_with_reservoir() {
-        let mut gas = Gas::new_with_regular_gas_and_reservoir(0, 500);
+        let mut gas = Gas::new_with_execution_gas_and_reservoir(0, 500);
         assert!(gas.spend_state(200).is_ok());
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spent()), (300, 0, 200));
 

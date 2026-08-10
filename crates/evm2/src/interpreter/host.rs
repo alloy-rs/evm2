@@ -25,11 +25,6 @@ pub struct MessageResultExt<E = ()> {
     pub output: Bytes,
     /// Created address for successful create messages.
     pub created_address: Option<Address>,
-    /// EIP-2780: whether a depth-0 runtime gas-phase charge (the recipient's new-account state gas
-    /// or delegation-target access) ran out of gas before the frame executed. The EIP-7702 handler
-    /// treats this as a runtime out-of-gas: it reverts the applied delegations and includes the
-    /// transaction as an out-of-gas halt. Always `false` off the depth-0 path.
-    pub runtime_gas_oog: bool,
     /// EVM type-specific extension data.
     pub ext: E,
     #[doc(hidden)] // Not public API. Please use an existing constructor.

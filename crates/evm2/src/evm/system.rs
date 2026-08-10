@@ -12,8 +12,8 @@ use super::{SendEvmRef, r#async};
 use crate::{
     EvmTypes,
     env::TxEnvExt,
-    ethereum::initial_message,
-    interpreter::Host,
+    ethereum::{execute_initial_frame, prepare_initial_frame},
+    interpreter::GasTracker,
     registry::{HandlerError, HandlerResult},
     version::{EvmFeatures, GasId},
 };
@@ -31,7 +31,7 @@ pub const SYSTEM_CALL_GAS_LIMIT: u64 = 30_000_000;
 /// Upper bound on the number of new storage slots a single system call is expected to write.
 ///
 /// EIP-8037 (Amsterdam) sizes the system-call state-gas reservoir as this many `SSTORE` new-slot
-/// state charges; state gas beyond the reservoir spills into the regular gas budget.
+/// state charges; state gas beyond the reservoir spills into the execution gas budget.
 pub const SYSTEM_MAX_SSTORES_PER_CALL: u64 = 16;
 
 /// EIP-4788 beacon roots system contract address.
@@ -145,17 +145,25 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             0
         };
-        let mut message = initial_message(
+        let mut tx_gas =
+            GasTracker::new_with_execution_gas_and_reservoir(SYSTEM_CALL_GAS_LIMIT, reservoir);
+        let frame = prepare_initial_frame(
             self,
             caller,
             0,
             TxKind::Call(system_contract_address),
             &data,
             U256::ZERO,
+            &mut tx_gas,
+        )?;
+        let result = execute_initial_frame(
+            self,
+            &tx_env,
+            frame,
+            &mut tx_gas,
             SYSTEM_CALL_GAS_LIMIT,
             reservoir,
-        )?;
-        let result = Host::execute_message(self, &tx_env, &mut message);
+        );
         if let Some(code) = self.error_code {
             return Err(HandlerError::Fatal(code));
         }

@@ -21,7 +21,7 @@ pub type TxResult<T = crate::BaseEvmTypes> = TxResultExt<<T as EvmTypesHost>::Tx
 pub struct TxResultExt<E = ()> {
     /// Whether execution succeeded.
     pub status: bool,
-    /// Total gas spent (regular + state) before refund. The receipt gas-used value is
+    /// Total gas spent (execution + state) before refund. The receipt gas-used value is
     /// [`Self::tx_gas_used`].
     pub total_gas_spent: u64,
     /// State gas consumed by the transaction (EIP-8037): storage creation, account creation, code
@@ -58,22 +58,22 @@ impl<E> TxResultExt<E> {
         if spent_sub_refunded > self.floor_gas { spent_sub_refunded } else { self.floor_gas }
     }
 
-    /// Returns this transaction's regular (non-state) block gas:
+    /// Returns this transaction's execution (non-state) block gas:
     /// `max(total_gas_spent - state_gas_spent, floor_gas)`, pre-refund.
     ///
     /// Together with [`Self::state_gas_spent()`] this is the per-transaction split that callers add
-    /// to the block's separate regular- and state-gas counters (EIP-8037 + EIP-7778). The
+    /// to the block's separate execution- and state-gas counters (EIP-8037 + EIP-7778). The
     /// EIP-7623 calldata floor is not discounted by state gas, so it binds against the
-    /// regular component (ethereum/EIPs#11836); the refund still only affects
+    /// execution component (ethereum/EIPs#11836); the refund still only affects
     /// [`Self::tx_gas_used`].
     #[inline]
-    pub const fn regular_gas_spent(&self) -> u64 {
-        let regular = self.total_gas_spent.saturating_sub(self.state_gas_spent);
-        if regular > self.floor_gas { regular } else { self.floor_gas }
+    pub const fn execution_gas_spent(&self) -> u64 {
+        let execution = self.total_gas_spent.saturating_sub(self.state_gas_spent);
+        if execution > self.floor_gas { execution } else { self.floor_gas }
     }
 
     /// Returns this transaction's state gas (EIP-8037) — the stored `state_gas_spent` field,
-    /// exposed as the counterpart to [`Self::regular_gas_spent`] for the per-transaction
+    /// exposed as the counterpart to [`Self::execution_gas_spent`] for the per-transaction
     /// block-gas split.
     #[inline]
     pub const fn state_gas_spent(&self) -> u64 {
@@ -303,10 +303,10 @@ mod tests {
         // Floor inactive: tx_gas_used = total_gas_spent - refunded, refund is effective.
         let r = result(100_000, 30_000, 8_000, 21_000);
         assert_eq!(r.tx_gas_used(), 92_000);
-        // Per-tx split: regular + state == total.
-        assert_eq!(r.regular_gas_spent(), 70_000);
+        // Per-tx split: execution + state == total.
+        assert_eq!(r.execution_gas_spent(), 70_000);
         assert_eq!(r.state_gas_spent(), 30_000);
-        assert_eq!(r.regular_gas_spent() + r.state_gas_spent(), r.total_gas_spent);
+        assert_eq!(r.execution_gas_spent() + r.state_gas_spent(), r.total_gas_spent);
     }
 
     #[test]

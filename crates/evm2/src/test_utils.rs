@@ -51,6 +51,7 @@ pub(crate) struct TestHost {
     pub(crate) calls: Vec<Message<TestTypes>>,
     pub(crate) call_static_flags: Vec<bool>,
     pub(crate) selfdestructs: Vec<(Address, Address, bool)>,
+    pub(crate) new_account_checks: Vec<Address>,
 }
 
 impl Default for TestHost {
@@ -78,6 +79,7 @@ impl Default for TestHost {
             calls: Vec::new(),
             call_static_flags: Vec::new(),
             selfdestructs: Vec::new(),
+            new_account_checks: Vec::new(),
         }
     }
 }
@@ -118,9 +120,10 @@ impl Host<TestTypes> for TestHost {
 
     fn target_is_empty_for_new_account_gas(
         &mut self,
-        _address: &Address,
+        address: &Address,
         features: EvmFeatures,
     ) -> Result<bool, InstrStop> {
+        self.new_account_checks.push(*address);
         if features.contains(EvmFeatures::EIP161) {
             return Ok(!self.exists || self.is_empty);
         }
