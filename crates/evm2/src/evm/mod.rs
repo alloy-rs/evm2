@@ -2123,7 +2123,6 @@ mod tests {
         };
         let frame_gas =
             GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
-
         let stop = evm.run_interpreter(&tx_env, &message, frame_gas);
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);

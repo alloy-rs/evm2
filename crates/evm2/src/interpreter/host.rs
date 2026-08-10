@@ -152,8 +152,7 @@ pub trait Host<T: EvmTypesHost> {
     /// Records an emitted log.
     fn log(&mut self, log: Log);
 
-    /// Executes a message inside this host. The message carries the bytecode to run
-    /// ([`MessageExt::code`](super::MessageExt::code)).
+    /// Executes a message inside this host.
     fn execute_message(&mut self, tx_env: &TxEnv<T>, message: &mut Message<T>) -> MessageResult<T>;
 
     /// Registers the current contract for self-destruction.
