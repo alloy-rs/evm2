@@ -326,7 +326,6 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmConfigSelector, EvmFeatures, EvmTypesHost, SpecId,
-        bytecode::Bytecode,
         env::{BlockEnv, BlockEnvExt, TxEnv},
         evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
         interpreter::{Host, InstrStop, Message, MessageResult, Word},
@@ -443,7 +442,6 @@ mod tests {
         fn execute_message(
             &mut self,
             _tx_env: &TxEnv<TestTypes>,
-            _bytecode: Bytecode,
             _message: &mut Message<TestTypes>,
         ) -> MessageResult<TestTypes> {
             unimplemented!()

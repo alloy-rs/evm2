@@ -381,9 +381,8 @@ mod tests {
         evm.set_inspector(inspector);
         let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
-        let mut message = message.clone();
-        message.gas_limit = gas_limit;
-        let result = Host::execute_message(&mut evm, &tx_env, bytecode, &mut message);
+        let mut message = MessageExt { gas_limit, code: bytecode, ..message.clone() };
+        let result = Host::execute_message(&mut evm, &tx_env, &mut message);
         let inspector = evm.clear_inspector_as::<I>().unwrap();
         (result, inspector, evm)
     }
@@ -646,8 +645,8 @@ mod tests {
         evm.set_inspector(MutateCallInspector { destination: replacement });
         let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
-        let mut message = MessageExt { gas_limit: 100_000, ..Default::default() };
-        let result = Host::execute_message(&mut evm, &tx_env, bytecode, &mut message);
+        let mut message = MessageExt { gas_limit: 100_000, code: bytecode, ..Default::default() };
+        let result = Host::execute_message(&mut evm, &tx_env, &mut message);
 
         assert_matches!(result.stop, InstrStop::Stop);
         // The redirected call transferred the value to the replacement, not the target.
@@ -948,9 +947,12 @@ mod tests {
         code.push(op::SELFDESTRUCT);
 
         let tx_env = TxEnvExt::default();
-        let bytecode = legacy_bytecode(code);
-        let message = Message::<TestTypes> { gas_limit: 10_000, ..Default::default() };
-        let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message);
+        let message = Message::<TestTypes> {
+            gas_limit: 10_000,
+            code: legacy_bytecode(code),
+            ..Default::default()
+        };
+        let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
         let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
         let stop = interp.run_inspect(&config, &mut host, &mut inspector);
 

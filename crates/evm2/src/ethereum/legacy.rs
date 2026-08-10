@@ -1,8 +1,8 @@
 use super::{
-    floor_gas, initial_gas_and_reservoir, initial_message, intrinsic_gas, validate_block_gas_limit,
-    validate_chain_id, validate_create_initcode, validate_floor_gas, validate_gas_price,
-    validate_intrinsic_gas, validate_nonce_not_overflow, validate_regular_gas_limit_cap,
-    validate_sender, validate_tx_gas_limit_cap, warm_base_accounts,
+    execute_initial_frame, floor_gas, initial_gas_and_reservoir, intrinsic_gas,
+    prepare_initial_frame, validate_block_gas_limit, validate_chain_id, validate_create_initcode,
+    validate_floor_gas, validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
+    validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_base_accounts,
 };
 use crate::{
     EvmTypes, TxResult,
@@ -11,7 +11,7 @@ use crate::{
         error_handler,
         handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
     },
-    interpreter::Host,
+    interpreter::GasTracker,
     registry::{HandlerResult, TxRequest},
 };
 use alloy_consensus::TxLegacy;
@@ -62,12 +62,10 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         chain_id: U256::from(req.host.version().chain_id),
         ..TxEnvExt::default()
     };
-    let (bytecode, mut message) = initial_message(
-        req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, gas_limit, reservoir,
-    )?;
-    // Failed execution has already been rolled back to the message's own checkpoint (and halt gas
-    // zeroed) inside `execute_message`, so the result settles directly.
-    let result = req.host.execute_message(&tx_env, bytecode, &mut message);
+    let mut tx_gas = GasTracker::new_with_regular_gas_and_reservoir(gas_limit, reservoir);
+    let frame =
+        prepare_initial_frame(req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, &mut tx_gas)?;
+    let result = execute_initial_frame(req.host, &tx_env, frame, &mut tx_gas, gas_limit, reservoir);
     H::settle_transaction(
         req.host,
         req.envelope,

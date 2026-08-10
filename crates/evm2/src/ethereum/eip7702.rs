@@ -1,10 +1,10 @@
 use super::{
-    LazyAuthorization, access_list_counts, effective_gas_price, floor_gas,
-    initial_gas_and_reservoir, initial_message, intrinsic_gas, validate_block_gas_limit,
-    validate_chain_id, validate_create_initcode, validate_floor_gas, validate_gas_price,
-    validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
-    validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
-    warm_base_accounts,
+    InitialFrame, LazyAuthorization, access_list_counts, effective_gas_price, floor_gas,
+    initial_gas_and_reservoir, intrinsic_gas, prepare_initial_frame, runtime_oog_result,
+    settle_initial_frame_gas, validate_block_gas_limit, validate_chain_id,
+    validate_create_initcode, validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
+    validate_nonce_not_overflow, validate_priority_fee, validate_regular_gas_limit_cap,
+    validate_sender, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult, Version,
@@ -13,9 +13,7 @@ use crate::{
         error_handler,
         handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
     },
-    interpreter::{
-        GasTracker, Host, InstrStop, MessageResult, MessageResultExt, gas::EIP8038_ACCOUNT_WRITE,
-    },
+    interpreter::{GasTracker, Host, InstrStop, MessageResult, gas::EIP8038_ACCOUNT_WRITE},
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
 };
@@ -128,10 +126,9 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     };
 
     // Applies the pre-Amsterdam authorization regular refund (zero under EIP-2780) and settles
-    // the transaction with the given authorization state gas on top of the hook-provided
-    // intrinsic state gas (charged upfront, before `runtime_checkpoint`, so it persists on every
-    // exit). Every exit below funnels through here.
-    let settle = |host: &mut Evm<'_, T>, mut result: MessageResult<T>, auth_state_gas: u64| {
+    // the transaction with the hook-provided intrinsic state gas (charged upfront, before
+    // `runtime_checkpoint`, so it persists on every exit). Every exit below funnels through here.
+    let settle = |host: &mut Evm<'_, T>, mut result: MessageResult<T>| {
         result.gas.set_refunded(
             result.gas.refunded().saturating_add(i64::try_from(regular_refund).unwrap_or(i64::MAX)),
         );
@@ -143,54 +140,47 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
                 gas_price,
                 gas_limit: tx.gas_limit,
                 floor_gas,
-                initial_state_gas: initial_state_gas.saturating_add(auth_state_gas),
+                initial_state_gas,
                 state_refund,
                 result,
             },
         )
     };
     // Settles the transaction as an out-of-gas halt when the runtime gas phase (the authorization
-    // charges or the first-frame recipient charge) runs out of gas: reverts the runtime
+    // charges or the first-frame recipient charge) runs out of gas: reverts the authorization
     // checkpoint to drop the applied delegations, then consumes all regular gas and returns the
     // reservoir. Unreachable pre-Amsterdam, where no runtime charge is attempted.
     let settle_oog = |host: &mut Evm<'_, T>| {
         let features = host.version().features;
         host.state.rollback(runtime_checkpoint, features);
-        settle(
-            host,
-            MessageResultExt {
-                stop: InstrStop::OutOfGas,
-                gas: GasTracker::new_spent_with_reservoir(regular_gas_limit, reservoir),
-                ..MessageResultExt::default()
-            },
-            0,
-        )
+        settle(host, runtime_oog_result(regular_gas_limit, reservoir))
     };
 
     if auth_oog {
         return settle_oog(req.host);
     }
-    // State gas charged for the authorizations, carried into the block state-gas accounting.
-    let auth_state_gas = tx_gas.state_gas_spent().max(0) as u64;
-    let (bytecode, mut message) = initial_message(
+    let Some(InitialFrame { mut message, charged_state_gas }) = prepare_initial_frame(
         req.host,
         caller,
         tx.nonce,
         tx.to.into(),
         &tx.input,
         tx.value,
-        tx_gas.remaining(),
-        tx_gas.reservoir(),
-    )?;
-    // Failed execution has already been rolled back to the message's own checkpoint (past the
-    // applied delegations, which stay) inside `execute_message`.
-    let result = req.host.execute_message(&tx_env, bytecode, &mut message);
-    // A depth-0 recipient charge that ran out of gas is part of the runtime gas phase, so it
-    // drops the delegations too.
-    if result.runtime_gas_oog {
+        &mut tx_gas,
+    )?
+    else {
+        // A depth-0 recipient charge that ran out of gas is part of the runtime gas phase, so it
+        // drops the delegations too.
         return settle_oog(req.host);
-    }
-    settle(req.host, result, auth_state_gas)
+    };
+
+    // Failed execution has already been rolled back to the message's own checkpoint (past the
+    // applied delegations, which stay) inside `execute_message`. The settle merges the frame gas
+    // into `tx_gas`, which carries the authorization state gas into the block state-gas
+    // accounting.
+    let mut result = req.host.execute_message(&tx_env, &mut message);
+    settle_initial_frame_gas(&mut tx_gas, &mut result, charged_state_gas);
+    settle(req.host, result)
 }
 
 fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations: usize) -> u64 {

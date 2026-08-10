@@ -12,8 +12,8 @@ use super::{SendEvmRef, r#async};
 use crate::{
     EvmTypes,
     env::TxEnvExt,
-    ethereum::initial_message,
-    interpreter::Host,
+    ethereum::{execute_initial_frame, prepare_initial_frame},
+    interpreter::GasTracker,
     registry::{HandlerError, HandlerResult},
     version::{EvmFeatures, GasId},
 };
@@ -145,17 +145,25 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             0
         };
-        let (bytecode, mut message) = initial_message(
+        let mut tx_gas =
+            GasTracker::new_with_regular_gas_and_reservoir(SYSTEM_CALL_GAS_LIMIT, reservoir);
+        let frame = prepare_initial_frame(
             self,
             caller,
             0,
             TxKind::Call(system_contract_address),
             &data,
             U256::ZERO,
+            &mut tx_gas,
+        )?;
+        let result = execute_initial_frame(
+            self,
+            &tx_env,
+            frame,
+            &mut tx_gas,
             SYSTEM_CALL_GAS_LIMIT,
             reservoir,
-        )?;
-        let result = Host::execute_message(self, &tx_env, bytecode, &mut message);
+        );
         if let Some(code) = self.error_code {
             return Err(HandlerError::Fatal(code));
         }
