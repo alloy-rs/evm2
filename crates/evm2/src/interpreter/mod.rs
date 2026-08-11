@@ -28,7 +28,7 @@ mod memory;
 pub use memory::Memory;
 
 mod message;
-pub use message::{Message, MessageExt, MessageKind};
+pub use message::{Message, MessageExt, MessageKind, derive_create_destination};
 
 mod host;
 pub use host::{Host, MessageResult, MessageResultExt};

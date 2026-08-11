@@ -1,9 +1,10 @@
 use super::{
-    access_list_counts, effective_gas_price, floor_gas, initial_gas_and_reservoir, initial_message,
-    intrinsic_gas, validate_block_gas_limit, validate_chain_id, validate_create_initcode,
+    access_list_counts, effective_gas_price, execute_initial_frame, floor_gas,
+    initial_gas_and_reservoir, intrinsic_gas, prepare_initial_frame, validate_block_gas_limit,
+    validate_chain_id, validate_create_initcode, validate_execution_gas_limit_cap,
     validate_floor_gas, validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
-    validate_priority_fee, validate_regular_gas_limit_cap, validate_sender,
-    validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
+    validate_priority_fee, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
+    warm_base_accounts,
 };
 use crate::{
     EvmTypes, TxResult,
@@ -12,7 +13,7 @@ use crate::{
         error_handler,
         handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
     },
-    interpreter::Host,
+    interpreter::GasTracker,
     registry::{HandlerError, HandlerResult, TxRequest},
     utils::b256_to_word,
 };
@@ -73,7 +74,7 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         tx.value,
     );
     validate_floor_gas(tx.gas_limit, floor_gas)?;
-    validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
+    validate_execution_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let blob_gas_cost = U256::from(DATA_GAS_PER_BLOB) * U256::from(tx.blob_versioned_hashes.len());
     let max_blob_gas_cost = blob_gas_cost * max_fee_per_blob_gas;
@@ -93,7 +94,7 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
     H::before_execution(req.host, req.envelope, caller, effective_gas_cost + blob_basefee_cost)?;
 
-    let (gas_limit, reservoir) =
+    let (execution_gas_limit, reservoir) =
         initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, initial_state_gas);
     let tx_env = TxEnvExt {
         origin: caller,
@@ -103,19 +104,25 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         ext: T::TxEnvExt::default(),
         _non_exhaustive: (),
     };
-    let mut message = initial_message(
+    let mut tx_gas =
+        GasTracker::new_with_execution_gas_and_reservoir(execution_gas_limit, reservoir);
+    let frame = prepare_initial_frame(
         req.host,
         caller,
         tx.nonce,
         tx.to.into(),
         &tx.input,
         tx.value,
-        gas_limit,
-        reservoir,
+        &mut tx_gas,
     )?;
-    // Failed execution has already been rolled back to the message's own checkpoint (and halt gas
-    // zeroed) inside `execute_message`, so the result settles directly.
-    let result = req.host.execute_message(&tx_env, &mut message);
+    let result = execute_initial_frame(
+        req.host,
+        &tx_env,
+        frame,
+        &mut tx_gas,
+        execution_gas_limit,
+        reservoir,
+    );
     H::settle_transaction(
         req.host,
         req.envelope,

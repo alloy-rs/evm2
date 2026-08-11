@@ -3,9 +3,10 @@
 use crate::{
     EvmFeatures, EvmTypesHost,
     bytecode::Bytecode,
+    constants::CALL_DEPTH_LIMIT,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Result, StackMut,
-        Word,
+        Word, derive_create_destination,
     },
     utils::{word_to_address, word_to_usize},
     version::GasId,
@@ -308,41 +309,30 @@ fn create_inner<T: EvmTypesHost>(
     };
     gas.spend(create_cost)?;
 
-    // Build the message up front (minus the child gas split, filled in below).
+    let kind = if is_create2 { MessageKind::Create2 } else { MessageKind::Create };
     let current = state.message();
-    let code = Bytecode::new_legacy(input.clone());
-    let mut message = MessageExt {
-        kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
-        depth: current.depth.saturating_add(1),
-        gas_limit: 0,
-        reservoir: 0,
-        // Derived below into the yet-to-be-created contract address.
-        destination: Address::ZERO,
-        caller: current.destination,
-        input,
-        value,
-        code,
-        code_address: current.destination,
-        disable_precompiles: false,
-        // CREATE is rejected in a static context (see `require_non_staticcall`).
-        caller_is_static: false,
-        salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
-        ext: T::MessageExt::default(),
-        _non_exhaustive: (),
-    };
+    let caller = current.destination;
+    let depth = current.depth.saturating_add(1);
+    let salt = salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default();
 
-    // Derive the created contract address once and record it in `destination`. CREATE needs the
-    // creator's (pre-bump) nonce; the caller is the currently-executing contract, already warm and
-    // in the access list, so this read is neutral. CREATE2 needs no nonce. The same load feeds the
-    // EIP-8037 balance/nonce checks below, so it is only performed when one of the two needs it.
+    // Derive the created contract address once. CREATE needs the creator's (pre-bump) nonce; the
+    // caller is the currently-executing contract, already warm and in the access list, so this read
+    // is neutral. CREATE2 needs no nonce. The same load feeds the EIP-8037 balance/nonce checks
+    // below, so it is only performed when one of the two needs it.
     let caller_info = if is_create2 && !state.feature(EvmFeatures::EIP8037) {
         None
     } else {
-        Some(state.host().load_account(&message.caller, false, false)?)
+        Some(state.host().load_account(&caller, false, false)?)
     };
-    message.derive_destination(caller_info.as_ref().map_or(0, |info| info.nonce));
+    let destination = derive_create_destination(
+        kind,
+        &caller,
+        &salt,
+        &input,
+        caller_info.as_ref().map_or(0, |info| info.nonce),
+    );
 
-    // EIP-8037 (ethereum/EIPs#11858): charge the CREATE account-creation state gas on this frame
+    // EIP-8037: charge the CREATE account-creation state gas on this frame
     // before the child gas/reservoir split, conditional on the destination not already existing.
     // The single destination read decides the charge (and warms the address); a create at a
     // pre-existing leaf pays nothing, so its child is not shortchanged by an unneeded spill. The
@@ -350,13 +340,16 @@ fn create_inner<T: EvmTypesHost>(
     // create-failure path after `execute_message`).
     let mut charged_create_state_gas = false;
     if let Some(caller_info) = caller_info.filter(|_| state.feature(EvmFeatures::EIP8037)) {
-        // Only decide the account-creation charge once the endowment and nonce pre-checks pass: a
-        // create that early-fails on those never accesses the destination, so reading it here would
-        // leak it into the EIP-7928 block access list. The early-fail itself (pushing 0) is handled
-        // by the child frame below.
-        if caller_info.balance >= message.value && caller_info.nonce != u64::MAX {
+        // Only decide the account-creation charge once the depth, endowment, and nonce pre-checks
+        // pass: a create that early-fails on those never accesses the destination, so reading it
+        // here would leak it into the EIP-7928 block access list (and warm the address). The
+        // early-fail itself (pushing 0) is handled by the child frame below.
+        if depth <= CALL_DEPTH_LIMIT
+            && caller_info.balance >= value
+            && caller_info.nonce != u64::MAX
+        {
             let features = state.version().features;
-            if state.host().target_is_empty_for_new_account_gas(&message.destination, features)? {
+            if state.host().target_is_empty_for_new_account_gas(&destination, features)? {
                 gas.spend_state(state.gas_params().create_state_gas())?;
                 charged_create_state_gas = true;
             }
@@ -368,17 +361,33 @@ fn create_inner<T: EvmTypesHost>(
         gas.remaining()
     };
     gas.spend(gas_limit)?;
-    message.gas_limit = gas_limit;
-    message.reservoir = gas.reservoir();
 
     let tx_env = state.tx();
+    let mut message = MessageExt {
+        kind,
+        depth,
+        gas_limit,
+        reservoir: gas.reservoir(),
+        destination,
+        caller,
+        code: Bytecode::new_legacy(input.clone()),
+        input,
+        value,
+        code_address: caller,
+        disable_precompiles: false,
+        // CREATE is rejected in a static context (see `require_non_staticcall`).
+        caller_is_static: false,
+        salt,
+        ext: T::MessageExt::default(),
+        _non_exhaustive: (),
+    };
     let mut result = state.host().execute_message(tx_env, &mut message);
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
     gas.merge_child_gas(result.gas, result.stop);
 
-    // EIP-8037 (ethereum/EIPs#11858): when the opcode charged the conditional `create_state_gas`
+    // EIP-8037: when the opcode charged the conditional `create_state_gas`
     // and the create then fails to deploy (revert, halt, or an early-fail leaving
     // `created_address == None` — depth, out-of-funds, nonce overflow), no new account leaf is
     // created, so refund the charge to the reservoir via `refill_reservoir` (matching 0→x→0 storage
@@ -899,6 +908,25 @@ mod tests {
         assert_eq!(interp.stack(), [Word::ZERO]);
         assert_eq!(interp.gas_remaining(), 17_991);
         assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn create_too_deep_skips_destination_read_eip8037() {
+        // EIP-8037: a create failing the depth pre-check must not access the destination —
+        // the read would leak the address into the EIP-7928 block access list.
+        let mut host = TestHost { exists: false, ..Default::default() };
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        code.extend([op::CREATE, op::STOP]);
+
+        let interp = run(RunConfig::new(code)
+            .host(&mut host)
+            .spec(SpecId::AMSTERDAM)
+            .message(MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .gas_limit(50_000));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::ZERO]);
+        assert!(host.new_account_checks.is_empty());
     }
 
     #[test]

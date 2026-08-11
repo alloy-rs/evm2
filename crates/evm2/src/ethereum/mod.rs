@@ -17,10 +17,12 @@ pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 use crate::{
     Evm, EvmFeatures, EvmTypes, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
+    env::TxEnv,
     evm::{AccountInfo, error_handler, handler::GasSettlement},
     interpreter::{
-        Message, MessageExt, MessageKind, Word,
-        gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS},
+        GasTracker, Host, InstrStop, Message, MessageExt, MessageKind, MessageResult,
+        MessageResultExt, Word,
+        gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS, WARM_STORAGE_READ_COST},
     },
     registry::{HandlerError, HandlerResult, TxRegistry},
     utils::num_words,
@@ -284,7 +286,7 @@ pub fn validate_block_gas_limit(
 /// Validates the transaction gas limit against the active transaction cap.
 pub const fn validate_tx_gas_limit_cap(version: &Version, tx_gas_limit: u64) -> HandlerResult<()> {
     // EIP-7825 caps each transaction gas limit to 2^24 in Osaka. Amsterdam/EIP-8037
-    // replaces this with a regular-gas cap while allowing extra transaction gas to serve as
+    // replaces this with a execution-gas cap while allowing extra transaction gas to serve as
     // the state-gas reservoir.
     let cap = version.tx_gas_limit_cap;
     if !version.feature(EvmFeatures::EIP8037) && tx_gas_limit > cap {
@@ -293,8 +295,8 @@ pub const fn validate_tx_gas_limit_cap(version: &Version, tx_gas_limit: u64) -> 
     Ok(())
 }
 
-/// Validates the regular-gas portion against the active transaction cap.
-pub const fn validate_regular_gas_limit_cap(
+/// Validates the execution-gas portion against the active transaction cap.
+pub const fn validate_execution_gas_limit_cap(
     version: &Version,
     tx_gas_limit: u64,
     intrinsic: u64,
@@ -302,10 +304,10 @@ pub const fn validate_regular_gas_limit_cap(
 ) -> HandlerResult<()> {
     let cap = version.tx_gas_limit_cap;
     if version.feature(EvmFeatures::EIP8037) && tx_gas_limit > cap {
-        let required_regular_gas = if intrinsic > floor_gas { intrinsic } else { floor_gas };
-        if required_regular_gas > cap {
+        let required_execution_gas = if intrinsic > floor_gas { intrinsic } else { floor_gas };
+        if required_execution_gas > cap {
             return Err(HandlerError::TxGasLimitGreaterThanCap {
-                gas_limit: required_regular_gas,
+                gas_limit: required_execution_gas,
                 cap,
             });
         }
@@ -353,13 +355,13 @@ pub const fn validate_nonce_not_overflow(nonce: u64) -> HandlerResult<()> {
     Ok(())
 }
 
-/// Validates that the gas limit covers regular and state intrinsic gas.
+/// Validates that the gas limit covers execution and state intrinsic gas.
 pub const fn validate_intrinsic_gas(
     gas_limit: u64,
     intrinsic: u64,
     initial_state_gas: u64,
 ) -> HandlerResult<()> {
-    // EIP-8037: the gas limit must cover the regular intrinsic gas plus the upfront state gas.
+    // EIP-8037: the gas limit must cover the execution intrinsic gas plus the upfront state gas.
     let required = intrinsic.saturating_add(initial_state_gas);
     if gas_limit < required {
         return Err(HandlerError::IntrinsicGasTooLow { required, got: gas_limit });
@@ -444,15 +446,15 @@ pub fn charge_upfront<'a, T: EvmTypes>(
     Ok(())
 }
 
-/// Returns `(regular_gas_limit, reservoir)` for the first frame.
+/// Returns `(execution_gas_limit, reservoir)` for the first frame.
 ///
 /// `initial_state_gas` is the EIP-8037 state gas charged at the intrinsic phase (the pre-EIP-2780
 /// pessimistic EIP-7702 authorization state gas, or hook-added charges). It is deducted from the
-/// reservoir, spilling into the regular budget when the reservoir is insufficient. It is zero
+/// reservoir, spilling into the execution budget when the reservoir is insufficient. It is zero
 /// without EIP-8037; under EIP-2780 the state-dependent charges are metered at the runtime gas
-/// phase instead. The pre-EIP-2780 EIP-7702 state-gas refund is not an input here: per
-/// execution-specs it is credited directly back to the reservoir after the authorizations are
-/// applied, not applied to regular gas first.
+/// phase instead ([`prepare_initial_frame`]). The pre-EIP-2780 EIP-7702 state-gas refund is not an
+/// input here: per execution-specs it is credited directly back to the reservoir after the
+/// authorizations are applied, not applied to execution gas first.
 pub fn initial_gas_and_reservoir(
     version: &Version,
     tx_gas_limit: u64,
@@ -465,46 +467,124 @@ pub fn initial_gas_and_reservoir(
 
     let cap = version.tx_gas_limit_cap;
     let execution_gas = tx_gas_limit - intrinsic;
-    let mut regular_gas_limit = core::cmp::min(tx_gas_limit, cap).saturating_sub(intrinsic);
-    let mut reservoir = execution_gas - regular_gas_limit;
+    let mut execution_gas_limit = core::cmp::min(tx_gas_limit, cap).saturating_sub(intrinsic);
+    let mut reservoir = execution_gas - execution_gas_limit;
 
     if reservoir >= initial_state_gas {
         reservoir -= initial_state_gas;
     } else {
-        regular_gas_limit -= initial_state_gas - reservoir;
+        execution_gas_limit -= initial_state_gas - reservoir;
         reservoir = 0;
     }
 
-    (regular_gas_limit, reservoir)
+    (execution_gas_limit, reservoir)
 }
 
-#[allow(clippy::too_many_arguments)]
-/// Creates the top-level message and its bytecode for a transaction call or create.
-pub fn initial_message<'a, T: EvmTypes>(
+/// The first frame of a transaction, prepared by [`prepare_initial_frame`].
+#[derive(Clone, Debug)]
+pub struct InitialFrame<T: EvmTypes> {
+    /// Top-level call or create message, carrying the resolved bytecode to run.
+    pub message: Message<T>,
+    /// EIP-8037 state gas charged on the transaction-level tracker for the account leaf this
+    /// frame creates (the call recipient's new-account charge or the create target's
+    /// account-creation charge), zero when nothing was charged. Refunded by
+    /// [`settle_initial_frame_gas`] when the frame fails and the leaf is not created.
+    pub charged_state_gas: u64,
+}
+
+/// Completes the EIP-2780 runtime gas phase on the transaction-level `tx_gas` and builds the
+/// first frame — the depth-0 analog of the CALL/CREATE opcodes' account-load-and-charge step.
+///
+/// For a call, the recipient pays the new-account state gas when the call transfers value to an
+/// empty recipient (charged before the delegation resolution, matching the spec's
+/// `prepare_dispatch` order), and a delegated recipient pays the delegation-target access
+/// following the EIP-2929 warm/cold model: the warm cost lands before the target load and the
+/// cold premium after it, with the load gated on `skip_cold_load` (as nested calls do) so a
+/// cold, unafforded target stays out of the EIP-7928 block access list. For a create, the
+/// account-creation state gas is charged when the destination is not already alive (existing,
+/// non-empty), so a create at a pre-existing balance-only account pays nothing for the leaf
+/// (execution-specs `created_target_alive`); nested creates are charged on the parent frame by
+/// the CREATE opcode instead. A delegated recipient is still resolved (for free) so the frame
+/// runs the delegate's code.
+///
+/// The frame's `gas_limit`/`reservoir` snapshot `tx_gas` after the charges. Returns `None` when
+/// a charge runs out of gas: the transaction stays valid but is included as an out-of-gas halt
+/// without entering execution ([`runtime_oog_result`]).
+pub fn prepare_initial_frame<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
     to: TxKind,
     input: &Bytes,
     value: U256,
-    gas_limit: u64,
-    reservoir: u64,
-) -> HandlerResult<Message<T>> {
+    tx_gas: &mut GasTracker,
+) -> HandlerResult<Option<InitialFrame<T>>> {
+    let mut charged_state_gas = 0;
     let message = match to {
         TxKind::Call(to) => {
-            let initial_code = initial_call_code(host, to)?;
+            let (recipient_is_empty, mut code) = {
+                let mut account = host.state.account(&to, false).map_err(error_handler!(host))?;
+                // A nonexistent recipient reads as an empty account (EIP-161).
+                let recipient_is_empty = account.get().is_none_or(AccountInfo::is_empty);
+                (recipient_is_empty, account.load_code().map_err(error_handler!(host))?)
+            };
+            let mut code_address = to;
+            let mut disable_precompiles = false;
+            if host.feature(EvmFeatures::EIP2780) && !value.is_zero() && recipient_is_empty {
+                let new_account_state_gas = host.version().gas_params.new_account_state_gas();
+                if tx_gas.spend_state(new_account_state_gas).is_err() {
+                    return Ok(None);
+                }
+                charged_state_gas = new_account_state_gas;
+            }
+            // An empty recipient is never delegated, so the charge above and the resolution below
+            // are mutually exclusive.
+            if host.feature(EvmFeatures::EIP7702)
+                && let Some(delegated_address) = code.eip7702_address()
+            {
+                if host.feature(EvmFeatures::EIP2780) {
+                    // Delegation-target access, EIP-2929 warm/cold: charge the warm access first
+                    // (covered → the target is loaded and enters the block access list), then the
+                    // cold premium after the load. The load is skipped when the cold premium is
+                    // unaffordable, keeping a cold, unafforded target out of the block access
+                    // list.
+                    let cold_additional = host.version().gas_params.cold_account_additional_cost();
+                    if tx_gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
+                        return Ok(None);
+                    }
+                    let skip_cold_load = tx_gas.remaining() < cold_additional;
+                    let Ok(load) =
+                        Host::load_account(host, &delegated_address, true, skip_cold_load)
+                    else {
+                        return Ok(None);
+                    };
+                    if load.is_cold && tx_gas.spend(cold_additional).is_err() {
+                        return Ok(None);
+                    }
+                    code = load.code;
+                } else {
+                    let mut account = host
+                        .state
+                        .account(&delegated_address, false)
+                        .map_err(error_handler!(host))?;
+                    account.warm();
+                    code = account.load_code().map_err(error_handler!(host))?;
+                }
+                code_address = delegated_address;
+                disable_precompiles = true;
+            }
             MessageExt {
                 kind: MessageKind::Call,
                 depth: 0,
-                gas_limit,
-                reservoir,
+                gas_limit: tx_gas.remaining(),
+                reservoir: tx_gas.reservoir(),
                 destination: to,
                 caller,
                 input: input.clone(),
                 value,
-                code: initial_code.code,
-                code_address: initial_code.code_address,
-                disable_precompiles: initial_code.disable_precompiles,
+                code,
+                code_address,
+                disable_precompiles,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
@@ -512,18 +592,33 @@ pub fn initial_message<'a, T: EvmTypes>(
             }
         }
         TxKind::Create => {
-            let address = caller.create(nonce);
+            let destination = caller.create(nonce);
+            if host.feature(EvmFeatures::EIP8037) {
+                let target_alive = host
+                    .state
+                    .account(&destination, false)
+                    .map_err(error_handler!(host))?
+                    .get()
+                    .is_some_and(|info| !info.is_empty());
+                if !target_alive {
+                    let create_state_gas = host.version().gas_params.create_state_gas();
+                    if tx_gas.spend_state(create_state_gas).is_err() {
+                        return Ok(None);
+                    }
+                    charged_state_gas = create_state_gas;
+                }
+            }
             MessageExt {
                 kind: MessageKind::Create,
                 depth: 0,
-                gas_limit,
-                reservoir,
-                destination: address,
+                gas_limit: tx_gas.remaining(),
+                reservoir: tx_gas.reservoir(),
+                destination,
                 caller,
                 input: input.clone(),
                 value,
                 code: Bytecode::new_legacy(input.clone()),
-                code_address: address,
+                code_address: destination,
                 disable_precompiles: false,
                 caller_is_static: false,
                 salt: B256::ZERO,
@@ -533,47 +628,72 @@ pub fn initial_message<'a, T: EvmTypes>(
         }
     };
     debug_assert_eq!(message.depth, 0);
-    Ok(message)
+    Ok(Some(InitialFrame { message, charged_state_gas }))
 }
 
-struct InitialCallCode {
-    code: Bytecode,
-    code_address: Address,
-    disable_precompiles: bool,
-}
-
-fn initial_call_code<'a, T: EvmTypes>(
-    host: &mut Evm<'a, T>,
-    to: Address,
-) -> HandlerResult<InitialCallCode> {
-    let code = host
-        .state
-        .account(&to, false)
-        .map_err(error_handler!(host))?
-        .load_code()
-        .map_err(error_handler!(host))?;
-    if host.feature(EvmFeatures::EIP7702)
-        && let Some(delegated_address) = code.eip7702_address()
-    {
-        // Under EIP-2780 the delegation resolution is deferred to the frame
-        // (`apply_eip2780_call_charges`), which meters the delegation-target access and gates its
-        // load on gas so a cold, unafforded target stays out of the EIP-7928 block access list. The
-        // frame swaps in the delegate's code and code_address after the charge; loading the target
-        // here would leak it into the block access list on a runtime out-of-gas.
-        if host.feature(EvmFeatures::EIP2780) {
-            return Ok(InitialCallCode { code, code_address: to, disable_precompiles: true });
+/// Settles the first frame's result into the transaction-level `tx_gas` and writes the settled
+/// tracker back to the result for gas finalization.
+///
+/// All execution gas was forwarded to the frame, so it is first consumed on `tx_gas` and the
+/// frame's settled gas merged back like any parent frame would
+/// ([`GasTracker::merge_child_gas`]). When the frame did not create the account leaf whose state
+/// gas the runtime gas phase charged upfront ([`InitialFrame::charged_state_gas`]), the charge
+/// is refunded in LIFO order ([`GasTracker::refill_reservoir`]), exactly as the CALL/CREATE
+/// opcodes refund their upfront state charges for failed children. Unlike an inner frame's
+/// caller, the transaction ends here: an exceptional halt consumes all execution gas, including
+/// the spilled portion the refill just credited back to `remaining`.
+pub const fn settle_initial_frame_gas<E>(
+    tx_gas: &mut GasTracker,
+    result: &mut MessageResultExt<E>,
+    charged_state_gas: u64,
+) {
+    tx_gas.spend_all();
+    tx_gas.merge_child_gas(result.gas, result.stop);
+    if charged_state_gas != 0 && !result.stop.is_success() {
+        tx_gas.refill_reservoir(charged_state_gas);
+        if result.stop.is_halt() {
+            tx_gas.spend_all();
         }
-        let mut account =
-            host.state.account(&delegated_address, false).map_err(error_handler!(host))?;
-        account.warm();
-        let delegated_code = account.load_code().map_err(error_handler!(host))?;
-        return Ok(InitialCallCode {
-            code: delegated_code,
-            code_address: delegated_address,
-            disable_precompiles: true,
-        });
     }
-    Ok(InitialCallCode { code, code_address: to, disable_precompiles: false })
+    result.gas = *tx_gas;
+}
+
+/// Executes the prepared first frame and settles its gas into the transaction-level tracker.
+pub fn execute_initial_frame<T: EvmTypes>(
+    host: &mut Evm<'_, T>,
+    tx_env: &TxEnv<T>,
+    frame: Option<InitialFrame<T>>,
+    tx_gas: &mut GasTracker,
+    execution_gas_limit: u64,
+    reservoir: u64,
+) -> MessageResult<T> {
+    let Some(InitialFrame { mut message, charged_state_gas }) = frame else {
+        return runtime_oog_result(execution_gas_limit, reservoir);
+    };
+
+    // Failed execution has already been rolled back to the message's own checkpoint inside
+    // `execute_message`; the settle merges the frame gas into the transaction-level gas.
+    let mut result = host.execute_message(tx_env, &mut message);
+    settle_initial_frame_gas(tx_gas, &mut result, charged_state_gas);
+    result
+}
+
+/// Builds the result for a transaction whose EIP-2780 runtime gas phase ran out of gas
+/// ([`prepare_initial_frame`] returned `None`, or the EIP-7702 authorization charges bailed).
+///
+/// The transaction is valid but cannot afford the state-dependent runtime charges: it is
+/// included as an out-of-gas halt that consumes all execution gas and returns the reservoir,
+/// without entering execution. The phase's partial charges are dropped by rebuilding the
+/// pristine transaction-level gas from `execution_gas_limit` and `reservoir`.
+pub fn runtime_oog_result<E: Default>(
+    execution_gas_limit: u64,
+    reservoir: u64,
+) -> MessageResultExt<E> {
+    MessageResultExt {
+        stop: InstrStop::OutOfGas,
+        gas: GasTracker::new_spent_with_reservoir(execution_gas_limit, reservoir),
+        ..MessageResultExt::default()
+    }
 }
 
 /// Applies the default Ethereum gas refund, sender reimbursement, and beneficiary reward rules.
@@ -635,15 +755,16 @@ pub fn finalize_gas<'a, T: EvmTypes>(
     let refunded = result.final_refund(tx_gas_limit, max_refund_quotient);
     // EIP-7623: when the calldata floor exceeds spent-minus-refund, `TxResult::tx_gas_used`
     // resolves to the floor. `total_gas_spent` stays pre-refund and pre-floor: block-level
-    // regular gas (EIP-7778/EIP-8037) accumulates `tx_gas_used_before_refund` per
+    // execution gas (EIP-7778/EIP-8037) accumulates `tx_gas_used_before_refund` per
     // execution-specs, without the floor clamp.
     //
-    // Execution state gas contributes only on success: a revert/halt rolls back its state changes.
-    // The upfront `initial_state_gas` is added unconditionally — an EIP-7702 execution failure
-    // still leaves the applied delegations (and their state gas) in place.
-    let exec_state_gas = if result.stop.is_success() { result.gas.state_gas_spent() } else { 0 };
-    let state_gas_spent = (exec_state_gas.saturating_add_unsigned(initial_state_gas).max(0) as u64)
-        .saturating_sub(state_refund);
+    // The settled tracker's state gas is self-consistent: a failed frame's state charges were
+    // rolled back before it was merged, while unconditional pre-execution charges (the EIP-7702
+    // authorizations, whose delegations survive an execution failure) remain. The upfront
+    // `initial_state_gas` is likewise added unconditionally.
+    let state_gas_spent =
+        (result.gas.state_gas_spent().saturating_add_unsigned(initial_state_gas).max(0) as u64)
+            .saturating_sub(state_refund);
     Ok(TxResultExt {
         status: result.stop.is_success(),
         total_gas_spent,
@@ -666,7 +787,7 @@ pub fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
 /// Calculates transaction calldata floor gas.
 ///
 /// `caller`/`to`/`value` feed the EIP-2780 floor base (ethereum/EIPs#11836):
-/// under EIP-2780 the floor is anchored on the decomposed regular-gas intrinsic
+/// under EIP-2780 the floor is anchored on the decomposed execution-gas intrinsic
 /// base (`TX_BASE` + `to`-based + `value`-based, the same sum
 /// [`intrinsic_gas`] charges) instead of the flat `TxFloorCostBase`, so the
 /// floor never undercuts the transaction's own intrinsic base.
@@ -753,7 +874,7 @@ pub fn intrinsic_gas(
 }
 
 /// EIP-2780: sum of the sender base, `tx.to`-based, and `tx.value`-based
-/// regular-gas charges. Excludes calldata, access list, authorizations, and
+/// execution-gas charges. Excludes calldata, access list, authorizations, and
 /// initcode pieces which are added by the caller.
 ///
 /// Per execution-specs, a self-transfer (`tx.to == sender`) pays neither the
@@ -1066,20 +1187,22 @@ mod tests {
             Precompiles::base(SpecId::PRAGUE),
         );
 
-        let mut message = initial_message(
+        let mut tx_gas = GasTracker::new_with_execution_gas_and_reservoir(100_000, 0);
+        let InitialFrame { mut message, charged_state_gas } = prepare_initial_frame(
             &mut evm,
             caller,
             0,
             TxKind::Call(target),
             &Bytes::new(),
             U256::ZERO,
-            100_000,
-            0,
+            &mut tx_gas,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(message.destination, target);
         assert_eq!(message.code_address, delegated);
         assert!(message.disable_precompiles);
+        assert_eq!(charged_state_gas, 0);
 
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
 
@@ -1089,7 +1212,7 @@ mod tests {
     }
 
     #[test]
-    fn amsterdam_allows_total_gas_above_osaka_cap_when_regular_gas_fits() {
+    fn amsterdam_allows_total_gas_above_osaka_cap_when_execution_gas_fits() {
         let osaka = Version::base(SpecId::OSAKA);
         let amsterdam = Version::base(SpecId::AMSTERDAM);
         let tx_gas_limit = osaka.tx_gas_limit_cap + 1;
@@ -1105,11 +1228,11 @@ mod tests {
         );
         assert_eq!(validate_tx_gas_limit_cap(amsterdam, tx_gas_limit), Ok(()));
         assert_eq!(
-            validate_regular_gas_limit_cap(amsterdam, tx_gas_limit, intrinsic, floor_gas),
+            validate_execution_gas_limit_cap(amsterdam, tx_gas_limit, intrinsic, floor_gas),
             Ok(())
         );
         assert_eq!(
-            validate_regular_gas_limit_cap(
+            validate_execution_gas_limit_cap(
                 amsterdam,
                 tx_gas_limit,
                 amsterdam.tx_gas_limit_cap + 1,

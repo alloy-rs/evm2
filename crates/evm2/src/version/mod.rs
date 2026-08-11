@@ -778,8 +778,8 @@ evm_versions! {
             // floor-tokens count.
             TxFloorZeroByteMultiplier: NON_ZERO_BYTE_MULTIPLIER_ISTANBUL,
             TxAccessListFloorByteMultiplier: EIP7981_ACCESS_LIST_FLOOR_BYTE_MULTIPLIER,
-            // EIP-7702 under EIP-8037: per-authorization regular-gas refund. The
-            // intrinsic per-auth regular charge bundles a worst-case
+            // EIP-7702 under EIP-8037: per-authorization execution-gas refund. The
+            // intrinsic per-auth execution charge bundles a worst-case
             // `ACCOUNT_WRITE`; when the authority leaf already exists (or the auth
             // EIP-2780 (ethereum/EIPs#11844): the per-auth `ACCOUNT_WRITE` and
             // state gas are charged conditionally at the runtime gas phase, per
@@ -816,7 +816,7 @@ evm_versions! {
             ColdStorageCost: EIP8038_COLD_STORAGE_ACCESS_ADDITIONAL,
             // CALL_VALUE = ACCOUNT_WRITE + CALL_STIPEND. A value-bearing CALL already
             // pays the ACCOUNT_WRITE surcharge here, so creating the target charges
-            // no extra regular gas — only the NEW_ACCOUNT state gas (hence
+            // no extra execution gas — only the NEW_ACCOUNT state gas (hence
             // `NewAccountCost` is zero). SELFDESTRUCT has no such bundled charge, so
             // it still pays a separate ACCOUNT_WRITE when sending balance to an empty
             // account (execution-specs `selfdestruct`).
@@ -826,12 +826,12 @@ evm_versions! {
             // SSTORE write surcharge / refunds = STORAGE_WRITE.
             SstoreSetWithoutLoadCost: EIP8038_STORAGE_WRITE,
             SstoreResetWithoutColdLoadCost: EIP8038_STORAGE_WRITE,
-            // SSTORE 0→x→0 regular refund only; the state-gas portion is restored
+            // SSTORE 0→x→0 execution refund only; the state-gas portion is restored
             // directly to the reservoir via `sstore_state_gas_refill`.
             SstoreSetRefund: EIP8038_STORAGE_WRITE,
             SstoreResetRefund: EIP8038_STORAGE_WRITE,
             SstoreClearingSlotRefund: EIP8038_STORAGE_CLEAR_REFUND,
-            // CREATE / CREATE2 regular-gas access cost (CREATE opcodes and create txns).
+            // CREATE / CREATE2 execution-gas access cost (CREATE opcodes and create txns).
             Create: EIP8038_CREATE_ACCESS,
             TxCreateCost: EIP8038_CREATE_ACCESS,
             // EIP-7981: charge access-list data at 64 gas per byte (20 bytes per
