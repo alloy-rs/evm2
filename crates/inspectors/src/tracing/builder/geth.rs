@@ -1,5 +1,6 @@
 //! Geth trace builder
 use crate::tracing::{
+    final_refunded,
     tx_state::TxState,
     types::{CallKind, CallTraceNode, CallTraceStepStackItem},
     utils::load_account_code,
@@ -20,7 +21,7 @@ use alloy_rpc_types_trace::geth::{
     erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
 };
 use evm2::{
-    EvmTypesHost, TxResultWithState,
+    EvmFeatures, EvmTypesHost, TxResultExt, TxResultWithState,
     evm::{DbResult, DynDatabase},
     interpreter::op,
 };
@@ -30,19 +31,27 @@ use evm2::{
 pub struct GethTraceBuilder<'a> {
     /// Recorded trace nodes.
     nodes: Cow<'a, [CallTraceNode]>,
+    /// EVM features used to produce the trace.
+    features: EvmFeatures,
 }
 
 impl GethTraceBuilder<'static> {
     /// Returns a new instance of the builder from [`Cow::Owned`]
     pub const fn new(nodes: Vec<CallTraceNode>) -> Self {
-        Self { nodes: Cow::Owned(nodes) }
+        Self { nodes: Cow::Owned(nodes), features: EvmFeatures::empty() }
     }
 }
 
 impl<'a> GethTraceBuilder<'a> {
     /// Returns a new instance of the builder from [`Cow::Borrowed`]
     pub const fn new_borrowed(nodes: &'a [CallTraceNode]) -> Self {
-        Self { nodes: Cow::Borrowed(nodes) }
+        Self { nodes: Cow::Borrowed(nodes), features: EvmFeatures::empty() }
+    }
+
+    /// Sets the EVM features used to produce the trace.
+    pub const fn with_features(mut self, features: EvmFeatures) -> Self {
+        self.features = features;
+        self
     }
 
     /// Consumes the builder and returns the recorded trace nodes.
@@ -53,6 +62,11 @@ impl<'a> GethTraceBuilder<'a> {
     /// Returns the sum of all steps in the recorded node traces.
     fn trace_step_count(&self) -> usize {
         self.nodes.iter().map(|node| node.trace.steps.len()).sum()
+    }
+
+    #[inline]
+    const fn is_eip8037_enabled(&self) -> bool {
+        self.features.contains(EvmFeatures::EIP8037)
     }
 
     /// Fill in the geth trace with all steps of the trace and its children traces in the order they
@@ -120,6 +134,31 @@ impl<'a> GethTraceBuilder<'a> {
         return_value: Bytes,
         opts: GethDefaultTracingOptions,
     ) -> DefaultFrame {
+        self.geth_traces_inner(receipt_gas_used, None, return_value, opts)
+    }
+
+    /// Generate a geth-style trace with EIP-8037 transaction gas accounting.
+    pub fn geth_traces_with_result_gas<E>(
+        &self,
+        gas: &TxResultExt<E>,
+        return_value: Bytes,
+        opts: GethDefaultTracingOptions,
+    ) -> DefaultFrame {
+        self.geth_traces_inner(
+            gas.tx_gas_used(),
+            Some((gas.execution_gas_spent(), gas.state_gas_spent(), final_refunded(gas))),
+            return_value,
+            opts,
+        )
+    }
+
+    fn geth_traces_inner(
+        &self,
+        receipt_gas_used: u64,
+        gas: Option<(u64, u64, u64)>,
+        return_value: Bytes,
+        opts: GethDefaultTracingOptions,
+    ) -> DefaultFrame {
         if self.nodes.is_empty() {
             return Default::default();
         }
@@ -131,10 +170,15 @@ impl<'a> GethTraceBuilder<'a> {
         let mut storage = HashMap::default();
         self.fill_geth_trace(main_trace_node, &opts, &mut storage, &mut struct_logs);
 
+        let gas = gas.filter(|_| self.is_eip8037_enabled());
+
         DefaultFrame {
             // If the top-level trace succeeded, then it was a success
             failed: !main_trace.success,
             gas: receipt_gas_used,
+            execution_gas_used: gas.map(|gas| gas.0),
+            state_gas_used: gas.map(|gas| gas.1),
+            gas_refund: gas.map(|gas| gas.2),
             return_value,
             struct_logs,
         }
@@ -146,6 +190,28 @@ impl<'a> GethTraceBuilder<'a> {
     ///
     /// This expects the gas used and return value for the executed transaction.
     pub fn geth_call_traces(&self, opts: CallConfig, gas_used: u64) -> CallFrame {
+        self.geth_call_traces_inner(opts, gas_used, None)
+    }
+
+    /// Generate a geth-style call trace with EIP-8037 transaction gas accounting.
+    pub fn geth_call_traces_with_result_gas<E>(
+        &self,
+        opts: CallConfig,
+        gas: &TxResultExt<E>,
+    ) -> CallFrame {
+        self.geth_call_traces_inner(
+            opts,
+            gas.tx_gas_used(),
+            Some((gas.execution_gas_spent(), gas.state_gas_spent(), final_refunded(gas))),
+        )
+    }
+
+    fn geth_call_traces_inner(
+        &self,
+        opts: CallConfig,
+        gas_used: u64,
+        gas: Option<(u64, u64, u64)>,
+    ) -> CallFrame {
         if self.nodes.is_empty() {
             return Default::default();
         }
@@ -155,6 +221,11 @@ impl<'a> GethTraceBuilder<'a> {
         let main_trace_node = &self.nodes[0];
         let mut root_call_frame = main_trace_node.geth_empty_call_frame(include_logs);
         root_call_frame.gas_used = U256::from(gas_used);
+        if let Some(gas) = gas.filter(|_| self.is_eip8037_enabled()) {
+            root_call_frame.execution_gas_used = Some(U256::from(gas.0));
+            root_call_frame.state_gas_used = Some(U256::from(gas.1));
+            root_call_frame.gas_refund = Some(U256::from(gas.2));
+        }
 
         // selfdestructs are not recorded as individual call traces but are derived from
         // the call trace and are added as additional `CallFrame` objects to the parent call

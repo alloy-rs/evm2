@@ -1,5 +1,6 @@
 use crate::tracing::{
     FourByteInspector, MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
+    final_refunded,
 };
 #[cfg(feature = "js-tracer")]
 use alloc::boxed::Box;
@@ -9,7 +10,7 @@ use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     CallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
     GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace, NoopFrame, PreStateConfig,
-    erc7562::Erc7562Config, mux::MuxConfig,
+    StateGasTrace, erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
     ErrorCode, EvmTypes, EvmTypesHost, Inspector, NoopInspector, TxResultWithState,
@@ -37,6 +38,8 @@ pub enum DebugInspector {
     PreStateTracer(TracingInspector, PreStateConfig),
     /// Noop tracer
     Noop(NoopInspector),
+    /// EIP-8037 state-gas tracer
+    StateGasTracer(NoopInspector),
     /// Mux tracer
     Mux(MuxInspector, MuxConfig),
     /// FlatCallTracer
@@ -60,6 +63,7 @@ impl DebugInspector {
                 Self::PreStateTracer(inspector.clone(), *config)
             }
             Self::Noop(inspector) => Self::Noop(inspector.clone()),
+            Self::StateGasTracer(inspector) => Self::StateGasTracer(inspector.clone()),
             Self::Mux(inspector, config) => Self::Mux(inspector.clone(), config.clone()),
             Self::FlatCallTracer(inspector) => Self::FlatCallTracer(inspector.clone()),
             Self::Erc7562Tracer(inspector, config) => {
@@ -107,6 +111,9 @@ impl DebugInspector {
                         )
                     }
                     GethDebugBuiltInTracerType::NoopTracer => Self::Noop(NoopInspector::default()),
+                    GethDebugBuiltInTracerType::StateGasTracer => {
+                        Self::StateGasTracer(NoopInspector::default())
+                    }
                     GethDebugBuiltInTracerType::MuxTracer => {
                         let config = tracer_config
                             .into_mux_config()
@@ -182,7 +189,7 @@ impl DebugInspector {
             | Self::FlatCallTracer(inspector)
             | Self::Erc7562Tracer(inspector, _)
             | Self::Default(inspector, _) => inspector.fuse(),
-            Self::Noop(_) => {}
+            Self::Noop(_) | Self::StateGasTracer(_) => {}
             Self::Mux(inspector, config) => {
                 *inspector = MuxInspector::try_from_config(config.clone())?;
             }
@@ -219,7 +226,10 @@ impl DebugInspector {
             Self::CallTracer(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit());
                 inspector.set_transaction_caller(tx.signer());
-                inspector.geth_builder().geth_call_traces(*config, res.result.tx_gas_used()).into()
+                inspector
+                    .geth_builder()
+                    .geth_call_traces_with_result_gas(*config, &res.result)
+                    .into()
             }
             Self::PreStateTracer(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit());
@@ -230,6 +240,13 @@ impl DebugInspector {
                     .into()
             }
             Self::Noop(_) => NoopFrame::default().into(),
+            Self::StateGasTracer(_) => StateGasTrace {
+                gas_used: res.result.tx_gas_used(),
+                execution_gas_used: res.result.execution_gas_spent(),
+                state_gas_used: res.result.state_gas_spent(),
+                gas_refund: final_refunded(&res.result),
+            }
+            .into(),
             Self::Mux(inspector, _) => inspector
                 .try_into_mux_frame(res, db, tx_info)
                 .map_err(DebugInspectorError::Database)?
@@ -257,7 +274,7 @@ impl DebugInspector {
                 inspector.set_transaction_caller(tx.signer());
                 inspector
                     .geth_builder()
-                    .geth_traces(res.result.tx_gas_used(), res.result.output.clone(), *config)
+                    .geth_traces_with_result_gas(&res.result, res.result.output.clone(), *config)
                     .into()
             }
             #[cfg(feature = "js-tracer")]
@@ -281,6 +298,7 @@ macro_rules! delegate {
             Self::Erc7562Tracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Default($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Noop($insp) => Inspector::<T>::$method($insp, $($arg),*),
+            Self::StateGasTracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Mux($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             #[cfg(feature = "js-tracer")]
             Self::Js($insp) => Inspector::<T>::$method(&mut **$insp, $($arg),*),
