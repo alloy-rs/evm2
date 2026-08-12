@@ -1,10 +1,10 @@
-use crate::tracing::{FourByteInspector, TracingInspector, TracingInspectorConfig};
+use crate::tracing::{FourByteInspector, TracingInspector, TracingInspectorConfig, final_refunded};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Log, U256, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     CallConfig, FlatCallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
-    NoopFrame, PreStateConfig,
+    NoopFrame, PreStateConfig, StateGasTrace,
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
@@ -31,6 +31,7 @@ enum TraceConfig {
     Call(CallConfig),
     PreState(PreStateConfig),
     FlatCall(FlatCallConfig),
+    StateGas,
     Noop,
 }
 
@@ -78,6 +79,12 @@ impl MuxInspector {
                     }
                     configs.push((builtin, TraceConfig::Noop));
                 }
+                GethDebugBuiltInTracerType::StateGasTracer => {
+                    if tracer_config.is_some() {
+                        return Err(Error::UnexpectedConfig(builtin));
+                    }
+                    configs.push((builtin, TraceConfig::StateGas));
+                }
                 GethDebugBuiltInTracerType::FlatCallTracer => {
                     let flatcall_config = tracer_config
                         .ok_or(Error::MissingConfig(builtin))?
@@ -117,7 +124,7 @@ impl MuxInspector {
                     if let Some(inspector) = &self.tracing {
                         inspector
                             .geth_builder()
-                            .geth_call_traces(*call_config, result.result.tx_gas_used())
+                            .geth_call_traces_with_result_gas(*call_config, &result.result)
                             .into()
                     } else {
                         continue;
@@ -145,6 +152,13 @@ impl MuxInspector {
                     }
                 }
                 TraceConfig::Noop => NoopFrame::default().into(),
+                TraceConfig::StateGas => StateGasTrace {
+                    gas_used: result.result.tx_gas_used(),
+                    execution_gas_used: result.result.execution_gas_spent(),
+                    state_gas_used: result.result.state_gas_spent(),
+                    gas_refund: final_refunded(&result.result),
+                }
+                .into(),
             };
 
             frame.insert(GethDebugTracerType::BuiltInTracer(*tracer_type), trace);
