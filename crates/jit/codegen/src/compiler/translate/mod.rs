@@ -291,7 +291,13 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         fx.bcx.unreachable();
         if bytecode.has_dynamic_jumps() {
             fx.bcx.switch_to_block(fx.dynamic_jump_table);
-            let jumpdests = bytecode.iter_insts().filter(|(_, data)| data.opcode == op::JUMPDEST);
+            // A decoded JUMPDEST is not necessarily a valid jump target: EIP-8024
+            // immediates can desynchronize decoding from the legacy JUMPDEST analysis,
+            // so a `0x5b` masked by the analysis still decodes as an instruction. Only
+            // analysis-valid targets belong in the dispatch table.
+            let jumpdests = bytecode.iter_insts().filter(|(_, data)| {
+                data.opcode == op::JUMPDEST && bytecode.is_valid_jump(data.jumpdest_pc() as usize)
+            });
             let targets = jumpdests
                 .map(|(inst, data)| (data.jumpdest_pc() as u64, fx.effective_entry(inst)))
                 .collect::<Vec<_>>();
