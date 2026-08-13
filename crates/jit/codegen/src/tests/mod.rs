@@ -491,6 +491,51 @@ tests! {
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
+        // The reverse of the above: the byte after DUPN is analyzed as PUSH1 by the
+        // unchanged JUMPDEST analysis, so its data byte masks the 0x5b even though
+        // instruction decoding (which consumes DUPN's immediate) yields it as a
+        // JUMPDEST instruction. The jump must fail.
+        jump_to_push_masked_jumpdest_after_dupn(@raw {
+            bytecode: &[
+                op::PUSH1, 5, op::JUMP,
+                op::DUPN, op::PUSH1, op::JUMPDEST, // JUMPDEST is PUSH1 data in the analysis
+                op::PUSH1, 0x42, op::PUSH0, op::MSTORE,
+                op::PUSH1, 0x20, op::PUSH0, op::RETURN,
+            ],
+            spec_id: SpecId::AMSTERDAM,
+            expected_return: InstrStop::InvalidJump,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // Same masked target, but reached through an unresolved dynamic jump
+        // (CALLDATASIZE is unknown at compile time): the dynamic dispatch table must
+        // not contain the analysis-masked JUMPDEST either.
+        dynamic_jump_to_push_masked_jumpdest_after_dupn(@raw {
+            bytecode: &[
+                op::PUSH1, 57, op::CALLDATASIZE, op::SUB, op::JUMP, // 64 - 57 = pc 7
+                op::DUPN, op::PUSH1, op::JUMPDEST,
+                op::PUSH1, 0x42, op::PUSH0, op::MSTORE,
+                op::PUSH1, 0x20, op::PUSH0, op::RETURN,
+            ],
+            spec_id: SpecId::AMSTERDAM,
+            expected_return: InstrStop::InvalidJump,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // A valid target inside a PUSH immediate: DUPN desynchronizes decoding, so the
+        // 0x5b sits in the data of a decoded PUSH1 while the analysis (which does not
+        // skip DUPN immediates) sees it at an instruction boundary. The jump must land.
+        jump_into_desynced_push_immediate(@raw {
+            bytecode: &[
+                op::PUSH1, 6, op::JUMP,
+                op::DUPN, op::PUSH1, op::PUSH1, op::JUMPDEST, // decoded: DUPN(PUSH1), PUSH1(0x5b)
+                op::STOP,
+            ],
+            spec_id: SpecId::AMSTERDAM,
+            expected_return: InstrStop::Stop,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
 
         // Truncated PUSH2 at EOF: only 1 of 2 immediate bytes present.
         // EVM spec right-pads with zeros: PUSH2 0x42 → 0x4200.
