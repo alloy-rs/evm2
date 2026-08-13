@@ -790,17 +790,17 @@ evm_versions! {
             TxEip7702AuthRefund: 0,
             TxEip7702PerAuthState: 23 * AMSTERDAM_CPSB,
 
-            // EIP-8038: State-access gas cost update (ethereum/EIPs#11802;
-            // preliminary draft values). Constants in `interpreter::gas`.
+            // EIP-8038: State-access gas cost update (glamsterdam devnet-8
+            // values). Constants in `interpreter::gas`.
             //   WARM_ACCESS                    100 ->    100  (unchanged)
             //   COLD_ACCOUNT_ACCESS          2,600 ->  3,000
-            //   ACCOUNT_WRITE                6,700 ->  8,000
-            //   COLD_STORAGE_ACCESS          2,100 ->  3,000
+            //   ACCOUNT_WRITE                6,700 ->  9,000
+            //   COLD_STORAGE_ACCESS          2,100 ->  2,100  (unchanged)
             //   STORAGE_WRITE                2,800 -> 10,000
-            //   STORAGE_CLEAR_REFUND         4,800 -> 12,480
-            //   CREATE_ACCESS                7,000 -> 11,000  (ACCOUNT_WRITE + COLD_STORAGE_ACCESS)
-            //   ACCESS_LIST_ADDRESS_COST     2,400 ->  3,000  (COLD_ACCOUNT_ACCESS)
-            //   ACCESS_LIST_STORAGE_KEY_COST 1,900 ->  3,000  (COLD_STORAGE_ACCESS)
+            //   STORAGE_CLEAR_REFUND         4,800 -> 11,616
+            //   CREATE_ACCESS                7,000 -> 12,000  (ACCOUNT_WRITE + COLD_ACCOUNT_ACCESS)
+            //   ACCESS_LIST_ADDRESS_COST     2,400 ->  2,900  (COLD_ACCOUNT_ACCESS - WARM_ACCESS)
+            //   ACCESS_LIST_STORAGE_KEY_COST 1,900 ->  2,000  (COLD_STORAGE_ACCESS - WARM_ACCESS)
             //
             // WARM_ACCESS and the SSTORE warm base (`SstoreStatic`) are unchanged
             // (100), so they keep their inherited Berlin values.
@@ -809,9 +809,9 @@ evm_versions! {
             ColdAccountAdditionalCost: EIP8038_COLD_ACCOUNT_ACCESS_ADDITIONAL,
             ColdStorageAdditionalCost: EIP8038_COLD_STORAGE_ACCESS_ADDITIONAL,
             // EIP-8038 folds the warm base into the cold cost: a cold SSTORE pays
-            // `COLD_STORAGE_ACCESS` (3000) total, not warm(100)+cold. Since
+            // `COLD_STORAGE_ACCESS` (2100) total, not warm(100)+cold. Since
             // `SstoreStatic` (warm, 100) is always charged, the cold add-on here
-            // is the premium above warm (2900), unlike pre-8038 forks which add
+            // is the premium above warm (2000), unlike pre-8038 forks which add
             // the full `COLD_SLOAD_COST` on top of the warm base.
             ColdStorageCost: EIP8038_COLD_STORAGE_ACCESS_ADDITIONAL,
             // CALL_VALUE = ACCOUNT_WRITE + CALL_STIPEND. A value-bearing CALL already
@@ -836,7 +836,8 @@ evm_versions! {
             TxCreateCost: EIP8038_CREATE_ACCESS,
             // EIP-7981: charge access-list data at 64 gas per byte (20 bytes per
             // address, 32 per storage key), baked into the per-item cost; EIP-8038
-            // sets each per-item base to COLD_*_ACCESS (3,000).
+            // sets each per-item base to the cold-minus-warm premium (2,900 per
+            // address, 2,000 per storage key).
             TxAccessListAddressCost: EIP8038_ACCESS_LIST_ADDRESS_COST + 20 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
             TxAccessListStorageKeyCost: EIP8038_ACCESS_LIST_STORAGE_KEY_COST + 32 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
             // EIP-2780 (ethereum/EIPs#11844): the intrinsic per-auth charge is
@@ -848,7 +849,6 @@ evm_versions! {
             // EIP-2780: Reduce intrinsic transaction gas. The `to`- and
             // `value`-based intrinsic charges. ACCOUNT_WRITE / CREATE_ACCESS
             // source from EIP-8038 so a single change propagates everywhere.
-            TxTransferLogCost: EIP2780_TRANSFER_LOG_COST,
             TxValueCost: EIP2780_TX_VALUE_COST,
             TxCreateAccessCost: EIP8038_CREATE_ACCESS,
         ],

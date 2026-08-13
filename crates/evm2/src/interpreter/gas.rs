@@ -53,42 +53,48 @@ pub const EIP7702_PER_AUTH_BASE_COST: u32 = 12500;
 pub const EIP7702_PER_EMPTY_ACCOUNT_COST: u32 = 25000;
 
 // EIP-8038: State-access gas cost update. Increases the gas cost of state-access
-// operations to reflect Ethereum's larger state. Values are the parameters
-// proposed in ethereum/EIPs#11802 (still an open draft — preliminary). Active
-// alongside EIP-8037 starting at the Amsterdam hardfork. Touching an already-warm
-// account or storage slot is unchanged by EIP-8038, so the existing
+// operations to reflect Ethereum's larger state. Values match the glamsterdam
+// devnet-8 numbers in execution-specs `forks/amsterdam` (`vm/gas.py::GasCosts`).
+// Active alongside EIP-8037 starting at the Amsterdam hardfork. Touching an
+// already-warm account or storage slot is unchanged by EIP-8038, so the existing
 // `WARM_STORAGE_READ_COST` (100) is reused throughout.
 /// Cold touch of an account (was 2,600 pre-EIP-8038).
 pub(crate) const EIP8038_COLD_ACCOUNT_ACCESS: u32 = 3000;
-/// Cold touch of a storage slot (was 2,100 pre-EIP-8038).
-pub(crate) const EIP8038_COLD_STORAGE_ACCESS: u32 = 3000;
+/// Cold touch of a storage slot. Unchanged from the pre-EIP-8038 cost, but
+/// under EIP-8038 it is the *total* cold charge (the warm base is folded in).
+pub(crate) const EIP8038_COLD_STORAGE_ACCESS: u32 = 2100;
 /// First-time account-write surcharge (was 6,700 pre-EIP-8038).
-pub(crate) const EIP8038_ACCOUNT_WRITE: u32 = 8000;
+pub(crate) const EIP8038_ACCOUNT_WRITE: u32 = 9000;
 /// First-time storage-write surcharge (was 2,800 pre-EIP-8038).
 pub(crate) const EIP8038_STORAGE_WRITE: u32 = 10000;
 /// Refund for clearing a storage slot (was 4,800 pre-EIP-8038).
 ///
 /// Derived per the spec as `(STORAGE_WRITE + COLD_STORAGE_ACCESS) * 4800 / 5000`
-/// = 12,480.
+/// = 11,616.
 pub(crate) const EIP8038_STORAGE_CLEAR_REFUND: u32 =
     (EIP8038_STORAGE_WRITE + EIP8038_COLD_STORAGE_ACCESS) * 4800 / 5000;
 /// State-access cost for contract deployment (was 7,000 pre-EIP-8038).
 ///
-/// Per the spec, `CREATE_ACCESS = ACCOUNT_WRITE + COLD_STORAGE_ACCESS` = 11,000.
+/// Per the spec, `CREATE_ACCESS = ACCOUNT_WRITE + COLD_ACCOUNT_ACCESS` = 12,000.
 /// This does not match the legacy decomposition (`GAS_CREATE - GAS_NEW_ACCOUNT`);
 /// the EIP keeps that discrepancy rather than reconciling it.
-pub(crate) const EIP8038_CREATE_ACCESS: u32 = EIP8038_ACCOUNT_WRITE + EIP8038_COLD_STORAGE_ACCESS;
-/// Access-list per-address base cost, `COLD_ACCOUNT_ACCESS` (was 2,400 pre-EIP-8038).
-pub(crate) const EIP8038_ACCESS_LIST_ADDRESS_COST: u32 = EIP8038_COLD_ACCOUNT_ACCESS;
-/// Access-list per-storage-key base cost, `COLD_STORAGE_ACCESS` (was 1,900 pre-EIP-8038).
-pub(crate) const EIP8038_ACCESS_LIST_STORAGE_KEY_COST: u32 = EIP8038_COLD_STORAGE_ACCESS;
+pub(crate) const EIP8038_CREATE_ACCESS: u32 = EIP8038_ACCOUNT_WRITE + EIP8038_COLD_ACCOUNT_ACCESS;
+/// Access-list per-address base cost (was 2,400 pre-EIP-8038). Derived per the
+/// spec as `COLD_ACCOUNT_ACCESS - WARM_ACCESS`: the access list pre-pays only
+/// the cold premium, the warm base is still charged at first use.
+pub(crate) const EIP8038_ACCESS_LIST_ADDRESS_COST: u32 =
+    EIP8038_COLD_ACCOUNT_ACCESS - WARM_STORAGE_READ_COST;
+/// Access-list per-storage-key base cost (was 1,900 pre-EIP-8038). Derived per
+/// the spec as `COLD_STORAGE_ACCESS - WARM_ACCESS`.
+pub(crate) const EIP8038_ACCESS_LIST_STORAGE_KEY_COST: u32 =
+    EIP8038_COLD_STORAGE_ACCESS - WARM_STORAGE_READ_COST;
 /// Cold premium on top of `WARM_STORAGE_READ_COST` for account access.
 pub(crate) const EIP8038_COLD_ACCOUNT_ACCESS_ADDITIONAL: u32 =
     EIP8038_COLD_ACCOUNT_ACCESS - WARM_STORAGE_READ_COST;
 /// Cold premium on top of `WARM_STORAGE_READ_COST` for storage access.
 pub(crate) const EIP8038_COLD_STORAGE_ACCESS_ADDITIONAL: u32 =
     EIP8038_COLD_STORAGE_ACCESS - WARM_STORAGE_READ_COST;
-/// CALL value-transfer cost: `ACCOUNT_WRITE + CALL_STIPEND` per the EIP = 10,300.
+/// CALL value-transfer cost: `ACCOUNT_WRITE + CALL_STIPEND` per the EIP = 11,300.
 pub(crate) const EIP8038_CALL_VALUE: u32 = EIP8038_ACCOUNT_WRITE + CALL_STIPEND;
 /// Calldata bytes charged for one EIP-7702 authorization tuple (execution-specs
 /// `AUTH_TUPLE_BYTES`): chain id, authority address, nonce, signature parity, and
@@ -117,14 +123,13 @@ pub(crate) const EIP8038_EIP7702_PER_AUTH_BASE_REGULAR: u32 = EIP7702_AUTH_TUPLE
 // Active alongside EIP-8037 / EIP-8038 starting at the Amsterdam hardfork.
 /// Reduced intrinsic base charged to `tx.sender` (execution-specs `TX_BASE`).
 pub(crate) const EIP2780_TX_BASE_COST: u32 = 12_000;
-/// Execution gas cost of the EIP-7708 transfer log emitted for every nonzero-value
-/// transfer to a different account: `GAS_LOG + 3 * GAS_LOG_TOPIC + 32 *
-/// GAS_LOG_DATA_PER_BYTE = 375 + 1_125 + 256 = 1_756`.
-pub(crate) const EIP2780_TRANSFER_LOG_COST: u32 = 1_756;
 /// Additional intrinsic execution-gas charge for a value-bearing (non-create,
-/// non-self) transaction (execution-specs `TX_VALUE_COST`), on top of
-/// [`EIP2780_TRANSFER_LOG_COST`].
-pub(crate) const EIP2780_TX_VALUE_COST: u32 = 4_244;
+/// non-self) transaction (execution-specs `TX_VALUE_COST`).
+///
+/// Since glamsterdam devnet-8 the former separate `TRANSFER_LOG_COST` (1,756)
+/// is folded into this constant (`4,244 + 1,756 = 6,000`); contract-creation
+/// transactions no longer pay any value-based charge.
+pub(crate) const EIP2780_TX_VALUE_COST: u32 = 6_000;
 
 /// Tracks execution, state, and refunded gas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
