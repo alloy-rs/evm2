@@ -230,7 +230,12 @@ impl<'a> Bytecode<'a> {
         let gas_params = gas_params.unwrap_or(evm2::Version::base(spec_id).gas_params);
         let mut insts = IndexVec::with_capacity(code.len() + 8);
         let mut inst_to_pc = IndexVec::with_capacity(code.len() + 8);
-        let mut jumpdests = BitVec::repeat(false, code.len());
+        // EIP-8024: JUMPDEST analysis is unchanged by DUPN/SWAPN/EXCHANGE: only PUSH
+        // data is skipped, their immediates are not. Compute the valid-jump-target
+        // bitmap with the legacy scan over the raw bytes, independent of instruction
+        // decoding below (which does consume DUPN/SWAPN/EXCHANGE immediates and can
+        // therefore desynchronize from the analysis).
+        let jumpdests = legacy_jumpdests(&code);
         let mut pc_to_inst = FxHashMap::with_capacity_and_hasher(code.len(), Default::default());
         let mut u256_interner = U256Interner::new();
         let op_infos = op_info_map(spec_id);
@@ -239,10 +244,6 @@ impl<'a> Bytecode<'a> {
             let inst: Inst = insts.next_idx();
             pc_to_inst.insert(pc as u32, inst);
             inst_to_pc.push(pc as u32);
-
-            if opcode == op::JUMPDEST {
-                jumpdests.set(pc, true)
-            }
 
             let mut flags = InstFlags::empty();
             let info = op_infos[opcode as usize];
@@ -298,17 +299,21 @@ impl<'a> Bytecode<'a> {
                 stack_section,
             });
 
-            // EIP-8024: JUMPDEST analysis is unchanged by DUPN/SWAPN/EXCHANGE. Their
-            // immediate byte is NOT masked, so 0x5b in that position is a valid jump
-            // target. When the immediate is 0x5b, rewind the iterator so it is re-yielded
-            // and processed as a normal JUMPDEST by the loop.
-            if matches!(opcode, op::DUPN | op::SWAPN | op::EXCHANGE)
-                && !info.is_unknown()
-                && !info.is_disabled()
-                && immediate == Some(&[op::JUMPDEST])
-            {
-                // SAFETY: we just consumed the 1-byte immediate.
-                unsafe { iter.rewind(1) };
+            // A valid jump target (per the legacy analysis above) can sit inside a
+            // consumed immediate: directly as a DUPN/SWAPN/EXCHANGE immediate byte, or
+            // inside a PUSH immediate once the decoded stream has diverged from the
+            // analysis past such an opcode. Rewind the iterator to the first such
+            // target so it is re-yielded and jumps have an instruction to land on.
+            // Analysis-aligned PUSH data never contains valid targets, so pre-EIP-8024
+            // bytecode never rewinds. Execution cannot fall through into the rewound
+            // bytes: every desynchronizing immediate is an invalid DUPN/SWAPN/EXCHANGE
+            // encoding, so the opcode preceding them halts at runtime.
+            if let Some(imm) = immediate {
+                let imm_end = pc + 1 + imm.len();
+                if let Some(target) = (pc + 1..imm_end).find(|&p| jumpdests[p]) {
+                    // SAFETY: we just consumed the immediate bytes at `pc + 1..imm_end`.
+                    unsafe { iter.rewind(imm_end - target) };
+                }
             }
         }
 
@@ -615,7 +620,7 @@ impl<'a> Bytecode<'a> {
     }
 
     /// Returns `true` if the given program counter is a valid jump destination.
-    fn is_valid_jump(&self, pc: usize) -> bool {
+    pub(crate) fn is_valid_jump(&self, pc: usize) -> bool {
         self.jumpdests.get(pc).as_deref().copied() == Some(true)
     }
 
@@ -1170,6 +1175,27 @@ bitflags::bitflags! {
         /// Don't generate any code.
         const DEAD_CODE = 1 << 8;
     }
+}
+
+/// Computes the legacy `JUMPDEST` analysis bitmap: a `0x5b` byte is a valid jump
+/// target unless it is part of the data of a `PUSH1..=PUSH32` instruction.
+///
+/// This is the analysis of every fork: EIP-8024 explicitly leaves it unchanged, so
+/// DUPN/SWAPN/EXCHANGE immediates are scanned as if they were opcodes.
+fn legacy_jumpdests(code: &[u8]) -> BitVec {
+    let mut jumpdests = BitVec::repeat(false, code.len());
+    let mut pc = 0;
+    while pc < code.len() {
+        let opcode = code[pc];
+        if opcode == op::JUMPDEST {
+            jumpdests.set(pc, true);
+        }
+        pc += 1;
+        if let op::PUSH1..=op::PUSH32 = opcode {
+            pc += (opcode - op::PUSH1 + 1) as usize;
+        }
+    }
+    jumpdests
 }
 
 fn bitvec_as_bytes<T: bitvec::store::BitStore, O: bitvec::order::BitOrder>(
