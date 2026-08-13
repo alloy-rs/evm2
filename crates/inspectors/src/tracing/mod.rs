@@ -15,7 +15,7 @@ use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use core::mem;
 use evm2::{
-    Evm, EvmTypes, Inspector, SpecId,
+    Evm, EvmFeatures, EvmTypes, Inspector, SpecId, TxResultExt,
     evm::JournalEntry,
     interpreter::{
         Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
@@ -64,6 +64,12 @@ pub use mux::{Error as MuxError, MuxInspector};
 mod debug;
 pub use debug::{DebugInspector, DebugInspectorError};
 
+/// Returns the effective gas refund after the calldata floor adjustment.
+#[inline]
+pub(crate) const fn final_refunded<E>(gas: &TxResultExt<E>) -> u64 {
+    if gas.total_gas_spent.saturating_sub(gas.refunded) < gas.floor_gas { 0 } else { gas.refunded }
+}
+
 /// An inspector that collects call traces.
 ///
 /// This [Inspector] can be hooked into evm2's EVM which then calls the inspector functions, such
@@ -91,6 +97,10 @@ pub struct TracingInspector {
     ///
     /// This is filled during execution.
     spec_id: Option<SpecId>,
+    /// The active EVM features.
+    ///
+    /// This is filled during execution.
+    features: EvmFeatures,
     /// Pool of reusable _empty_ step vectors to reduce allocations.
     ///
     /// All `Vec<CallTraceStep>` are always empty but may have capacity.
@@ -115,6 +125,7 @@ impl TracingInspector {
             step_stack,
             last_journal_len,
             spec_id,
+            features,
             // kept
             config,
             reusable_step_vecs,
@@ -135,6 +146,7 @@ impl TracingInspector {
         trace_stack.clear();
         step_stack.clear();
         spec_id.take();
+        *features = EvmFeatures::empty();
         *last_journal_len = 0;
     }
 
@@ -239,7 +251,7 @@ impl TracingInspector {
     /// Consumes the Inspector and returns a [GethTraceBuilder].
     #[inline]
     pub fn into_geth_builder(self) -> GethTraceBuilder<'static> {
-        GethTraceBuilder::new(self.traces.arena)
+        GethTraceBuilder::new(self.traces.arena).with_features(self.features)
     }
 
     /// Returns the  [GethTraceBuilder] for the recorded traces without consuming the type.
@@ -249,7 +261,7 @@ impl TracingInspector {
     /// starting a new transaction: [`Self::fuse`]
     #[inline]
     pub fn geth_builder(&self) -> GethTraceBuilder<'_> {
-        GethTraceBuilder::new_borrowed(&self.traces.arena)
+        GethTraceBuilder::new_borrowed(&self.traces.arena).with_features(self.features)
     }
 
     /// Returns true if we're no longer in the context of the root call.
@@ -472,6 +484,12 @@ impl TracingInspector {
             // These fields will be populated in `step_end`.
             push_stack: None,
             gas_cost: 0,
+            state_gas_cost: None,
+            state_gas_reservoir: interp
+                .version()
+                .feature(EvmFeatures::EIP8037)
+                .then_some(interp.gas().reservoir()),
+            state_gas_spent: interp.gas().state_gas_spent(),
             storage_change: None,
             status: None,
 
@@ -560,6 +578,10 @@ impl TracingInspector {
         // step the remaining gas here, at the end of the step.
         // TODO: Figure out why this can overflow. https://github.com/paradigmxyz/revm-inspectors/pull/38
         step.gas_cost = step.gas_remaining.saturating_sub(interp.gas().remaining());
+        let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
+        if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
+            step.state_gas_cost = Some(state_gas_delta);
+        }
 
         // set the status
         step.status = interp.result().err();
@@ -567,6 +589,12 @@ impl TracingInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for TracingInspector {
+    #[inline]
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        self.spec_id = Some(interp.spec());
+        self.features = interp.version().features;
+    }
+
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if self.config.record_steps {
@@ -600,6 +628,9 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
+        self.spec_id = Some(interp.spec());
+        self.features = interp.version().features;
+
         // determine correct `from` and `to` based on the call scheme
         let (from, to) = match message.kind {
             MessageKind::DelegateCall | MessageKind::CallCode => {
@@ -645,9 +676,12 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
 
     fn create(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
+        self.spec_id = Some(interp.spec());
+        self.features = interp.version().features;
+
         self.start_trace_on_call(
             usize::from(message.depth),
             message.destination,

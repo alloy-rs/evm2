@@ -3,12 +3,16 @@ use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
     TxEnv, deploy_contract, op,
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, address, hex, map::HashMap};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
     GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace,
     PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
+};
+use evm2::{
+    BaseEvmTypes, Evm, EvmFeatures, ExecutionConfig, Precompiles, Version,
+    ethereum::ethereum_tx_registry,
 };
 use evm2_inspectors::tracing::{
     DebugInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
@@ -148,6 +152,210 @@ fn test_geth_erc7562_tracer() {
     }
 }
 
+fn trace_contract(
+    spec: SpecId,
+    opts: GethDebugTracingOptions,
+    code: Bytes,
+) -> (GethTrace, evm2::TxResult) {
+    let contract = address!("1000000000000000000000000000000000000001");
+    let caller = address!("1000000000000000000000000000000000000002");
+    let context = Context::mainnet()
+        .with_db(CacheDB::<EmptyDB>::default())
+        .modify_cfg_chained(|cfg| cfg.spec = spec)
+        .modify_db_chained(|db| {
+            db.insert_account_info(
+                &contract,
+                AccountInfo { code: Some(Bytecode::new_raw(code)), ..Default::default() },
+            );
+        });
+    let mut inspector = DebugInspector::new(opts).unwrap();
+    let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+
+    let res = evm
+        .inspect_tx(TxEnv {
+            caller,
+            gas_limit: 1_000_000,
+            gas_price: 0,
+            kind: TransactTo::Call(contract),
+            data: Bytes::default(),
+            nonce: 0,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+    (trace, res.tx_result.result.clone())
+}
+
+fn trace_contract_with_version(
+    spec: SpecId,
+    version: Version,
+    opts: GethDebugTracingOptions,
+    code: Bytes,
+) -> (GethTrace, evm2::TxResult) {
+    let contract = address!("1000000000000000000000000000000000000001");
+    let caller = address!("1000000000000000000000000000000000000002");
+    let mut context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            db.insert_account_info(
+                &contract,
+                AccountInfo { code: Some(Bytecode::new_raw(code)), ..Default::default() },
+            );
+        });
+    let block = *context.block();
+    let mut inspector = DebugInspector::new(opts).unwrap();
+    let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(spec, version),
+        spec,
+        block,
+        ethereum_tx_registry(spec),
+        context.db.clone(),
+        Precompiles::base(spec),
+    );
+    evm.set_inspector(&mut inspector);
+
+    let tx = TxEnv {
+        caller,
+        gas_limit: 1_000_000,
+        gas_price: 0,
+        kind: TransactTo::Call(contract),
+        data: Bytes::default(),
+        nonce: 0,
+        ..Default::default()
+    };
+    let envelope = tx.envelope();
+    let res = evm.transact(&envelope).unwrap().detach();
+    drop(evm);
+
+    let trace = inspector.get_result(None, &envelope, &block, &res, context.db_mut()).unwrap();
+    (trace, res.result.clone())
+}
+
+#[test]
+fn test_geth_state_gas_tracer() {
+    // SSTORE slot 0 from zero to one, then STOP.
+    let (trace, gas) = trace_contract(
+        SpecId::AMSTERDAM,
+        GethDebugTracingOptions::state_gas_tracer(),
+        hex!("600160005500").into(),
+    );
+    assert!(gas.state_gas_spent() > 0);
+
+    match trace {
+        GethTrace::StateGasTracer(frame) => {
+            assert_eq!(frame.gas_used, gas.tx_gas_used());
+            assert_eq!(frame.execution_gas_used, gas.execution_gas_spent());
+            assert_eq!(frame.state_gas_used, gas.state_gas_spent());
+            assert_eq!(frame.gas_refund, gas.refunded);
+        }
+        _ => panic!("Expected StateGasTracer"),
+    }
+}
+
+#[test]
+fn test_geth_eip8037_fields_follow_fork() {
+    // SSTORE slot 0 from zero to one and restore it to zero. This exercises both positive and
+    // negative per-opcode state-gas changes while leaving the transaction's final state gas at
+    // zero.
+    let code = hex!("6001600055600060005500");
+
+    for (spec, enabled) in [(SpecId::OSAKA, false), (SpecId::AMSTERDAM, true)] {
+        let (trace, gas) = trace_contract(spec, GethDebugTracingOptions::default(), code.into());
+        assert_eq!(gas.state_gas_spent(), 0);
+
+        let GethTrace::Default(frame) = trace else {
+            panic!("Expected default tracer");
+        };
+        assert_eq!(frame.execution_gas_used, enabled.then_some(gas.execution_gas_spent()));
+        assert_eq!(frame.state_gas_used, enabled.then_some(0));
+        assert_eq!(frame.gas_refund, enabled.then_some(gas.refunded));
+
+        let sstores =
+            frame.struct_logs.iter().filter(|log| log.opcode() == "SSTORE").collect::<Vec<_>>();
+        assert_eq!(sstores.len(), 2);
+        if enabled {
+            assert!(sstores[0].state_gas_cost.is_some_and(|cost| cost > 0), "{sstores:#?}");
+            assert!(sstores[1].state_gas_cost.is_some_and(|cost| cost < 0), "{sstores:#?}");
+            assert!(frame.struct_logs.iter().all(|log| log.state_gas_reservoir.is_some()));
+        } else {
+            assert!(
+                frame
+                    .struct_logs
+                    .iter()
+                    .all(|log| log.state_gas_cost.is_none() && log.state_gas_reservoir.is_none())
+            );
+        }
+
+        let value = serde_json::to_value(&frame).unwrap();
+        assert_eq!(value.get("executionGasUsed").is_some(), enabled);
+        assert_eq!(value.get("stateGasUsed").is_some(), enabled);
+        assert_eq!(value.get("gasRefund").is_some(), enabled);
+        if enabled {
+            let sstore_logs = value["structLogs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|log| log["op"] == "SSTORE")
+                .collect::<Vec<_>>();
+            assert!(sstore_logs[0]["stateGasCost"].as_i64().is_some_and(|cost| cost > 0));
+            assert!(sstore_logs[1]["stateGasCost"].as_i64().is_some_and(|cost| cost < 0));
+        }
+
+        let (trace, call_gas) = trace_contract(
+            spec,
+            GethDebugTracingOptions::call_tracer(CallConfig::default()),
+            code.into(),
+        );
+        let GethTrace::CallTracer(frame) = trace else {
+            panic!("Expected call tracer");
+        };
+        assert_eq!(
+            frame.execution_gas_used,
+            enabled.then(|| U256::from(call_gas.execution_gas_spent()))
+        );
+        assert_eq!(frame.state_gas_used, enabled.then_some(U256::ZERO));
+        assert_eq!(frame.gas_refund, enabled.then(|| U256::from(call_gas.refunded)));
+
+        // Empty-code calls do not initialize an interpreter, so the fork must also be captured at
+        // frame entry.
+        let (trace, empty_gas) =
+            trace_contract(spec, GethDebugTracingOptions::default(), Bytes::new());
+        let GethTrace::Default(frame) = trace else {
+            panic!("Expected default tracer");
+        };
+        assert_eq!(frame.execution_gas_used, enabled.then_some(empty_gas.execution_gas_spent()));
+        assert_eq!(frame.state_gas_used, enabled.then_some(0));
+        assert_eq!(frame.gas_refund, enabled.then_some(empty_gas.refunded));
+    }
+
+    let mut version = Version::new(SpecId::AMSTERDAM);
+    version.features.remove(EvmFeatures::EIP8037);
+    let (trace, gas) = trace_contract_with_version(
+        SpecId::AMSTERDAM,
+        version,
+        GethDebugTracingOptions::default(),
+        code.into(),
+    );
+    assert_eq!(gas.state_gas_spent(), 0);
+
+    let GethTrace::Default(frame) = trace else {
+        panic!("Expected default tracer");
+    };
+    assert!(frame.execution_gas_used.is_none());
+    assert!(frame.state_gas_used.is_none());
+    assert!(frame.gas_refund.is_none());
+    assert!(
+        frame
+            .struct_logs
+            .iter()
+            .all(|log| log.state_gas_cost.is_none() && log.state_gas_reservoir.is_none())
+    );
+}
+
 #[test]
 fn test_geth_mux_tracer() {
     /*
@@ -215,6 +423,7 @@ fn test_geth_mux_tracer() {
             GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::FlatCallTracer),
             Some(GethDebugTracerConfig(serde_json::to_value(flatcall_config).unwrap())),
         ),
+        (GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::StateGasTracer), None),
     ]));
 
     let mut insp = MuxInspector::try_from_config(config).unwrap();
@@ -238,7 +447,7 @@ fn test_geth_mux_tracer() {
         .try_into_mux_frame(&res.tx_result, ctx.db_mut(), TransactionInfo::default())
         .unwrap();
 
-    assert_eq!(frame.0.len(), 4);
+    assert_eq!(frame.0.len(), 5);
     assert!(frame.0.contains_key(&GethDebugTracerType::BuiltInTracer(
         GethDebugBuiltInTracerType::FourByteTracer
     )));
@@ -252,6 +461,9 @@ fn test_geth_mux_tracer() {
     )));
     assert!(frame.0.contains_key(&GethDebugTracerType::BuiltInTracer(
         GethDebugBuiltInTracerType::FlatCallTracer
+    )));
+    assert!(frame.0.contains_key(&GethDebugTracerType::BuiltInTracer(
+        GethDebugBuiltInTracerType::StateGasTracer
     )));
 
     let four_byte_frame = frame.0
@@ -307,6 +519,19 @@ fn test_geth_mux_tracer() {
             assert!(traces[5].trace.error.is_none());
         }
         _ => panic!("Expected FlatCallTracer"),
+    }
+
+    let state_gas_frame = frame.0
+        [&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::StateGasTracer)]
+        .clone();
+    match state_gas_frame {
+        GethTrace::StateGasTracer(state_gas) => {
+            assert_eq!(state_gas.gas_used, res.tx_result.result.tx_gas_used());
+            assert_eq!(state_gas.execution_gas_used, res.tx_result.result.execution_gas_spent());
+            assert_eq!(state_gas.state_gas_used, res.tx_result.result.state_gas_spent());
+            assert_eq!(state_gas.gas_refund, res.tx_result.result.refunded);
+        }
+        _ => panic!("Expected StateGasTracer"),
     }
 }
 
