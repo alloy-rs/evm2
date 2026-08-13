@@ -167,8 +167,6 @@ gas_ids! {
     /// EIP-7702 transaction state gas per authorization.
     TxEip7702PerAuthState;
 
-    /// EIP-2780 execution gas cost of the EIP-7708 transfer log on a nonzero-value transfer.
-    TxTransferLogCost;
     /// EIP-2780 additional intrinsic charge for a value-bearing non-create, non-self transaction.
     TxValueCost;
     /// EIP-2780/EIP-8038 execution gas cost of a top-level CREATE access.
@@ -523,17 +521,17 @@ mod tests {
         assert_eq!(prague.get(GasId::TxFloorZeroByteMultiplier), 1);
 
         let amsterdam = gas_params(SpecId::AMSTERDAM);
-        // EIP-8038 (ethereum/EIPs#11802) state-access cost values.
-        assert_eq!(amsterdam.get(GasId::Create), 11_000);
+        // EIP-8038 state-access cost values (glamsterdam devnet-8).
+        assert_eq!(amsterdam.get(GasId::Create), 12_000);
         assert_eq!(amsterdam.get(GasId::WarmStorageReadCost), 100); // unchanged
-        assert_eq!(amsterdam.get(GasId::ColdStorageCost), 2900);
+        assert_eq!(amsterdam.get(GasId::ColdStorageCost), 2000);
         assert_eq!(amsterdam.get(GasId::ColdAccountAdditionalCost), 2900);
-        assert_eq!(amsterdam.get(GasId::TransferValueCost), 10_300);
+        assert_eq!(amsterdam.get(GasId::TransferValueCost), 11_300);
         // CALL folds the account-write surcharge into CALL_VALUE, so a new target
         // adds no extra execution gas (only NEW_ACCOUNT state gas).
         assert_eq!(amsterdam.get(GasId::NewAccountCost), 0);
         assert_eq!(amsterdam.get(GasId::SstoreSetWithoutLoadCost), 10_000);
-        assert_eq!(amsterdam.get(GasId::SstoreClearingSlotRefund), 12_480);
+        assert_eq!(amsterdam.get(GasId::SstoreClearingSlotRefund), 11_616);
         // EIP-2780/Amsterdam intrinsic per-auth execution gas: the state-independent
         // REGULAR_PER_AUTH_BASE_COST = 101*16 + 3000 + 3000 + 2*100 = 7_816 (the ACCOUNT_WRITE
         // and state-gas remainder is charged at the runtime gas phase).
@@ -541,8 +539,8 @@ mod tests {
         assert_eq!(amsterdam.get(GasId::TxEip7702AuthRefund), 0);
         assert_eq!(amsterdam.get(GasId::SstoreSetState), 64 * 1530);
         assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthState), 23 * 1530);
-        assert_eq!(amsterdam.get(GasId::TxAccessListAddressCost), 3000 + 20 * 64);
-        assert_eq!(amsterdam.get(GasId::TxAccessListStorageKeyCost), 3000 + 32 * 64);
+        assert_eq!(amsterdam.get(GasId::TxAccessListAddressCost), 2900 + 20 * 64);
+        assert_eq!(amsterdam.get(GasId::TxAccessListStorageKeyCost), 2000 + 32 * 64);
         assert_eq!(amsterdam.get(GasId::TxAccessListFloorByteMultiplier), 4);
         // EIP-7976: zero bytes weigh the same as non-zero bytes in the floor.
         assert_eq!(amsterdam.get(GasId::TxFloorZeroByteMultiplier), 4);

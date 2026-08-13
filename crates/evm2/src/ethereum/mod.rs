@@ -890,15 +890,12 @@ fn eip2780_base_to_value_gas(
     let params = &version.gas_params;
     let mut gas = u64::from(EIP2780_TX_BASE_COST);
     if is_create {
+        // Since glamsterdam devnet-8, creates pay no value-based charge.
         gas += u64::from(params.get(GasId::TxCreateAccessCost));
-        if !value.is_zero() {
-            gas += u64::from(params.get(GasId::TxTransferLogCost));
-        }
     } else if !is_self_transfer {
         gas += u64::from(EIP8038_COLD_ACCOUNT_ACCESS);
         if !value.is_zero() {
-            gas += u64::from(params.get(GasId::TxTransferLogCost))
-                + u64::from(params.get(GasId::TxValueCost));
+            gas += u64::from(params.get(GasId::TxValueCost));
         }
     }
     gas
@@ -978,9 +975,9 @@ mod tests {
             ),
             // EIP-2780 replaces the 21,000 base with TX_BASE (12,000) +
             // COLD_ACCOUNT_ACCESS (3,000) for the zero-value call recipient.
-            // EIP-8038 sets the per-item access-list base to COLD_ACCOUNT_ACCESS /
-            // COLD_STORAGE_ACCESS (both 3,000).
-            (12_000 + 3000) + (3000 + 20 * 64) + (3000 + 32 * 64)
+            // EIP-8038 sets the per-item access-list base to the cold-minus-warm
+            // premium: 2,900 per address and 2,000 per storage key.
+            (12_000 + 3000) + (2900 + 20 * 64) + (2000 + 32 * 64)
         );
     }
 
