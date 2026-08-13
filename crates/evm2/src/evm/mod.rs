@@ -398,15 +398,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Result<PrecompileOutput, PrecompileError> {
-        let precompiles = self.precompiles.as_mut() as *mut dyn PrecompileProvider<T>;
-        let evm = self as *mut Self;
+        let guard = self.enter_execution();
+        let precompiles = guard.evm.precompiles.as_mut() as *mut dyn PrecompileProvider<T>;
+        let evm_ptr = guard.evm as *mut Self;
         // SAFETY: Precompile execution may need access to both the provider and the host EVM.
         // The provider is not moved or replaced during this call, and `execute` is expected to
         // preserve `Evm` invariants while using the host reference.
         unsafe {
-            let _guard = self.enter_execution();
             (&mut *precompiles)
-                .execute(&mut *evm, message, gas)
+                .execute(&mut *evm_ptr, message, gas)
                 .expect("precompile was checked before execution")
         }
     }
@@ -437,10 +437,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     #[inline]
-    const fn enter_execution(&mut self) -> ExecutionGuard {
+    const fn enter_execution(&mut self) -> ExecutionGuard<'_, 'a, T> {
         let was_running = self.running;
         self.running = true;
-        ExecutionGuard { running: &mut self.running, was_running }
+        ExecutionGuard { evm: self, was_running }
     }
 
     /// Returns the transaction handler registry.
@@ -823,12 +823,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline]
     fn inspect_log(&mut self, log: &Log) {
-        let _guard = self.enter_execution();
-        if let Some(inspector) = self.inspector.as_deref_mut() {
+        let guard = self.enter_execution();
+        if let Some(inspector) = guard.evm.inspector.as_deref_mut() {
             // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
             // replacement while the hook is running.
             let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
-            inspector.log(log, self);
+            inspector.log(log, guard.evm);
         }
     }
 
@@ -964,19 +964,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 }
 
-struct ExecutionGuard {
-    running: *mut bool,
+struct ExecutionGuard<'guard, 'evm, T: EvmTypesHost> {
+    evm: &'guard mut Evm<'evm, T>,
     was_running: bool,
 }
 
-impl Drop for ExecutionGuard {
+impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     #[inline]
     fn drop(&mut self) {
-        // SAFETY: The guard is created from an `Evm` field and dropped before that `Evm` can be
-        // dropped. It only restores the execution-state flag updated by this guard.
-        unsafe {
-            *self.running = self.was_running;
-        }
+        self.evm.running = self.was_running;
     }
 }
 
@@ -1142,9 +1138,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         tx_env: &'frame TxEnv<T>,
         message: &'frame mut Message<T>,
     ) -> MessageResult<T> {
-        let _guard = self.enter_execution();
-        let Some(inspector) = self.inspector.as_deref_mut() else {
-            return self.execute_message_impl(tx_env, message);
+        let guard = self.enter_execution();
+        let Some(inspector) = guard.evm.inspector.as_deref_mut() else {
+            return guard.evm.execute_message_impl(tx_env, message);
         };
         // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
         // replacement while the hooks are running.
@@ -1155,7 +1151,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
 
         let mut top_frame: Option<Box<Interpreter<'frame, 'a, T>>> = None;
-        let frame = match self.current_frame {
+        let frame = match guard.evm.current_frame {
             // SAFETY: The parent frame is suspended on this call stack for the duration of the
             // message execution.
             Some(mut frame) => unsafe {
@@ -1165,15 +1161,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 >(frame.as_mut())
             },
             None => {
-                let frame = top_frame.insert(self.interpreter_pool.pop());
+                let frame = top_frame.insert(guard.evm.interpreter_pool.pop());
                 // SAFETY: The message outlives the frame, which is returned to the pool below.
                 let frame_message = unsafe { trustme::decouple_lt(&*message) };
                 frame.init(tx_env, frame_message);
                 // SAFETY: `execution_config` points to a private field that host execution does
                 // not replace or mutate, so the pointee remains valid for the lifetime of the
                 // frame.
-                let version = unsafe { trustme::decouple_lt(self.execution_config.version()) };
-                frame.prepare_run(self.spec_id(), version, self);
+                let version = unsafe { trustme::decouple_lt(guard.evm.execution_config.version()) };
+                frame.prepare_run(guard.evm.spec_id(), version, guard.evm);
                 frame
             }
         };
@@ -1186,7 +1182,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             inspector.call(frame, message)
         };
 
-        let mut result = inspected.unwrap_or_else(|| self.execute_message_impl(tx_env, message));
+        let mut result =
+            inspected.unwrap_or_else(|| guard.evm.execute_message_impl(tx_env, message));
 
         if is_create {
             inspector.create_end(frame, message, &mut result);
@@ -1195,7 +1192,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         }
 
         if let Some(frame) = top_frame {
-            let _ = self.interpreter_pool.push(frame);
+            let _ = guard.evm.interpreter_pool.push(frame);
         }
 
         result
@@ -1495,33 +1492,34 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         message: &'frame Message<T>,
     ) -> InstrStop {
         let mut interp: Box<Interpreter<'frame, 'a, T>> = self.interpreter_pool.pop();
-        let _guard = self.enter_execution();
+        let guard = self.enter_execution();
         let interp_ref = interp.as_mut();
         interp_ref.init(tx_env, message);
         // SAFETY: `execution_config` points to a private field that host execution does not
         // replace or mutate, so the pointee remains valid here.
-        let execution_config = unsafe { trustme::decouple_lt(&self.execution_config) };
-        self.inspect_initialize_interp(interp_ref);
-        let inspector = self.inspector.as_deref_mut().map(|inspector| {
+        let execution_config = unsafe { trustme::decouple_lt(&guard.evm.execution_config) };
+        guard.evm.inspect_initialize_interp(interp_ref);
+        let inspector = guard.evm.inspector.as_deref_mut().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // interpreter run.
             unsafe { trustme::decouple_lt_mut(inspector) }
         });
-        let prev_frame = self
+        let prev_frame = guard
+            .evm
             .current_frame
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
-        let interpreter_runner = self.interpreter_runner.clone();
+        let interpreter_runner = guard.evm.interpreter_runner.clone();
         let stop = if let Some(inspector) = inspector {
-            interp_ref.run_inspect(execution_config, self, inspector)
+            interp_ref.run_inspect(execution_config, guard.evm, inspector)
         } else if let Some(runner) = interpreter_runner
-            && let Some(stop) = runner.run(execution_config, interp_ref, self)
+            && let Some(stop) = runner.run(execution_config, interp_ref, guard.evm)
         {
             stop
         } else {
-            interp_ref.run(execution_config, self)
+            interp_ref.run(execution_config, guard.evm)
         };
-        self.current_frame = prev_frame;
-        self.interpreter_pool.push(interp);
+        guard.evm.current_frame = prev_frame;
+        guard.evm.interpreter_pool.push(interp);
         stop
     }
 
