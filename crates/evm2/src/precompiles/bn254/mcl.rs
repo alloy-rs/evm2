@@ -9,19 +9,6 @@ unsafe extern "C" {
     fn mclBn_getCurveType() -> i32;
 }
 
-#[inline]
-fn ensure_init() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        // CurveType::SNARK (MCL_BN_SNARK1) is the Ethereum-compatible BN254 (alt_bn128).
-        // CurveType::BN254 is a different, older BN254 parameterization.
-        assert!(mcl_rust::init(CurveType::SNARK), "mcl BN254 initialization failed");
-    });
-
-    let curve = unsafe { mclBn_getCurveType() };
-    assert_eq!(curve, CurveType::SNARK as i32, "mcl curve changed after initialization");
-}
-
 pub(crate) struct MclOps;
 
 impl Bn254Ops for MclOps {
@@ -31,7 +18,15 @@ impl Bn254Ops for MclOps {
 
     #[inline]
     fn init() {
-        ensure_init();
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            // CurveType::SNARK (MCL_BN_SNARK1) is the Ethereum-compatible BN254 (alt_bn128).
+            // CurveType::BN254 is a different, older BN254 parameterization.
+            assert!(mcl_rust::init(CurveType::SNARK), "mcl BN254 initialization failed");
+        });
+
+        let curve = unsafe { mclBn_getCurveType() };
+        assert_eq!(curve, CurveType::SNARK as i32, "mcl curve changed after initialization");
     }
 
     #[inline]
