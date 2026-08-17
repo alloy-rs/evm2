@@ -30,6 +30,9 @@ pub(crate) trait Bn254Ops {
     type G2;
     type Scalar;
 
+    #[inline]
+    fn init() {}
+
     fn read_g1(input: &[u8]) -> Result<Self::G1, PrecompileHalt>;
     fn encode_g1(point: Self::G1) -> [u8; G1_LEN];
     fn read_g2(input: &[u8]) -> Result<Self::G2, PrecompileHalt>;
@@ -44,6 +47,7 @@ pub(crate) trait Bn254Ops {
 /// Performs point addition on two G1 points using the selected backend.
 #[inline]
 pub(crate) fn g1_point_add(p1_bytes: &[u8], p2_bytes: &[u8]) -> Result<[u8; 64], PrecompileHalt> {
+    ArithmeticOps::init();
     let p1 = ArithmeticOps::read_g1(p1_bytes)?;
     let p2 = ArithmeticOps::read_g1(p2_bytes)?;
     Ok(ArithmeticOps::encode_g1(ArithmeticOps::g1_add(p1, p2)))
@@ -55,6 +59,7 @@ pub(crate) fn g1_point_mul(
     point_bytes: &[u8],
     fr_bytes: &[u8],
 ) -> Result<[u8; 64], PrecompileHalt> {
+    ArithmeticOps::init();
     let p = ArithmeticOps::read_g1(point_bytes)?;
     let fr = ArithmeticOps::read_scalar(fr_bytes);
     Ok(ArithmeticOps::encode_g1(ArithmeticOps::g1_mul(p, fr)))
@@ -63,6 +68,7 @@ pub(crate) fn g1_point_mul(
 /// Performs a pairing check on a list of G1 and G2 point pairs using the selected backend.
 #[inline]
 pub(crate) fn pairing_check(pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileHalt> {
+    PairingOps::init();
     let mut g1_points = Vec::with_capacity(pairs.len());
     let mut g2_points = Vec::with_capacity(pairs.len());
 

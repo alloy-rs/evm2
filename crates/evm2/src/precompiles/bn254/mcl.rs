@@ -5,6 +5,10 @@ use crate::precompiles::PrecompileHalt;
 use mcl_rust::{CurveType, Fp, Fp2, Fr, G1, G2, GT};
 use std::sync::Once;
 
+unsafe extern "C" {
+    fn mclBn_getCurveType() -> i32;
+}
+
 #[inline]
 fn ensure_init() {
     static INIT: Once = Once::new();
@@ -13,6 +17,9 @@ fn ensure_init() {
         // CurveType::BN254 is a different, older BN254 parameterization.
         assert!(mcl_rust::init(CurveType::SNARK), "mcl BN254 initialization failed");
     });
+
+    let curve = unsafe { mclBn_getCurveType() };
+    assert_eq!(curve, CurveType::SNARK as i32, "mcl curve changed after initialization");
 }
 
 pub(crate) struct MclOps;
@@ -23,8 +30,12 @@ impl Bn254Ops for MclOps {
     type Scalar = Fr;
 
     #[inline]
-    fn read_g1(input: &[u8]) -> Result<Self::G1, PrecompileHalt> {
+    fn init() {
         ensure_init();
+    }
+
+    #[inline]
+    fn read_g1(input: &[u8]) -> Result<Self::G1, PrecompileHalt> {
         let px = read_fp(&input[..FQ_LEN])?;
         let py = read_fp(&input[FQ_LEN..G1_LEN])?;
 
@@ -62,7 +73,6 @@ impl Bn254Ops for MclOps {
 
     #[inline]
     fn read_g2(input: &[u8]) -> Result<Self::G2, PrecompileHalt> {
-        ensure_init();
         let x = read_fp2(&input[..FQ2_LEN])?;
         let y = read_fp2(&input[FQ2_LEN..2 * FQ2_LEN])?;
 
@@ -90,7 +100,6 @@ impl Bn254Ops for MclOps {
             "unexpected scalar length. got {}, expected {SCALAR_LEN}",
             input.len()
         );
-        ensure_init();
 
         let mut le_bytes = [0u8; SCALAR_LEN];
         le_bytes.copy_from_slice(input);
