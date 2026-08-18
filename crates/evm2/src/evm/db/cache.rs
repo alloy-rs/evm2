@@ -346,35 +346,20 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
         // A cached slot can be a locally committed write even when the backing account is absent.
         // Only use account absence to suppress uncached backing-storage reads.
-        let account_absent = self.account_absent(address);
-        match self.cache.storage.entry(*address) {
-            Entry::Occupied(mut entry) => {
-                let storage = entry.get_mut();
-                match storage.slots.entry(*key) {
-                    Entry::Occupied(slot) => Ok(*slot.get()),
-                    Entry::Vacant(slot) => {
-                        if storage.wiped {
-                            return Ok(Word::ZERO);
-                        }
-                        if account_absent {
-                            return Ok(Word::ZERO);
-                        }
-                        let value = self.db.get_storage(address, key)?;
-                        Ok(*slot.insert(value))
-                    }
-                }
+        if let Some(storage) = self.cache.storage.get(address) {
+            if let Some(value) = storage.slots.get(key) {
+                return Ok(*value);
             }
-            Entry::Vacant(entry) => {
-                if account_absent {
-                    return Ok(Word::ZERO);
-                }
-                let value = self.db.get_storage(address, key)?;
-                let mut storage = AccountStorageCache::default();
-                storage.slots.insert(*key, value);
-                entry.insert(storage);
-                Ok(value)
+            if storage.wiped {
+                return Ok(Word::ZERO);
             }
         }
+        if self.account_absent(address) {
+            return Ok(Word::ZERO);
+        }
+        let value = self.db.get_storage(address, key)?;
+        self.cache.storage.entry(*address).or_default().slots.insert(*key, value);
+        Ok(value)
     }
 
     #[inline]
