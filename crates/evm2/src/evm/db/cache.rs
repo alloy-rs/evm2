@@ -214,10 +214,9 @@ impl<ExtDB> CacheDB<ExtDB> {
         self.cache.accounts.get(address).is_some_and(Option::is_none)
     }
 
-    /// Inserts persistent storage.
+    /// Inserts persistent storage without modifying cached account info.
     #[inline]
     pub fn insert_account_storage(&mut self, address: &Address, key: &Word, value: &Word) {
-        self.cache.accounts.entry(*address).or_insert_with(|| Some(AccountInfo::default()));
         self.cache.storage.entry(*address).or_default().slots.insert(*key, *value);
     }
 
@@ -345,32 +344,22 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
             Err(err) => return Err(self.bal_context.store_error(err)),
         }
 
+        // A cached slot can be a locally committed write even when the backing account is absent.
+        // Only use account absence to suppress uncached backing-storage reads.
+        if let Some(storage) = self.cache.storage.get(address) {
+            if let Some(value) = storage.slots.get(key) {
+                return Ok(*value);
+            }
+            if storage.wiped {
+                return Ok(Word::ZERO);
+            }
+        }
         if self.account_absent(address) {
             return Ok(Word::ZERO);
         }
-
-        match self.cache.storage.entry(*address) {
-            Entry::Occupied(mut entry) => {
-                let storage = entry.get_mut();
-                match storage.slots.entry(*key) {
-                    Entry::Occupied(slot) => Ok(*slot.get()),
-                    Entry::Vacant(slot) => {
-                        if storage.wiped {
-                            return Ok(Word::ZERO);
-                        }
-                        let value = self.db.get_storage(address, key)?;
-                        Ok(*slot.insert(value))
-                    }
-                }
-            }
-            Entry::Vacant(entry) => {
-                let value = self.db.get_storage(address, key)?;
-                let mut storage = AccountStorageCache::default();
-                storage.slots.insert(*key, value);
-                entry.insert(storage);
-                Ok(value)
-            }
-        }
+        let value = self.db.get_storage(address, key)?;
+        self.cache.storage.entry(*address).or_default().slots.insert(*key, value);
+        Ok(value)
     }
 
     #[inline]
@@ -503,6 +492,65 @@ mod tests {
         assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), block_hash);
         assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), block_hash);
         assert_eq!(cache.db.inner().block_hash_loads, 1);
+    }
+
+    #[test]
+    fn cached_storage_write_overrides_cached_absent_account() {
+        let address = Address::with_last_byte(1);
+        let key = Word::from(2);
+        let value = Word::from(3);
+        let mut cache = CacheDB::new(crate::evm::Db::new(CountingDB::default()));
+
+        assert!(cache.get_account(&address).unwrap().is_none());
+
+        let mut pending = PendingState::default();
+        pending.insert_storage(address, key, Word::ZERO, value);
+        cache.commit_pending(&pending);
+
+        assert_eq!(cache.get_storage(&address, &key).unwrap(), value);
+    }
+
+    #[test]
+    fn deleted_account_wipes_cached_storage() {
+        let address = Address::with_last_byte(1);
+        let key = Word::from(2);
+        let original = AccountInfo::default();
+        let mut cache = CacheDB::default();
+        cache.insert_account_info(&address, original.clone());
+        cache.insert_account_storage(&address, &key, &Word::from(3));
+
+        let mut pending = PendingState::default();
+        pending.insert_storage(address, key, Word::from(3), Word::from(4));
+        pending.insert_account(address, Some(original), None);
+        cache.commit_pending(&pending);
+
+        assert!(cache.get_account(&address).unwrap().is_none());
+        assert_eq!(cache.get_storage(&address, &key).unwrap(), Word::ZERO);
+        assert!(cache.cache.storage[&address].wiped);
+        assert!(cache.cache.storage[&address].slots.is_empty());
+    }
+
+    #[test]
+    fn seeded_storage_does_not_shadow_wrapped_account() {
+        let address = Address::with_last_byte(1);
+        let key = Word::from(2);
+        let value = Word::from(3);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let account = AccountInfo::default()
+            .with_balance(Word::from(4))
+            .with_nonce(5)
+            .with_code(code.clone());
+        let mut cache = CacheDB::new(crate::evm::Db::new(CountingDB {
+            account: Some(account.clone()),
+            ..CountingDB::default()
+        }));
+
+        cache.insert_account_storage(&address, &key, &value);
+
+        assert_eq!(cache.get_storage(&address, &key).unwrap(), value);
+        assert_eq!(cache.get_account(&address).unwrap(), Some(account));
+        assert_eq!(cache.get_code_by_hash(&code.hash_slow()).unwrap(), code);
+        assert_eq!(cache.db.inner().account_loads, 1);
     }
 
     /// A counting cache with an attached read BAL positioned at index 2.
