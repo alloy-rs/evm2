@@ -208,12 +208,6 @@ impl<ExtDB> CacheDB<ExtDB> {
         self.cache.accounts.get(address).and_then(Option::as_ref)
     }
 
-    /// Returns whether the account is known to be absent from the cache layer.
-    #[inline]
-    pub(crate) fn account_absent(&self, address: &Address) -> bool {
-        self.cache.accounts.get(address).is_some_and(Option::is_none)
-    }
-
     /// Inserts persistent storage without modifying cached account info.
     #[inline]
     pub fn insert_account_storage(&mut self, address: &Address, key: &Word, value: &Word) {
@@ -346,20 +340,34 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
         // A cached slot can be a locally committed write even when the backing account is absent.
         // Only use account absence to suppress uncached backing-storage reads.
-        if let Some(storage) = self.cache.storage.get(address) {
-            if let Some(value) = storage.slots.get(key) {
-                return Ok(*value);
+        match self.cache.storage.entry(*address) {
+            Entry::Occupied(mut entry) => {
+                let storage = entry.get_mut();
+                match storage.slots.entry(*key) {
+                    Entry::Occupied(slot) => Ok(*slot.get()),
+                    Entry::Vacant(slot) => {
+                        if storage.wiped {
+                            return Ok(Word::ZERO);
+                        }
+                        if self.cache.accounts.get(address).is_some_and(Option::is_none) {
+                            return Ok(Word::ZERO);
+                        }
+                        let value = self.db.get_storage(address, key)?;
+                        Ok(*slot.insert(value))
+                    }
+                }
             }
-            if storage.wiped {
-                return Ok(Word::ZERO);
+            Entry::Vacant(entry) => {
+                if self.cache.accounts.get(address).is_some_and(Option::is_none) {
+                    return Ok(Word::ZERO);
+                }
+                let value = self.db.get_storage(address, key)?;
+                let mut storage = AccountStorageCache::default();
+                storage.slots.insert(*key, value);
+                entry.insert(storage);
+                Ok(value)
             }
         }
-        if self.account_absent(address) {
-            return Ok(Word::ZERO);
-        }
-        let value = self.db.get_storage(address, key)?;
-        self.cache.storage.entry(*address).or_default().slots.insert(*key, value);
-        Ok(value)
     }
 
     #[inline]
