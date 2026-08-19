@@ -113,6 +113,12 @@ impl StateChangeSink for BlockStateAccumulator {
     }
 
     fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+        if let Some(info) = change.current
+            && let Some(code) = info.code
+        {
+            self.code.entry(info.code_hash).or_insert_with(|| code.clone());
+        }
+
         let original = change.original.map(AccountInfoRef::to_account_info_without_code);
         let current = change.current.map(AccountInfoRef::to_account_info_without_code);
         let deletes_account = current.is_none();
@@ -239,24 +245,25 @@ fn visit_block_changes<S: StateChangeSink>(
 mod tests {
     use super::{
         super::{
-            Account, AccountInfo, PendingState, StateChangeSource, StorageOverlay, StorageSlot,
-            Tracked,
+            Account, AccountChangeRef, AccountInfo, AccountInfoRef, PendingState,
+            StateChangeSource, StorageOverlay, StorageSlot, Tracked,
         },
         BlockStateAccumulator,
     };
-    use crate::interpreter::Word;
+    use crate::{
+        bytecode::Bytecode,
+        evm::{DynDatabase, InMemoryDB},
+        interpreter::Word,
+    };
     use alloy_primitives::{Address, map::U256Map};
 
     use super::super::StateChangeSink;
-    #[cfg(feature = "serde")]
-    use crate::bytecode::Bytecode;
     use alloc::{vec, vec::Vec};
     #[cfg(feature = "serde")]
     use alloy_primitives::B256;
 
     #[test]
     fn code_sorted_orders_by_hash() {
-        use crate::bytecode::Bytecode;
         use alloy_primitives::{B256, Bytes};
 
         let mut block = BlockStateAccumulator::new();
@@ -277,6 +284,30 @@ mod tests {
         );
         // Same entries as the unsorted accessor, only ordered.
         assert_eq!(block.code_sorted().len(), block.code().count());
+    }
+
+    #[test]
+    fn block_accumulator_preserves_inline_account_code() {
+        let address = Address::from([0x57; 20]);
+        let code = Bytecode::new_raw_checked(vec![0x60, 0x00].into()).unwrap();
+        let info = AccountInfo::default().with_nonce(1).with_code(code.clone());
+        let code_hash = info.code_hash;
+        let mut accumulator = BlockStateAccumulator::new();
+
+        accumulator
+            .account(AccountChangeRef {
+                address,
+                original: None,
+                current: Some(AccountInfoRef::from_info(&info)),
+                created: true,
+                selfdestructed: false,
+            })
+            .unwrap();
+
+        let mut database = InMemoryDB::default();
+        accumulator.visit(&mut database).unwrap();
+
+        assert_eq!(database.get_code_by_hash(&code_hash).unwrap(), code);
     }
 
     fn changes(
