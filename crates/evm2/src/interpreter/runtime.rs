@@ -48,8 +48,20 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
 // execution and not used after the owning execution context is gone.
 unsafe impl<T: EvmTypesHost> Send for Interpreter<'_, '_, T> {}
 
-impl<T: EvmTypesHost> Default for Interpreter<'_, '_, T> {
-    fn default() -> Self {
+impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
+    /// Creates an interpreter from a transaction-global environment and a frame-local message,
+    /// which carries the bytecode to run.
+    pub fn new(tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) -> Self {
+        // SAFETY: Calling init right after.
+        let mut interp = unsafe { Self::uninit() };
+        interp.init(tx_env, message);
+        interp
+    }
+
+    /// # Safety
+    ///
+    /// Must call `init` before use.
+    unsafe fn uninit() -> Self {
         let bytecode = Bytecode::new();
         Self {
             pc: bytecode.original_byte_slice().as_ptr(),
@@ -72,19 +84,9 @@ impl<T: EvmTypesHost> Default for Interpreter<'_, '_, T> {
             stack: unsafe { Box::new_uninit().assume_init() },
         }
     }
-}
-
-impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
-    /// Creates an interpreter from a transaction-global environment and a frame-local message,
-    /// which carries the bytecode to run.
-    pub fn new(tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) -> Self {
-        let mut interp = Self::default();
-        interp.init(tx_env, message);
-        interp
-    }
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.
-    pub(crate) fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
+    fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
         let bytecode = message.code.clone();
         let gas_limit = message.gas_limit;
         let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
@@ -564,8 +566,18 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
         Self { frames: Vec::new() }
     }
 
-    pub(crate) fn pop<'frame, 'host>(&mut self) -> Box<Interpreter<'frame, 'host, T>> {
-        let frame = self.frames.pop().unwrap_or_default();
+    pub(crate) fn pop<'frame, 'host>(
+        &mut self,
+        tx_env: &'frame TxEnv<T>,
+        message: &'frame Message<T>,
+    ) -> Box<Interpreter<'frame, 'host, T>> {
+        let frame = match self.frames.pop() {
+            Some(mut frame) => {
+                frame.init(tx_env, message);
+                frame
+            }
+            None => Box::new(Interpreter::new(tx_env, message)),
+        };
         // SAFETY: Frames stored in the pool have their frame-local references cleared before they
         // are erased to `'static`. Rebinding the lifetime is only used to initialize the next
         // frame.
