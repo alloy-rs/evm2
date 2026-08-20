@@ -174,10 +174,10 @@ pub use tx::{ExecutedTx, TxResult, TxResultExt, TxResultWithState};
 
 mod state;
 pub use state::{
-    AccountChangeRef, AccountHandle, AccountInfo, AccountInfoRef, BlockStateAccumulator,
-    JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource,
-    StateCheckpoint, StateInner, StorageChange, StorageHandle, StorageOverlay, StorageSlot,
-    StorageSlotHandle, Tee, Tracked,
+    AccountChangeRef, AccountHandle, AccountInfo, BlockStateAccumulator, JournalEntry,
+    NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource, StateCheckpoint,
+    StateInner, StorageChange, StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle, Tee,
+    Tracked,
 };
 
 mod prewarm_set;

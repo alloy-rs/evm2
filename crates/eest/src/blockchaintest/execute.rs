@@ -33,7 +33,7 @@ use evm2::{
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
-        AccountChangeRef, AccountInfo as EvmAccountInfo, AccountInfoRef, BEACON_ROOTS_ADDRESS, Bal,
+        AccountChangeRef, AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, Bal,
         BlockStateAccumulator, DbStats, DbStatsCounts, HISTORY_STORAGE_ADDRESS, InMemoryDB,
         StateChangeSink, StateChangeSource, SystemTx, Tee, WITHDRAWAL_REQUEST_ADDRESS,
     },
@@ -938,20 +938,11 @@ impl StateChangeSource for AccountStateChange {
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
         sink.account(AccountChangeRef {
             address: self.address,
-            original: self.original.as_ref().map(account_info_ref),
-            current: self.current.as_ref().map(account_info_ref),
+            original: self.original.as_ref(),
+            current: self.current.as_ref(),
             created: false,
             selfdestructed: false,
         })
-    }
-}
-
-const fn account_info_ref(info: &EvmAccountInfo) -> AccountInfoRef<'_> {
-    AccountInfoRef {
-        balance: info.balance,
-        nonce: info.nonce,
-        code_hash: info.code_hash,
-        code: info.code.as_ref(),
     }
 }
 

@@ -15,8 +15,7 @@ pub use journal::{JournalEntry, StateCheckpoint};
 pub use pending::PendingState;
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
 pub use stream::{
-    AccountChangeRef, AccountInfoRef, NoopChangeSink, StateChangeSink, StateChangeSource,
-    StorageChange, Tee,
+    AccountChangeRef, NoopChangeSink, StateChangeSink, StateChangeSource, StorageChange, Tee,
 };
 pub use tracked::Tracked;
 
@@ -808,8 +807,8 @@ impl<'a> State<'a> {
             if entry.is_changed() {
                 sink.account(AccountChangeRef {
                     address,
-                    original: entry.original.as_ref().map(AccountInfoRef::from_info),
-                    current: entry.present.as_ref().map(AccountInfoRef::from_info),
+                    original: entry.original.as_ref(),
+                    current: entry.present.as_ref(),
                     created: entry.is_created(),
                     selfdestructed: self.selfdestructs.contains(&address),
                 })?;

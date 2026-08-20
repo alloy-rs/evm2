@@ -6,63 +6,15 @@ use alloy_primitives::{Address, B256};
 use auto_impl::auto_impl;
 use core::convert::Infallible;
 
-/// Borrowed account information exposed to change sinks.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AccountInfoRef<'a> {
-    /// Account balance.
-    pub balance: Word,
-    /// Account nonce.
-    pub nonce: u64,
-    /// Account code hash.
-    pub code_hash: B256,
-    /// Borrowed bytecode when the source has it available.
-    pub code: Option<&'a Bytecode>,
-}
-
-impl<'a> AccountInfoRef<'a> {
-    #[inline]
-    pub(crate) const fn from_info(info: &'a AccountInfo) -> Self {
-        Self {
-            balance: info.balance,
-            nonce: info.nonce,
-            code_hash: info.code_hash,
-            code: info.code.as_ref(),
-        }
-    }
-
-    /// Materializes this borrowed account into owned account info.
-    #[inline]
-    pub fn to_account_info(self) -> AccountInfo {
-        AccountInfo {
-            balance: self.balance,
-            nonce: self.nonce,
-            code_hash: self.code_hash,
-            code: self.code.cloned(),
-            _non_exhaustive: (),
-        }
-    }
-
-    #[inline]
-    pub(crate) const fn to_account_info_without_code(self) -> AccountInfo {
-        AccountInfo {
-            balance: self.balance,
-            nonce: self.nonce,
-            code_hash: self.code_hash,
-            code: None,
-            _non_exhaustive: (),
-        }
-    }
-}
-
 /// Borrowed account change passed to [`StateChangeSink`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AccountChangeRef<'a> {
     /// Account address.
     pub address: Address,
     /// Account at the start of the source's aggregation boundary.
-    pub original: Option<AccountInfoRef<'a>>,
+    pub original: Option<&'a AccountInfo>,
     /// Account after the change. `None` is an explicit deletion.
-    pub current: Option<AccountInfoRef<'a>>,
+    pub current: Option<&'a AccountInfo>,
     /// Whether the account was created during the transaction.
     ///
     /// Only transaction-level sources report this; block-level aggregation loses per-transaction
@@ -129,7 +81,7 @@ pub trait StateChangeSink {
     fn account_read(
         &mut self,
         _address: Address,
-        _info: Option<AccountInfoRef<'_>>,
+        _info: Option<&AccountInfo>,
     ) -> Result<(), Self::Error> {
         Ok(())
     }
@@ -216,7 +168,7 @@ where
     fn account_read(
         &mut self,
         address: Address,
-        info: Option<AccountInfoRef<'_>>,
+        info: Option<&AccountInfo>,
     ) -> Result<(), Self::Error> {
         self.a.account_read(address, info)?;
         self.b.account_read(address, info)

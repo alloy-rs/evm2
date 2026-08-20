@@ -1,8 +1,8 @@
 //! Owned pending transaction state detached from the EVM.
 
 use super::{
-    Account, AccountChangeRef, AccountInfo, AccountInfoRef, StateChangeSink, StateChangeSource,
-    StorageChange, StorageOverlay, StorageSlot, Tracked,
+    Account, AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange,
+    StorageOverlay, StorageSlot, Tracked,
 };
 use crate::interpreter::Word;
 use alloy_primitives::{
@@ -133,13 +133,13 @@ impl StateChangeSource for PendingState {
             if entry.is_changed() || entry.is_created() || selfdestructed {
                 sink.account(AccountChangeRef {
                     address,
-                    original: entry.original.as_ref().map(AccountInfoRef::from_info),
-                    current: entry.present.as_ref().map(AccountInfoRef::from_info),
+                    original: entry.original.as_ref(),
+                    current: entry.present.as_ref(),
                     created: entry.is_created(),
                     selfdestructed,
                 })?;
             } else {
-                sink.account_read(address, entry.present.as_ref().map(AccountInfoRef::from_info))?;
+                sink.account_read(address, entry.present.as_ref())?;
             }
         }
         Ok(())

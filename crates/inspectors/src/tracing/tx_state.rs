@@ -7,8 +7,8 @@ use alloy_primitives::{
 use core::convert::Infallible;
 use evm2::{
     evm::{
-        AccountChangeRef, AccountInfo, AccountInfoRef, PendingState, StateChangeSink,
-        StateChangeSource, StorageChange, Tracked,
+        AccountChangeRef, AccountInfo, PendingState, StateChangeSink, StateChangeSource,
+        StorageChange, Tracked,
     },
     interpreter::Word,
 };
@@ -55,13 +55,21 @@ impl TxAccount {
     }
 }
 
+fn clone_account_info(target: &mut Option<AccountInfo>, source: Option<&AccountInfo>) {
+    match (target, source) {
+        (Some(target), Some(source)) => target.clone_from(source),
+        (target, Some(source)) => *target = Some(source.clone()),
+        (target, None) => *target = None,
+    }
+}
+
 impl StateChangeSink for TxState {
     type Error = Infallible;
 
     fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
         let entry = self.accounts.entry(change.address).or_default();
-        entry.original = change.original.map(AccountInfoRef::to_account_info);
-        entry.current = change.current.map(AccountInfoRef::to_account_info);
+        clone_account_info(&mut entry.original, change.original);
+        clone_account_info(&mut entry.current, change.current);
         entry.created = change.created;
         entry.selfdestructed = change.selfdestructed;
         Ok(())
@@ -79,11 +87,11 @@ impl StateChangeSink for TxState {
     fn account_read(
         &mut self,
         address: Address,
-        info: Option<AccountInfoRef<'_>>,
+        info: Option<&AccountInfo>,
     ) -> Result<(), Self::Error> {
         let entry = self.accounts.entry(address).or_default();
-        entry.original = info.map(AccountInfoRef::to_account_info);
-        entry.current = entry.original.clone();
+        clone_account_info(&mut entry.original, info);
+        entry.current.clone_from(&entry.original);
         Ok(())
     }
 

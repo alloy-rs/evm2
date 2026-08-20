@@ -1,8 +1,7 @@
 //! Block-level state accumulation.
 
 use super::{
-    AccountChangeRef, AccountInfo, AccountInfoRef, StateChangeSink, StateChangeSource,
-    StorageChange, Tracked,
+    AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange, Tracked,
 };
 use crate::{
     bytecode::Bytecode,
@@ -113,8 +112,8 @@ impl StateChangeSink for BlockStateAccumulator {
     }
 
     fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
-        let original = change.original.map(AccountInfoRef::to_account_info_without_code);
-        let current = change.current.map(AccountInfoRef::to_account_info_without_code);
+        let original = change.original.map(AccountInfo::clone_no_code);
+        let current = change.current.map(AccountInfo::clone_no_code);
         let deletes_account = current.is_none();
 
         match self.accounts.entry(change.address) {
@@ -225,8 +224,8 @@ fn visit_block_changes<S: StateChangeSink>(
     for (address, delta) in account_deltas {
         sink.account(AccountChangeRef {
             address: *address,
-            original: delta.original.as_ref().map(AccountInfoRef::from_info),
-            current: delta.current.as_ref().map(AccountInfoRef::from_info),
+            original: delta.original.as_ref(),
+            current: delta.current.as_ref(),
             // Block-level aggregation loses per-transaction lifecycle flags.
             created: false,
             selfdestructed: false,
