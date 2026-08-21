@@ -3275,6 +3275,24 @@ mod tests {
     }
 
     #[test]
+    fn frontier_materialized_empty_account_is_created() {
+        let target = Address::from([0x22; 20]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::FRONTIER,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::FRONTIER),
+        );
+        evm.state.account(&target, false).unwrap().touch();
+
+        evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
+        let pending = evm.state.take_pending_state();
+
+        assert!(pending.accounts.get(&target).unwrap().is_created());
+    }
+
+    #[test]
     fn homestead_code_deposit_oog_fails_create() {
         let caller = Address::from([0x11; 20]);
         let created = Address::from([0x22; 20]);

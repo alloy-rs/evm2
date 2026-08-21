@@ -704,6 +704,7 @@ impl<'a> State<'a> {
             // Finalization runs after the last revertible scope, so this is not journaled: the
             // entry would never be replayed before `clear_transaction_state` clears it.
             entry.present = Some(AccountInfo::default());
+            entry.mark_created();
         }
         Ok(())
     }
