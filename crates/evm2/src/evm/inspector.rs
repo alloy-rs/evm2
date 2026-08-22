@@ -371,12 +371,23 @@ mod tests {
         gas_limit: u64,
         inspector: I,
     ) -> (MessageResult<BaseEvmTypes>, Box<I>, Evm<'static, BaseEvmTypes>) {
+        run_evm_with_inspector_db_spec(SpecId::OSAKA, db, code, message, gas_limit, inspector)
+    }
+
+    fn run_evm_with_inspector_db_spec<I: Inspector<BaseEvmTypes> + 'static>(
+        spec_id: SpecId,
+        db: InMemoryDB,
+        code: Vec<u8>,
+        message: &Message<BaseEvmTypes>,
+        gas_limit: u64,
+        inspector: I,
+    ) -> (MessageResult<BaseEvmTypes>, Box<I>, Evm<'static, BaseEvmTypes>) {
         let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
+            spec_id,
             BlockEnvExt::default(),
             TxRegistry::new(),
             db,
-            Precompiles::base(SpecId::OSAKA),
+            Precompiles::base(spec_id),
         );
         evm.set_inspector(inspector);
         let tx_env = TxEnvExt::default();
@@ -757,6 +768,44 @@ mod tests {
 
         assert_matches!(result.stop, InstrStop::Stop);
         assert_eq!(inspector.create_destinations, [expected]);
+    }
+
+    #[test]
+    fn amsterdam_create_preaccess_failure_does_not_fire_create_hook() {
+        let contract = Address::from([0x11; 20]);
+        for is_create2 in [false, true] {
+            for (balance, nonce, value) in
+                [(Word::from(1), 0, Word::from(2)), (Word::MAX, u64::MAX, Word::ZERO)]
+            {
+                let mut code = Vec::new();
+                if is_create2 {
+                    push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO, value]);
+                } else {
+                    push_all(&mut code, [Word::ZERO, Word::ZERO, value]);
+                }
+                code.push(if is_create2 { op::CREATE2 } else { op::CREATE });
+                return_top_word(&mut code);
+
+                let mut db = InMemoryDB::default();
+                db.insert_account_info(
+                    &contract,
+                    AccountInfo { balance, nonce, ..Default::default() },
+                );
+                let (result, inspector, _) = run_evm_with_inspector_db_spec(
+                    SpecId::AMSTERDAM,
+                    db,
+                    code,
+                    &MessageExt { destination: contract, ..Default::default() },
+                    100_000,
+                    HookInspector::default(),
+                );
+
+                assert_matches!(result.stop, InstrStop::Return);
+                assert_eq!(Word::from_be_slice(&result.output), Word::ZERO);
+                assert!(inspector.create_depths.is_empty());
+                assert!(inspector.create_end_stops.is_empty());
+            }
+        }
     }
 
     #[test]

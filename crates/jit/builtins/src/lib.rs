@@ -683,6 +683,15 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     } else {
         Some(ecx.host().load_account(&caller, false, false)?)
     };
+    if let Some(caller_info) = caller_info.as_ref().filter(|_| ecx.enables(EvmFeatures::EIP8037))
+        && (caller_info.balance < value || caller_info.nonce == u64::MAX)
+    {
+        unsafe {
+            sp.write(EvmWord::ZERO);
+        }
+        ecx.set_return_data(Bytes::new());
+        return Ok(());
+    }
     let destination = derive_create_destination(
         kind,
         &caller,
@@ -692,14 +701,11 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     );
 
     // EIP-8037: charge the CREATE account-creation state gas before the child
-    // gas split, conditional on the destination not already existing (and on the depth, endowment,
-    // and nonce pre-checks passing, so an early-failing create leaves the destination out of the
-    // block access list).
+    // gas split, conditional on the destination not already existing. Balance and nonce
+    // pre-access failures returned above, before the destination was accessed.
     let mut charged_create_state_gas = false;
-    if let Some(caller_info) = caller_info.filter(|_| ecx.enables(EvmFeatures::EIP8037))
+    if ecx.enables(EvmFeatures::EIP8037)
         && depth <= CALL_DEPTH_LIMIT
-        && caller_info.balance >= value
-        && caller_info.nonce != u64::MAX
         && ecx.host().target_is_empty_for_new_account_gas(&destination, version.features)?
     {
         ecx.gas.spend_state(version.gas_params.create_state_gas())?;
@@ -1039,7 +1045,7 @@ mod tests {
         BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
         env::{BlockEnvExt, TxEnvExt},
         ethereum::ethereum_tx_registry,
-        evm::{EmptyDB, inspector::Inspector},
+        evm::{AccountInfo, EmptyDB, InMemoryDB, inspector::Inspector},
         interpreter::{GasTracker, Message, MessageResult, MessageResultExt, op},
     };
     use evm2_jit_context::EvmStack;
@@ -1131,9 +1137,16 @@ mod tests {
         interpreter: &'ctx mut evm2::interpreter::Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &'ctx mut Evm<'host, BaseEvmTypes>,
     ) -> PreparedJitFrame<'ctx, 'frame, 'host> {
-        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
-            SpecId::CANCUN,
-        );
+        prepare_frame_for_spec(interpreter, host, SpecId::CANCUN)
+    }
+
+    fn prepare_frame_for_spec<'ctx, 'frame, 'host>(
+        interpreter: &'ctx mut evm2::interpreter::Interpreter<'frame, 'host, BaseEvmTypes>,
+        host: &'ctx mut Evm<'host, BaseEvmTypes>,
+        spec_id: SpecId,
+    ) -> PreparedJitFrame<'ctx, 'frame, 'host> {
+        let config =
+            <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(spec_id);
         let config = Box::leak(Box::new(config));
         interpreter.prepare_run(config.base_spec_id(), config.version(), host);
         let (ecx, stack, _stack_len) = EvmContext::from_interpreter_with_stack(interpreter);
@@ -1408,5 +1421,66 @@ mod tests {
         assert_eq!(inspector.creates[0].kind, MessageKind::Create2);
         assert_eq!(inspector.creates[0].input.as_ref(), initcode);
         assert_eq!(inspector.creates[0].salt, B256::from(salt.to_be_bytes()));
+    }
+
+    #[test]
+    fn create_builtin_preaccess_failure_skips_child_message() {
+        let contract = Address::from([0x11; 20]);
+        for create_kind in [CreateKind::Create, CreateKind::Create2] {
+            for (balance, nonce, value) in
+                [(Word::ZERO, 0, Word::from(1)), (Word::MAX, u64::MAX, Word::ZERO)]
+            {
+                let mut db = InMemoryDB::default();
+                db.insert_account_info(
+                    &contract,
+                    AccountInfo { balance, nonce, ..Default::default() },
+                );
+                let mut host = Evm::<BaseEvmTypes>::new(
+                    SpecId::AMSTERDAM,
+                    BlockEnvExt::default(),
+                    ethereum_tx_registry(SpecId::AMSTERDAM),
+                    db,
+                    Precompiles::base(SpecId::AMSTERDAM),
+                );
+                host.set_inspector(MessageInspector::default());
+                let tx_env = TxEnvExt::default();
+                let message = MessageExt {
+                    gas_limit: 100_000,
+                    destination: contract,
+                    code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+                    ..MessageExt::default()
+                };
+                let mut interpreter =
+                    evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+
+                {
+                    let mut frame =
+                        prepare_frame_for_spec(&mut interpreter, &mut host, SpecId::AMSTERDAM);
+                    frame.ecx.set_return_data(Bytes::from_static(b"stale"));
+                    match create_kind {
+                        CreateKind::Create => {
+                            frame.stack.set(0, EvmWord::ZERO);
+                            frame.stack.set(1, EvmWord::ZERO);
+                            frame.stack.set(2, EvmWord::from(value));
+                        }
+                        CreateKind::Create2 => {
+                            frame.stack.set(0, EvmWord::ZERO);
+                            frame.stack.set(1, EvmWord::ZERO);
+                            frame.stack.set(2, EvmWord::ZERO);
+                            frame.stack.set(3, EvmWord::from(value));
+                        }
+                    }
+
+                    let sp = frame.stack.as_mut_ptr();
+                    unsafe { __revmc_builtin_create(&mut frame.ecx, sp, create_kind) };
+
+                    assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &EvmWord::ZERO);
+                    assert!(frame.ecx.return_data().is_empty());
+                }
+
+                let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
+                assert!(inspector.creates.is_empty());
+            }
+        }
     }
 }
