@@ -18,8 +18,7 @@ fn main() {
     let is_wasm = target_is_wasm();
     let target_pointer_width = target_pointer_width();
     let no_tco = env("CARGO_FEATURE_NO_TCO");
-    let backend = DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco.is_some());
-    match backend {
+    match DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco.is_some()) {
         DispatchBackend::Auto => unreachable!("auto backend must resolve to a concrete backend"),
         DispatchBackend::Tco => println!("cargo:rustc-cfg=tco"),
         DispatchBackend::Packed => println!("cargo:rustc-cfg=dispatch_packed"),
