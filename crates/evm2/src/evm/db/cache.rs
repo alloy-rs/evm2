@@ -7,7 +7,7 @@ use crate::{
     evm::{
         bal::BalContext,
         state::{
-            Account, AccountChangeRef, AccountInfo, AccountInfoRef, PendingState, StateChangeSink,
+            Account, AccountChangeRef, AccountInfo, PendingState, StateChangeSink,
             StateChangeSource, StorageChange, StorageOverlay,
         },
     },
@@ -161,10 +161,7 @@ impl<ExtDB> CacheDB<ExtDB> {
                 continue;
             }
             match entry.present.as_ref() {
-                Some(account) => self.insert_account_info(
-                    &address,
-                    AccountInfoRef::from_info(account).to_account_info_without_code(),
-                ),
+                Some(account) => self.insert_account_info(&address, account.clone_no_code()),
                 None => {
                     self.cache.accounts.insert(address, None);
                     self.cache.storage.entry(address).or_default().wipe();
@@ -257,7 +254,7 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
         self.bal_context.account(change)?;
         match change.current {
-            Some(info) => self.insert_account_info(&change.address, info.to_account_info()),
+            Some(info) => self.insert_account_info(&change.address, info.clone()),
             None => {
                 self.cache.accounts.insert(change.address, None);
                 self.cache.storage.entry(change.address).or_default().wipe();
@@ -270,7 +267,7 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     fn account_read(
         &mut self,
         address: Address,
-        info: Option<AccountInfoRef<'_>>,
+        info: Option<&AccountInfo>,
     ) -> Result<(), Self::Error> {
         self.bal_context.account_read(address, info)
     }

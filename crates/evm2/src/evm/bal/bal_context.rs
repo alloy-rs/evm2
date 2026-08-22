@@ -4,8 +4,8 @@ use super::{AccountBal, Bal, BalError, BlockAccessIndex};
 use crate::{
     AnyError, ErrorCode,
     evm::state::{
-        Account, AccountChangeRef, AccountInfo, AccountInfoRef, PendingState, StateChangeSink,
-        StorageChange, StorageOverlay,
+        Account, AccountChangeRef, AccountInfo, PendingState, StateChangeSink, StorageChange,
+        StorageOverlay,
     },
     interpreter::Word,
 };
@@ -327,8 +327,8 @@ impl StateChangeSink for BalContext {
     fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
         let index = self.bal_index;
         if let Some(bal) = self.bal_builder.as_mut() {
-            let original = change.original.map(AccountInfoRef::to_account_info).unwrap_or_default();
-            let current = change.current.map(AccountInfoRef::to_account_info).unwrap_or_default();
+            let original = change.original.cloned().unwrap_or_default();
+            let current = change.current.cloned().unwrap_or_default();
             bal.accounts
                 .entry(change.address)
                 .or_default()
@@ -358,7 +358,7 @@ impl StateChangeSink for BalContext {
     fn account_read(
         &mut self,
         address: Address,
-        _info: Option<AccountInfoRef<'_>>,
+        _info: Option<&AccountInfo>,
     ) -> Result<(), Self::Error> {
         if let Some(bal) = self.bal_builder.as_mut() {
             bal.accounts.entry(address).or_default();

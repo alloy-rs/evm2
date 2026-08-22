@@ -72,6 +72,18 @@ impl AccountInfo {
         Self { balance, nonce, code_hash, code: Some(code), _non_exhaustive: () }
     }
 
+    /// Clones this account without bytecode.
+    #[inline]
+    pub(crate) const fn clone_no_code(&self) -> Self {
+        Self {
+            balance: self.balance,
+            nonce: self.nonce,
+            code_hash: self.code_hash,
+            code: None,
+            _non_exhaustive: (),
+        }
+    }
+
     /// Creates a new [`AccountInfo`] with the given code.
     #[inline]
     pub fn with_code(self, code: Bytecode) -> Self {
