@@ -46,7 +46,7 @@ macro_rules! asm_comment {
     };
 }
 
-#[cfg(all(tco, not(tco_cranelift)))]
+#[cfg(all(tco, not(cranelift)))]
 #[collapse_debuginfo(yes)]
 macro_rules! tail_return {
     ($e:expr) => {
@@ -54,7 +54,7 @@ macro_rules! tail_return {
     };
 }
 
-#[cfg(tco_cranelift)]
+#[cfg(all(tco, cranelift))]
 #[collapse_debuginfo(yes)]
 macro_rules! tail_return {
     ($e:expr) => {
@@ -62,7 +62,7 @@ macro_rules! tail_return {
     };
 }
 
-#[cfg(all(tco, not(tco_cranelift)))]
+#[cfg(all(tco, not(cranelift)))]
 #[collapse_debuginfo(yes)]
 macro_rules! extern_table {
     ($(#[$attr:meta])* fn $($f:tt)*) => {
@@ -73,7 +73,7 @@ macro_rules! extern_table {
     };
 }
 
-#[cfg(any(not(tco), tco_cranelift))]
+#[cfg(any(not(tco), cranelift))]
 #[collapse_debuginfo(yes)]
 macro_rules! extern_table {
     ($(#[$attr:meta])* fn $($f:tt)*) => {

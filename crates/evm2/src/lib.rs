@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(
-    all(tco, not(tco_cranelift)),
+    all(tco, not(cranelift)),
     feature(explicit_tail_calls, rust_preserve_none_cc),
     allow(incomplete_features)
 )]

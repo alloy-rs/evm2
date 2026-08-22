@@ -4,11 +4,15 @@ use std::{ffi::OsString, process::Command};
 
 fn main() {
     for cfg in
-        ["dispatch_packed", "dispatch_single_return", "dispatch_unpacked", "tco", "tco_cranelift"]
+        ["cranelift", "dispatch_packed", "dispatch_single_return", "dispatch_unpacked", "tco"]
     {
         println!("cargo:rustc-check-cfg=cfg({cfg})");
     }
     println!("cargo:rerun-if-changed=build.rs");
+
+    if is_cranelift_backend() {
+        println!("cargo:rustc-cfg=cranelift");
+    }
 
     // Select interpreter backend.
     let is_wasm = target_is_wasm();
@@ -17,12 +21,7 @@ fn main() {
     let backend = DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco.is_some());
     match backend {
         DispatchBackend::Auto => unreachable!("auto backend must resolve to a concrete backend"),
-        DispatchBackend::Tco => {
-            if is_cranelift_backend() {
-                println!("cargo:rustc-cfg=tco_cranelift");
-            }
-            println!("cargo:rustc-cfg=tco");
-        }
+        DispatchBackend::Tco => println!("cargo:rustc-cfg=tco"),
         DispatchBackend::Packed => println!("cargo:rustc-cfg=dispatch_packed"),
         DispatchBackend::SingleReturn => println!("cargo:rustc-cfg=dispatch_single_return"),
         DispatchBackend::Unpacked => println!("cargo:rustc-cfg=dispatch_unpacked"),
@@ -100,7 +99,8 @@ fn rustc() -> OsString {
     env("RUSTC").unwrap_or_else(|| OsString::from("rustc"))
 }
 
-// taken from https://github.com/rust-lang/rustc_codegen_cranelift/blob/9cac33b3d15c9eaf38525ee191ab470b1e26453c/src/abi/mod.rs#L60-L85
+// Cranelift does not implement `rust-preserve-none`.
+// Taken from https://github.com/rust-lang/rustc_codegen_cranelift/blob/9cac33b3d15c9eaf38525ee191ab470b1e26453c/src/abi/mod.rs#L60-L85.
 fn is_cranelift_backend() -> bool {
     env("CARGO_ENCODED_RUSTFLAGS").is_some_and(|rustflags| {
         rustflags
