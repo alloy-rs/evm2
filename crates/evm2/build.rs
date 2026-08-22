@@ -3,7 +3,9 @@
 use std::{ffi::OsString, process::Command};
 
 fn main() {
-    for cfg in ["dispatch_packed", "dispatch_single_return", "dispatch_unpacked", "tco"] {
+    for cfg in
+        ["dispatch_packed", "dispatch_single_return", "dispatch_unpacked", "tco", "tco_cranelift"]
+    {
         println!("cargo:rustc-check-cfg=cfg({cfg})");
     }
     println!("cargo:rerun-if-changed=build.rs");
@@ -12,7 +14,11 @@ fn main() {
     let is_wasm = target_is_wasm();
     let target_pointer_width = target_pointer_width();
     let no_tco = env("CARGO_FEATURE_NO_TCO");
-    match DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco.is_some()) {
+    let backend = DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco.is_some());
+    if is_cranelift_backend() && matches!(&backend, DispatchBackend::Tco) {
+        println!("cargo:rustc-cfg=tco_cranelift");
+    }
+    match backend {
         DispatchBackend::Auto => unreachable!("auto backend must resolve to a concrete backend"),
         DispatchBackend::Tco => println!("cargo:rustc-cfg=tco"),
         DispatchBackend::Packed => println!("cargo:rustc-cfg=dispatch_packed"),
@@ -90,6 +96,15 @@ fn rustc_is_nightly() -> bool {
 
 fn rustc() -> OsString {
     env("RUSTC").unwrap_or_else(|| OsString::from("rustc"))
+}
+
+fn is_cranelift_backend() -> bool {
+    env("CARGO_ENCODED_RUSTFLAGS").is_some_and(|rustflags| {
+        rustflags
+            .to_string_lossy()
+            .split('\x1f')
+            .any(|flag| flag.contains("codegen-backend") && flag.contains("cranelift"))
+    })
 }
 
 fn env(key: &str) -> Option<OsString> {
