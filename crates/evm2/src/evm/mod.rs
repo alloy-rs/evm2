@@ -1161,10 +1161,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 >(frame.as_mut())
             },
             None => {
-                let frame = top_frame.insert(guard.evm.interpreter_pool.pop());
                 // SAFETY: The message outlives the frame, which is returned to the pool below.
                 let frame_message = unsafe { trustme::decouple_lt(&*message) };
-                frame.init(tx_env, frame_message);
+                let frame = top_frame.insert(guard.evm.interpreter_pool.pop(tx_env, frame_message));
                 // SAFETY: `execution_config` points to a private field that host execution does
                 // not replace or mutate, so the pointee remains valid for the lifetime of the
                 // frame.
@@ -1491,10 +1490,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         tx_env: &'frame TxEnv<T>,
         message: &'frame Message<T>,
     ) -> InstrStop {
-        let mut interp: Box<Interpreter<'frame, 'a, T>> = self.interpreter_pool.pop();
         let guard = self.enter_execution();
+        let mut interp: Box<Interpreter<'frame, 'a, T>> =
+            guard.evm.interpreter_pool.pop(tx_env, message);
         let interp_ref = interp.as_mut();
-        interp_ref.init(tx_env, message);
         // SAFETY: `execution_config` points to a private field that host execution does not
         // replace or mutate, so the pointee remains valid here.
         let execution_config = unsafe { trustme::decouple_lt(&guard.evm.execution_config) };
