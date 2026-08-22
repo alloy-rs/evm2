@@ -100,6 +100,7 @@ fn rustc() -> OsString {
     env("RUSTC").unwrap_or_else(|| OsString::from("rustc"))
 }
 
+// taken from https://github.com/rust-lang/rustc_codegen_cranelift/blob/9cac33b3d15c9eaf38525ee191ab470b1e26453c/src/abi/mod.rs#L60-L85
 fn is_cranelift_backend() -> bool {
     env("CARGO_ENCODED_RUSTFLAGS").is_some_and(|rustflags| {
         rustflags
