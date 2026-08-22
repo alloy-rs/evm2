@@ -15,12 +15,14 @@ fn main() {
     let target_pointer_width = target_pointer_width();
     let no_tco = env("CARGO_FEATURE_NO_TCO");
     let backend = DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco.is_some());
-    if is_cranelift_backend() && matches!(&backend, DispatchBackend::Tco) {
-        println!("cargo:rustc-cfg=tco_cranelift");
-    }
     match backend {
         DispatchBackend::Auto => unreachable!("auto backend must resolve to a concrete backend"),
-        DispatchBackend::Tco => println!("cargo:rustc-cfg=tco"),
+        DispatchBackend::Tco => {
+            if is_cranelift_backend() {
+                println!("cargo:rustc-cfg=tco_cranelift");
+            }
+            println!("cargo:rustc-cfg=tco");
+        }
         DispatchBackend::Packed => println!("cargo:rustc-cfg=dispatch_packed"),
         DispatchBackend::SingleReturn => println!("cargo:rustc-cfg=dispatch_single_return"),
         DispatchBackend::Unpacked => println!("cargo:rustc-cfg=dispatch_unpacked"),
