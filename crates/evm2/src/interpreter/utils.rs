@@ -46,19 +46,11 @@ macro_rules! asm_comment {
     };
 }
 
-#[cfg(all(tco, not(cranelift)))]
+#[cfg(tco)]
 #[collapse_debuginfo(yes)]
 macro_rules! tail_return {
     ($e:expr) => {
         become $e;
-    };
-}
-
-#[cfg(all(tco, cranelift))]
-#[collapse_debuginfo(yes)]
-macro_rules! tail_return {
-    ($e:expr) => {
-        return $e;
     };
 }
 

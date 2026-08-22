@@ -1,9 +1,6 @@
 #![doc = include_str!("../README.md")]
-#![cfg_attr(
-    all(tco, not(cranelift)),
-    feature(explicit_tail_calls, rust_preserve_none_cc),
-    allow(incomplete_features)
-)]
+#![cfg_attr(tco, feature(explicit_tail_calls), allow(incomplete_features))]
+#![cfg_attr(all(tco, not(cranelift)), feature(rust_preserve_none_cc))]
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
