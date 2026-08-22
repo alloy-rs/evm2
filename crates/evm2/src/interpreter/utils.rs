@@ -54,7 +54,7 @@ macro_rules! tail_return {
     };
 }
 
-#[cfg(tco)]
+#[cfg(all(tco, not(cranelift)))]
 #[collapse_debuginfo(yes)]
 macro_rules! extern_table {
     ($(#[$attr:meta])* fn $($f:tt)*) => {
@@ -65,7 +65,7 @@ macro_rules! extern_table {
     };
 }
 
-#[cfg(not(tco))]
+#[cfg(any(not(tco), cranelift))]
 #[collapse_debuginfo(yes)]
 macro_rules! extern_table {
     ($(#[$attr:meta])* fn $($f:tt)*) => {

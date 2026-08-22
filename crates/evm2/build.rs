@@ -3,10 +3,16 @@
 use std::{ffi::OsString, process::Command};
 
 fn main() {
-    for cfg in ["dispatch_packed", "dispatch_single_return", "dispatch_unpacked", "tco"] {
+    for cfg in
+        ["cranelift", "dispatch_packed", "dispatch_single_return", "dispatch_unpacked", "tco"]
+    {
         println!("cargo:rustc-check-cfg=cfg({cfg})");
     }
     println!("cargo:rerun-if-changed=build.rs");
+
+    if is_cranelift_backend() {
+        println!("cargo:rustc-cfg=cranelift");
+    }
 
     // Select interpreter backend.
     let is_wasm = target_is_wasm();
@@ -90,6 +96,17 @@ fn rustc_is_nightly() -> bool {
 
 fn rustc() -> OsString {
     env("RUSTC").unwrap_or_else(|| OsString::from("rustc"))
+}
+
+// Cranelift does not implement `rust-preserve-none`.
+// Taken from https://github.com/rust-lang/rustc_codegen_cranelift/blob/9cac33b3d15c9eaf38525ee191ab470b1e26453c/src/abi/mod.rs#L60-L85.
+fn is_cranelift_backend() -> bool {
+    env("CARGO_ENCODED_RUSTFLAGS").is_some_and(|rustflags| {
+        rustflags
+            .to_string_lossy()
+            .split('\x1f')
+            .any(|flag| flag.contains("codegen-backend") && flag.contains("cranelift"))
+    })
 }
 
 fn env(key: &str) -> Option<OsString> {
