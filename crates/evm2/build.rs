@@ -10,15 +10,16 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=build.rs");
 
-    if is_cranelift_backend() {
+    let clif = is_cranelift_backend();
+    if clif {
         println!("cargo:rustc-cfg=cranelift");
     }
 
     // Select interpreter backend.
     let is_wasm = target_is_wasm();
     let target_pointer_width = target_pointer_width();
-    let no_tco = env("CARGO_FEATURE_NO_TCO");
-    match DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco.is_some()) {
+    let no_tco = env("CARGO_FEATURE_NO_TCO").is_some() || clif;
+    match DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco) {
         DispatchBackend::Auto => unreachable!("auto backend must resolve to a concrete backend"),
         DispatchBackend::Tco => println!("cargo:rustc-cfg=tco"),
         DispatchBackend::Packed => println!("cargo:rustc-cfg=dispatch_packed"),
