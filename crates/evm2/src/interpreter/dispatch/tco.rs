@@ -12,7 +12,7 @@ use core::hint::cold_path;
 type TailInstrFn<T> = extern_table!(
     fn(
         pc: Pc,
-        stack: RawStack,
+        stack: RawStack<'_>,
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, '_, T>,
         instructions: *const (),
@@ -47,7 +47,7 @@ extern_table! {
         const OP: u8,
     >(
         mut pc: Pc,
-        mut stack: RawStack,
+        mut stack: RawStack<'_>,
         mut remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, '_, T>,
         instructions: *const (),
@@ -112,7 +112,7 @@ extern_table! {
     #[cold]
     fn tail_call_restore<T: EvmTypesHost>(
         pc: Pc,
-        stack: RawStack,
+        stack: RawStack<'_>,
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, '_, T>,
         _instructions: *const (),

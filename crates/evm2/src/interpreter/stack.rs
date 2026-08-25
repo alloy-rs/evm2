@@ -1,7 +1,9 @@
 use super::{InstrStop, Result};
 use crate::constants::STACK_LIMIT;
 use alloy_primitives::U256;
-use core::{debug_assert_matches, fmt, hint::cold_path, mem::MaybeUninit, ops::Deref};
+use core::{
+    debug_assert_matches, fmt, hint::cold_path, marker::PhantomData, mem::MaybeUninit, ops::Deref,
+};
 
 /// EVM stack word.
 pub type Word = U256;
@@ -23,9 +25,10 @@ pub struct Stack<'a> {
 
 /// Raw mutable EVM operand stack.
 #[derive(Clone, Copy)]
-pub(crate) struct RawStack {
+pub(crate) struct RawStack<'a> {
     stack: *mut StackBacking,
     len: usize,
+    marker: PhantomData<&'a mut StackBacking>,
 }
 
 /// Borrowed mutable EVM operand stack.
@@ -187,11 +190,11 @@ impl<'a> Stack<'a> {
     }
 }
 
-impl RawStack {
+impl<'a> RawStack<'a> {
     #[inline(always)]
     pub(crate) const fn new(stack: *mut StackBacking, len: usize) -> Self {
         debug_assert!(len <= Stack::CAPACITY);
-        Self { stack, len }
+        Self { stack, len, marker: PhantomData }
     }
 
     #[inline(always)]

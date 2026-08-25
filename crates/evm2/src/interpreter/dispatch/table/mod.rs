@@ -122,7 +122,7 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
 fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
     state: &mut InterpreterState<'_, '_, T>,
     mut pc: Pc,
-    mut stack: RawStack,
+    mut stack: RawStack<'_>,
     instructions: &RawInstrTable<T>,
 ) -> InstrStop {
     let mut loop_state = imp::loop_state(state.gas_mut());
