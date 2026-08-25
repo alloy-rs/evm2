@@ -31,7 +31,7 @@ fn run_state<'a, 'frame, 'host, T: EvmTypesHost>(
     // the separate stack view is live.
     let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
     let pc = Pc::new(interpreter.pc);
-    let stack = RawStack::new((&raw mut *interpreter.stack).cast(), interpreter.stack_len);
+    let stack = RawStack::new(&raw mut *interpreter.stack, interpreter.stack_len);
     (state, pc, stack)
 }
 
