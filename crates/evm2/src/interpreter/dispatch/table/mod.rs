@@ -139,8 +139,8 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
         let instr = instructions[op as usize];
         let (next_pc, next_stack_len) = {
             // SAFETY: This is the only stack borrow outside inspector callbacks.
-            let mut stack_view = unsafe { stack.borrow() };
-            imp::dispatch_loop_call(instr, pc, stack_view.reborrow(), state, &mut loop_state)
+            let stack_view = unsafe { stack.borrow() };
+            imp::dispatch_loop_call(instr, pc, stack_view, state, &mut loop_state)
         };
         pc = next_pc;
         stack.set_len(next_stack_len);

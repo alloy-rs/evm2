@@ -155,12 +155,6 @@ impl<'a> Stack<'a> {
     }
 
     #[inline(always)]
-    #[cfg(not(tco))]
-    pub(crate) const fn reborrow(&mut self) -> Stack<'_> {
-        Stack { stack: self.stack, len: self.len }
-    }
-
-    #[inline(always)]
     pub(crate) const fn as_mut(&mut self) -> StackMut<'_> {
         StackMut { stack: self.stack, len: &mut self.len }
     }
