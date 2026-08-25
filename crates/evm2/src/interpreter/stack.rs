@@ -21,6 +21,13 @@ pub struct Stack<'a> {
     pub(crate) len: usize,
 }
 
+/// Raw mutable EVM operand stack.
+#[derive(Clone, Copy)]
+pub(crate) struct RawStack {
+    stack: *mut StackBacking,
+    len: usize,
+}
+
 /// Borrowed mutable EVM operand stack.
 pub struct StackMut<'a> {
     pub(crate) stack: &'a mut StackBacking,
@@ -183,6 +190,36 @@ impl<'a> Stack<'a> {
     #[inline]
     pub const fn as_slice(&self) -> &[Word] {
         unsafe { core::slice::from_raw_parts(self.as_word_ptr(), self.len()) }
+    }
+}
+
+impl RawStack {
+    #[inline(always)]
+    pub(crate) const fn new(stack: *mut StackBacking, len: usize) -> Self {
+        debug_assert!(len <= Stack::CAPACITY);
+        Self { stack, len }
+    }
+
+    #[inline(always)]
+    pub(crate) const fn len(self) -> usize {
+        self.len
+    }
+
+    #[inline(always)]
+    pub(crate) const fn set_len(&mut self, len: usize) {
+        debug_assert!(len <= Stack::CAPACITY);
+        self.len = len;
+    }
+
+    /// Borrows the stack backing.
+    ///
+    /// # Safety
+    ///
+    /// No access to the interpreter stack may occur until the returned `Stack` is dropped.
+    #[inline(always)]
+    pub(crate) unsafe fn borrow(&mut self) -> Stack<'_> {
+        // SAFETY: The caller upholds exclusive access to the stack backing.
+        Stack::new(unsafe { &mut *self.stack }, self.len)
     }
 }
 
