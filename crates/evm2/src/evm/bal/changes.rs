@@ -196,6 +196,18 @@ impl<T: BalChange> BalChanges<T> {
         (i != 0).then(|| self.changes[i - 1].value())
     }
 
+    /// Returns the latest value written at or before `bal_index`.
+    ///
+    /// Unlike [`Self::get`], this includes a write at `bal_index`. This is used for accepted
+    /// overlay state, whose writes are visible immediately after they are applied.
+    pub(crate) fn get_inclusive(&self, bal_index: BlockAccessIndex) -> Option<&T::Value> {
+        self.changes
+            .iter()
+            .rev()
+            .find(|change| change.block_access_index() <= bal_index)
+            .map(BalChange::value)
+    }
+
     /// Extend the builder with another builder.
     pub fn extend(&mut self, other: Self) {
         self.changes.extend(other.changes);
@@ -312,6 +324,9 @@ mod tests {
         assert_eq!(bal_changes.get(idx(2)), Some(&2));
         assert_eq!(bal_changes.get(idx(3)), Some(&3));
         assert_eq!(bal_changes.get(idx(4)), Some(&3));
+        assert_eq!(bal_changes.get_inclusive(idx(0)), Some(&1));
+        assert_eq!(bal_changes.get_inclusive(idx(1)), Some(&2));
+        assert_eq!(bal_changes.get_inclusive(idx(2)), Some(&3));
     }
 
     fn get_binary_search(threshold: u64) {

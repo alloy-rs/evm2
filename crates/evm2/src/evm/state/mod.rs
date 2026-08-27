@@ -22,7 +22,7 @@ pub use tracked::Tracked;
 use super::{
     PrewarmSet,
     bal::{Bal, BalError, BlockAccessIndex},
-    db::{CacheDB, DbResult, DynDatabase, boxed_dyn_database},
+    db::{CacheDB, DbResult, DynDatabase, StorageOverrideMode, boxed_dyn_database},
 };
 use crate::{
     ErrorCode, EvmFeatures, Version,
@@ -154,6 +154,23 @@ impl<'a> State<'a> {
     #[inline]
     pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
         self.inner.database.commit_source(source);
+    }
+
+    /// Applies account and nested per-account storage overrides above BAL reads.
+    ///
+    /// Once overrides are installed, subsequently committed execution state is kept above the BAL
+    /// as well. A [`StorageOverrideMode::Replace`] entry makes unspecified slots read as zero;
+    /// [`StorageOverrideMode::Diff`] falls through to the BAL and underlying database.
+    /// Overrides reuse the existing BAL builder; no database wrapper or separate override cache is
+    /// installed.
+    pub fn apply_state_overrides(
+        &mut self,
+        accounts: impl IntoIterator<Item = (Address, AccountInfo)>,
+        storage: impl IntoIterator<
+            Item = (Address, StorageOverrideMode, impl IntoIterator<Item = (Word, Word)>),
+        >,
+    ) {
+        self.inner.database.apply_state_overrides(accounts, storage);
     }
 
     /// Attaches an EIP-7928 BAL that the accepted-overlay database consults on reads.

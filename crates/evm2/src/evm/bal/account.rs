@@ -211,6 +211,36 @@ impl AccountInfoBal {
         changed
     }
 
+    /// Applies accepted-overlay account writes at or before `bal_index`.
+    pub(crate) fn populate_account_info_inclusive(
+        &self,
+        bal_index: BlockAccessIndex,
+        account: &mut AccountInfo,
+    ) -> bool {
+        let mut changed = false;
+        if let Some(nonce) = self.nonce.get_inclusive(bal_index) {
+            account.nonce = *nonce;
+            changed = true;
+        }
+        if let Some(balance) = self.balance.get_inclusive(bal_index) {
+            account.balance = *balance;
+            changed = true;
+        }
+        if let Some((code_hash, code)) = self.code.get_inclusive(bal_index) {
+            account.code_hash = *code_hash;
+            account.code = Some(code.clone());
+            changed = true;
+        }
+        changed
+    }
+
+    /// Returns whether accepted-overlay account writes are visible at `bal_index`.
+    pub(crate) fn has_writes_inclusive(&self, bal_index: BlockAccessIndex) -> bool {
+        self.nonce.get_inclusive(bal_index).is_some()
+            || self.balance.get_inclusive(bal_index).is_some()
+            || self.code.get_inclusive(bal_index).is_some()
+    }
+
     /// Extend account info from another account info.
     #[inline]
     pub fn update(

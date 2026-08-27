@@ -173,6 +173,7 @@ mod tx;
 pub use tx::{ExecutedTx, TxResult, TxResultExt, TxResultWithState};
 
 mod state;
+pub use db::StorageOverrideMode;
 pub use state::{
     AccountChangeRef, AccountHandle, AccountInfo, BlockStateAccumulator, JournalEntry,
     NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource, StateCheckpoint,

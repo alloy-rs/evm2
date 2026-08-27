@@ -31,7 +31,8 @@ type BalResult<T> = Result<T, BalError>;
 ///   it at [`Self::bal_index`] (post-state per transaction). A read not covered by the BAL is
 ///   either an error or falls through to the database, depending on whether fallback is enabled.
 /// - **Writes** ([`Self::bal_builder`]): when enabled, `Self::commit_pending` folds each committed
-///   transaction's pending post-state into the builder at [`Self::bal_index`].
+///   transaction's pending post-state into the builder at [`Self::bal_index`]. Builder writes are
+///   also the accepted-state overlay above an attached read BAL.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BalContext {
     /// Optional attached EIP-7928 BAL consulted on reads.
@@ -130,6 +131,12 @@ impl BalContext {
     #[inline]
     pub const fn bal_builder(&self) -> Option<&Bal> {
         self.bal_builder.as_ref()
+    }
+
+    /// Returns the BAL builder used as the accepted-state overlay, creating it if needed.
+    #[inline]
+    pub(crate) fn bal_builder_mut_or_default(&mut self) -> &mut Bal {
+        self.bal_builder.get_or_insert_default()
     }
 
     /// Returns whether BAL construction is enabled.
@@ -249,6 +256,56 @@ impl BalContext {
         if changed || was_present {
             *account = Some(info);
         }
+    }
+
+    /// Applies account writes from the accepted-state BAL overlay.
+    #[inline]
+    pub(crate) fn populate_bal_overlay_account(
+        &self,
+        address: &Address,
+        account: &mut Option<AccountInfo>,
+    ) -> bool {
+        let Some(bal_account) = self.bal_builder.as_ref().and_then(|bal| bal.accounts.get(address))
+        else {
+            return false;
+        };
+        let was_present = account.is_some();
+        let mut info = account.take().unwrap_or_default();
+        let changed =
+            bal_account.account_info.populate_account_info_inclusive(self.bal_index, &mut info);
+        if changed || was_present {
+            *account = Some(info);
+        }
+        changed
+    }
+
+    /// Returns whether the accepted-state BAL overlay covers an account.
+    #[inline]
+    pub(crate) fn has_bal_overlay_account(&self, address: &Address) -> bool {
+        self.bal_builder
+            .as_ref()
+            .and_then(|bal| bal.accounts.get(address))
+            .is_some_and(|account| account.account_info.has_writes_inclusive(self.bal_index))
+    }
+
+    /// Returns whether the accepted-state BAL overlay contains an account entry.
+    #[inline]
+    pub(crate) fn has_bal_overlay_entry(&self, address: &Address) -> bool {
+        self.bal_builder.as_ref().is_some_and(|bal| bal.accounts.contains_key(address))
+    }
+
+    /// Returns a storage write from the accepted-state BAL overlay.
+    #[inline]
+    pub(crate) fn bal_overlay_storage(&self, address: &Address, key: &Word) -> Option<Word> {
+        self.bal_builder
+            .as_ref()?
+            .accounts
+            .get(address)?
+            .storage
+            .storage
+            .get(key)?
+            .get_inclusive(self.bal_index)
+            .copied()
     }
 
     /// Resolves storage slot `key` for `address` from the attached read BAL at the current

@@ -97,6 +97,16 @@ pub struct CacheDB<ExtDB = EmptyDB> {
     pub _non_exhaustive: (),
 }
 
+/// Controls how an account's storage overrides are applied.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StorageOverrideMode {
+    /// Override only the supplied slots and fall through for all other slots.
+    #[default]
+    Diff,
+    /// Replace the account's storage, making every unspecified slot zero.
+    Replace,
+}
+
 impl Default for CacheDB<EmptyDB> {
     #[inline]
     fn default() -> Self {
@@ -118,6 +128,44 @@ impl<ExtDB> CacheDB<ExtDB> {
     #[inline]
     pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
         let Ok(()) = source.visit(self);
+    }
+
+    /// Applies account and nested per-account storage overrides above BAL reads.
+    ///
+    /// Overrides reuse the existing BAL builder as the accepted-state overlay; no additional
+    /// database wrapper or override cache is installed.
+    pub fn apply_state_overrides(
+        &mut self,
+        accounts: impl IntoIterator<Item = (Address, AccountInfo)>,
+        storage: impl IntoIterator<
+            Item = (Address, StorageOverrideMode, impl IntoIterator<Item = (Word, Word)>),
+        >,
+    ) {
+        let index = self.bal_context.bal_index();
+        let Self { cache, bal_context, .. } = self;
+        let overlay = bal_context.bal_builder_mut_or_default();
+
+        for (address, mut info) in accounts {
+            Self::insert_contract_inner(&mut cache.contracts, &mut info);
+            let code = info.code.take();
+            let account = &mut overlay.accounts.entry(address).or_default().account_info;
+            account.nonce.force_update(index, info.nonce);
+            account.balance.force_update(index, info.balance);
+            if let Some(code) = code {
+                account.code.force_update(index, (info.code_hash, code));
+            }
+        }
+
+        for (address, mode, slots) in storage {
+            let cached = cache.storage.entry(address).or_default();
+            if mode == StorageOverrideMode::Replace {
+                cached.wipe();
+            }
+            let overlay = &mut overlay.accounts.entry(address).or_default().storage.storage;
+            for (key, value) in slots {
+                overlay.entry(key).or_default().force_update(index, value);
+            }
+        }
     }
 
     /// Accepts a detached [`PendingState`] -- a committed transaction's post-state -- into this
@@ -286,11 +334,16 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
 impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        let has_overlay = self.bal_context.has_bal_overlay_account(address);
         // Resolve the account in the attached read BAL first: with fallback disabled, an
         // uncovered account errors before the cache or backing database is consulted.
-        let bal_account = match self.bal_context.get_bal_account(address) {
-            Ok(bal_account) => bal_account,
-            Err(err) => return Err(self.bal_context.store_error(err)),
+        let bal_account = if has_overlay {
+            None
+        } else {
+            match self.bal_context.get_bal_account(address) {
+                Ok(bal_account) => bal_account,
+                Err(err) => return Err(self.bal_context.store_error(err)),
+            }
         };
 
         // Resolve the raw account from the cache or backing database. The cache always stores the
@@ -314,6 +367,10 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
         if let Some(bal_account) = bal_account {
             self.bal_context.populate_bal_account(bal_account, &mut account);
         }
+        let locally_absent = self.cache.accounts.get(address).is_some_and(Option::is_none);
+        if self.bal_context.populate_bal_overlay_account(address, &mut account) && locally_absent {
+            account = None;
+        }
         Ok(account)
     }
 
@@ -327,6 +384,15 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        if let Some(value) = self.bal_context.bal_overlay_storage(address, key) {
+            return Ok(value);
+        }
+        if self.bal_context.has_bal_overlay_entry(address)
+            && self.cache.storage.get(address).is_some_and(|storage| storage.wiped)
+        {
+            return Ok(Word::ZERO);
+        }
+
         // Serve the slot from the attached read BAL when it covers a write at or before the current
         // index; otherwise fall through to the cache/database.
         match self.bal_context.bal_storage(address, key) {
@@ -581,6 +647,10 @@ mod tests {
             Word::from(7),
             BalChanges::new(vec![StorageChange::new(BlockAccessIndex::new(1), Word::from(42))]),
         );
+        account.storage.storage.insert(
+            Word::from(8),
+            BalChanges::new(vec![StorageChange::new(BlockAccessIndex::new(1), Word::from(43))]),
+        );
         Bal::from_iter([(address, account)])
     }
 
@@ -605,6 +675,69 @@ mod tests {
 
         // Storage slot 7 is served from the BAL, shadowing the database value (9).
         assert_eq!(cache.get_storage(&address, &Word::from(7)).unwrap(), Word::from(42));
+    }
+
+    #[test]
+    fn state_overrides_take_precedence_over_bal() {
+        let address = Address::with_last_byte(1);
+        let (overridden_slot, bal_slot, fallback_slot) =
+            (Word::from(7), Word::from(8), Word::from(9));
+        let mut cache = cache_with_read_bal(address, true);
+
+        let positioned = cache.get_account(&address).unwrap().unwrap();
+        assert_eq!(positioned.balance, Word::from(500));
+        let override_code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let override_code_hash = override_code.hash_slow();
+
+        cache.apply_state_overrides(
+            [(
+                address,
+                AccountInfo { balance: Word::from(700), ..positioned.clone() }
+                    .with_code(override_code.clone()),
+            )],
+            [(address, StorageOverrideMode::Diff, [(overridden_slot, Word::from(99))])],
+        );
+
+        let overridden = cache.get_account(&address).unwrap().unwrap();
+        assert_eq!(overridden.balance, Word::from(700));
+        assert_eq!(overridden.nonce, 3);
+        assert_eq!(cache.get_code_by_hash(&override_code_hash).unwrap(), override_code);
+        assert_eq!(cache.get_storage(&address, &overridden_slot).unwrap(), Word::from(99));
+        assert_eq!(cache.get_storage(&address, &bal_slot).unwrap(), Word::from(43));
+        assert_eq!(cache.get_storage(&address, &fallback_slot).unwrap(), Word::from(9));
+
+        cache.apply_state_overrides(
+            core::iter::empty(),
+            [(address, StorageOverrideMode::Replace, [(overridden_slot, Word::from(101))])],
+        );
+        assert_eq!(cache.get_storage(&address, &overridden_slot).unwrap(), Word::from(101));
+        assert_eq!(cache.get_storage(&address, &bal_slot).unwrap(), Word::ZERO);
+
+        let committed = AccountInfo { balance: Word::from(800), ..overridden };
+        let mut pending = PendingState::default();
+        pending.insert_account(address, Some(positioned), Some(committed));
+        pending.insert_storage(address, overridden_slot, Word::from(101), Word::from(102));
+        cache.commit_pending(&pending);
+        assert_eq!(cache.get_account(&address).unwrap().unwrap().balance, Word::from(800));
+        assert_eq!(cache.get_storage(&address, &overridden_slot).unwrap(), Word::from(102));
+        assert!(cache.bal_context.bal_builder().is_some());
+    }
+
+    #[test]
+    fn state_overrides_bypass_uncovered_bal_entries() {
+        let covered = Address::with_last_byte(1);
+        let overridden = Address::with_last_byte(2);
+        let slot = Word::from(3);
+        let mut cache = cache_with_read_bal(covered, false);
+
+        cache.apply_state_overrides(
+            [(overridden, AccountInfo::default().with_balance(Word::from(4)))],
+            [(overridden, StorageOverrideMode::Replace, [(slot, Word::from(5))])],
+        );
+
+        assert_eq!(cache.get_account(&overridden).unwrap().unwrap().balance, Word::from(4));
+        assert_eq!(cache.get_storage(&overridden, &slot).unwrap(), Word::from(5));
+        assert_eq!(cache.get_storage(&overridden, &Word::from(6)).unwrap(), Word::ZERO);
     }
 
     #[test]

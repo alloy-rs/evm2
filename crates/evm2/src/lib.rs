@@ -21,7 +21,7 @@ pub mod evm;
 pub use evm::config::EvmTypesHost;
 pub use evm::{
     AccountInfo, BlockStateAccumulator, Evm, ExecutedTx, InterpreterRunner, JournalEntry,
-    PendingState, TxResult, TxResultExt, TxResultWithState, config,
+    PendingState, StorageOverrideMode, TxResult, TxResultExt, TxResultWithState, config,
     config::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
         ExecutionConfig,

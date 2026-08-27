@@ -8,7 +8,7 @@ use auto_impl::auto_impl;
 use core::error::Error;
 
 mod cache;
-pub use cache::{AccountStorageCache, Cache, CacheDB, InMemoryDB};
+pub use cache::{AccountStorageCache, Cache, CacheDB, InMemoryDB, StorageOverrideMode};
 
 /// Result of a database operation.
 pub type DbResult<T> = Result<T, ErrorCode>;
