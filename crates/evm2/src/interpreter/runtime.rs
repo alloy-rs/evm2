@@ -45,8 +45,15 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` points into owned bytecode,
 // frame-local references are cleared before pooling, and host/inspector pointers are installed for
-// execution and not used after the owning execution context is gone.
-unsafe impl<T: EvmTypesHost> Send for Interpreter<'_, '_, T> {}
+// execution and not used after the owning execution context is gone. The `Sync` bounds make the
+// retained shared frame references safe to transfer between threads.
+unsafe impl<T> Send for Interpreter<'_, '_, T>
+where
+    T: EvmTypesHost,
+    T::MessageExt: Sync,
+    T::TxEnvExt: Sync,
+{
+}
 
 impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Creates an interpreter from a transaction-global environment and a frame-local message,
