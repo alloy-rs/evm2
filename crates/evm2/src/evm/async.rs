@@ -779,6 +779,24 @@ mod tests {
     }
 
     #[test]
+    #[should_panic = "async EVM execution requires EVM erased fields to be verified as Send with Evm::evm_is_send"]
+    fn transaction_async_send_panics_after_state_mut_replaces_database() {
+        let marker = Rc::new(());
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
+        evm.state_mut().set_initial(Db::new(NonSendDb { marker }));
+        let tx = test_tx(41);
+
+        drop(evm.transact_async_send(&tx));
+    }
+
+    #[test]
     fn transaction_async_accepts_non_send_erased_fields() {
         let marker = Rc::new(());
         let registry = TxRegistry::new().with_handler(
@@ -900,6 +918,24 @@ mod tests {
 
         assert!(result.status);
         assert_eq!(result.tx_gas_used(), 0);
+    }
+
+    #[test]
+    #[should_panic = "async EVM execution requires EVM erased fields to be verified as Send with Evm::evm_is_send"]
+    fn system_call_async_send_panics_after_overlay_db_mut_replaces_database() {
+        let marker = Rc::new(());
+        let contract = Address::from([0x42; 20]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
+        evm.overlay_db_mut().db = Box::new(Db::new(NonSendDb { marker }));
+
+        drop(evm.system_call_async_send(SystemTx::new(contract, Bytes::new())));
     }
 
     #[test]
