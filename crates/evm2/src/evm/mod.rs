@@ -584,6 +584,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// available through [`Self::database_mut`].
     #[inline]
     pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase + 'a>> {
+        self.evm_send = false;
         self.state.overlay_db_mut()
     }
 
@@ -747,6 +748,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Returns the mutable EVM state.
     #[inline]
     pub const fn state_mut(&mut self) -> &mut State<'a> {
+        self.evm_send = false;
         &mut self.state
     }
 
