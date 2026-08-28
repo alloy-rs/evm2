@@ -190,7 +190,8 @@ impl Account {
         let account = self.present.as_ref()?;
         let code = account.code.as_ref()?;
         let code_hash = account.code_hash;
-        (self.code_changed
+        ((self.code_changed
+            || self.original.as_ref().map(|original| original.code_hash) != Some(code_hash))
             && !code.is_empty()
             && !code_hash.is_zero()
             && code_hash != KECCAK256_EMPTY)
@@ -623,6 +624,21 @@ mod tests {
         assert!(!state.account(&address, false).unwrap().is_warm());
         assert!(state.account_info_untracked(&address).unwrap().is_none());
         assert!(!state.take_pending_state().is_changed());
+    }
+
+    #[test]
+    fn account_info_set_code_is_published_on_commit() {
+        use alloy_primitives::Bytes;
+
+        let address = Address::from([0x8c; 20]);
+        let code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
+        let mut state = State::new(CacheDB::default());
+
+        state.account(&address, false).unwrap().get_or_insert().set_code(code.clone());
+        state.commit_transaction();
+
+        let loaded = state.account(&address, false).unwrap().load_code().unwrap();
+        assert_eq!(loaded, code);
     }
 
     #[test]
