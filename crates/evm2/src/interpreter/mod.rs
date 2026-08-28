@@ -21,7 +21,7 @@ mod ctrl;
 pub use ctrl::{BytecodeRef, Pc};
 
 mod stack;
-pub(crate) use stack::StackBacking;
+pub(crate) use stack::{RawStack, StackBacking};
 pub use stack::{Stack, StackMut, StackRef, Word};
 
 mod memory;

@@ -1,7 +1,9 @@
 use super::{InstrStop, Result};
 use crate::constants::STACK_LIMIT;
 use alloy_primitives::U256;
-use core::{debug_assert_matches, fmt, hint::cold_path, mem::MaybeUninit, ops::Deref};
+use core::{
+    debug_assert_matches, fmt, hint::cold_path, marker::PhantomData, mem::MaybeUninit, ops::Deref,
+};
 
 /// EVM stack word.
 pub type Word = U256;
@@ -19,6 +21,14 @@ pub struct StackRef<'a> {
 pub struct Stack<'a> {
     pub(crate) stack: &'a mut StackBacking,
     pub(crate) len: usize,
+}
+
+/// Raw mutable EVM operand stack.
+#[derive(Clone, Copy)]
+pub(crate) struct RawStack<'a> {
+    stack: *mut StackBacking,
+    len: usize,
+    marker: PhantomData<&'a mut StackBacking>,
 }
 
 /// Borrowed mutable EVM operand stack.
@@ -148,12 +158,6 @@ impl<'a> Stack<'a> {
     }
 
     #[inline(always)]
-    #[cfg(not(tco))]
-    pub(crate) const fn reborrow(&mut self) -> Stack<'_> {
-        Stack { stack: self.stack, len: self.len }
-    }
-
-    #[inline(always)]
     pub(crate) const fn as_mut(&mut self) -> StackMut<'_> {
         StackMut { stack: self.stack, len: &mut self.len }
     }
@@ -183,6 +187,36 @@ impl<'a> Stack<'a> {
     #[inline]
     pub const fn as_slice(&self) -> &[Word] {
         unsafe { core::slice::from_raw_parts(self.as_word_ptr(), self.len()) }
+    }
+}
+
+impl<'a> RawStack<'a> {
+    #[inline(always)]
+    pub(crate) const fn new(stack: *mut StackBacking, len: usize) -> Self {
+        debug_assert!(len <= Stack::CAPACITY);
+        Self { stack, len, marker: PhantomData }
+    }
+
+    #[inline(always)]
+    pub(crate) const fn len(self) -> usize {
+        self.len
+    }
+
+    #[inline(always)]
+    pub(crate) const fn set_len(&mut self, len: usize) {
+        debug_assert!(len <= Stack::CAPACITY);
+        self.len = len;
+    }
+
+    /// Borrows the stack backing.
+    ///
+    /// # Safety
+    ///
+    /// No access to the interpreter stack may occur until the returned `Stack` is dropped.
+    #[inline(always)]
+    pub(crate) unsafe fn borrow(&mut self) -> Stack<'_> {
+        // SAFETY: The caller upholds exclusive access to the stack backing.
+        Stack::new(unsafe { &mut *self.stack }, self.len)
     }
 }
 

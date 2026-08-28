@@ -1,7 +1,7 @@
 use super::{DynInspector, InspectMode, NoInspector, inc_pc, run_state};
 use crate::{
     EvmConfig, EvmTypesHost,
-    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, StackMut},
+    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut},
 };
 use core::hint::cold_path;
 
@@ -122,34 +122,37 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
 fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
     state: &mut InterpreterState<'_, '_, T>,
     mut pc: Pc,
-    mut stack: Stack<'_>,
+    mut stack: RawStack<'_>,
     instructions: &RawInstrTable<T>,
 ) -> InstrStop {
     let mut loop_state = imp::loop_state(state.gas_mut());
     loop {
         if M::INSPECT {
             imp::sync_loop_state(state, loop_state);
-            M::step(state, pc, stack.len);
+            M::step(state, pc, stack.len());
             if state.result().is_err() {
-                return finish_run(state, pc, stack.len, loop_state);
+                return finish_run(state, pc, stack.len(), loop_state);
             }
         }
 
         let op = pc.op();
         let instr = instructions[op as usize];
-        let (next_pc, next_stack_len) =
-            imp::dispatch_loop_call(instr, pc, stack.reborrow(), state, &mut loop_state);
+        let (next_pc, next_stack_len) = {
+            // SAFETY: This is the only stack borrow outside inspector callbacks.
+            let stack_view = unsafe { stack.borrow() };
+            imp::dispatch_loop_call(instr, pc, stack_view, state, &mut loop_state)
+        };
         pc = next_pc;
-        stack.len = next_stack_len;
+        stack.set_len(next_stack_len);
 
         if M::INSPECT {
             imp::sync_loop_state(state, loop_state);
-            M::step_end(state, pc, stack.len);
+            M::step_end(state, pc, stack.len());
             if state.result().is_err() {
-                return finish_run(state, pc, stack.len, loop_state);
+                return finish_run(state, pc, stack.len(), loop_state);
             }
         } else if pc.as_ptr().is_null() {
-            return finish_run(state, pc, stack.len, loop_state);
+            return finish_run(state, pc, stack.len(), loop_state);
         }
     }
 }

@@ -2,7 +2,7 @@ use super::{InspectMode, run_state};
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{
-        InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, gas::RemainingGas,
+        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, gas::RemainingGas,
         private::InstructionImplFn,
     },
 };
@@ -12,7 +12,7 @@ use core::hint::cold_path;
 type TailInstrFn<T> = extern_table!(
     fn(
         pc: Pc,
-        stack: Stack<'_>,
+        stack: RawStack<'_>,
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, '_, T>,
         instructions: *const (),
@@ -47,7 +47,7 @@ extern_table! {
         const OP: u8,
     >(
         mut pc: Pc,
-        mut stack: Stack<'_>,
+        mut stack: RawStack<'_>,
         mut remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, '_, T>,
         instructions: *const (),
@@ -56,7 +56,7 @@ extern_table! {
         let instr: InstructionImplFn<T> = instruction.instr;
         let dynamic_gas = instruction.dynamic_gas;
         if M::INSPECT {
-            M::step(state, pc, stack.len);
+            M::step(state, pc, stack.len());
             if state.result().is_err() {
                 cold_path();
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
@@ -67,14 +67,20 @@ extern_table! {
             state.set_result(Err(e));
             if M::INSPECT {
                 state.gas_mut().set_remaining(remaining_gas.get());
-                M::step_end(state, pc, stack.len);
+                M::step_end(state, pc, stack.len());
             }
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         if M::INSPECT || dynamic_gas {
             state.gas_mut().set_remaining(remaining_gas.get());
         }
-        let r = instr(&mut pc, stack.as_mut(), state);
+        let (r, stack_len) = {
+            // SAFETY: This is the only stack borrow outside inspector callbacks.
+            let mut stack_view = unsafe { stack.borrow() };
+            let r = instr(&mut pc, stack_view.as_mut(), state);
+            (r, stack_view.len)
+        };
+        stack.set_len(stack_len);
         if dynamic_gas {
             remaining_gas.set(state.gas_mut().remaining());
         }
@@ -82,13 +88,13 @@ extern_table! {
             cold_path();
             state.set_result(Err(e));
             if M::INSPECT {
-                M::step_end(state, pc, stack.len);
+                M::step_end(state, pc, stack.len());
             }
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         super::inc_pc(&mut pc, OP);
         if M::INSPECT {
-            M::step_end(state, pc, stack.len);
+            M::step_end(state, pc, stack.len());
             if state.result().is_err() {
                 cold_path();
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
@@ -106,13 +112,13 @@ extern_table! {
     #[cold]
     fn tail_call_restore<T: EvmTypesHost>(
         pc: Pc,
-        stack: Stack<'_>,
+        stack: RawStack<'_>,
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, '_, T>,
         _instructions: *const (),
     ) {
         state.gas_mut().set_remaining(remaining_gas.get());
-        state.set_pc_stack_len(pc.as_ptr(), stack.len);
+        state.set_pc_stack_len(pc.as_ptr(), stack.len());
         debug_assert!(state.result().is_err());
         // Exits by returning normally.
     }
