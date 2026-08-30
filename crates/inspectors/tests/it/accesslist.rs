@@ -1,7 +1,10 @@
 //! Accesslist tests
 
 use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, TransactTo, TxEnv};
-use alloy_primitives::{address, hex};
+use alloy_consensus::{TxEip7702, transaction::Recovered};
+use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
+use alloy_primitives::{Address, U256, address, hex};
+use evm2::ethereum::{LazyTxEip7702, TxEnvelope};
 use evm2_inspectors::access_list::AccessListInspector;
 
 #[test]
@@ -46,4 +49,46 @@ fn test_access_list_precompile() {
     let erecover = address!("0x0000000000000000000000000000000000000001");
     assert!(accesslist.excluded().contains(&erecover));
     assert!(accesslist.into_access_list().is_empty());
+}
+
+#[test]
+fn test_access_list_authorization_exclusions() {
+    const CHAIN_ID: u64 = 1;
+    const TX_CHAIN_ID: u64 = CHAIN_ID + 1;
+
+    let current_chain = address!("00000000000000000000000000000000000000c0");
+    let zero_chain = address!("00000000000000000000000000000000000000d0");
+    let wrong_chain = address!("00000000000000000000000000000000000000e0");
+    let max_nonce = address!("00000000000000000000000000000000000000f0");
+
+    let authorization = |chain_id, nonce, authority| {
+        RecoveredAuthorization::new_unchecked(
+            Authorization { chain_id: U256::from(chain_id), address: Address::ZERO, nonce },
+            authority,
+        )
+    };
+    let authorizations = vec![
+        authorization(CHAIN_ID, 0, RecoveredAuthority::Valid(current_chain)),
+        authorization(0, 0, RecoveredAuthority::Valid(zero_chain)),
+        authorization(CHAIN_ID + 1, 0, RecoveredAuthority::Valid(wrong_chain)),
+        authorization(CHAIN_ID, u64::MAX, RecoveredAuthority::Valid(max_nonce)),
+        authorization(CHAIN_ID, 0, RecoveredAuthority::Invalid),
+    ];
+    let tx = Recovered::new_unchecked(
+        TxEnvelope::Eip7702(LazyTxEip7702::from_cached_recovered_authorizations(
+            TxEip7702 { chain_id: TX_CHAIN_ID, ..Default::default() },
+            authorizations,
+        )),
+        Address::ZERO,
+    );
+
+    let inspector = AccessListInspector::default().with_excluded_from_tx(&tx, CHAIN_ID);
+    let excluded = inspector.excluded();
+
+    assert!(excluded.contains(&current_chain));
+    assert!(excluded.contains(&zero_chain));
+    assert!(!excluded.contains(&wrong_chain));
+    assert!(!excluded.contains(&max_nonce));
+    // The unrecoverable authorization has no authority and therefore adds nothing.
+    assert_eq!(excluded.len(), 2);
 }

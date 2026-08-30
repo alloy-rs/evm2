@@ -35,6 +35,7 @@ boa_engine = { workspace = true, optional = true }
 boa_gc = { workspace = true, optional = true }
 
 [dev-dependencies]
+alloy-eips.workspace = true
 alloy-hardforks.workspace = true
 snapbox = { workspace = true, features = ["term-svg"] }
 
