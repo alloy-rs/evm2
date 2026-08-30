@@ -18,6 +18,7 @@
 mod account;
 mod bal_context;
 mod changes;
+mod decode_error;
 mod error;
 mod list;
 
@@ -25,5 +26,6 @@ pub use account::{AccountBal, AccountInfoBal, StorageBal};
 pub use alloy_eip7928::BlockAccessIndex;
 pub use bal_context::BalContext;
 pub use changes::{BalChange, BalChanges, BalCodeChange};
+pub use decode_error::{BalChangeKind, BalDecodeError};
 pub use error::BalError;
 pub use list::Bal;
