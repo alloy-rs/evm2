@@ -54,9 +54,10 @@ impl AccessListInspector {
     /// Excludes the transaction's addresses from the final access list.
     ///
     /// 7702 authorities should be excluded because those get loaded anyway.
-    pub fn with_excluded_from_tx(self, tx: &RecoveredTxEnvelope) -> Self {
+    /// `chain_id` is the configured execution chain ID used to validate those authorizations.
+    pub fn with_excluded_from_tx(self, tx: &RecoveredTxEnvelope, chain_id: u64) -> Self {
         let Some(tx) = tx.as_eip7702() else { return self };
-        let chain_id = U256::from(tx.chain_id);
+        let chain_id = U256::from(chain_id);
         let authorities = tx.authorization_list.iter().filter_map(|authorization| {
             let auth_chain_id = authorization.chain_id();
             if !auth_chain_id.is_zero() && auth_chain_id != &chain_id {

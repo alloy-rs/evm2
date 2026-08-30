@@ -54,6 +54,7 @@ fn test_access_list_precompile() {
 #[test]
 fn test_access_list_authorization_exclusions() {
     const CHAIN_ID: u64 = 1;
+    const TX_CHAIN_ID: u64 = CHAIN_ID + 1;
 
     let current_chain = address!("00000000000000000000000000000000000000c0");
     let zero_chain = address!("00000000000000000000000000000000000000d0");
@@ -75,13 +76,13 @@ fn test_access_list_authorization_exclusions() {
     ];
     let tx = Recovered::new_unchecked(
         TxEnvelope::Eip7702(LazyTxEip7702::from_cached_recovered_authorizations(
-            TxEip7702 { chain_id: CHAIN_ID, ..Default::default() },
+            TxEip7702 { chain_id: TX_CHAIN_ID, ..Default::default() },
             authorizations,
         )),
         Address::ZERO,
     );
 
-    let inspector = AccessListInspector::default().with_excluded_from_tx(&tx);
+    let inspector = AccessListInspector::default().with_excluded_from_tx(&tx, CHAIN_ID);
     let excluded = inspector.excluded();
 
     assert!(excluded.contains(&current_chain));
