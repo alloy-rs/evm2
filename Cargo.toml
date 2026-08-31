@@ -64,6 +64,7 @@ evm2-jit-runtime = { path = "crates/jit/runtime", version = "0.1.0", default-fea
 
 alloy-consensus = { version = "2.0.4", default-features = false }
 alloy-chains = { version = "0.2.34", default-features = false }
+alloy-eip2930 = { version = "0.2.4", default-features = false }
 alloy-eip7928 = { version = "0.4.0", default-features = false }
 alloy-eips = { version = "2.0.4", default-features = false }
 alloy-hardforks = { version = "0.4", default-features = false }

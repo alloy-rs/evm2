@@ -1,9 +1,9 @@
 use alloc::collections::BTreeSet;
+use alloy_eip2930::{AccessList, AccessListItem};
 use alloy_primitives::{
     Address, B256, U256,
     map::{HashMap, HashSet},
 };
-use alloy_rpc_types_eth::{AccessList, AccessListItem};
 use evm2::{
     Evm, EvmTypes, Inspector,
     ethereum::RecoveredTxEnvelope,
@@ -32,14 +32,11 @@ impl AccessListInspector {
     ///
     /// The `access_list` is the provided access list from the call request
     pub fn new(access_list: AccessList) -> Self {
-        Self {
-            excluded: Default::default(),
-            touched_slots: access_list
-                .0
-                .into_iter()
-                .map(|v| (v.address, v.storage_keys.into_iter().collect()))
-                .collect(),
+        let mut touched_slots = HashMap::<Address, BTreeSet<B256>>::default();
+        for item in access_list.0 {
+            touched_slots.entry(item.address).or_default().extend(item.storage_keys);
         }
+        Self { excluded: Default::default(), touched_slots }
     }
 
     /// Excludes additional addresses from the final access list.
@@ -94,7 +91,9 @@ impl AccessListInspector {
             address,
             storage_keys: slots.into_iter().collect(),
         });
-        AccessList(items.collect())
+        let mut access_list = AccessList(items.collect());
+        access_list.sort();
+        access_list
     }
 
     /// Returns list of addresses and storage keys used by the transaction. It gives you the list of
@@ -104,7 +103,9 @@ impl AccessListInspector {
             address: *address,
             storage_keys: slots.iter().copied().collect(),
         });
-        AccessList(items.collect())
+        let mut access_list = AccessList(items.collect());
+        access_list.sort();
+        access_list
     }
 
     /// Collects addresses which should be excluded from the access list. Must be called before the
@@ -115,6 +116,8 @@ impl AccessListInspector {
         self.excluded.extend(
             [message.caller, message.destination].into_iter().chain(host.precompiles().addresses()),
         );
+        // Remove seeded excluded entries; SLOAD/SSTORE can re-add slots accessed during execution.
+        self.touched_slots.retain(|address, _| !self.excluded.contains(address));
     }
 }
 

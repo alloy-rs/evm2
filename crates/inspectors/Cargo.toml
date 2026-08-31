@@ -16,6 +16,7 @@ workspace = true
 [dependencies]
 # eth
 alloy-consensus.workspace = true
+alloy-eip2930.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-rpc-types-trace.workspace = true
 alloy-sol-types.workspace = true
@@ -44,6 +45,7 @@ default = ["std"]
 std = [
     "alloy-primitives/std",
     "alloy-consensus/std",
+    "alloy-eip2930/std",
     "alloy-rpc-types-eth/std",
     "alloy-sol-types/std",
     "anstyle/std",
@@ -56,6 +58,7 @@ serde = [
     "dep:serde",
     "alloy-primitives/serde",
     "alloy-consensus/serde",
+    "alloy-eip2930/serde",
     "alloy-rpc-types-eth/serde",
     "evm2/serde",
 ]
