@@ -774,9 +774,11 @@ mod tests {
     fn amsterdam_create_preaccess_failure_does_not_fire_create_hook() {
         let contract = Address::from([0x11; 20]);
         for is_create2 in [false, true] {
-            for (balance, nonce, value) in
-                [(Word::from(1), 0, Word::from(2)), (Word::MAX, u64::MAX, Word::ZERO)]
-            {
+            for (balance, nonce, value, depth) in [
+                (Word::from(1), 0, Word::from(2), 0),
+                (Word::MAX, u64::MAX, Word::ZERO, 0),
+                (Word::MAX, 0, Word::ZERO, CALL_DEPTH_LIMIT),
+            ] {
                 let mut code = Vec::new();
                 if is_create2 {
                     push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO, value]);
@@ -795,7 +797,7 @@ mod tests {
                     SpecId::AMSTERDAM,
                     db,
                     code,
-                    &MessageExt { destination: contract, ..Default::default() },
+                    &MessageExt { destination: contract, depth, ..Default::default() },
                     100_000,
                     HookInspector::default(),
                 );

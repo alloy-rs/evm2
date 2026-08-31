@@ -325,7 +325,9 @@ fn create_inner<T: EvmTypesHost>(
         Some(state.host().load_account(&caller, false, false)?)
     };
     if let Some(caller_info) = caller_info.as_ref().filter(|_| state.feature(EvmFeatures::EIP8037))
-        && (caller_info.balance < value || caller_info.nonce == u64::MAX)
+        && (caller_info.balance < value
+            || caller_info.nonce == u64::MAX
+            || depth > CALL_DEPTH_LIMIT)
     {
         state.clear_return_data();
         stack.push(Word::ZERO)?;
@@ -346,9 +348,9 @@ fn create_inner<T: EvmTypesHost>(
     // charge is refunded via `refill_reservoir` if the create fails to deploy (see the
     // create-failure path after `execute_message`).
     let mut charged_create_state_gas = false;
-    // Only decide the account-creation charge once the depth pre-check passes. Balance and nonce
-    // pre-access failures returned above, before the destination was accessed.
-    if state.feature(EvmFeatures::EIP8037) && depth <= CALL_DEPTH_LIMIT {
+    // Balance, nonce, and depth pre-access failures returned above, before the destination was
+    // accessed.
+    if state.feature(EvmFeatures::EIP8037) {
         let features = state.version().features;
         if state.host().target_is_empty_for_new_account_gas(&destination, features)? {
             gas.spend_state(state.gas_params().create_state_gas())?;
@@ -911,21 +913,22 @@ mod tests {
     }
 
     #[test]
-    fn create_too_deep_skips_destination_read_eip8037() {
+    fn create_too_deep_clears_return_data_and_skips_destination_read_eip8037() {
         // EIP-8037: a create failing the depth pre-check must not access the destination —
         // the read would leak the address into the EIP-7928 block access list.
         let mut host = TestHost { exists: false, ..Default::default() };
         let mut code = Vec::new();
         push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
-        code.extend([op::CREATE, op::STOP]);
+        code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
 
         let interp = run(RunConfig::new(code)
             .host(&mut host)
             .spec(SpecId::AMSTERDAM)
             .message(MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .return_data(Bytes::from_static(b"stale"))
             .gas_limit(50_000));
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.stack(), [Word::ZERO]);
+        assert_eq!(interp.stack(), [Word::ZERO, Word::ZERO]);
         assert!(host.new_account_checks.is_empty());
     }
 

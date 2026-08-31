@@ -684,7 +684,9 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         Some(ecx.host().load_account(&caller, false, false)?)
     };
     if let Some(caller_info) = caller_info.as_ref().filter(|_| ecx.enables(EvmFeatures::EIP8037))
-        && (caller_info.balance < value || caller_info.nonce == u64::MAX)
+        && (caller_info.balance < value
+            || caller_info.nonce == u64::MAX
+            || depth > CALL_DEPTH_LIMIT)
     {
         unsafe {
             sp.write(EvmWord::ZERO);
@@ -701,11 +703,10 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     );
 
     // EIP-8037: charge the CREATE account-creation state gas before the child
-    // gas split, conditional on the destination not already existing. Balance and nonce
+    // gas split, conditional on the destination not already existing. Balance, nonce, and depth
     // pre-access failures returned above, before the destination was accessed.
     let mut charged_create_state_gas = false;
     if ecx.enables(EvmFeatures::EIP8037)
-        && depth <= CALL_DEPTH_LIMIT
         && ecx.host().target_is_empty_for_new_account_gas(&destination, version.features)?
     {
         ecx.gas.spend_state(version.gas_params.create_state_gas())?;
@@ -1427,9 +1428,11 @@ mod tests {
     fn create_builtin_preaccess_failure_skips_child_message() {
         let contract = Address::from([0x11; 20]);
         for create_kind in [CreateKind::Create, CreateKind::Create2] {
-            for (balance, nonce, value) in
-                [(Word::ZERO, 0, Word::from(1)), (Word::MAX, u64::MAX, Word::ZERO)]
-            {
+            for (balance, nonce, value, depth) in [
+                (Word::ZERO, 0, Word::from(1), 0),
+                (Word::MAX, u64::MAX, Word::ZERO, 0),
+                (Word::MAX, 0, Word::ZERO, CALL_DEPTH_LIMIT),
+            ] {
                 let mut db = InMemoryDB::default();
                 db.insert_account_info(
                     &contract,
@@ -1445,6 +1448,7 @@ mod tests {
                 host.set_inspector(MessageInspector::default());
                 let tx_env = TxEnvExt::default();
                 let message = MessageExt {
+                    depth,
                     gas_limit: 100_000,
                     destination: contract,
                     code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
