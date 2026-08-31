@@ -324,15 +324,6 @@ fn create_inner<T: EvmTypesHost>(
     } else {
         Some(state.host().load_account(&caller, false, false)?)
     };
-    if let Some(caller_info) = caller_info.as_ref().filter(|_| state.feature(EvmFeatures::EIP8037))
-        && (caller_info.balance < value
-            || caller_info.nonce == u64::MAX
-            || depth > CALL_DEPTH_LIMIT)
-    {
-        state.clear_return_data();
-        stack.push(Word::ZERO)?;
-        return Ok(());
-    }
     let destination = derive_create_destination(
         kind,
         &caller,
@@ -348,9 +339,20 @@ fn create_inner<T: EvmTypesHost>(
     // charge is refunded via `refill_reservoir` if the create fails to deploy (see the
     // create-failure path after `execute_message`).
     let mut charged_create_state_gas = false;
-    // Balance, nonce, and depth pre-access failures returned above, before the destination was
-    // accessed.
     if state.feature(EvmFeatures::EIP8037) {
+        // `caller_info` is always `Some` when EIP-8037 is enabled.
+        if let Some(caller_info) = caller_info.as_ref()
+            && (caller_info.balance < value
+                || caller_info.nonce == u64::MAX
+                || depth > CALL_DEPTH_LIMIT)
+        {
+            state.clear_return_data();
+            stack.push(Word::ZERO)?;
+            return Ok(());
+        }
+
+        // The destination is loaded here and made warm. Balance, nonce, and depth pre-access
+        // failures return above before the destination is accessed.
         let features = state.version().features;
         if state.host().target_is_empty_for_new_account_gas(&destination, features)? {
             gas.spend_state(state.gas_params().create_state_gas())?;

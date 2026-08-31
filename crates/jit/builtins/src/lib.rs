@@ -683,17 +683,6 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     } else {
         Some(ecx.host().load_account(&caller, false, false)?)
     };
-    if let Some(caller_info) = caller_info.as_ref().filter(|_| ecx.enables(EvmFeatures::EIP8037))
-        && (caller_info.balance < value
-            || caller_info.nonce == u64::MAX
-            || depth > CALL_DEPTH_LIMIT)
-    {
-        unsafe {
-            sp.write(EvmWord::ZERO);
-        }
-        ecx.set_return_data(Bytes::new());
-        return Ok(());
-    }
     let destination = derive_create_destination(
         kind,
         &caller,
@@ -703,14 +692,28 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     );
 
     // EIP-8037: charge the CREATE account-creation state gas before the child
-    // gas split, conditional on the destination not already existing. Balance, nonce, and depth
-    // pre-access failures returned above, before the destination was accessed.
+    // gas split, conditional on the destination not already existing.
     let mut charged_create_state_gas = false;
-    if ecx.enables(EvmFeatures::EIP8037)
-        && ecx.host().target_is_empty_for_new_account_gas(&destination, version.features)?
-    {
-        ecx.gas.spend_state(version.gas_params.create_state_gas())?;
-        charged_create_state_gas = true;
+    if ecx.enables(EvmFeatures::EIP8037) {
+        // `caller_info` is always `Some` when EIP-8037 is enabled.
+        if let Some(caller_info) = caller_info.as_ref()
+            && (caller_info.balance < value
+                || caller_info.nonce == u64::MAX
+                || depth > CALL_DEPTH_LIMIT)
+        {
+            unsafe {
+                sp.write(EvmWord::ZERO);
+            }
+            ecx.set_return_data(Bytes::new());
+            return Ok(());
+        }
+
+        // The destination is loaded here and made warm. Balance, nonce, and depth pre-access
+        // failures return above before the destination is accessed.
+        if ecx.host().target_is_empty_for_new_account_gas(&destination, version.features)? {
+            ecx.gas.spend_state(version.gas_params.create_state_gas())?;
+            charged_create_state_gas = true;
+        }
     }
 
     let mut gas_limit = ecx.gas.remaining();
