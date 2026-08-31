@@ -1,7 +1,7 @@
 use alloc::collections::BTreeSet;
 use alloy_eip2930::{AccessList, AccessListItem};
 use alloy_primitives::{
-    Address, B256,
+    Address, B256, U256,
     map::{HashMap, HashSet},
 };
 use evm2::{
@@ -31,16 +31,12 @@ impl AccessListInspector {
     /// Creates a new inspector instance
     ///
     /// The `access_list` is the provided access list from the call request
-    pub fn new(mut access_list: AccessList) -> Self {
-        access_list.dedup();
-        Self {
-            excluded: Default::default(),
-            touched_slots: access_list
-                .0
-                .into_iter()
-                .map(|v| (v.address, v.storage_keys.into_iter().collect()))
-                .collect(),
+    pub fn new(access_list: AccessList) -> Self {
+        let mut touched_slots = HashMap::<Address, BTreeSet<B256>>::default();
+        for item in access_list.0 {
+            touched_slots.entry(item.address).or_default().extend(item.storage_keys);
         }
+        Self { excluded: Default::default(), touched_slots }
     }
 
     /// Excludes additional addresses from the final access list.
@@ -55,12 +51,20 @@ impl AccessListInspector {
     /// Excludes the transaction's addresses from the final access list.
     ///
     /// 7702 authorities should be excluded because those get loaded anyway.
-    pub fn with_excluded_from_tx(self, tx: &RecoveredTxEnvelope) -> Self {
-        let authorities = tx
-            .as_eip7702()
-            .into_iter()
-            .flat_map(|tx| &tx.authorization_list)
-            .filter_map(|authorization| authorization.authority());
+    /// `chain_id` is the configured execution chain ID used to validate those authorizations.
+    pub fn with_excluded_from_tx(self, tx: &RecoveredTxEnvelope, chain_id: u64) -> Self {
+        let Some(tx) = tx.as_eip7702() else { return self };
+        let chain_id = U256::from(chain_id);
+        let authorities = tx.authorization_list.iter().filter_map(|authorization| {
+            let auth_chain_id = authorization.chain_id();
+            if !auth_chain_id.is_zero() && auth_chain_id != &chain_id {
+                return None;
+            }
+            if authorization.nonce() == u64::MAX {
+                return None;
+            }
+            authorization.authority()
+        });
         self.with_excluded(authorities)
     }
 
