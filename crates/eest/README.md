@@ -22,6 +22,11 @@ Populate it with:
 ./scripts/setup_test_fixtures.py
 ```
 
+By default this downloads the glamsterdam devnet fixtures plus the legacy
+Cancun and Constantinople state tests. Set `EVM2_STATETEST_MAIN=1` to also
+download the EEST `main` develop suite (stable with `EVM2_STATETEST_STABLE=1`),
+or `EVM2_STATETEST_DEVNET_ONLY=1` to skip the legacy fixtures.
+
 Run all discovered EEST fixtures with the single `eest` test binary:
 
 ```sh
@@ -77,9 +82,10 @@ Run all discovered state tests with nextest:
 cargo nextest run -p evm2-eest --test eest --ignore-default-filter statetests
 ```
 
-By default, this runs `main/develop/state_tests` plus the legacy Cancun and
-Constantinople state tests. EEST develop includes the stable fixtures, so stable
-is not run separately.
+This runs every downloaded state-test root: `devnet/state_tests`, the legacy
+Cancun and Constantinople state tests, and `main/develop/state_tests` when the
+`main` suite has been downloaded. EEST develop includes the stable fixtures, so
+stable is not run separately.
 
 Set `EVM2_STATETEST_STABLE=1` to download and run EEST stable fixtures instead
 of develop.
@@ -92,10 +98,10 @@ Run all discovered blockchain tests with nextest:
 cargo nextest run -p evm2-eest --test eest --ignore-default-filter blockchain_tests
 ```
 
-By default, this runs `main/develop/blockchain_tests` and
-`devnet/blockchain_tests`. Transition forks are skipped. Blocks with
-`blockAccessList` currently reach a `todo!()` assertion until evm2 can build
-block access lists.
+This runs every downloaded blockchain-test root: `devnet/blockchain_tests`,
+plus `main/develop/blockchain_tests` when the `main` suite has been downloaded.
+Transition forks are skipped. Blocks with a `blockAccessList` build the block
+access list and check it against the fixture, including the header hash.
 
 Set `EVM2_BLOCKCHAINTEST_STABLE=1` or `EVM2_EEST_STABLE=1` to use EEST stable
 instead of develop for main blockchain fixtures.
@@ -140,7 +146,6 @@ For local experiments, `EVM2_STATETEST_ROOT`, `EVM2_BLOCKCHAINTEST_ROOT`,
 `EVM2_STATETEST_STABLE`, `EVM2_BLOCKCHAINTEST_STABLE`, `EVM2_EEST_STABLE`,
 `EVM2_TEST_FIXTURES`, and `SUBDIR` are supported as optional filters.
 
-Test cases for unsupported hardforks (currently Amsterdam) are skipped
-automatically. Set `EVM2_SKIP_FORKS` to a comma-separated list of hardfork
-names (for example `EVM2_SKIP_FORKS=osaka,prague`) to skip additional full
-hardforks.
+No hardforks are skipped by default. Set `EVM2_SKIP_FORKS` to a
+comma-separated list of hardfork names (for example
+`EVM2_SKIP_FORKS=osaka,prague`) to skip full hardforks.

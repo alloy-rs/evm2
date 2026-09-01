@@ -43,9 +43,14 @@ See [`crates/evm2/examples/custom_evm`](crates/evm2/examples/custom_evm) for the
 ## Benchmarks
 
 ```sh
-cargo bench -p evm2 --bench evm
-EVM2_BENCH_REVM=1 cargo bench -p evm2 --bench evm
+cargo bench -p evm2-cli --bench evm
+EVM2_BENCH_REVM=1 cargo bench -p evm2-cli --bench evm
 ```
+
+The interpreter dispatch backend is selected at build time: nightly toolchains
+default to the tail-call (TCO) backend, while stable toolchains fall back to
+the packed backend on 64-bit targets. The headline interpreter numbers assume
+the TCO backend; set `EVM2_DISPATCH_BACKEND` to pin a backend explicitly.
 
 ## Development
 
