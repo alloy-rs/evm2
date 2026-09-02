@@ -43,8 +43,8 @@ See [`crates/evm2/examples/custom_evm`](crates/evm2/examples/custom_evm) for the
 ## Benchmarks
 
 ```sh
-cargo bench -p evm2 --bench evm
-EVM2_BENCH_REVM=1 cargo bench -p evm2 --bench evm
+cargo bench -p evm2-cli --bench evm
+EVM2_BENCH_REVM=1 cargo bench -p evm2-cli --bench evm
 ```
 
 ## Development
