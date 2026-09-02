@@ -236,8 +236,13 @@ impl<'a> StackMut<'a> {
     }
 
     /// Consumes this borrowed stack and returns its raw word pointer and length.
+    ///
+    /// # Safety
+    ///
+    /// The caller must keep the length at or below [`STACK_LIMIT`] and ensure the first `len`
+    /// words are initialized before creating another stack view.
     #[inline]
-    pub const fn into_raw_parts(self) -> (*mut Word, &'a mut usize) {
+    pub const unsafe fn into_raw_parts(self) -> (*mut Word, &'a mut usize) {
         (self.stack.as_mut_ptr().cast(), self.len)
     }
 
@@ -419,9 +424,13 @@ impl<'a> StackMut<'a> {
     }
 
     /// Duplicates the `n`th stack word from the top.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n` is zero.
     #[inline]
     pub fn dup(&mut self, n: usize) -> Result {
-        debug_assert!(n > 0, "attempted to dup 0");
+        assert!(n > 0, "attempted to dup 0");
         let len = self.len();
         if (len < n) | (len == Self::CAPACITY) {
             cold_path();
@@ -441,15 +450,23 @@ impl<'a> StackMut<'a> {
     }
 
     /// Swaps the top word with the `n`th word below it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n` is zero.
     #[inline(always)]
     pub fn swap(&mut self, n: usize) -> Result {
         self.exchange(0, n)
     }
 
     /// Exchanges the `n`th and `m`th words below the top.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n` and `m` are equal.
     #[inline]
     pub fn exchange(&mut self, n: usize, m: usize) -> Result {
-        debug_assert!(n != m, "overlapping exchange");
+        assert!(n != m, "overlapping exchange");
         let len = self.len();
         if n >= len || m >= len {
             cold_path();
@@ -680,6 +697,30 @@ mod tests {
 
         run_with_len(StackMut::CAPACITY, |stack| {
             assert_matches!(stack.dup(1), Err(InstrStop::StackOverflow));
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "attempted to dup 0")]
+    fn dup_zero_panics() {
+        run(|stack| {
+            let _ = stack.dup(0);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "overlapping exchange")]
+    fn swap_zero_panics() {
+        run_with_len(1, |stack| {
+            let _ = stack.swap(0);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "overlapping exchange")]
+    fn overlapping_exchange_panics() {
+        run_with_len(2, |stack| {
+            let _ = stack.exchange(1, 1);
         });
     }
 

@@ -72,12 +72,17 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
     pub fn from_interpreter(
         interpreter: &'ctx mut Interpreter<'frame, 'host, BaseEvmTypes>,
     ) -> Self {
-        Self::from_interpreter_with_stack(interpreter).0
+        unsafe { Self::from_interpreter_with_stack(interpreter).0 }
     }
 
     /// Creates a new context from an interpreter and returns the borrowed stack.
+    ///
+    /// # Safety
+    ///
+    /// The caller must keep the returned stack length at or below the stack capacity and ensure
+    /// the first `stack_len` words are initialized before accessing the interpreter stack.
     #[inline]
-    pub fn from_interpreter_with_stack(
+    pub unsafe fn from_interpreter_with_stack(
         interpreter: &'ctx mut Interpreter<'frame, 'host, BaseEvmTypes>,
     ) -> (Self, &'ctx mut EvmStack, &'ctx mut usize) {
         let interpreter_ptr = ptr::from_mut(&mut *interpreter);
@@ -86,7 +91,7 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
         let gas = interpreter.gas();
         let calldatasize = message.input.len();
         let return_data_len = interpreter.return_data().len();
-        let (stack_ptr, stack_len) = interpreter.stack_mut().into_raw_parts();
+        let (stack_ptr, stack_len) = unsafe { interpreter.stack_mut().into_raw_parts() };
         let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
         let mut this = Self {
             interpreter: interpreter_ptr,
@@ -325,7 +330,8 @@ impl EvmCompilerFn {
         self,
         interpreter: &'ctx mut Interpreter<'frame, 'host, BaseEvmTypes>,
     ) -> InstrStop {
-        let (mut ecx, stack, stack_len) = EvmContext::from_interpreter_with_stack(interpreter);
+        let (mut ecx, stack, stack_len) =
+            unsafe { EvmContext::from_interpreter_with_stack(interpreter) };
         let result = unsafe { self.call(&mut ecx, stack, stack_len) };
         if result == InstrStop::OutOfGas {
             ecx.gas.spend_all();

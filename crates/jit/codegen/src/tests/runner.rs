@@ -400,7 +400,8 @@ fn with_evm_context_and_host_mut<
     let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
     interpreter.prepare_run(config.base_spec_id(), config.version(), host);
 
-    let (mut ecx, stack, stack_len) = EvmContext::from_interpreter_with_stack(&mut interpreter);
+    let (mut ecx, stack, stack_len) =
+        unsafe { EvmContext::from_interpreter_with_stack(&mut interpreter) };
     f(&mut ecx, stack, stack_len)
 }
 
