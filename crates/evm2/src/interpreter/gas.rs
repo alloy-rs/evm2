@@ -191,7 +191,7 @@ impl GasTracker {
     /// Creates a gas tracker from already used gas.
     #[inline]
     pub const fn new_used_gas(gas_limit: u64, used_gas: u64, reservoir: u64) -> Self {
-        Self::from_parts(gas_limit, gas_limit - used_gas, reservoir)
+        Self::from_parts(gas_limit, gas_limit.saturating_sub(used_gas), reservoir)
     }
 
     /// Returns remaining execution gas.
@@ -715,6 +715,12 @@ impl MemoryGas {
 mod tests {
     use super::*;
     use core::assert_matches;
+
+    #[test]
+    fn test_new_used_gas_saturates_remaining() {
+        let gas = GasTracker::new_used_gas(100, 101, 50);
+        assert_eq!((gas.remaining(), gas.limit(), gas.reservoir()), (0, 100, 50));
+    }
 
     #[test]
     fn test_spend_state() {
