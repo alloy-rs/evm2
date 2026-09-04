@@ -625,9 +625,13 @@ fn execute_block(
 
         if let Some(expected_bal) = block_access_list(block) {
             let built = evm.state_mut().take_bal_builder().unwrap_or_default();
-            if let Err(kind) =
-                check_block_access_list(block_index, built, expected_bal, block_header(block))
-            {
+            if let Err(kind) = check_block_access_list(
+                block_index,
+                built,
+                expected_bal,
+                block_header(block),
+                transactions.len(),
+            ) {
                 if should_fail {
                     return Ok(BlockResolution::Discard);
                 }
@@ -1161,6 +1165,7 @@ fn check_block_access_list(
     built: Bal,
     expected: &BlockAccessList,
     header: Option<&BlockHeader>,
+    transaction_count: usize,
 ) -> Result<(), TestErrorKind> {
     let built = BlockAccessList::from(built);
 
@@ -1181,6 +1186,18 @@ fn check_block_access_list(
         }
     }
 
+    // Validate the fixture-provided list against this block's transaction count before
+    // canonicalizing it for comparison. Invalid expected data represents an invalid block; it
+    // must not be retained as raw input after a failed conversion.
+    let expected = BlockAccessList::from(
+        Bal::try_from_alloy_ref_with_transaction_count(expected.as_slice(), transaction_count)
+            .map_err(|err| {
+                TestErrorKind::UnexpectedFailure(format!(
+                    "invalid expected block access list: {err}"
+                ))
+            })?,
+    );
+
     // The header commits to the computed list by hash (execution-specs compares
     // `hash_block_access_list` against `header.block_access_list_hash`).
     if let Some(expected_hash) = header.and_then(|header| header.block_access_list_hash) {
@@ -1192,10 +1209,6 @@ fn check_block_access_list(
         }
     }
 
-    let expected = match Bal::try_from(expected.clone()) {
-        Ok(bal) => BlockAccessList::from(bal),
-        Err(_) => expected.clone(),
-    };
     if built == expected {
         return Ok(());
     }
@@ -1330,6 +1343,28 @@ mod tests {
 
     #[cfg(feature = "jit")]
     const BYTECODE_STORE42: &[u8] = &[op::PUSH1, 0x42, op::PUSH0, op::SSTORE, op::STOP];
+
+    #[test]
+    fn bal_check_surfaces_contextual_expected_list_errors() {
+        use super::{Bal, BlockHeader, TestErrorKind, check_block_access_list};
+        use alloy_eip7928::{AccountChanges, BalanceChange, BlockAccessIndex};
+        use alloy_primitives::{Address, U256};
+
+        let expected = vec![AccountChanges {
+            address: Address::with_last_byte(1),
+            balance_changes: vec![BalanceChange::new(BlockAccessIndex::new(3), U256::ONE)],
+            ..Default::default()
+        }];
+        let header = BlockHeader { gas_limit: U256::from(30_000_000), ..Default::default() };
+
+        let err = check_block_access_list(0, Bal::new(), &expected, Some(&header), 1).unwrap_err();
+        assert!(matches!(
+            err,
+            TestErrorKind::UnexpectedFailure(message)
+                if message.contains("invalid expected block access list")
+                    && message.contains("exceeds the block maximum 2")
+        ));
+    }
 
     #[test]
     fn blockchain_tests_apply_ommer_rewards_before_merge() {
