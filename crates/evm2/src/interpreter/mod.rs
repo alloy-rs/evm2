@@ -6,7 +6,11 @@ pub use gas::{Gas, GasTracker, MemoryGas};
 #[macro_use]
 mod utils;
 
-pub(crate) mod instructions;
+/// Base EVM instruction implementations.
+///
+/// This module is not part of the stable API and has no stability guarantees.
+#[doc(hidden)]
+pub mod instructions;
 pub use instructions::i256;
 
 pub(crate) mod dispatch;

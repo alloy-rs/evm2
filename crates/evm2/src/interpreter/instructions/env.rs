@@ -44,32 +44,32 @@ fn copy_data(
 }
 
 #[instruction]
-pub(crate) fn address(cx: _) -> out {
+pub fn address(cx: _) -> out {
     *out = address_to_word(&cx.state.message().destination);
 }
 
 #[instruction(dynamic_gas)]
-pub(crate) fn balance(cx: _, [addr]: [Word]) -> Result<out> {
+pub fn balance(cx: _, [addr]: [Word]) -> Result<out> {
     *out = load_account(&mut cx, *addr, false)?.balance;
 }
 
 #[instruction]
-pub(crate) fn origin(cx: _) -> out {
+pub fn origin(cx: _) -> out {
     *out = address_to_word(&cx.state.tx().origin);
 }
 
 #[instruction]
-pub(crate) fn caller(cx: _) -> out {
+pub fn caller(cx: _) -> out {
     *out = address_to_word(&cx.state.message().caller);
 }
 
 #[instruction]
-pub(crate) fn callvalue(cx: _) -> out {
+pub fn callvalue(cx: _) -> out {
     *out = cx.state.message().value;
 }
 
 #[instruction]
-pub(crate) fn calldataload(cx: _, [offset]: [Word]) -> out {
+pub fn calldataload(cx: _, [offset]: [Word]) -> out {
     let offset = word_to_usize_saturated(*offset);
     let input = cx.state.message().input.as_ref();
     let mut word = B256::ZERO;
@@ -81,12 +81,12 @@ pub(crate) fn calldataload(cx: _, [offset]: [Word]) -> out {
 }
 
 #[instruction]
-pub(crate) fn calldatasize(cx: _) -> out {
+pub fn calldatasize(cx: _) -> out {
     *out = Word::from(cx.state.message().input.len());
 }
 
 #[instruction(dynamic_gas)]
-pub(crate) fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
+pub fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
     let len = word_to_usize(*len)?;
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
     let input = cx.state.message().input.as_ref();
@@ -95,12 +95,12 @@ pub(crate) fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> 
 }
 
 #[instruction]
-pub(crate) fn codesize(cx: _) -> out {
+pub fn codesize(cx: _) -> out {
     *out = Word::from(cx.state.bytecode().len());
 }
 
 #[instruction(dynamic_gas)]
-pub(crate) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
+pub fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
     let len = word_to_usize(*len)?;
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
     let data = cx.state.0.bytecode.original_byte_slice();
@@ -109,23 +109,23 @@ pub(crate) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Resu
 }
 
 #[instruction]
-pub(crate) fn gasprice(cx: _) -> out {
+pub fn gasprice(cx: _) -> out {
     *out = cx.state.tx().gas_price;
 }
 
 #[instruction(dynamic_gas)]
-pub(crate) fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
+pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
     *out = Word::from(load_account(&mut cx, *addr, true)?.code.len());
 }
 
 #[instruction(dynamic_gas)]
-pub(crate) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
+pub fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
     let account = load_account(&mut cx, *addr, false)?;
     *out = if account.is_empty { Word::ZERO } else { b256_to_word(account.code_hash) };
 }
 
 #[instruction(dynamic_gas)]
-pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Result {
+pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Result {
     let len = word_to_usize(*len)?;
     cx.gas.spend(cx.state.gas_params().extcodecopy_cost(len))?;
     let memory_offset = if len != 0 {
@@ -146,12 +146,12 @@ pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]
 }
 
 #[instruction]
-pub(crate) fn returndatasize(cx: _) -> Result<out> {
+pub fn returndatasize(cx: _) -> Result<out> {
     *out = Word::from(cx.state.return_data().len());
 }
 
 #[instruction(dynamic_gas)]
-pub(crate) fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
+pub fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
     let len = word_to_usize(*len)?;
     let data_offset = word_to_usize_saturated(*data_offset);
     if data_offset.saturating_add(len) > cx.state.return_data().len() {
