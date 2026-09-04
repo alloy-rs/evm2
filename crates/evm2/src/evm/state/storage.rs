@@ -186,10 +186,10 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     ///
     /// Only called during transaction finalization (selfdestruct and EIP-161 dead-account
     /// deletion), after the last revertible scope, so the wipe is not journaled. Loaded slot
-    /// entries are kept with their values reset to zero: wiped slots resolve to zero on re-load,
-    /// and resetting `original` alongside `current` turns the transaction's prior writes into
-    /// unchanged reads, which keeps a destroyed account's storage accesses visible to the EIP-7928
-    /// block access list (execution-specs `destroy_storage` converts writes to reads).
+    /// entries are kept with their current values reset to zero, while transaction-boundary
+    /// originals remain intact for EVM state accounting. Wiped slots resolve to zero on re-load;
+    /// EIP-7928 BAL construction uses the overlay's wipe marker to classify destroyed slots as
+    /// reads.
     #[inline]
     pub fn wipe(&mut self) {
         self.storage.wiped = true;
@@ -394,6 +394,10 @@ mod tests {
         assert!(!state.storage_slot(&account, cold_key, false).unwrap().is_warm());
         assert_eq!(state.storage_slot(&account, warm_key, false).unwrap().current(), Word::ZERO);
         assert_eq!(state.storage_slot(&account, cold_key, false).unwrap().current(), Word::ZERO);
+        assert_eq!(
+            state.storage_slot(&account, cold_key, false).unwrap().original(),
+            Word::from(4)
+        );
 
         let pending = state.take_pending_state();
         let overlay = pending.storage.get(&account).expect("wipe must be emitted");
