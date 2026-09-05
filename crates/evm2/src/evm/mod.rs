@@ -2002,6 +2002,28 @@ mod tests {
         Ok(TxResultExt { status: true, total_gas_spent: req.tx.nonce, ..TxResultExt::default() })
     }
 
+    fn handle_read_only_tx(
+        req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
+    ) -> HandlerResult<TxResult> {
+        let account = req
+            .host
+            .state
+            .account(&LIFECYCLE_ACCOUNT, false)
+            .map_err(registry::HandlerError::Fatal)?;
+        assert_eq!(account.balance(), Word::from(1));
+        drop(account);
+
+        let slot = req
+            .host
+            .state
+            .storage(&LIFECYCLE_ACCOUNT)
+            .into_slot(LIFECYCLE_STORAGE_KEY, false)
+            .map_err(registry::HandlerError::Fatal)?;
+        assert_eq!(slot.current(), Word::from(1));
+
+        Ok(TxResultExt { status: true, ..TxResultExt::default() })
+    }
+
     fn empty_precompiles() -> Precompiles<BaseEvmTypes> {
         Precompiles::new(Cow::Owned(PrecompileMap::new()))
     }
@@ -2125,6 +2147,27 @@ mod tests {
             TEST_TX_TYPE,
             TxEnvelope::as_legacy,
             handle_lifecycle_tx,
+        );
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &LIFECYCLE_ACCOUNT,
+            AccountInfo::default().with_balance(Word::from(1)),
+        );
+        database.insert_account_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY, &Word::from(1));
+        Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        )
+    }
+
+    fn read_only_evm() -> Evm<'static, BaseEvmTypes> {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handle_read_only_tx,
         );
         let mut database = InMemoryDB::default();
         database.insert_account_info(
@@ -2916,6 +2959,32 @@ mod tests {
         assert_eq!(
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
             Word::from(1)
+        );
+    }
+
+    #[test]
+    fn executed_transaction_discard_with_streams_bal_reads() {
+        let mut evm = read_only_evm();
+        let mut sink = InMemoryDB::default();
+        sink.bal_context.enable_bal_builder();
+
+        let _ = evm
+            .transact(&test_tx(0))
+            .expect("read-only transaction should execute")
+            .discard_with(&mut sink)
+            .expect("cache sink is infallible");
+
+        let bal = sink.bal_context.take_bal_builder().expect("builder was enabled");
+        let account = bal.accounts.get(&LIFECYCLE_ACCOUNT).expect("read account is in the bal");
+        assert!(account.account_info.balance.is_empty());
+        assert!(account.account_info.nonce.is_empty());
+        assert!(
+            account
+                .storage
+                .storage
+                .get(&LIFECYCLE_STORAGE_KEY)
+                .expect("read slot is in the bal")
+                .is_empty()
         );
     }
 
