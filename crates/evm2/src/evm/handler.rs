@@ -26,12 +26,14 @@ pub struct GasSettlement<T: EvmTypes> {
 
 /// Static extension points shared by transaction handlers.
 pub trait TxHandlerHooks<T: EvmTypes>: Sized {
-    /// Adjusts the intrinsic execution and state gas calculated by the standard handler.
+    /// Adjusts the intrinsic execution gas, state gas, and floor gas calculated by the standard
+    /// handler before gas-limit validation. The adjusted floor gas is also used during settlement.
     fn adjust_intrinsic_gas(
         _host: &mut Evm<'_, T>,
         _envelope: &T::Tx,
         _intrinsic: &mut u64,
         _initial_state_gas: &mut u64,
+        _floor_gas: &mut u64,
     ) -> HandlerResult<()> {
         Ok(())
     }
