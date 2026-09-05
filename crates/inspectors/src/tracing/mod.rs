@@ -86,6 +86,8 @@ pub struct TracingInspector {
     traces: CallTraceArena,
     /// Tracks active calls
     trace_stack: Vec<usize>,
+    /// Number of logs recorded so far, used as the index of the next log.
+    log_count: usize,
     /// Tracks recorded steps waiting for `step_end`.
     ///
     /// This is a stack because nested calls are executed between the `step` and `step_end` of the
@@ -124,6 +126,7 @@ impl TracingInspector {
         let Self {
             traces,
             trace_stack,
+            log_count,
             step_stack,
             recorded_steps,
             last_journal_len,
@@ -147,6 +150,7 @@ impl TracingInspector {
 
         traces.clear();
         trace_stack.clear();
+        *log_count = 0;
         step_stack.clear();
         *recorded_steps = 0;
         spec_id.take();
@@ -274,11 +278,6 @@ impl TracingInspector {
         !self.trace_stack.is_empty()
     }
 
-    /// Returns how many logs we already recorded.
-    fn log_count(&self) -> usize {
-        self.traces.nodes().iter().map(|trace| trace.log_count()).sum()
-    }
-
     /// Returns true if this a call to a precompile contract.
     ///
     /// Returns true if the `to` address is a precompile contract and the value is zero.
@@ -363,8 +362,11 @@ impl TracingInspector {
         // find an empty steps vec or create a new one
         let steps = self.reusable_step_vecs.pop().unwrap_or_default();
 
+        // the currently active call is the parent of the new call
+        let parent = self.trace_stack.last().copied().unwrap_or_default();
+
         self.trace_stack.push(self.traces.push_trace(
-            0,
+            parent,
             push_kind,
             CallTrace {
                 depth,
@@ -618,7 +620,8 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
         if self.config.record_logs {
             // index starts at 0
-            let log_count = self.log_count();
+            let log_count = self.log_count;
+            self.log_count += 1;
             let trace = self.last_trace();
             trace.ordering.push(TraceMemberOrder::Log(trace.logs.len()));
             trace.logs.push(
