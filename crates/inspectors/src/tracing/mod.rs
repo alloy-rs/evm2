@@ -91,6 +91,8 @@ pub struct TracingInspector {
     /// This is a stack because nested calls are executed between the `step` and `step_end` of the
     /// call instruction itself. A `usize::MAX` step index marks a step that was not recorded.
     step_stack: Vec<(usize, usize)>,
+    /// Number of opcode steps captured across all calls since the last reset.
+    recorded_steps: u64,
     /// Tracks the journal len in the step, used in step_end to check if the journal has changed
     last_journal_len: usize,
     /// The spec id of the EVM.
@@ -123,6 +125,7 @@ impl TracingInspector {
             traces,
             trace_stack,
             step_stack,
+            recorded_steps,
             last_journal_len,
             spec_id,
             features,
@@ -145,6 +148,7 @@ impl TracingInspector {
         traces.clear();
         trace_stack.clear();
         step_stack.clear();
+        *recorded_steps = 0;
         spec_id.take();
         *features = EvmFeatures::empty();
         *last_journal_len = 0;
@@ -418,13 +422,15 @@ impl TracingInspector {
 
         let trace_idx = self.last_trace_idx();
 
-        let record = self.config.should_record_opcode(op);
+        let record = self.config.should_record_opcode(op)
+            && self.config.step_limit.is_none_or(|limit| self.recorded_steps < limit.get());
         if !record {
             // Push a sentinel so that the upcoming `step_end` stays paired with this step.
             self.step_stack.push((trace_idx, usize::MAX));
             return;
         }
 
+        self.recorded_steps += 1;
         let node = &mut self.traces.arena[trace_idx];
 
         // Reuse the memory from the previous step if:
@@ -510,7 +516,7 @@ impl TracingInspector {
             return;
         };
         let node = &mut self.traces.arena[trace_idx];
-        // The step is not present if it was filtered out by the opcode filter.
+        // The step is not present if it was filtered out or the capture limit was reached.
         let Some(step) = node.trace.steps.get_mut(step_idx) else {
             return;
         };
