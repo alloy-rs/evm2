@@ -1,11 +1,11 @@
 //! BAL builder module
 
 use super::{
-    BalError, BlockAccessIndex,
+    BalChangeKind, BalDecodeError, BalError, BlockAccessIndex,
     changes::{BalChanges, BalCodeChange},
 };
 use crate::{
-    bytecode::{Bytecode, BytecodeDecodeError},
+    bytecode::Bytecode,
     evm::state::{AccountInfo, StorageSlot},
 };
 use alloc::vec::Vec;
@@ -39,7 +39,7 @@ impl AccountBal {
 }
 
 impl TryFrom<&AlloyAccountChanges> for AccountBal {
-    type Error = BytecodeDecodeError;
+    type Error = BalDecodeError;
 
     /// Create an account BAL from borrowed EIP-7928 [`AlloyAccountChanges`] without
     /// consuming the source.
@@ -49,32 +49,26 @@ impl TryFrom<&AlloyAccountChanges> for AccountBal {
     ///
     /// # Errors
     ///
-    /// Returns [`BytecodeDecodeError`] if any code change contains bytecode rejected by
-    /// [`Bytecode::new_raw_checked`]. This currently happens for malformed EIP-7702
-    /// bytecode, such as bytes with the EIP-7702 magic prefix but an invalid length or
-    /// unsupported version.
+    /// Returns [`BalDecodeError`] if the account entry violates EIP-7928 ordering or uniqueness,
+    /// contains an invalid block access index, or contains malformed bytecode.
     #[inline]
     fn try_from(alloy_account: &AlloyAccountChanges) -> Result<Self, Self::Error> {
+        let address = alloy_account.address;
         Ok(Self {
             account_info: AccountInfoBal {
-                nonce: alloy_account.nonce_changes.clone().into(),
-                balance: alloy_account.balance_changes.clone().into(),
-                code: alloy_account
-                    .code_changes
-                    .iter()
-                    .map(BalCodeChange::try_from)
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into(),
+                nonce: checked_clone_changes(
+                    address,
+                    BalChangeKind::Nonce,
+                    &alloy_account.nonce_changes,
+                )?,
+                balance: checked_clone_changes(
+                    address,
+                    BalChangeKind::Balance,
+                    &alloy_account.balance_changes,
+                )?,
+                code: checked_code_changes_ref(address, &alloy_account.code_changes)?,
             },
-            storage: StorageBal::from_iter(
-                alloy_account
-                    .storage_changes
-                    .iter()
-                    .map(|slot| (slot.slot, slot.changes.clone().into()))
-                    .chain(
-                        alloy_account.storage_reads.iter().map(|key| (*key, BalChanges::default())),
-                    ),
-            ),
+            storage: checked_storage_ref(alloy_account)?,
         })
     }
 }
@@ -134,7 +128,7 @@ impl From<AccountBal> for AlloyAccountChanges {
 }
 
 impl TryFrom<AlloyAccountChanges> for AccountBal {
-    type Error = BytecodeDecodeError;
+    type Error = BalDecodeError;
 
     /// Create an account BAL from EIP-7928 [`AlloyAccountChanges`].
     ///
@@ -143,37 +137,191 @@ impl TryFrom<AlloyAccountChanges> for AccountBal {
     ///
     /// # Errors
     ///
-    /// Returns [`BytecodeDecodeError`] if any code change contains bytecode rejected by
-    /// [`Bytecode::new_raw_checked`]. This currently happens for malformed EIP-7702
-    /// bytecode, such as bytes with the EIP-7702 magic prefix but an invalid length or
-    /// unsupported version.
+    /// Returns [`BalDecodeError`] if the account entry violates EIP-7928 ordering or uniqueness,
+    /// contains an invalid block access index, or contains malformed bytecode.
     #[inline]
     fn try_from(alloy_account: AlloyAccountChanges) -> Result<Self, Self::Error> {
+        let address = alloy_account.address;
         Ok(Self {
             account_info: AccountInfoBal {
-                nonce: alloy_account.nonce_changes.into(),
-                balance: alloy_account.balance_changes.into(),
-                code: alloy_account
-                    .code_changes
-                    .iter()
-                    .map(BalCodeChange::try_from)
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into(),
+                nonce: checked_changes(address, BalChangeKind::Nonce, alloy_account.nonce_changes)?,
+                balance: checked_changes(
+                    address,
+                    BalChangeKind::Balance,
+                    alloy_account.balance_changes,
+                )?,
+                code: checked_code_changes(address, alloy_account.code_changes)?,
             },
-            storage: StorageBal::from_iter(
-                alloy_account
-                    .storage_changes
-                    .into_iter()
-                    .chain(
-                        alloy_account
-                            .storage_reads
-                            .into_iter()
-                            .map(|key| AlloySlotChanges::new(key, Default::default())),
-                    )
-                    .map(|slot| (slot.slot, slot.changes.into())),
-            ),
+            storage: checked_storage(
+                address,
+                alloy_account.storage_changes,
+                alloy_account.storage_reads,
+            )?,
         })
     }
+}
+
+/// Clone and validate borrowed storage entries while building the storage map.
+#[inline]
+fn checked_storage_ref(account: &AlloyAccountChanges) -> Result<StorageBal, BalDecodeError> {
+    let address = account.address;
+    let mut storage = U256Map::with_capacity_and_hasher(
+        account.storage_changes.len() + account.storage_reads.len(),
+        Default::default(),
+    );
+    let mut previous = None;
+    for slot in &account.storage_changes {
+        check_storage_key_order(address, &mut previous, slot.slot)?;
+        if slot.changes.is_empty() {
+            return Err(BalDecodeError::EmptyStorageChanges { address, slot: slot.slot });
+        }
+        let changes = checked_clone_changes(address, BalChangeKind::Storage, &slot.changes)?;
+        if storage.insert(slot.slot, changes).is_some() {
+            return Err(BalDecodeError::DuplicateStorageKey { address, slot: slot.slot });
+        }
+    }
+    previous = None;
+    for &slot in &account.storage_reads {
+        check_storage_key_order(address, &mut previous, slot)?;
+        if storage.insert(slot, BalChanges::default()).is_some() {
+            return Err(BalDecodeError::DuplicateStorageKey { address, slot });
+        }
+    }
+    Ok(StorageBal { storage })
+}
+
+/// Validate owned storage entries while building the storage map.
+#[inline]
+fn checked_storage(
+    address: Address,
+    storage_changes: Vec<AlloySlotChanges>,
+    storage_reads: Vec<U256>,
+) -> Result<StorageBal, BalDecodeError> {
+    let mut storage = U256Map::with_capacity_and_hasher(
+        storage_changes.len() + storage_reads.len(),
+        Default::default(),
+    );
+    let mut previous = None;
+    for slot in storage_changes {
+        check_storage_key_order(address, &mut previous, slot.slot)?;
+        if slot.changes.is_empty() {
+            return Err(BalDecodeError::EmptyStorageChanges { address, slot: slot.slot });
+        }
+        let changes = checked_changes(address, BalChangeKind::Storage, slot.changes)?;
+        if storage.insert(slot.slot, changes).is_some() {
+            return Err(BalDecodeError::DuplicateStorageKey { address, slot: slot.slot });
+        }
+    }
+    previous = None;
+    for slot in storage_reads {
+        check_storage_key_order(address, &mut previous, slot)?;
+        if storage.insert(slot, BalChanges::default()).is_some() {
+            return Err(BalDecodeError::DuplicateStorageKey { address, slot });
+        }
+    }
+    Ok(StorageBal { storage })
+}
+
+/// Enforce strictly increasing storage keys.
+#[inline]
+fn check_storage_key_order(
+    address: Address,
+    previous: &mut Option<U256>,
+    slot: U256,
+) -> Result<(), BalDecodeError> {
+    if let Some(previous) = *previous {
+        if previous == slot {
+            return Err(BalDecodeError::DuplicateStorageKey { address, slot });
+        }
+        if previous > slot {
+            return Err(BalDecodeError::StorageKeysOutOfOrder { address, previous, slot });
+        }
+    }
+    *previous = Some(slot);
+    Ok(())
+}
+
+/// Clone a borrowed change list while validating its indices.
+#[inline]
+fn checked_clone_changes<T: super::BalChange + Clone>(
+    address: Address,
+    kind: BalChangeKind,
+    changes: &[T],
+) -> Result<BalChanges<T>, BalDecodeError> {
+    let mut converted = Vec::with_capacity(changes.len());
+    let mut previous = None;
+    for change in changes {
+        check_change_index(address, kind, &mut previous, change.block_access_index())?;
+        converted.push(change.clone());
+    }
+    Ok(converted.into())
+}
+
+/// Validate and wrap an owned change list without reallocating it.
+#[inline]
+fn checked_changes<T: super::BalChange>(
+    address: Address,
+    kind: BalChangeKind,
+    changes: Vec<T>,
+) -> Result<BalChanges<T>, BalDecodeError> {
+    let mut previous = None;
+    for change in &changes {
+        check_change_index(address, kind, &mut previous, change.block_access_index())?;
+    }
+    Ok(changes.into())
+}
+
+/// Decode and validate borrowed code changes in one pass.
+#[inline]
+fn checked_code_changes_ref(
+    address: Address,
+    changes: &[AlloyCodeChange],
+) -> Result<BalChanges<BalCodeChange>, BalDecodeError> {
+    let mut converted = Vec::with_capacity(changes.len());
+    let mut previous = None;
+    for change in changes {
+        check_change_index(address, BalChangeKind::Code, &mut previous, change.block_access_index)?;
+        converted.push(BalCodeChange::try_from(change)?);
+    }
+    Ok(converted.into())
+}
+
+/// Decode and validate owned code changes in one pass.
+#[inline]
+fn checked_code_changes(
+    address: Address,
+    changes: Vec<AlloyCodeChange>,
+) -> Result<BalChanges<BalCodeChange>, BalDecodeError> {
+    let mut converted = Vec::with_capacity(changes.len());
+    let mut previous = None;
+    for change in changes {
+        check_change_index(address, BalChangeKind::Code, &mut previous, change.block_access_index)?;
+        converted.push(BalCodeChange::try_from(change)?);
+    }
+    Ok(converted.into())
+}
+
+/// Enforce valid, strictly increasing block access indices.
+#[inline]
+fn check_change_index(
+    address: Address,
+    kind: BalChangeKind,
+    previous: &mut Option<BlockAccessIndex>,
+    index: BlockAccessIndex,
+) -> Result<(), BalDecodeError> {
+    if index.get() > u32::MAX as u64 {
+        return Err(BalDecodeError::BlockAccessIndexOutOfRange { address, kind, index });
+    }
+    if let Some(previous) = *previous {
+        if previous == index {
+            return Err(BalDecodeError::DuplicateBlockAccessIndex { address, kind, index });
+        }
+        if previous > index {
+            return Err(BalDecodeError::ChangeIndicesOutOfOrder { address, kind, previous, index });
+        }
+    }
+    *previous = Some(index);
+    Ok(())
 }
 
 /// Account info bal structure.

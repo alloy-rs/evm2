@@ -1,10 +1,7 @@
 //! The top-level Block Access List structure.
 
-use super::{AccountBal, BalError, BlockAccessIndex};
-use crate::{
-    bytecode::BytecodeDecodeError,
-    evm::state::{AccountInfo, PendingState},
-};
+use super::{AccountBal, BalDecodeError, BalError, BlockAccessIndex};
+use crate::evm::state::{AccountInfo, PendingState};
 use alloc::vec::Vec;
 use alloy_eip7928::{AccountChanges as AlloyAccountChanges, BlockAccessList as AlloyBal};
 use alloy_primitives::{Address, U256, map::AddressMap};
@@ -26,6 +23,77 @@ impl Bal {
     /// Create a new BAL builder.
     pub fn new() -> Self {
         Self { accounts: AddressMap::default() }
+    }
+
+    /// Import an EIP-7928 BAL and validate indices against the block's transaction count.
+    ///
+    /// Unlike the [`TryFrom`] conversion, this can enforce that every block access index is at
+    /// most the post-execution index (`transaction_count + 1`).
+    #[inline]
+    pub fn try_from_alloy_with_transaction_count(
+        alloy_bal: AlloyBal,
+        transaction_count: usize,
+    ) -> Result<Self, BalDecodeError> {
+        let bal = Self::try_from(alloy_bal)?;
+        bal.validate_block_access_indices(transaction_count)?;
+        Ok(bal)
+    }
+
+    /// Import a borrowed EIP-7928 BAL and validate indices against the block's transaction count.
+    ///
+    /// Unlike the [`TryFrom`] conversion, this can enforce that every block access index is at
+    /// most the post-execution index (`transaction_count + 1`).
+    #[inline]
+    pub fn try_from_alloy_ref_with_transaction_count(
+        alloy_bal: &[AlloyAccountChanges],
+        transaction_count: usize,
+    ) -> Result<Self, BalDecodeError> {
+        let bal = Self::try_from(alloy_bal)?;
+        bal.validate_block_access_indices(transaction_count)?;
+        Ok(bal)
+    }
+
+    /// Validate every change index against this block's transaction count.
+    ///
+    /// EIP-7928 assigns index zero to pre-execution, indices `1..=transaction_count` to
+    /// transactions, and `transaction_count + 1` to post-execution.
+    #[inline]
+    pub fn validate_block_access_indices(
+        &self,
+        transaction_count: usize,
+    ) -> Result<(), BalDecodeError> {
+        let max = BlockAccessIndex::new(
+            u64::try_from(transaction_count).unwrap_or(u64::MAX).saturating_add(1),
+        );
+        for (address, account) in &self.accounts {
+            validate_block_change_indices(
+                *address,
+                super::BalChangeKind::Nonce,
+                &account.account_info.nonce,
+                max,
+            )?;
+            validate_block_change_indices(
+                *address,
+                super::BalChangeKind::Balance,
+                &account.account_info.balance,
+                max,
+            )?;
+            validate_block_change_indices(
+                *address,
+                super::BalChangeKind::Code,
+                &account.account_info.code,
+                max,
+            )?;
+            for changes in account.storage.storage.values() {
+                validate_block_change_indices(
+                    *address,
+                    super::BalChangeKind::Storage,
+                    changes,
+                    max,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     /// Extend BAL with a transaction's detached [`PendingState`] at `bal_index`.
@@ -99,6 +167,21 @@ impl Bal {
     }
 }
 
+#[inline]
+fn validate_block_change_indices<T: super::BalChange>(
+    address: Address,
+    kind: super::BalChangeKind,
+    changes: &super::BalChanges<T>,
+    max: BlockAccessIndex,
+) -> Result<(), BalDecodeError> {
+    if let Some(index) =
+        changes.changes.iter().map(super::BalChange::block_access_index).find(|index| *index > max)
+    {
+        return Err(BalDecodeError::BlockAccessIndexExceedsBlock { address, kind, index, max });
+    }
+    Ok(())
+}
+
 impl From<Bal> for AlloyBal {
     /// Consume `Bal` and create a canonical EIP-7928 [`AlloyBal`].
     ///
@@ -121,22 +204,23 @@ impl From<Bal> for AlloyBal {
 }
 
 impl TryFrom<&[AlloyAccountChanges]> for Bal {
-    type Error = BytecodeDecodeError;
+    type Error = BalDecodeError;
 
     /// Convert borrowed EIP-7928 [`AlloyAccountChanges`] into a [`Bal`] without consuming
     /// the source.
     ///
     /// # Errors
     ///
-    /// Returns [`BytecodeDecodeError`] if any account code change contains bytecode
-    /// rejected by [`Bytecode::new_raw_checked`](crate::bytecode::Bytecode::new_raw_checked). This
-    /// currently happens for malformed EIP-7702 bytecode, such as bytes with the EIP-7702 magic
-    /// prefix but an invalid length or unsupported version.
+    /// Returns [`BalDecodeError`] if the BAL violates EIP-7928 ordering or uniqueness, contains an
+    /// invalid block access index, or contains malformed bytecode.
     #[inline]
     fn try_from(alloy_bal: &[AlloyAccountChanges]) -> Result<Self, Self::Error> {
         let mut accounts =
             AddressMap::with_capacity_and_hasher(alloy_bal.len(), Default::default());
+        let mut previous = None;
         for alloy_account in alloy_bal {
+            validate_account_order(previous, alloy_account.address)?;
+            previous = Some(alloy_account.address);
             accounts.insert(alloy_account.address, AccountBal::try_from(alloy_account)?);
         }
 
@@ -145,27 +229,44 @@ impl TryFrom<&[AlloyAccountChanges]> for Bal {
 }
 
 impl TryFrom<AlloyBal> for Bal {
-    type Error = BytecodeDecodeError;
+    type Error = BalDecodeError;
 
     /// Convert an EIP-7928 [`AlloyBal`] into a [`Bal`].
     ///
     /// # Errors
     ///
-    /// Returns [`BytecodeDecodeError`] if any account code change contains bytecode
-    /// rejected by [`Bytecode::new_raw_checked`](crate::bytecode::Bytecode::new_raw_checked). This
-    /// currently happens for malformed EIP-7702 bytecode, such as bytes with the EIP-7702 magic
-    /// prefix but an invalid length or unsupported version.
+    /// Returns [`BalDecodeError`] if the BAL violates EIP-7928 ordering or uniqueness, contains an
+    /// invalid block access index, or contains malformed bytecode.
     #[inline]
     fn try_from(alloy_bal: AlloyBal) -> Result<Self, Self::Error> {
         let mut accounts =
             AddressMap::with_capacity_and_hasher(alloy_bal.len(), Default::default());
+        let mut previous = None;
         for alloy_account in alloy_bal {
             let address = alloy_account.address;
+            validate_account_order(previous, address)?;
+            previous = Some(address);
             accounts.insert(address, AccountBal::try_from(alloy_account)?);
         }
 
         Ok(Self { accounts })
     }
+}
+
+#[inline]
+fn validate_account_order(
+    previous: Option<Address>,
+    address: Address,
+) -> Result<(), BalDecodeError> {
+    if let Some(previous) = previous {
+        if previous == address {
+            return Err(BalDecodeError::DuplicateAccount { address });
+        }
+        if previous > address {
+            return Err(BalDecodeError::AccountsOutOfOrder { previous, address });
+        }
+    }
+    Ok(())
 }
 
 impl core::fmt::Display for Bal {
@@ -263,7 +364,7 @@ mod tests {
     use crate::{
         bytecode::Bytecode,
         evm::{
-            bal::{AccountInfoBal, BalChanges, BalCodeChange, StorageBal},
+            bal::{AccountInfoBal, BalChangeKind, BalChanges, BalCodeChange, StorageBal},
             state::{Account, AccountInfo, StorageOverlay, StorageSlot, Tracked},
         },
     };
@@ -531,5 +632,161 @@ mod tests {
         }];
 
         assert!(Bal::try_from(alloy_bal.as_slice()).is_err());
+    }
+
+    fn assert_owned_and_borrowed_error(alloy_bal: AlloyBal, expected: BalDecodeError) {
+        assert_eq!(Bal::try_from(alloy_bal.as_slice()), Err(expected));
+        assert_eq!(Bal::try_from(alloy_bal), Err(expected));
+    }
+
+    #[test]
+    fn try_from_alloy_rejects_duplicate_accounts() {
+        let address = Address::with_last_byte(1);
+        let alloy_bal = vec![
+            AlloyAccountChanges { address, ..Default::default() },
+            AlloyAccountChanges { address, ..Default::default() },
+        ];
+
+        assert_owned_and_borrowed_error(alloy_bal, BalDecodeError::DuplicateAccount { address });
+    }
+
+    #[test]
+    fn try_from_alloy_rejects_out_of_order_accounts() {
+        let low = Address::with_last_byte(1);
+        let high = Address::with_last_byte(2);
+        let alloy_bal = vec![
+            AlloyAccountChanges { address: high, ..Default::default() },
+            AlloyAccountChanges { address: low, ..Default::default() },
+        ];
+
+        assert_owned_and_borrowed_error(
+            alloy_bal,
+            BalDecodeError::AccountsOutOfOrder { previous: high, address: low },
+        );
+    }
+
+    #[test]
+    fn try_from_alloy_rejects_storage_read_write_overlap() {
+        let address = Address::with_last_byte(1);
+        let slot = U256::from(2);
+        let alloy_bal = vec![AlloyAccountChanges {
+            address,
+            storage_changes: vec![AlloySlotChanges::new(
+                slot,
+                vec![AlloyStorageChange::new(idx(1), U256::from(10))],
+            )],
+            storage_reads: vec![slot],
+            ..Default::default()
+        }];
+
+        assert_owned_and_borrowed_error(
+            alloy_bal,
+            BalDecodeError::DuplicateStorageKey { address, slot },
+        );
+    }
+
+    #[test]
+    fn try_from_alloy_rejects_empty_storage_changes() {
+        let address = Address::with_last_byte(1);
+        let slot = U256::from(2);
+        let alloy_bal = vec![AlloyAccountChanges {
+            address,
+            storage_changes: vec![AlloySlotChanges::new(slot, vec![])],
+            ..Default::default()
+        }];
+
+        assert_owned_and_borrowed_error(
+            alloy_bal,
+            BalDecodeError::EmptyStorageChanges { address, slot },
+        );
+    }
+
+    #[test]
+    fn try_from_alloy_rejects_out_of_order_change_indices() {
+        let address = Address::with_last_byte(1);
+        let alloy_bal = vec![AlloyAccountChanges {
+            address,
+            balance_changes: vec![
+                AlloyBalanceChange::new(idx(4), U256::from(40)),
+                AlloyBalanceChange::new(idx(1), U256::from(10)),
+                AlloyBalanceChange::new(idx(2), U256::from(20)),
+                AlloyBalanceChange::new(idx(3), U256::from(30)),
+                AlloyBalanceChange::new(idx(5), U256::from(50)),
+            ],
+            ..Default::default()
+        }];
+
+        assert_owned_and_borrowed_error(
+            alloy_bal,
+            BalDecodeError::ChangeIndicesOutOfOrder {
+                address,
+                kind: BalChangeKind::Balance,
+                previous: idx(4),
+                index: idx(1),
+            },
+        );
+    }
+
+    #[test]
+    fn try_from_alloy_rejects_duplicate_change_indices() {
+        let address = Address::with_last_byte(1);
+        let alloy_bal = vec![AlloyAccountChanges {
+            address,
+            nonce_changes: vec![AlloyNonceChange::new(idx(2), 1), AlloyNonceChange::new(idx(2), 2)],
+            ..Default::default()
+        }];
+
+        assert_owned_and_borrowed_error(
+            alloy_bal,
+            BalDecodeError::DuplicateBlockAccessIndex {
+                address,
+                kind: BalChangeKind::Nonce,
+                index: idx(2),
+            },
+        );
+    }
+
+    #[test]
+    fn try_from_alloy_rejects_non_uint32_change_index() {
+        let address = Address::with_last_byte(1);
+        let index = idx(u32::MAX as u64 + 1);
+        let alloy_bal = vec![AlloyAccountChanges {
+            address,
+            code_changes: vec![AlloyCodeChange::new(index, Bytes::new())],
+            ..Default::default()
+        }];
+
+        assert_owned_and_borrowed_error(
+            alloy_bal,
+            BalDecodeError::BlockAccessIndexOutOfRange {
+                address,
+                kind: BalChangeKind::Code,
+                index,
+            },
+        );
+    }
+
+    #[test]
+    fn try_from_alloy_with_transaction_count_rejects_index_after_post_execution() {
+        let address = Address::with_last_byte(1);
+        let index = idx(4);
+        let max = idx(3);
+        let alloy_bal = vec![AlloyAccountChanges {
+            address,
+            balance_changes: vec![AlloyBalanceChange::new(index, U256::from(10))],
+            ..Default::default()
+        }];
+        let expected = BalDecodeError::BlockAccessIndexExceedsBlock {
+            address,
+            kind: BalChangeKind::Balance,
+            index,
+            max,
+        };
+
+        assert_eq!(
+            Bal::try_from_alloy_ref_with_transaction_count(alloy_bal.as_slice(), 2),
+            Err(expected)
+        );
+        assert_eq!(Bal::try_from_alloy_with_transaction_count(alloy_bal, 2), Err(expected));
     }
 }
