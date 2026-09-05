@@ -293,12 +293,6 @@ impl CallTraceNode {
         }
     }
 
-    /// Returns how many logs this trace already has.
-    #[inline]
-    pub(crate) const fn log_count(&self) -> usize {
-        self.logs.len()
-    }
-
     /// Returns true if this is a call to a precompile
     #[inline]
     pub fn is_precompile(&self) -> bool {
