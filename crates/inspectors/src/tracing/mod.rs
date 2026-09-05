@@ -423,7 +423,7 @@ impl TracingInspector {
         let trace_idx = self.last_trace_idx();
 
         let record = self.config.should_record_opcode(op)
-            && self.config.step_limit.is_none_or(|limit| limit == 0 || self.recorded_steps < limit);
+            && self.config.step_limit.is_none_or(|limit| self.recorded_steps < limit.get());
         if !record {
             // Push a sentinel so that the upcoming `step_end` stays paired with this step.
             self.step_stack.push((trace_idx, usize::MAX));
