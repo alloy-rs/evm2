@@ -13,7 +13,7 @@
 
 use alloy_consensus::{TypedTransaction, transaction::Recovered};
 use alloy_eips::{eip7702::SignedAuthorization, eip7840::BlobParams};
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, TxKind, U256, keccak256};
 use alloy_rpc_types_eth::{
     AccessList as RpcAccessList, AccessListItem as RpcAccessListItem, TransactionInput,
     TransactionRequest,
@@ -54,6 +54,8 @@ pub struct TxOutcome {
     pub success: bool,
     /// Number of logs emitted by the transaction.
     pub logs: usize,
+    /// Digest of every emitted log's address, topics and data, in emission order.
+    pub logs_digest: B256,
 }
 
 /// Per-block outcome recorded identically by both engines.
@@ -63,8 +65,16 @@ pub struct BlockOutcome {
     pub number: u64,
     /// `gasUsed` declared by the fixture header.
     pub header_gas_used: u64,
-    /// Cumulative transaction gas used, as observed during execution.
+    /// Cumulative receipt gas used by the block's transactions (refunds applied).
     pub gas_used: u64,
+    /// Cumulative EIP-8037 execution gas (pre-refund, EIP-7623 floor applied).
+    pub execution_gas_used: u64,
+    /// Cumulative EIP-8037 state gas.
+    pub state_gas_used: u64,
+    /// Gas the header must record under the fixture's fork: [`Self::gas_used`] before
+    /// Amsterdam, `max(execution_gas_used, state_gas_used)` from Amsterdam on, mirroring
+    /// the EEST executor's block validation.
+    pub block_gas_used: u64,
     /// Per-transaction outcomes, in block order.
     pub txs: Vec<TxOutcome>,
 }
@@ -87,9 +97,9 @@ impl ReplayOutcome {
         self.blocks.iter().map(|block| u128::from(block.gas_used)).sum()
     }
 
-    /// Returns the blocks whose observed gas used disagrees with the fixture header.
+    /// Returns the blocks whose fork-rule block gas disagrees with the fixture header.
     pub fn header_gas_mismatches(&self) -> Vec<&BlockOutcome> {
-        self.blocks.iter().filter(|block| block.gas_used != block.header_gas_used).collect()
+        self.blocks.iter().filter(|block| block.block_gas_used != block.header_gas_used).collect()
     }
 }
 
@@ -142,14 +152,20 @@ pub fn diff(evm2: &ReplayOutcome, revm: &ReplayOutcome) -> Vec<Mismatch> {
             });
             continue;
         }
-        if left.gas_used != right.gas_used {
-            mismatches.push(Mismatch {
-                block,
-                transaction: None,
-                field: "block_gas_used",
-                evm2: left.gas_used.to_string(),
-                revm: right.gas_used.to_string(),
-            });
+        for (field, lhs, rhs) in [
+            ("block_gas_used", left.gas_used, right.gas_used),
+            ("block_execution_gas_used", left.execution_gas_used, right.execution_gas_used),
+            ("block_state_gas_used", left.state_gas_used, right.state_gas_used),
+        ] {
+            if lhs != rhs {
+                mismatches.push(Mismatch {
+                    block,
+                    transaction: None,
+                    field,
+                    evm2: lhs.to_string(),
+                    revm: rhs.to_string(),
+                });
+            }
         }
         for (index, (left, right)) in left.txs.iter().zip(&right.txs).enumerate() {
             if left.gas_used != right.gas_used {
@@ -179,6 +195,15 @@ pub fn diff(evm2: &ReplayOutcome, revm: &ReplayOutcome) -> Vec<Mismatch> {
                     revm: right.logs.to_string(),
                 });
             }
+            if left.logs_digest != right.logs_digest {
+                mismatches.push(Mismatch {
+                    block,
+                    transaction: Some(index),
+                    field: "logs_digest",
+                    evm2: left.logs_digest.to_string(),
+                    revm: right.logs_digest.to_string(),
+                });
+            }
         }
     }
     mismatches
@@ -197,7 +222,8 @@ impl ReplayFixture {
     ///
     /// # Panics
     ///
-    /// Panics when the fixture cannot be read or does not contain exactly one case.
+    /// Panics when the fixture cannot be read or does not contain exactly one case, or
+    /// when the case fails the checks in [`Self::from_case`].
     pub fn load(path: &Path) -> Self {
         let suite: BlockchainTest = evm2_eest::read_blockchain_fixture(path)
             .unwrap_or_else(|err| panic!("failed to read fixture {}: {err}", path.display()));
@@ -208,6 +234,23 @@ impl ReplayFixture {
             path.display()
         );
         let (name, case) = suite.0.into_iter().next().expect("fixture must contain a case");
+        Self::from_case(name, case)
+    }
+
+    /// Wraps a decoded test case after checking that it is a canonical chain.
+    ///
+    /// The replay loops execute and commit every block unconditionally; they do not
+    /// mirror the EEST executor's handling of blocks that expect an exception. A
+    /// fixture relying on that handling would silently replay its invalid blocks, so
+    /// such fixtures are rejected here instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the case has no blocks, when a block expects an exception, lacks a
+    /// header or does not extend the previous block, or when `lastblockhash` is not the
+    /// final block's hash.
+    pub fn from_case(name: String, case: BlockchainTestCase) -> Self {
+        assert_canonical(&name, &case);
         let spec = fork_to_spec_id(case.network);
         Self { name, spec, case }
     }
@@ -290,6 +333,8 @@ impl ReplayFixture {
 
             let mut txs = Vec::with_capacity(block_transactions(block).len());
             let mut gas_used = 0u64;
+            let mut execution_gas_used = 0u64;
+            let mut state_gas_used = 0u64;
             for raw in block_transactions(block) {
                 let tx = evm2_tx(raw);
                 let result = evm
@@ -297,10 +342,14 @@ impl ReplayFixture {
                     .unwrap_or_else(|err| panic!("evm2 replay transaction must execute: {err:?}"))
                     .commit_to(&mut block_state);
                 gas_used = gas_used.saturating_add(result.tx_gas_used());
+                execution_gas_used =
+                    execution_gas_used.saturating_add(result.execution_gas_spent());
+                state_gas_used = state_gas_used.saturating_add(result.state_gas_spent());
                 txs.push(TxOutcome {
                     gas_used: result.tx_gas_used(),
                     success: result.status,
                     logs: result.logs.len(),
+                    logs_digest: logs_digest(&result.logs),
                 });
             }
 
@@ -323,6 +372,9 @@ impl ReplayFixture {
                 number: header.number.saturating_to::<u64>(),
                 header_gas_used: header.gas_used.saturating_to::<u64>(),
                 gas_used,
+                execution_gas_used,
+                state_gas_used,
+                block_gas_used: block_gas_used(spec, gas_used, execution_gas_used, state_gas_used),
                 txs,
             });
         }
@@ -353,6 +405,8 @@ impl ReplayFixture {
 
             let mut txs = Vec::with_capacity(block_transactions(block).len());
             let mut gas_used = 0u64;
+            let mut execution_gas_used = 0u64;
+            let mut state_gas_used = 0u64;
             {
                 let mut evm = Context::mainnet()
                     .with_cfg(cfg.clone())
@@ -367,10 +421,15 @@ impl ReplayFixture {
                         panic!("revm replay transaction must execute: {err:?}")
                     });
                     gas_used = gas_used.saturating_add(result.tx_gas_used());
+                    execution_gas_used =
+                        execution_gas_used.saturating_add(result.gas().block_regular_gas_used());
+                    state_gas_used =
+                        state_gas_used.saturating_add(result.gas().block_state_gas_used());
                     txs.push(TxOutcome {
                         gas_used: result.tx_gas_used(),
                         success: result.is_success(),
                         logs: result.logs().len(),
+                        logs_digest: logs_digest(result.logs()),
                     });
                 }
 
@@ -390,6 +449,9 @@ impl ReplayFixture {
                 number: block_number,
                 header_gas_used: header.gas_used.saturating_to::<u64>(),
                 gas_used,
+                execution_gas_used,
+                state_gas_used,
+                block_gas_used: block_gas_used(spec, gas_used, execution_gas_used, state_gas_used),
                 txs,
             });
         }
@@ -416,6 +478,58 @@ fn block_transactions(block: &Block) -> &[Transaction] {
         return transactions;
     }
     block.rlp_decoded.as_ref().map(|decoded| decoded.transactions.as_slice()).unwrap_or_default()
+}
+
+/// Checks that `case` is a canonical chain: every block carries a header, expects no
+/// exception and extends the previous block, and `lastblockhash` names the final block.
+fn assert_canonical(name: &str, case: &BlockchainTestCase) {
+    assert!(!case.blocks.is_empty(), "replay fixture {name} has no blocks");
+    let mut parent = &case.genesis_block_header;
+    for (index, block) in case.blocks.iter().enumerate() {
+        assert!(
+            block.expect_exception.is_none(),
+            "replay fixture {name} block {index} expects an exception; replay fixtures must only \
+             contain valid blocks"
+        );
+        let header = block_header(block)
+            .unwrap_or_else(|| panic!("replay fixture {name} block {index} has no header"));
+        assert!(
+            header.parent_hash == parent.hash && header.number == parent.number + U256::ONE,
+            "replay fixture {name} block {index} does not extend the previous block"
+        );
+        parent = header;
+    }
+    assert!(
+        case.lastblockhash == parent.hash,
+        "replay fixture {name} lastblockhash does not match the final block"
+    );
+}
+
+/// Digests a transaction's logs (address, topics and data, in emission order) so the
+/// parity check covers log contents rather than only their count.
+fn logs_digest(logs: &[Log]) -> B256 {
+    let mut bytes = Vec::new();
+    for log in logs {
+        bytes.extend_from_slice(log.address.as_slice());
+        bytes.extend_from_slice(&(log.data.topics().len() as u64).to_be_bytes());
+        for topic in log.data.topics() {
+            bytes.extend_from_slice(topic.as_slice());
+        }
+        bytes.extend_from_slice(&(log.data.data.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(&log.data.data);
+    }
+    keccak256(bytes)
+}
+
+/// Returns the gas a block header must record, mirroring the EEST executor: cumulative
+/// receipt gas before Amsterdam, `max(execution, state)` under EIP-8037 (Amsterdam+).
+fn block_gas_used(
+    spec: SpecId,
+    gas_used: u64,
+    execution_gas_used: u64,
+    state_gas_used: u64,
+) -> u64 {
+    if spec.enables(SpecId::AMSTERDAM) { execution_gas_used.max(state_gas_used) } else { gas_used }
 }
 
 fn block_withdrawals(block: &Block) -> &[Withdrawal] {

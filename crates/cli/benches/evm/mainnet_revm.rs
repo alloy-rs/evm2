@@ -24,7 +24,8 @@ impl PreparedBench {
     }
 
     /// Replays the corpus through both engines once and refuses to benchmark
-    /// unless every transaction agrees on gas used, success and log count.
+    /// unless every transaction agrees on gas used, success and logs, every
+    /// block agrees on its EIP-8037 gas split, and both reproduce the header gas.
     pub(crate) fn sanity_check(&self) {
         let evm2 = self.fixture.replay_evm2();
         let revm = self.fixture.replay_revm();
