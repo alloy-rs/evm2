@@ -21,6 +21,14 @@ use evm2::{
     interpreter::op,
 };
 
+/// A frame awaiting tree assembly, with visibility inherited by children in the forward pass.
+struct PendingCallFrame<T> {
+    /// Whether this call and its ancestors permit descendant logs. Independent of whether
+    /// the frame itself contains logs; root-frame logs retain their existing special handling.
+    logs_visible: bool,
+    frame: T,
+}
+
 #[cfg(test)]
 mod steps_tests;
 
@@ -246,18 +254,27 @@ impl<'a> GethTraceBuilder<'a> {
         // traces are identified by their index in the arena
         // so we can populate the call frame tree by walking up the call tree
         let mut call_frames = Vec::with_capacity(self.nodes.len());
-        call_frames.push((0, root_call_frame));
+        call_frames.push(PendingCallFrame {
+            logs_visible: include_logs && !main_trace_node.trace.is_error(),
+            frame: root_call_frame,
+        });
 
-        for (idx, trace) in self.nodes.iter().enumerate().skip(1) {
-            // include logs only if call and all its parents were successful
-            let include_logs = include_logs && !self.call_or_parent_failed(trace);
-            call_frames.push((idx, trace.geth_empty_call_frame(include_logs)));
+        for trace in self.nodes.iter().skip(1) {
+            // Parents precede their children, so inherit log visibility without walking back
+            // to the root for every call. Keep the flag alongside the frame we already allocate.
+            let include_logs = include_logs
+                && !trace.trace.is_error()
+                && trace.parent.is_none_or(|parent| call_frames[parent].logs_visible);
+            call_frames.push(PendingCallFrame {
+                logs_visible: include_logs,
+                frame: trace.geth_empty_call_frame(include_logs),
+            });
 
             // selfdestructs are not recorded as individual call traces but are derived from
             // the call trace and are added as additional `CallFrame` objects
             // becoming the first child of the derived call
             if let Some(selfdestruct) = trace.geth_selfdestruct_call_trace() {
-                call_frames.last_mut().expect("not empty").1.calls.push(selfdestruct);
+                call_frames.last_mut().expect("not empty").frame.calls.push(selfdestruct);
             }
         }
 
@@ -265,37 +282,21 @@ impl<'a> GethTraceBuilder<'a> {
         // this will roll up the child frames to their parent; this works because `child idx >
         // parent idx`
         loop {
-            let (idx, mut call) = call_frames.pop().expect("call frames not empty");
+            let PendingCallFrame { frame: mut call, .. } =
+                call_frames.pop().expect("call frames not empty");
+            let idx = call_frames.len();
             // Children are appended in reverse call order because we walk the arena from the
             // back, and the selfdestruct frame (if any) was pushed first. Reversing once per frame
             // restores call order and moves the selfdestruct frame last.
             call.calls.reverse();
             let node = &self.nodes[idx];
             if let Some(parent) = node.parent {
-                call_frames[parent].1.calls.push(call);
+                call_frames[parent].frame.calls.push(call);
             } else {
                 debug_assert!(call_frames.is_empty(), "only one root node has no parent");
                 return call;
             }
         }
-    }
-
-    /// Returns true if the given trace or any of its parents failed.
-    fn call_or_parent_failed(&self, node: &CallTraceNode) -> bool {
-        if node.trace.is_error() {
-            return true;
-        }
-
-        let mut parent_idx = node.parent;
-        while let Some(idx) = parent_idx {
-            let next = &self.nodes[idx];
-            if next.trace.is_error() {
-                return true;
-            }
-
-            parent_idx = next.parent;
-        }
-        false
     }
 
     ///  Returns the accounts necessary for transaction execution.
@@ -476,7 +477,7 @@ impl<'a> GethTraceBuilder<'a> {
             Some(root)
         };
 
-        let mut frames: Vec<(usize, Erc7562Frame)> = Vec::with_capacity(self.nodes.len());
+        let mut frames: Vec<PendingCallFrame<Erc7562Frame>> = Vec::with_capacity(self.nodes.len());
 
         for (idx, node) in self.nodes.iter().enumerate() {
             let trace = &node.trace;
@@ -584,18 +585,20 @@ impl<'a> GethTraceBuilder<'a> {
                 }
             }
 
+            let include_logs = include_logs
+                && !trace.is_error()
+                && node.parent.is_none_or(|parent| frames[parent].logs_visible);
             let call_frame = if idx == 0 {
                 top_call.take().unwrap()
             } else {
-                let include_logs = include_logs && !self.call_or_parent_failed(node);
                 self.nodes[idx].geth_empty_call_frame(include_logs)
             };
 
             let call_frame_type = Self::convert_call_kind(node.kind());
 
-            frames.push((
-                idx,
-                Erc7562Frame {
+            frames.push(PendingCallFrame {
+                logs_visible: include_logs,
+                frame: Erc7562Frame {
                     call_frame_type,
                     from: call_frame.from,
                     gas: call_frame.gas.to(),
@@ -615,16 +618,17 @@ impl<'a> GethTraceBuilder<'a> {
                     keccak,
                     calls: vec![],
                 },
-            ));
+            });
         }
 
         // Assemble tree, see `geth_call_traces_inner` for the ordering logic
         loop {
-            let (idx, mut frame) = frames.pop().expect("call frames not empty");
+            let PendingCallFrame { mut frame, .. } = frames.pop().expect("call frames not empty");
+            let idx = frames.len();
             frame.calls.reverse();
             let node = &self.nodes[idx];
             if let Some(parent) = node.parent {
-                frames[parent].1.calls.push(frame);
+                frames[parent].frame.calls.push(frame);
             } else {
                 debug_assert!(frames.is_empty(), "only one root node has no parent");
                 return Ok(frame);
@@ -649,13 +653,16 @@ impl<'a> GethTraceBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracing::tx_state::TxAccount;
+    use crate::tracing::{
+        tx_state::TxAccount,
+        types::{CallLog, CallTrace},
+    };
     use alloy_primitives::{B256, U256, address};
     use evm2::{
         AccountInfo, ErrorCode,
         bytecode::Bytecode,
         evm::{CacheDB, DbResult, DynDatabase, EmptyDB},
-        interpreter::Word,
+        interpreter::{InstrStop, Word},
     };
 
     struct FailingDb {
@@ -683,6 +690,93 @@ mod tests {
 
         fn get_block_hash(&mut self, _number: &Word) -> DbResult<B256> {
             Err(self.error)
+        }
+    }
+
+    #[test]
+    fn log_visibility_follows_ancestors_and_preserves_siblings() {
+        // The reverted branch has a log-free intermediate call. Visibility must propagate
+        // through it, while the later successful sibling and its children keep their logs.
+        let parents = [None, Some(0), Some(1), Some(2), Some(0), Some(0), Some(5)];
+        for root_failed in [false, true] {
+            let mut nodes: Vec<CallTraceNode> = parents
+                .iter()
+                .enumerate()
+                .map(|(idx, &parent)| {
+                    let failed = idx == 1 || idx == 4 || (idx == 0 && root_failed);
+                    CallTraceNode {
+                        idx,
+                        parent,
+                        trace: CallTrace {
+                            address: Address::with_last_byte(idx as u8),
+                            success: !failed,
+                            status: Some(if idx == 4 {
+                                InstrStop::OutOfGas
+                            } else if failed {
+                                InstrStop::Revert
+                            } else {
+                                InstrStop::Return
+                            }),
+                            ..Default::default()
+                        },
+                        logs: if idx == 2 {
+                            vec![]
+                        } else {
+                            [0, 1]
+                                .into_iter()
+                                .map(|log| {
+                                    CallLog::from(alloy_primitives::Log::new_unchecked(
+                                        Address::with_last_byte(idx as u8),
+                                        vec![B256::with_last_byte(log)],
+                                        Bytes::from(vec![idx as u8, log]),
+                                    ))
+                                    .with_index((idx * 2 + log as usize) as u64)
+                                })
+                                .collect()
+                        },
+                        ..Default::default()
+                    }
+                })
+                .collect();
+            for (idx, parent) in parents.into_iter().enumerate() {
+                if let Some(parent) = parent {
+                    nodes[parent].children.push(idx);
+                }
+            }
+            let builder = GethTraceBuilder::new(nodes);
+            for with_log in [false, true] {
+                let call = builder.geth_call_traces(
+                    CallConfig { with_log: Some(with_log), ..Default::default() },
+                    0,
+                );
+                let erc = builder
+                    .geth_erc7562_traces(
+                        Erc7562Config { with_log: Some(with_log), ..Default::default() },
+                        0,
+                        &mut EmptyDB::default(),
+                    )
+                    .unwrap();
+                let mut pending = vec![(&call, &erc)];
+                let mut visited = Vec::new();
+                while let Some((call, erc)) = pending.pop() {
+                    let idx = call.to.unwrap().as_slice()[19] as usize;
+                    visited.push(idx);
+                    assert_eq!(call.to, erc.to);
+                    assert_eq!(call.logs, erc.logs);
+                    let visible = with_log && (idx == 0 || (idx >= 5 && !root_failed));
+                    assert_eq!(call.logs.len(), if visible { 2 } else { 0 }, "node {idx}");
+                    if visible {
+                        for (log_idx, log) in call.logs.iter().enumerate() {
+                            assert_eq!(log.index, Some((idx * 2 + log_idx) as u64));
+                            assert_eq!(log.topics, Some(vec![B256::with_last_byte(log_idx as u8)]));
+                            assert_eq!(log.data, Some(Bytes::from(vec![idx as u8, log_idx as u8])));
+                        }
+                    }
+                    assert_eq!(call.calls.len(), erc.calls.len());
+                    pending.extend(call.calls.iter().zip(&erc.calls).rev());
+                }
+                assert_eq!(visited, [0, 1, 2, 3, 4, 5, 6]);
+            }
         }
     }
 
