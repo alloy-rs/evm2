@@ -1,5 +1,5 @@
 use super::types::ForkSpec;
-use alloy_primitives::U256;
+use alloy_primitives::{Log, U256};
 use std::fmt;
 
 /// Execution hooks for blockchain test replay.
@@ -20,7 +20,7 @@ pub trait Hook {
     fn transaction_started(&mut self, _event: TransactionStarted) {}
 
     /// Called after a transaction completes.
-    fn transaction_finished(&mut self, _event: TransactionFinished) {}
+    fn transaction_finished(&mut self, _event: TransactionFinished<'_>) {}
 
     /// Called when transaction execution returns an unexpected error.
     fn transaction_failed(&mut self, _event: TransactionFailed<'_>) {}
@@ -115,7 +115,7 @@ pub struct TransactionStarted {
 
 /// Transaction finish event.
 #[derive(Clone, Copy, Debug)]
-pub struct TransactionFinished {
+pub struct TransactionFinished<'a> {
     /// Zero-based block index in the case.
     pub block_index: usize,
     /// Number of blocks in the case.
@@ -126,6 +126,16 @@ pub struct TransactionFinished {
     pub transaction_index: usize,
     /// Number of transactions in the block.
     pub total_transactions: usize,
+    /// Gas charged to the transaction after refunds.
+    pub gas_used: u64,
+    /// Execution gas charged to the block before refunds, with the calldata floor applied.
+    pub execution_gas_used: u64,
+    /// State gas charged to the block.
+    pub state_gas_used: u64,
+    /// Whether execution succeeded.
+    pub success: bool,
+    /// Logs emitted by the transaction.
+    pub logs: &'a [Log],
 }
 
 /// Transaction failure event.

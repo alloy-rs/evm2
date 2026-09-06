@@ -356,7 +356,7 @@ impl BlockchainTestHook for ReplayProgressHook {
 
     fn transaction_started(&mut self, _event: BlockchainTestTransactionStarted) {}
 
-    fn transaction_finished(&mut self, event: BlockchainTestTransactionFinished) {
+    fn transaction_finished(&mut self, event: BlockchainTestTransactionFinished<'_>) {
         if event.total_transactions >= 1_000
             && ((event.transaction_index + 1).is_multiple_of(500)
                 || event.transaction_index + 1 == event.total_transactions)
