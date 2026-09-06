@@ -54,9 +54,11 @@ std = [
     "serde_json/std",
     "evm2/std",
     "thiserror/std",
+    "num-bigint?/std",
 ]
 serde = [
     "dep:serde",
+    "num-bigint?/serde",
     "alloy-primitives/serde",
     "alloy-consensus/serde",
     "alloy-eip2930/serde",
