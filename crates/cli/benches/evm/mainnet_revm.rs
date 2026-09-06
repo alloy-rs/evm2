@@ -1,16 +1,16 @@
-use criterion::{BenchmarkGroup, black_box, measurement::WallTime};
+use criterion::{BenchmarkGroup, measurement::WallTime};
 use evm2_cli::{
     evm_bench::BenchCase,
     replay_bench::{ReplayFixture, diff},
 };
+use evm2_eest::BlockchainTestNoopHook;
 use std::{
     borrow::Cow,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-/// revm counterpart of `mainnet::PreparedBench`, plus the harness-only setup
-/// benchmarks that price the work both replay paths repeat every iteration.
+/// revm counterpart of `mainnet::PreparedBench`.
 #[derive(Clone)]
 pub(crate) struct PreparedBench {
     name: Cow<'static, str>,
@@ -30,6 +30,8 @@ impl PreparedBench {
         let evm2 = self.fixture.replay_evm2();
         let revm = self.fixture.replay_revm();
         for (engine, outcome) in [("evm2", &evm2), ("revm", &revm)] {
+            assert_eq!(outcome.blocks.len(), self.fixture.blocks());
+            assert_eq!(outcome.transactions(), self.fixture.transactions());
             let mismatches = outcome.header_gas_mismatches();
             assert!(
                 mismatches.is_empty(),
@@ -48,19 +50,7 @@ impl PreparedBench {
 
     pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
         group.bench_function(format!("{}/replay/revm", self.name), |b| {
-            b.iter(|| black_box(self.fixture.replay_revm()));
-        });
-    }
-
-    /// Benchmarks the per-iteration harness work only: decoding the fixture's
-    /// pre-state into an in-memory database and building every block's
-    /// transaction environments, with no EVM execution.
-    pub(crate) fn bench_setup(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
-        group.bench_function(format!("{}/replay/setup", self.name), |b| {
-            b.iter(|| black_box(self.fixture.setup_evm2()));
-        });
-        group.bench_function(format!("{}/replay/revm/setup", self.name), |b| {
-            b.iter(|| black_box(self.fixture.setup_revm()));
+            b.iter(|| self.fixture.execute_revm(&mut BlockchainTestNoopHook));
         });
     }
 }

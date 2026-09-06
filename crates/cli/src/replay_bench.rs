@@ -1,47 +1,38 @@
-//! Paired evm2/revm drivers for the mainnet block-replay benchmark.
+//! Mainnet replay comparison using the EEST executor and revm.
 //!
-//! The benchmark's evm2 timing path stays on `evm2_eest`'s blockchain-test
-//! executor (`crates/cli/benches/evm/mainnet.rs`). This module adds the missing
-//! revm counterpart plus an evm2 mirror of the same block loop, so that the two
-//! engines can be diffed transaction by transaction and the harness-side setup
-//! cost can be measured on either side with the same code shape.
-//!
-//! The evm2 mirror follows `crates/eest/src/blockchaintest/execute.rs`
-//! (`execute_case`/`execute_block`) step for step; the revm driver follows
-//! `bins/revme/src/cmd/blockchaintest.rs` of the pinned revm 42 checkout, with
-//! the block/commit cadence bent to match the evm2 side rather than revme's.
+//! Both engines report results through the EEST hook. Parity checks collect
+//! transaction outcomes; timed runs use a no-op hook and include database setup,
+//! transaction decoding, execution and block commits.
 
-use alloy_consensus::{TypedTransaction, transaction::Recovered};
 use alloy_eips::{eip7702::SignedAuthorization, eip7840::BlobParams};
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, TxKind, U256, keccak256};
-use alloy_rpc_types_eth::{
-    AccessList as RpcAccessList, AccessListItem as RpcAccessListItem, TransactionInput,
-    TransactionRequest,
-};
+use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256, keccak256};
+use alloy_rpc_types_eth::{AccessList as RpcAccessList, AccessListItem as RpcAccessListItem};
 use evm2::{
-    BaseEvmTypes, Evm, Precompiles, SpecId,
-    bytecode::Bytecode,
-    env::{BlockEnv, BlockEnvExt},
-    ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+    SpecId,
     evm::{
-        AccountChangeRef, AccountInfo, BEACON_ROOTS_ADDRESS, BlockStateAccumulator,
-        CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, InMemoryDB, StateChangeSink,
-        StateChangeSource, SystemTx, Tee, WITHDRAWAL_REQUEST_ADDRESS,
+        BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS,
+        WITHDRAWAL_REQUEST_ADDRESS,
     },
 };
-use evm2_eest::blockchaintest::{
-    Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, Transaction, Withdrawal,
+use evm2_eest::{
+    BlockchainTestExecuteConfig, NameFilter,
+    blockchaintest::{
+        Block, BlockFinished, BlockHeader, BlockStarted, BlockchainTest, BlockchainTestCase,
+        CaseStarted, ForkSpec, Hook, Transaction, TransactionFinished, TransactionStarted,
+        Withdrawal,
+    },
+    execute_blockchain_tests_suite,
 };
 use revm::{
     Context, DatabaseCommit, ExecuteEvm, MainBuilder, MainContext, SystemCallEvm,
     context::{BlockEnv as RevmBlockEnv, CfgEnv, ContextTr, JournalTr, TxEnv},
-    context_interface::{block::BlobExcessGasAndPrice, either::Either},
+    context_interface::{Cfg, block::BlobExcessGasAndPrice, either::Either},
     database::{CacheDB, EmptyDB, InMemoryDB as RevmInMemoryDB},
     handler::EvmTr,
     primitives::hardfork::SpecId as RevmSpecId,
     state::{AccountInfo as RevmAccountInfo, Bytecode as RevmBytecode},
 };
-use std::{mem, path::Path};
+use std::path::Path;
 
 const ONE_GWEI: u64 = 1_000_000_000;
 
@@ -214,7 +205,7 @@ pub fn diff(evm2: &ReplayOutcome, revm: &ReplayOutcome) -> Vec<Mismatch> {
 pub struct ReplayFixture {
     name: String,
     spec: SpecId,
-    case: BlockchainTestCase,
+    suite: BlockchainTest,
 }
 
 impl ReplayFixture {
@@ -239,20 +230,18 @@ impl ReplayFixture {
 
     /// Wraps a decoded test case after checking that it is a canonical chain.
     ///
-    /// The replay loops execute and commit every block unconditionally; they do not
-    /// mirror the EEST executor's handling of blocks that expect an exception. A
-    /// fixture relying on that handling would silently replay its invalid blocks, so
-    /// such fixtures are rejected here instead.
+    /// The revm driver supports valid post-merge blocks without block access lists.
     ///
     /// # Panics
     ///
     /// Panics when the case has no blocks, when a block expects an exception, lacks a
     /// header or does not extend the previous block, or when `lastblockhash` is not the
-    /// final block's hash.
+    /// final block's hash. Pre-merge forks and block access lists are unsupported.
     pub fn from_case(name: String, case: BlockchainTestCase) -> Self {
         assert_canonical(&name, &case);
         let spec = fork_to_spec_id(case.network);
-        Self { name, spec, case }
+        assert!(spec.enables(SpecId::MERGE), "replay corpus must be post-merge");
+        Self { name: name.clone(), spec, suite: BlockchainTest([(name, case)].into()) }
     }
 
     /// Returns the case name.
@@ -266,125 +255,45 @@ impl ReplayFixture {
     }
 
     /// Returns the number of blocks in the case.
-    pub const fn blocks(&self) -> usize {
-        self.case.blocks.len()
+    pub fn blocks(&self) -> usize {
+        self.case().blocks.len()
     }
 
     /// Returns the total number of transactions across every block.
     pub fn transactions(&self) -> usize {
-        self.case.blocks.iter().map(|block| block_transactions(block).len()).sum()
+        self.case().blocks.iter().map(|block| block_transactions(block).len()).sum()
     }
 
-    /// Builds the evm2 pre-state database and every block's transaction list.
-    ///
-    /// This is the harness-side work the timed replay repeats on each iteration;
-    /// it is exposed so the benchmark can price it separately.
-    pub fn setup_evm2(&self) -> (InMemoryDB, Vec<Vec<RecoveredTxEnvelope>>) {
-        let mut database = evm2_pre_state(&self.case);
-        evm2_seed_block_hashes(&mut database, &self.case);
-        let txs = self
-            .case
-            .blocks
-            .iter()
-            .map(|block| block_transactions(block).iter().map(evm2_tx).collect())
-            .collect();
-        (database, txs)
+    fn case(&self) -> &BlockchainTestCase {
+        &self.suite.0[&self.name]
     }
 
-    /// Builds the revm pre-state database and every block's transaction list.
-    pub fn setup_revm(&self) -> (RevmInMemoryDB, Vec<Vec<TxEnv>>) {
-        let mut database = revm_pre_state(&self.case);
-        revm_seed_block_hashes(&mut database, &self.case);
-        let txs = self
-            .case
-            .blocks
-            .iter()
-            .map(|block| block_transactions(block).iter().map(revm_tx).collect())
-            .collect();
-        (database, txs)
-    }
-
-    /// Replays every block through evm2, mirroring the EEST blockchain executor.
+    /// Replays through the benchmark's EEST executor and records transaction outcomes.
     pub fn replay_evm2(&self) -> ReplayOutcome {
-        let case = &self.case;
-        let spec = self.spec;
-        let mut database = evm2_pre_state(case);
-        evm2_seed_block_hashes(&mut database, case);
+        let mut recorder = ReplayRecorder { spec: self.spec, outcome: ReplayOutcome::default() };
+        let summary = execute_blockchain_tests_suite(
+            Path::new(&self.name),
+            &self.suite,
+            BlockchainTestExecuteConfig { validate_post_state: false, ..Default::default() },
+            &NameFilter::default(),
+            &mut recorder,
+        )
+        .expect("EEST replay must execute");
+        assert_eq!(summary.executed, 1);
+        assert_eq!(summary.skipped, 0);
+        recorder.outcome
+    }
 
-        let mut parent_block_hash = Some(case.genesis_block_header.hash);
-        let mut parent_excess_blob_gas =
-            case.genesis_block_header.excess_blob_gas.unwrap_or_default().saturating_to::<u64>();
-        let mut outcome = ReplayOutcome::default();
-
-        for block in &case.blocks {
-            let header = block_header(block).expect("replay fixture block must carry a header");
-            let block_env = evm2_block_env(header, parent_excess_blob_gas, spec);
-
-            let mut evm = Evm::<BaseEvmTypes>::new(
-                spec,
-                block_env,
-                ethereum_tx_registry(spec),
-                mem::take(&mut database),
-                Precompiles::base(spec),
-            );
-            let mut block_state = BlockStateAccumulator::new();
-
-            evm2_pre_block(&mut evm, &mut block_state, spec, block_env, parent_block_hash, header);
-
-            let mut txs = Vec::with_capacity(block_transactions(block).len());
-            let mut gas_used = 0u64;
-            let mut execution_gas_used = 0u64;
-            let mut state_gas_used = 0u64;
-            for raw in block_transactions(block) {
-                let tx = evm2_tx(raw);
-                let result = evm
-                    .transact(&tx)
-                    .unwrap_or_else(|err| panic!("evm2 replay transaction must execute: {err:?}"))
-                    .commit_to(&mut block_state);
-                gas_used = gas_used.saturating_add(result.tx_gas_used());
-                execution_gas_used =
-                    execution_gas_used.saturating_add(result.execution_gas_spent());
-                state_gas_used = state_gas_used.saturating_add(result.state_gas_spent());
-                txs.push(TxOutcome {
-                    gas_used: result.tx_gas_used(),
-                    success: result.status,
-                    logs: result.logs.len(),
-                    logs_digest: logs_digest(&result.logs),
-                });
-            }
-
-            evm2_post_block(&mut evm, &mut block_state, spec, block_withdrawals(block));
-
-            let mut restored = mem::take(
-                evm.database_as_mut::<InMemoryDB>().expect("block EVM database must be InMemoryDB"),
-            );
-            drop(evm);
-            restored.commit_source(&block_state);
-            restored.insert_block_hash(&header.number, &header.hash);
-            database = restored;
-
-            parent_block_hash = Some(header.hash);
-            if let Some(excess) = header.excess_blob_gas {
-                parent_excess_blob_gas = excess.saturating_to::<u64>();
-            }
-
-            outcome.blocks.push(BlockOutcome {
-                number: header.number.saturating_to::<u64>(),
-                header_gas_used: header.gas_used.saturating_to::<u64>(),
-                gas_used,
-                execution_gas_used,
-                state_gas_used,
-                block_gas_used: block_gas_used(spec, gas_used, execution_gas_used, state_gas_used),
-                txs,
-            });
-        }
-
-        outcome
+    /// Replays through revm and records transaction outcomes for parity checks.
+    pub fn replay_revm(&self) -> ReplayOutcome {
+        let mut recorder = ReplayRecorder { spec: self.spec, outcome: ReplayOutcome::default() };
+        self.execute_revm(&mut recorder);
+        recorder.outcome
     }
 
     /// Replays every block through revm using the same block sequence and cadence.
-    pub fn replay_revm(&self) -> ReplayOutcome {
-        let case = &self.case;
+    pub fn execute_revm(&self, hook: &mut dyn Hook) {
+        let case = self.case();
         let spec = self.spec;
         let revm_spec = revm_spec_id(spec);
         let mut database = revm_pre_state(case);
@@ -396,14 +305,23 @@ impl ReplayFixture {
         let mut parent_block_hash = Some(case.genesis_block_header.hash);
         let mut parent_excess_blob_gas =
             case.genesis_block_header.excess_blob_gas.unwrap_or_default().saturating_to::<u64>();
-        let mut outcome = ReplayOutcome::default();
+        let total_blocks = case.blocks.len();
+        hook.case_started(CaseStarted { name: &self.name, total_blocks, network: case.network });
 
-        for block in &case.blocks {
+        for (block_index, block) in case.blocks.iter().enumerate() {
             let header = block_header(block).expect("replay fixture block must carry a header");
             let block_env = revm_block_env(header, parent_excess_blob_gas, spec);
             let block_number = header.number.saturating_to::<u64>();
 
-            let mut txs = Vec::with_capacity(block_transactions(block).len());
+            let transactions = block_transactions(block);
+            let total_transactions = transactions.len();
+            hook.block_started(BlockStarted {
+                block_index,
+                total_blocks,
+                block_number: Some(header.number),
+                block_gas_used: Some(header.gas_used),
+                total_transactions,
+            });
             let mut gas_used = 0u64;
             let mut execution_gas_used = 0u64;
             let mut state_gas_used = 0u64;
@@ -416,8 +334,25 @@ impl ReplayFixture {
 
                 revm_pre_block(&mut evm, spec, block_number, parent_block_hash, header);
 
-                for raw in block_transactions(block) {
-                    let result = evm.transact_one(revm_tx(raw)).unwrap_or_else(|err| {
+                for (transaction_index, raw) in transactions.iter().enumerate() {
+                    hook.transaction_started(TransactionStarted {
+                        block_index,
+                        total_blocks,
+                        block_number: Some(header.number),
+                        transaction_index,
+                        total_transactions,
+                    });
+                    let tx = revm_tx(raw);
+                    if spec.enables(SpecId::AMSTERDAM) {
+                        let block_gas_limit = header.gas_limit.saturating_to::<u64>();
+                        assert!(
+                            tx.gas_limit.min(cfg.tx_gas_limit_cap())
+                                <= block_gas_limit.saturating_sub(execution_gas_used)
+                                && tx.gas_limit <= block_gas_limit.saturating_sub(state_gas_used),
+                            "revm transaction gas limit exceeds available block gas",
+                        );
+                    }
+                    let result = evm.transact_one(tx).unwrap_or_else(|err| {
                         panic!("revm replay transaction must execute: {err:?}")
                     });
                     gas_used = gas_used.saturating_add(result.tx_gas_used());
@@ -425,13 +360,25 @@ impl ReplayFixture {
                         execution_gas_used.saturating_add(result.gas().block_regular_gas_used());
                     state_gas_used =
                         state_gas_used.saturating_add(result.gas().block_state_gas_used());
-                    txs.push(TxOutcome {
+                    hook.transaction_finished(TransactionFinished {
+                        block_index,
+                        total_blocks,
+                        block_number: Some(header.number),
+                        transaction_index,
+                        total_transactions,
                         gas_used: result.tx_gas_used(),
+                        execution_gas_used: result.gas().block_regular_gas_used(),
+                        state_gas_used: result.gas().block_state_gas_used(),
                         success: result.is_success(),
-                        logs: result.logs().len(),
-                        logs_digest: logs_digest(result.logs()),
+                        logs: result.logs(),
                     });
                 }
+
+                assert_eq!(
+                    block_gas_used(spec, gas_used, execution_gas_used, state_gas_used),
+                    header.gas_used.saturating_to::<u64>(),
+                    "revm block {block_number} gas must match its header",
+                );
 
                 revm_post_block(&mut evm, spec, block_withdrawals(block));
 
@@ -445,18 +392,59 @@ impl ReplayFixture {
                 parent_excess_blob_gas = excess.saturating_to::<u64>();
             }
 
-            outcome.blocks.push(BlockOutcome {
-                number: block_number,
-                header_gas_used: header.gas_used.saturating_to::<u64>(),
-                gas_used,
-                execution_gas_used,
-                state_gas_used,
-                block_gas_used: block_gas_used(spec, gas_used, execution_gas_used, state_gas_used),
-                txs,
+            hook.block_finished(BlockFinished {
+                block_index,
+                total_blocks,
+                block_number: Some(header.number),
+                block_gas_used: Some(header.gas_used),
             });
         }
+    }
+}
 
-        outcome
+struct ReplayRecorder {
+    spec: SpecId,
+    outcome: ReplayOutcome,
+}
+
+impl Hook for ReplayRecorder {
+    fn block_started(&mut self, event: BlockStarted) {
+        self.outcome.blocks.push(BlockOutcome {
+            number: event.block_number.expect("replay block must have a number").saturating_to(),
+            header_gas_used: event
+                .block_gas_used
+                .expect("replay block must have header gas")
+                .saturating_to(),
+            gas_used: 0,
+            execution_gas_used: 0,
+            state_gas_used: 0,
+            block_gas_used: 0,
+            txs: Vec::with_capacity(event.total_transactions),
+        });
+    }
+
+    fn transaction_finished(&mut self, event: TransactionFinished<'_>) {
+        let block = &mut self.outcome.blocks[event.block_index];
+        block.gas_used = block.gas_used.saturating_add(event.gas_used);
+        block.execution_gas_used =
+            block.execution_gas_used.saturating_add(event.execution_gas_used);
+        block.state_gas_used = block.state_gas_used.saturating_add(event.state_gas_used);
+        block.txs.push(TxOutcome {
+            gas_used: event.gas_used,
+            success: event.success,
+            logs: event.logs.len(),
+            logs_digest: logs_digest(event.logs),
+        });
+    }
+
+    fn block_finished(&mut self, event: BlockFinished) {
+        let block = &mut self.outcome.blocks[event.block_index];
+        block.block_gas_used = block_gas_used(
+            self.spec,
+            block.gas_used,
+            block.execution_gas_used,
+            block.state_gas_used,
+        );
     }
 }
 
@@ -490,6 +478,14 @@ fn assert_canonical(name: &str, case: &BlockchainTestCase) {
             block.expect_exception.is_none(),
             "replay fixture {name} block {index} expects an exception; replay fixtures must only \
              contain valid blocks"
+        );
+        assert!(
+            block.block_access_list.is_none()
+                && block
+                    .rlp_decoded
+                    .as_ref()
+                    .is_none_or(|decoded| decoded.block_access_list.is_none()),
+            "replay fixture {name} block {index}: block access lists are not supported",
         );
         let header = block_header(block)
             .unwrap_or_else(|| panic!("replay fixture {name} block {index} has no header"));
@@ -602,259 +598,6 @@ fn revm_spec_id(spec: SpecId) -> RevmSpecId {
         SpecId::AMSTERDAM => RevmSpecId::AMSTERDAM,
         other => panic!("unsupported replay spec: {other:?}"),
     }
-}
-
-// ---------------------------------------------------------------------------
-// evm2 side.
-// ---------------------------------------------------------------------------
-
-fn evm2_pre_state(case: &BlockchainTestCase) -> InMemoryDB {
-    let mut database = InMemoryDB::default();
-    for (address, account) in &case.pre.0 {
-        let info = AccountInfo::default()
-            .with_balance(account.balance)
-            .with_nonce(account.nonce.saturating_to::<u64>())
-            .with_code(
-                Bytecode::new_raw_checked(account.code.clone())
-                    .unwrap_or_else(|_| Bytecode::new_legacy(account.code.clone())),
-            );
-        database.insert_account_info(address, info);
-        for (key, value) in &account.storage {
-            database.insert_account_storage(address, key, value);
-        }
-    }
-    database
-}
-
-fn evm2_seed_block_hashes(database: &mut InMemoryDB, case: &BlockchainTestCase) {
-    for block_hash in &case.block_hashes {
-        database.insert_block_hash(&block_hash.number, &block_hash.hash);
-    }
-    database.insert_block_hash(&case.genesis_block_header.number, &case.genesis_block_header.hash);
-}
-
-fn evm2_block_env(header: &BlockHeader, parent_excess_blob_gas: u64, spec: SpecId) -> BlockEnv {
-    let excess_blob_gas = header
-        .excess_blob_gas
-        .map(|gas| gas.saturating_to::<u64>())
-        .unwrap_or(parent_excess_blob_gas);
-    BlockEnvExt {
-        number: header.number,
-        beneficiary: header.coinbase,
-        timestamp: header.timestamp,
-        gas_limit: header.gas_limit,
-        basefee: header.base_fee_per_gas.unwrap_or_default(),
-        difficulty: header.difficulty,
-        prevrandao: if header.difficulty.is_zero() {
-            U256::from_be_slice(header.mix_hash.as_slice())
-        } else {
-            U256::ZERO
-        },
-        blob_basefee: U256::from(
-            blob_params_for_timestamp(header.timestamp, spec).calc_blob_fee(excess_blob_gas),
-        ),
-        slot_num: header.slot_number.unwrap_or_default(),
-        ext: (),
-        _non_exhaustive: (),
-    }
-}
-
-fn evm2_pre_block(
-    evm: &mut Evm<'_, BaseEvmTypes>,
-    block_state: &mut BlockStateAccumulator,
-    spec: SpecId,
-    block: BlockEnv,
-    parent_block_hash: Option<B256>,
-    header: &BlockHeader,
-) {
-    if block.number.is_zero() {
-        return;
-    }
-    if spec.enables(SpecId::PRAGUE)
-        && let Some(hash) = parent_block_hash
-    {
-        evm2_system_call(
-            evm,
-            block_state,
-            HISTORY_STORAGE_ADDRESS,
-            Bytes::copy_from_slice(hash.as_slice()),
-            "eip2935",
-        );
-    }
-    if spec.enables(SpecId::CANCUN)
-        && let Some(root) = header.parent_beacon_block_root
-    {
-        evm2_system_call(
-            evm,
-            block_state,
-            BEACON_ROOTS_ADDRESS,
-            Bytes::copy_from_slice(root.as_slice()),
-            "eip4788",
-        );
-    }
-}
-
-/// Mirrors `post_block_transition`, minus the pre-merge block and ommer rewards:
-/// the replay corpus is post-merge, so `block_reward` is always zero.
-fn evm2_post_block(
-    evm: &mut Evm<'_, BaseEvmTypes>,
-    block_state: &mut BlockStateAccumulator,
-    spec: SpecId,
-    withdrawals: &[Withdrawal],
-) {
-    assert!(spec.enables(SpecId::MERGE), "replay corpus must be post-merge");
-
-    if spec.enables(SpecId::SHANGHAI) {
-        for withdrawal in withdrawals {
-            evm2_increment_balance(
-                evm,
-                block_state,
-                withdrawal.address,
-                withdrawal.amount.saturating_mul(U256::from(ONE_GWEI)),
-            );
-        }
-    }
-
-    if spec.enables(SpecId::PRAGUE) {
-        evm2_system_call(evm, block_state, WITHDRAWAL_REQUEST_ADDRESS, Bytes::new(), "eip7002");
-        evm2_system_call(evm, block_state, CONSOLIDATION_REQUEST_ADDRESS, Bytes::new(), "eip7251");
-    }
-
-    if spec.enables(SpecId::AMSTERDAM) {
-        evm2_system_call(
-            evm,
-            block_state,
-            evm2::evm::BUILDER_DEPOSIT_REQUEST_ADDRESS,
-            Bytes::new(),
-            "eip8282_deposit",
-        );
-        evm2_system_call(
-            evm,
-            block_state,
-            evm2::evm::BUILDER_EXIT_REQUEST_ADDRESS,
-            Bytes::new(),
-            "eip8282_exit",
-        );
-    }
-}
-
-fn evm2_system_call(
-    evm: &mut Evm<'_, BaseEvmTypes>,
-    block_state: &mut BlockStateAccumulator,
-    address: Address,
-    data: Bytes,
-    label: &'static str,
-) {
-    let executed = evm
-        .system_call(SystemTx::new(address, data))
-        .unwrap_or_else(|err| panic!("evm2 {label} system call must execute: {err:?}"));
-    assert!(executed.result().status, "evm2 {label} system call must succeed");
-    let _ = executed.commit_to(block_state);
-}
-
-struct AccountStateChange {
-    address: Address,
-    original: Option<AccountInfo>,
-    current: Option<AccountInfo>,
-}
-
-impl StateChangeSource for AccountStateChange {
-    fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        sink.account(AccountChangeRef {
-            address: self.address,
-            original: self.original.as_ref(),
-            current: self.current.as_ref(),
-            created: false,
-            selfdestructed: false,
-        })
-    }
-}
-
-fn evm2_increment_balance(
-    evm: &mut Evm<'_, BaseEvmTypes>,
-    block_state: &mut BlockStateAccumulator,
-    address: Address,
-    amount: U256,
-) {
-    let original = evm
-        .read_account_info(&address)
-        .unwrap_or_else(|code| panic!("evm2 withdrawal account read must succeed: {code:?}"));
-    let mut current = original.clone().unwrap_or_default();
-    current.balance = current.balance.saturating_add(amount);
-    if current.code_hash.is_zero() {
-        current.code_hash = KECCAK256_EMPTY;
-    }
-    let current = (!current.is_empty()).then_some(current);
-
-    let change = AccountStateChange { address, original, current };
-    let mut sink = Tee::new(evm.overlay_db_mut(), block_state);
-    let Ok(()) = change.visit(&mut sink);
-}
-
-fn evm2_tx(raw: &Transaction) -> RecoveredTxEnvelope {
-    let caller = raw.sender.expect("replay transaction must carry a sender");
-    let tx_type = raw.transaction_type.map(|ty| ty.saturating_to::<u8>()).unwrap_or(0);
-
-    let mut request = TransactionRequest::default()
-        .from(caller)
-        .gas_limit(raw.gas_limit.saturating_to::<u64>())
-        .nonce(raw.nonce.saturating_to::<u64>())
-        .value(raw.value)
-        .input(TransactionInput::from(raw.data.clone()));
-    request.to = Some(raw.to.map_or(TxKind::Create, TxKind::Call));
-    request.transaction_type = Some(tx_type);
-    request.chain_id = raw.chain_id.map(|id| id.saturating_to::<u64>());
-    if !matches!(tx_type, 2..=4) {
-        request.gas_price = raw.gas_price.map(|price| price.saturating_to::<u128>());
-        if request.gas_price.is_none()
-            && (matches!(tx_type, 0 | 1)
-                || (raw.max_fee_per_gas.is_none() && raw.max_priority_fee_per_gas.is_none()))
-        {
-            request.gas_price = Some(0);
-        }
-    }
-    request.max_fee_per_gas = raw.max_fee_per_gas.map(|fee| fee.saturating_to::<u128>());
-    request.max_priority_fee_per_gas =
-        if raw.max_fee_per_gas.is_some() && raw.max_priority_fee_per_gas.is_none() {
-            Some(0)
-        } else {
-            raw.max_priority_fee_per_gas.map(|fee| fee.saturating_to::<u128>())
-        };
-    request.max_fee_per_blob_gas = raw.max_fee_per_blob_gas.map(|fee| fee.saturating_to::<u128>());
-    request.access_list = evm2_access_list(raw, tx_type);
-    request.authorization_list = authorization_list(raw);
-    if raw.max_fee_per_blob_gas.is_some() || tx_type == 3 || !raw.blob_versioned_hashes.is_empty() {
-        request.blob_versioned_hashes = Some(raw.blob_versioned_hashes.clone());
-    }
-
-    let tx = request
-        .build_consensus_tx()
-        .unwrap_or_else(|err| panic!("replay transaction must build: {}", err.error));
-    match tx {
-        TypedTransaction::Legacy(tx) => Recovered::new_unchecked(TxEnvelope::Legacy(tx), caller),
-        TypedTransaction::Eip2930(tx) => Recovered::new_unchecked(TxEnvelope::Eip2930(tx), caller),
-        TypedTransaction::Eip1559(tx) => Recovered::new_unchecked(TxEnvelope::Eip1559(tx), caller),
-        TypedTransaction::Eip4844(tx) => Recovered::new_unchecked(TxEnvelope::Eip4844(tx), caller),
-        TypedTransaction::Eip7702(tx) => Recovered::new_unchecked(tx.into(), caller),
-    }
-}
-
-fn evm2_access_list(raw: &Transaction, tx_type: u8) -> Option<RpcAccessList> {
-    if tx_type == 0 {
-        return None;
-    }
-    let Some(access_list) = &raw.access_list else {
-        return (tx_type == 1).then(RpcAccessList::default);
-    };
-    Some(RpcAccessList(
-        access_list
-            .iter()
-            .map(|item| RpcAccessListItem {
-                address: item.address,
-                storage_keys: item.storage_keys.clone(),
-            })
-            .collect(),
-    ))
 }
 
 fn authorization_list(raw: &Transaction) -> Option<Vec<SignedAuthorization>> {

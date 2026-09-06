@@ -80,7 +80,6 @@ fn evm(c: &mut Criterion) {
                 prepared.bench(&mut group);
                 if let Some(revm_prepared) = &revm_prepared {
                     revm_prepared.bench(&mut group);
-                    revm_prepared.bench_setup(&mut group);
                 }
                 apply_default_budget(&mut group);
             }

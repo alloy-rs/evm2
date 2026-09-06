@@ -517,6 +517,18 @@ fn execute_block(
                         block_execution_gas_used.saturating_add(result.execution_gas_spent());
                     block_state_gas_used =
                         block_state_gas_used.saturating_add(result.state_gas_spent());
+                    hook.transaction_finished(TransactionFinished {
+                        block_index,
+                        total_blocks,
+                        block_number,
+                        transaction_index,
+                        total_transactions,
+                        gas_used: result.tx_gas_used(),
+                        execution_gas_used: result.execution_gas_spent(),
+                        state_gas_used: result.state_gas_spent(),
+                        success: result.status,
+                        logs: &result.logs,
+                    });
                     if compare_receipt_root {
                         let status = if spec.enables(SpecId::BYZANTIUM) {
                             Eip658Value::Eip658(result.status)
@@ -538,13 +550,6 @@ fn execute_block(
                             .expect("executor only builds supported Ethereum transaction types");
                         receipts.push(ReceiptEnvelope::from_typed(tx_type, receipt));
                     }
-                    hook.transaction_finished(TransactionFinished {
-                        block_index,
-                        total_blocks,
-                        block_number,
-                        transaction_index,
-                        total_transactions,
-                    });
                 }
                 Err(err) if should_fail => {
                     let _ = err;
