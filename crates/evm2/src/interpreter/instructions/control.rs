@@ -10,18 +10,18 @@ use core::hint::cold_path;
 use evm2_macros::instruction;
 
 #[instruction]
-pub(crate) fn stop() -> Result {
+pub fn stop() -> Result {
     cold_path();
     Err(InstrStop::Stop)
 }
 
 #[instruction]
-pub(crate) fn jump(cx: _, [target]: [Word]) -> Result {
+pub fn jump(cx: _, [target]: [Word]) -> Result {
     jump_inner(*target, &mut cx)
 }
 
 #[instruction]
-pub(crate) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
+pub fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
         jump_inner(*target, &mut cx)?;
     } else {
@@ -41,25 +41,25 @@ fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut InstructionCx<'_, '_, '_, 
 }
 
 #[instruction]
-pub(crate) fn pc(cx: _) -> out {
+pub fn pc(cx: _) -> out {
     *out = Word::from(cx.state.bytecode().pc_offset(*cx.pc));
 }
 
 #[instruction(dynamic_gas)]
-pub(crate) fn gas(cx: _) -> out {
+pub fn gas(cx: _) -> out {
     *out = Word::from(cx.gas.remaining());
 }
 
 #[instruction]
-pub(crate) fn jumpdest() {}
+pub fn jumpdest() {}
 
 #[instruction(dynamic_gas)]
-pub(crate) fn r#return(cx: _, [offset, len]: [Word]) -> Result {
+pub fn r#return(cx: _, [offset, len]: [Word]) -> Result {
     return_inner(cx, offset, len, InstrStop::Return)
 }
 
 #[instruction(dynamic_gas)]
-pub(crate) fn revert(cx: _, [offset, len]: [Word]) -> Result {
+pub fn revert(cx: _, [offset, len]: [Word]) -> Result {
     return_inner(cx, offset, len, InstrStop::Revert)
 }
 
@@ -89,7 +89,7 @@ fn return_inner<T: EvmTypesHost>(
 }
 
 #[instruction]
-pub(crate) fn invalid() -> Result {
+pub fn invalid() -> Result {
     cold_path();
     Err(InstrStop::InvalidOpcode)
 }

@@ -86,11 +86,15 @@ pub struct TracingInspector {
     traces: CallTraceArena,
     /// Tracks active calls
     trace_stack: Vec<usize>,
+    /// Number of logs recorded so far, used as the index of the next log.
+    log_count: usize,
     /// Tracks recorded steps waiting for `step_end`.
     ///
     /// This is a stack because nested calls are executed between the `step` and `step_end` of the
     /// call instruction itself. A `usize::MAX` step index marks a step that was not recorded.
     step_stack: Vec<(usize, usize)>,
+    /// Number of opcode steps captured across all calls since the last reset.
+    recorded_steps: u64,
     /// Tracks the journal len in the step, used in step_end to check if the journal has changed
     last_journal_len: usize,
     /// The spec id of the EVM.
@@ -122,7 +126,9 @@ impl TracingInspector {
         let Self {
             traces,
             trace_stack,
+            log_count,
             step_stack,
+            recorded_steps,
             last_journal_len,
             spec_id,
             features,
@@ -144,7 +150,9 @@ impl TracingInspector {
 
         traces.clear();
         trace_stack.clear();
+        *log_count = 0;
         step_stack.clear();
+        *recorded_steps = 0;
         spec_id.take();
         *features = EvmFeatures::empty();
         *last_journal_len = 0;
@@ -270,11 +278,6 @@ impl TracingInspector {
         !self.trace_stack.is_empty()
     }
 
-    /// Returns how many logs we already recorded.
-    fn log_count(&self) -> usize {
-        self.traces.nodes().iter().map(|trace| trace.log_count()).sum()
-    }
-
     /// Returns true if this a call to a precompile contract.
     ///
     /// Returns true if the `to` address is a precompile contract and the value is zero.
@@ -359,8 +362,11 @@ impl TracingInspector {
         // find an empty steps vec or create a new one
         let steps = self.reusable_step_vecs.pop().unwrap_or_default();
 
+        // the currently active call is the parent of the new call
+        let parent = self.trace_stack.last().copied().unwrap_or_default();
+
         self.trace_stack.push(self.traces.push_trace(
-            0,
+            parent,
             push_kind,
             CallTrace {
                 depth,
@@ -418,13 +424,15 @@ impl TracingInspector {
 
         let trace_idx = self.last_trace_idx();
 
-        let record = self.config.should_record_opcode(op);
+        let record = self.config.should_record_opcode(op)
+            && self.config.step_limit.is_none_or(|limit| self.recorded_steps < limit.get());
         if !record {
             // Push a sentinel so that the upcoming `step_end` stays paired with this step.
             self.step_stack.push((trace_idx, usize::MAX));
             return;
         }
 
+        self.recorded_steps += 1;
         let node = &mut self.traces.arena[trace_idx];
 
         // Reuse the memory from the previous step if:
@@ -510,7 +518,7 @@ impl TracingInspector {
             return;
         };
         let node = &mut self.traces.arena[trace_idx];
-        // The step is not present if it was filtered out by the opcode filter.
+        // The step is not present if it was filtered out or the capture limit was reached.
         let Some(step) = node.trace.steps.get_mut(step_idx) else {
             return;
         };
@@ -612,7 +620,8 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
         if self.config.record_logs {
             // index starts at 0
-            let log_count = self.log_count();
+            let log_count = self.log_count;
+            self.log_count += 1;
             let trace = self.last_trace();
             trace.ordering.push(TraceMemberOrder::Log(trace.logs.len()));
             trace.logs.push(

@@ -16,7 +16,7 @@ const fn require_non_staticcall<T: EvmTypesHost>(state: &InterpreterState<'_, '_
 }
 
 #[instruction(dynamic_gas)]
-pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
+pub fn sload(cx: _, [key]: [Word]) -> Result<out> {
     // EIP-2929: SLOAD pays the warm read cost as static opcode gas, then only
     // charges the additional cold cost when the slot was not already warm. Avoid
     // touching the host/database if the frame cannot afford that cold surcharge.
@@ -32,7 +32,7 @@ pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
 }
 
 #[instruction(dynamic_gas)]
-pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
+pub fn sstore(cx: _, [key, value]: [Word]) -> Result {
     require_non_staticcall(cx.state)?;
     let is_eip2200 = cx.state.feature(EvmFeatures::EIP2200);
 
@@ -80,20 +80,20 @@ pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
 }
 
 #[instruction]
-pub(crate) fn tload(cx: _, [key]: [Word]) -> out {
+pub fn tload(cx: _, [key]: [Word]) -> out {
     let destination = &cx.state.message().destination;
     *out = cx.state.host().tload(destination, key);
 }
 
 #[instruction]
-pub(crate) fn tstore(cx: _, [key, value]: [Word]) -> Result {
+pub fn tstore(cx: _, [key, value]: [Word]) -> Result {
     require_non_staticcall(cx.state)?;
     let destination = &cx.state.message().destination;
     cx.state.host().tstore(destination, key, value);
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]
-pub(crate) fn log<const N: usize>(cx: _) -> Result {
+pub fn log<const N: usize>(cx: _) -> Result {
     log_common(cx, stack, N)
 }
 

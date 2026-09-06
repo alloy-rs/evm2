@@ -7,7 +7,7 @@ use crate::{
 use evm2_macros::instruction;
 
 #[instruction]
-pub(crate) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
+pub fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
     *out = if let Some(diff) = cx.state.host().block_env().number.checked_sub(*number) {
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
@@ -20,22 +20,22 @@ pub(crate) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
 }
 
 #[instruction]
-pub(crate) fn coinbase(cx: _) -> out {
+pub fn coinbase(cx: _) -> out {
     *out = address_to_word(&cx.state.host().block_env().beneficiary);
 }
 
 #[instruction]
-pub(crate) fn timestamp(cx: _) -> out {
+pub fn timestamp(cx: _) -> out {
     *out = cx.state.host().block_env().timestamp;
 }
 
 #[instruction]
-pub(crate) fn block_number(cx: _) -> out {
+pub fn block_number(cx: _) -> out {
     *out = cx.state.host().block_env().number;
 }
 
 #[instruction]
-pub(crate) fn difficulty(cx: _) -> out {
+pub fn difficulty(cx: _) -> out {
     *out = if cx.state.feature(EvmFeatures::EIP4399) {
         cx.state.host().block_env().prevrandao
     } else {
@@ -44,39 +44,39 @@ pub(crate) fn difficulty(cx: _) -> out {
 }
 
 #[instruction]
-pub(crate) fn gaslimit(cx: _) -> out {
+pub fn gaslimit(cx: _) -> out {
     *out = cx.state.host().block_env().gas_limit;
 }
 
 #[instruction]
-pub(crate) fn chainid(cx: _) -> Result<out> {
+pub fn chainid(cx: _) -> Result<out> {
     *out = cx.state.tx().chain_id;
 }
 
 #[instruction]
-pub(crate) fn selfbalance(cx: _) -> Result<out> {
+pub fn selfbalance(cx: _) -> Result<out> {
     let destination = &cx.state.message().destination;
     *out = cx.state.host().load_account(destination, false, false)?.balance;
 }
 
 #[instruction]
-pub(crate) fn basefee(cx: _) -> Result<out> {
+pub fn basefee(cx: _) -> Result<out> {
     *out = cx.state.host().block_env().basefee;
 }
 
 #[instruction]
-pub(crate) fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
+pub fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
     let index = word_to_usize_saturated(*index);
     *out = cx.state.tx().blob_hashes.get(index).copied().unwrap_or_default();
 }
 
 #[instruction]
-pub(crate) fn blobbasefee(cx: _) -> Result<out> {
+pub fn blobbasefee(cx: _) -> Result<out> {
     *out = cx.state.host().block_env().blob_basefee;
 }
 
 #[instruction]
-pub(crate) fn slotnum(cx: _) -> Result<out> {
+pub fn slotnum(cx: _) -> Result<out> {
     *out = cx.state.host().block_env().slot_num;
 }
 

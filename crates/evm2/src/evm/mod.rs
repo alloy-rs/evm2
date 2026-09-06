@@ -1425,6 +1425,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             self.inspect_log(log);
         }
         let (stop, output) = match execution {
+            Ok(_) | Err(PrecompileError::Revert(_)) if gas.remaining() > message.gas_limit => {
+                (InstrStop::PrecompileOOG, Bytes::new())
+            }
             Ok(output) => (InstrStop::Return, output.into_bytes()),
             Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
             Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
@@ -2074,6 +2077,47 @@ mod tests {
         let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
         assert_eq!(inspector.0.len(), 1);
         assert_eq!(inspector.0.as_slice(), evm.logs());
+    }
+
+    #[test]
+    fn precompile_cannot_return_more_gas_than_its_limit() {
+        fn overcharge_and_return(
+            _: &mut Evm<'_, BaseEvmTypes>,
+            _: &Message,
+            gas: &mut GasTracker,
+        ) -> crate::precompiles::PrecompileResult {
+            let _ = gas.spend(gas.limit() + 1);
+            Ok(PrecompileOutput::new(Bytes::new()))
+        }
+
+        fn overcharge_and_revert(
+            _: &mut Evm<'_, BaseEvmTypes>,
+            _: &Message,
+            gas: &mut GasTracker,
+        ) -> crate::precompiles::PrecompileResult {
+            let _ = gas.spend(gas.limit() + 1);
+            Err(PrecompileError::Revert(Bytes::new()))
+        }
+
+        let precompiles = precompiles_with([
+            test_precompile(TEST_PRECOMPILE, overcharge_and_return),
+            test_precompile(INNER_TEST_PRECOMPILE, overcharge_and_revert),
+        ]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+
+        for address in [TEST_PRECOMPILE, INNER_TEST_PRECOMPILE] {
+            let mut message = precompile_message(address);
+            let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
+
+            assert_eq!(result.stop, InstrStop::PrecompileOOG);
+            assert_eq!(result.gas.remaining(), 0);
+        }
     }
 
     fn lifecycle_evm() -> Evm<'static, BaseEvmTypes> {
