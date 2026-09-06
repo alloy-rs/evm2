@@ -276,6 +276,15 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         &mut self.return_data
     }
 
+    /// Borrows the operand stack, linear memory, and host independently for inspection.
+    #[inline]
+    pub const fn stack_memory_host(&mut self) -> (StackRef<'_>, &[u8], &mut T::Host<'host>) {
+        // SAFETY: As in `host`, the host pointer is initialized during execution and points
+        // outside the interpreter's owned stack and memory.
+        let host = unsafe { self.host.unwrap_unchecked().as_mut() };
+        (self.stack(), self.memory.as_slice(), host)
+    }
+
     /// Returns the host implementation.
     #[inline]
     pub const fn host(&mut self) -> &mut T::Host<'host> {

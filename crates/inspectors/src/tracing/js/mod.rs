@@ -5,9 +5,9 @@ use crate::tracing::{
     config::TraceStyle,
     js::{
         bindings::{
-            CallFrame, Contract, EvmDbRef, FrameResult, JsEvmContext, MemoryRef, MemorySnapshot,
-            ReusableCallFrame, ReusableEvmDb, ReusableFrameResult, ReusableStepLog, StackRef,
-            StepLog,
+            CallFrame, Contract, FrameResult, JsEvmContext, OpcodeNames, PreStep,
+            ReusableCallFrame, ReusableEvmDb, ReusableFrameResult, ReusableStepLog, StepInfo,
+            StepSnapshot,
         },
         builtins::{PrecompileList, register_builtins, to_serde_value},
     },
@@ -23,19 +23,22 @@ use alloc::{
 use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
 pub use boa_engine::vm::RuntimeLimits;
-use boa_engine::{Context, JsError, JsObject, JsResult, JsValue, Source, js_string};
+use boa_engine::{Context, JsError, JsObject, JsResult, JsValue, Script, Source, js_string};
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
     env::BlockEnv,
     evm::DynDatabase,
     interpreter::{
         GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
-        Word, opcode::OpCode,
+        opcode::op,
     },
 };
 
 pub(crate) mod bindings;
 pub(crate) mod builtins;
+
+#[cfg(test)]
+mod snapshot_tests;
 
 /// The maximum number of iterations in a loop.
 ///
@@ -48,47 +51,29 @@ pub const LOOP_ITERATION_LIMIT: u64 = 200_000;
 /// Once exceeded, the function will throw an error.
 pub const RECURSION_LIMIT: usize = 10_000;
 
-/// Pre-execution state captured in `step()` to be used in `step_end()`.
-///
-/// The JS step callback needs the pre-execution stack/memory state but the post-execution gas
-/// cost. This struct holds the snapshot from `step()` so `step_end()` can invoke the callback
-/// with the correct gas cost.
-#[derive(Debug)]
+/// Reused pre-execution data for one call depth. Parents remain pending during child execution.
+#[derive(Debug, Default)]
 struct PendingStep {
-    /// Cloned stack from before opcode execution
-    stack: Vec<Word>,
-    /// Program counter
-    pc: u64,
-    /// Opcode being executed
-    op: u8,
-    /// Gas remaining before execution
-    gas_remaining: u64,
-    /// Call depth
-    depth: u64,
-    /// Gas refund counter
-    refund: u64,
-    /// Contract info
-    contract: Contract,
-    /// Memory before opcode execution.
-    memory: MemorySnapshot,
-    /// Total gas spent before this opcode (to compute delta in step_end)
+    snapshot: StepSnapshot,
     gas_spent_before: u64,
+    active: bool,
 }
 
 /// A javascript inspector that will delegate inspector functions to javascript functions
 ///
 /// See also <https://geth.ethereum.org/docs/developers/evm-tracing/custom-tracer#custom-javascript-tracing>
-#[derive(Debug)]
 pub struct JsInspector {
     ctx: Context,
     /// The original javascript code used to create this inspector.
     code: String,
-    /// The javascript config provided to the inspector.
-    _js_config_value: JsValue,
+    /// The parsed tracer script, evaluated again by [`Self::fuse`].
+    script: Script,
     /// The input config object.
     config: serde_json::Value,
     /// The evaluated object that contains the inspector functions.
     obj: JsObject,
+    /// Cached `this` value for callbacks.
+    this: JsValue,
     /// The context of the transaction that is being inspected.
     transaction_context: TransactionContext,
 
@@ -109,6 +94,8 @@ pub struct JsInspector {
     exit_fn: Option<JsObject>,
     /// Executed before each instruction is executed.
     step_fn: Option<JsObject>,
+    /// Lazily initialized opcode names shared across transaction resets.
+    op_names: OpcodeNames,
     /// Reused step wrapper to avoid rebuilding the JS object graph per opcode.
     reusable_step_log: ReusableStepLog,
     /// Reused frame wrapper to avoid rebuilding the JS object graph per enter callback.
@@ -119,16 +106,23 @@ pub struct JsInspector {
     reusable_db: ReusableEvmDb,
     /// Keeps track of the current call stack.
     call_stack: Vec<CallStackItem>,
+    /// Monotonically increasing ID used to refresh callback contract input.
+    next_call_id: u64,
     /// Marker to track whether the precompiles have been registered.
     precompiles_registered: bool,
     /// Pre-execution states captured in `step()` to be processed in `step_end()`.
     pending_steps: Vec<PendingStep>,
-    /// Cached memory snapshot, only updated when the previous opcode modifies memory.
-    cached_memory: MemorySnapshot,
-    /// The opcode from the previous step, used to decide whether to re-snapshot memory.
-    prev_op: Option<OpCode>,
-    /// The call depth from the previous step, used to refresh memory across frames.
-    prev_depth: Option<u16>,
+}
+
+impl core::fmt::Debug for JsInspector {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("JsInspector")
+            .field("code", &self.code)
+            .field("config", &self.config)
+            .field("transaction_context", &self.transaction_context)
+            .field("call_stack", &self.call_stack)
+            .finish_non_exhaustive()
+    }
 }
 
 impl JsInspector {
@@ -170,54 +164,17 @@ impl JsInspector {
 
         register_builtins(&mut ctx)?;
 
-        // evaluate the code
+        // parse the code
         let wrapped = format!("({code})");
-        let obj =
-            ctx.eval(Source::from_bytes(wrapped.as_bytes())).map_err(JsInspectorError::EvalCode)?;
+        let script = Script::parse(Source::from_bytes(wrapped.as_bytes()), None, &mut ctx)
+            .map_err(JsInspectorError::EvalCode)?;
 
-        let obj = obj.as_object().ok_or(JsInspectorError::ExpectedJsObject)?;
+        let JsTracerObject { obj, result_fn, fault_fn, enter_fn, exit_fn, step_fn } =
+            JsTracerObject::evaluate(&script, &config, &mut ctx)?;
 
-        // ensure all the fields are callables, if present
-
-        let result_fn = obj
-            .get(js_string!("result"), &mut ctx)?
-            .as_object()
-            .ok_or(JsInspectorError::ResultFunctionMissing)?;
-        if !result_fn.is_callable() {
-            return Err(JsInspectorError::ResultFunctionMissing);
-        }
-
-        let fault_fn = obj
-            .get(js_string!("fault"), &mut ctx)?
-            .as_object()
-            .ok_or(JsInspectorError::FaultFunctionMissing)?;
-        if !fault_fn.is_callable() {
-            return Err(JsInspectorError::FaultFunctionMissing);
-        }
-
-        let enter_fn =
-            obj.get(js_string!("enter"), &mut ctx)?.as_object().filter(|o| o.is_callable());
-        let exit_fn =
-            obj.get(js_string!("exit"), &mut ctx)?.as_object().filter(|o| o.is_callable());
-        let step_fn =
-            obj.get(js_string!("step"), &mut ctx)?.as_object().filter(|o| o.is_callable());
-
-        let _js_config_value =
-            JsValue::from_json(&config, &mut ctx).map_err(JsInspectorError::InvalidJsonConfig)?;
-
-        if let Some(setup_fn) = obj.get(js_string!("setup"), &mut ctx)?.as_object() {
-            if !setup_fn.is_callable() {
-                return Err(JsInspectorError::SetupFunctionNotCallable);
-            }
-
-            // call setup()
-            setup_fn
-                .call(&(obj.clone().into()), core::slice::from_ref(&_js_config_value), &mut ctx)
-                .map_err(JsInspectorError::SetupCallFailed)?;
-        }
-
+        let op_names = OpcodeNames::new();
         let reusable_step_log =
-            ReusableStepLog::new(&mut ctx).map_err(JsInspectorError::EvalCode)?;
+            ReusableStepLog::new(&mut ctx, op_names.clone()).map_err(JsInspectorError::EvalCode)?;
         let reusable_call_frame =
             ReusableCallFrame::new(&mut ctx).map_err(JsInspectorError::EvalCode)?;
         let reusable_frame_result =
@@ -227,8 +184,9 @@ impl JsInspector {
         Ok(Self {
             ctx,
             code,
-            _js_config_value,
+            script,
             config,
+            this: obj.clone().into(),
             obj,
             transaction_context,
             result_fn,
@@ -236,16 +194,15 @@ impl JsInspector {
             enter_fn,
             exit_fn,
             step_fn,
+            op_names,
             reusable_step_log,
             reusable_call_frame,
             reusable_frame_result,
             reusable_db,
             call_stack: Default::default(),
+            next_call_id: 1,
             precompiles_registered: false,
             pending_steps: Vec::new(),
-            cached_memory: MemorySnapshot::default(),
-            prev_op: None,
-            prev_depth: None,
         })
     }
 
@@ -257,6 +214,44 @@ impl JsInspector {
     /// Creates a fresh inspector from the same code and config, resetting all execution state.
     pub fn try_clone(&self) -> Result<Self, JsInspectorError> {
         Self::new(self.code.clone(), self.config.clone())
+    }
+
+    /// Resets the inspector to its initial state so it can be used for the next transaction.
+    ///
+    /// This evaluates the tracer script again in the existing JS context, which yields a fresh
+    /// tracer object (and invokes its `setup` function) without parsing the script again. Global
+    /// state the previous tracer object may have modified, e.g. prototypes, is kept. Callback
+    /// wrappers are recreated so their own properties do not carry over between transactions.
+    pub fn fuse(&mut self) -> Result<(), JsInspectorError> {
+        let JsTracerObject { obj, result_fn, fault_fn, enter_fn, exit_fn, step_fn } =
+            JsTracerObject::evaluate(&self.script, &self.config, &mut self.ctx)?;
+        // Callback objects are mutable JS objects: replacing their Rust state does not remove
+        // user-defined properties or restore overwritten methods. Rebuild them once per
+        // transaction, while retaining the parsed script and reusing wrappers within a transaction.
+        let reusable_step_log = ReusableStepLog::new(&mut self.ctx, self.op_names.clone())
+            .map_err(JsInspectorError::EvalCode)?;
+        let reusable_call_frame =
+            ReusableCallFrame::new(&mut self.ctx).map_err(JsInspectorError::EvalCode)?;
+        let reusable_frame_result =
+            ReusableFrameResult::new(&mut self.ctx).map_err(JsInspectorError::EvalCode)?;
+        let reusable_db = ReusableEvmDb::new(&mut self.ctx).map_err(JsInspectorError::EvalCode)?;
+
+        self.reusable_step_log = reusable_step_log;
+        self.reusable_call_frame = reusable_call_frame;
+        self.reusable_frame_result = reusable_frame_result;
+        self.reusable_db = reusable_db;
+        self.this = obj.clone().into();
+        self.obj = obj;
+        self.result_fn = result_fn;
+        self.fault_fn = fault_fn;
+        self.enter_fn = enter_fn;
+        self.exit_fn = exit_fn;
+        self.step_fn = step_fn;
+        self.call_stack.clear();
+        self.precompiles_registered = false;
+        self.pending_steps.clear();
+
+        Ok(())
     }
 
     /// Returns the transaction context.
@@ -300,7 +295,6 @@ impl JsInspector {
     ) -> Result<JsValue, JsInspectorError> {
         let TxResultWithState { result, pending_state, .. } = res;
         let state = TxState::from_pending(pending_state);
-        let (db, _db_guard) = EvmDbRef::new_changes(&state, db);
 
         let mut to = None;
         let mut output_bytes = None;
@@ -345,42 +339,15 @@ impl JsInspector {
             error,
         };
         let ctx = ctx.into_js_object(&mut self.ctx)?;
-        let db = db.into_js_object(&mut self.ctx)?;
-        Ok(self.result_fn.call(
-            &(self.obj.clone().into()),
-            &[ctx.into(), db.into()],
-            &mut self.ctx,
-        )?)
-    }
-
-    fn try_fault(&mut self, step: StepLog, db: EvmDbRef) -> JsResult<()> {
-        self.reusable_step_log.update(step);
-        self.reusable_db.update(db);
-        let step = self.reusable_step_log.value();
-        let db = self.reusable_db.value();
-        self.fault_fn.call(&(self.obj.clone().into()), &[step, db], &mut self.ctx)?;
-        Ok(())
-    }
-
-    fn try_step(&mut self, step: StepLog, db: EvmDbRef) -> JsResult<()> {
-        if let Some(step_fn) = &self.step_fn {
-            self.reusable_step_log.update(step);
-            self.reusable_db.update(db);
-            let step = self.reusable_step_log.value();
-            let db = self.reusable_db.value();
-            step_fn.call(&(self.obj.clone().into()), &[step, db], &mut self.ctx)?;
-        }
-        Ok(())
+        Ok(self.reusable_db.with_changes_scope(&state, db, || {
+            self.result_fn.call(&self.this, &[ctx.into(), self.reusable_db.value()], &mut self.ctx)
+        })?)
     }
 
     fn try_enter(&mut self, frame: CallFrame) -> JsResult<()> {
         if let Some(enter_fn) = &self.enter_fn {
             self.reusable_call_frame.update(frame);
-            enter_fn.call(
-                &(self.obj.clone().into()),
-                &[self.reusable_call_frame.value()],
-                &mut self.ctx,
-            )?;
+            enter_fn.call(&self.this, &[self.reusable_call_frame.value()], &mut self.ctx)?;
         }
         Ok(())
     }
@@ -388,11 +355,7 @@ impl JsInspector {
     fn try_exit(&mut self, frame: FrameResult) -> JsResult<()> {
         if let Some(exit_fn) = &self.exit_fn {
             self.reusable_frame_result.update(frame);
-            exit_fn.call(
-                &(self.obj.clone().into()),
-                &[self.reusable_frame_result.value()],
-                &mut self.ctx,
-            )?;
+            exit_fn.call(&self.this, &[self.reusable_frame_result.value()], &mut self.ctx)?;
         }
         Ok(())
     }
@@ -439,10 +402,12 @@ impl JsInspector {
         gas_limit: u64,
     ) -> &CallStackItem {
         let call = CallStackItem {
+            id: self.next_call_id,
             contract: Contract { caller, contract, value, input },
             kind,
             gas_limit,
         };
+        self.next_call_id += 1;
         self.call_stack.push(call);
         self.active_call()
     }
@@ -465,95 +430,66 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         if self.step_fn.is_none() {
             return;
         }
-
-        let message = interp.message();
-
-        // Update the cached memory snapshot only if the previous opcode modified memory or
-        // execution moved to a different frame.
-        // This avoids an expensive Vec<u8> clone on every single step.
-        let should_update_memory = self.prev_op.is_none_or(|prev| prev.modifies_memory())
-            || self.prev_depth != Some(message.depth);
-        if should_update_memory {
-            self.cached_memory = MemorySnapshot::new(interp.memory());
+        let depth = usize::from(interp.message().depth);
+        if self.pending_steps.len() <= depth {
+            self.pending_steps.resize_with(depth + 1, PendingStep::default);
         }
-
-        let op = interp.opcode();
-        self.prev_op = OpCode::new(op);
-        self.prev_depth = Some(message.depth);
-        let active_call = self.active_call();
-        self.pending_steps.push(PendingStep {
-            stack: interp.stack().as_slice().to_vec(),
+        let pending = &mut self.pending_steps[depth];
+        pending.gas_spent_before = interp.gas().spent();
+        pending.active = true;
+        pending.snapshot.record(PreStep {
             pc: interp.pc() as u64,
-            op,
+            op: interp.opcode(),
             gas_remaining: interp.gas().remaining(),
-            depth: u64::from(message.depth),
             refund: interp.gas().refunded() as u64,
-            contract: Contract {
-                caller: message.caller,
-                contract: message.destination,
-                value: active_call.contract.value,
-                input: active_call.contract.input.clone(),
-            },
-            memory: self.cached_memory.clone(),
-            gas_spent_before: interp.gas().spent(),
+            stack: interp.stack().as_slice(),
+            memory: interp.memory().as_slice(),
         });
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        if self.step_fn.is_none() {
+        let Some(step_fn) = &self.step_fn else {
+            return;
+        };
+        let depth = usize::from(interp.message().depth);
+        let Some(pending) = self.pending_steps.get_mut(depth) else {
+            return;
+        };
+        if !core::mem::take(&mut pending.active) {
             return;
         }
-
-        let Some(pending) = self.pending_steps.pop() else {
-            return;
-        };
-
         let result = interp.result();
         let is_revert = matches!(result, Err(stop) if stop.is_revert());
-        let cost = interp.gas().spent().saturating_sub(pending.gas_spent_before);
-
-        let (db, db_guard) = EvmDbRef::new_state(interp.host().state_mut());
-        let (stack, stack_guard) = StackRef::new_owned(pending.stack);
-        let (memory, memory_guard) = MemoryRef::new_owned(pending.memory);
-
-        let stop = if is_revert {
-            let step = StepLog {
-                stack,
-                op: OpCode::REVERT.get().into(),
-                pc: pending.pc,
-                memory,
-                gas_remaining: pending.gas_remaining,
-                cost,
-                depth: pending.depth,
-                refund: pending.refund,
-                error: result.err().map(|err| format!("{err:?}")),
-                contract: pending.contract,
-            };
-
-            let _ = self.try_fault(step, db);
-            false
-        } else {
-            let step = StepLog {
-                stack,
-                op: pending.op.into(),
-                memory,
-                pc: pending.pc,
-                gas_remaining: pending.gas_remaining,
-                cost,
-                depth: pending.depth,
-                refund: pending.refund,
-                error: None,
-                contract: pending.contract,
-            };
-
-            self.try_step(step, db).is_err() && result.is_ok()
+        let call = self.call_stack.last().expect("call stack is empty");
+        let info = StepInfo {
+            cost: interp.gas().spent().saturating_sub(pending.gas_spent_before),
+            depth: depth as u64,
+            error: if is_revert { result.err().map(|err| format!("{err:?}")) } else { None },
+            op: is_revert.then_some(op::REVERT),
+            caller: interp.message().caller,
+            contract: interp.message().destination,
+            value: call.contract.value,
+            input: &call.contract.input,
+            call_id: call.id,
         };
-
-        drop(memory_guard);
-        drop(stack_guard);
-        drop(db_guard);
-
-        if stop {
+        let (stack, memory, host) = interp.stack_memory_host();
+        let res = self.reusable_db.with_state_scope(host.state_mut(), || {
+            self.reusable_step_log.with_scope(
+                &mut pending.snapshot,
+                stack.as_slice(),
+                memory,
+                info,
+                || {
+                    let f = if is_revert { &self.fault_fn } else { step_fn };
+                    f.call(
+                        &self.this,
+                        &[self.reusable_step_log.value(), self.reusable_db.value()],
+                        &mut self.ctx,
+                    )
+                },
+            )
+        });
+        if !is_revert && res.is_err() && result.is_ok() {
             interp.set_stop(InstrStop::Revert);
         }
     }
@@ -687,9 +623,71 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
     }
 }
 
+/// The evaluated tracer object and its callback functions.
+struct JsTracerObject {
+    obj: JsObject,
+    result_fn: JsObject,
+    fault_fn: JsObject,
+    enter_fn: Option<JsObject>,
+    exit_fn: Option<JsObject>,
+    step_fn: Option<JsObject>,
+}
+
+impl JsTracerObject {
+    /// Evaluates the script to a fresh tracer object, validates its callbacks and invokes `setup`.
+    fn evaluate(
+        script: &Script,
+        config: &serde_json::Value,
+        ctx: &mut Context,
+    ) -> Result<Self, JsInspectorError> {
+        let obj = script.evaluate(ctx).map_err(JsInspectorError::EvalCode)?;
+        let obj = obj.as_object().ok_or(JsInspectorError::ExpectedJsObject)?;
+
+        // ensure all the fields are callables, if present
+
+        let result_fn = obj
+            .get(js_string!("result"), ctx)?
+            .as_object()
+            .ok_or(JsInspectorError::ResultFunctionMissing)?;
+        if !result_fn.is_callable() {
+            return Err(JsInspectorError::ResultFunctionMissing);
+        }
+
+        let fault_fn = obj
+            .get(js_string!("fault"), ctx)?
+            .as_object()
+            .ok_or(JsInspectorError::FaultFunctionMissing)?;
+        if !fault_fn.is_callable() {
+            return Err(JsInspectorError::FaultFunctionMissing);
+        }
+
+        let enter_fn = obj.get(js_string!("enter"), ctx)?.as_object().filter(|o| o.is_callable());
+        let exit_fn = obj.get(js_string!("exit"), ctx)?.as_object().filter(|o| o.is_callable());
+        let step_fn = obj.get(js_string!("step"), ctx)?.as_object().filter(|o| o.is_callable());
+
+        let js_config_value =
+            JsValue::from_json(config, ctx).map_err(JsInspectorError::InvalidJsonConfig)?;
+
+        if let Some(setup_fn) = obj.get(js_string!("setup"), ctx)?.as_object() {
+            if !setup_fn.is_callable() {
+                return Err(JsInspectorError::SetupFunctionNotCallable);
+            }
+
+            // call setup()
+            setup_fn
+                .call(&(obj.clone().into()), core::slice::from_ref(&js_config_value), ctx)
+                .map_err(JsInspectorError::SetupCallFailed)?;
+        }
+
+        Ok(Self { obj, result_fn, fault_fn, enter_fn, exit_fn, step_fn })
+    }
+}
+
 /// Represents an active call
 #[derive(Debug)]
 struct CallStackItem {
+    /// Unique across calls and transaction resets.
+    id: u64,
     contract: Contract,
     kind: CallKind,
     gas_limit: u64,
@@ -1240,6 +1238,183 @@ mod tests {
         }"#;
         let res = run_trace(code, Some(bytes!("0x5F5F52600100")), true);
         assert_eq!(res, json!([json!({}), json!({}), json!({"0": 0})]));
+    }
+
+    #[test]
+    fn test_step_sees_pre_execution_stack() {
+        let code = r#"{
+            res: [],
+            step: function(log) {
+                if (log.op.toString() === 'ADD') {
+                    this.res.push(log.stack.length());
+                    this.res.push(log.stack.peek(0));
+                    this.res.push(log.stack.peek(1));
+                }
+                if (log.op.toString() === 'STOP') {
+                    this.res.push(log.stack.length());
+                    this.res.push(log.stack.peek(0));
+                }
+            },
+            fault: function() {},
+            result: function() { return this.res }
+        }"#;
+        // PUSH1 1, PUSH1 2, ADD, STOP
+        let res = run_trace(code, Some(bytes!("0x600160020100")), true);
+        assert_eq!(res, json!([2, "2", "1", 1, "3"]));
+    }
+
+    #[test]
+    fn test_step_sees_pre_execution_memory() {
+        let code = r#"{
+            res: [],
+            step: function(log) {
+                var op = log.op.toString();
+                if (op === 'MSTORE8' || op === 'STOP') {
+                    this.res.push(log.memory.length());
+                    if (log.memory.length() > 0) {
+                        this.res.push(log.memory.getUint(0)[0]);
+                        this.res.push(log.memory.slice(0, 2)[0]);
+                    }
+                }
+            },
+            fault: function() {},
+            result: function() { return this.res }
+        }"#;
+        // PUSH1 0xff, PUSH1 0, MSTORE8, PUSH1 0xaa, PUSH1 0, MSTORE8, STOP
+        let res = run_trace(code, Some(bytes!("0x60ff60005360aa60005300")), true);
+        // the second MSTORE8 must still see the value written by the first one
+        assert_eq!(res, json!([0, 32, 255, 255, 32, 170, 170]));
+    }
+
+    #[test]
+    fn test_fuse_resets_tracer() {
+        let code = r#"{
+            count: 0,
+            step: function() { this.count += 1; },
+            fault: function() {},
+            result: function() { return this.count; }
+        }"#;
+        let addr = Address::repeat_byte(0x01);
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            &Address::ZERO,
+            AccountInfo { balance: U256::from(1e18), ..Default::default() },
+        );
+        db.insert_account_info(
+            &addr,
+            AccountInfo {
+                code: Some(Bytecode::new_legacy(hex!("6001600100").into())),
+                ..Default::default()
+            },
+        );
+
+        let mut inspector = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            evm2::env::BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            db,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_limit: 1_000_000,
+                to: TxKind::Call(addr),
+                ..Default::default()
+            }),
+            Address::ZERO,
+        );
+        for _ in 0..3 {
+            evm.set_inspector(inspector);
+            let res = evm.transact(&tx).unwrap().detach();
+            assert!(res.result.status);
+            inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
+            let block = *evm.block_env();
+            assert_eq!(
+                inspector.json_result(&res, &tx, &block, evm.database_mut()).unwrap(),
+                json!(3)
+            );
+            inspector.fuse().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_fuse_resets_callback_objects() {
+        let code = r#"{
+            counts: { log: 0, db: 0, enter: 0, exit: 0 },
+            setup: function(config) {
+                if (config.used) throw new Error("config was reused");
+                config.used = true;
+                this.ready = true;
+            },
+            mark: function(object, kind) {
+                if (!this.ready) throw new Error("setup was not called");
+                if (!object.seen) {
+                    // Non-configurable properties cannot be removed by clearing the wrapper.
+                    Object.defineProperty(object, "seen", { value: true });
+                    this.counts[kind]++;
+                }
+            },
+            step: function(log, db) {
+                this.mark(log, "log");
+                this.mark(db, "db");
+            },
+            enter: function(frame) { this.mark(frame, "enter"); },
+            exit: function(result) { this.mark(result, "exit"); },
+            fault: function() {},
+            result: function() { return this.counts; }
+        }"#;
+        let addr = Address::repeat_byte(0x01);
+        let child = Address::repeat_byte(0x02);
+        // Call the child twice to also verify that wrappers are reused within a transaction.
+        let mut bytecode = Vec::new();
+        for _ in 0..2 {
+            bytecode.extend_from_slice(&hex!("60006000600060006000"));
+            bytecode.push(0x73); // PUSH20
+            bytecode.extend_from_slice(child.as_slice());
+            bytecode.extend_from_slice(&hex!("61fffff150")); // PUSH2 gas, CALL, POP
+        }
+        bytecode.push(0x00);
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            &addr,
+            AccountInfo { code: Some(Bytecode::new_legacy(bytecode.into())), ..Default::default() },
+        );
+        db.insert_account_info(
+            &child,
+            AccountInfo {
+                code: Some(Bytecode::new_legacy(hex!("600100").into())),
+                ..Default::default()
+            },
+        );
+        let mut inspector = JsInspector::new(code.to_string(), json!({})).unwrap();
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            evm2::env::BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            db,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_limit: 1_000_000,
+                to: TxKind::Call(addr),
+                ..Default::default()
+            }),
+            Address::ZERO,
+        );
+        for _ in 0..3 {
+            evm.set_inspector(inspector);
+            let res = evm.transact(&tx).unwrap().detach();
+            assert!(res.result.status);
+            inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
+            let block = *evm.block_env();
+            assert_eq!(
+                inspector.json_result(&res, &tx, &block, evm.database_mut()).unwrap(),
+                json!({"log": 1, "db": 1, "enter": 1, "exit": 1})
+            );
+            inspector.fuse().unwrap();
+        }
     }
 
     #[test]
