@@ -160,3 +160,86 @@ fn evm_reports_invalid_transaction_execution() {
 
     assert_eq!(result.stop, InstrStop::StackUnderflow);
 }
+
+#[test]
+fn eip8037_sibling_refill_restores_parent_gas_left() {
+    use crate::{
+        EvmFeatures, ExecutionConfig, Version,
+        ethereum::{TxEnvelope, ethereum_tx_registry},
+        version::GasId,
+    };
+    use alloy_consensus::{TxLegacy, transaction::Recovered};
+    use alloy_primitives::{TxKind, U256};
+
+    let parent = Address::from([0x11; 20]);
+    let setter = Address::from([0xa1; 20]);
+    let clearer = Address::from([0xb2; 20]);
+    let caller = Address::from([0xcc; 20]);
+    let mut parent_code = Vec::new();
+    for target in [setter, clearer] {
+        // DELEGATECALL(gas, target, 0, 0, 0, 0).
+        for _ in 0..4 {
+            parent_code.extend([op::PUSH1, 0]);
+        }
+        parent_code.push(op::PUSH20);
+        parent_code.extend_from_slice(target.as_slice());
+        parent_code.extend([op::GAS, op::DELEGATECALL, op::POP]);
+    }
+    // Return the gas visible to the parent after both siblings finish.
+    parent_code.extend([
+        op::GAS,
+        op::PUSH1,
+        0,
+        op::MSTORE,
+        op::PUSH1,
+        32,
+        op::PUSH1,
+        0,
+        op::RETURN,
+    ]);
+
+    let mut database = InMemoryDB::default();
+    for (address, code) in [
+        (parent, legacy_bytecode(parent_code)),
+        (setter, legacy_bytecode([op::PUSH1, 1, op::PUSH1, 0, op::SSTORE, op::STOP])),
+        (clearer, legacy_bytecode([op::PUSH1, 0, op::PUSH1, 0, op::SSTORE, op::STOP])),
+    ] {
+        database
+            .insert_account_info(&address, AccountInfo::default().with_nonce(1).with_code(code));
+    }
+    database.insert_account_info(
+        &caller,
+        AccountInfo { balance: U256::from(u64::MAX), ..Default::default() },
+    );
+    let tx = Recovered::new_unchecked(
+        TxEnvelope::Legacy(TxLegacy {
+            gas_limit: 1_000_000,
+            to: TxKind::Call(parent),
+            ..Default::default()
+        }),
+        caller,
+    );
+    let run = |enabled| {
+        let mut version = Version::new(SpecId::AMSTERDAM);
+        version.features.remove(EvmFeatures::EIP2780);
+        version.features.set(EvmFeatures::EIP8037, enabled);
+        version.gas_params.set(GasId::SstoreSetState, 200_000);
+        let mut evm = TestEvm::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::AMSTERDAM, version),
+            SpecId::AMSTERDAM,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            database.clone(),
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        evm.transact(&tx).unwrap().discard()
+    };
+
+    let baseline = run(false);
+    let result = run(true);
+    assert!(baseline.status);
+    assert!(result.status);
+    assert_eq!(result.state_gas_spent, 0);
+    assert_eq!(result.output.len(), 32);
+    assert_eq!(result.output, baseline.output);
+}
