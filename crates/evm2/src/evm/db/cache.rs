@@ -161,7 +161,7 @@ impl<ExtDB> CacheDB<ExtDB> {
                 continue;
             }
             match entry.present.as_ref() {
-                Some(account) => self.insert_account_info(&address, account.clone_no_code()),
+                Some(account) => self.insert_account_info(&address, account.clone()),
                 None => {
                     self.cache.accounts.insert(address, None);
                     self.cache.storage.entry(address).or_default().wipe();
@@ -314,6 +314,12 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
         if let Some(bal_account) = bal_account {
             self.bal_context.populate_bal_account(bal_account, &mut account);
         }
+        // BAL code changes carry the bytecode inline. Register it before returning the account so
+        // a subsequent code-by-hash lookup cannot fall through to a backing database that never
+        // saw the BAL-provided code.
+        if let Some(info) = account.as_mut() {
+            Self::insert_contract_inner(&mut self.cache.contracts, info);
+        }
         Ok(account)
     }
 
@@ -419,7 +425,7 @@ mod typed {
 mod tests {
     use super::*;
     use crate::{
-        evm::bal::{AccountBal, Bal, BalChanges, BlockAccessIndex},
+        evm::bal::{AccountBal, Bal, BalChanges, BalCodeChange, BlockAccessIndex},
         interpreter::op,
     };
     use alloc::{string::ToString, sync::Arc, vec};
@@ -558,6 +564,26 @@ mod tests {
         assert_eq!(cache.db.inner().account_loads, 1);
     }
 
+    #[test]
+    fn commit_caches_present_code_when_its_hash_is_unchanged() {
+        let address = Address::with_last_byte(1);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let code_hash = code.hash_slow();
+        let original = AccountInfo::default().with_code(code.clone());
+        let current = original.clone().with_balance(Word::from(1));
+        let mut cache = CacheDB::new(crate::evm::Db::new(CountingDB::default()));
+
+        // The account changes, but the code hash does not, so `changed_code` does not emit the
+        // bytecode separately. Committing the present account must still register its inline code.
+        let mut pending = PendingState::default();
+        pending.insert_account(address, Some(original), Some(current));
+        cache.commit_pending(&pending);
+
+        assert_eq!(cache.account_info(&address).unwrap().code_hash, code_hash);
+        assert_eq!(cache.get_code_by_hash(&code_hash).unwrap(), code);
+        assert_eq!(cache.db.inner().code_loads, 0);
+    }
+
     /// A counting cache with an attached read BAL positioned at index 2.
     fn cache_with_read_bal(
         address: Address,
@@ -605,6 +631,32 @@ mod tests {
 
         // Storage slot 7 is served from the BAL, shadowing the database value (9).
         assert_eq!(cache.get_storage(&address, &Word::from(7)).unwrap(), Word::from(42));
+    }
+
+    #[test]
+    fn attached_bal_registers_supplied_bytecode_by_hash() {
+        let address = Address::with_last_byte(1);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let code_hash = code.hash_slow();
+        let mut account = AccountBal::default();
+        account.account_info.code = BalChanges::new(vec![BalCodeChange::new(
+            BlockAccessIndex::new(1),
+            (code_hash, code.clone()),
+        )]);
+
+        let mut cache = counting_cache();
+        cache.bal_context.set_bal(Arc::new(Bal::from_iter([(address, account)])));
+        cache.bal_context.set_bal_index(BlockAccessIndex::new(2));
+
+        let loaded = cache.get_account(&address).unwrap().unwrap();
+        assert_eq!(loaded.code_hash, code_hash);
+        assert_eq!(loaded.code.as_ref(), Some(&code));
+
+        // The backing database never knew this code. Once the BAL is detached, the normal
+        // code-by-hash path must still find the bytecode registered by the BAL account read.
+        cache.bal_context.clear_bal();
+        assert_eq!(cache.get_code_by_hash(&code_hash).unwrap(), code);
+        assert_eq!(cache.db.inner().code_loads, 0);
     }
 
     #[test]
