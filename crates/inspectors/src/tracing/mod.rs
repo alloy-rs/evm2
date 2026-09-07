@@ -599,7 +599,9 @@ impl TracingInspector {
 impl<T: EvmTypes> Inspector<T> for TracingInspector {
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        self.spec_id = Some(interp.spec());
+        if self.spec_id.is_none() {
+            self.spec_id = Some(interp.spec());
+        }
         self.features = interp.version().features;
     }
 
@@ -637,7 +639,9 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.spec_id = Some(interp.spec());
+        if self.spec_id.is_none() {
+            self.spec_id = Some(interp.spec());
+        }
         self.features = interp.version().features;
 
         // determine correct `from` and `to` based on the call scheme
@@ -688,7 +692,9 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.spec_id = Some(interp.spec());
+        if self.spec_id.is_none() {
+            self.spec_id = Some(interp.spec());
+        }
         self.features = interp.version().features;
 
         self.start_trace_on_call(
