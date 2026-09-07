@@ -1999,6 +1999,28 @@ mod tests {
         Ok(TxResultExt { status: true, total_gas_spent: req.tx.nonce, ..TxResultExt::default() })
     }
 
+    fn handle_storage_wipe_tx(
+        req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
+    ) -> HandlerResult<TxResult> {
+        {
+            let slot = req
+                .host
+                .state
+                .storage(&LIFECYCLE_ACCOUNT)
+                .into_slot(LIFECYCLE_STORAGE_KEY, false)
+                .map_err(registry::HandlerError::Fatal)?;
+            assert_eq!(slot.current(), Word::from(1));
+        }
+
+        req.host
+            .state
+            .account(&LIFECYCLE_ACCOUNT, false)
+            .map_err(registry::HandlerError::Fatal)?
+            .mark_destructed();
+
+        Ok(TxResultExt { status: true, ..TxResultExt::default() })
+    }
+
     fn empty_precompiles() -> Precompiles<BaseEvmTypes> {
         Precompiles::new(Cow::Owned(PrecompileMap::new()))
     }
@@ -2086,6 +2108,27 @@ mod tests {
         database.insert_account_info(
             &LIFECYCLE_ACCOUNT,
             AccountInfo::default().with_balance(Word::from(1)),
+        );
+        database.insert_account_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY, &Word::from(1));
+        Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        )
+    }
+
+    fn storage_wipe_evm() -> Evm<'static, BaseEvmTypes> {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handle_storage_wipe_tx,
+        );
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &LIFECYCLE_ACCOUNT,
+            AccountInfo::default().with_code(Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))),
         );
         database.insert_account_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY, &Word::from(1));
         Evm::<BaseEvmTypes>::new(
@@ -2920,6 +2963,63 @@ mod tests {
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
             Word::from(1)
         );
+    }
+
+    #[test]
+    fn selfdestruct_storage_read_matches_all_commit_paths() {
+        let index = BlockAccessIndex::new(1);
+        let tx = test_tx(0);
+
+        let mut evm = storage_wipe_evm();
+        evm.state.enable_bal_builder();
+        evm.state.set_bal_index(index);
+        let _ = evm.transact(&tx).expect("selfdestruct transaction should execute").commit();
+        let committed = BlockAccessList::from(
+            evm.state.take_bal_builder().expect("commit BAL builder was enabled"),
+        );
+
+        let mut evm = storage_wipe_evm();
+        let mut streamed = BalContext::new().with_bal_builder();
+        streamed.set_bal_index(index);
+        let _ = evm
+            .transact(&tx)
+            .expect("selfdestruct transaction should execute")
+            .commit_with(&mut streamed)
+            .expect("BAL sink is infallible");
+        let streamed = BlockAccessList::from(
+            streamed.take_bal_builder().expect("streamed BAL builder was enabled"),
+        );
+
+        let mut evm = storage_wipe_evm();
+        let detached = evm
+            .transact(&tx)
+            .expect("selfdestruct transaction should execute")
+            .detach()
+            .pending_state;
+        let mut pending = BalContext::new().with_bal_builder();
+        pending.set_bal_index(index);
+        pending.commit_pending(&detached);
+        let pending = BlockAccessList::from(
+            pending.take_bal_builder().expect("pending BAL builder was enabled"),
+        );
+
+        assert_eq!(streamed, committed);
+        assert_eq!(pending, committed);
+        assert_eq!(
+            alloy_eip7928::compute_block_access_list_hash(&streamed),
+            alloy_eip7928::compute_block_access_list_hash(&committed)
+        );
+        assert_eq!(
+            alloy_eip7928::compute_block_access_list_hash(&pending),
+            alloy_eip7928::compute_block_access_list_hash(&committed)
+        );
+
+        let account = committed
+            .iter()
+            .find(|account| account.address == LIFECYCLE_ACCOUNT)
+            .expect("selfdestructed account is in the BAL");
+        assert_eq!(account.storage_reads, vec![LIFECYCLE_STORAGE_KEY]);
+        assert!(account.storage_changes.is_empty());
     }
 
     #[test]
