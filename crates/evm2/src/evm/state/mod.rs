@@ -794,25 +794,33 @@ impl<'a> State<'a> {
             if storage.wiped {
                 sink.storage_wipe(address)?;
             }
-            for (&key, slot) in storage.changed_slots() {
-                sink.storage(StorageChange {
-                    address,
-                    key,
-                    original: slot.original,
-                    current: slot.current,
-                })?;
+            for (&key, slot) in &storage.slots {
+                let value = &slot.value;
+                if value.is_changed() && (!storage.wiped || !value.current.is_zero()) {
+                    sink.storage(StorageChange {
+                        address,
+                        key,
+                        original: value.original,
+                        current: value.current,
+                    })?;
+                } else {
+                    sink.storage_read(address, key, value.current)?;
+                }
             }
         }
 
         for (&address, entry) in self.accounts.iter() {
-            if entry.is_changed() {
+            let selfdestructed = self.selfdestructs.contains(&address);
+            if entry.is_changed() || entry.is_created() || selfdestructed {
                 sink.account(AccountChangeRef {
                     address,
                     original: entry.original.as_ref(),
                     current: entry.present.as_ref(),
                     created: entry.is_created(),
-                    selfdestructed: self.selfdestructs.contains(&address),
+                    selfdestructed,
                 })?;
+            } else {
+                sink.account_read(address, entry.present.as_ref())?;
             }
         }
 
