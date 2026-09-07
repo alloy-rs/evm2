@@ -3,7 +3,7 @@
 
 use alloy_primitives::{B256, B512, keccak256};
 use secp256k1::{
-    Message, SECP256K1,
+    Message,
     ecdsa::{RecoverableSignature, RecoveryId},
 };
 
@@ -19,7 +19,7 @@ pub(crate) fn ecrecover(sig: &B512, recid: u8, msg: &B256) -> Result<B256, secp2
     let sig = RecoverableSignature::from_compact(sig.as_slice(), recid)?;
 
     let msg = Message::from_digest(msg.0);
-    let public = SECP256K1.recover_ecdsa(msg, &sig)?;
+    let public = sig.recover_ecdsa(msg)?;
 
     let mut hash = keccak256(&public.serialize_uncompressed()[1..]);
     hash[..12].fill(0);
