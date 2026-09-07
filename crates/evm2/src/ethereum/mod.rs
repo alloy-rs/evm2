@@ -915,6 +915,69 @@ mod tests {
     use alloy_consensus::{TxEip2930, transaction::Recovered};
     use alloy_eips::eip2930::AccessList;
 
+    #[rstest::rstest]
+    fn adjusted_floor_gas_controls_validation_and_settlement(
+        #[values(31_049, 31_050)] gas_limit: u64,
+    ) {
+        use crate::evm::handler::TxHandlerHooks;
+
+        struct CalldataSurcharge;
+
+        impl TxHandlerHooks<BaseEvmTypes> for CalldataSurcharge {
+            fn adjust_intrinsic_gas(
+                _host: &mut Evm<'_, BaseEvmTypes>,
+                _envelope: &TxEnvelope,
+                intrinsic: &mut u64,
+                initial_state_gas: &mut u64,
+                floor_gas: &mut u64,
+            ) -> HandlerResult<()> {
+                assert_eq!(*intrinsic, 21_020);
+                assert_eq!(*initial_state_gas, 0);
+                assert_eq!(*floor_gas, 21_050);
+                *intrinsic += 10_000;
+                *floor_gas += 10_000;
+                Ok(())
+            }
+        }
+
+        let caller = Address::with_last_byte(0xaa);
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_limit,
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
+                input: Bytes::from_static(&[0, 1]),
+                ..TxLegacy::default()
+            }),
+            caller,
+        );
+        let registry = TxRegistry::new().with_handler(
+            0,
+            TxEnvelope::as_legacy,
+            legacy::handle_with_hooks::<BaseEvmTypes, CalldataSurcharge>,
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::PRAGUE,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::PRAGUE),
+        );
+
+        let result = evm.transact(&tx).map(crate::evm::ExecutedTx::discard);
+        if gas_limit < 31_050 {
+            assert_eq!(
+                result,
+                Err(HandlerError::IntrinsicGasTooLow { required: 31_050, got: gas_limit })
+            );
+        } else {
+            let result = result.unwrap();
+            assert!(result.status);
+            assert_eq!(result.total_gas_spent, 31_020);
+            assert_eq!(result.floor_gas, 31_050);
+            assert_eq!(result.tx_gas_used(), 31_050);
+        }
+    }
+
     #[test]
     fn intrinsic_gas_charges_shanghai_create_initcode_words() {
         let input = Bytes::from(vec![1; 74]);
