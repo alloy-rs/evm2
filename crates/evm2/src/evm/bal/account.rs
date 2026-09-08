@@ -353,8 +353,9 @@ impl StorageBal {
     /// Convert the storage into a vector of reads and writes, each sorted by slot key.
     pub fn into_vecs(self) -> (Vec<U256>, Vec<(U256, BalChanges<StorageChange>)>) {
         let len = self.storage.len();
-        let mut reads = Vec::with_capacity(len);
-        let mut writes = Vec::with_capacity(len);
+        let read_len = self.storage.values().filter(|value| value.is_empty()).count();
+        let mut reads = Vec::with_capacity(read_len);
+        let mut writes = Vec::with_capacity(len - read_len);
 
         for (key, value) in self.storage {
             if value.is_empty() {
