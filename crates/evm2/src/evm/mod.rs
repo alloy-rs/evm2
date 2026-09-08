@@ -834,8 +834,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         }
     }
 
+    /// Notifies the inspector and records an emitted log.
     #[inline]
-    fn emit_log(&mut self, log: Log) {
+    pub fn log(&mut self, log: Log) {
         self.inspect_log(&log);
         self.state.log(log);
     }
@@ -875,7 +876,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         if self.feature(EvmFeatures::EIP7708)
             && let Some(log) = eip7708_transfer_log(from, to, value)
         {
-            self.emit_log(log);
+            self.log(log);
         }
     }
 
@@ -1418,12 +1419,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ) -> MessageResult<T> {
         let mut gas =
             GasTracker::new_with_execution_gas_and_reservoir(message.gas_limit, message.reservoir);
-        let logs_len = self.state.logs().len();
         let execution = self.execute_precompile(message, &mut gas);
-        let logs = self.state.logs()[logs_len..].to_vec();
-        for log in &logs {
-            self.inspect_log(log);
-        }
         let (stop, output) = match execution {
             Ok(_) | Err(PrecompileError::Revert(_)) if gas.remaining() > message.gas_limit => {
                 (InstrStop::PrecompileOOG, Bytes::new())
@@ -1659,7 +1655,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     }
 
     fn log(&mut self, log: Log) {
-        self.emit_log(log);
+        self.log(log);
     }
 
     #[inline]
@@ -2077,7 +2073,7 @@ mod tests {
         }
 
         let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
-            evm.state_mut().log(Log {
+            evm.log(Log {
                 address: TEST_PRECOMPILE,
                 data: LogData::new_unchecked(Vec::new(), Bytes::from_static(b"precompile")),
             });
@@ -2099,6 +2095,63 @@ mod tests {
         let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
         assert_eq!(inspector.0.len(), 1);
         assert_eq!(inspector.0.as_slice(), evm.logs());
+    }
+
+    #[test]
+    fn nested_precompile_logs_are_inspected_once() {
+        #[derive(Default)]
+        struct LogInspector(Vec<Log>);
+
+        impl Inspector<BaseEvmTypes> for LogInspector {
+            fn log(&mut self, log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
+                self.0.push(log.clone());
+            }
+        }
+
+        let precompiles = precompiles_with([
+            test_precompile(TEST_PRECOMPILE, |evm, message, _| {
+                let mut child = precompile_message(INNER_TEST_PRECOMPILE);
+                child.depth = message.depth + 1;
+                child.input = message.input.clone();
+                Host::execute_message(evm, &TxEnvExt::default(), &mut child);
+                evm.log(Log { address: TEST_PRECOMPILE, data: LogData::default() });
+                Ok(PrecompileOutput::new(Bytes::new()))
+            }),
+            test_precompile(INNER_TEST_PRECOMPILE, |evm, message, _| {
+                let log = Log { address: INNER_TEST_PRECOMPILE, data: LogData::default() };
+                Host::log(evm, log.clone());
+                evm.log(log);
+                if message.input.is_empty() {
+                    Ok(PrecompileOutput::new(Bytes::new()))
+                } else {
+                    Err(PrecompileError::Revert(Bytes::new()))
+                }
+            }),
+        ]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+        for revert in [false, true] {
+            evm.state.clear_transaction_state();
+            evm.set_inspector(LogInspector::default());
+            let mut message = precompile_message(TEST_PRECOMPILE);
+            if revert {
+                message.input = Bytes::from_static(b"revert");
+            }
+            let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
+
+            assert_eq!(result.stop, InstrStop::Return);
+            let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
+            assert_eq!(
+                inspector.0.iter().map(|log| log.address).collect::<Vec<_>>(),
+                [INNER_TEST_PRECOMPILE, INNER_TEST_PRECOMPILE, TEST_PRECOMPILE,]
+            );
+            assert_eq!(evm.logs().len(), if revert { 1 } else { 3 });
+        }
     }
 
     #[test]
