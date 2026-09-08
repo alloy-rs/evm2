@@ -22,7 +22,7 @@ use revm::{
     context::{BlockEnv as RevmBlockEnv, TxEnv as RevmTxEnv},
     primitives::TxKind as RevmTxKind,
 };
-use secp256k1::{Message, SECP256K1, SecretKey};
+use secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::OnceLock};
 
@@ -513,15 +513,17 @@ pub(crate) fn fixed_eip7702_auth() -> SignedAuthorization {
 fn signed_eip7702_auth(auth: Authorization) -> SignedAuthorization {
     static SECRET_KEY: OnceLock<SecretKey> = OnceLock::new();
     let secret_key = SECRET_KEY.get_or_init(|| {
-        SecretKey::from_byte_array([0x77; 32])
+        SecretKey::from_secret_bytes([0x77; 32])
             .expect("hard-coded EIP-7702 signing key must be valid")
     });
-    let signature =
-        SECP256K1.sign_ecdsa_recoverable(Message::from_digest(auth.signature_hash().0), secret_key);
+    let signature = RecoverableSignature::sign_ecdsa_recoverable(
+        Message::from_digest(auth.signature_hash().0),
+        secret_key,
+    );
     let (recovery_id, signature) = signature.serialize_compact();
     SignedAuthorization::new_unchecked(
         auth,
-        i32::from(recovery_id) as u8,
+        recovery_id.to_u8(),
         U256::from_be_slice(&signature[..32]),
         U256::from_be_slice(&signature[32..]),
     )
