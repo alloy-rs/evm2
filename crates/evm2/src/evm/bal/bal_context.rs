@@ -120,6 +120,17 @@ impl BalContext {
         self
     }
 
+    /// Enables BAL construction with capacity for at least `capacity` accounts.
+    ///
+    /// Installs an empty builder, replacing any existing builder.
+    #[inline]
+    pub fn with_bal_builder_capacity(mut self, capacity: usize) -> Self {
+        let mut bal = Bal::new();
+        bal.accounts.reserve(capacity);
+        self.bal_builder = Some(bal);
+        self
+    }
+
     /// Enables EIP-7928 BAL construction in place, installing an empty builder.
     #[inline]
     pub fn enable_bal_builder(&mut self) {
