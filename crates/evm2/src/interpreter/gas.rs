@@ -230,6 +230,22 @@ impl GasTracker {
         self.reservoir = val;
     }
 
+    /// Adopts a child's returned reservoir, first restoring any state gas spilled
+    /// into this frame's execution gas in last-in-first-out order.
+    ///
+    /// A child can refill state gas charged by an ancestor or sibling without
+    /// inheriting its spill counter. Only the excess refill stays in the reservoir.
+    /// This reconciles the funding pools; the child's signed state-gas spend is
+    /// merged separately by [`Self::merge_child_gas`].
+    #[inline]
+    pub const fn absorb_returned_reservoir(&mut self, reservoir: u64) {
+        let to_remaining =
+            if reservoir < self.state_gas_spilled { reservoir } else { self.state_gas_spilled };
+        self.remaining = self.remaining.saturating_add(to_remaining);
+        self.state_gas_spilled -= to_remaining;
+        self.reservoir = reservoir - to_remaining;
+    }
+
     /// Returns spent state gas. May be negative within a frame (see field docs).
     #[inline]
     pub const fn state_gas_spent(&self) -> i64 {
@@ -412,7 +428,8 @@ impl GasTracker {
     ///   the child's execution gas (already zeroed when settled).
     /// - **The reservoir** is a shared state-gas pool the child inherited at call time, so the
     ///   parent always adopts the child's value — which settling restored to the inherited amount
-    ///   on revert/halt, leaving it untouched.
+    ///   on revert/halt. Any returned reservoir first unwinds the parent's outstanding spilled
+    ///   state gas in LIFO order.
     /// - **Net state gas, its spilled portion, and the refund counter** persist only on success; on
     ///   revert/halt the child's state changes roll back, so it contributes none.
     #[inline]
@@ -420,12 +437,12 @@ impl GasTracker {
         if stop.is_success() || stop.is_revert() {
             self.erase_cost(child.remaining);
         }
-        self.set_reservoir(child.reservoir);
         if stop.is_success() {
             self.add_state_gas_spent(child.state_gas_spent);
             self.add_state_gas_spilled(child.state_gas_spilled);
             self.record_refund(child.refunded);
         }
+        self.absorb_returned_reservoir(child.reservoir);
     }
 
     /// Spends all remaining execution gas.
@@ -858,6 +875,57 @@ mod tests {
             (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
             (200, 1000, 0, 0)
         );
+    }
+
+    #[test]
+    fn returned_reservoir_restores_spilled_state_gas_first() {
+        let mut gas = GasTracker::from_parts(1_000, 600, 0);
+        gas.spend_state(400).unwrap();
+
+        gas.absorb_returned_reservoir(250);
+        assert_eq!(gas.remaining(), 450);
+        assert_eq!(gas.reservoir(), 0);
+        assert_eq!(gas.state_gas_spilled(), 150);
+        assert_eq!(gas.state_gas_spent(), 400);
+
+        gas.absorb_returned_reservoir(200);
+        assert_eq!(gas.remaining(), 600);
+        assert_eq!(gas.reservoir(), 50);
+        assert_eq!(gas.state_gas_spilled(), 0);
+        assert_eq!(gas.state_gas_spent(), 400);
+    }
+
+    #[test]
+    fn sibling_refill_restores_parent_regular_gas() {
+        const STATE_GAS: u64 = 200;
+        const CHILD_GAS: u64 = 500;
+        let mut parent = GasTracker::from_parts(1_000, 1_000, 0);
+
+        // A's state creation spills into execution gas and is merged into P.
+        parent.spend(CHILD_GAS).unwrap();
+        let mut child_a = GasTracker::from_parts(CHILD_GAS, CHILD_GAS, 0);
+        child_a.spend_state(STATE_GAS).unwrap();
+        child_a.settle_gas(InstrStop::Stop);
+        parent.merge_child_gas(child_a, InstrStop::Stop);
+        assert_eq!(parent.remaining(), 800);
+        assert_eq!(parent.reservoir(), 0);
+        assert_eq!(parent.state_gas_spent(), STATE_GAS as i64);
+        assert_eq!(parent.state_gas_spilled(), STATE_GAS);
+
+        // B clears A's slot, with no local spill counter to restore.
+        parent.spend(CHILD_GAS).unwrap();
+        let mut child_b = GasTracker::from_parts(CHILD_GAS, CHILD_GAS, parent.reservoir());
+        child_b.refill_reservoir(STATE_GAS);
+        assert_eq!(child_b.reservoir(), STATE_GAS);
+        assert_eq!(child_b.state_gas_spilled(), 0);
+
+        // P absorbs B's reservoir to restore the execution gas spent by A.
+        child_b.settle_gas(InstrStop::Stop);
+        parent.merge_child_gas(child_b, InstrStop::Stop);
+        assert_eq!(parent.remaining(), 1_000);
+        assert_eq!(parent.reservoir(), 0);
+        assert_eq!(parent.state_gas_spent(), 0);
+        assert_eq!(parent.state_gas_spilled(), 0);
     }
 
     #[test]

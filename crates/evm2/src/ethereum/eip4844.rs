@@ -62,9 +62,7 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     // Blob transactions are always calls; EIP-2780 charges any state-dependent gas at the runtime
     // gas phase, so no state gas is charged at the intrinsic phase.
     let mut initial_state_gas = 0;
-    H::adjust_intrinsic_gas(req.host, req.envelope, &mut intrinsic, &mut initial_state_gas)?;
-    validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
-    let floor_gas = floor_gas(
+    let mut floor_gas = floor_gas(
         req.host.version(),
         caller,
         tx.to.into(),
@@ -73,6 +71,14 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         access_list_storage_keys,
         tx.value,
     );
+    H::adjust_intrinsic_gas(
+        req.host,
+        req.envelope,
+        &mut intrinsic,
+        &mut initial_state_gas,
+        &mut floor_gas,
+    )?;
+    validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
     validate_floor_gas(tx.gas_limit, floor_gas)?;
     validate_execution_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
