@@ -70,6 +70,24 @@ impl BalContext {
         Self::default()
     }
 
+    /// Applies a function to the context, returning the modified context.
+    #[inline]
+    pub fn apply<F>(self, f: F) -> Self
+    where
+        F: FnOnce(Self) -> Self,
+    {
+        f(self)
+    }
+
+    /// Applies a fallible function to the context, returning the modified context or an error.
+    #[inline]
+    pub fn try_apply<F, E>(self, f: F) -> Result<Self, E>
+    where
+        F: FnOnce(Self) -> Result<Self, E>,
+    {
+        f(self)
+    }
+
     /// Attaches an EIP-7928 BAL consulted on reads, and returns `self`.
     #[inline]
     pub fn with_bal(mut self, bal: Arc<Bal>) -> Self {
