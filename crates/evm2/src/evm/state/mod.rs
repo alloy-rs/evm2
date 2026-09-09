@@ -289,7 +289,7 @@ impl<'a> State<'a> {
 
     /// Records a transaction log.
     #[inline]
-    pub fn log(&mut self, log: Log) {
+    pub(crate) fn log(&mut self, log: Log) {
         self.logs.push(log);
     }
 
