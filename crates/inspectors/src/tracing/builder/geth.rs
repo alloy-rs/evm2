@@ -18,7 +18,7 @@ use alloy_rpc_types_trace::geth::{
 use evm2::{
     EvmFeatures, EvmTypesHost, TxResultExt, TxResultWithState,
     evm::{DbResult, DynDatabase},
-    interpreter::op,
+    interpreter::{InstrStop, op},
 };
 
 /// A frame awaiting tree assembly, with visibility inherited by children in the forward pass.
@@ -490,10 +490,11 @@ impl<'a> GethTraceBuilder<'a> {
             let mut contract_size = HashMap::default();
             let mut ext_code_access_info = Vec::new();
             let mut keccak = Vec::new();
-            let mut out_of_gas = false;
+            let mut out_of_gas = trace.status.is_some_and(InstrStop::is_out_of_gas);
 
             for step in &trace.steps {
                 let op = step.op.get();
+                out_of_gas |= step.status.is_some_and(InstrStop::is_out_of_gas);
 
                 // Skip if opcode is ignored
                 if opts.ignored_opcodes.contains(&op) {
@@ -548,12 +549,6 @@ impl<'a> GethTraceBuilder<'a> {
                     _ => {}
                 }
 
-                if let Some(status) = &step.status
-                    && *status == evm2::interpreter::InstrStop::OutOfGas
-                {
-                    out_of_gas = true;
-                }
-
                 if matches!(op, op::EXTCODESIZE | op::EXTCODECOPY | op::EXTCODEHASH)
                     && let Some(stack) = &step.stack
                     && let Some(item) = stack.get(stack.len().saturating_sub(1))
@@ -570,7 +565,7 @@ impl<'a> GethTraceBuilder<'a> {
 
                 // KECCAK preimages from returndata
                 if op == op::KECCAK256
-                    && !out_of_gas
+                    && step.status.is_none()
                     && let (Some(stack), Some(memory)) = (&step.stack, &step.memory)
                     && stack.len() >= 2
                 {
