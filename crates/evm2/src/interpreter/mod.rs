@@ -151,6 +151,20 @@ impl InstrStop {
         !self.is_success() && !self.is_revert()
     }
 
+    /// Returns whether execution ran out of gas or exceeded the memory limit.
+    #[inline]
+    pub const fn is_out_of_gas(self) -> bool {
+        matches!(
+            self,
+            Self::OutOfGas
+                | Self::MemoryOOG
+                | Self::MemoryLimitOOG
+                | Self::PrecompileOOG
+                | Self::InvalidOperandOOG
+                | Self::ReentrancySentryOOG
+        )
+    }
+
     /// Returns whether execution hit a fatal host/extension boundary error.
     #[inline]
     pub const fn is_fatal(self) -> bool {
