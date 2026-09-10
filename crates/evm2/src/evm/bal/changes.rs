@@ -138,6 +138,18 @@ impl TryFrom<&AlloyCodeChange> for BalCodeChange {
     }
 }
 
+impl TryFrom<AlloyCodeChange> for BalCodeChange {
+    type Error = BytecodeDecodeError;
+
+    /// Decode an owned code change without cloning its bytecode.
+    #[inline]
+    fn try_from(change: AlloyCodeChange) -> Result<Self, Self::Error> {
+        let bytecode = Bytecode::new_raw_checked(change.new_code)?;
+        let hash = bytecode.hash_slow();
+        Ok(Self { block_access_index: change.block_access_index, code: (hash, bytecode) })
+    }
+}
+
 impl From<BalCodeChange> for AlloyCodeChange {
     fn from(change: BalCodeChange) -> Self {
         Self::new(change.block_access_index, change.code.1.original_bytes())
