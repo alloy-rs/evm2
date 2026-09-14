@@ -23,7 +23,7 @@ use crate::{
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
 };
 use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, Transaction as _, TxType};
-use alloy_eip7928::BlockAccessList;
+use alloy_eip7928::{BlockAccessList, validate_block_access_list};
 use alloy_eips::{eip2718::Typed2718, eip7840::BlobParams};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
@@ -630,9 +630,13 @@ fn execute_block(
 
         if let Some(expected_bal) = block_access_list(block) {
             let built = evm.state_mut().take_bal_builder().unwrap_or_default();
-            if let Err(kind) =
-                check_block_access_list(block_index, built, expected_bal, block_header(block))
-            {
+            if let Err(kind) = check_block_access_list(
+                block_index,
+                built,
+                expected_bal,
+                block_header(block),
+                transactions.len(),
+            ) {
                 if should_fail {
                     return Ok(BlockResolution::Discard);
                 }
@@ -1158,14 +1162,14 @@ fn validate_post_state(
 /// Validates the block access list built during execution: the EIP-7928 item-count bound, the
 /// header's block access list hash, and a comparison against the fixture's expected list.
 ///
-/// Built and expected lists are canonicalized into EIP-7928 order (`From<Bal> for
-/// BlockAccessList`) before comparison so that map/insertion ordering never causes a spurious
-/// mismatch.
+/// The built list is canonicalized into EIP-7928 order (`From<Bal> for BlockAccessList`) before
+/// comparison. The fixture-provided list must already be canonical.
 fn check_block_access_list(
     block_index: usize,
     built: Bal,
     expected: &BlockAccessList,
     header: Option<&BlockHeader>,
+    transaction_count: usize,
 ) -> Result<(), TestErrorKind> {
     let built = BlockAccessList::from(built);
 
@@ -1186,6 +1190,10 @@ fn check_block_access_list(
         }
     }
 
+    validate_block_access_list(expected, transaction_count).map_err(|err| {
+        TestErrorKind::UnexpectedFailure(format!("invalid expected block access list: {err}"))
+    })?;
+
     // The header commits to the computed list by hash (execution-specs compares
     // `hash_block_access_list` against `header.block_access_list_hash`).
     if let Some(expected_hash) = header.and_then(|header| header.block_access_list_hash) {
@@ -1197,16 +1205,12 @@ fn check_block_access_list(
         }
     }
 
-    let expected = match Bal::try_from(expected.clone()) {
-        Ok(bal) => BlockAccessList::from(bal),
-        Err(_) => expected.clone(),
-    };
-    if built == expected {
+    if built.as_slice() == expected.as_slice() {
         return Ok(());
     }
     Err(TestErrorKind::BlockAccessListMismatch {
         block_index,
-        details: format_bal_diff(&built, &expected),
+        details: format_bal_diff(&built, expected),
     })
 }
 
@@ -1335,6 +1339,28 @@ mod tests {
 
     #[cfg(feature = "jit")]
     const BYTECODE_STORE42: &[u8] = &[op::PUSH1, 0x42, op::PUSH0, op::SSTORE, op::STOP];
+
+    #[test]
+    fn bal_check_surfaces_contextual_expected_list_errors() {
+        use super::{Bal, BlockHeader, TestErrorKind, check_block_access_list};
+        use alloy_eip7928::{AccountChanges, BalanceChange, BlockAccessIndex};
+        use alloy_primitives::{Address, U256};
+
+        let expected = vec![AccountChanges {
+            address: Address::with_last_byte(1),
+            balance_changes: vec![BalanceChange::new(BlockAccessIndex::new(3), U256::ONE)],
+            ..Default::default()
+        }];
+        let header = BlockHeader { gas_limit: U256::from(30_000_000), ..Default::default() };
+
+        let err = check_block_access_list(0, Bal::new(), &expected, Some(&header), 1).unwrap_err();
+        assert!(matches!(
+            err,
+            TestErrorKind::UnexpectedFailure(message)
+                if message.contains("invalid expected block access list")
+                    && message.contains("exceeds the block maximum 2")
+        ));
+    }
 
     #[test]
     fn blockchain_tests_apply_ommer_rewards_before_merge() {
