@@ -14,6 +14,8 @@ mod geth_js;
 mod opcode;
 #[cfg(feature = "std")]
 mod parity;
+#[cfg(feature = "std")]
+mod stack;
 #[cfg(feature = "js-tracer")]
 mod test_native_bigint;
 #[cfg(feature = "std")]
