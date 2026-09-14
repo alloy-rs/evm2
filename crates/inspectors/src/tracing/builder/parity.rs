@@ -143,14 +143,30 @@ impl ParityTraceBuilder {
     ///
     /// Note: this is considered a convenience method that takes the state changes after inspecting
     /// a transaction with the [TracingInspector](crate::tracing::TracingInspector).
+    ///
+    /// Use [Self::into_trace_results_with_state_parts] when the result and state are borrowed
+    /// separately.
     pub fn into_trace_results_with_state<T: EvmTypesHost>(
         self,
         res: &TxResultWithState<T>,
         trace_types: &HashSet<TraceType>,
         db: &mut dyn DynDatabase,
     ) -> DbResult<TraceResults> {
-        let TxResultWithState { ref result, pending_state: ref state, .. } = *res;
+        self.into_trace_results_with_state_parts(&res.result, &res.pending_state, trace_types, db)
+    }
 
+    /// Consumes the inspector and returns traces from a separately borrowed execution result and
+    /// state, without cloning the state into a result container.
+    ///
+    /// Populates state diffs and VM bytecode only when requested by `trace_types`. The database
+    /// must represent the state before the transaction's changes are committed.
+    pub fn into_trace_results_with_state_parts<E>(
+        self,
+        result: &TxResultExt<E>,
+        state: &PendingState,
+        trace_types: &HashSet<TraceType>,
+        db: &mut dyn DynDatabase,
+    ) -> DbResult<TraceResults> {
         let breadth_first_addresses = if trace_types.contains(&TraceType::VmTrace) {
             CallTraceNodeWalkerBF::new(&self.nodes)
                 .map(|node| node.trace.address)
