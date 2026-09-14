@@ -1,4 +1,3 @@
-use super::walker::CallTraceNodeWalkerBF;
 use crate::tracing::{
     TracingInspectorConfig,
     tx_state::TxState,
@@ -6,7 +5,7 @@ use crate::tracing::{
     utils::load_account_code,
 };
 use alloc::{collections::VecDeque, string::ToString, vec, vec::Vec};
-use alloy_primitives::{Address, KECCAK256_EMPTY, U64, U256, map::HashSet};
+use alloy_primitives::{Address, U64, U256, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
 use core::iter::Peekable;
@@ -158,8 +157,9 @@ impl ParityTraceBuilder {
     /// Consumes the inspector and returns traces from a separately borrowed execution result and
     /// state, without cloning the state into a result container.
     ///
-    /// Populates state diffs and VM bytecode only when requested by `trace_types`. The database
-    /// must represent the state before the transaction's changes are committed.
+    /// Populates state diffs when requested by `trace_types`. VM bytecode comes from the recorded
+    /// frames. The database must represent the state before the transaction's changes are
+    /// committed.
     pub fn into_trace_results_with_state_parts<E>(
         self,
         result: &TxResultExt<E>,
@@ -167,24 +167,11 @@ impl ParityTraceBuilder {
         trace_types: &HashSet<TraceType>,
         db: &mut dyn DynDatabase,
     ) -> DbResult<TraceResults> {
-        let breadth_first_addresses = if trace_types.contains(&TraceType::VmTrace) {
-            CallTraceNodeWalkerBF::new(&self.nodes)
-                .map(|node| node.trace.address)
-                .collect::<Vec<_>>()
-        } else {
-            vec![]
-        };
-
         let mut trace_res = self.into_trace_results(result, trace_types);
 
         // check the state diff case
         if let Some(ref mut state_diff) = trace_res.state_diff {
             populate_state_diff(state_diff, db, state)?;
-        }
-
-        // check the vm trace case
-        if let Some(ref mut vm_trace) = trace_res.vm_trace {
-            populate_vm_trace_bytecodes(db, vm_trace, breadth_first_addresses)?;
         }
 
         Ok(trace_res)
@@ -296,12 +283,12 @@ impl ParityTraceBuilder {
 
     /// Creates a VM trace by walking over `CallTraceNode`s
     ///
-    /// does not have the code fields filled in
+    /// Bytecode is included if it was recorded by the inspector.
     pub fn vm_trace(&self) -> VmTrace {
         self.nodes.first().map(|node| self.make_vm_trace(node)).unwrap_or_default()
     }
 
-    /// Returns a VM trace without the code filled in
+    /// Returns a VM trace with the recorded bytecode.
     ///
     /// Iteratively creates a VM trace by traversing the recorded nodes in the arena
     fn make_vm_trace(&self, start: &CallTraceNode) -> VmTrace {
@@ -343,7 +330,7 @@ impl ParityTraceBuilder {
                     match current.parent {
                         Some(parent) => {
                             sub_stack.push_back(Some(VmTrace {
-                                code: Default::default(),
+                                code: current.trace.bytecode.clone(),
                                 ops: instructions,
                             }));
 
@@ -357,7 +344,7 @@ impl ParityTraceBuilder {
             }
         };
 
-        VmTrace { code: Default::default(), ops: instructions }
+        VmTrace { code: start.trace.bytecode.clone(), ops: instructions }
     }
 
     /// Creates a VM instruction from a [CallTraceStep] and a [VmTrace] for the subcall if there is
@@ -443,47 +430,6 @@ where
         }
         Some(trace)
     }
-}
-
-/// addresses are presorted via breadth first walk thru [CallTraceNode]s, this  can be done by a
-/// walker in [crate::tracing::builder::walker]
-///
-/// iteratively fill the [VmTrace] code fields
-pub(crate) fn populate_vm_trace_bytecodes<I>(
-    db: &mut dyn DynDatabase,
-    trace: &mut VmTrace,
-    breadth_first_addresses: I,
-) -> DbResult<()>
-where
-    I: IntoIterator<Item = Address>,
-{
-    let mut stack: VecDeque<&mut VmTrace> = VecDeque::new();
-    stack.push_back(trace);
-
-    let mut addrs = breadth_first_addresses.into_iter();
-
-    while let Some(curr_ref) = stack.pop_front() {
-        for op in curr_ref.ops.iter_mut() {
-            if let Some(sub) = op.sub.as_mut() {
-                stack.push_back(sub);
-            }
-        }
-
-        let addr = addrs.next().expect("there should be an address");
-
-        let db_acc = db.get_account(&addr)?.unwrap_or_default();
-
-        curr_ref.code = if let Some(code) = db_acc.code {
-            code.original_bytes()
-        } else {
-            let code_hash =
-                if db_acc.code_hash != KECCAK256_EMPTY { db_acc.code_hash } else { continue };
-
-            db.get_code_by_hash(&code_hash)?.original_bytes()
-        };
-    }
-
-    Ok(())
 }
 
 /// Populates [StateDiff] given the [PendingState] of a transaction and a database.
