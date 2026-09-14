@@ -464,3 +464,6 @@ fn test_parity_delegatecall_selfdestruct() {
 
 #[path = "parity/state_diff_7702.rs"]
 mod state_diff_7702;
+
+#[path = "parity/state_diff_selfdestruct.rs"]
+mod state_diff_selfdestruct;
