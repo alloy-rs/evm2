@@ -461,3 +461,6 @@ fn test_parity_delegatecall_selfdestruct() {
     assert_eq!(action2.address, delegate_addr);
     assert_eq!(action2.refund_address, deployer);
 }
+
+#[path = "parity/vm_bytecode.rs"]
+mod vm_bytecode;

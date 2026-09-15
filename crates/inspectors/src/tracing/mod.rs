@@ -607,6 +607,9 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             self.spec_id = Some(interp.spec());
         }
         self.features = interp.version().features;
+        if self.config.record_bytecode {
+            self.last_trace().trace.bytecode = Some(interp.original_bytecode());
+        }
     }
 
     #[inline]
