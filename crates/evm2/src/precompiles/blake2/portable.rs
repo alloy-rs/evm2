@@ -7,8 +7,8 @@
 // - Changed compress_block signature for EIP-152: takes (rounds, words, m, t, f) with pre-parsed
 //   Word arrays instead of raw bytes, and variable round count.
 // - Replaced 12 hardcoded round() calls with a loop over 10 unrolled rounds using a remaining
-//   counter, mirroring avx2.rs. The round index stays a compile-time constant so that each
-//   round's SIGMA row const-folds into immediate message offsets.
+//   counter, mirroring avx2.rs. The round index stays a compile-time constant so that each round's
+//   SIGMA row const-folds into immediate message offsets.
 
 use super::{IV, SIGMA, Word};
 
