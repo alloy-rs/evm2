@@ -7,12 +7,13 @@ pub use gas::{Gas, GasTracker, MemoryGas};
 mod utils;
 
 pub(crate) mod instructions;
-pub use instructions::i256;
+pub use instructions::{CreateInstruction, i256};
 
 pub(crate) mod dispatch;
 
 #[doc(hidden)] // For macro only. Not public API.
 pub mod private;
+pub use private::Instruction;
 
 pub mod opcode;
 pub use opcode::op;

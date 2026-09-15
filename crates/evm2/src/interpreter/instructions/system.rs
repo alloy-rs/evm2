@@ -276,8 +276,9 @@ pub(crate) fn staticcall(cx: _) -> Result {
     call_inner(stack, cx.gas, cx.state, MessageKind::StaticCall)
 }
 
+/// Standard `CREATE` or `CREATE2` instruction.
 #[instruction(no_stack_preamble, dynamic_gas)]
-pub(crate) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
+pub fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     create_inner(stack, cx.gas, cx.state, IS_CREATE2)
 }
 

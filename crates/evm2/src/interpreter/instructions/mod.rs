@@ -26,6 +26,7 @@ mod stack;
 pub(crate) use stack::*;
 
 mod system;
+pub use system::create as CreateInstruction;
 pub(crate) use system::*;
 
 pub mod i256;
