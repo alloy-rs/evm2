@@ -604,7 +604,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         }
         self.features = interp.version().features;
         if self.config.record_bytecode {
-            self.last_trace().trace.bytecode = Bytes::copy_from_slice(interp.bytecode().as_slice());
+            self.last_trace().trace.bytecode = Some(interp.original_bytecode());
         }
     }
 

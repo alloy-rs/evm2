@@ -168,21 +168,38 @@ fn bytecode_recording_is_opt_in() {
         TracingInspectorConfig::parity_statediff(),
     ] {
         let inspector = inspect_code(&code, config);
-        assert!(inspector.traces().nodes().iter().all(|node| node.trace.bytecode.is_empty()));
+        assert!(inspector.traces().nodes().iter().all(|node| node.trace.bytecode.is_none()));
     }
     let mut config = TracingInspectorConfig::default_geth();
     config.merge(TracingInspectorConfig::parity_vm_trace());
     let inspector = inspect_code(&code, config);
-    assert_eq!(inspector.traces().nodes()[0].trace.bytecode.as_ref(), code);
+    assert_eq!(inspector.traces().nodes()[0].trace.bytecode.as_ref().unwrap().as_ref(), code);
+}
+
+#[test]
+fn bytecode_recording_reuses_original_buffer() {
+    // Keep a full contract-sized buffer alive so copying it is observable by pointer identity.
+    let mut bytes = vec![0x5b; 24_576];
+    bytes[0] = 0x00;
+    let code = Bytecode::new_raw(bytes.into());
+    let inspector = inspect_bytecode(code.clone(), TracingInspectorConfig::parity_vm_trace());
+    let recorded = inspector.traces().nodes()[0].trace.bytecode.as_ref().unwrap();
+    assert_eq!(recorded.as_ptr(), code.original_byte_slice().as_ptr());
+    assert_eq!(recorded.len(), code.len());
+
+    let vm_trace = inspector.into_parity_builder().vm_trace();
+    assert_eq!(vm_trace.code.as_ptr(), code.original_byte_slice().as_ptr());
+    assert_eq!(vm_trace.code.len(), code.len());
 }
 
 fn inspect_code(code: &[u8], config: TracingInspectorConfig) -> TracingInspector {
+    inspect_bytecode(Bytecode::new_raw(Bytes::copy_from_slice(code)), config)
+}
+
+fn inspect_bytecode(code: Bytecode, config: TracingInspectorConfig) -> TracingInspector {
     let target = Address::with_last_byte(0x42);
     let mut db = CacheDB::default();
-    db.insert_account_info(
-        &target,
-        AccountInfo::default().with_code(Bytecode::new_raw(Bytes::copy_from_slice(code))),
-    );
+    db.insert_account_info(&target, AccountInfo::default().with_code(code));
     let mut evm =
         Context::mainnet().with_db(db).build_mainnet_with_inspector(TracingInspector::new(config));
     let result = evm

@@ -330,7 +330,7 @@ impl ParityTraceBuilder {
                     match current.parent {
                         Some(parent) => {
                             sub_stack.push_back(Some(VmTrace {
-                                code: current.trace.bytecode.clone(),
+                                code: current.trace.bytecode.clone().unwrap_or_default(),
                                 ops: instructions,
                             }));
 
@@ -344,7 +344,7 @@ impl ParityTraceBuilder {
             }
         };
 
-        VmTrace { code: start.trace.bytecode.clone(), ops: instructions }
+        VmTrace { code: start.trace.bytecode.clone().unwrap_or_default(), ops: instructions }
     }
 
     /// Creates a VM instruction from a [CallTraceStep] and a [VmTrace] for the subcall if there is
