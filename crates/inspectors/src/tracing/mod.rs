@@ -453,6 +453,10 @@ impl TracingInspector {
             || self.config.record_stack_snapshots.is_full()
         {
             Some(interp.stack().as_slice().into())
+        } else if self.config.record_stack_snapshots.is_top() {
+            let stack = interp.stack();
+            let top = stack.as_slice().last().map(core::slice::from_ref).unwrap_or_default();
+            Some(top.into())
         } else {
             None
         };
