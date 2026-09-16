@@ -810,7 +810,7 @@ pub(crate) fn run(
     inner: Arc<super::BackendShared>,
     cmd_rx: chan::Receiver<Command>,
     config: RuntimeConfig,
-) {
+) -> eyre::Result<()> {
     debug!("backend thread started");
 
     let (result_tx, result_rx) = chan::unbounded::<WorkerResult>();
@@ -873,8 +873,9 @@ pub(crate) fn run(
 
     debug!(?shutdown_reason, stats = ?state.inner.stats(), "backend task shutting down");
 
-    state.workers.shutdown();
+    let shutdown = state.workers.shutdown();
     while state.result_rx.try_recv().is_ok() {}
+    shutdown
 }
 
 #[cfg(test)]
