@@ -9,11 +9,11 @@ use crate::precompiles::{
 use alloc::vec::Vec;
 use blst::{
     MultiPoint, blst_bendian_from_fp, blst_final_exp, blst_fp, blst_fp_from_bendian, blst_fp2,
-    blst_fp12, blst_fp12_is_one, blst_fp12_mul, blst_map_to_g1, blst_map_to_g2, blst_miller_loop,
-    blst_p1, blst_p1_add_or_double_affine, blst_p1_affine, blst_p1_affine_in_g1,
-    blst_p1_affine_on_curve, blst_p1_from_affine, blst_p1_mult, blst_p1_to_affine, blst_p2,
-    blst_p2_add_or_double_affine, blst_p2_affine, blst_p2_affine_in_g2, blst_p2_affine_on_curve,
-    blst_p2_from_affine, blst_p2_mult, blst_p2_to_affine, blst_scalar, blst_scalar_from_bendian,
+    blst_fp12, blst_fp12_is_one, blst_map_to_g1, blst_map_to_g2, blst_miller_loop_n, blst_p1,
+    blst_p1_add_or_double_affine, blst_p1_affine, blst_p1_affine_in_g1, blst_p1_affine_on_curve,
+    blst_p1_from_affine, blst_p1_mult, blst_p1_to_affine, blst_p2, blst_p2_add_or_double_affine,
+    blst_p2_affine, blst_p2_affine_in_g2, blst_p2_affine_on_curve, blst_p2_from_affine,
+    blst_p2_mult, blst_p2_to_affine, blst_scalar, blst_scalar_from_bendian,
 };
 
 // Big-endian non-Montgomery form.
@@ -253,28 +253,6 @@ fn map_fp2_to_g2(fp2: &blst_fp2) -> blst_p2_affine {
     p2_to_affine(&p)
 }
 
-/// Computes a single miller loop for a given G1, G2 pair
-#[inline]
-fn compute_miller_loop(g1: &blst_p1_affine, g2: &blst_p2_affine) -> blst_fp12 {
-    let mut result = blst_fp12::default();
-
-    // SAFETY: All arguments are valid blst types
-    unsafe { blst_miller_loop(&mut result, g2, g1) }
-
-    result
-}
-
-/// multiply_fp12 multiplies two fp12 elements
-#[inline]
-fn multiply_fp12(a: &blst_fp12, b: &blst_fp12) -> blst_fp12 {
-    let mut result = blst_fp12::default();
-
-    // SAFETY: All arguments are valid blst types
-    unsafe { blst_fp12_mul(&mut result, a, b) }
-
-    result
-}
-
 /// final_exp computes the final exponentiation on an fp12 element
 #[inline]
 fn final_exp(f: &blst_fp12) -> blst_fp12 {
@@ -296,6 +274,11 @@ fn is_fp12_one(f: &blst_fp12) -> bool {
 
 /// pairing_check performs a pairing check on a list of G1 and G2 point pairs and
 /// returns true if the result is equal to the identity element.
+///
+/// Note: `pairs` must not contain points at infinity. Callers must skip such
+/// pairs (their pairing is the identity element): `blst_miller_loop_n`, unlike
+/// the per-pair `blst_miller_loop`, does not special-case infinity and would
+/// feed the all-zero point representation into the line evaluations.
 #[inline]
 pub(crate) fn pairing_check(pairs: &[(blst_p1_affine, blst_p2_affine)]) -> bool {
     // When no inputs are given, we return true
@@ -308,21 +291,21 @@ pub(crate) fn pairing_check(pairs: &[(blst_p1_affine, blst_p2_affine)]) -> bool 
     if pairs.is_empty() {
         return true;
     }
-    // Compute the miller loop for the first pair
-    let (first_g1, first_g2) = &pairs[0];
-    let mut acc = compute_miller_loop(first_g1, first_g2);
+    // Fused multi-miller loop over all pairs, matching the arkworks backend's
+    // `multi_pairing`. We use the raw FFI, not blst's `miller_loop_n` wrapper, which
+    // threads (undesirable in a precompile, unavailable on no_std).
+    let (g1_points, g2_points): (Vec<blst_p1_affine>, Vec<blst_p2_affine>) =
+        pairs.iter().copied().unzip();
 
-    // For the remaining pairs, compute miller loop and multiply with the accumulated result
-    for (g1, g2) in pairs.iter().skip(1) {
-        let ml = compute_miller_loop(g1, g2);
-        acc = multiply_fp12(&acc, &ml);
-    }
+    // `blst_miller_loop_n` takes null-terminated arrays of pointers to point arrays.
+    let qs: [*const blst_p2_affine; 2] = [g2_points.as_ptr(), core::ptr::null()];
+    let ps: [*const blst_p1_affine; 2] = [g1_points.as_ptr(), core::ptr::null()];
 
-    // Apply final exponentiation and check if result is 1
-    let final_result = final_exp(&acc);
+    let mut acc = blst_fp12::default();
+    // SAFETY: `qs`/`ps` are null-terminated arrays over `pairs.len()` valid points.
+    unsafe { blst_miller_loop_n(&mut acc, qs.as_ptr(), ps.as_ptr(), pairs.len()) };
 
-    // Check if the result is one (identity element)
-    is_fp12_one(&final_result)
+    is_fp12_one(&final_exp(&acc))
 }
 
 /// Encodes a G1 point in affine format into byte slice.
@@ -549,13 +532,13 @@ fn _extract_g2_input(
 ///
 /// Note: The field element is expected to be in big endian format.
 fn read_fp(input: &[u8; FP_LENGTH]) -> Result<blst_fp, PrecompileHalt> {
+    // Performs the check for canonical field elements.
     if !is_valid_be(input) {
         return Err(PrecompileHalt::NonCanonicalFp);
     }
     let mut fp = blst_fp::default();
     // SAFETY: `input` has fixed length, and `fp` is a blst value.
     unsafe {
-        // This performs the check for canonical field elements
         blst_fp_from_bendian(&mut fp, input.as_ptr());
     }
 

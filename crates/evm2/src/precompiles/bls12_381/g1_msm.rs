@@ -30,14 +30,13 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
         return Err(PrecompileHalt::Bls12381G1MsmInputLength.into());
     }
 
-    let k = input_len / G1_MSM_INPUT_LENGTH;
+    let input_chunks = input.as_chunks::<G1_MSM_INPUT_LENGTH>().0;
+    let k = input_chunks.len();
     let required_gas = msm_required_gas(k, &DISCOUNT_TABLE_G1_MSM, G1_MSM_BASE_GAS_FEE);
     gas.spend(required_gas)?;
 
-    let mut valid_pairs_iter = (0..k).map(|i| {
-        let start = i * G1_MSM_INPUT_LENGTH;
-        let padded_g1 = &input[start..start + PADDED_G1_LENGTH];
-        let scalar_bytes = &input[start + PADDED_G1_LENGTH..start + G1_MSM_INPUT_LENGTH];
+    let mut valid_pairs_iter = input_chunks.iter().map(|pair| {
+        let (padded_g1, scalar_bytes) = pair.split_at(PADDED_G1_LENGTH);
 
         // Remove padding from G1 point - this validates padding format
         let [x, y] = remove_g1_padding(padded_g1)?;

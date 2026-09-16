@@ -65,7 +65,7 @@ evm2-jit-runtime = { path = "crates/jit/runtime", version = "0.1.0", default-fea
 alloy-consensus = { version = "2.0.4", default-features = false }
 alloy-chains = { version = "0.2.34", default-features = false }
 alloy-eip2930 = { version = "0.2.4", default-features = false }
-alloy-eip7928 = { version = "0.4.10", git = "https://github.com/alloy-rs/eips", rev = "d62432daaccc21f1a49731e5a3508f773f35e631", default-features = false }
+alloy-eip7928 = { version = "0.4.11", git = "https://github.com/alloy-rs/eips", rev = "914593f3211aaac1e213371c78549445f4ef7894", default-features = false }
 alloy-eips = { version = "2.0.4", default-features = false }
 alloy-hardforks = { version = "0.4", default-features = false }
 alloy-primitives = { version = "1.5.7", default-features = false }
@@ -112,7 +112,7 @@ quanta = "0.12"
 postcard = { version = "1.1.3", default-features = false }
 rand = "0.10"
 rayon = "1.10"
-revm = { version = "43", git = "https://github.com/bluealloy/revm", rev = "40165c9ad022fb4fe4091d07152a4d796570327c", default-features = true, features = ["asm-keccak"] }
+revm = { version = "43", git = "https://github.com/bluealloy/revm", rev = "3f24ccd59393446d8f68082b625eb741fd22aa76", default-features = true, features = ["asm-keccak"] }
 rstest = "0.27.0"
 ruint = { version = "1.18", default-features = false }
 serde = { version = "1.0", default-features = false }
@@ -178,19 +178,19 @@ lto = "thin"
 codegen-units = 1
 
 [patch.crates-io]
-revm = { git = "https://github.com/bluealloy/revm", rev = "40165c9ad022fb4fe4091d07152a4d796570327c" }
-revm-bytecode = { git = "https://github.com/bluealloy/revm", rev = "40165c9ad022fb4fe4091d07152a4d796570327c" }
-revm-context = { git = "https://github.com/bluealloy/revm", rev = "40165c9ad022fb4fe4091d07152a4d796570327c" }
-revm-context-interface = { git = "https://github.com/bluealloy/revm", rev = "40165c9ad022fb4fe4091d07152a4d796570327c" }
-revm-database = { git = "https://github.com/bluealloy/revm", rev = "40165c9ad022fb4fe4091d07152a4d796570327c" }
-revm-database-interface = { git = "https://github.com/bluealloy/revm", rev = "40165c9ad022fb4fe4091d07152a4d796570327c" }
-revm-handler = { git = "https://github.com/bluealloy/revm", rev = "40165c9ad022fb4fe4091d07152a4d796570327c" }
-revm-inspector = { git = "https://github.com/bluealloy/revm", rev = "40165c9ad022fb4fe4091d07152a4d796570327c" }
-revm-interpreter = { git = "https://github.com/bluealloy/revm", rev = "40165c9ad022fb4fe4091d07152a4d796570327c" }
-revm-precompile = { git = "https://github.com/bluealloy/revm", rev = "40165c9ad022fb4fe4091d07152a4d796570327c" }
-revm-primitives = { git = "https://github.com/bluealloy/revm", rev = "40165c9ad022fb4fe4091d07152a4d796570327c" }
-revm-state = { git = "https://github.com/bluealloy/revm", rev = "40165c9ad022fb4fe4091d07152a4d796570327c" }
-alloy-eip7928 = { version = "0.4.10", git = "https://github.com/alloy-rs/eips", rev = "d62432daaccc21f1a49731e5a3508f773f35e631" }
+revm = { git = "https://github.com/bluealloy/revm", rev = "3f24ccd59393446d8f68082b625eb741fd22aa76" }
+revm-bytecode = { git = "https://github.com/bluealloy/revm", rev = "3f24ccd59393446d8f68082b625eb741fd22aa76" }
+revm-context = { git = "https://github.com/bluealloy/revm", rev = "3f24ccd59393446d8f68082b625eb741fd22aa76" }
+revm-context-interface = { git = "https://github.com/bluealloy/revm", rev = "3f24ccd59393446d8f68082b625eb741fd22aa76" }
+revm-database = { git = "https://github.com/bluealloy/revm", rev = "3f24ccd59393446d8f68082b625eb741fd22aa76" }
+revm-database-interface = { git = "https://github.com/bluealloy/revm", rev = "3f24ccd59393446d8f68082b625eb741fd22aa76" }
+revm-handler = { git = "https://github.com/bluealloy/revm", rev = "3f24ccd59393446d8f68082b625eb741fd22aa76" }
+revm-inspector = { git = "https://github.com/bluealloy/revm", rev = "3f24ccd59393446d8f68082b625eb741fd22aa76" }
+revm-interpreter = { git = "https://github.com/bluealloy/revm", rev = "3f24ccd59393446d8f68082b625eb741fd22aa76" }
+revm-precompile = { git = "https://github.com/bluealloy/revm", rev = "3f24ccd59393446d8f68082b625eb741fd22aa76" }
+revm-primitives = { git = "https://github.com/bluealloy/revm", rev = "3f24ccd59393446d8f68082b625eb741fd22aa76" }
+revm-state = { git = "https://github.com/bluealloy/revm", rev = "3f24ccd59393446d8f68082b625eb741fd22aa76" }
+alloy-eip7928 = { version = "0.4.11", git = "https://github.com/alloy-rs/eips", rev = "914593f3211aaac1e213371c78549445f4ef7894" }
 # faster compile times: https://github.com/arkworks-rs/algebra/issues/1104
 ark-ec = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
 ark-bls12-381 = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
