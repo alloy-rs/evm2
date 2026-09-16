@@ -58,6 +58,13 @@ impl SyncNotifier {
         Self(Some(tx))
     }
 
+    /// Observations have no waiter: never accumulate empty metadata during a slow compilation.
+    pub(crate) fn retain_waiter(self, pending: &mut Vec<Self>) {
+        if self.0.is_some() {
+            pending.push(self);
+        }
+    }
+
     pub(crate) fn notify(self) {
         if let Some(tx) = self.0 {
             let _ = tx.send(());

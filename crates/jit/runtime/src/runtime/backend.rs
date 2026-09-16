@@ -335,7 +335,7 @@ impl BackendState {
         entry.last_observed_at = now;
 
         if entry.phase == EntryPhase::Working {
-            entry.pending_notifiers.push(sync_notifier);
+            sync_notifier.retain_waiter(&mut entry.pending_notifiers);
             return;
         }
 
@@ -875,6 +875,100 @@ pub(crate) fn run(
 
     state.workers.shutdown();
     while state.result_rx.try_recv().is_ok() {}
+}
+
+#[cfg(test)]
+mod notifier_tests {
+    use super::*;
+    use crate::runtime::{BackendShared, stats::RuntimeStats};
+    use evm2::SpecId;
+    use std::{sync::atomic::AtomicUsize, time::Duration};
+
+    #[test]
+    fn working_entry_retains_only_real_waiters_and_notifies_on_completion() {
+        // Seed an in-flight entry without starting a compiler: its completion must
+        // not race the repeated observations or require an LLVM backend.
+        let config = RuntimeConfig {
+            tuning: RuntimeTuning { jit_worker_count: 0, ..RuntimeTuning::default() },
+            ..RuntimeConfig::default()
+        };
+        let inner = Arc::new(BackendShared {
+            resident: ResidentMap::default(),
+            events: EventQueue::new(config.tuning.channel_capacity),
+            pause_depth: AtomicUsize::new(0),
+            stats: Arc::new(RuntimeStats::default()),
+        });
+        let (result_tx, result_rx) = chan::unbounded();
+        let workers = WorkerPool::new(result_tx, config.clone(), Arc::clone(&inner.stats));
+        let bytecode = Bytes::from_static(&[0x00]);
+        let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
+        let now = Instant::now();
+        let mut state = BackendState {
+            inner,
+            resident_meta: HashMap::default(),
+            entries: HashMap::from_iter([(
+                key,
+                EntryState {
+                    hotness: 1,
+                    phase: EntryPhase::Working,
+                    bytecode: bytecode.clone(),
+                    last_observed_at: now,
+                    pending_notifiers: Vec::new(),
+                },
+            )]),
+            workers,
+            jit_object_linker: JitObjectLinker::new(),
+            result_rx,
+            store: config.store,
+            tuning: config.tuning,
+            aot: false,
+            pending_jobs: 1,
+            generation: 0,
+            last_sweep: now,
+            on_compilation: None,
+        };
+        for _ in 0..10_000 {
+            state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
+        }
+        assert_eq!(state.entries[&key].pending_notifiers.len(), 0);
+        assert_eq!(state.entries[&key].pending_notifiers.capacity(), 0);
+
+        let (first, first_rx) = chan::bounded(1);
+        let (second, second_rx) = chan::bounded(1);
+        for sender in [first, second] {
+            state.handle_compile_jit(CompileJitRequest {
+                key,
+                bytecode: bytecode.clone(),
+                sync_notifier: SyncNotifier::new(sender),
+            });
+        }
+        for _ in 0..10_000 {
+            state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
+        }
+        assert_eq!(state.entries[&key].pending_notifiers.len(), 2);
+        assert_eq!(first_rx.try_recv(), Err(chan::TryRecvError::Empty));
+        assert_eq!(second_rx.try_recv(), Err(chan::TryRecvError::Empty));
+        assert_eq!(state.inner.stats.lookup_misses.load(Ordering::Relaxed), 20_000);
+        assert_eq!(state.inner.stats.compilations_dispatched.load(Ordering::Relaxed), 0);
+
+        // Failure still completes both the original request and the later waiters.
+        let (original, original_rx) = chan::bounded(1);
+        state.handle_worker_result(WorkerResult {
+            key,
+            outcome: Err("test compilation failure".to_owned()),
+            kind: CompilationKind::Jit,
+            sync_notifier: SyncNotifier::new(original),
+            generation: 0,
+            compile_duration: Duration::ZERO,
+            timings: crate::CompileTimings::default(),
+        });
+        assert_eq!(state.pending_jobs, 0);
+        assert!(!state.entries.contains_key(&key));
+        for receiver in [original_rx, first_rx, second_rx] {
+            assert_eq!(receiver.try_recv(), Ok(()));
+            assert_eq!(receiver.try_recv(), Err(chan::TryRecvError::Disconnected));
+        }
+    }
 }
 
 #[cfg(all(test, feature = "llvm"))]
