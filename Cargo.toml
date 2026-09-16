@@ -65,7 +65,7 @@ evm2-jit-runtime = { path = "crates/jit/runtime", version = "0.1.0", default-fea
 alloy-consensus = { version = "2.0.4", default-features = false }
 alloy-chains = { version = "0.2.34", default-features = false }
 alloy-eip2930 = { version = "0.2.4", default-features = false }
-alloy-eip7928 = { version = "0.4.0", default-features = false }
+alloy-eip7928 = { version = "0.4.11", default-features = false }
 alloy-eips = { version = "2.0.4", default-features = false }
 alloy-hardforks = { version = "0.4", default-features = false }
 alloy-primitives = { version = "1.5.7", default-features = false }
@@ -178,7 +178,6 @@ lto = "thin"
 codegen-units = 1
 
 [patch.crates-io]
-alloy-eip7928 = { git = "https://github.com/alloy-rs/eips", rev = "7f78ac6f259537f79ac9843b3b3f7c98293c694a" }
 # faster compile times: https://github.com/arkworks-rs/algebra/issues/1104
 ark-ec = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
 ark-bls12-381 = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
