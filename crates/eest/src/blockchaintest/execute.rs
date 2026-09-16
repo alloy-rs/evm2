@@ -23,7 +23,7 @@ use crate::{
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
 };
 use alloy_consensus::{Eip658Value, Receipt, ReceiptEnvelope, Transaction as _, TxType};
-use alloy_eip7928::BlockAccessList;
+use alloy_eip7928::{BlockAccessList, validate_block_access_list};
 use alloy_eips::{eip2718::Typed2718, eip7840::BlobParams};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
@@ -362,6 +362,20 @@ fn execute_block(
 ) -> Result<(), TestError> {
     let db_stats = db_stats_counts.is_some();
     let should_fail = block.expect_exception.is_some();
+
+    if let Some(expected_bal) = block_access_list(block)
+        && let Err(err) = validate_block_access_list(expected_bal, total_transactions)
+    {
+        if should_fail {
+            return Ok(());
+        }
+        return Err(TestError::case(
+            path,
+            name,
+            TestErrorKind::UnexpectedFailure(format!("invalid expected block access list: {err}")),
+        ));
+    }
+
     let mut block_hash = None;
     let mut beacon_root = None;
     let mut this_excess_blob_gas = None;
@@ -1158,9 +1172,8 @@ fn validate_post_state(
 /// Validates the block access list built during execution: the EIP-7928 item-count bound, the
 /// header's block access list hash, and a comparison against the fixture's expected list.
 ///
-/// Built and expected lists are canonicalized into EIP-7928 order (`From<Bal> for
-/// BlockAccessList`) before comparison so that map/insertion ordering never causes a spurious
-/// mismatch.
+/// The built list is canonicalized into EIP-7928 order (`From<Bal> for BlockAccessList`) before
+/// comparison. The fixture-provided list must already be canonical.
 fn check_block_access_list(
     block_index: usize,
     built: Bal,
@@ -1197,16 +1210,12 @@ fn check_block_access_list(
         }
     }
 
-    let expected = match Bal::try_from(expected.clone()) {
-        Ok(bal) => BlockAccessList::from(bal),
-        Err(_) => expected.clone(),
-    };
-    if built == expected {
+    if built.as_slice() == expected.as_slice() {
         return Ok(());
     }
     Err(TestErrorKind::BlockAccessListMismatch {
         block_index,
-        details: format_bal_diff(&built, &expected),
+        details: format_bal_diff(&built, expected),
     })
 }
 
