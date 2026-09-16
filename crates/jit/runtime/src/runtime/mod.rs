@@ -132,7 +132,7 @@ struct LazySpawnState {
 
 /// Backend thread handle and its completion signal.
 struct BackendThread {
-    handle: std::thread::JoinHandle<()>,
+    handle: std::thread::JoinHandle<eyre::Result<()>>,
     done_rx: chan::Receiver<()>,
 }
 
@@ -532,8 +532,9 @@ impl JitBackend {
         let thread = std::thread::Builder::new()
             .name(config.thread_name.clone())
             .spawn(move || {
-                backend::run(shared, rx, config);
+                let result = backend::run(shared, rx, config);
                 let _ = done_tx.send(());
+                result
             })
             .wrap_err("failed to spawn backend thread")?;
 
@@ -650,7 +651,7 @@ impl BackendInner {
             }
 
             // Thread signaled done, join should return immediately.
-            ct.handle.join().map_err(|_| eyre::eyre!("backend thread panicked"))?;
+            ct.handle.join().map_err(|_| eyre::eyre!("backend thread panicked"))??;
         }
         Ok(())
     }

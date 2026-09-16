@@ -1283,3 +1283,19 @@ fn compiler_recycle_every_compilation() {
 
     assert_eq!(tb.stats().resident_entries, n as u64);
 }
+
+#[test]
+fn shutdown_propagates_worker_error() {
+    let backend = JitBackend::disabled();
+    let (done_tx, done_rx) = chan::bounded(1);
+    *backend.inner.thread.lock().unwrap() = Some(BackendThread {
+        handle: std::thread::spawn(move || {
+            let _ = done_tx.send(());
+            eyre::bail!("controlled compile worker failure")
+        }),
+        done_rx,
+    });
+    let error = backend.inner.shutdown().unwrap_err();
+    assert!(error.to_string().contains("controlled compile worker failure"));
+    assert!(backend.inner.thread.lock().unwrap().is_none());
+}

@@ -27,6 +27,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    thread::JoinHandle,
     time::Duration,
 };
 
@@ -195,6 +196,8 @@ impl Drop for JitCodeBacking {
 pub(crate) struct WorkerPool {
     /// Rayon pool used to execute compilation jobs.
     pool: Option<ThreadPool>,
+    /// OS workers retained until their Rayon loop and TLS destructors have exited.
+    threads: Vec<JoinHandle<()>>,
     /// Out-of-process helper used by this worker pool.
     out_of_process_helper: OutOfProcessHelper,
     /// Sender for worker results.
@@ -219,17 +222,40 @@ impl WorkerPool {
         let worker_count = config.tuning.jit_worker_count;
         let queue_capacity = worker_count.saturating_mul(config.tuning.jit_worker_queue_capacity);
         let out_of_process_helper = create_out_of_process_helper(&config, stats);
+        let mut threads = Vec::with_capacity(worker_count);
         let pool = (worker_count > 0).then(|| {
-            ThreadPoolBuilder::new()
+            let result = ThreadPoolBuilder::new()
                 .num_threads(worker_count)
                 .thread_name(|i| format!("evm2_jit-{i:02}"))
                 .exit_handler(|_| clear_thread_local_compilers())
-                .build()
-                .expect("failed to spawn compile workers")
+                .spawn_handler(|worker| {
+                    let mut builder = std::thread::Builder::new();
+                    if let Some(name) = worker.name() {
+                        builder = builder.name(name.to_owned());
+                    }
+                    if let Some(size) = worker.stack_size() {
+                        builder = builder.stack_size(size);
+                    }
+                    threads.push(builder.spawn(move || worker.run())?);
+                    Ok(())
+                })
+                .build();
+            match result {
+                Ok(pool) => pool,
+                Err(error) => {
+                    // A partially constructed Rayon pool has already signaled termination.
+                    // Do not detach any workers if starting a later thread failed.
+                    for thread in threads.drain(..) {
+                        let _ = thread.join();
+                    }
+                    panic!("failed to spawn compile workers: {error}");
+                }
+            }
         });
 
         Self {
             pool,
+            threads,
             out_of_process_helper,
             result_tx,
             config: Arc::new(config),
@@ -276,13 +302,21 @@ impl WorkerPool {
     }
 
     /// Shuts down all workers after draining queued jobs.
-    pub(crate) fn shutdown(&mut self) {
+    pub(crate) fn shutdown(&mut self) -> eyre::Result<()> {
         self.shutdown.store(true, Ordering::Release);
         self.cancel_in_flight();
-        if let Some(pool) = &self.pool {
-            pool.broadcast(|_| clear_thread_local_compilers());
-        }
+        // Rayon Drop requests termination; it does not wait for OS threads. A broadcast
+        // is insufficient too: it may run before jobs in the global injection queue.
+        // Exit handlers clear each compiler only after that worker has drained its jobs.
         self.pool.take();
+        let mut panicked = 0;
+        for thread in self.threads.drain(..) {
+            if thread.join().is_err() {
+                panicked += 1;
+            }
+        }
+        eyre::ensure!(panicked == 0, "{panicked} compile worker thread(s) panicked");
+        Ok(())
     }
 
     /// Cancels any in-flight compilation that can be interrupted externally.
@@ -303,7 +337,13 @@ impl WorkerPool {
 
 impl Drop for WorkerPool {
     fn drop(&mut self) {
-        self.shutdown();
+        if let Err(error) = self.shutdown() {
+            if std::thread::panicking() {
+                warn!(%error, "compile worker shutdown failed during unwinding");
+            } else {
+                panic!("compile worker shutdown failed: {error}");
+            }
+        }
     }
 }
 
@@ -681,5 +721,109 @@ fn compile_job(
         generation,
         compile_duration: Duration::ZERO,
         timings: CompileTimings::default(),
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct ExitHook {
+        events: chan::Sender<&'static str>,
+        release: chan::Receiver<()>,
+    }
+
+    impl Drop for ExitHook {
+        fn drop(&mut self) {
+            self.events.send("tls-enter").unwrap();
+            self.release.recv_timeout(Duration::from_secs(10)).unwrap();
+            self.events.send("tls-exit").unwrap();
+        }
+    }
+
+    thread_local! {
+        static EXIT_HOOK: RefCell<Option<ExitHook>> = const { RefCell::new(None) };
+    }
+
+    fn workers(count: usize) -> WorkerPool {
+        let (results, _rx) = chan::unbounded();
+        let config = RuntimeConfig {
+            tuning: super::super::RuntimeTuning { jit_worker_count: count, ..Default::default() },
+            ..Default::default()
+        };
+        WorkerPool::new(results, config, Arc::new(RuntimeStats::default()))
+    }
+
+    #[test]
+    fn drop_drains_injected_jobs_and_waits_for_worker_tls_exit() {
+        let pool = workers(1);
+        let (events, events_rx) = chan::unbounded();
+        let (first_release, first_rx) = chan::bounded(1);
+        let (second_release, second_rx) = chan::bounded(1);
+        let (tls_release, tls_rx) = chan::bounded(1);
+        let first_events = events.clone();
+        pool.pool.as_ref().unwrap().spawn_fifo(move || {
+            EXIT_HOOK.with(|slot| {
+                *slot.borrow_mut() =
+                    Some(ExitHook { events: first_events.clone(), release: tls_rx });
+            });
+            first_events.send("first-enter").unwrap();
+            first_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            first_events.send("first-exit").unwrap();
+        });
+        assert_eq!(events_rx.recv_timeout(Duration::from_secs(10)).unwrap(), "first-enter");
+        let second_events = events.clone();
+        // This external submission is held in the injection queue behind the first job.
+        pool.pool.as_ref().unwrap().spawn_fifo(move || {
+            second_events.send("second-enter").unwrap();
+            second_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            second_events.send("second-exit").unwrap();
+        });
+        let (dropping, dropping_rx) = chan::bounded(1);
+        let owner = std::thread::spawn(move || {
+            dropping.send(()).unwrap();
+            drop(pool);
+            events.send("owner-exit").unwrap();
+        });
+        dropping_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        first_release.send(()).unwrap();
+        // Drive every gate and complete all cleanup before asserting, including on the
+        // buggy path. Timeouts are deadlock guards; the assertion is event ordering.
+        let mut observed = Vec::new();
+        for _ in 0..6 {
+            let event = events_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            observed.push(event);
+            match event {
+                "second-enter" => second_release.send(()).unwrap(),
+                "tls-enter" => tls_release.send(()).unwrap(),
+                _ => {}
+            }
+        }
+        owner.join().unwrap();
+        assert_eq!(
+            observed,
+            ["first-exit", "second-enter", "second-exit", "tls-enter", "tls-exit", "owner-exit"]
+        );
+    }
+    #[test]
+    fn shutdown_joins_remaining_workers_before_reporting_a_panic() {
+        let mut pool = workers(0);
+        let (release, rx) = chan::bounded(1);
+        let (exited, exited_rx) = chan::bounded(1);
+        pool.threads.push(std::thread::spawn(|| panic!("controlled worker failure")));
+        pool.threads.push(std::thread::spawn(move || {
+            rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            exited.send(()).unwrap();
+        }));
+        let owner = std::thread::spawn(move || {
+            let error = pool.shutdown().unwrap_err();
+            assert!(pool.threads.is_empty());
+            assert_eq!(exited_rx.try_recv(), Ok(()));
+            assert!(error.to_string().contains("1 compile worker thread(s) panicked"));
+            pool.shutdown().unwrap();
+        });
+        release.send(()).unwrap();
+        owner.join().unwrap();
     }
 }
