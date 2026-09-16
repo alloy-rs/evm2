@@ -453,6 +453,10 @@ impl TracingInspector {
             || self.config.record_stack_snapshots.is_full()
         {
             Some(interp.stack().as_slice().into())
+        } else if self.config.record_stack_snapshots.is_top() {
+            let stack = interp.stack();
+            let top = stack.as_slice().last().map(core::slice::from_ref).unwrap_or_default();
+            Some(top.into())
         } else {
             None
         };
@@ -638,6 +642,9 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             self.spec_id = Some(interp.spec());
         }
         self.features = interp.version().features;
+        if self.config.record_bytecode {
+            self.last_trace().trace.bytecode = Some(interp.original_bytecode());
+        }
     }
 
     #[inline]

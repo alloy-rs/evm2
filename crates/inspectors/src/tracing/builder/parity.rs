@@ -1,17 +1,16 @@
-use super::walker::CallTraceNodeWalkerBF;
 use crate::tracing::{
     TracingInspectorConfig,
     tx_state::TxState,
     types::{CallTraceNode, CallTraceStep, StepDelta, TraceMemberOrder},
     utils::load_account_code,
 };
-use alloc::{collections::VecDeque, string::ToString, vec, vec::Vec};
-use alloy_primitives::{Address, KECCAK256_EMPTY, U64, U256, map::HashSet};
+use alloc::{string::ToString, vec, vec::Vec};
+use alloy_primitives::{Address, U64, U256, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
 use core::iter::Peekable;
 use evm2::{
-    AccountInfo, EvmTypesHost, SpecId, TxResultExt, TxResultWithState,
+    EvmTypesHost, SpecId, TxResultExt, TxResultWithState,
     evm::{DbResult, DynDatabase, PendingState},
 };
 
@@ -158,8 +157,9 @@ impl ParityTraceBuilder {
     /// Consumes the inspector and returns traces from a separately borrowed execution result and
     /// state, without cloning the state into a result container.
     ///
-    /// Populates state diffs and VM bytecode only when requested by `trace_types`. The database
-    /// must represent the state before the transaction's changes are committed.
+    /// Populates state diffs when requested by `trace_types`. VM bytecode comes from the recorded
+    /// frames. The database must represent the state before the transaction's changes are
+    /// committed.
     pub fn into_trace_results_with_state_parts<E>(
         self,
         result: &TxResultExt<E>,
@@ -167,24 +167,11 @@ impl ParityTraceBuilder {
         trace_types: &HashSet<TraceType>,
         db: &mut dyn DynDatabase,
     ) -> DbResult<TraceResults> {
-        let breadth_first_addresses = if trace_types.contains(&TraceType::VmTrace) {
-            CallTraceNodeWalkerBF::new(&self.nodes)
-                .map(|node| node.trace.address)
-                .collect::<Vec<_>>()
-        } else {
-            vec![]
-        };
-
         let mut trace_res = self.into_trace_results(result, trace_types);
 
         // check the state diff case
         if let Some(ref mut state_diff) = trace_res.state_diff {
             populate_state_diff(state_diff, db, state)?;
-        }
-
-        // check the vm trace case
-        if let Some(ref mut vm_trace) = trace_res.vm_trace {
-            populate_vm_trace_bytecodes(db, vm_trace, breadth_first_addresses)?;
         }
 
         Ok(trace_res)
@@ -284,12 +271,12 @@ impl ParityTraceBuilder {
 
     /// Creates a VM trace by walking over `CallTraceNode`s
     ///
-    /// does not have the code fields filled in
+    /// Bytecode is included if it was recorded by the inspector.
     pub fn vm_trace(&self) -> VmTrace {
         self.nodes.first().map(|node| self.make_vm_trace(node)).unwrap_or_default()
     }
 
-    /// Returns a VM trace without the code filled in
+    /// Returns a VM trace with the recorded bytecode.
     ///
     /// Iteratively creates a VM trace by traversing the recorded nodes in the arena
     fn make_vm_trace(&self, start: &CallTraceNode) -> VmTrace {
@@ -323,6 +310,19 @@ impl ParityTraceBuilder {
                     while let Some(member) = ordering.next() {
                         let TraceMemberOrder::Step(step_idx) = *member else { continue };
                         let step = &current.trace.steps[step_idx];
+
+                        // The interpreter executes a synthetic STOP after falling off the end of
+                        // empty bytecode. It is not part of the recorded code and must not appear
+                        // in the VM trace.
+                        if current
+                            .trace
+                            .bytecode
+                            .as_ref()
+                            .is_some_and(|bytecode| step.pc >= bytecode.len())
+                        {
+                            continue;
+                        }
+
                         let delta = deltas.next_if(|delta| delta.step == step_idx);
                         let maybe_sub_call = if step.is_call_like_op() {
                             ordering
@@ -343,7 +343,7 @@ impl ParityTraceBuilder {
                     match current.parent {
                         Some(parent) => {
                             sub_stack.push(Some(VmTrace {
-                                code: Default::default(),
+                                code: current.trace.bytecode.clone().unwrap_or_default(),
                                 ops: instructions,
                             }));
 
@@ -357,7 +357,7 @@ impl ParityTraceBuilder {
             }
         };
 
-        VmTrace { code: Default::default(), ops: instructions }
+        VmTrace { code: start.trace.bytecode.clone().unwrap_or_default(), ops: instructions }
     }
 
     /// Creates a VM instruction from a [CallTraceStep] and a [VmTrace] for the subcall if there is
@@ -445,47 +445,6 @@ where
     }
 }
 
-/// addresses are presorted via breadth first walk thru [CallTraceNode]s, this  can be done by a
-/// walker in [crate::tracing::builder::walker]
-///
-/// iteratively fill the [VmTrace] code fields
-pub(crate) fn populate_vm_trace_bytecodes<I>(
-    db: &mut dyn DynDatabase,
-    trace: &mut VmTrace,
-    breadth_first_addresses: I,
-) -> DbResult<()>
-where
-    I: IntoIterator<Item = Address>,
-{
-    let mut stack: VecDeque<&mut VmTrace> = VecDeque::new();
-    stack.push_back(trace);
-
-    let mut addrs = breadth_first_addresses.into_iter();
-
-    while let Some(curr_ref) = stack.pop_front() {
-        for op in curr_ref.ops.iter_mut() {
-            if let Some(sub) = op.sub.as_mut() {
-                stack.push_back(sub);
-            }
-        }
-
-        let addr = addrs.next().expect("there should be an address");
-
-        let db_acc = db.get_account(&addr)?.unwrap_or_default();
-
-        curr_ref.code = if let Some(code) = db_acc.code {
-            code.original_bytes()
-        } else {
-            let code_hash =
-                if db_acc.code_hash != KECCAK256_EMPTY { db_acc.code_hash } else { continue };
-
-            db.get_code_by_hash(&code_hash)?.original_bytes()
-        };
-    }
-
-    Ok(())
-}
-
 /// Populates [StateDiff] given the [PendingState] of a transaction and a database.
 ///
 /// Loops over all state accounts in the accounts diff that contains all accounts that are included
@@ -498,22 +457,34 @@ pub fn populate_state_diff(
 ) -> DbResult<()> {
     let state = TxState::from_pending(pending);
     for (addr, changed_acc) in state.accounts.iter() {
-        // if the account was selfdestructed and created during the transaction, we can ignore it
-        if changed_acc.selfdestructed && changed_acc.created {
+        let db_acc = db.get_account(addr)?;
+
+        // An account created and destroyed in this transaction has no net change unless it
+        // already existed, for example with a prefunded balance.
+        if changed_acc.current.is_none() && db_acc.is_none() {
             continue;
         }
 
+        let db_acc = db_acc.unwrap_or_default();
         let entry = state_diff.entry(*addr).or_default();
 
-        // we need to fetch the account from the db
-        let db_acc = db.get_account(addr)?.unwrap_or_default();
+        // Use the finalized account state: selfdestruct can preserve a balance-only account.
+        if changed_acc.current.is_none() {
+            entry.balance = Delta::Removed(db_acc.balance);
+            entry.nonce = Delta::Removed(U64::from(db_acc.nonce));
+            entry.code = Delta::Removed(load_account_code(db, &db_acc)?.unwrap_or_default());
+            // PendingState contains accessed slots only. Read pre-state because the stream
+            // can report wiped slots as zero-valued reads.
+            for key in changed_acc.storage.keys() {
+                let original = db.get_storage(addr, key)?;
+                if !original.is_zero() {
+                    entry.storage.insert((*key).into(), Delta::Removed(original.into()));
+                }
+            }
+            continue;
+        }
 
-        // deleted accounts are treated as drained: the balance is zero and nonce and code are
-        // unchanged
-        let info = changed_acc
-            .current
-            .clone()
-            .unwrap_or_else(|| AccountInfo { balance: U256::ZERO, ..db_acc.clone() });
+        let info = changed_acc.current.as_ref().expect("deleted accounts handled above");
 
         // we check if this account was created during the transaction
         // where the smart contract was not touched before being created (no balance)
@@ -524,7 +495,7 @@ pub fn populate_state_diff(
             entry.nonce = Delta::Added(U64::from(info.nonce));
 
             // accounts without code are marked as added
-            let account_code = load_account_code(db, &info)?.unwrap_or_default();
+            let account_code = load_account_code(db, info)?.unwrap_or_default();
             entry.code = Delta::Added(account_code);
 
             // new storage values are marked as added,
@@ -533,11 +504,10 @@ pub fn populate_state_diff(
                 entry.storage.insert((*key).into(), Delta::Added(slot.current.into()));
             }
         } else {
-            // we check if this account was created during the transaction
-            // where the smart contract was touched before being created (has balance)
-            if changed_acc.created {
+            // EIP-7702 can change code without creating the account, even if execution reverts.
+            if db_acc.code_hash != info.code_hash {
                 let original_account_code = load_account_code(db, &db_acc)?.unwrap_or_default();
-                let present_account_code = load_account_code(db, &info)?.unwrap_or_default();
+                let present_account_code = load_account_code(db, info)?.unwrap_or_default();
                 entry.code = Delta::changed(original_account_code, present_account_code);
             }
 
@@ -550,7 +520,7 @@ pub fn populate_state_diff(
             }
 
             // check if the account was changed at all
-            if entry.storage.is_empty() && db_acc == info && !changed_acc.selfdestructed {
+            if entry.storage.is_empty() && &db_acc == info && !changed_acc.selfdestructed {
                 // clear the entry if the account was not changed
                 state_diff.remove(addr);
                 continue;

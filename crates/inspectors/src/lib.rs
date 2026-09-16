@@ -32,6 +32,9 @@ pub mod access_list;
 /// Implementation of an opcode counter for the EVM.
 pub mod opcode;
 
+/// An inspector for recording Otterscan internal operations.
+pub mod otterscan;
+
 /// An inspector for recording traces
 pub mod tracing;
 
