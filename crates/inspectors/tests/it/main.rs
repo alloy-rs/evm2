@@ -13,7 +13,11 @@ mod geth_js;
 #[cfg(feature = "std")]
 mod opcode;
 #[cfg(feature = "std")]
+mod otterscan;
+#[cfg(feature = "std")]
 mod parity;
+#[cfg(feature = "std")]
+mod stack;
 #[cfg(feature = "js-tracer")]
 mod test_native_bigint;
 #[cfg(feature = "std")]

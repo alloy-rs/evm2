@@ -10,7 +10,7 @@ use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
 use core::iter::Peekable;
 use evm2::{
-    AccountInfo, EvmTypesHost, SpecId, TxResultExt, TxResultWithState,
+    EvmTypesHost, SpecId, TxResultExt, TxResultWithState,
     evm::{DbResult, DynDatabase, PendingState},
 };
 
@@ -444,22 +444,34 @@ pub fn populate_state_diff(
 ) -> DbResult<()> {
     let state = TxState::from_pending(pending);
     for (addr, changed_acc) in state.accounts.iter() {
-        // if the account was selfdestructed and created during the transaction, we can ignore it
-        if changed_acc.selfdestructed && changed_acc.created {
+        let db_acc = db.get_account(addr)?;
+
+        // An account created and destroyed in this transaction has no net change unless it
+        // already existed, for example with a prefunded balance.
+        if changed_acc.current.is_none() && db_acc.is_none() {
             continue;
         }
 
+        let db_acc = db_acc.unwrap_or_default();
         let entry = state_diff.entry(*addr).or_default();
 
-        // we need to fetch the account from the db
-        let db_acc = db.get_account(addr)?.unwrap_or_default();
+        // Use the finalized account state: selfdestruct can preserve a balance-only account.
+        if changed_acc.current.is_none() {
+            entry.balance = Delta::Removed(db_acc.balance);
+            entry.nonce = Delta::Removed(U64::from(db_acc.nonce));
+            entry.code = Delta::Removed(load_account_code(db, &db_acc)?.unwrap_or_default());
+            // PendingState contains accessed slots only. Read pre-state because the stream
+            // can report wiped slots as zero-valued reads.
+            for key in changed_acc.storage.keys() {
+                let original = db.get_storage(addr, key)?;
+                if !original.is_zero() {
+                    entry.storage.insert((*key).into(), Delta::Removed(original.into()));
+                }
+            }
+            continue;
+        }
 
-        // deleted accounts are treated as drained: the balance is zero and nonce and code are
-        // unchanged
-        let info = changed_acc
-            .current
-            .clone()
-            .unwrap_or_else(|| AccountInfo { balance: U256::ZERO, ..db_acc.clone() });
+        let info = changed_acc.current.as_ref().expect("deleted accounts handled above");
 
         // we check if this account was created during the transaction
         // where the smart contract was not touched before being created (no balance)
@@ -470,7 +482,7 @@ pub fn populate_state_diff(
             entry.nonce = Delta::Added(U64::from(info.nonce));
 
             // accounts without code are marked as added
-            let account_code = load_account_code(db, &info)?.unwrap_or_default();
+            let account_code = load_account_code(db, info)?.unwrap_or_default();
             entry.code = Delta::Added(account_code);
 
             // new storage values are marked as added,
@@ -479,11 +491,10 @@ pub fn populate_state_diff(
                 entry.storage.insert((*key).into(), Delta::Added(slot.current.into()));
             }
         } else {
-            // we check if this account was created during the transaction
-            // where the smart contract was touched before being created (has balance)
-            if changed_acc.created {
+            // EIP-7702 can change code without creating the account, even if execution reverts.
+            if db_acc.code_hash != info.code_hash {
                 let original_account_code = load_account_code(db, &db_acc)?.unwrap_or_default();
-                let present_account_code = load_account_code(db, &info)?.unwrap_or_default();
+                let present_account_code = load_account_code(db, info)?.unwrap_or_default();
                 entry.code = Delta::changed(original_account_code, present_account_code);
             }
 
@@ -496,7 +507,7 @@ pub fn populate_state_diff(
             }
 
             // check if the account was changed at all
-            if entry.storage.is_empty() && db_acc == info && !changed_acc.selfdestructed {
+            if entry.storage.is_empty() && &db_acc == info && !changed_acc.selfdestructed {
                 // clear the entry if the account was not changed
                 state_diff.remove(addr);
                 continue;

@@ -269,7 +269,7 @@ impl StorageSlotHandle<'_, '_> {
     /// warm set stay warm across rollback, so warming them again records nothing.
     #[inline]
     pub fn warm(&mut self) -> bool {
-        if self.slot.is_warm {
+        if self.is_warm() {
             return false;
         }
         self.slot.is_warm = true;
@@ -472,5 +472,24 @@ mod tests {
         }
         assert!(state.storage(&address).is_loaded(&key));
         assert!(state.storage(&address).is_warm(&key));
+    }
+
+    #[test]
+    fn storage_slot_warm_honors_prewarm_after_load() {
+        let address = Address::from([0x36; 20]);
+        let key = Word::from(11);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&address, AccountInfo::default());
+        database.insert_account_storage(&address, &key, &Word::from(42));
+        let mut state = State::new(database);
+
+        // Load the slot while cold, then extend the base prewarm set. The handle's pure warmth
+        // query and its mutating transition must agree that the slot is already warm.
+        assert!(!state.storage_slot(&address, key, false).unwrap().is_warm());
+        state.prewarm_storage_slot(&address, key);
+
+        let mut slot = state.storage_slot(&address, key, false).unwrap();
+        assert!(slot.is_warm());
+        assert!(!slot.warm(), "base-prewarmed slot must not report a cold transition");
     }
 }
