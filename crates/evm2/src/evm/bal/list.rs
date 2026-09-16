@@ -112,11 +112,7 @@ impl Bal {
             );
         }
         for (address, overlay) in &pending.storage {
-            self.accounts
-                .entry(*address)
-                .or_default()
-                .storage
-                .update_pending(bal_index, &overlay.slots);
+            self.accounts.entry(*address).or_default().storage.update_pending(bal_index, overlay);
         }
     }
 
@@ -124,9 +120,10 @@ impl Bal {
     /// against its present info. An absent side is the non-existent (default) account, so an
     /// account removed by the transaction records zeroed writes.
     ///
-    /// A selfdestructed account needs no special-casing: transaction finalization already resolved
-    /// its present info to the EIP-8246 balance-only remnant or to a removed account, and its
-    /// destroyed storage writes surface as reads (execution-specs `destroy_storage`).
+    /// A selfdestructed account needs no account-info special-casing: transaction finalization
+    /// already resolved its present info to the EIP-8246 balance-only remnant or to a removed
+    /// account. [`StorageBal::update_pending`](super::StorageBal::update_pending) uses the storage
+    /// wipe marker to convert its destroyed storage writes into reads.
     #[inline]
     pub(crate) fn update_account(
         &mut self,
@@ -364,8 +361,12 @@ mod tests {
     use crate::{
         bytecode::Bytecode,
         evm::{
-            bal::{AccountInfoBal, BalChangeKind, BalChanges, BalCodeChange, StorageBal},
-            state::{Account, AccountInfo, StorageOverlay, StorageSlot, Tracked},
+            bal::{
+                AccountInfoBal, BalChangeKind, BalChanges, BalCodeChange, BalContext, StorageBal,
+            },
+            state::{
+                Account, AccountInfo, StateChangeSource, StorageOverlay, StorageSlot, Tracked,
+            },
         },
     };
     use alloc::{vec, vec::Vec};
@@ -543,16 +544,16 @@ mod tests {
         let address = Address::with_last_byte(1);
 
         // Transaction finalization already resolved the selfdestructed account: removed
-        // (`present: None`), storage overlay wiped with the prior writes turned into
-        // loaded-but-unchanged slots surfacing as reads. The BAL derives from that overlay
-        // without special-casing.
+        // (`present: None`) with its storage overlay marked as wiped.
         let account = Account {
             original: Some(AccountInfo::default().with_balance(U256::from(100))),
             present: None,
             ..Default::default()
         };
         let mut overlay = StorageOverlay { wiped: true, ..Default::default() };
-        overlay.slots.insert(U256::from(5), slot(U256::from(42), U256::from(42)));
+        // Wiping preserves the transaction-boundary original for state accounting while setting
+        // the current value to zero. BAL construction must classify this destroyed slot as a read.
+        overlay.slots.insert(U256::from(5), slot(U256::from(42), U256::ZERO));
         let pending = PendingState {
             accounts: AddressMap::from_iter([(address, account)]),
             storage: AddressMap::from_iter([(address, overlay)]),
@@ -568,8 +569,48 @@ mod tests {
             account.account_info.balance.changes,
             vec![AlloyBalanceChange::new(idx(2), U256::ZERO)]
         );
-        // The loaded-but-unchanged slot stays a read (empty writes).
+        // The changed-to-zero slot becomes a read because the overlay is wiped.
         assert!(account.storage.storage.get(&U256::from(5)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn storage_wipe_converts_prior_writes_to_reads_in_both_fold_paths() {
+        let address = Address::with_last_byte(1);
+        let key = U256::from(5);
+
+        let mut written = StorageOverlay::default();
+        written.slots.insert(key, slot(U256::ZERO, U256::from(42)));
+        let first = PendingState {
+            accounts: AddressMap::default(),
+            storage: AddressMap::from_iter([(address, written)]),
+            selfdestructs: AddressSet::default(),
+        };
+
+        let mut wiped = StorageOverlay { wiped: true, ..Default::default() };
+        wiped.slots.insert(key, slot(U256::from(42), U256::ZERO));
+        let second = PendingState {
+            accounts: AddressMap::default(),
+            storage: AddressMap::from_iter([(address, wiped)]),
+            selfdestructs: AddressSet::from_iter([address]),
+        };
+
+        let mut direct = Bal::new();
+        direct.commit(idx(1), first.clone());
+        direct.commit(idx(2), second.clone());
+
+        let mut streamed = BalContext::new().with_bal_builder();
+        streamed.set_bal_index(idx(1));
+        first.visit(&mut streamed).unwrap();
+        streamed.set_bal_index(idx(2));
+        second.visit(&mut streamed).unwrap();
+        let streamed = streamed.take_bal_builder().unwrap();
+
+        assert_eq!(direct, streamed);
+        assert!(direct.accounts[&address].storage.storage[&key].is_empty());
+
+        let alloy = AlloyBal::from(direct);
+        assert_eq!(alloy[0].storage_reads, vec![key]);
+        assert!(alloy[0].storage_changes.is_empty());
     }
 
     #[test]

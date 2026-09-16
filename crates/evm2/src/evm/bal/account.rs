@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     bytecode::Bytecode,
-    evm::state::{AccountInfo, StorageSlot},
+    evm::state::{AccountInfo, StorageOverlay},
 };
 use alloc::vec::Vec;
 use alloy_eip7928::{
@@ -464,17 +464,31 @@ impl StorageBal {
         }
     }
 
-    /// Update storage from an account's pending [`StorageSlot`] overlay: a changed slot records a
-    /// write at `bal_index`, a loaded-but-unchanged slot records a read.
+    /// Update storage from an account's pending [`StorageOverlay`]: a changed slot records a write
+    /// at `bal_index`, and a loaded-but-unchanged slot records a read.
+    ///
+    /// A wipe converts every storage key previously accessed for the account into a read, as
+    /// required for storage within a selfdestructed contract. Wiped slots whose final value is zero
+    /// remain reads; any non-zero post-wipe slot is recorded as a subsequent write.
     #[inline]
-    pub fn update_pending(&mut self, bal_index: BlockAccessIndex, slots: &U256Map<StorageSlot>) {
-        self.storage.reserve(slots.len());
-        for (key, slot) in slots {
-            self.storage.entry(*key).or_default().update(
-                bal_index,
-                &slot.value.original,
-                slot.value.current,
-            );
+    pub fn update_pending(&mut self, bal_index: BlockAccessIndex, overlay: &StorageOverlay) {
+        if overlay.wiped {
+            self.record_wipe();
+        }
+        self.storage.reserve(overlay.slots.len());
+        for (key, slot) in &overlay.slots {
+            let changes = self.storage.entry(*key).or_default();
+            if !overlay.wiped || !slot.value.current.is_zero() {
+                changes.update(bal_index, &slot.value.original, slot.value.current);
+            }
+        }
+    }
+
+    /// Converts all storage keys accumulated so far into reads after a storage wipe.
+    #[inline]
+    pub(crate) fn record_wipe(&mut self) {
+        for changes in self.storage.values_mut() {
+            changes.changes.clear();
         }
     }
 

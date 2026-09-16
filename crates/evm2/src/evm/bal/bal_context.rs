@@ -196,7 +196,7 @@ impl BalContext {
             bal.update_account(index, address, entry.original.as_ref(), entry.present.as_ref());
         }
         for (&address, overlay) in storage {
-            bal.accounts.entry(address).or_default().storage.update_pending(index, &overlay.slots);
+            bal.accounts.entry(address).or_default().storage.update_pending(index, overlay);
         }
     }
 
@@ -317,9 +317,9 @@ impl BalContext {
 /// This is the sink shape of the [`Self::commit_pending`] fold: changed accounts and storage
 /// slots are
 /// recorded as writes, loaded-but-unchanged ones -- the read callbacks -- as reads. The bytecode
-/// and storage-wipe callbacks need no BAL action: code changes surface through
-/// [`StateChangeSink::account`], and a wiped account's storage surfaces through the storage
-/// callbacks. Every callback is a no-op when BAL construction is disabled.
+/// Code changes surface through [`StateChangeSink::account`]. A storage wipe converts every slot
+/// previously accumulated for that account into a read; the following storage callbacks add any
+/// post-wipe writes and reads. Every callback is a no-op when BAL construction is disabled.
 impl StateChangeSink for BalContext {
     type Error = Infallible;
 
@@ -350,6 +350,14 @@ impl StateChangeSink for BalContext {
                 .entry(change.key)
                 .or_default()
                 .update(index, &change.original, change.current);
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
+        if let Some(bal) = self.bal_builder.as_mut() {
+            bal.accounts.entry(address).or_default().storage.record_wipe();
         }
         Ok(())
     }
