@@ -3194,6 +3194,40 @@ mod tests {
     }
 
     #[test]
+    fn executed_transaction_failed_sink_discards_reusable_storage() {
+        struct RejectStorage;
+        impl StateChangeSink for RejectStorage {
+            type Error = &'static str;
+
+            fn storage(&mut self, _change: state::StorageChange) -> Result<(), Self::Error> {
+                Err("storage sink rejected")
+            }
+        }
+
+        let mut evm = lifecycle_evm();
+        let error = evm
+            .transact(&test_tx(7))
+            .expect("lifecycle transaction should execute")
+            .commit_with(&mut RejectStorage)
+            .unwrap_err();
+        assert_eq!(error, "storage sink rejected");
+        assert_eq!(evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY), None);
+        assert_eq!(
+            evm.state.read_committed_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
+            Word::from(1)
+        );
+
+        let mut changes = BlockStateAccumulator::new();
+        let result = evm
+            .transact(&test_tx(9))
+            .expect("execution after sink failure should succeed")
+            .commit_to(&mut changes);
+        assert_eq!(result.tx_gas_used(), 9);
+        assert_eq!(changes.storage_sorted()[0].1.original, Word::from(1));
+        assert_eq!(changes.storage_sorted()[0].1.current, Word::from(9));
+    }
+
+    #[test]
     fn dropped_executed_transaction_discards_state() {
         let mut evm = lifecycle_evm();
         drop(evm.transact(&test_tx(7)).expect("lifecycle transaction should execute"));
