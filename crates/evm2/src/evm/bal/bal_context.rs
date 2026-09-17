@@ -438,6 +438,7 @@ impl StateChangeSink for BalContext {
 mod tests {
     use super::*;
     use crate::{bytecode::Bytecode, evm::bal::BalCodeChange};
+    use alloc::vec;
     use alloy_eip7928::{BalanceChange, NonceChange};
     use alloy_primitives::{Address, U256, bytes};
 
