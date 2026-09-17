@@ -6,9 +6,10 @@ use crate::{
     interpreter::{GasTracker, Message},
     precompiles::PrecompileId,
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use alloy_primitives::{Address, Bytes};
 use auto_impl::auto_impl;
+use core::cell::RefCell;
 
 /// Result returned by a precompile.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -37,9 +38,41 @@ impl PrecompileOutput {
     }
 }
 
-/// Precompile execution hook.
-#[auto_impl(&mut, Box)]
+/// Reentrant precompile execution hook.
+///
+/// The EVM keeps a shared owner alive during each call. Mutable state must use interior
+/// mutability, with state borrows released before recursive host calls. Providers that
+/// do not need recursion can implement [`MutPrecompileProvider`] and use [`RefCell`].
+#[auto_impl(&, &mut, Box)]
 pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
+    /// Returns precompile addresses.
+    fn addresses(&self) -> Vec<Address> {
+        Vec::new()
+    }
+
+    /// Returns precompile addresses and identifiers.
+    fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
+        Vec::new()
+    }
+
+    /// Returns whether `address` has a registered precompile.
+    fn contains(&self, address: &Address) -> bool;
+
+    /// Executes the precompile at `address`, if one is registered.
+    fn execute(
+        &self,
+        evm: &mut Evm<'_, T>,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+    ) -> Option<Result<PrecompileOutput, PrecompileError>>;
+}
+
+/// Mutable precompile provider, adapted through [`RefCell`].
+///
+/// Recursive execution while this provider is borrowed panics. Implement
+/// [`PrecompileProvider`] directly to release state borrows before recursion.
+#[auto_impl(&mut, Box)]
+pub trait MutPrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     /// Returns precompile addresses.
     fn addresses(&self) -> Vec<Address> {
         Vec::new()
@@ -62,11 +95,34 @@ pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
 }
 
+impl<T: EvmTypesHost, P: MutPrecompileProvider<T>> PrecompileProvider<T> for RefCell<P> {
+    fn addresses(&self) -> Vec<Address> {
+        self.borrow().addresses()
+    }
+
+    fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
+        self.borrow().precompile_ids()
+    }
+
+    fn contains(&self, address: &Address) -> bool {
+        self.borrow().contains(address)
+    }
+
+    fn execute(
+        &self,
+        evm: &mut Evm<'_, T>,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+    ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+        self.borrow_mut().execute(evm, message, gas)
+    }
+}
+
 #[inline]
-pub(crate) fn boxed_precompile_provider<'a, T: EvmTypesHost>(
+pub(crate) fn shared_precompile_provider<'a, T: EvmTypesHost>(
     precompiles: impl PrecompileProvider<T> + 'a,
-) -> Box<dyn PrecompileProvider<T> + 'a> {
-    Box::new(precompiles)
+) -> Arc<dyn PrecompileProvider<T> + 'a> {
+    Arc::new(precompiles)
 }
 
 impl<'a, T: EvmTypesHost> core::ops::Deref for dyn PrecompileProvider<T> + 'a {
@@ -103,7 +159,7 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for NoPrecompiles {
 
     #[inline]
     fn execute(
-        &mut self,
+        &self,
         _evm: &mut Evm<'_, T>,
         _message: &Message<T>,
         _gas: &mut GasTracker,

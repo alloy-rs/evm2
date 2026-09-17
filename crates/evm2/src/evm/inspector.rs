@@ -5,11 +5,16 @@ use crate::{
     evm::NonStaticAny,
     interpreter::{Interpreter, Message, MessageResult},
 };
-use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloy_primitives::{Address, Log, U256};
 use auto_impl::auto_impl;
+use core::cell::RefCell;
 
 /// EVM execution inspector.
+///
+/// [`crate::Evm::set_inspector`] adapts this trait through [`RefCell`]. Ordinary nested
+/// EVM calls remain inspected, but reentry while a hook is still running panics.
+/// Implement [`SharedInspector`] for callbacks that invoke the host recursively.
 #[auto_impl(&mut, Box)]
 pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     /// Called after a frame interpreter has been initialized.
@@ -39,8 +44,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
 
     /// Called before a call message executes.
     ///
-    /// The interpreter is the currently running frame whose instruction produced the message; for
-    /// the top-level message it is a frame initialized with the message itself.
+    /// Opcode calls borrow the parent interpreter. Direct host calls use a separate frame
+    /// initialized with a snapshot of the message.
     #[inline]
     fn call(
         &mut self,
@@ -67,8 +72,8 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
 
     /// Called before a create message executes.
     ///
-    /// The interpreter is the currently running frame whose instruction produced the message; for
-    /// the top-level message it is a frame initialized with the message itself.
+    /// Opcode calls borrow the parent interpreter. Direct host calls use a separate frame
+    /// initialized with a snapshot of the message.
     #[inline]
     fn create(
         &mut self,
@@ -109,11 +114,176 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     }
 }
 
+/// Reentrant EVM execution inspector.
+///
+/// Mutable state must use interior mutability. Release state borrows before invoking
+/// the host recursively. Ordinary inspectors can use [`Inspector`] instead.
+#[auto_impl(&, &mut, Box)]
+pub trait SharedInspector<T: EvmTypesHost>: NonStaticAny {
+    /// Called after a frame interpreter has been initialized.
+    #[inline]
+    fn initialize_interp(&self, interp: &mut Interpreter<'_, '_, T>) {
+        let _ = interp;
+    }
+
+    /// Called before each instruction executes.
+    #[inline]
+    fn step(&self, interp: &mut Interpreter<'_, '_, T>) {
+        let _ = interp;
+    }
+
+    /// Called after each instruction executes.
+    #[inline]
+    fn step_end(&self, interp: &mut Interpreter<'_, '_, T>) {
+        let _ = interp;
+    }
+
+    /// Called when a log is emitted.
+    #[inline]
+    fn log(&self, log: &Log, host: &mut T::Host<'_>) {
+        let _ = log;
+        let _ = host;
+    }
+
+    /// Called before a call message executes.
+    ///
+    /// Opcode calls borrow the parent interpreter. Direct host calls use a separate frame
+    /// initialized with a snapshot of the message.
+    #[inline]
+    fn call(
+        &self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        let _ = interp;
+        let _ = message;
+        None
+    }
+
+    /// Called after a call message executes.
+    #[inline]
+    fn call_end(
+        &self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        let _ = interp;
+        let _ = message;
+        let _ = result;
+    }
+
+    /// Called before a create message executes.
+    ///
+    /// Opcode calls borrow the parent interpreter. Direct host calls use a separate frame
+    /// initialized with a snapshot of the message.
+    #[inline]
+    fn create(
+        &self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        let _ = interp;
+        let _ = message;
+        None
+    }
+
+    /// Called after a create message executes.
+    #[inline]
+    fn create_end(
+        &self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        let _ = interp;
+        let _ = message;
+        let _ = result;
+    }
+
+    /// Called after a contract self-destructs.
+    #[inline]
+    fn selfdestruct(
+        &self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        host: &mut T::Host<'_>,
+    ) {
+        let _ = contract;
+        let _ = target;
+        let _ = value;
+        let _ = host;
+    }
+}
+
+impl<T: EvmTypesHost, I: Inspector<T>> SharedInspector<T> for RefCell<I> {
+    fn initialize_interp(&self, interp: &mut Interpreter<'_, '_, T>) {
+        self.borrow_mut().initialize_interp(interp)
+    }
+
+    fn step(&self, interp: &mut Interpreter<'_, '_, T>) {
+        self.borrow_mut().step(interp)
+    }
+
+    fn step_end(&self, interp: &mut Interpreter<'_, '_, T>) {
+        self.borrow_mut().step_end(interp)
+    }
+
+    fn log(&self, log: &Log, host: &mut T::Host<'_>) {
+        self.borrow_mut().log(log, host)
+    }
+
+    fn call(
+        &self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        self.borrow_mut().call(interp, message)
+    }
+
+    fn call_end(
+        &self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        self.borrow_mut().call_end(interp, message, result)
+    }
+
+    fn create(
+        &self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        self.borrow_mut().create(interp, message)
+    }
+
+    fn create_end(
+        &self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        self.borrow_mut().create_end(interp, message, result)
+    }
+
+    fn selfdestruct(
+        &self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        host: &mut T::Host<'_>,
+    ) {
+        self.borrow_mut().selfdestruct(contract, target, value, host)
+    }
+}
+
 #[inline]
-pub(crate) fn boxed_inspector<'a, T: EvmTypesHost>(
+pub(crate) fn shared_inspector<'a, T: EvmTypesHost>(
     inspector: impl Inspector<T> + 'a,
-) -> Box<dyn Inspector<T> + 'a> {
-    Box::new(inspector)
+) -> Arc<dyn SharedInspector<T> + 'a> {
+    Arc::new(RefCell::new(inspector))
 }
 
 /// Inspector that does nothing.
@@ -139,9 +309,23 @@ impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn Inspector<T> + 'a {
     }
 }
 
+impl<'a, T: EvmTypesHost> core::ops::Deref for dyn SharedInspector<T> + 'a {
+    type Target = dyn NonStaticAny + 'a;
+
+    fn deref(&self) -> &Self::Target {
+        self
+    }
+}
+
+impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn SharedInspector<T> + 'a {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Inspector;
+    use super::*;
     use crate::{
         BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmTypesHost, ExecutionConfig, Precompiles,
         SpecId,
@@ -161,7 +345,8 @@ mod tests {
     use alloc::{boxed::Box, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
-    use core::assert_matches;
+    use core::{assert_matches, cell::Cell};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     #[derive(Default)]
     struct SelfdestructInspector {
@@ -424,6 +609,227 @@ mod tests {
         let mut code = Vec::new();
         push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
         code
+    }
+
+    #[test]
+    fn shared_inspector_can_reenter_from_step() {
+        struct RecursiveInspector {
+            steps: Cell<usize>,
+            depths: RefCell<Vec<u16>>,
+        }
+
+        impl SharedInspector<BaseEvmTypes> for RecursiveInspector {
+            fn step(&self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                self.steps.set(self.steps.get() + 1);
+                if interp.message().depth == 0 {
+                    let tx = interp.tx_env();
+                    let mut child = MessageExt {
+                        depth: 1,
+                        gas_limit: 100,
+                        code: legacy_bytecode([op::STOP]),
+                        ..Default::default()
+                    };
+                    assert_eq!(interp.host().execute_message(tx, &mut child).stop, InstrStop::Stop);
+                }
+            }
+
+            fn call(
+                &self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                self.depths.borrow_mut().push(message.depth);
+                None
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_shared_inspector(RecursiveInspector {
+            steps: Cell::new(0),
+            depths: RefCell::new(Vec::new()),
+        });
+        let mut message =
+            MessageExt { gas_limit: 100, code: legacy_bytecode([op::STOP]), ..Default::default() };
+        assert_eq!(evm.execute_message(&TxEnvExt::default(), &mut message).stop, InstrStop::Stop);
+        let inspector = evm.inspector().unwrap().downcast_ref::<RecursiveInspector>().unwrap();
+        assert_eq!(inspector.steps.get(), 2);
+        assert_eq!(*inspector.depths.borrow(), [0, 1]);
+    }
+
+    #[test]
+    fn mutable_inspector_reentry_panics_and_releases_borrow() {
+        struct RecursiveInspector;
+
+        impl Inspector<BaseEvmTypes> for RecursiveInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                let tx = interp.tx_env();
+                let mut child = MessageExt {
+                    depth: 1,
+                    gas_limit: 100,
+                    code: legacy_bytecode([op::STOP]),
+                    ..Default::default()
+                };
+                let _ = interp.host().execute_message(tx, &mut child);
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(RecursiveInspector);
+        let mut message =
+            MessageExt { gas_limit: 100, code: legacy_bytecode([op::STOP]), ..Default::default() };
+        assert!(
+            catch_unwind(AssertUnwindSafe(
+                || evm.execute_message(&TxEnvExt::default(), &mut message)
+            ))
+            .is_err()
+        );
+        assert!(evm.clear_inspector_as::<RecursiveInspector>().is_some());
+        evm.set_inspector(NoopInspector::default());
+        assert_eq!(evm.execute_message(&TxEnvExt::default(), &mut message).stop, InstrStop::Stop);
+    }
+
+    #[test]
+    fn nested_call_hooks_borrow_the_parent_frame() {
+        #[derive(Default)]
+        struct ParentInspector {
+            pcs: Vec<usize>,
+        }
+
+        impl Inspector<BaseEvmTypes> for ParentInspector {
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth == 1 {
+                    assert_eq!(interp.message().depth, 0);
+                    assert_eq!(interp.opcode(), op::CALL);
+                    self.pcs.push(interp.pc());
+                    // Host access must remain independent of the parent-frame borrow.
+                    assert_eq!(interp.host().spec_id(), SpecId::OSAKA);
+                }
+                None
+            }
+
+            fn call_end(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                _result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                if message.depth == 1 {
+                    assert_eq!(interp.pc(), self.pcs[0]);
+                    interp.memory_mut().resize(0, 1).unwrap();
+                    interp.memory_mut().set(0, b"!");
+                }
+            }
+        }
+
+        let mut code = call_code(Address::with_last_byte(0xff));
+        code.extend([op::CALL, op::POP, op::PUSH1, 1, op::PUSH0, op::RETURN]);
+        let (result, inspector, _) = run_evm_with_inspector(
+            code,
+            &MessageExt::default(),
+            50_000,
+            ParentInspector::default(),
+        );
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(result.output.as_ref(), b"!");
+        assert_eq!(inspector.pcs.len(), 1);
+    }
+
+    #[test]
+    fn interpreter_clears_host_access_on_return_and_unwind() {
+        let tx = TxEnvExt::default();
+        let message =
+            Message::<TestTypes> { code: legacy_bytecode([op::STOP]), ..Default::default() };
+        let mut interp = Interpreter::<TestTypes>::new(&tx, &message);
+        let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+        let mut host = TestHost::default();
+        assert_eq!(interp.run(&config, &mut host), InstrStop::Stop);
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                let _ = interp.host();
+            }))
+            .is_err()
+        );
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                let _ = interp.version();
+            }))
+            .is_err()
+        );
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                interp.with_host(config.base_spec_id(), config.version(), &mut host, |_| {
+                    panic!("hook panic")
+                });
+            }))
+            .is_err()
+        );
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                let _ = interp.host();
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn nested_host_scope_restores_inspection_after_unwind() {
+        #[derive(Default)]
+        struct NestedScopeInspector {
+            step_ends: usize,
+        }
+
+        impl Inspector<TestTypes> for NestedScopeInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, TestTypes>) {
+                let mut inner_host = TestHost::default();
+                let inner_version = crate::Version::new(SpecId::BERLIN);
+                assert!(
+                    catch_unwind(AssertUnwindSafe(|| {
+                        interp.with_host(
+                            SpecId::BERLIN,
+                            &inner_version,
+                            &mut inner_host,
+                            |inner| {
+                                assert_eq!(inner.spec(), SpecId::BERLIN);
+                                panic!("nested scope");
+                            },
+                        );
+                    }))
+                    .is_err()
+                );
+                assert_eq!(interp.spec(), SpecId::OSAKA);
+                assert_eq!(interp.version().features, crate::Version::new(SpecId::OSAKA).features);
+            }
+
+            fn step_end(&mut self, _interp: &mut Interpreter<'_, '_, TestTypes>) {
+                self.step_ends += 1;
+            }
+        }
+
+        let tx = TxEnvExt::default();
+        let message =
+            Message::<TestTypes> { code: legacy_bytecode([op::STOP]), ..Default::default() };
+        let mut interp = Interpreter::<TestTypes>::new(&tx, &message);
+        let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+        let mut host = TestHost::default();
+        let mut inspector = NestedScopeInspector::default();
+        assert_eq!(interp.run_inspect(&config, &mut host, &mut inspector), InstrStop::Stop);
+        assert_eq!(inspector.step_ends, 1);
     }
 
     #[test]
@@ -1047,7 +1453,7 @@ mod tests {
         );
 
         let result = evm.transact(&tx).expect("transaction should execute").discard();
-        let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
+        let inspector = evm.inspector_as::<SharedE2eInspector>().unwrap();
         let state = &inspector.state;
 
         assert!(result.status);
@@ -1088,7 +1494,7 @@ mod tests {
         );
 
         let result = evm.transact(&tx).expect("transaction should execute").detach();
-        let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
+        let inspector = evm.inspector_as::<SharedE2eInspector>().unwrap();
         let state = &inspector.state;
 
         assert!(result.result.status);
@@ -1124,7 +1530,7 @@ mod tests {
         );
 
         let result = evm.transact(&tx).expect("transaction should execute").discard();
-        let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
+        let inspector = evm.inspector_as::<SharedE2eInspector>().unwrap();
         let state = &inspector.state;
 
         assert!(result.status);

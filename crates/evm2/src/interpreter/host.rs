@@ -150,6 +150,15 @@ pub trait Host<T: EvmTypesHost> {
     /// Executes a message inside this host.
     fn execute_message(&mut self, tx_env: &TxEnv<T>, message: &mut Message<T>) -> MessageResult<T>;
 
+    /// Executes a message whose caller has already dispatched the inspector hooks.
+    fn execute_message_uninspected(
+        &mut self,
+        tx_env: &TxEnv<T>,
+        message: &mut Message<T>,
+    ) -> MessageResult<T> {
+        self.execute_message(tx_env, message)
+    }
+
     /// Registers the current contract for self-destruction.
     fn selfdestruct(
         &mut self,

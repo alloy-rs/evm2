@@ -111,8 +111,8 @@
 //! ```
 
 use self::{
-    inspector::{Inspector, boxed_inspector},
-    precompile::{PrecompileOutput, PrecompileProvider, boxed_precompile_provider},
+    inspector::{Inspector, SharedInspector, shared_inspector},
+    precompile::{PrecompileOutput, PrecompileProvider, shared_precompile_provider},
 };
 use crate::{
     AnyError, ErrorCode, EvmConfigSelector, EvmTypes, EvmTypesHost, ExecutionConfig,
@@ -126,16 +126,15 @@ use crate::{
         MessageResult, MessageResultExt, Word,
     },
     registry::{HandlerError, HandlerResult, TxRegistry},
-    trustme,
     version::{EvmFeatures, GasId},
 };
 use alloc::{boxed::Box, sync::Arc, vec};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
+use core::cell::{Ref, RefCell};
 #[cfg(feature = "async")]
 use core::future::Future;
-use core::ptr::NonNull;
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
@@ -243,18 +242,13 @@ pub struct Evm<'a, T: EvmTypesHost> {
     #[derive_where(skip)]
     ext: T::EvmExt,
     #[derive_where(skip)]
-    precompiles: Box<dyn PrecompileProvider<T> + 'a>,
+    precompiles: Arc<dyn PrecompileProvider<T> + 'a>,
     #[derive_where(skip)]
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
-    inspector: Option<Box<dyn Inspector<T> + 'a>>,
+    inspector: Option<Arc<dyn SharedInspector<T> + 'a>>,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
-    /// The currently running interpreter frame, if any.
-    ///
-    /// This is passed to the inspector call and create hooks as the parent frame.
-    #[derive_where(skip)]
-    current_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
     #[derive_where(skip)]
     running: bool,
     #[cfg(feature = "async")]
@@ -345,7 +339,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             block,
             registry,
             boxed_dyn_database(database),
-            boxed_precompile_provider(precompiles),
+            shared_precompile_provider(precompiles),
             ext,
         )
     }
@@ -357,7 +351,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         block: BlockEnv<T>,
         registry: TxRegistry<T, TxResult<T>>,
         database: Box<dyn DynDatabase + 'a>,
-        precompiles: Box<dyn PrecompileProvider<T> + 'a>,
+        precompiles: Arc<dyn PrecompileProvider<T> + 'a>,
         ext: T::EvmExt,
     ) -> Self {
         assert_eq!(
@@ -377,7 +371,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
             interpreter_runner: None,
-            current_frame: None,
             running: false,
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
@@ -399,16 +392,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         gas: &mut GasTracker,
     ) -> Result<PrecompileOutput, PrecompileError> {
         let guard = self.enter_execution();
-        let precompiles = guard.evm.precompiles.as_mut() as *mut dyn PrecompileProvider<T>;
-        let evm_ptr = guard.evm as *mut Self;
-        // SAFETY: Precompile execution may need access to both the provider and the host EVM.
-        // The provider is not moved or replaced during this call, and `execute` is expected to
-        // preserve `Evm` invariants while using the host reference.
-        unsafe {
-            (&mut *precompiles)
-                .execute(&mut *evm_ptr, message, gas)
-                .expect("precompile was checked before execution")
-        }
+        let precompiles = guard.evm.precompiles.clone();
+        precompiles
+            .execute(guard.evm, message, gas)
+            .expect("precompile was checked before execution")
     }
 
     #[inline]
@@ -517,7 +504,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             execution_config.base_spec_id(),
             "execution config spec mismatch"
         );
-        let precompiles = boxed_precompile_provider(precompiles);
+        let precompiles = shared_precompile_provider(precompiles);
         self.replace_execution_config(execution_config, spec_id, registry, precompiles);
     }
 
@@ -546,7 +533,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             execution_config.base_spec_id(),
             "execution config spec mismatch"
         );
-        let precompiles = boxed_precompile_provider(precompiles);
+        let precompiles = shared_precompile_provider(precompiles);
         self.block = block;
         self.replace_execution_config(execution_config, spec_id, registry, precompiles);
     }
@@ -557,7 +544,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
         registry: TxRegistry<T, TxResult<T>>,
-        precompiles: Box<dyn PrecompileProvider<T> + 'a>,
+        precompiles: Arc<dyn PrecompileProvider<T> + 'a>,
     ) {
         self.spec_id = spec_id;
         self.features = execution_config.version().features;
@@ -656,6 +643,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             "async EVM execution requires EVM erased fields to be verified as Send with \
              Evm::evm_is_send"
         );
+        assert!(
+            Arc::strong_count(&self.precompiles) == 1
+                && self
+                    .inspector
+                    .as_ref()
+                    .is_none_or(|inspector| Arc::strong_count(inspector) == 1),
+            "cannot send an EVM while callbacks are active"
+        );
     }
 
     /// Marks this EVM as thread-sendable after checking the current erased field types.
@@ -718,7 +713,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         'a: 'static,
     {
         let inspector = self.inspector().expect("inspector type mismatch");
-        assert_eq!(inspector.type_id(), typeid::of::<I>(), "inspector type mismatch");
+        assert_eq!(inspector.type_id(), typeid::of::<RefCell<I>>(), "inspector type mismatch");
     }
 
     /// Returns the backing database as `D` if it has that concrete type.
@@ -780,14 +775,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn precompiles_mut(&mut self) -> &mut (dyn PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
-        self.precompiles.as_mut()
+        Arc::get_mut(&mut self.precompiles).expect("precompile provider is in use")
     }
 
     /// Replaces the precompile provider.
     #[inline]
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
-        self.precompiles = boxed_precompile_provider(precompiles);
+        self.precompiles = shared_precompile_provider(precompiles);
         self.evm_send = false;
     }
 
@@ -807,29 +802,26 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         'a: 'static,
     {
         self.assert_precompiles_downcast_mutable();
-        self.precompiles.as_mut().downcast_mut()
+        Arc::get_mut(&mut self.precompiles).expect("precompile provider is in use").downcast_mut()
     }
 
     /// Returns the active execution inspector.
     #[inline]
-    pub fn inspector(&self) -> Option<&(dyn Inspector<T> + 'a)> {
+    pub fn inspector(&self) -> Option<&(dyn SharedInspector<T> + 'a)> {
         self.inspector.as_deref()
     }
 
     /// Returns the active execution inspector mutably.
     #[inline]
-    pub fn inspector_mut(&mut self) -> Option<&mut (dyn Inspector<T> + 'a)> {
+    pub fn inspector_mut(&mut self) -> Option<&mut (dyn SharedInspector<T> + 'a)> {
         self.assert_inspector_mutable();
-        self.inspector.as_deref_mut()
+        self.inspector.as_mut().and_then(Arc::get_mut)
     }
 
     #[inline]
     fn inspect_log(&mut self, log: &Log) {
         let guard = self.enter_execution();
-        if let Some(inspector) = guard.evm.inspector.as_deref_mut() {
-            // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
-            // replacement while the hook is running.
-            let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
+        if let Some(inspector) = guard.evm.inspector.clone() {
             inspector.log(log, guard.evm);
         }
     }
@@ -884,21 +876,46 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.assert_inspector_mutable();
-        self.inspector = Some(boxed_inspector(inspector));
+        self.inspector = Some(shared_inspector(inspector));
         self.evm_send = false;
+    }
+
+    /// Sets an inspector that supports recursive callbacks through shared access.
+    pub fn set_shared_inspector<I: SharedInspector<T> + 'a>(&mut self, inspector: I) {
+        self.assert_inspector_mutable();
+        self.inspector = Some(Arc::new(inspector));
+        self.evm_send = false;
+    }
+
+    /// Borrows an ordinary mutable inspector as its concrete type.
+    ///
+    /// Returns `None` if the type differs or a callback currently holds its mutable borrow.
+    pub fn inspector_as<I: Inspector<T> + 'static>(&self) -> Option<Ref<'_, I>>
+    where
+        'a: 'static,
+    {
+        self.inspector()?.downcast_ref::<RefCell<I>>()?.try_borrow().ok()
+    }
+
+    /// Returns an ordinary inspector mutably as its concrete type.
+    pub fn inspector_as_mut<I: Inspector<T> + 'static>(&mut self) -> Option<&mut I>
+    where
+        'a: 'static,
+    {
+        self.inspector_mut()?.downcast_mut::<RefCell<I>>().map(RefCell::get_mut)
     }
 
     /// Sets the active boxed execution inspector.
     #[inline]
     pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T> + 'a>) {
         self.assert_inspector_mutable();
-        self.inspector = Some(inspector);
+        self.inspector = Some(shared_inspector(inspector));
         self.evm_send = false;
     }
 
     /// Removes the active execution inspector.
     #[inline]
-    pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T> + 'a>> {
+    pub fn clear_inspector(&mut self) -> Option<Arc<dyn SharedInspector<T> + 'a>> {
         self.assert_inspector_mutable();
         self.evm_send = false;
         self.inspector.take()
@@ -911,8 +928,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         'a: 'static,
     {
         self.assert_inspector_mutable();
-        let i = self.inspector.take_if(|i| i.is::<I>())?;
-        Some(unsafe { Box::from_raw(Box::into_raw(i).cast::<I>()) })
+        let inspector = self.inspector.take_if(|i| i.is::<RefCell<I>>())?;
+        // SAFETY: The type check verifies the allocation's concrete, static type.
+        let inspector = unsafe { Arc::from_raw(Arc::into_raw(inspector).cast::<RefCell<I>>()) };
+        Some(Box::new(Arc::try_unwrap(inspector).ok().expect("inspector is in use").into_inner()))
     }
 
     /// Sets the optional external interpreter runner.
@@ -986,7 +1005,7 @@ struct SendEvmRef<'a, 'evm, T: EvmTypesHost> {
 
 #[cfg(feature = "async")]
 // SAFETY: `SendEvmRef` is only constructed by async entrypoints after `Evm::evm_is_send` has
-// verified the concrete erased field types as `Send`.
+// verified the concrete erased field types as `Send` and no callback owners remain active.
 unsafe impl<T> Send for SendEvmRef<'_, '_, T>
 where
     T: EvmTypesHost,
@@ -1133,8 +1152,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     /// Fires the inspector call/create hooks around message execution.
     ///
-    /// This is invoked for every message when an inspector is installed; hook overrides skip
-    /// execution entirely, including the call depth check.
+    /// Direct host calls use a separate hook frame; opcode calls dispatch hooks from their
+    /// parent interpreter. Hook overrides skip execution, including the call depth check.
     #[inline(never)]
     fn execute_message_inspected<'frame>(
         &mut self,
@@ -1142,61 +1161,32 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         message: &'frame mut Message<T>,
     ) -> MessageResult<T> {
         let guard = self.enter_execution();
-        let Some(inspector) = guard.evm.inspector.as_deref_mut() else {
+        let Some(inspector) = guard.evm.inspector.clone() else {
             return guard.evm.execute_message_impl(tx_env, message);
         };
-        // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
-        // replacement while the hooks are running.
-        let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
-
-        // `destination` already holds the create's contract address (set when the message was
-        // constructed), so the create hook observes it directly.
+        // Keep the hook frame's message separate: hooks may mutate the executing message.
+        let frame_message = message.clone();
+        let mut frame = guard.evm.interpreter_pool.pop(tx_env, &frame_message);
+        let config = guard.evm.execution_config;
         let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
-
-        let mut top_frame: Option<Box<Interpreter<'frame, 'a, T>>> = None;
-        let frame = match guard.evm.current_frame {
-            // SAFETY: The parent frame is suspended on this call stack for the duration of the
-            // message execution.
-            Some(mut frame) => unsafe {
-                core::mem::transmute::<
-                    &mut Interpreter<'static, 'static, T>,
-                    &mut Interpreter<'frame, 'a, T>,
-                >(frame.as_mut())
-            },
-            None => {
-                // SAFETY: The message outlives the frame, which is returned to the pool below.
-                let frame_message = unsafe { trustme::decouple_lt(&*message) };
-                let frame = top_frame.insert(guard.evm.interpreter_pool.pop(tx_env, frame_message));
-                // SAFETY: `execution_config` points to a private field that host execution does
-                // not replace or mutate, so the pointee remains valid for the lifetime of the
-                // frame.
-                let version = unsafe { trustme::decouple_lt(guard.evm.execution_config.version()) };
-                frame.prepare_run(guard.evm.spec_id(), version, guard.evm);
-                frame
-            }
-        };
-        // SAFETY: The frame outlives the hook invocations below.
-        let frame = unsafe { trustme::decouple_lt_mut(frame) };
-
-        let inspected = if is_create {
-            inspector.create(frame, message)
-        } else {
-            inspector.call(frame, message)
-        };
-
+        let inspected =
+            frame.with_host(config.base_spec_id(), config.version(), guard.evm, |frame| {
+                if is_create {
+                    inspector.create(frame, message)
+                } else {
+                    inspector.call(frame, message)
+                }
+            });
         let mut result =
             inspected.unwrap_or_else(|| guard.evm.execute_message_impl(tx_env, message));
-
-        if is_create {
-            inspector.create_end(frame, message, &mut result);
-        } else {
-            inspector.call_end(frame, message, &mut result);
-        }
-
-        if let Some(frame) = top_frame {
-            let _ = guard.evm.interpreter_pool.push(frame);
-        }
-
+        frame.with_host(config.base_spec_id(), config.version(), guard.evm, |frame| {
+            if is_create {
+                inspector.create_end(frame, message, &mut result)
+            } else {
+                inspector.call_end(frame, message, &mut result)
+            }
+        });
+        let _ = guard.evm.interpreter_pool.push(frame);
         result
     }
 
@@ -1494,48 +1484,28 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let guard = self.enter_execution();
         let mut interp: Box<Interpreter<'frame, 'a, T>> =
             guard.evm.interpreter_pool.pop(tx_env, message);
-        let interp_ref = interp.as_mut();
-        // SAFETY: `execution_config` points to a private field that host execution does not
-        // replace or mutate, so the pointee remains valid here.
-        let execution_config = unsafe { trustme::decouple_lt(&guard.evm.execution_config) };
-        guard.evm.inspect_initialize_interp(interp_ref);
-        let inspector = guard.evm.inspector.as_deref_mut().map(|inspector| {
-            // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
-            // interpreter run.
-            unsafe { trustme::decouple_lt_mut(inspector) }
-        });
-        let prev_frame = guard
-            .evm
-            .current_frame
-            .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
+        let execution_config = guard.evm.execution_config;
+        let inspector = guard.evm.inspector.clone();
         let interpreter_runner = guard.evm.interpreter_runner.clone();
         let stop = if let Some(inspector) = inspector {
-            interp_ref.run_inspect(execution_config, guard.evm, inspector)
+            interp.with_host(
+                execution_config.base_spec_id(),
+                execution_config.version(),
+                guard.evm,
+                |interp| {
+                    inspector.initialize_interp(interp);
+                },
+            );
+            interp.run_inspect_shared(&execution_config, guard.evm, inspector.as_ref())
         } else if let Some(runner) = interpreter_runner
-            && let Some(stop) = runner.run(execution_config, interp_ref, guard.evm)
+            && let Some(stop) = runner.run(&execution_config, &mut interp, guard.evm)
         {
             stop
         } else {
-            interp_ref.run(execution_config, guard.evm)
+            interp.run(&execution_config, guard.evm)
         };
-        guard.evm.current_frame = prev_frame;
         guard.evm.interpreter_pool.push(interp);
         stop
-    }
-
-    fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, 'a, T>) {
-        if let Some(inspector) = self.inspector.as_deref_mut() {
-            // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
-            // hook.
-            let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
-            // The host and spec are normally wired up by the interpreter run; set them up early so
-            // that the hook can access them.
-            // SAFETY: `execution_config` points to a private field that host execution does not
-            // replace or mutate, so the pointee remains valid here.
-            let version = unsafe { trustme::decouple_lt(self.execution_config.version()) };
-            interp.prepare_run(self.spec_id(), version, self);
-            inspector.initialize_interp(interp);
-        }
     }
 }
 
@@ -1663,6 +1633,14 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         if self.inspector.is_some() {
             return self.execute_message_inspected(tx_env, message);
         }
+        self.execute_message_impl(tx_env, message)
+    }
+
+    fn execute_message_uninspected(
+        &mut self,
+        tx_env: &TxEnv<T>,
+        message: &mut Message<T>,
+    ) -> MessageResult<T> {
         self.execute_message_impl(tx_env, message)
     }
 
@@ -2058,6 +2036,139 @@ mod tests {
             salt: B256::ZERO,
             ext: (),
             _non_exhaustive: (),
+        }
+    }
+
+    #[test]
+    fn stateful_precompile_can_reenter_after_releasing_state() {
+        struct RecursiveProvider(RefCell<Vec<u16>>);
+
+        impl PrecompileProvider<BaseEvmTypes> for RecursiveProvider {
+            fn contains(&self, address: &Address) -> bool {
+                *address == TEST_PRECOMPILE
+            }
+
+            fn execute(
+                &self,
+                evm: &mut Evm<'_, BaseEvmTypes>,
+                message: &Message,
+                gas: &mut GasTracker,
+            ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+                self.0.borrow_mut().push(message.depth);
+                if message.depth < 2 {
+                    let child = MessageExt { depth: message.depth + 1, ..message.clone() };
+                    evm.execute_precompile(&child, gas).unwrap();
+                }
+                self.0.borrow_mut().push(message.depth);
+                Some(Ok(PrecompileOutput::default()))
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            RecursiveProvider(RefCell::new(Vec::new())),
+        );
+        evm.execute_precompile(&precompile_message(TEST_PRECOMPILE), &mut GasTracker::new(30_000))
+            .unwrap();
+        let provider = evm.precompiles_as::<RecursiveProvider>().unwrap();
+        assert_eq!(*provider.0.borrow(), [0, 1, 2, 2, 1, 0]);
+        assert!(!evm.running);
+    }
+
+    #[test]
+    fn mutable_precompile_adapter_checks_recursive_borrows() {
+        struct MutableProvider {
+            recurse: bool,
+            calls: usize,
+        }
+
+        impl precompile::MutPrecompileProvider<BaseEvmTypes> for MutableProvider {
+            fn contains(&self, address: &Address) -> bool {
+                *address == TEST_PRECOMPILE
+            }
+
+            fn execute(
+                &mut self,
+                evm: &mut Evm<'_, BaseEvmTypes>,
+                message: &Message,
+                gas: &mut GasTracker,
+            ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+                self.calls += 1;
+                if self.recurse {
+                    let _ = evm.execute_precompile(message, gas);
+                }
+                Some(Ok(PrecompileOutput::default()))
+            }
+        }
+
+        let provider = RefCell::new(MutableProvider { recurse: true, calls: 0 });
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            provider,
+        );
+        let message = precompile_message(TEST_PRECOMPILE);
+        let mut gas = GasTracker::new(30_000);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || evm.execute_precompile(&message, &mut gas)
+            ))
+            .is_err()
+        );
+        assert!(!evm.running);
+        evm.precompiles_as_mut::<RefCell<MutableProvider>>().unwrap().get_mut().recurse = false;
+        evm.execute_precompile(&message, &mut gas).unwrap();
+        assert_eq!(evm.precompiles_as::<RefCell<MutableProvider>>().unwrap().borrow().calls, 2);
+    }
+
+    #[test]
+    #[cfg(feature = "async")]
+    fn active_callback_owners_prevent_send_execution() {
+        struct CheckingInspector;
+
+        impl Inspector<BaseEvmTypes> for CheckingInspector {
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &mut Message,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                interp.host().assert_erased_send();
+                None
+            }
+        }
+
+        for inspect in [false, true] {
+            let provider = precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
+                evm.assert_erased_send();
+                Ok(PrecompileOutput::default())
+            })]);
+            let mut evm = Evm::<BaseEvmTypes>::new(
+                SpecId::OSAKA,
+                BlockEnvExt::default(),
+                TxRegistry::new(),
+                InMemoryDB::default(),
+                provider,
+            );
+            if inspect {
+                evm.set_inspector(CheckingInspector);
+                evm.evm_is_send_with_inspector::<InMemoryDB, Precompiles, CheckingInspector>();
+            } else {
+                evm.evm_is_send::<InMemoryDB, Precompiles>();
+            }
+            let mut message = precompile_message(TEST_PRECOMPILE);
+            let tx = TxEnvExt::default();
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || evm.execute_message(&tx, &mut message)
+                ))
+                .is_err()
+            );
+            evm.assert_erased_send();
         }
     }
 

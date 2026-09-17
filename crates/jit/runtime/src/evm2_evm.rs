@@ -61,8 +61,9 @@ pub fn run_interpreter<'frame, 'host>(
         LookupDecision::Unavailable(_) => return None,
     };
 
-    interpreter.prepare_run(config.base_spec_id(), config.version(), host);
-    Some(unsafe { program.func.call_with_interpreter(interpreter) })
+    interpreter.with_host(config.base_spec_id(), config.version(), host, |interpreter| {
+        Some(unsafe { program.func.call_with_interpreter(interpreter) })
+    })
 }
 
 #[cfg(test)]
