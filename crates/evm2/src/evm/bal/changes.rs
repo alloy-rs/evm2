@@ -133,7 +133,9 @@ impl TryFrom<&AlloyCodeChange> for BalCodeChange {
 
     fn try_from(change: &AlloyCodeChange) -> Result<Self, Self::Error> {
         let bytecode = Bytecode::new_raw_checked(change.new_code().clone())?;
-        let hash = bytecode.hash_slow();
+        let hash = change.code_hash();
+        // SAFETY: the cached hash belongs to the same original code bytes.
+        unsafe { bytecode.set_bytecode_hash(hash) };
         Ok(Self { block_access_index: change.block_access_index, code: (hash, bytecode) })
     }
 }
