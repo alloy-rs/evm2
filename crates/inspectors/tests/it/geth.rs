@@ -18,6 +18,55 @@ use evm2_inspectors::tracing::{
     DebugInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
 };
 
+#[test]
+fn test_calltracer_invalid_opcode_errors() {
+    let account = address!("1000000000000000000000000000000000000001");
+    let parent = address!("2000000000000000000000000000000000000002");
+    for (opcode, expected) in [(0xfe, "invalid opcode: INVALID"), (0x0c, "invalid opcode")] {
+        for nested in [false, true] {
+            let options =
+                serde_json::from_value(serde_json::json!({"tracer": "callTracer"})).unwrap();
+            let mut inspector = DebugInspector::new(options).unwrap();
+            let mut db = CacheDB::<EmptyDB>::default();
+            db.insert_account_info(
+                &account,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(Bytes::from(vec![opcode]))),
+                    ..Default::default()
+                },
+            );
+            let mut parent_code = hex!("60006000600060006000").to_vec();
+            parent_code.push(0x73);
+            parent_code.extend_from_slice(account.as_slice());
+            parent_code.extend_from_slice(&hex!("61fffff15000"));
+            db.insert_account_info(
+                &parent,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(parent_code.into())),
+                    ..Default::default()
+                },
+            );
+            let mut evm =
+                Context::mainnet().with_db(db).build_mainnet().with_inspector(&mut inspector);
+            let result = evm
+                .inspect_tx(TxEnv {
+                    gas_limit: 150000,
+                    kind: TransactTo::Call(if nested { parent } else { account }),
+                    ..Default::default()
+                })
+                .unwrap();
+            let (ctx, inspector) = evm.ctx_inspector();
+            let tx = ctx.tx().envelope();
+            let block = *ctx.block();
+            let trace =
+                inspector.get_result(None, &tx, &block, &result.tx_result, ctx.db_mut()).unwrap();
+            let trace = serde_json::to_value(trace).unwrap();
+            let frame = if nested { &trace["calls"][0] } else { &trace };
+            assert_eq!(frame["error"], expected, "opcode={opcode:#x}, nested={nested}");
+        }
+    }
+}
+
 /// Exercise the RPC options through dispatch, execution, and result serialization.
 #[test]
 fn test_debug_empty_tracer() {
