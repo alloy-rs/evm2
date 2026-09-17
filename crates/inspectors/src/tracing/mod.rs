@@ -18,7 +18,7 @@ use evm2::{
     Evm, EvmFeatures, EvmTypes, Inspector, SpecId, TxResultExt,
     evm::JournalEntry,
     interpreter::{
-        Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
+        InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
     },
 };
@@ -621,6 +621,10 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
 
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        // Call-only tracers still need to distinguish INVALID from undefined opcodes.
+        if interp.result() == Err(InstrStop::InvalidOpcode) {
+            self.last_trace().trace.invalid_opcode = Some(interp.opcode());
+        }
         if self.config.record_steps {
             self.fill_step_on_step_end(interp);
         }
