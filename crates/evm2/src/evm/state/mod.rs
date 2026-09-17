@@ -5,6 +5,7 @@ mod block;
 mod journal;
 mod pending;
 mod storage;
+mod storage_pool;
 mod stream;
 mod tracked;
 
@@ -49,6 +50,8 @@ pub struct State<'a> {
     accounts: AddressMap<Account>,
     /// Persistent storage writes plus warm slot metadata for the current transaction.
     storage: AddressMap<StorageOverlay>,
+    /// Empty slot-map allocations retained between transactions, under fixed capacity limits.
+    storage_pool: storage_pool::StoragePool,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
     transient_storage: StorageKeyMap<Word>,
     /// Inner state.
@@ -102,6 +105,7 @@ impl<'a> State<'a> {
         Self {
             accounts: AddressMap::default(),
             storage: AddressMap::default(),
+            storage_pool: storage_pool::StoragePool::default(),
             transient_storage: StorageKeyMap::default(),
             inner: StateInner {
                 database: CacheDB::new(initial),
@@ -347,11 +351,12 @@ impl<'a> State<'a> {
         let Self {
             accounts,
             storage,
+            storage_pool,
             transient_storage,
             inner: StateInner { prewarm_set, journal, selfdestructs, logs, database: _ },
         } = self;
         accounts.clear();
-        storage.clear();
+        storage_pool.clear(storage);
         transient_storage.clear();
         prewarm_set.clear();
         journal.clear();
@@ -435,7 +440,11 @@ impl<'a> State<'a> {
     /// This does not load or touch the owning account; callers that need the account materialized
     /// must do so separately via [`Self::account`].
     pub fn storage(&mut self, address: &Address) -> StorageHandle<'_, 'a> {
-        let storage = self.storage.entry(*address).or_default();
+        let storage_pool = &mut self.storage_pool;
+        let storage = self.storage.entry(*address).or_insert_with(|| StorageOverlay {
+            slots: storage_pool.take(),
+            ..StorageOverlay::default()
+        });
         StorageHandle::new(*address, storage, &mut self.inner)
     }
 
@@ -863,7 +872,7 @@ impl<'a> State<'a> {
         // detaching it.
         self.inner.database.commit(&self.accounts, &self.storage);
         self.accounts.clear();
-        self.storage.clear();
+        self.storage_pool.clear(&mut self.storage);
         self.inner.selfdestructs.clear();
     }
 }
