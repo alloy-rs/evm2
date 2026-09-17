@@ -49,6 +49,10 @@ pub fn run_interpreter<'frame, 'host>(
     interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
     host: &mut Evm<'host, BaseEvmTypes>,
 ) -> Option<InstrStop> {
+    // Disabled runners must not hash code merely to discover that lookup is unavailable.
+    if !backend.enabled() {
+        return None;
+    }
     let code_hash = interpreter.original_bytecode_hash();
     let code = interpreter.original_bytecode();
     let decision = backend.lookup(LookupRequest {
