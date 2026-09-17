@@ -106,6 +106,9 @@ pub struct CallTrace {
     pub gas_refund_counter: u64,
     /// The final status of the call.
     pub status: Option<InstrStop>,
+    /// The opcode responsible for an invalid-instruction halt, when available.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub invalid_opcode: Option<u8>,
     /// Opcode-level execution steps.
     pub steps: Vec<CallTraceStep>,
     /// Optional complementary decoded call data.
@@ -146,6 +149,12 @@ impl CallTrace {
 
     /// Returns the error message if it is an erroneous result.
     pub(crate) fn as_error_msg(&self, kind: TraceStyle) -> Option<String> {
+        if self.status == Some(InstrStop::InvalidOpcode)
+            && self.invalid_opcode == Some(op::INVALID)
+            && !kind.is_parity()
+        {
+            return Some("invalid opcode: INVALID".into());
+        }
         self.status.and_then(|status| utils::fmt_error_msg(status, kind))
     }
 
