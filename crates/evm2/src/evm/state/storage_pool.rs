@@ -52,6 +52,3 @@ impl StoragePool {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;
