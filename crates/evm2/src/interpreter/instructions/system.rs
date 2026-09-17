@@ -234,8 +234,7 @@ fn call_inner<T: EvmTypesHost>(
     let new_account_state_gas =
         prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)?;
 
-    let tx_env = state.tx();
-    let mut result = state.host().execute_message(tx_env, &mut message);
+    let mut result = state.execute_message(&mut message);
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
@@ -366,7 +365,6 @@ fn create_inner<T: EvmTypesHost>(
     };
     gas.spend(gas_limit)?;
 
-    let tx_env = state.tx();
     let mut message = MessageExt {
         kind,
         depth,
@@ -385,7 +383,7 @@ fn create_inner<T: EvmTypesHost>(
         ext: T::MessageExt::default(),
         _non_exhaustive: (),
     };
-    let mut result = state.host().execute_message(tx_env, &mut message);
+    let mut result = state.execute_message(&mut message);
     if result.stop.is_fatal() {
         return Err(result.stop);
     }

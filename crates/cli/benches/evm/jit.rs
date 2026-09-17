@@ -197,8 +197,9 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
         host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
         let func = *self.functions.get(&interpreter.original_bytecode_hash())?;
-        interpreter.prepare_run(config.base_spec_id(), config.version(), host);
-        Some(unsafe { func.call_with_interpreter(interpreter) })
+        interpreter.with_host(config.base_spec_id(), config.version(), host, |interpreter| {
+            Some(unsafe { func.call_with_interpreter(interpreter) })
+        })
     }
 }
 

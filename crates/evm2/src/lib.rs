@@ -28,7 +28,7 @@ pub use evm::{
     },
     env, handler, inspector, precompile, registry,
 };
-pub use inspector::{Inspector, NoopInspector};
+pub use inspector::{Inspector, NoopInspector, SharedInspector};
 
 pub mod precompiles;
 pub use precompiles::{

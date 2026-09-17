@@ -1,19 +1,19 @@
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking, StackMut,
-    StackRef, Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result,
+    StackBacking, StackMut, StackRef, Word,
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, SpecId, Version,
     bytecode::Bytecode,
     env::TxEnv,
-    evm::inspector::Inspector,
+    evm::inspector::{Inspector, SharedInspector},
     interpreter::dispatch::{self, InstrTable},
     trustme,
     version::{EvmFeatures, GasParams},
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes};
-use core::{fmt, ops::Range, ptr::NonNull};
+use core::{cell::RefCell, fmt, ops::Range, ptr::NonNull};
 use derive_where::derive_where;
 
 /// EVM interpreter.
@@ -30,7 +30,7 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     #[derive_where(skip)]
     message: Option<&'frame Message<T>>,
     host: Option<NonNull<T::Host<'host>>>,
-    inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
+    inspector: Option<NonNull<dyn SharedInspector<T> + 'frame>>,
     version: Option<&'frame Version>,
     pub(in crate::interpreter) stack_len: usize,
     #[derive_where(skip)]
@@ -41,18 +41,6 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
-}
-
-// SAFETY: The interpreter's internal pointers are always valid. `pc` points into owned bytecode,
-// frame-local references are cleared before pooling, and host/inspector pointers are installed for
-// execution and not used after the owning execution context is gone. The `Sync` bounds make the
-// retained shared frame references safe to transfer between threads.
-unsafe impl<T> Send for Interpreter<'_, '_, T>
-where
-    T: EvmTypesHost,
-    T::MessageExt: Sync,
-    T::TxEnvExt: Sync,
-{
 }
 
 impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
@@ -281,7 +269,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     pub const fn stack_memory_host(&mut self) -> (StackRef<'_>, &[u8], &mut T::Host<'host>) {
         // SAFETY: As in `host`, the host pointer is initialized during execution and points
         // outside the interpreter's owned stack and memory.
-        let host = unsafe { self.host.unwrap_unchecked().as_mut() };
+        let host = unsafe { self.host.expect("interpreter is not running").as_mut() };
         (self.stack(), self.memory.as_slice(), host)
     }
 
@@ -289,7 +277,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub const fn host(&mut self) -> &mut T::Host<'host> {
         // SAFETY: `host` is initialized at the beginning of inspected execution.
-        unsafe { self.host.unwrap_unchecked().as_mut() }
+        unsafe { self.host.expect("interpreter is not running").as_mut() }
     }
 
     /// Returns the active base specification ID.
@@ -302,7 +290,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub const fn version(&self) -> &Version {
         // SAFETY: `version` is initialized before execution starts.
-        unsafe { self.version.unwrap_unchecked() }
+        self.version.expect("interpreter is not running")
     }
 
     /// Returns whether the active frame forbids state-changing operations.
@@ -320,7 +308,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Runs the interpreter until it stops.
     #[inline]
     pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host<'host>) -> InstrStop {
-        self.run_inner(config.base_spec_id(), config.version(), host, None, config.instructions)
+        self.run_inner(config.base_spec_id(), config.version(), host, config.instructions)
     }
 
     /// Runs the interpreter until it stops with an execution inspector.
@@ -331,27 +319,79 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         host: &mut T::Host<'host>,
         inspector: &mut (dyn Inspector<T> + 'host),
     ) -> InstrStop {
-        self.run_inner(
-            config.base_spec_id(),
-            config.version(),
-            host,
-            Some(NonNull::from(inspector)),
-            config.inspect_instructions,
-        )
+        self.run_inspect_shared(config, host, &RefCell::new(inspector))
     }
 
-    /// Prepares this interpreter for external execution.
+    /// Runs the interpreter with an inspector that supports shared, recursive access.
+    pub fn run_inspect_shared(
+        &mut self,
+        config: &ExecutionConfig<T>,
+        host: &mut T::Host<'host>,
+        inspector: &dyn SharedInspector<T>,
+    ) -> InstrStop {
+        self.with_host(config.base_spec_id(), config.version(), host, |interp| {
+            // SAFETY: The inspector borrow covers this synchronous dispatch. The scoped
+            // interpreter cannot escape `with_host`, and its pointer is cleared on unwind.
+            interp.inspector = Some(unsafe {
+                core::mem::transmute::<
+                    NonNull<dyn SharedInspector<T>>,
+                    NonNull<dyn SharedInspector<T>>,
+                >(NonNull::from(inspector))
+            });
+            dispatch::run(interp, config.inspect_instructions)
+        })
+    }
+
+    /// Borrows the host and version for synchronous external execution or inspection.
+    ///
+    /// The scoped interpreter cannot escape the callback. Host access outside this scope panics.
+    ///
+    /// ```compile_fail
+    /// use evm2::{BaseEvmTypes, Evm, ExecutionConfig, interpreter::Interpreter};
+    ///
+    /// fn retain<'frame, 'host>(
+    ///     interp: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+    ///     config: &ExecutionConfig<BaseEvmTypes>,
+    ///     host: &mut Evm<'host, BaseEvmTypes>,
+    ///     saved: &mut Option<Interpreter<'frame, 'host, BaseEvmTypes>>,
+    /// ) {
+    ///     interp.with_host(config.base_spec_id(), config.version(), host, |running| {
+    ///         let replacement = Interpreter::new(running.tx_env(), running.message());
+    ///         *saved = Some(core::mem::replace(running, replacement));
+    ///     });
+    /// }
+    /// ```
     #[inline]
-    #[doc(hidden)]
-    pub fn prepare_run(&mut self, spec: SpecId, version: &Version, host: &mut T::Host<'host>) {
-        self.memory.set_memory_limit(version.memory_limit);
-        // SAFETY: `version` remains alive for the duration of this interpreter run.
-        let version = unsafe { trustme::decouple_lt(version) };
-        self.host = Some(NonNull::from(host));
-        self.inspector = None;
-        self.version = Some(version);
-        self.spec = spec;
-        self.features = version.features;
+    pub fn with_host<R>(
+        &mut self,
+        spec: SpecId,
+        version: &Version,
+        host: &mut T::Host<'host>,
+        f: impl for<'run> FnOnce(&mut Interpreter<'run, 'host, T>) -> R,
+    ) -> R {
+        let guard = RunGuard {
+            host: self.host,
+            inspector: self.inspector,
+            version: self.version,
+            spec: self.spec,
+            features: self.features,
+            interp: self,
+        };
+        guard.interp.memory.set_memory_limit(version.memory_limit);
+        guard.interp.spec = spec;
+        guard.interp.features = version.features;
+        // SAFETY: The callback only receives a shorter, scoped frame lifetime. Its return
+        // type cannot depend on that lifetime. The guard clears borrowed execution data
+        // before the original interpreter can be used again, including on unwind.
+        let interp = unsafe {
+            core::mem::transmute::<&mut Interpreter<'frame, 'host, T>, &mut Interpreter<'_, 'host, T>>(
+                guard.interp,
+            )
+        };
+        interp.host = Some(NonNull::from(host));
+        interp.version = Some(version);
+        interp.inspector = None;
+        f(interp)
     }
 
     #[inline(never)]
@@ -360,13 +400,31 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         spec: SpecId,
         version: &Version,
         host: &mut T::Host<'host>,
-        inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
         instructions: &InstrTable<T>,
     ) -> InstrStop {
-        self.prepare_run(spec, version, host);
-        self.inspector = inspector;
+        self.with_host(spec, version, host, |interp| dispatch::run(interp, instructions))
+    }
+}
 
-        dispatch::run(self, instructions)
+struct RunGuard<'a, 'frame, 'host, T: EvmTypesHost> {
+    interp: &'a mut Interpreter<'frame, 'host, T>,
+    host: Option<NonNull<T::Host<'host>>>,
+    inspector: Option<NonNull<dyn SharedInspector<T> + 'frame>>,
+    version: Option<&'frame Version>,
+    spec: SpecId,
+    features: EvmFeatures,
+}
+
+impl<T: EvmTypesHost> Drop for RunGuard<'_, '_, '_, T> {
+    fn drop(&mut self) {
+        self.interp.host = self.host;
+        self.interp.inspector = self.inspector;
+        self.interp.version = self.version;
+        if let Some(version) = self.version {
+            self.interp.spec = self.spec;
+            self.interp.features = self.features;
+            self.interp.memory.set_memory_limit(version.memory_limit);
+        }
     }
 }
 
@@ -536,13 +594,38 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.output = output;
     }
 
+    pub(crate) fn execute_message(&mut self, message: &mut Message<T>) -> MessageResult<T> {
+        let Some(inspector) = self.0.inspector else {
+            let tx_env = self.tx();
+            return self.host().execute_message(tx_env, message);
+        };
+        // SAFETY: `run_inspect_shared` keeps the shared inspector alive through dispatch.
+        let inspector = unsafe { inspector.as_ref() };
+        let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
+        let inspected = if is_create {
+            inspector.create(&mut self.0, message)
+        } else {
+            inspector.call(&mut self.0, message)
+        };
+        let mut result = inspected.unwrap_or_else(|| {
+            let tx_env = self.tx();
+            self.host().execute_message_uninspected(tx_env, message)
+        });
+        if is_create {
+            inspector.create_end(&mut self.0, message, &mut result);
+        } else {
+            inspector.call_end(&mut self.0, message, &mut result);
+        }
+        result
+    }
+
     #[inline]
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
         unsafe {
-            let mut inspector = self.0.inspector.unwrap_unchecked();
-            inspector.as_mut().step(&mut self.0);
+            let inspector = self.0.inspector.unwrap_unchecked();
+            inspector.as_ref().step(&mut self.0);
         }
     }
 
@@ -551,8 +634,8 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
         unsafe {
-            let mut inspector = self.0.inspector.unwrap_unchecked();
-            inspector.as_mut().step_end(&mut self.0);
+            let inspector = self.0.inspector.unwrap_unchecked();
+            inspector.as_ref().step_end(&mut self.0);
         }
     }
 
@@ -563,10 +646,10 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         target: &Address,
         value: &Word,
     ) {
-        if let Some(mut inspector) = self.0.inspector {
+        if let Some(inspector) = self.0.inspector {
             unsafe {
                 let mut host = self.0.host.unwrap_unchecked();
-                inspector.as_mut().selfdestruct(contract, target, value, host.as_mut());
+                inspector.as_ref().selfdestruct(contract, target, value, host.as_mut());
             }
         }
     }

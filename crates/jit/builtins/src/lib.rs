@@ -1043,7 +1043,6 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::boxed::Box;
     use alloy_primitives::Address;
     use evm2::{
         BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
@@ -1137,25 +1136,19 @@ mod tests {
         )
     }
 
-    fn prepare_frame<'ctx, 'frame, 'host>(
-        interpreter: &'ctx mut evm2::interpreter::Interpreter<'frame, 'host, BaseEvmTypes>,
-        host: &'ctx mut Evm<'host, BaseEvmTypes>,
-    ) -> PreparedJitFrame<'ctx, 'frame, 'host> {
-        prepare_frame_for_spec(interpreter, host, SpecId::CANCUN)
-    }
-
-    fn prepare_frame_for_spec<'ctx, 'frame, 'host>(
-        interpreter: &'ctx mut evm2::interpreter::Interpreter<'frame, 'host, BaseEvmTypes>,
-        host: &'ctx mut Evm<'host, BaseEvmTypes>,
+    fn with_frame<'host, R>(
+        interpreter: &mut evm2::interpreter::Interpreter<'_, 'host, BaseEvmTypes>,
+        host: &mut Evm<'host, BaseEvmTypes>,
         spec_id: SpecId,
-    ) -> PreparedJitFrame<'ctx, 'frame, 'host> {
+        f: impl FnOnce(PreparedJitFrame<'_, '_, '_>) -> R,
+    ) -> R {
         let config =
             <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(spec_id);
-        let config = Box::leak(Box::new(config));
-        interpreter.prepare_run(config.base_spec_id(), config.version(), host);
-        let (ecx, stack, _stack_len) =
-            unsafe { EvmContext::from_interpreter_with_stack(interpreter) };
-        PreparedJitFrame { ecx, stack }
+        interpreter.with_host(config.base_spec_id(), config.version(), host, |interpreter| {
+            let (ecx, stack, _stack_len) =
+                unsafe { EvmContext::from_interpreter_with_stack(interpreter) };
+            f(PreparedJitFrame { ecx, stack })
+        })
     }
 
     #[test]
@@ -1183,8 +1176,7 @@ mod tests {
         let mut interpreter =
             evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
-        {
-            let mut frame = prepare_frame(&mut interpreter, &mut host);
+        with_frame(&mut interpreter, &mut host, SpecId::CANCUN, |mut frame| {
             frame.ecx.memory_mut().resize(0, 16).unwrap();
             frame.ecx.memory_mut().set(4, b"in");
             frame.stack.set(0, EvmWord::from(Word::from(2)));
@@ -1207,7 +1199,7 @@ mod tests {
             frame.ecx.refresh_memory_cache();
             frame.ecx.interpreter_mut().set_output(0..output.len() as u32);
             assert_eq!(frame.ecx.return_data(), child_output.as_ref());
-        }
+        });
 
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
         assert_eq!(inspector.calls.len(), 1);
@@ -1238,15 +1230,14 @@ mod tests {
         let mut interpreter =
             evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
-        {
-            let mut frame = prepare_frame(&mut interpreter, &mut host);
+        with_frame(&mut interpreter, &mut host, SpecId::CANCUN, |mut frame| {
             write_call_stack(frame.stack, target, 50_000, Some(stack_value));
 
             let sp = frame.stack.as_mut_ptr();
             unsafe { __revmc_builtin_call(&mut frame.ecx, sp, CallKind::CallCode) };
 
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
-        }
+        });
 
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
         assert_eq!(inspector.calls.len(), 1);
@@ -1278,15 +1269,14 @@ mod tests {
         let mut interpreter =
             evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
-        {
-            let mut frame = prepare_frame(&mut interpreter, &mut host);
+        with_frame(&mut interpreter, &mut host, SpecId::CANCUN, |mut frame| {
             write_call_stack(frame.stack, target, 50_000, None);
 
             let sp = frame.stack.as_mut_ptr();
             unsafe { __revmc_builtin_call(&mut frame.ecx, sp, CallKind::DelegateCall) };
 
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
-        }
+        });
 
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
         assert_eq!(inspector.calls.len(), 1);
@@ -1317,15 +1307,14 @@ mod tests {
         let mut interpreter =
             evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
-        {
-            let mut frame = prepare_frame(&mut interpreter, &mut host);
+        with_frame(&mut interpreter, &mut host, SpecId::CANCUN, |mut frame| {
             write_call_stack(frame.stack, target, 50_000, None);
 
             let sp = frame.stack.as_mut_ptr();
             unsafe { __revmc_builtin_call(&mut frame.ecx, sp, CallKind::StaticCall) };
 
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
-        }
+        });
 
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
         assert_eq!(inspector.calls.len(), 1);
@@ -1360,8 +1349,7 @@ mod tests {
         let mut interpreter =
             evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
-        {
-            let mut frame = prepare_frame(&mut interpreter, &mut host);
+        with_frame(&mut interpreter, &mut host, SpecId::CANCUN, |mut frame| {
             frame.ecx.memory_mut().resize(0, 1).unwrap();
             frame.ecx.memory_mut().set(0, &initcode);
             frame.stack.set(0, EvmWord::from(Word::from(initcode.len())));
@@ -1373,7 +1361,7 @@ mod tests {
 
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));
             assert!(frame.ecx.return_data().is_empty());
-        }
+        });
 
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
         assert_eq!(inspector.creates.len(), 1);
@@ -1405,8 +1393,7 @@ mod tests {
         let mut interpreter =
             evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
-        {
-            let mut frame = prepare_frame(&mut interpreter, &mut host);
+        with_frame(&mut interpreter, &mut host, SpecId::CANCUN, |mut frame| {
             frame.ecx.memory_mut().resize(0, 1).unwrap();
             frame.ecx.memory_mut().set(0, &initcode);
             frame.stack.set(0, salt);
@@ -1419,7 +1406,7 @@ mod tests {
 
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));
             assert!(frame.ecx.return_data().is_empty());
-        }
+        });
 
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
         assert_eq!(inspector.creates.len(), 1);
@@ -1461,9 +1448,7 @@ mod tests {
                 let mut interpreter =
                     evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
-                {
-                    let mut frame =
-                        prepare_frame_for_spec(&mut interpreter, &mut host, SpecId::AMSTERDAM);
+                with_frame(&mut interpreter, &mut host, SpecId::AMSTERDAM, |mut frame| {
                     frame.ecx.set_return_data(Bytes::from_static(b"stale"));
                     match create_kind {
                         CreateKind::Create => {
@@ -1484,7 +1469,7 @@ mod tests {
 
                     assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &EvmWord::ZERO);
                     assert!(frame.ecx.return_data().is_empty());
-                }
+                });
 
                 let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
                 assert!(inspector.creates.is_empty());

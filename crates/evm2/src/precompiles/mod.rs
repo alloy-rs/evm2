@@ -151,7 +151,7 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
 
     #[inline]
     fn execute(
-        &mut self,
+        &self,
         evm: &mut Evm<'_, T>,
         message: &Message<T>,
         gas: &mut GasTracker,

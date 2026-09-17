@@ -646,8 +646,9 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
     ) -> Option<InstrStop> {
         let code = interpreter.original_bytecode();
         let func = *self.functions.get(&keccak256(&code))?;
-        interpreter.prepare_run(config.base_spec_id(), config.version(), host);
-        Some(unsafe { func.call_with_interpreter(interpreter) })
+        interpreter.with_host(config.base_spec_id(), config.version(), host, |interpreter| {
+            Some(unsafe { func.call_with_interpreter(interpreter) })
+        })
     }
 }
 
