@@ -13,6 +13,7 @@
 //! - [`AccountInfoBal`]: Account info BAL data (nonce, balance, code)
 //! - [`StorageBal`]: Storage-level BAL data for an account
 //! - [`BalContext`]: attached read BAL plus optional builder, carried by the database wrapper
+//! - [`BalAccountLookup`]: complete, partial, or uncovered account information at a read position
 //! - [`BalError`]: lookup failures against an attached BAL
 
 mod account;
@@ -23,7 +24,7 @@ mod list;
 
 pub use account::{AccountBal, AccountInfoBal, StorageBal};
 pub use alloy_eip7928::BlockAccessIndex;
-pub use bal_context::BalContext;
+pub use bal_context::{BalAccountLookup, BalContext};
 pub use changes::{BalChange, BalChanges, BalCodeChange};
 pub use error::BalError;
 pub use list::Bal;
