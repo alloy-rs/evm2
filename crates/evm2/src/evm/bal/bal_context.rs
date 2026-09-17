@@ -10,7 +10,7 @@ use crate::{
     interpreter::Word,
 };
 use alloc::sync::Arc;
-use alloy_eip7928::BlockAccessList;
+use alloy_eip7928::{BalAccountInfo, BlockAccessList};
 use alloy_primitives::{Address, map::AddressMap};
 use core::convert::Infallible;
 
@@ -232,6 +232,41 @@ impl BalContext {
         }
     }
 
+    /// Looks up account fields visible strictly before the current block access index.
+    ///
+    /// Returns [`BalAccountLookup::Complete`] when the BAL supplies balance, nonce, and code,
+    /// allowing the caller to skip the account read from its backing database. Otherwise,
+    /// [`BalAccountLookup::Partial`] carries the available fields as [`BalAccountInfo`]: `None`
+    /// means the field must come from the backing account, not that it is zero or empty.
+    /// Read-only entries and entries with no writes before the index are partial with no fields.
+    ///
+    /// Unlike [`BalAccountInfo::from_changes`], this observes the configured read position rather
+    /// than taking the block's final values. To include post-execution writes for a block with
+    /// `n` transactions, set the index to `n + 2`, past the post-execution index `n + 1`.
+    ///
+    /// Returns [`BalAccountLookup::NotCovered`] when no BAL is attached, or when the address is
+    /// missing and database fallback is enabled. A missing address with fallback disabled returns
+    /// [`BalError::AccountNotFound`], just like [`Self::get_bal_account`].
+    #[inline]
+    pub fn get_bal_account_info(&self, address: &Address) -> BalResult<BalAccountLookup> {
+        let Some(account) = self.get_bal_account(address)? else {
+            return Ok(BalAccountLookup::NotCovered);
+        };
+        let account = &account.account_info;
+        let code = account.code.get(self.bal_index);
+        let info = BalAccountInfo {
+            balance: account.balance.get(self.bal_index).copied(),
+            nonce: account.nonce.get(self.bal_index).copied(),
+            code_hash: code.map(|(hash, _)| *hash),
+        };
+        match (info.balance, info.nonce, code) {
+            (Some(balance), Some(nonce), Some((hash, code))) => Ok(BalAccountLookup::Complete(
+                AccountInfo::new(balance, nonce, *hash, code.clone()),
+            )),
+            _ => Ok(BalAccountLookup::Partial(info)),
+        }
+    }
+
     /// Applies a resolved BAL account's info writes at the current index to `account`.
     ///
     /// `bal_account` comes from [`Self::get_bal_account`], resolved before the raw account is
@@ -254,7 +289,7 @@ impl BalContext {
     /// Resolves storage slot `key` for `address` from the attached read BAL at the current
     /// index.
     ///
-    /// Returns `Ok(Some(value))` when the BAL has a write for the slot at or before the current
+    /// Returns `Ok(Some(value))` when the BAL has a write for the slot strictly before the current
     /// index. Returns `Ok(None)` when no BAL is attached, when the slot is covered but has no
     /// applicable write (caller should read the cache/database), or when the account/slot is
     /// uncovered but [`Self::set_allow_db_fallback`] is enabled. Returns an error when the account
@@ -310,6 +345,25 @@ impl BalContext {
         }
         self.bal_error.take().map(AnyError::new)
     }
+}
+
+/// Account information available from a BAL at the configured read position.
+///
+/// Returned by [`BalContext::get_bal_account_info`] without consulting the backing database.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BalAccountLookup {
+    /// Every account field is known, including decoded bytecode.
+    ///
+    /// This describes field completeness, not account existence. An empty account is returned as
+    /// an [`AccountInfo`]; the caller decides whether state-clearing rules make it absent.
+    Complete(AccountInfo),
+    /// Only some account fields are known. Missing fields must be read from the backing account.
+    ///
+    /// An empty [`BalAccountInfo`] means no account fields are known at this position; it does
+    /// not mean the account itself is empty or absent. Code changes carry their hash only.
+    Partial(BalAccountInfo),
+    /// No BAL is attached, or the account is missing and database fallback is enabled.
+    NotCovered,
 }
 
 /// Folds streamed state changes into the BAL builder at the current [`BalContext::bal_index`].
@@ -383,9 +437,115 @@ impl StateChangeSink for BalContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Address;
+    use crate::{bytecode::Bytecode, evm::bal::BalCodeChange};
+    use alloy_eip7928::{BalanceChange, NonceChange};
+    use alloy_primitives::{Address, U256, bytes};
 
     const ADDRESS: Address = Address::repeat_byte(0xab);
+
+    #[test]
+    fn account_info_lookup_obeys_coverage_and_fallback() {
+        let mut context = BalContext::new();
+        assert_eq!(context.get_bal_account_info(&ADDRESS), Ok(BalAccountLookup::NotCovered));
+
+        context.set_bal(Arc::new(Bal::new()));
+        assert_eq!(
+            context.get_bal_account_info(&ADDRESS),
+            Err(BalError::AccountNotFound { address: ADDRESS }),
+        );
+        context.set_allow_db_fallback(true);
+        assert_eq!(context.get_bal_account_info(&ADDRESS), Ok(BalAccountLookup::NotCovered));
+
+        let mut bal = Bal::new();
+        bal.accounts.insert(ADDRESS, AccountBal::default());
+        context.set_bal(Arc::new(bal));
+        context.set_allow_db_fallback(false);
+        assert_eq!(
+            context.get_bal_account_info(&ADDRESS),
+            Ok(BalAccountLookup::Partial(BalAccountInfo::default())),
+        );
+    }
+
+    #[test]
+    fn account_info_lookup_uses_exclusive_index_and_includes_post_execution() {
+        let code = Bytecode::new_raw(bytes!("6001"));
+        let mut account = AccountBal::default();
+        account.account_info.balance = vec![
+            BalanceChange::new(BlockAccessIndex::new(0), U256::from(1)),
+            BalanceChange::new(BlockAccessIndex::new(1), U256::from(7)),
+            // Post-execution for a two-transaction block.
+            BalanceChange::new(BlockAccessIndex::new(3), U256::from(42)),
+        ]
+        .into();
+        account.account_info.nonce = vec![NonceChange::new(BlockAccessIndex::new(2), 5)].into();
+        account.account_info.code =
+            vec![BalCodeChange::new(BlockAccessIndex::new(3), (code.hash_slow(), code.clone()))]
+                .into();
+        let mut bal = Bal::new();
+        bal.accounts.insert(ADDRESS, account);
+        let mut context = BalContext::new().with_bal(Arc::new(bal));
+
+        for (index, balance, nonce) in [
+            (0, None, None),
+            (1, Some(U256::from(1)), None),
+            (2, Some(U256::from(7)), None),
+            (3, Some(U256::from(7)), Some(5)),
+        ] {
+            context.set_bal_index(BlockAccessIndex::new(index));
+            assert_eq!(
+                context.get_bal_account_info(&ADDRESS),
+                Ok(BalAccountLookup::Partial(BalAccountInfo { balance, nonce, code_hash: None })),
+            );
+        }
+
+        context.set_bal_index(BlockAccessIndex::new(4));
+        let BalAccountLookup::Complete(info) = context.get_bal_account_info(&ADDRESS).unwrap()
+        else {
+            panic!("all fields must be known after post-execution");
+        };
+        assert_eq!(info.balance, U256::from(42));
+        assert_eq!(info.nonce, 5);
+        assert_eq!(info.code_hash, code.hash_slow());
+        assert_eq!(info.code, Some(code));
+    }
+
+    #[test]
+    fn account_info_lookup_distinguishes_missing_fields_from_empty_values() {
+        for fields in 0..8 {
+            let index = BlockAccessIndex::new(1);
+            let code = Bytecode::default();
+            let mut account = AccountBal::default();
+            let mut expected = BalAccountInfo::default();
+            if fields & 1 != 0 {
+                account.account_info.balance = vec![BalanceChange::new(index, U256::ZERO)].into();
+                expected.balance = Some(U256::ZERO);
+            }
+            if fields & 2 != 0 {
+                account.account_info.nonce = vec![NonceChange::new(index, 0)].into();
+                expected.nonce = Some(0);
+            }
+            if fields & 4 != 0 {
+                expected.code_hash = Some(code.hash_slow());
+                account.account_info.code =
+                    vec![BalCodeChange::new(index, (code.hash_slow(), code.clone()))].into();
+            }
+            let mut bal = Bal::new();
+            bal.accounts.insert(ADDRESS, account);
+            let mut context = BalContext::new().with_bal(Arc::new(bal));
+            context.set_bal_index(BlockAccessIndex::new(2));
+
+            let lookup = context.get_bal_account_info(&ADDRESS).unwrap();
+            if expected.is_complete() {
+                let BalAccountLookup::Complete(info) = lookup else {
+                    panic!("all three recorded fields must produce a complete account");
+                };
+                assert!(info.is_empty());
+                assert_eq!(info.code, Some(code));
+            } else {
+                assert_eq!(lookup, BalAccountLookup::Partial(expected));
+            }
+        }
+    }
 
     #[test]
     fn clear_bal_restores_database_reads() {
