@@ -655,7 +655,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         // determine correct `from` and `to` based on the call scheme
         let (from, to) = match message.kind {
             MessageKind::DelegateCall | MessageKind::CallCode => {
-                (message.destination, message.code_address)
+                (message.destination, message.call_target)
             }
             _ => (message.caller, message.destination),
         };
