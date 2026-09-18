@@ -1114,6 +1114,16 @@ mod tests {
     }
 
     impl PrecompileProvider<BaseEvmTypes> for NonSendPrecompiles {
+        fn move_precompiles(
+            &mut self,
+            moves: &[(Address, Address)],
+        ) -> Result<(), crate::precompiles::MovePrecompileError> {
+            <crate::evm::precompile::NoPrecompiles as PrecompileProvider<BaseEvmTypes>>::move_precompiles(
+                &mut Default::default(),
+                moves,
+            )
+        }
+
         fn contains(&self, _address: &Address) -> bool {
             let _ = Rc::strong_count(&self.marker);
             false
