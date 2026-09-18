@@ -432,6 +432,9 @@ jobs:
     name: cargo deny check
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Dependency auditing needs rustc metadata, not the build cache wrapper.
+      RUSTC_WRAPPER: ""
     permissions:
       contents: read
       id-token: write
