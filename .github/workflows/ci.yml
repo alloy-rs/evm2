@@ -22,10 +22,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      id-token: write
       contents: read
     outputs:
       test-matrix: ${{ steps.gen.outputs.test-matrix }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -46,12 +49,15 @@ jobs:
     needs: matrices
     timeout-minutes: 30
     permissions:
+      id-token: write
       contents: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.matrices.outputs.test-matrix) }}
 
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -77,18 +83,27 @@ jobs:
         with:
           cache-on-failure: true
           cache-bin: false
-      - uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+      - name: Install nextest
+        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@25cce154e7fb10f99361a166468a6c56b9c31aa3
+        with:
+          tool: nextest@0.9.140
+          checksum: true
+          fallback: none
         if: ${{ !matrix.command || matrix.command == 'nextest' }}
+      - name: Install cross
+        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@25cce154e7fb10f99361a166468a6c56b9c31aa3
         with:
-          tool: nextest
-      - uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+          tool: cross@0.2.5
+          checksum: true
+          fallback: none
         if: ${{ matrix.command == 'cross-test' }}
+      - name: Install wasmtime
+        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@25cce154e7fb10f99361a166468a6c56b9c31aa3
         with:
-          tool: cross
-      - uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+          tool: wasmtime@47.0.2
+          checksum: true
+          fallback: none
         if: ${{ matrix.command == 'wasm-test' }}
-        with:
-          tool: wasmtime
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         if: ${{ matrix.kind == 'eest' }}
       - name: Download EEST fixtures
@@ -126,6 +141,10 @@ jobs:
             export EVM2_BLOCKCHAINTEST_ROOT="test-fixtures/devnet/blockchain_tests"
           fi
           cargo nextest --profile ci run "${package_flags[@]}" --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
+      # Fetch on the protected host; cross containers do not inherit Aegis routing.
+      - name: Fetch cross-test dependencies through Aegis
+        if: ${{ matrix.command == 'cross-test' }}
+        run: cargo fetch --target ${{ matrix.target }}
       - name: cross test
         if: ${{ matrix.command == 'cross-test' }}
         shell: bash
@@ -133,7 +152,7 @@ jobs:
           if [[ -n "${{ matrix.cxx }}" ]]; then
             export CXX="${{ matrix.cxx }}"
           fi
-          cross test --workspace --exclude evm2-eest --target ${{ matrix.target }} --no-fail-fast --lib --bins --tests ${{ matrix.flags }}
+          cross test --offline --workspace --exclude evm2-eest --target ${{ matrix.target }} --no-fail-fast --lib --bins --tests ${{ matrix.flags }}
       - name: wasm build
         if: ${{ matrix.command == 'build' }}
         shell: bash
@@ -157,6 +176,7 @@ jobs:
     runs-on: ${{ matrix.runner_label }}
     timeout-minutes: 120
     permissions:
+      id-token: write
       contents: read
     strategy:
       fail-fast: false
@@ -178,6 +198,8 @@ jobs:
             subset: ci-smoke
             filter: test(statetests::jit)
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -197,9 +219,12 @@ jobs:
         with:
           cache-on-failure: true
           cache-bin: false
-      - uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+      - name: Install nextest
+        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@25cce154e7fb10f99361a166468a6c56b9c31aa3
         with:
-          tool: nextest
+          tool: nextest@0.9.140
+          checksum: true
+          fallback: none
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - name: Download EEST fixtures
         run: ./scripts/setup_test_fixtures.py
@@ -215,12 +240,15 @@ jobs:
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
+      id-token: write
       contents: read
     strategy:
       fail-fast: false
       matrix:
         target: ["riscv32imac-unknown-none-elf", "riscv64imac-unknown-none-elf"]
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -240,12 +268,15 @@ jobs:
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
+      id-token: write
       contents: read
     strategy:
       fail-fast: false
       matrix:
         flags: ["", "--all-targets"]
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -253,9 +284,12 @@ jobs:
         run: .github/scripts/install_llvm.sh ubuntu
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: rui314/setup-mold@7e4f20ad28a2e8ca6fd0892ccf72e2abb706b9c3 # v1
-      - uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+      - name: Install cargo-hack
+        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@25cce154e7fb10f99361a166468a6c56b9c31aa3
         with:
-          tool: cargo-hack
+          tool: cargo-hack@0.6.45
+          checksum: true
+          fallback: none
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -268,17 +302,23 @@ jobs:
     runs-on: depot-ubuntu-latest
     timeout-minutes: 20
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: rui314/setup-mold@7e4f20ad28a2e8ca6fd0892ccf72e2abb706b9c3 # v1
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-      - uses: taiki-e/cache-cargo-install-action@9ee83daaa7b96a6fab930949ecf1122bba04a389 # v3.0.8
+      - name: Install zepter
+        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@25cce154e7fb10f99361a166468a6c56b9c31aa3
         with:
-          tool: zepter
+          tool: zepter@1.88.1
+          checksum: true
+          fallback: cargo-binstall
       - name: Eagerly pull dependencies
         run: cargo generate-lockfile
       - run: zepter run check
@@ -287,8 +327,11 @@ jobs:
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -305,8 +348,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -316,8 +362,11 @@ jobs:
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -340,8 +389,11 @@ jobs:
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -363,8 +415,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
+      id-token: write
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -374,15 +429,36 @@ jobs:
       - run: cargo fmt --all --check
 
   deny:
+    name: cargo deny check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
-    uses: tempoxyz/ci/.github/workflows/deny.yml@934b6a6317ac26272eaecf0d265472f4105c99d6 # 2026.05.09
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c # main
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: nightly
+      # Run on the protected host so dependency downloads are inspected.
+      - name: Install cargo-deny
+        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@25cce154e7fb10f99361a166468a6c56b9c31aa3 # main
+        with:
+          tool: cargo-deny@0.20.2
+          checksum: true
+          fallback: none
+      - run: cargo deny --all-features check all
 
   ci-success:
     name: ci success
     runs-on: ubuntu-latest
     if: always()
     permissions:
+      id-token: write
       contents: read
     needs:
       - matrices
@@ -398,6 +474,8 @@ jobs:
       - fmt
       - deny
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@ca2b15de1d1f6edd2276736187d7e4c2d898972c
       - name: Decide whether the needed jobs succeeded or failed
         uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
         with:
