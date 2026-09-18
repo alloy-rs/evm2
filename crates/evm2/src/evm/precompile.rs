@@ -4,7 +4,7 @@ use super::{Evm, NonStaticAny};
 use crate::{
     EvmTypesHost, PrecompileError,
     interpreter::{GasTracker, Message},
-    precompiles::PrecompileId,
+    precompiles::{MovePrecompileError, PrecompileId},
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes};
@@ -53,6 +53,13 @@ pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     /// Returns whether `address` has a registered precompile.
     fn contains(&self, address: &Address) -> bool;
 
+    /// Relocates installed precompiles, validating all sources before changing the provider.
+    ///
+    /// Entries whose source and destination match are ignored. Wrappers must preserve the
+    /// underlying provider and invalidate any address-dependent caches after a successful move.
+    fn move_precompiles(&mut self, moves: &[(Address, Address)])
+    -> Result<(), MovePrecompileError>;
+
     /// Executes the precompile at `address`, if one is registered.
     fn execute(
         &mut self,
@@ -91,6 +98,16 @@ impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn PrecompileProvider<T> + 'a
 pub struct NoPrecompiles(());
 
 impl<T: EvmTypesHost> PrecompileProvider<T> for NoPrecompiles {
+    fn move_precompiles(
+        &mut self,
+        moves: &[(Address, Address)],
+    ) -> Result<(), MovePrecompileError> {
+        match moves.iter().find(|(source, dest)| source != dest) {
+            Some((source, _)) => Err(MovePrecompileError::NotAPrecompile(*source)),
+            None => Ok(()),
+        }
+    }
+
     #[inline]
     fn addresses(&self) -> Vec<Address> {
         Vec::new()
