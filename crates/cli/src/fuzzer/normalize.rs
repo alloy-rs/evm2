@@ -1,26 +1,35 @@
 use crate::fuzzer::case::EvmCase;
-use alloy_primitives::{Address, B256, U256, keccak256};
+use alloy_primitives::{Address, B256, U256, keccak256, map::HashMap};
 use core::convert::Infallible;
 use evm2::evm::{
     AccountChangeRef, PendingState, StateChangeSink, StateChangeSource, StorageChange,
+    registry::HandlerError,
 };
-use std::collections::BTreeMap;
+use revm::{
+    context_interface::result::{EVMError, InvalidTransaction},
+    database::bal::EvmDatabaseError,
+};
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+    mem::discriminant,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Outcome {
-    pub(crate) kind: OutcomeKind,
+    pub(crate) kind: FuzzOutcomeKind,
     pub(crate) gas_used: Option<u64>,
     pub(crate) output: Option<Vec<u8>>,
     pub(crate) logs: Vec<CanonicalLog>,
     pub(crate) state: CanonicalState,
-    pub(crate) error: Option<String>,
+    pub(crate) error: Option<FuzzError>,
     pub(crate) receipts: Vec<TxReceipt>,
 }
 
 impl Outcome {
     pub(crate) fn from_receipts(receipts: Vec<TxReceipt>) -> Self {
         let Some(last) = receipts.last() else {
-            return Self::error("empty transaction sequence".to_string());
+            return Self::error(FuzzError::EmptyTransactionSequence);
         };
         Self {
             kind: last.kind,
@@ -33,7 +42,7 @@ impl Outcome {
         }
     }
 
-    pub(crate) fn error(error: String) -> Self {
+    pub(crate) fn error(error: FuzzError) -> Self {
         let receipt = TxReceipt::error(error);
         Self {
             kind: receipt.kind,
@@ -49,38 +58,48 @@ impl Outcome {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TxReceipt {
-    pub(crate) kind: OutcomeKind,
+    pub(crate) kind: FuzzOutcomeKind,
     pub(crate) gas_used: Option<u64>,
     pub(crate) output: Option<Vec<u8>>,
     pub(crate) logs: Vec<CanonicalLog>,
     pub(crate) state: CanonicalState,
-    pub(crate) error: Option<String>,
+    pub(crate) error: Option<FuzzError>,
 }
 
 impl TxReceipt {
-    pub(crate) fn error(error: String) -> Self {
+    pub(crate) fn error(error: FuzzError) -> Self {
         Self {
-            kind: OutcomeKind::Error,
+            kind: FuzzOutcomeKind::Error,
             gas_used: None,
             output: None,
             logs: Vec::new(),
             state: CanonicalState::default(),
-            error: Some(normalize_error(error)),
+            error: Some(error),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OutcomeKind {
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub(crate) enum FuzzOutcomeKind {
     Success,
     RevertOrHalt,
     Error,
 }
 
+impl fmt::Display for FuzzOutcomeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Success => "success",
+            Self::RevertOrHalt => "revert_or_halt",
+            Self::Error => "error",
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CanonicalState {
-    pub(crate) accounts: BTreeMap<Address, Option<CanonicalAccount>>,
-    pub(crate) storage: BTreeMap<(Address, U256), U256>,
+    pub(crate) accounts: HashMap<Address, Option<CanonicalAccount>>,
+    pub(crate) storage: HashMap<(Address, U256), U256>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,32 +116,104 @@ pub(crate) struct CanonicalLog {
     pub(crate) data: Vec<u8>,
 }
 
-fn normalize_error(error: String) -> String {
-    let error = error
-        .strip_prefix("Transaction(")
-        .and_then(|error| error.strip_suffix(')'))
-        .unwrap_or(&error);
-    if error.starts_with("IntrinsicGasTooLow") || error.starts_with("CallGasCostMoreThanGasLimit") {
-        return "IntrinsicGasTooLow".to_string();
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum FuzzError {
+    EmptyTransactionSequence,
+    IntrinsicGasTooLow,
+    InsufficientFunds,
+    InvalidNonce,
+    NonceOverflow,
+    UnsupportedTransactionType,
+    Transaction(InvalidTransaction),
+    Evm2(HandlerError),
+    Revm(EVMError<EvmDatabaseError<Infallible>>),
+}
+
+impl Hash for FuzzError {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        discriminant(self).hash(state);
+        match self {
+            Self::Transaction(error) => error.hash(state),
+            // Backend errors lack Hash; equality still compares their full payloads.
+            Self::Evm2(error) => discriminant(error).hash(state),
+            Self::Revm(error) => discriminant(error).hash(state),
+            _ => {}
+        }
     }
-    if error.starts_with("LackOfFundForMaxFee") || error == "InsufficientFunds" {
-        return "InsufficientFunds".to_string();
+}
+
+impl fmt::Display for FuzzError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Transaction(error) => write!(f, "{error:?}"),
+            _ => write!(f, "{self:?}"),
+        }
     }
-    if error.starts_with("NonceTooHigh")
-        || error.starts_with("NonceTooLow")
-        || error.starts_with("InvalidNonce")
-    {
-        return "InvalidNonce".to_string();
+}
+
+impl From<HandlerError> for FuzzError {
+    fn from(error: HandlerError) -> Self {
+        match error {
+            HandlerError::IntrinsicGasTooLow { .. } => Self::IntrinsicGasTooLow,
+            HandlerError::InsufficientFunds => Self::InsufficientFunds,
+            HandlerError::InvalidNonce { .. } => Self::InvalidNonce,
+            HandlerError::NonceOverflow => Self::NonceOverflow,
+            HandlerError::UnsupportedTransactionType(_) => Self::UnsupportedTransactionType,
+            HandlerError::MissingChainId => Self::Transaction(InvalidTransaction::MissingChainId),
+            HandlerError::RejectCallerWithCode => {
+                Self::Transaction(InvalidTransaction::RejectCallerWithCode)
+            }
+            HandlerError::EmptyAuthorizationList => {
+                Self::Transaction(InvalidTransaction::EmptyAuthorizationList)
+            }
+            HandlerError::EmptyBlobs => Self::Transaction(InvalidTransaction::EmptyBlobs),
+            HandlerError::TooManyBlobs { have, max } => {
+                Self::Transaction(InvalidTransaction::TooManyBlobs { have, max })
+            }
+            HandlerError::BlobVersionNotSupported => {
+                Self::Transaction(InvalidTransaction::BlobVersionNotSupported)
+            }
+            HandlerError::PriorityFeeGreaterThanMaxFee => {
+                Self::Transaction(InvalidTransaction::PriorityFeeGreaterThanMaxFee)
+            }
+            HandlerError::TxGasLimitGreaterThanCap { gas_limit, cap } => {
+                Self::Transaction(InvalidTransaction::TxGasLimitGreaterThanCap { gas_limit, cap })
+            }
+            error @ (HandlerError::Fatal(_)
+            | HandlerError::External(_)
+            | HandlerError::WrongTransactionType { .. }
+            | HandlerError::InvalidChainId { .. }
+            | HandlerError::GasLimitMoreThanBlock { .. }
+            | HandlerError::CreateInitCodeSizeLimit { .. }
+            | HandlerError::OutOfFunds
+            | HandlerError::SignerRecoveryFailed
+            | HandlerError::FeeCapLessThanBaseFee { .. }
+            | HandlerError::BlobFeeCapLessThanBlobBaseFee { .. }
+            | HandlerError::UnsupportedCaller(_)) => Self::Evm2(error),
+        }
     }
-    if error == "NonceOverflowInTransaction" || error == "NonceOverflow" {
-        return "NonceOverflow".to_string();
+}
+
+impl From<EVMError<EvmDatabaseError<Infallible>>> for FuzzError {
+    fn from(error: EVMError<EvmDatabaseError<Infallible>>) -> Self {
+        match error {
+            EVMError::Transaction(error) => match error {
+                InvalidTransaction::CallGasCostMoreThanGasLimit { .. } => Self::IntrinsicGasTooLow,
+                InvalidTransaction::LackOfFundForMaxFee { .. } => Self::InsufficientFunds,
+                InvalidTransaction::NonceTooHigh { .. }
+                | InvalidTransaction::NonceTooLow { .. } => Self::InvalidNonce,
+                InvalidTransaction::NonceOverflowInTransaction => Self::NonceOverflow,
+                InvalidTransaction::Eip2930NotSupported
+                | InvalidTransaction::Eip1559NotSupported
+                | InvalidTransaction::Eip4844NotSupported
+                | InvalidTransaction::Eip7702NotSupported
+                | InvalidTransaction::Eip7873NotSupported => Self::UnsupportedTransactionType,
+                error => Self::Transaction(error),
+            },
+            EVMError::Database(EvmDatabaseError::Database(error)) => match error {},
+            error => Self::Revm(error),
+        }
     }
-    if error.starts_with("UnsupportedTransactionType")
-        || error.ends_with("NotSupported") && error.starts_with("Eip")
-    {
-        return "UnsupportedTransactionType".to_string();
-    }
-    error.to_string()
 }
 
 pub(crate) fn state_from_evm2_changes(pending: &PendingState) -> CanonicalState {
@@ -163,7 +254,7 @@ pub(crate) fn state_from_evm2_changes(pending: &PendingState) -> CanonicalState 
 
 pub(crate) fn state_from_revm(
     state: revm::state::EvmState,
-    original_accounts: &BTreeMap<Address, CanonicalAccount>,
+    original_accounts: &HashMap<Address, CanonicalAccount>,
 ) -> CanonicalState {
     let mut canonical = CanonicalState::default();
     for (address, account) in state {
@@ -214,7 +305,7 @@ pub(crate) fn state_from_revm(
     canonical
 }
 
-pub(crate) fn canonical_accounts(case: &EvmCase) -> BTreeMap<Address, CanonicalAccount> {
+pub(crate) fn canonical_accounts(case: &EvmCase) -> HashMap<Address, CanonicalAccount> {
     case.accounts
         .iter()
         .map(|account| {
@@ -231,7 +322,7 @@ pub(crate) fn canonical_accounts(case: &EvmCase) -> BTreeMap<Address, CanonicalA
 }
 
 pub(crate) fn apply_account_changes(
-    accounts: &mut BTreeMap<Address, CanonicalAccount>,
+    accounts: &mut HashMap<Address, CanonicalAccount>,
     state: &CanonicalState,
 ) {
     for (&address, account) in &state.accounts {
@@ -251,5 +342,70 @@ pub(crate) fn canonical_log(log: &alloy_primitives::Log) -> CanonicalLog {
         address: log.address,
         topics: log.data.topics().to_vec(),
         data: log.data.data.to_vec(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalized_error_categories() {
+        for (evm2, revm) in [
+            (
+                HandlerError::IntrinsicGasTooLow { required: 21_000, got: 1 },
+                InvalidTransaction::CallGasCostMoreThanGasLimit {
+                    initial_gas: 21_000,
+                    gas_limit: 1,
+                },
+            ),
+            (
+                HandlerError::InsufficientFunds,
+                InvalidTransaction::LackOfFundForMaxFee {
+                    fee: Box::new(U256::from(10)),
+                    balance: Box::new(U256::ZERO),
+                },
+            ),
+            (
+                HandlerError::InvalidNonce { expected: 1, got: 2 },
+                InvalidTransaction::NonceTooHigh { tx: 2, state: 1 },
+            ),
+            (HandlerError::NonceOverflow, InvalidTransaction::NonceOverflowInTransaction),
+            (HandlerError::UnsupportedTransactionType(4), InvalidTransaction::Eip7702NotSupported),
+            (HandlerError::EmptyBlobs, InvalidTransaction::EmptyBlobs),
+            (
+                HandlerError::TooManyBlobs { have: 10, max: 6 },
+                InvalidTransaction::TooManyBlobs { have: 10, max: 6 },
+            ),
+        ] {
+            let evm2 = FuzzError::from(evm2);
+            let revm = FuzzError::from(EVMError::Transaction(revm));
+            assert_eq!(evm2, revm);
+            let mut counts = HashMap::<_, _>::default();
+            counts.insert(evm2, 1);
+            assert_eq!(counts.get(&revm), Some(&1));
+        }
+    }
+
+    #[test]
+    fn unmatched_errors_keep_payloads() {
+        assert_ne!(
+            FuzzError::from(HandlerError::WrongTransactionType { expected: 1 }),
+            FuzzError::from(HandlerError::WrongTransactionType { expected: 2 }),
+        );
+        assert_ne!(
+            FuzzError::from(EVMError::Transaction(InvalidTransaction::TooManyBlobs {
+                have: 7,
+                max: 6
+            })),
+            FuzzError::from(EVMError::Transaction(InvalidTransaction::TooManyBlobs {
+                have: 8,
+                max: 6
+            })),
+        );
+        assert_ne!(
+            FuzzError::from(EVMError::Custom("first".into())),
+            FuzzError::from(EVMError::Custom("second".into())),
+        );
     }
 }

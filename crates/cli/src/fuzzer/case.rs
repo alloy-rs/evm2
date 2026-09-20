@@ -1,4 +1,5 @@
 use crate::fuzzer::{
+    features::FuzzFeatures,
     precompile::{self, PrecompileTarget},
     program::Program,
     rng::Gen,
@@ -11,7 +12,7 @@ use alloy_eips::{
     eip2930::{AccessList, AccessListItem},
     eip7702::{Authorization, SignedAuthorization},
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, map::HashMap};
 use evm2::{
     SpecId,
     env::{BlockEnv, BlockEnvExt},
@@ -23,8 +24,8 @@ use revm::{
     primitives::TxKind as RevmTxKind,
 };
 use secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::OnceLock};
+use serde::{Deserialize, Serialize, Serializer};
+use std::{fmt, sync::OnceLock};
 
 pub(crate) const CALLER: Address = Address::new([0x10; 20]);
 pub(crate) const TARGET: Address = Address::new([0x20; 20]);
@@ -42,7 +43,7 @@ pub(crate) struct EvmCase {
     #[serde(default)]
     pub(crate) extra_txs: Vec<CaseTx>,
     #[serde(default)]
-    pub(crate) features: Vec<String>,
+    pub(crate) features: FuzzFeatures,
     pub(crate) accounts: Vec<CaseAccount>,
 }
 
@@ -52,7 +53,7 @@ impl EvmCase {
     }
 
     pub(crate) fn generate(rng: &mut Gen) -> Self {
-        let spec = match rng.range(12) {
+        let spec = match rng.range(13) {
             0 => SpecId::FRONTIER,
             1 => SpecId::HOMESTEAD,
             2 => SpecId::TANGERINE,
@@ -64,14 +65,13 @@ impl EvmCase {
             8 => SpecId::SHANGHAI,
             9 => SpecId::CANCUN,
             10 => SpecId::PRAGUE,
-            // TODO: Re-enable Amsterdam once evm2's EIP-8037 state-gas accounting is aligned
-            // with revm. Manual Amsterdam replay remains supported through serde parsing/mapping.
-            _ => SpecId::OSAKA,
+            11 => SpecId::OSAKA,
+            _ => SpecId::AMSTERDAM,
         };
         let block = CaseBlock::generate(rng, spec);
         let mut extra_accounts = Vec::new();
         for i in 0..rng.range_inclusive(0, 4) {
-            let mut callee_storage = BTreeMap::new();
+            let mut callee_storage = HashMap::default();
             if rng.one_in(2) {
                 callee_storage.insert(rng.biased_word(), rng.biased_word());
             }
@@ -121,7 +121,7 @@ impl EvmCase {
         }
         let (program, mut features) =
             Program::generate(rng, spec, &address_pool, &call_pool).into_parts();
-        let mut storage = BTreeMap::new();
+        let mut storage = HashMap::default();
         for _ in 0..rng.range_inclusive(0, 4) {
             storage.insert(rng.biased_word(), rng.biased_word());
         }
@@ -131,7 +131,7 @@ impl EvmCase {
                 balance: CALLER_BALANCE,
                 nonce: 0,
                 code: Bytes::new(),
-                storage: BTreeMap::new(),
+                storage: HashMap::default(),
             },
             CaseAccount {
                 address: TARGET,
@@ -155,8 +155,6 @@ impl EvmCase {
             core::iter::once(&tx).chain(&extra_txs),
             &mut features,
         );
-        features.sort();
-        features.dedup();
         Self { spec, block, tx, extra_txs, features, accounts }
     }
 }
@@ -255,7 +253,7 @@ impl CaseBlock {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct CaseTx {
     #[serde(default)]
-    pub(crate) kind: TxKindCase,
+    pub(crate) kind: FuzzTxKind,
     pub(crate) caller: Address,
     pub(crate) target: Address,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -273,8 +271,8 @@ pub(crate) struct CaseTx {
     pub(crate) authorization_list: Option<Vec<SignedAuthorization>>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) enum TxKindCase {
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub(crate) enum FuzzTxKind {
     #[default]
     Legacy,
     Eip2930,
@@ -283,17 +281,19 @@ pub(crate) enum TxKindCase {
     Eip7702,
 }
 
-impl TxKindCase {
-    pub(crate) const fn name(self) -> &'static str {
-        match self {
+impl fmt::Display for FuzzTxKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
             Self::Legacy => "legacy",
             Self::Eip2930 => "eip2930",
             Self::Eip1559 => "eip1559",
             Self::Eip4844 => "eip4844",
             Self::Eip7702 => "eip7702",
-        }
+        })
     }
+}
 
+impl FuzzTxKind {
     pub(crate) const fn is_enabled(self, spec: SpecId) -> bool {
         match self {
             Self::Legacy => true,
@@ -401,34 +401,34 @@ fn add_eip7702_accounts<'a>(
     rng: &mut Gen,
     accounts: &mut Vec<CaseAccount>,
     txs: impl Iterator<Item = &'a CaseTx>,
-    features: &mut Vec<String>,
+    features: &mut FuzzFeatures,
 ) {
-    let eip7702_txs = txs.filter(|tx| tx.kind == TxKindCase::Eip7702).collect::<Vec<_>>();
+    let eip7702_txs = txs.filter(|tx| tx.kind == FuzzTxKind::Eip7702).collect::<Vec<_>>();
     if eip7702_txs.is_empty() {
         return;
     }
 
-    features.push("eip7702_auth".to_string());
+    features.insert(FuzzFeatures::EIP7702_AUTH);
     for tx in eip7702_txs {
         let auths = tx.eip7702_authorization_list();
         if auths.is_empty() {
-            features.push("eip7702_auth_empty".to_string());
+            features.insert(FuzzFeatures::EIP7702_AUTH_EMPTY);
         }
         if auths.len() > 1 {
-            features.push("eip7702_auth_multi".to_string());
+            features.insert(FuzzFeatures::EIP7702_AUTH_MULTI);
         }
         for auth in auths {
             if auth.y_parity() > 1 {
-                features.push("eip7702_auth_bad_signature".to_string());
+                features.insert(FuzzFeatures::EIP7702_AUTH_BAD_SIGNATURE);
             }
             if auth.chain_id() != &U256::ZERO && auth.chain_id() != &U256::from(1) {
-                features.push("eip7702_auth_bad_chain".to_string());
+                features.insert(FuzzFeatures::EIP7702_AUTH_BAD_CHAIN);
             }
             if auth.nonce() != 1 {
-                features.push("eip7702_auth_bad_nonce".to_string());
+                features.insert(FuzzFeatures::EIP7702_AUTH_BAD_NONCE);
             }
             if auth.address() != &EIP7702_DELEGATED_TARGET {
-                features.push("eip7702_auth_alt_delegate".to_string());
+                features.insert(FuzzFeatures::EIP7702_AUTH_ALT_DELEGATE);
             }
         }
     }
@@ -439,20 +439,22 @@ fn add_eip7702_accounts<'a>(
             balance: U256::from(1_000),
             nonce: 0,
             code: tiny_callee_code(rng, SpecId::PRAGUE),
-            storage: BTreeMap::new(),
+            storage: HashMap::default(),
         },
     );
 
     let authority = fixed_eip7702_authority();
     accounts.retain(|account| account.address != authority);
     match rng.range(5) {
-        0 => features.push("eip7702_authority_missing".to_string()),
+        0 => {
+            features.insert(FuzzFeatures::EIP7702_AUTHORITY_MISSING);
+        }
         1 => {
-            features.push("eip7702_authority_valid".to_string());
+            features.insert(FuzzFeatures::EIP7702_AUTHORITY_VALID);
             accounts.push(eip7702_authority_account(authority, 1, Bytes::new()));
         }
         2 => {
-            features.push("eip7702_authority_bad_nonce".to_string());
+            features.insert(FuzzFeatures::EIP7702_AUTHORITY_BAD_NONCE);
             accounts.push(eip7702_authority_account(
                 authority,
                 rng.pick(&[2, u64::MAX]),
@@ -460,11 +462,11 @@ fn add_eip7702_accounts<'a>(
             ));
         }
         3 => {
-            features.push("eip7702_authority_regular_code".to_string());
+            features.insert(FuzzFeatures::EIP7702_AUTHORITY_REGULAR_CODE);
             accounts.push(eip7702_authority_account(authority, 1, Bytes::from_static(&[op::STOP])));
         }
         _ => {
-            features.push("eip7702_authority_delegated".to_string());
+            features.insert(FuzzFeatures::EIP7702_AUTHORITY_DELEGATED);
             accounts.push(eip7702_authority_account(
                 authority,
                 1,
@@ -479,8 +481,8 @@ fn upsert_account(accounts: &mut Vec<CaseAccount>, account: CaseAccount) {
     accounts.push(account);
 }
 
-const fn eip7702_authority_account(address: Address, nonce: u64, code: Bytes) -> CaseAccount {
-    CaseAccount { address, balance: U256::ZERO, nonce, code, storage: BTreeMap::new() }
+fn eip7702_authority_account(address: Address, nonce: u64, code: Bytes) -> CaseAccount {
+    CaseAccount { address, balance: U256::ZERO, nonce, code, storage: HashMap::default() }
 }
 
 fn eip7702_designation(address: Address) -> Bytes {
@@ -537,7 +539,7 @@ impl CaseTx {
         input_len: usize,
         nonce: u64,
     ) -> Self {
-        let kind = TxKindCase::generate(rng, spec);
+        let kind = FuzzTxKind::generate(rng, spec);
         let direct_precompile = rng.one_in(10).then(|| precompile::random_target(rng, spec));
         let creates = direct_precompile.is_none() && kind.supports_create() && rng.one_in(8);
         Self {
@@ -545,13 +547,13 @@ impl CaseTx {
             caller: CALLER,
             target: if let Some(precompile) = direct_precompile {
                 precompile.address()
-            } else if kind == TxKindCase::Eip7702 && rng.one_in(4) {
+            } else if kind == FuzzTxKind::Eip7702 && rng.one_in(4) {
                 fixed_eip7702_authority()
             } else {
                 TARGET
             },
             creates,
-            gas_limit: if kind == TxKindCase::Eip7702 {
+            gas_limit: if kind == FuzzTxKind::Eip7702 {
                 rng.pick(&[60_000, 100_000, 250_000, 1_000_000])
             } else if creates {
                 rng.pick(&[80_000, 100_000, 250_000, 1_000_000])
@@ -570,14 +572,14 @@ impl CaseTx {
             nonce,
             access_list: generate_access_list(rng, accounts),
             blob_hashes: vec![versioned_hash(rng)],
-            authorization_list: (kind == TxKindCase::Eip7702)
+            authorization_list: (kind == FuzzTxKind::Eip7702)
                 .then(|| generate_eip7702_authorization_list(rng)),
         }
     }
 
     pub(crate) fn evm2(&self) -> RecoveredTxEnvelope {
         match self.kind {
-            TxKindCase::Legacy => Recovered::new_unchecked(
+            FuzzTxKind::Legacy => Recovered::new_unchecked(
                 TxEnvelope::Legacy(TxLegacy {
                     nonce: self.nonce,
                     gas_price: self.gas_price,
@@ -589,7 +591,7 @@ impl CaseTx {
                 }),
                 self.caller,
             ),
-            TxKindCase::Eip2930 => Recovered::new_unchecked(
+            FuzzTxKind::Eip2930 => Recovered::new_unchecked(
                 TxEnvelope::Eip2930(TxEip2930 {
                     chain_id: 1,
                     nonce: self.nonce,
@@ -602,7 +604,7 @@ impl CaseTx {
                 }),
                 self.caller,
             ),
-            TxKindCase::Eip1559 => Recovered::new_unchecked(
+            FuzzTxKind::Eip1559 => Recovered::new_unchecked(
                 TxEnvelope::Eip1559(TxEip1559 {
                     chain_id: 1,
                     nonce: self.nonce,
@@ -616,7 +618,7 @@ impl CaseTx {
                 }),
                 self.caller,
             ),
-            TxKindCase::Eip4844 => Recovered::new_unchecked(
+            FuzzTxKind::Eip4844 => Recovered::new_unchecked(
                 TxEnvelope::Eip4844(TxEip4844Variant::TxEip4844(TxEip4844 {
                     chain_id: 1,
                     nonce: self.nonce,
@@ -632,7 +634,7 @@ impl CaseTx {
                 })),
                 self.caller,
             ),
-            TxKindCase::Eip7702 => Recovered::new_unchecked(
+            FuzzTxKind::Eip7702 => Recovered::new_unchecked(
                 TxEnvelope::Eip7702(
                     TxEip7702 {
                         chain_id: 1,
@@ -654,7 +656,7 @@ impl CaseTx {
     }
 
     pub(crate) fn eip7702_authorization_list(&self) -> Vec<SignedAuthorization> {
-        if self.kind == TxKindCase::Eip7702 {
+        if self.kind == FuzzTxKind::Eip7702 {
             self.authorization_list.clone().unwrap_or_else(|| vec![fixed_eip7702_auth()])
         } else {
             Vec::new()
@@ -669,7 +671,7 @@ impl CaseTx {
         if self.creates { None } else { precompile::target_for_address(self.target) }
     }
 
-    pub(crate) fn precompile_input_shape(&self, precompile: PrecompileTarget) -> &'static str {
+    pub(crate) fn precompile_input_shape(&self, precompile: PrecompileTarget) -> FuzzFeatures {
         precompile::input_shape(precompile, self.input.len())
     }
 
@@ -684,11 +686,11 @@ impl CaseTx {
     pub(crate) fn revm(&self) -> RevmTxEnv {
         RevmTxEnv {
             tx_type: match self.kind {
-                TxKindCase::Legacy => 0,
-                TxKindCase::Eip2930 => 1,
-                TxKindCase::Eip1559 => 2,
-                TxKindCase::Eip4844 => 3,
-                TxKindCase::Eip7702 => 4,
+                FuzzTxKind::Legacy => 0,
+                FuzzTxKind::Eip2930 => 1,
+                FuzzTxKind::Eip1559 => 2,
+                FuzzTxKind::Eip4844 => 3,
+                FuzzTxKind::Eip7702 => 4,
             },
             caller: self.caller,
             gas_limit: self.gas_limit,
@@ -698,19 +700,19 @@ impl CaseTx {
             data: self.input.clone(),
             nonce: self.nonce,
             chain_id: match self.kind {
-                TxKindCase::Legacy => None,
-                TxKindCase::Eip2930
-                | TxKindCase::Eip1559
-                | TxKindCase::Eip4844
-                | TxKindCase::Eip7702 => Some(1),
+                FuzzTxKind::Legacy => None,
+                FuzzTxKind::Eip2930
+                | FuzzTxKind::Eip1559
+                | FuzzTxKind::Eip4844
+                | FuzzTxKind::Eip7702 => Some(1),
             },
             access_list: self.access_list.clone(),
             gas_priority_fee: match self.kind {
-                TxKindCase::Eip1559 | TxKindCase::Eip4844 | TxKindCase::Eip7702 => Some(0),
-                TxKindCase::Legacy | TxKindCase::Eip2930 => None,
+                FuzzTxKind::Eip1559 | FuzzTxKind::Eip4844 | FuzzTxKind::Eip7702 => Some(0),
+                FuzzTxKind::Legacy | FuzzTxKind::Eip2930 => None,
             },
             blob_hashes: self.blob_hashes.clone(),
-            max_fee_per_blob_gas: if self.kind == TxKindCase::Eip4844 { 1 } else { 0 },
+            max_fee_per_blob_gas: if self.kind == FuzzTxKind::Eip4844 { 1 } else { 0 },
             ..RevmTxEnv::default()
         }
     }
@@ -722,7 +724,17 @@ pub(crate) struct CaseAccount {
     pub(crate) balance: U256,
     pub(crate) nonce: u64,
     pub(crate) code: Bytes,
-    pub(crate) storage: BTreeMap<U256, U256>,
+    #[serde(serialize_with = "serialize_storage")]
+    pub(crate) storage: HashMap<U256, U256>,
+}
+
+fn serialize_storage<S: Serializer>(
+    storage: &HashMap<U256, U256>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let mut entries = storage.iter().collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|&(key, _)| key);
+    serializer.collect_map(entries)
 }
 
 mod spec_serde {
@@ -784,5 +796,22 @@ mod spec_serde {
             "AMSTERDAM" => Some(SpecId::AMSTERDAM),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_serialization_is_canonical() {
+        let mut case = EvmCase::generate(&mut Gen::new(1));
+        case.accounts[0].storage = (0..32).map(|key| (U256::from(key), U256::ONE)).collect();
+        let json = serde_json::to_vec(&case).unwrap();
+        case.accounts[0].storage = (0..32).rev().map(|key| (U256::from(key), U256::ONE)).collect();
+        assert_eq!(serde_json::to_vec(&case).unwrap(), json);
+        let decoded = serde_json::from_slice::<EvmCase>(&json).unwrap();
+        assert_eq!(decoded, case);
+        assert_eq!(serde_json::to_vec(&decoded).unwrap(), json);
     }
 }

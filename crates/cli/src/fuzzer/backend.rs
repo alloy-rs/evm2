@@ -1,8 +1,8 @@
 use crate::fuzzer::{
-    case::{EvmCase, TxKindCase},
+    case::{EvmCase, FuzzTxKind},
     normalize::{
-        Outcome, OutcomeKind, TxReceipt, apply_account_changes, canonical_accounts, canonical_log,
-        state_from_evm2_changes, state_from_revm,
+        FuzzOutcomeKind, Outcome, TxReceipt, apply_account_changes, canonical_accounts,
+        canonical_log, state_from_evm2_changes, state_from_revm,
     },
 };
 use evm2::{
@@ -43,10 +43,7 @@ impl EvmBackend for Evm2Backend {
         );
         let mut receipts = Vec::new();
         for tx in case.txs() {
-            let result = evm
-                .transact(&tx.evm2())
-                .map(|executed| executed.detach())
-                .map_err(|err| format!("{err:?}"));
+            let result = evm.transact(&tx.evm2()).map(|executed| executed.detach());
             match result {
                 Ok(result) => {
                     let tx_result = &result.result;
@@ -58,9 +55,9 @@ impl EvmBackend for Evm2Backend {
                     evm.commit_source(&result.pending_state);
                     receipts.push(TxReceipt {
                         kind: if tx_result.status {
-                            OutcomeKind::Success
+                            FuzzOutcomeKind::Success
                         } else {
-                            OutcomeKind::RevertOrHalt
+                            FuzzOutcomeKind::RevertOrHalt
                         },
                         gas_used: Some(tx_result.tx_gas_used()),
                         output,
@@ -70,7 +67,7 @@ impl EvmBackend for Evm2Backend {
                     });
                 }
                 Err(err) => {
-                    receipts.push(TxReceipt::error(err));
+                    receipts.push(TxReceipt::error(err.into()));
                     break;
                 }
             }
@@ -100,16 +97,16 @@ impl EvmBackend for RevmBackend {
         let mut accounts = canonical_accounts(case);
         for tx in case.txs() {
             let mut tx_env = tx.revm();
-            if tx.kind == TxKindCase::Eip7702 {
+            if tx.kind == FuzzTxKind::Eip7702 {
                 tx_env.authorization_list =
                     tx.eip7702_authorization_list().into_iter().map(Either::Left).collect();
             }
             match evm.transact(tx_env) {
                 Ok(result) => {
                     let kind = if result.result.is_success() {
-                        OutcomeKind::Success
+                        FuzzOutcomeKind::Success
                     } else {
-                        OutcomeKind::RevertOrHalt
+                        FuzzOutcomeKind::RevertOrHalt
                     };
                     let state = result.state;
                     let canonical_state = state_from_revm(state.clone(), &accounts);
@@ -126,7 +123,7 @@ impl EvmBackend for RevmBackend {
                     receipts.push(receipt);
                 }
                 Err(err) => {
-                    receipts.push(TxReceipt::error(format!("{err:?}")));
+                    receipts.push(TxReceipt::error(err.into()));
                     break;
                 }
             }

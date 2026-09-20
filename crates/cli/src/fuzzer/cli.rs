@@ -22,11 +22,11 @@ pub(crate) struct Options {
     )]
     pub(crate) threads: usize,
     #[command(subcommand)]
-    pub(crate) command: Option<Command>,
+    pub(crate) command: Option<FuzzCommand>,
 }
 
 #[derive(Clone, Debug, Subcommand)]
-pub(crate) enum Command {
+pub(crate) enum FuzzCommand {
     /// Generate deterministic structured cases and compare all backends.
     Generate,
     /// Replay one saved JSON case.
