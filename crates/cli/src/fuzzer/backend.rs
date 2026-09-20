@@ -1,12 +1,13 @@
 use crate::fuzzer::{
     case::{EvmCase, FuzzTxKind},
     normalize::{
-        FuzzOutcomeKind, Outcome, TxReceipt, apply_account_changes, canonical_accounts,
-        canonical_log, state_from_evm2_changes, state_from_revm,
+        CanonicalAccount, CanonicalState, FuzzOutcomeKind, Outcome, TxReceipt,
+        apply_account_changes, canonical_accounts, canonical_log, state_from_revm,
     },
 };
+use alloy_primitives::{Address, map::HashMap};
 use evm2::{
-    BaseEvmTypes, Evm, Precompiles, SpecId,
+    BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
     bytecode::Bytecode,
     ethereum::ethereum_tx_registry,
     evm::{AccountInfo as Evm2AccountInfo, InMemoryDB},
@@ -23,36 +24,53 @@ use revm::{
 pub(crate) trait EvmBackend {
     fn name(&self) -> &'static str;
 
-    fn run(&self, case: &EvmCase) -> Outcome;
+    fn run(&mut self, case: &EvmCase) -> Outcome;
 }
 
-pub(crate) struct Evm2Backend;
+#[derive(Default)]
+pub(crate) struct Evm2Backend {
+    evm: Option<Evm<'static, BaseEvmTypes>>,
+}
 
 impl EvmBackend for Evm2Backend {
     fn name(&self) -> &'static str {
         "evm2"
     }
 
-    fn run(&self, case: &EvmCase) -> Outcome {
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            case.spec,
-            case.block.evm2(),
-            ethereum_tx_registry(case.spec),
-            evm2_db(case),
-            Precompiles::base(case.spec),
-        );
-        let mut receipts = Vec::new();
+    fn run(&mut self, case: &EvmCase) -> Outcome {
+        let evm = if let Some(evm) = &mut self.evm {
+            evm.set_block(case.block.evm2());
+            if evm.spec_id() != case.spec {
+                evm.set_execution_config(
+                    BaseEvmConfigSelector::execution_config(case.spec),
+                    case.spec,
+                    ethereum_tx_registry(case.spec),
+                    Precompiles::base(case.spec),
+                );
+            }
+            evm.set_database(evm2_db(case));
+            evm
+        } else {
+            self.evm.insert(Evm::new(
+                case.spec,
+                case.block.evm2(),
+                ethereum_tx_registry(case.spec),
+                evm2_db(case),
+                Precompiles::base(case.spec),
+            ))
+        };
+        let mut receipts = Vec::with_capacity(1 + case.extra_txs.len());
         for tx in case.txs() {
-            let result = evm.transact(&tx.evm2()).map(|executed| executed.detach());
+            let result = evm.transact(&tx.evm2());
             match result {
                 Ok(result) => {
-                    let tx_result = &result.result;
+                    let mut state = CanonicalState::default();
+                    let Ok(tx_result) = result.commit_with(&mut state);
                     let output = if tx_result.status || tx_result.stop == InstrStop::Revert {
                         Some(tx_result.output.to_vec())
                     } else {
                         None
                     };
-                    evm.commit_source(&result.pending_state);
                     receipts.push(TxReceipt {
                         kind: if tx_result.status {
                             FuzzOutcomeKind::Success
@@ -62,7 +80,7 @@ impl EvmBackend for Evm2Backend {
                         gas_used: Some(tx_result.tx_gas_used()),
                         output,
                         logs: tx_result.logs.iter().map(canonical_log).collect(),
-                        state: state_from_evm2_changes(&result.pending_state),
+                        state,
                         error: None,
                     });
                 }
@@ -76,25 +94,40 @@ impl EvmBackend for Evm2Backend {
     }
 }
 
-pub(crate) struct RevmBackend;
+type RevmExecutor = revm::MainnetEvm<revm::handler::MainnetContext<RevmState<RevmInMemoryDB>>>;
+
+#[derive(Default)]
+pub(crate) struct RevmBackend {
+    evm: Option<RevmExecutor>,
+    accounts: HashMap<Address, CanonicalAccount>,
+}
 
 impl EvmBackend for RevmBackend {
     fn name(&self) -> &'static str {
         "revm"
     }
 
-    fn run(&self, case: &EvmCase) -> Outcome {
+    fn run(&mut self, case: &EvmCase) -> Outcome {
         let mut cfg = CfgEnv::new();
         cfg.set_spec_and_mainnet_gas_params(revm_spec(case.spec));
         cfg = cfg.disable_tx_chain_id_check();
-        let mut evm = Context::mainnet()
+        let context = Context::mainnet()
             .with_cfg(cfg)
             .with_block(case.block.revm())
-            .with_db(RevmState::builder().with_database(revm_db(case)).build())
-            .build_mainnet();
+            .with_db(RevmState::builder().with_database(revm_db(case)).build());
+        let evm = if let Some(evm) = &mut self.evm {
+            evm.ctx = context;
+            evm.instruction = revm::handler::instructions::EthInstructions::new_mainnet_with_spec(
+                revm_spec(case.spec),
+            );
+            evm
+        } else {
+            self.evm.insert(context.build_mainnet())
+        };
 
-        let mut receipts = Vec::new();
-        let mut accounts = canonical_accounts(case);
+        let mut receipts = Vec::with_capacity(1 + case.extra_txs.len());
+        let accounts = &mut self.accounts;
+        canonical_accounts(case, accounts);
         for tx in case.txs() {
             let mut tx_env = tx.revm();
             if tx.kind == FuzzTxKind::Eip7702 {
@@ -109,7 +142,7 @@ impl EvmBackend for RevmBackend {
                         FuzzOutcomeKind::RevertOrHalt
                     };
                     let state = result.state;
-                    let canonical_state = state_from_revm(state.clone(), &accounts);
+                    let canonical_state = state_from_revm(&state, accounts);
                     let receipt = TxReceipt {
                         kind,
                         gas_used: Some(result.result.tx_gas_used()),
@@ -119,7 +152,7 @@ impl EvmBackend for RevmBackend {
                         error: None,
                     };
                     evm.commit(state);
-                    apply_account_changes(&mut accounts, &receipt.state);
+                    apply_account_changes(accounts, &receipt.state);
                     receipts.push(receipt);
                 }
                 Err(err) => {
@@ -187,5 +220,25 @@ const fn revm_spec(spec: SpecId) -> RevmSpecId {
         SpecId::OSAKA => RevmSpecId::OSAKA,
         SpecId::AMSTERDAM => RevmSpecId::AMSTERDAM,
         _ => RevmSpecId::CANCUN,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fuzzer::{case::CaseGenerator, rng::Gen};
+
+    #[test]
+    fn reused_backends_match_fresh_executors() {
+        let mut generator = CaseGenerator::default();
+        let mut evm2 = Evm2Backend::default();
+        let mut revm = RevmBackend::default();
+        for seed in 0..512 {
+            let case = generator.generate(&mut Gen::new(seed));
+            let expected = RevmBackend::default().run(case);
+            assert_eq!(revm.run(case), expected, "revm seed {seed}");
+            assert_eq!(Evm2Backend::default().run(case), expected, "fresh evm2 seed {seed}");
+            assert_eq!(evm2.run(case), expected, "reused evm2 seed {seed}");
+        }
     }
 }

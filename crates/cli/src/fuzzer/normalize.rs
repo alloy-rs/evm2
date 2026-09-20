@@ -1,10 +1,7 @@
 use crate::fuzzer::case::EvmCase;
 use alloy_primitives::{Address, B256, U256, keccak256, map::HashMap};
 use core::convert::Infallible;
-use evm2::evm::{
-    AccountChangeRef, PendingState, StateChangeSink, StateChangeSource, StorageChange,
-    registry::HandlerError,
-};
+use evm2::evm::{AccountChangeRef, StateChangeSink, StorageChange, registry::HandlerError};
 use revm::{
     context_interface::result::{EVMError, InvalidTransaction},
     database::bal::EvmDatabaseError,
@@ -217,53 +214,45 @@ impl From<EVMError<EvmDatabaseError<Infallible>>> for FuzzError {
     }
 }
 
-pub(crate) fn state_from_evm2_changes(pending: &PendingState) -> CanonicalState {
-    struct Collector(CanonicalState);
+impl StateChangeSink for CanonicalState {
+    type Error = Infallible;
 
-    impl StateChangeSink for Collector {
-        type Error = Infallible;
-
-        fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
-            // A created-then-destroyed account (e.g. a CREATE whose init code selfdestructs) ends
-            // the transaction absent with no transaction-boundary original, a net no-op. revm's
-            // `state_from_revm` omits such an account, so drop the spurious `None` deletion here to
-            // keep the two backends' diffs symmetric.
-            if change.current.is_none() && change.original.is_none() {
-                return Ok(());
-            }
-            let account = change.current.map(|info| CanonicalAccount {
-                balance: info.balance,
-                nonce: info.nonce,
-                code_hash: info.code_hash,
-            });
-            self.0.accounts.insert(change.address, account);
-            Ok(())
+    fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+        // A created-then-destroyed account (e.g. a CREATE whose init code selfdestructs) ends
+        // the transaction absent with no transaction-boundary original, a net no-op. revm's
+        // `state_from_revm` omits such an account, so drop the spurious `None` deletion here to
+        // keep the two backends' diffs symmetric.
+        if change.current.is_none() && change.original.is_none() {
+            return Ok(());
         }
-
-        fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
-            if !change.current.is_zero() {
-                self.0.storage.insert((change.address, change.key), change.current);
-            }
-            Ok(())
-        }
+        let account = change.current.map(|info| CanonicalAccount {
+            balance: info.balance,
+            nonce: info.nonce,
+            code_hash: info.code_hash,
+        });
+        self.accounts.insert(change.address, account);
+        Ok(())
     }
 
-    let mut collector = Collector(CanonicalState::default());
-    let Ok(()) = pending.visit(&mut collector);
-    collector.0
+    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+        if !change.current.is_zero() {
+            self.storage.insert((change.address, change.key), change.current);
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn state_from_revm(
-    state: revm::state::EvmState,
+    state: &revm::state::EvmState,
     original_accounts: &HashMap<Address, CanonicalAccount>,
 ) -> CanonicalState {
     let mut canonical = CanonicalState::default();
-    for (address, account) in state {
-        let changed_storage_slots = account.changed_storage_slots().collect::<Vec<_>>();
+    for (&address, account) in state {
+        let mut changed_storage_slots = account.changed_storage_slots().peekable();
         if !account.is_touched()
             && !account.is_created()
             && !account.is_selfdestructed()
-            && changed_storage_slots.is_empty()
+            && changed_storage_slots.peek().is_none()
         {
             continue;
         }
@@ -306,20 +295,21 @@ pub(crate) fn state_from_revm(
     canonical
 }
 
-pub(crate) fn canonical_accounts(case: &EvmCase) -> HashMap<Address, CanonicalAccount> {
-    case.accounts
-        .iter()
-        .map(|account| {
-            (
-                account.address,
-                CanonicalAccount {
-                    balance: account.balance,
-                    nonce: account.nonce,
-                    code_hash: keccak256(&account.code),
-                },
-            )
-        })
-        .collect()
+pub(crate) fn canonical_accounts(
+    case: &EvmCase,
+    accounts: &mut HashMap<Address, CanonicalAccount>,
+) {
+    accounts.clear();
+    accounts.extend(case.accounts.iter().map(|account| {
+        (
+            account.address,
+            CanonicalAccount {
+                balance: account.balance,
+                nonce: account.nonce,
+                code_hash: keccak256(&account.code),
+            },
+        )
+    }));
 }
 
 pub(crate) fn apply_account_changes(

@@ -34,7 +34,7 @@ const CALLER_BALANCE: U256 = U256::from_limbs([0, 0, 1, 0]);
 const EIP7702_DELEGATED_TARGET: Address =
     Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct EvmCase {
     #[serde(with = "spec_serde")]
     pub(crate) spec: SpecId,
@@ -51,9 +51,52 @@ impl EvmCase {
     pub(crate) fn txs(&self) -> impl Iterator<Item = &CaseTx> {
         core::iter::once(&self.tx).chain(self.extra_txs.iter())
     }
+}
 
-    pub(crate) fn generate(rng: &mut Gen) -> Self {
-        let spec = match rng.range(13) {
+pub(crate) struct CaseGenerator {
+    case: EvmCase,
+    program: Program,
+    address_pool: Vec<Address>,
+    call_pool: Vec<Address>,
+}
+
+impl Default for CaseGenerator {
+    fn default() -> Self {
+        let mut address_pool = vec![
+            CALLER,
+            TARGET,
+            BENEFICIARY,
+            fixed_eip7702_authority(),
+            EIP7702_DELEGATED_TARGET,
+            Address::ZERO,
+            Address::new([0xff; 20]),
+        ];
+        address_pool.extend((1..=10).map(Address::with_last_byte));
+        let mut call_pool =
+            precompile::targets().iter().map(|target| target.address()).collect::<Vec<_>>();
+        call_pool.extend([CALLER, fixed_eip7702_authority(), EIP7702_DELEGATED_TARGET]);
+        call_pool.extend((1..=4).map(Address::with_last_byte));
+        let case = EvmCase {
+            accounts: vec![
+                CaseAccount { address: CALLER, balance: CALLER_BALANCE, ..Default::default() },
+                CaseAccount {
+                    address: TARGET,
+                    balance: U256::from(1_000_000),
+                    nonce: 1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        Self { case, program: Program::default(), address_pool, call_pool }
+    }
+}
+
+impl CaseGenerator {
+    pub(crate) fn generate(&mut self, rng: &mut Gen) -> &EvmCase {
+        let Self { case, program, address_pool, call_pool } = self;
+        let EvmCase { spec, block, tx, extra_txs, features, accounts } = case;
+        *spec = match rng.range(13) {
             0 => SpecId::FRONTIER,
             1 => SpecId::HOMESTEAD,
             2 => SpecId::TANGERINE,
@@ -68,98 +111,64 @@ impl EvmCase {
             11 => SpecId::OSAKA,
             _ => SpecId::AMSTERDAM,
         };
-        let block = CaseBlock::generate(rng, spec);
-        let mut extra_accounts = Vec::new();
-        for i in 0..rng.range_inclusive(0, 4) {
-            let mut callee_storage = HashMap::default();
+        let spec = *spec;
+        *block = CaseBlock::generate(rng, spec);
+        let extra_accounts = rng.range_inclusive(0, 4);
+        accounts.resize_with(2 + extra_accounts, CaseAccount::default);
+        for (i, account) in accounts[2..].iter_mut().enumerate() {
+            account.storage.clear();
             if rng.one_in(2) {
-                callee_storage.insert(rng.biased_word(), rng.biased_word());
+                account.storage.insert(rng.biased_word(), rng.biased_word());
             }
-            extra_accounts.push(CaseAccount {
-                address: Address::with_last_byte(0x40 + i as u8),
-                balance: rng.small_word(10_000),
-                nonce: rng.range_inclusive(0, 3) as u64,
-                code: tiny_callee_code(rng, spec),
-                storage: callee_storage,
-            });
+            account.address = Address::with_last_byte(0x40 + i as u8);
+            account.balance = rng.small_word(10_000);
+            account.nonce = rng.range_inclusive(0, 3) as u64;
+            account.code = tiny_callee_code(rng, spec);
         }
-        let eip7702_authority = fixed_eip7702_authority();
-        let mut address_pool = vec![
-            CALLER,
-            TARGET,
-            BENEFICIARY,
-            eip7702_authority,
-            EIP7702_DELEGATED_TARGET,
-            Address::ZERO,
-            Address::new([0xff; 20]),
-        ];
-
-        for i in 1..=10 {
-            address_pool.push(Address::with_last_byte(i));
+        if address_pool.len() != 7 + 10 + extra_accounts + precompile::targets().len() + 3 {
+            address_pool.truncate(7 + 10);
+            call_pool.truncate(precompile::targets().len() + 3 + 4);
+            for account in &accounts[2..] {
+                address_pool.push(account.address);
+            }
+            for precompile in precompile::targets() {
+                address_pool.push(precompile.address());
+            }
+            for account in &accounts[2..] {
+                call_pool.push(account.address);
+            }
+            for i in 0..3 {
+                let address = Address::with_last_byte(0x80 + i);
+                address_pool.push(address);
+                call_pool.push(address);
+            }
         }
-        for account in &extra_accounts {
-            address_pool.push(account.address);
-        }
-        let mut call_pool = Vec::new();
-        for precompile in precompile::targets() {
-            address_pool.push(precompile.address());
-            call_pool.push(precompile.address());
-        }
-        call_pool.push(CALLER);
-        call_pool.push(eip7702_authority);
-        call_pool.push(EIP7702_DELEGATED_TARGET);
-        for i in 1..=4 {
-            call_pool.push(Address::with_last_byte(i));
-        }
-        for account in &extra_accounts {
-            call_pool.push(account.address);
-        }
-        for i in 0..3 {
-            let address = Address::with_last_byte(0x80 + i);
-            address_pool.push(address);
-            call_pool.push(address);
-        }
-        let (program, mut features) =
-            Program::generate(rng, spec, &address_pool, &call_pool).into_parts();
-        let mut storage = HashMap::default();
+        let (program, program_features) = program.generate(rng, spec, address_pool, call_pool);
+        *features = program_features;
+        let target = &mut accounts[1];
+        target.code = program;
+        target.storage.clear();
         for _ in 0..rng.range_inclusive(0, 4) {
-            storage.insert(rng.biased_word(), rng.biased_word());
+            target.storage.insert(rng.biased_word(), rng.biased_word());
         }
-        let mut accounts = vec![
-            CaseAccount {
-                address: CALLER,
-                balance: CALLER_BALANCE,
-                nonce: 0,
-                code: Bytes::new(),
-                storage: HashMap::default(),
-            },
-            CaseAccount {
-                address: TARGET,
-                balance: U256::from(1_000_000),
-                nonce: 1,
-                code: program,
-                storage,
-            },
-        ];
-        accounts.extend(extra_accounts);
         let input_len = rng.range_inclusive(0, 64);
-        let tx = CaseTx::generate(rng, spec, &accounts, input_len, 0);
-        let mut extra_txs = Vec::new();
-        for nonce in 1..=rng.range_inclusive(0, 3) as u64 {
+        tx.generate(rng, spec, accounts, input_len, 0);
+        extra_txs.resize_with(rng.range_inclusive(0, 3), CaseTx::default);
+        for (i, tx) in extra_txs.iter_mut().enumerate() {
             let input_len = rng.range_inclusive(0, 64);
-            extra_txs.push(CaseTx::generate(rng, spec, &accounts, input_len, nonce));
+            tx.generate(rng, spec, accounts, input_len, i as u64 + 1);
         }
         add_eip7702_accounts(
             rng,
-            &mut accounts,
-            core::iter::once(&tx).chain(&extra_txs),
-            &mut features,
+            accounts,
+            core::iter::once(&*tx).chain(extra_txs.iter()),
+            features,
         );
-        Self { spec, block, tx, extra_txs, features, accounts }
+        case
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct CaseBlock {
     pub(crate) number: U256,
     pub(crate) timestamp: U256,
@@ -250,7 +259,7 @@ impl CaseBlock {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct CaseTx {
     #[serde(default)]
     pub(crate) kind: FuzzTxKind,
@@ -341,20 +350,19 @@ impl FuzzTxKind {
     }
 }
 
-fn generate_access_list(rng: &mut Gen, accounts: &[CaseAccount]) -> AccessList {
-    let mut items = Vec::new();
-    for _ in 0..rng.range_inclusive(0, 3) {
+fn generate_access_list(rng: &mut Gen, accounts: &[CaseAccount], list: &mut AccessList) {
+    list.0.resize_with(rng.range_inclusive(0, 3), AccessListItem::default);
+    for item in &mut list.0 {
         let account = &accounts[rng.range(accounts.len())];
-        let mut storage_keys = Vec::new();
+        item.address = account.address;
+        item.storage_keys.clear();
         for key in account.storage.keys().take(rng.range_inclusive(0, 3)) {
-            storage_keys.push(B256::from(key.to_be_bytes::<32>()));
+            item.storage_keys.push(B256::from(key.to_be_bytes::<32>()));
         }
-        if storage_keys.is_empty() && rng.one_in(2) {
-            storage_keys.push(B256::from(rng.biased_word().to_be_bytes::<32>()));
+        if item.storage_keys.is_empty() && rng.one_in(2) {
+            item.storage_keys.push(B256::from(rng.biased_word().to_be_bytes::<32>()));
         }
-        items.push(AccessListItem { address: account.address, storage_keys });
     }
-    AccessList(items)
 }
 
 fn versioned_hash(rng: &mut Gen) -> B256 {
@@ -363,13 +371,13 @@ fn versioned_hash(rng: &mut Gen) -> B256 {
     B256::from_slice(&hash)
 }
 
-fn generate_eip7702_authorization_list(rng: &mut Gen) -> Vec<SignedAuthorization> {
+fn generate_eip7702_authorization_list(rng: &mut Gen, list: &mut Vec<SignedAuthorization>) {
     if rng.one_in(16) {
-        return Vec::new();
+        return;
     }
 
     let len = rng.range_inclusive(1, 3);
-    (0..len).map(|_| generate_eip7702_authorization(rng)).collect()
+    list.extend((0..len).map(|_| generate_eip7702_authorization(rng)));
 }
 
 fn generate_eip7702_authorization(rng: &mut Gen) -> SignedAuthorization {
@@ -403,8 +411,8 @@ fn add_eip7702_accounts<'a>(
     txs: impl Iterator<Item = &'a CaseTx>,
     features: &mut FuzzFeatures,
 ) {
-    let eip7702_txs = txs.filter(|tx| tx.kind == FuzzTxKind::Eip7702).collect::<Vec<_>>();
-    if eip7702_txs.is_empty() {
+    let mut eip7702_txs = txs.filter(|tx| tx.kind == FuzzTxKind::Eip7702).peekable();
+    if eip7702_txs.peek().is_none() {
         return;
     }
 
@@ -533,47 +541,52 @@ fn signed_eip7702_auth(auth: Authorization) -> SignedAuthorization {
 
 impl CaseTx {
     fn generate(
+        &mut self,
         rng: &mut Gen,
         spec: SpecId,
         accounts: &[CaseAccount],
         input_len: usize,
         nonce: u64,
-    ) -> Self {
+    ) {
         let kind = FuzzTxKind::generate(rng, spec);
         let direct_precompile = rng.one_in(10).then(|| precompile::random_target(rng, spec));
         let creates = direct_precompile.is_none() && kind.supports_create() && rng.one_in(8);
-        Self {
-            kind,
-            caller: CALLER,
-            target: if let Some(precompile) = direct_precompile {
-                precompile.address()
-            } else if kind == FuzzTxKind::Eip7702 && rng.one_in(4) {
-                fixed_eip7702_authority()
-            } else {
-                TARGET
-            },
-            creates,
-            gas_limit: if kind == FuzzTxKind::Eip7702 {
-                rng.pick(&[60_000, 100_000, 250_000, 1_000_000])
-            } else if creates {
-                rng.pick(&[80_000, 100_000, 250_000, 1_000_000])
-            } else {
-                rng.pick(&[60_000, 80_000, 100_000, 250_000, 1_000_000])
-            },
-            gas_price: 1,
-            value: if rng.one_in(8) { rng.small_word(10) } else { U256::ZERO },
-            input: if creates {
-                creation_input(rng, spec)
-            } else if let Some(precompile) = direct_precompile {
-                precompile::input(rng, precompile).bytes
-            } else {
-                rng.bytes(input_len).into()
-            },
-            nonce,
-            access_list: generate_access_list(rng, accounts),
-            blob_hashes: vec![versioned_hash(rng)],
-            authorization_list: (kind == FuzzTxKind::Eip7702)
-                .then(|| generate_eip7702_authorization_list(rng)),
+        self.kind = kind;
+        self.caller = CALLER;
+        self.target = if let Some(precompile) = direct_precompile {
+            precompile.address()
+        } else if kind == FuzzTxKind::Eip7702 && rng.one_in(4) {
+            fixed_eip7702_authority()
+        } else {
+            TARGET
+        };
+        self.creates = creates;
+        self.gas_limit = if kind == FuzzTxKind::Eip7702 {
+            rng.pick(&[60_000, 100_000, 250_000, 1_000_000])
+        } else if creates {
+            rng.pick(&[80_000, 100_000, 250_000, 1_000_000])
+        } else {
+            rng.pick(&[60_000, 80_000, 100_000, 250_000, 1_000_000])
+        };
+        self.gas_price = 1;
+        self.value = if rng.one_in(8) { rng.small_word(10) } else { U256::ZERO };
+        self.input = if creates {
+            creation_input(rng, spec)
+        } else if let Some(precompile) = direct_precompile {
+            precompile::input(rng, precompile).bytes
+        } else {
+            rng.bytes(input_len).into()
+        };
+        self.nonce = nonce;
+        generate_access_list(rng, accounts, &mut self.access_list);
+        self.blob_hashes.clear();
+        self.blob_hashes.push(versioned_hash(rng));
+        if kind == FuzzTxKind::Eip7702 {
+            let list = self.authorization_list.get_or_insert_default();
+            list.clear();
+            generate_eip7702_authorization_list(rng, list);
+        } else {
+            self.authorization_list = None;
         }
     }
 
@@ -718,7 +731,7 @@ impl CaseTx {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct CaseAccount {
     pub(crate) address: Address,
     pub(crate) balance: U256,
@@ -804,8 +817,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn regeneration_matches_fresh_case() {
+        let mut generator = CaseGenerator::default();
+        for seed in 0..512 {
+            let mut rng = Gen::new(seed);
+            let mut fresh_rng = Gen::new(seed);
+            let mut reused = generator.generate(&mut rng).clone();
+            let mut fresh = CaseGenerator::default().generate(&mut fresh_rng).clone();
+            assert_eq!(rng.bytes(32), fresh_rng.bytes(32), "RNG state at seed {seed}");
+            // HashMap iteration can select different storage keys, but not different counts.
+            for case in [&mut reused, &mut fresh] {
+                for tx in core::iter::once(&mut case.tx).chain(&mut case.extra_txs) {
+                    for item in &mut tx.access_list.0 {
+                        item.storage_keys.fill(B256::ZERO);
+                    }
+                }
+            }
+            assert_eq!(reused, fresh, "seed {seed}");
+        }
+    }
+
+    #[test]
     fn storage_serialization_is_canonical() {
-        let mut case = EvmCase::generate(&mut Gen::new(1));
+        let mut case = CaseGenerator::default().generate(&mut Gen::new(1)).clone();
         case.accounts[0].storage = (0..32).map(|key| (U256::from(key), U256::ONE)).collect();
         let json = serde_json::to_vec(&case).unwrap();
         case.accounts[0].storage = (0..32).rev().map(|key| (U256::from(key), U256::ONE)).collect();
