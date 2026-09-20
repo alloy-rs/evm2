@@ -705,8 +705,12 @@ impl Program {
 
     fn mark_opcode(&mut self, opcode: u8) {
         match opcode {
-            op::SDIV | op::SMOD | op::SLT | op::SGT | op::SAR | op::SIGNEXTEND => {
+            op::SDIV | op::SMOD | op::SLT | op::SGT | op::SIGNEXTEND => {
                 self.mark("signed_arithmetic")
+            }
+            op::SAR => {
+                self.mark("signed_arithmetic");
+                self.mark("shift");
             }
             op::CLZ => self.mark("clz"),
             op::ADDMOD | op::MULMOD => self.mark("modular_arithmetic"),
