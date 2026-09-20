@@ -315,7 +315,7 @@ impl FuzzTxKind {
             return kind;
         }
         match rng.range(5) {
-            0 if spec.enables(SpecId::PRAGUE) => Self::Eip7702,
+            0 if spec.enables(SpecId::PRAGUE) && rng.one_in(4) => Self::Eip7702,
             1 if spec.enables(SpecId::CANCUN) => Self::Eip4844,
             2 if spec.enables(SpecId::LONDON) => Self::Eip1559,
             3 if spec.enables(SpecId::BERLIN) => Self::Eip2930,

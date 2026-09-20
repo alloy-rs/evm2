@@ -198,7 +198,8 @@ impl From<EVMError<EvmDatabaseError<Infallible>>> for FuzzError {
     fn from(error: EVMError<EvmDatabaseError<Infallible>>) -> Self {
         match error {
             EVMError::Transaction(error) => match error {
-                InvalidTransaction::CallGasCostMoreThanGasLimit { .. } => Self::IntrinsicGasTooLow,
+                InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                | InvalidTransaction::GasFloorMoreThanGasLimit { .. } => Self::IntrinsicGasTooLow,
                 InvalidTransaction::LackOfFundForMaxFee { .. } => Self::InsufficientFunds,
                 InvalidTransaction::NonceTooHigh { .. }
                 | InvalidTransaction::NonceTooLow { .. } => Self::InvalidNonce,
@@ -357,6 +358,13 @@ mod tests {
                 InvalidTransaction::CallGasCostMoreThanGasLimit {
                     initial_gas: 21_000,
                     gas_limit: 1,
+                },
+            ),
+            (
+                HandlerError::IntrinsicGasTooLow { required: 66_200, got: 60_000 },
+                InvalidTransaction::GasFloorMoreThanGasLimit {
+                    gas_floor: 66_200,
+                    gas_limit: 60_000,
                 },
             ),
             (
