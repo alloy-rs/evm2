@@ -24,7 +24,7 @@ pub struct BlockchainTestCase {
     pub genesis_rlp: Option<Bytes>,
     /// Blocks in the test.
     pub blocks: Vec<Block>,
-    /// Expected post-state accounts.
+    /// Full expected final-state allocation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub post_state: Option<BTreeMap<Address, Account>>,
     /// Pre-state accounts.
