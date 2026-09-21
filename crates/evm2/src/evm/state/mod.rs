@@ -294,6 +294,14 @@ impl<'a> State<'a> {
         &self.logs
     }
 
+    /// Returns the transaction logs mutably, without notifying the inspector.
+    ///
+    /// This allows restoring state while retaining the current logs.
+    #[inline]
+    pub const fn logs_mut(&mut self) -> &mut Vec<Log> {
+        &mut self.inner.logs
+    }
+
     /// Returns the revert journal for the current in-flight transaction.
     #[inline]
     pub fn journal(&self) -> &[JournalEntry] {
