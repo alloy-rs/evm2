@@ -43,10 +43,6 @@ use core::{
 use derive_where::derive_where;
 
 /// Mutable EVM state with an accepted-state cache, transaction layer, and reversible journal.
-///
-/// Cloning copies in-memory state but replaces the backing database with [`EmptyDB`]. Reattach it
-/// through [`Self::overlay_db_mut`]'s `db` field before any database-backed read;
-/// [`Self::set_initial`] clears the copied state.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct State<'a> {
@@ -62,9 +58,18 @@ pub struct State<'a> {
     inner: StateInner<'a>,
 }
 
+/// Clones in-memory state with [`EmptyDB`] as the backing database.
+/// Use [`State::clone_with`] to supply a database.
 impl Clone for State<'_> {
     fn clone(&self) -> Self {
-        Self {
+        self.clone_with(EmptyDB::default())
+    }
+}
+
+impl State<'_> {
+    /// Clones in-memory state with `db` as the backing database.
+    pub fn clone_with<'a>(&self, db: impl DynDatabase + 'a) -> State<'a> {
+        State {
             accounts: self.accounts.clone(),
             storage: self.storage.clone(),
             // The pool holds only spare allocations, not state.
@@ -73,7 +78,7 @@ impl Clone for State<'_> {
             inner: StateInner {
                 database: CacheDB {
                     cache: self.database.cache.clone(),
-                    db: Box::new(EmptyDB::default()),
+                    db: boxed_dyn_database(db),
                     bal_context: self.database.bal_context.clone(),
                     _non_exhaustive: (),
                 },
@@ -932,5 +937,19 @@ mod tests {
         cloned.account(&address, false).unwrap().set_balance(Word::from(6));
         assert_eq!(state.storage_slot(&address, key, false).unwrap().current(), Word::from(20));
         assert_eq!(state.account(&address, false).unwrap().balance(), Word::from(5));
+    }
+
+    #[test]
+    fn clone_with_uses_database_and_preserves_state() {
+        let address = Address::with_last_byte(42);
+        let mut state = State::new(EmptyDB::default());
+        state.tstore(&address, &Word::ZERO, &Word::from(1));
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default());
+
+        let mut cloned = state.clone_with(db);
+
+        assert_eq!(cloned.tload(&address, &Word::ZERO), Word::from(1));
+        assert!(cloned.account_info_untracked(&address).unwrap().is_some());
     }
 }
