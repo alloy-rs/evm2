@@ -314,11 +314,7 @@ jobs:
       - uses: rui314/setup-mold@10ca16bf91dc22e05ebdc935cad9c75ea248f621 # v1
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install zepter
-        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@25cce154e7fb10f99361a166468a6c56b9c31aa3
-        with:
-          tool: zepter@1.88.1
-          checksum: true
-          fallback: cargo-binstall
+        run: cargo install zepter --version 1.88.1 --locked
       - name: Eagerly pull dependencies
         run: cargo generate-lockfile
       - run: zepter run check
