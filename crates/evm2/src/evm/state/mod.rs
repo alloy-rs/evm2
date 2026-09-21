@@ -311,6 +311,19 @@ impl<'a> State<'a> {
         self.storage.get(address)?.slots.get(key).map(|slot| slot.value.current)
     }
 
+    /// Sets the warmth of an already-loaded storage slot without journaling the change.
+    ///
+    /// Does nothing for unloaded slots and leaves values and the pre-warmed set unchanged.
+    /// Slots in the pre-warmed set remain effectively warm even when their runtime warmth is
+    /// cleared.
+    pub fn set_storage_warm(&mut self, address: &Address, key: Word, warm: bool) {
+        if let Some(storage) = self.storage.get_mut(address)
+            && let Some(slot) = storage.slots.get_mut(&key)
+        {
+            slot.is_warm = warm;
+        }
+    }
+
     /// Reads a storage slot from the committed state (accepted overlay and backing database),
     /// ignoring the in-flight transaction overlay.
     #[inline]
@@ -951,5 +964,33 @@ mod tests {
 
         assert_eq!(cloned.tload(&address, &Word::ZERO), Word::from(1));
         assert!(cloned.account_info_untracked(&address).unwrap().is_some());
+    }
+
+    #[test]
+    fn set_storage_warm_preserves_loaded_values() {
+        let address = Address::with_last_byte(42);
+        let key = Word::from(1);
+        for prewarmed in [false, true] {
+            let mut state = State::new(EmptyDB::default());
+            state.set_storage_warm(&address, key, true);
+            assert!(!state.storage(&address).is_loaded(&key));
+            if prewarmed {
+                state.prewarm_storage(&address, [key, Word::from(2)]);
+            }
+            let mut slot = state.storage_slot(&address, key, false).unwrap();
+            slot.set(Word::from(7));
+            slot.warm();
+            let checkpoint = state.checkpoint();
+            state.set_storage_warm(&address, key, false);
+            assert_eq!(state.storage(&address).is_warm(&key), prewarmed);
+            assert_eq!(state.storage(&address).is_warm(&Word::from(2)), prewarmed);
+            state.rollback(checkpoint, crate::EvmFeatures::empty());
+            let mut slot = state.storage_slot(&address, key, false).unwrap();
+            assert_eq!((slot.original(), slot.current()), (Word::ZERO, Word::from(7)));
+            assert_eq!(slot.warm(), !prewarmed);
+            state.set_storage_warm(&address, key, false);
+            state.set_storage_warm(&address, key, true);
+            assert!(!state.storage_slot(&address, key, false).unwrap().warm());
+        }
     }
 }

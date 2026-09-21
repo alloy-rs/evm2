@@ -1134,4 +1134,62 @@ mod tests {
         assert_eq!(state.calls, 0);
         assert_eq!(state.creates, 1);
     }
+
+    #[test]
+    fn cooling_loaded_slot_respects_access_list() {
+        struct CoolSlotInspector {
+            prewarmed: bool,
+            before: Option<u64>,
+            costs: Vec<u64>,
+        }
+        impl Inspector<BaseEvmTypes> for CoolSlotInspector {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                let address = interp.message().destination;
+                let state = interp.host().state_mut();
+                state.storage_slot(&address, Word::ZERO, false).unwrap().set(Word::from(7));
+                if self.prewarmed {
+                    state.prewarm_storage_slot(&address, Word::ZERO);
+                }
+            }
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if interp.opcode() == op::SLOAD {
+                    if self.costs.len() == 1 {
+                        let address = interp.message().destination;
+                        interp.host().state_mut().set_storage_warm(&address, Word::ZERO, false);
+                    }
+                    self.before = Some(interp.gas().remaining());
+                }
+            }
+            fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if let Some(before) = self.before.take() {
+                    self.costs.push(before - interp.gas().remaining());
+                }
+            }
+        }
+        for prewarmed in [false, true] {
+            let mut code = vec![
+                op::PUSH0,
+                op::SLOAD,
+                op::POP,
+                op::PUSH0,
+                op::SLOAD,
+                op::POP,
+                op::PUSH0,
+                op::SLOAD,
+            ];
+            return_top_word(&mut code);
+            let (result, inspector, _) = run_evm_with_inspector(
+                code,
+                &MessageExt::default(),
+                100_000,
+                CoolSlotInspector { prewarmed, before: None, costs: Vec::new() },
+            );
+            assert_eq!(result.stop, InstrStop::Return);
+            assert_eq!(Word::from_be_slice(&result.output), Word::from(7));
+            assert_eq!(
+                inspector.costs,
+                [if prewarmed { 100 } else { 2100 }, if prewarmed { 100 } else { 2100 }, 100]
+            );
+        }
+    }
 }
