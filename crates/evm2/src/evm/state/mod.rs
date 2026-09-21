@@ -23,7 +23,7 @@ pub use tracked::Tracked;
 use super::{
     PrewarmSet,
     bal::{Bal, BalError, BlockAccessIndex},
-    db::{CacheDB, DbResult, DynDatabase, boxed_dyn_database},
+    db::{CacheDB, DbResult, DynDatabase, EmptyDB, boxed_dyn_database},
 };
 use crate::{
     ErrorCode, EvmFeatures, Version,
@@ -56,6 +56,39 @@ pub struct State<'a> {
     transient_storage: StorageKeyMap<Word>,
     /// Inner state.
     inner: StateInner<'a>,
+}
+
+/// Clones in-memory state with [`EmptyDB`] as the backing database.
+/// Use [`State::clone_with`] to supply a database.
+impl Clone for State<'_> {
+    fn clone(&self) -> Self {
+        self.clone_with(EmptyDB::default())
+    }
+}
+
+impl State<'_> {
+    /// Clones in-memory state with `db` as the backing database.
+    pub fn clone_with<'a>(&self, db: impl DynDatabase + 'a) -> State<'a> {
+        State {
+            accounts: self.accounts.clone(),
+            storage: self.storage.clone(),
+            // The pool holds only spare allocations, not state.
+            storage_pool: storage_pool::StoragePool::default(),
+            transient_storage: self.transient_storage.clone(),
+            inner: StateInner {
+                database: CacheDB {
+                    cache: self.database.cache.clone(),
+                    db: boxed_dyn_database(db),
+                    bal_context: self.database.bal_context.clone(),
+                    _non_exhaustive: (),
+                },
+                prewarm_set: self.prewarm_set.clone(),
+                journal: self.journal.clone(),
+                logs: self.logs.clone(),
+                selfdestructs: self.selfdestructs.clone(),
+            },
+        }
+    }
 }
 
 impl<'a> Deref for State<'a> {
@@ -874,5 +907,49 @@ impl<'a> State<'a> {
         self.accounts.clear();
         self.storage_pool.clear(&mut self.storage);
         self.inner.selfdestructs.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clone_preserves_state_and_detaches_database() {
+        let address = Address::with_last_byte(42);
+        let key = Word::from(1);
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default());
+        db.insert_account_storage(&address, &key, &Word::from(10));
+        let mut state = State::new(db);
+        state.storage_slot(&address, key, false).unwrap().write(Word::from(20));
+        state.account(&address, false).unwrap().set_balance(Word::from(5));
+        let mut cloned = state.clone();
+
+        assert!(cloned.initial().downcast_ref::<EmptyDB>().is_some());
+        assert!(state.initial().downcast_ref::<CacheDB>().is_some());
+        assert_eq!(cloned.database.cache, state.database.cache);
+        assert_eq!(cloned.journal(), state.journal());
+        assert_eq!(cloned.account(&address, false).unwrap().balance(), Word::from(5));
+        assert_eq!(cloned.storage_slot(&address, key, false).unwrap().current(), Word::from(20));
+
+        cloned.storage_slot(&address, key, false).unwrap().write(Word::from(30));
+        cloned.account(&address, false).unwrap().set_balance(Word::from(6));
+        assert_eq!(state.storage_slot(&address, key, false).unwrap().current(), Word::from(20));
+        assert_eq!(state.account(&address, false).unwrap().balance(), Word::from(5));
+    }
+
+    #[test]
+    fn clone_with_uses_database_and_preserves_state() {
+        let address = Address::with_last_byte(42);
+        let mut state = State::new(EmptyDB::default());
+        state.tstore(&address, &Word::ZERO, &Word::from(1));
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default());
+
+        let mut cloned = state.clone_with(db);
+
+        assert_eq!(cloned.tload(&address, &Word::ZERO), Word::from(1));
+        assert!(cloned.account_info_untracked(&address).unwrap().is_some());
     }
 }
