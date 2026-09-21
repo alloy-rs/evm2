@@ -1,6 +1,10 @@
 //! Basic in-memory EVM host state.
 
 mod account;
+#[cfg(feature = "account-ext")]
+mod extension;
+#[cfg(feature = "account-ext")]
+pub use extension::AccountExtension;
 mod block;
 mod journal;
 mod pending;
@@ -596,12 +600,16 @@ impl<'a> State<'a> {
         // Preserve any balance the address already held (e.g. funds sent before creation) and add
         // the endowment.
         let balance = target.balance().wrapping_add(*value);
+        #[cfg(feature = "account-ext")]
+        let extension = target.get().map(|info| info.extension.clone()).unwrap_or_default();
         *target.get_or_insert() = AccountInfo {
             nonce: u64::from(features.contains(EvmFeatures::EIP161)),
             balance,
             code_hash: KECCAK256_EMPTY,
             code: Some(Bytecode::default()),
             _non_exhaustive: (),
+            #[cfg(feature = "account-ext")]
+            extension,
         };
         target.mark_created();
         target.touch();

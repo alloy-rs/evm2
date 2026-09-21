@@ -16,6 +16,7 @@ keywords.workspace = true
 workspace = true
 
 [dependencies]
+triomphe = { workspace = true, optional = true }
 evm2-macros.workspace = true
 
 alloy-consensus.workspace = true
@@ -84,6 +85,7 @@ p256 = { workspace = true, features = ["ecdsa"] }
 aws-lc-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
+rmp-serde.workspace = true
 alloy-primitives = { workspace = true, features = ["serde", "std"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
@@ -98,6 +100,8 @@ path = "examples/custom_evm/main.rs"
 doc-scrape-examples = true
 
 [features]
+# Opt-in chain-specific account data; Ethereum builds keep the original account layout.
+account-ext = ["dep:triomphe"]
 default = [
     "std",
     "map-foldhash",
@@ -112,45 +116,47 @@ default = [
     "p256-aws-lc-rs",
 ]
 std = [
-    "alloy-consensus/std",
-    "alloy-eip7928/std",
-    "alloy-eips/std",
-    "alloy-primitives/std",
-    "bitvec/std",
-    "ark-bls12-381/std",
-    "ark-bn254/std",
-    "ark-ec/std",
-    "ark-ff/std",
-    "ark-serialize/std",
-    "ark-std/std",
-    "aurora-engine-modexp/std",
-    "k256/std",
-    "once_cell/std",
-    "p256/std",
-    "phf?/std",
-    "thiserror/std",
-    "c-kzg?/std",
-    "secp256k1?/std",
-    "serde?/std",
+	"alloy-consensus/std",
+	"alloy-eip7928/std",
+	"alloy-eips/std",
+	"alloy-primitives/std",
+	"bitvec/std",
+	"ark-bls12-381/std",
+	"ark-bn254/std",
+	"ark-ec/std",
+	"ark-ff/std",
+	"ark-serialize/std",
+	"ark-std/std",
+	"aurora-engine-modexp/std",
+	"k256/std",
+	"once_cell/std",
+	"p256/std",
+	"phf?/std",
+	"thiserror/std",
+	"c-kzg?/std",
+	"secp256k1?/std",
+	"serde?/std",
+	"triomphe?/std"
 ]
 
 async = ["std", "dep:corosensei"]
 
 serde = [
-    "dep:serde",
-    "alloy-consensus/serde",
-    "alloy-eip7928/serde",
-    "alloy-eips/serde",
-    "alloy-primitives/serde",
-    "ark-serialize/serde",
-    "bitvec/serde",
-    "derive-where/serde",
-    "k256/serde",
-    "p256/serde",
-    "phf?/serde",
-    "blst?/serde",
-    "c-kzg?/serde",
-    "secp256k1?/serde",
+	"dep:serde",
+	"alloy-consensus/serde",
+	"alloy-eip7928/serde",
+	"alloy-eips/serde",
+	"alloy-primitives/serde",
+	"ark-serialize/serde",
+	"bitvec/serde",
+	"derive-where/serde",
+	"k256/serde",
+	"p256/serde",
+	"phf?/serde",
+	"blst?/serde",
+	"c-kzg?/serde",
+	"secp256k1?/serde",
+	"triomphe?/serde"
 ]
 arbitrary = [
     "alloy-consensus/arbitrary",
