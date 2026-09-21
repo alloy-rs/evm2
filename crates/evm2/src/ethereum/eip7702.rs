@@ -1,6 +1,6 @@
 use super::{
-    InitialFrame, LazyAuthorization, access_list_counts, effective_gas_price, floor_gas,
-    initial_gas_and_reservoir, intrinsic_gas, prepare_initial_frame, runtime_oog_result,
+    InitialFrame, LazyAuthorization, PreparedTx, access_list_counts, effective_gas_price,
+    floor_gas, initial_gas_and_reservoir, intrinsic_gas, prepare_initial_frame, runtime_oog_result,
     settle_initial_frame_gas, validate_block_gas_limit, validate_chain_id,
     validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
     validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
@@ -31,6 +31,13 @@ pub fn handle<T: EvmTypes>(
 pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     req: TxRequest<'_, '_, T, super::LazyTxEip7702>,
 ) -> HandlerResult<TxResult<T>> {
+    execute_prepared::<T, H>(prepare_with_hooks::<T, H>(req)?)
+}
+
+/// Validates an EIP-7702 transaction and applies its pre-execution state changes.
+pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
+    req: TxRequest<'a, 'host, T, super::LazyTxEip7702>,
+) -> HandlerResult<PreparedTx<'a, 'host, T, super::LazyTxEip7702>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let envelope = req.envelope;
@@ -93,6 +100,17 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
     H::before_execution(req.host, envelope, caller, effective_gas_cost)?;
+
+    Ok(PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas })
+}
+
+/// Executes and settles a prepared EIP-7702 transaction.
+pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
+    prepared: PreparedTx<'_, '_, T, super::LazyTxEip7702>,
+) -> HandlerResult<TxResult<T>> {
+    let PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas } = prepared;
+    let tx = req.tx.inner();
+    let envelope = req.envelope;
     let chain_id = req.host.version().chain_id;
     let tx_env = TxEnvExt {
         origin: caller,
