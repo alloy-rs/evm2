@@ -23,9 +23,6 @@ pub struct AccountInfo {
     pub code_hash: B256,
     /// Bytecode associated with this account.
     pub code: Option<Bytecode>,
-    #[doc(hidden)] // Not public API. Please use an existing constructor.
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub _non_exhaustive: (),
     /// Raw chain-specific data committed to the account leaf by the state provider.
     ///
     /// Empty extensions are omitted by Serde. Binary formats must delimit structs
@@ -36,6 +33,9 @@ pub struct AccountInfo {
         serde(default, skip_serializing_if = "AccountExtension::is_empty")
     )]
     pub extension: AccountExtension,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub _non_exhaustive: (),
 }
 
 /// Compares [`AccountInfo`] by `balance`, `nonce`, and `code_hash`, skipping the
@@ -74,9 +74,9 @@ impl Default for AccountInfo {
             nonce: 0,
             code_hash: KECCAK256_EMPTY,
             code: Some(Bytecode::default()),
-            _non_exhaustive: (),
             #[cfg(feature = "account-ext")]
             extension: AccountExtension::new(),
+            _non_exhaustive: (),
         }
     }
 }
@@ -90,9 +90,9 @@ impl AccountInfo {
             nonce,
             code_hash,
             code: Some(code),
-            _non_exhaustive: (),
             #[cfg(feature = "account-ext")]
             extension: AccountExtension::new(),
+            _non_exhaustive: (),
         }
     }
 
@@ -105,9 +105,9 @@ impl AccountInfo {
             nonce: self.nonce,
             code_hash: self.code_hash,
             code: None,
-            _non_exhaustive: (),
             #[cfg(feature = "account-ext")]
             extension: self.extension.clone(),
+            _non_exhaustive: (),
         }
     }
 
