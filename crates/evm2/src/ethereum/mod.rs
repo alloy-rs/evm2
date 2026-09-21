@@ -24,7 +24,7 @@ use crate::{
         MessageResultExt, Word,
         gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS, WARM_STORAGE_READ_COST},
     },
-    registry::{HandlerError, HandlerResult, TxRegistry},
+    registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
     utils::num_words,
     version::GasId,
 };
@@ -52,6 +52,23 @@ pub enum TxEnvelope {
 
 /// Recovered Ethereum transaction envelope.
 pub type RecoveredTxEnvelope = Recovered<TxEnvelope>;
+
+/// Transaction state produced by validation and pre-execution processing for the standard
+/// Ethereum handlers.
+pub struct PreparedTx<'a, 'host: 'a, T: EvmTypes, Tx> {
+    pub(super) req: TxRequest<'a, 'host, T, Tx>,
+    pub(super) caller: Address,
+    pub(super) gas_price: U256,
+    pub(super) intrinsic: u64,
+    pub(super) initial_state_gas: u64,
+    pub(super) floor_gas: u64,
+}
+
+impl<T: EvmTypes, Tx> core::fmt::Debug for PreparedTx<'_, '_, T, Tx> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PreparedTx").finish_non_exhaustive()
+    }
+}
 
 impl From<EthereumTxEnvelope<TxEip4844>> for TxEnvelope {
     fn from(tx: EthereumTxEnvelope<TxEip4844>) -> Self {
