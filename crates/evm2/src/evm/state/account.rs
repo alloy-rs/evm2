@@ -98,6 +98,7 @@ impl AccountInfo {
 
     /// Clones this account without bytecode.
     #[inline]
+    #[allow(clippy::missing_const_for_fn)] // Cloning a shared extension cannot be const.
     pub(crate) fn clone_no_code(&self) -> Self {
         Self {
             balance: self.balance,
