@@ -189,13 +189,13 @@ pub struct AccountInfoBal {
 
 impl AccountInfoBal {
     /// Populate account info from BAL. Return true if account info got changed
+    ///
+    /// Account extensions are not represented in the BAL and are left unchanged.
     pub fn populate_account_info(
         &self,
         bal_index: BlockAccessIndex,
         account: &mut AccountInfo,
     ) -> bool {
-        #[cfg(feature = "account-ext")]
-        assert!(account.extension.is_empty(), "BAL does not support account extensions");
         let mut changed = false;
         if let Some(nonce) = self.nonce.get(bal_index) {
             account.nonce = *nonce;
@@ -214,6 +214,8 @@ impl AccountInfoBal {
     }
 
     /// Extend account info from another account info.
+    ///
+    /// Account extensions are not represented in the BAL and are ignored.
     #[inline]
     pub fn update(
         &mut self,
@@ -221,11 +223,6 @@ impl AccountInfoBal {
         original: &AccountInfo,
         present: &AccountInfo,
     ) {
-        #[cfg(feature = "account-ext")]
-        assert!(
-            original.extension.is_empty() && present.extension.is_empty(),
-            "BAL does not support account extensions"
-        );
         self.nonce.update(index, &original.nonce, present.nonce);
         self.balance.update(index, &original.balance, present.balance);
         if original.code_hash != present.code_hash {

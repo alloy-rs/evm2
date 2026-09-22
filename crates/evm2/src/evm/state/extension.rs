@@ -167,21 +167,6 @@ mod tests {
         assert!(state.account(&address, false).unwrap().get().is_none());
     }
 
-    #[test]
-    #[should_panic(expected = "BAL does not support account extensions")]
-    fn bal_rejects_extension_only_writes() {
-        let original = AccountInfo::default();
-        let current = AccountInfo {
-            extension: AccountExtension::copy_from_slice(&[1; 32]),
-            ..Default::default()
-        };
-        crate::evm::AccountInfoBal::default().update(
-            crate::evm::BlockAccessIndex(1),
-            &original,
-            &current,
-        );
-    }
-
     #[cfg(feature = "serde")]
     #[test]
     fn messagepack_preserves_empty_layout_and_nonempty_payloads() {

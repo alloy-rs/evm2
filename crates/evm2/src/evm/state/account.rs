@@ -1,7 +1,5 @@
 //! Account models held by the state overlay and emitted in transitions.
 
-#[cfg(feature = "account-ext")]
-use super::AccountExtension;
 use super::{DbResult, DynDatabase, JournalEntry, StateInner};
 use crate::{EvmFeatures, bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256};
@@ -30,9 +28,9 @@ pub struct AccountInfo {
     #[cfg(feature = "account-ext")]
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "AccountExtension::is_empty")
+        serde(default, skip_serializing_if = "super::AccountExtension::is_empty")
     )]
-    pub extension: AccountExtension,
+    pub extension: super::AccountExtension,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub _non_exhaustive: (),
@@ -75,7 +73,7 @@ impl Default for AccountInfo {
             code_hash: KECCAK256_EMPTY,
             code: Some(Bytecode::default()),
             #[cfg(feature = "account-ext")]
-            extension: AccountExtension::new(),
+            extension: super::AccountExtension::new(),
             _non_exhaustive: (),
         }
     }
@@ -91,7 +89,7 @@ impl AccountInfo {
             code_hash,
             code: Some(code),
             #[cfg(feature = "account-ext")]
-            extension: AccountExtension::new(),
+            extension: super::AccountExtension::new(),
             _non_exhaustive: (),
         }
     }
@@ -579,7 +577,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
 
     /// Updates the account payload, touching the account and recording a revert snapshot.
     #[cfg(feature = "account-ext")]
-    pub fn set_extension(&mut self, extension: AccountExtension) {
+    pub fn set_extension(&mut self, extension: super::AccountExtension) {
         self.touch();
         self.present_mut().extension = extension;
     }
