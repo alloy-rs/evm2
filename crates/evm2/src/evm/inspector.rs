@@ -19,18 +19,12 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     }
 
     /// Called before each instruction executes.
-    ///
-    /// Gas reflects all preceding instructions and hook edits. Gas changes made here apply to
-    /// the current instruction.
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
     }
 
     /// Called after each instruction executes.
-    ///
-    /// Gas includes the instruction's charges and is zero on out-of-gas errors. Dispatch
-    /// preserves gas changes made here; normal frame settlement still applies.
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
