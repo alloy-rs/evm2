@@ -135,7 +135,7 @@ use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 #[cfg(feature = "async")]
 use core::future::Future;
-use core::ptr::NonNull;
+use core::{cell::Cell, ptr::NonNull};
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
@@ -256,7 +256,7 @@ pub struct Evm<'a, T: EvmTypesHost> {
     #[derive_where(skip)]
     current_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
     #[derive_where(skip)]
-    running: bool,
+    running: Cell<bool>,
     #[cfg(feature = "async")]
     #[derive_where(skip)]
     async_stack: r#async::FiberStack,
@@ -378,7 +378,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             inspector: None,
             interpreter_runner: None,
             current_frame: None,
-            running: false,
+            running: Cell::new(false),
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
             evm_send: false,
@@ -413,7 +413,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline]
     fn assert_precompiles_mutable(&self) {
-        assert!(!self.running, "precompile provider cannot be modified during EVM execution");
+        assert!(!self.running.get(), "precompile provider cannot be modified during EVM execution");
     }
 
     #[inline]
@@ -423,23 +423,22 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline]
     fn assert_inspector_mutable(&self) {
-        assert!(!self.running, "inspector cannot be modified during EVM execution");
+        assert!(!self.running.get(), "inspector cannot be modified during EVM execution");
     }
 
     #[inline]
     fn assert_interpreter_runner_mutable(&self) {
-        assert!(!self.running, "interpreter runner cannot be modified during EVM execution");
+        assert!(!self.running.get(), "interpreter runner cannot be modified during EVM execution");
     }
 
     #[inline]
     fn assert_execution_config_mutable(&self) {
-        assert!(!self.running, "execution config cannot be modified during EVM execution");
+        assert!(!self.running.get(), "execution config cannot be modified during EVM execution");
     }
 
     #[inline]
     const fn enter_execution(&mut self) -> ExecutionGuard<'_, 'a, T> {
-        let was_running = self.running;
-        self.running = true;
+        let was_running = self.running.replace(true);
         ExecutionGuard { evm: self, was_running }
     }
 
@@ -975,7 +974,7 @@ struct ExecutionGuard<'guard, 'evm, T: EvmTypesHost> {
 impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     #[inline]
     fn drop(&mut self) {
-        self.evm.running = self.was_running;
+        self.evm.running.set(self.was_running);
     }
 }
 
