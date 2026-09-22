@@ -65,7 +65,7 @@ All features of the `evm2` crate are listed below. Use `default-features = false
 | `portable` | Yes | Enables portable builds of the enabled blst and c-kzg backends. |
 | `p256-aws-lc-rs` | Yes | Uses AWS-LC for the P256VERIFY precompile. |
 | `parse` | Yes | Enables parsing opcode names into `OpCode` values. |
-| `nightly` | No | Not required for nightly optimizations: the compiler is detected automatically (see below). |
+| `nightly` | No | Enables nightly features in Alloy primitives, derive-where, and ruint, plus smallvec specialization and `may_dangle`; requires nightly Rust. |
 | `no-tco` | No | Disables automatic selection of the tail-call interpreter backend. |
 
 Nightly Rust enables explicit tail calls and the `rust-preserve-none` calling convention in the tail-call interpreter backend. This backend is selected automatically on nightly except on WebAssembly, with Cranelift, or when `no-tco` is enabled. `EVM2_DISPATCH_BACKEND` overrides automatic backend selection.

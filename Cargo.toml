@@ -120,6 +120,7 @@ ruint = { version = "1.18", default-features = false }
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false }
 snapbox = "1.2"
+smallvec = { version = "1.15", default-features = false }
 thiserror = { version = "2.0", default-features = false }
 typeid = { version = "1.0.3", default-features = false }
 tokio = { version = "1", default-features = false }

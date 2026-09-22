@@ -8,6 +8,9 @@ extern crate self as evm2;
 
 extern crate alloc;
 
+#[cfg(feature = "nightly")]
+use {ruint as _, smallvec as _};
+
 pub mod bytecode;
 pub mod constants;
 mod error;
