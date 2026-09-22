@@ -1,4 +1,4 @@
-use crate::fuzzer::rng::Gen;
+use crate::fuzzer::{features::FuzzFeatures, rng::Gen};
 use alloy_primitives::{Address, Bytes};
 use evm2::SpecId;
 
@@ -15,27 +15,27 @@ impl PrecompileTarget {
         Address::new(bytes)
     }
 
-    pub(crate) const fn feature(self) -> &'static str {
+    pub(crate) const fn feature(self) -> FuzzFeatures {
         match self.number {
-            0x01 => "precompile_ecrecover",
-            0x02 => "precompile_sha256",
-            0x03 => "precompile_ripemd160",
-            0x04 => "precompile_identity",
-            0x05 => "precompile_modexp",
-            0x06 => "precompile_bn254_add",
-            0x07 => "precompile_bn254_mul",
-            0x08 => "precompile_bn254_pairing",
-            0x09 => "precompile_blake2f",
-            0x0a => "precompile_kzg_point_evaluation",
-            0x0b => "precompile_bls12_g1_add",
-            0x0c => "precompile_bls12_g1_msm",
-            0x0d => "precompile_bls12_g2_add",
-            0x0e => "precompile_bls12_g2_msm",
-            0x0f => "precompile_bls12_pairing",
-            0x10 => "precompile_bls12_map_fp_to_g1",
-            0x11 => "precompile_bls12_map_fp2_to_g2",
-            0x100 => "precompile_p256verify",
-            _ => "precompile_unknown",
+            0x01 => FuzzFeatures::PRECOMPILE_ECRECOVER,
+            0x02 => FuzzFeatures::PRECOMPILE_SHA256,
+            0x03 => FuzzFeatures::PRECOMPILE_RIPEMD160,
+            0x04 => FuzzFeatures::PRECOMPILE_IDENTITY,
+            0x05 => FuzzFeatures::PRECOMPILE_MODEXP,
+            0x06 => FuzzFeatures::PRECOMPILE_BN254_ADD,
+            0x07 => FuzzFeatures::PRECOMPILE_BN254_MUL,
+            0x08 => FuzzFeatures::PRECOMPILE_BN254_PAIRING,
+            0x09 => FuzzFeatures::PRECOMPILE_BLAKE2F,
+            0x0a => FuzzFeatures::PRECOMPILE_KZG_POINT_EVALUATION,
+            0x0b => FuzzFeatures::PRECOMPILE_BLS12_G1_ADD,
+            0x0c => FuzzFeatures::PRECOMPILE_BLS12_G1_MSM,
+            0x0d => FuzzFeatures::PRECOMPILE_BLS12_G2_ADD,
+            0x0e => FuzzFeatures::PRECOMPILE_BLS12_G2_MSM,
+            0x0f => FuzzFeatures::PRECOMPILE_BLS12_PAIRING,
+            0x10 => FuzzFeatures::PRECOMPILE_BLS12_MAP_FP_TO_G1,
+            0x11 => FuzzFeatures::PRECOMPILE_BLS12_MAP_FP2_TO_G2,
+            0x100 => FuzzFeatures::PRECOMPILE_P256VERIFY,
+            _ => FuzzFeatures::PRECOMPILE_UNKNOWN,
         }
     }
 
@@ -47,7 +47,7 @@ impl PrecompileTarget {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PrecompileInput {
     pub(crate) bytes: Bytes,
-    pub(crate) shape: &'static str,
+    pub(crate) shape: FuzzFeatures,
 }
 
 const PRECOMPILES: &[PrecompileTarget] = &[
@@ -116,21 +116,21 @@ pub(crate) fn input(rng: &mut Gen, target: PrecompileTarget) -> PrecompileInput 
     PrecompileInput { bytes, shape }
 }
 
-pub(crate) fn input_shape(target: PrecompileTarget, len: usize) -> &'static str {
+pub(crate) fn input_shape(target: PrecompileTarget, len: usize) -> FuzzFeatures {
     if len == 0 {
-        return "empty";
+        return FuzzFeatures::PRECOMPILE_INPUT_EMPTY;
     }
     let exact = exact_lens(target);
     if exact.contains(&len) {
-        return "exact";
+        return FuzzFeatures::PRECOMPILE_INPUT_EXACT;
     }
     if exact.iter().any(|exact| len < *exact) {
-        return "short";
+        return FuzzFeatures::PRECOMPILE_INPUT_SHORT;
     }
     if exact.iter().any(|exact| len > *exact) {
-        return "long";
+        return FuzzFeatures::PRECOMPILE_INPUT_LONG;
     }
-    "arbitrary"
+    FuzzFeatures::PRECOMPILE_INPUT_ARBITRARY
 }
 
 fn exact_len(rng: &mut Gen, target: PrecompileTarget) -> usize {

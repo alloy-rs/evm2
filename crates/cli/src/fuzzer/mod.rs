@@ -21,6 +21,7 @@ mod backend;
 mod case;
 mod cli;
 mod coverage;
+mod features;
 mod io;
 mod minimize;
 mod normalize;
@@ -30,8 +31,8 @@ mod rng;
 
 use self::{
     backend::{Evm2Backend, EvmBackend, RevmBackend},
-    case::EvmCase,
-    cli::Command,
+    case::{CaseGenerator, EvmCase},
+    cli::FuzzCommand,
     coverage::Coverage,
     io::{case_paths, read_case, write_failure_case, write_minimized_case},
     minimize::{differs, minimize_case},
@@ -52,37 +53,38 @@ use std::{
 pub(crate) use cli::Options;
 
 pub(crate) fn run(opts: Options) -> Result<(), String> {
-    let backends: [&dyn EvmBackend; 2] = [&RevmBackend, &Evm2Backend];
-    match opts.command.clone().unwrap_or(Command::Generate) {
-        Command::Generate => run_generated(&opts)?,
-        Command::Replay { path } => {
+    let backends: &mut [&mut dyn EvmBackend; 2] =
+        &mut [&mut RevmBackend::default(), &mut Evm2Backend::default()];
+    match opts.command.clone().unwrap_or(FuzzCommand::Generate) {
+        FuzzCommand::Generate => run_generated(&opts)?,
+        FuzzCommand::Replay { path } => {
             let case = read_case(&path)?;
             let mut coverage = Coverage::default();
             coverage.record_case(&case);
-            let outcome = compare_case(&backends, &case, CaseContext::Path(&path))?;
+            let outcome = compare_case(backends, &case, FuzzCaseContext::Path(&path))?;
             coverage.record_outcome(&outcome);
             println!("ok: replayed {}", path.display());
             coverage.print();
         }
-        Command::Corpus { path } => {
+        FuzzCommand::Corpus { path } => {
             let mut paths = case_paths(&path)?;
             paths.sort();
             let mut coverage = Coverage::default();
             for path in &paths {
                 let case = read_case(path)?;
                 coverage.record_case(&case);
-                let outcome = compare_case(&backends, &case, CaseContext::Path(path))?;
+                let outcome = compare_case(backends, &case, FuzzCaseContext::Path(path))?;
                 coverage.record_outcome(&outcome);
             }
             println!("ok: replayed {} corpus cases", paths.len());
             coverage.print();
         }
-        Command::Minimize { path } => {
+        FuzzCommand::Minimize { path } => {
             let case = read_case(&path)?;
-            if !differs(&backends, &case) {
+            if !differs(backends, &case) {
                 return Err(format!("{} does not reproduce a mismatch", path.display()));
             }
-            let minimized = minimize_case(&backends, case);
+            let minimized = minimize_case(backends, case);
             let path = write_minimized_case(&minimized)?;
             println!("ok: wrote minimized case to {}", path.display());
         }
@@ -111,9 +113,11 @@ fn run_generated(opts: &Options) -> Result<(), String> {
             let next_case = Arc::clone(&next_case);
             let stop = Arc::clone(&stop);
             handles.push(scope.spawn(move || {
-                let backends: [&dyn EvmBackend; 2] = [&RevmBackend, &Evm2Backend];
+                let backends: &mut [&mut dyn EvmBackend; 2] =
+                    &mut [&mut RevmBackend::default(), &mut Evm2Backend::default()];
                 let mut coverage = Coverage::default();
                 let mut executed = 0;
+                let mut generator = CaseGenerator::default();
                 while !stop.load(Ordering::Relaxed)
                     && opts.duration.is_none_or(|duration| started.elapsed() < duration)
                 {
@@ -123,10 +127,10 @@ fn run_generated(opts: &Options) -> Result<(), String> {
                     }
 
                     let mut rng = Gen::new(seed ^ case_index.wrapping_mul(0x9e37_79b9_7f4a_7c15));
-                    let case = EvmCase::generate(&mut rng);
-                    let context = CaseContext::Generated { seed, case_index };
-                    coverage.record_case(&case);
-                    let outcome = compare_case(&backends, &case, context).inspect_err(|_| {
+                    let case = generator.generate(&mut rng);
+                    let context = FuzzCaseContext::Generated { seed, case_index };
+                    coverage.record_case(case);
+                    let outcome = compare_case(backends, case, context).inspect_err(|_| {
                         stop.store(true, Ordering::Relaxed);
                     })?;
                     coverage.record_outcome(&outcome);
@@ -159,12 +163,12 @@ fn resolve_threads(threads: usize) -> usize {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum CaseContext<'a> {
+enum FuzzCaseContext<'a> {
     Generated { seed: u64, case_index: u64 },
     Path(&'a Path),
 }
 
-impl fmt::Display for CaseContext<'_> {
+impl fmt::Display for FuzzCaseContext<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Generated { seed, case_index } => {
@@ -176,29 +180,27 @@ impl fmt::Display for CaseContext<'_> {
 }
 
 fn compare_case(
-    backends: &[&dyn EvmBackend; 2],
+    backends: &mut [&mut dyn EvmBackend; 2],
     case: &EvmCase,
-    context: CaseContext<'_>,
+    context: FuzzCaseContext<'_>,
 ) -> Result<Outcome, String> {
     let baseline = backends[0].run(case);
-    for backend in &backends[1..] {
-        let got = backend.run(case);
-        if got != baseline {
-            if let CaseContext::Generated { seed, case_index } = context {
-                let path = write_failure_case(seed, case_index, case)?;
-                eprintln!("wrote failing case to {}", path.display());
-                let minimized = minimize_case(backends, case.clone());
-                if minimized != *case {
-                    let path = write_minimized_case(&minimized)?;
-                    eprintln!("wrote minimized failing case to {}", path.display());
-                }
+    let got = backends[1].run(case);
+    if got != baseline {
+        if let FuzzCaseContext::Generated { seed, case_index } = context {
+            let path = write_failure_case(seed, case_index, case)?;
+            eprintln!("wrote failing case to {}", path.display());
+            let minimized = minimize_case(backends, case.clone());
+            if minimized != *case {
+                let path = write_minimized_case(&minimized)?;
+                eprintln!("wrote minimized failing case to {}", path.display());
             }
-            eprintln!("differential mismatch at {context}");
-            eprintln!("case:\n{case:#?}");
-            eprintln!("{}:\n{baseline:#?}", backends[0].name());
-            eprintln!("{}:\n{got:#?}", backend.name());
-            return Err("differential mismatch".into());
         }
+        eprintln!("differential mismatch at {context}");
+        eprintln!("case:\n{case:#?}");
+        eprintln!("{}:\n{baseline:#?}", backends[0].name());
+        eprintln!("{}:\n{got:#?}", backends[1].name());
+        return Err("differential mismatch".into());
     }
     Ok(baseline)
 }

@@ -1,75 +1,72 @@
-use crate::fuzzer::{precompile, rng::Gen};
+use crate::fuzzer::{features::FuzzFeatures, precompile, rng::Gen};
 use alloy_primitives::{Address, Bytes, U256};
 use evm2::{SpecId, interpreter::op};
-use std::collections::BTreeSet;
 
+#[derive(Default)]
 pub(crate) struct Program {
     code: Vec<u8>,
     stack_height: usize,
-    features: BTreeSet<&'static str>,
+    features: FuzzFeatures,
 }
 
 impl Program {
     pub(crate) fn generate(
+        &mut self,
         rng: &mut Gen,
         spec: SpecId,
         addresses: &[Address],
         call_addresses: &[Address],
-    ) -> Self {
-        let mut program = Self { code: Vec::new(), stack_height: 0, features: BTreeSet::new() };
+    ) -> (Bytes, FuzzFeatures) {
+        self.code.clear();
+        self.stack_height = 0;
+        self.features = FuzzFeatures::default();
         let statements = rng.range_inclusive(1, 48);
         for _ in 0..statements {
             match rng.range(100) {
-                0..=24 => program.arithmetic(rng, spec),
-                25..=39 => program.memory(rng, spec),
-                40..=55 => program.storage(rng),
-                56..=68 => program.environment(rng, spec),
-                69..=73 => program.calldata(rng),
-                74..=79 => program.external_account(rng, spec, addresses),
-                80..=83 => program.log(rng),
-                84..=86 if program.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
-                    program.precompile_call(rng, spec)
+                0..=24 => self.arithmetic(rng, spec),
+                25..=39 => self.memory(rng, spec),
+                40..=55 => self.storage(rng),
+                56..=68 => self.environment(rng, spec),
+                69..=73 => self.calldata(rng),
+                74..=79 => self.external_account(rng, spec, addresses),
+                80..=83 => self.log(rng),
+                84..=86 if self.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
+                    self.precompile_call(rng, spec)
                 }
-                84..=86 => program.literal(rng, spec),
-                87..=89 if program.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
-                    program.generic_call(rng, spec, call_addresses)
+                84..=86 => self.literal(rng, spec),
+                87..=89 if self.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
+                    self.generic_call(rng, spec, call_addresses)
                 }
-                87..=89 => program.literal(rng, spec),
-                90..=91 if program.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
-                    program.returndata(rng, spec, call_addresses)
+                87..=89 => self.literal(rng, spec),
+                90..=91 if self.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
+                    self.returndata(rng, spec, call_addresses)
                 }
-                90..=91 => program.literal(rng, spec),
-                92..=93 if program.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
-                    program.create(rng, spec)
+                90..=91 => self.literal(rng, spec),
+                92..=93 if self.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
+                    self.create(rng, spec)
                 }
-                92..=93 => program.literal(rng, spec),
-                94..=95 => program.cancun(rng, spec),
-                96 => program.jump(rng),
-                97 if rng.one_in(3) => program.stack_shuffle(rng, spec),
-                97 if rng.one_in(2) => program.selfdestruct(rng, addresses),
-                97 => program.stack_cleanup(),
-                98 if program.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
-                    program.raw_invalidish(rng)
+                92..=93 => self.literal(rng, spec),
+                94..=95 => self.cancun(rng, spec),
+                96 => self.jump(rng),
+                97 if rng.one_in(3) => self.stack_shuffle(rng, spec),
+                97 if rng.one_in(2) => self.selfdestruct(rng, addresses),
+                97 => self.stack_cleanup(),
+                98 if self.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
+                    self.raw_invalidish(rng)
                 }
-                98 => program.literal(rng, spec),
-                _ => program.literal(rng, spec),
+                98 => self.literal(rng, spec),
+                _ => self.literal(rng, spec),
             }
-            while program.stack_height > 16 {
-                program.emit(op::POP, 1, 0);
+            while self.stack_height > 16 {
+                self.emit(op::POP, 1, 0);
             }
         }
         match rng.range(10) {
-            0 => program.finish_return(false),
-            1 if program.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => {
-                program.finish_return(true)
-            }
-            _ => program.emit(op::STOP, 0, 0),
+            0 => self.finish_return(false),
+            1 if self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => self.finish_return(true),
+            _ => self.emit(op::STOP, 0, 0),
         }
-        program
-    }
-
-    pub(crate) fn into_parts(self) -> (Bytes, Vec<String>) {
-        (self.code.into(), self.features.into_iter().map(str::to_string).collect())
+        (Bytes::copy_from_slice(&self.code), self.features)
     }
 
     fn allow_fork_feature(&mut self, rng: &mut Gen, spec: SpecId, since: SpecId) -> bool {
@@ -77,13 +74,13 @@ impl Program {
             return true;
         }
         if rng.one_in(20) {
-            self.mark("fork_invalid_opcode");
+            self.mark(FuzzFeatures::FORK_INVALID_OPCODE);
             return true;
         }
         false
     }
 
-    fn mark(&mut self, feature: &'static str) {
+    fn mark(&mut self, feature: FuzzFeatures) {
         self.features.insert(feature);
     }
 
@@ -297,17 +294,11 @@ impl Program {
     fn precompile_call(&mut self, rng: &mut Gen, spec: SpecId) {
         let precompile = precompile::random_target(rng, spec);
         let input = precompile::input(rng, precompile);
-        self.mark("precompile_call");
+        self.mark(FuzzFeatures::PRECOMPILE_CALL);
         self.mark(precompile.feature());
-        self.mark(match input.shape {
-            "empty" => "precompile_input_empty",
-            "exact" => "precompile_input_exact",
-            "short" => "precompile_input_short",
-            "long" => "precompile_input_long",
-            _ => "precompile_input_arbitrary",
-        });
+        self.mark(input.shape);
         if !precompile.is_enabled(spec) {
-            self.mark("precompile_future_address");
+            self.mark(FuzzFeatures::PRECOMPILE_FUTURE_ADDRESS);
         }
 
         let input_offset: u64 = rng.pick(&[0, 32, 64, 96]);
@@ -317,7 +308,7 @@ impl Program {
         let return_len: u64 = rng.pick(&[0, 1, 20, 32, 64, 96, 128, 256]);
         let gas: u64 = rng.pick(&[0, 1, 3_000, 10_000, 50_000, 200_000, 2_000_000]);
         if self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) && rng.one_in(2) {
-            self.mark("precompile_staticcall");
+            self.mark(FuzzFeatures::PRECOMPILE_STATICCALL);
             self.push_u64(return_len);
             self.push_u64(return_offset);
             self.push_u64(input.bytes.len() as u64);
@@ -326,7 +317,7 @@ impl Program {
             self.push_u64(gas);
             self.emit(op::STATICCALL, 6, 1);
         } else {
-            self.mark("precompile_call_op");
+            self.mark(FuzzFeatures::PRECOMPILE_CALL_OP);
             self.push_u64(return_len);
             self.push_u64(return_offset);
             self.push_u64(input.bytes.len() as u64);
@@ -491,7 +482,7 @@ impl Program {
     }
 
     fn invalid_jumpi(&mut self, rng: &mut Gen) {
-        self.push_u8(if rng.one_in(3) { 0 } else { 1 });
+        self.push_u64(if rng.one_in(3) { 0 } else { 1 });
         self.push_word(rng.biased_invalid_jumpdest());
         self.emit(op::JUMPI, 2, 0);
     }
@@ -505,7 +496,7 @@ impl Program {
     }
 
     fn forward_jumpi(&mut self, rng: &mut Gen) {
-        self.push_u8(if rng.one_in(2) { 0 } else { 1 });
+        self.push_u64(if rng.one_in(2) { 0 } else { 1 });
         let dest = self.push_jump_placeholder();
         self.emit(op::JUMPI, 2, 0);
         self.skipped_block(rng);
@@ -591,7 +582,7 @@ impl Program {
 
     fn raw_invalidish(&mut self, rng: &mut Gen) {
         if rng.one_in(3) {
-            self.mark("truncated_push");
+            self.mark(FuzzFeatures::TRUNCATED_PUSH);
             self.code.push(op::PUSH4);
             let immediate_len = rng.range_inclusive(0, 3);
             self.code.extend(rng.bytes(immediate_len));
@@ -627,11 +618,10 @@ impl Program {
 
     fn push_random_width_word(&mut self, rng: &mut Gen) {
         let len = rng.range_inclusive(1, 32);
-        self.mark("push");
-        self.mark("wide_push");
-        self.code.push(op::PUSH1 + len as u8 - 1);
-        self.code.extend(rng.bytes(len));
-        self.stack_height += 1;
+        let mut bytes = [0; 32];
+        rng.fill_bytes(&mut bytes[..len]);
+        self.mark(FuzzFeatures::WIDE_PUSH);
+        self.push_immediate(&bytes[..len]);
     }
 
     fn push_address(&mut self, address: Address) {
@@ -645,45 +635,25 @@ impl Program {
     }
 
     fn push_word(&mut self, value: U256) {
-        if value <= U256::from(u8::MAX) {
-            self.push_u8(value.to::<u8>());
-        } else if value <= U256::from(u64::MAX) {
-            self.push_u64(value.to::<u64>());
-        } else {
-            self.mark("push");
-            self.code.push(op::PUSH32);
-            self.code.extend(value.to_be_bytes::<32>());
-            self.stack_height += 1;
-        }
-    }
-
-    fn push_u8(&mut self, value: u8) {
-        self.mark("push");
-        self.code.extend([op::PUSH1, value]);
-        self.stack_height += 1;
+        let len = value.byte_len().max(1);
+        let len = if len > 8 { 32 } else { len };
+        self.push_immediate(&value.to_be_bytes::<32>()[32 - len..]);
     }
 
     fn push_u64(&mut self, value: u64) {
-        if value <= u64::from(u8::MAX) {
-            self.push_u8(value as u8);
-            return;
-        }
-        let bytes = value.to_be_bytes();
-        let first = bytes.iter().position(|byte| *byte != 0).unwrap_or(bytes.len() - 1);
-        let immediate = &bytes[first..];
-        self.mark("push");
-        self.code.push(op::PUSH1 + immediate.len() as u8 - 1);
-        self.code.extend(immediate);
+        self.push_word(U256::from(value));
+    }
+
+    fn push_immediate(&mut self, bytes: &[u8]) {
+        self.mark(FuzzFeatures::PUSH);
+        self.code.push(op::PUSH1 + bytes.len() as u8 - 1);
+        self.code.extend_from_slice(bytes);
         self.stack_height += 1;
     }
 
     fn push_jump_placeholder(&mut self) -> usize {
-        self.mark("push");
-        self.code.push(op::PUSH2);
-        let immediate = self.code.len();
-        self.code.extend([0, 0]);
-        self.stack_height += 1;
-        immediate
+        self.push_immediate(&[0; 2]);
+        self.code.len() - 2
     }
 
     fn patch_jump(&mut self, immediate: usize) {
@@ -706,48 +676,91 @@ impl Program {
     fn mark_opcode(&mut self, opcode: u8) {
         match opcode {
             op::SDIV | op::SMOD | op::SLT | op::SGT | op::SIGNEXTEND => {
-                self.mark("signed_arithmetic")
+                self.mark(FuzzFeatures::SIGNED_ARITHMETIC)
             }
             op::SAR => {
-                self.mark("signed_arithmetic");
-                self.mark("shift");
+                self.mark(FuzzFeatures::SIGNED_ARITHMETIC);
+                self.mark(FuzzFeatures::SHIFT);
             }
-            op::CLZ => self.mark("clz"),
-            op::ADDMOD | op::MULMOD => self.mark("modular_arithmetic"),
-            op::SHL | op::SHR => self.mark("shift"),
-            op::KECCAK256 => self.mark("keccak256"),
-            op::MLOAD | op::MSTORE | op::MSTORE8 | op::MSIZE => self.mark("memory"),
-            op::CODECOPY | op::CALLDATACOPY | op::EXTCODECOPY | op::MCOPY => self.mark("copy"),
-            op::SLOAD | op::SSTORE => self.mark("storage"),
+            op::CLZ => self.mark(FuzzFeatures::CLZ),
+            op::ADDMOD | op::MULMOD => self.mark(FuzzFeatures::MODULAR_ARITHMETIC),
+            op::SHL | op::SHR => self.mark(FuzzFeatures::SHIFT),
+            op::KECCAK256 => self.mark(FuzzFeatures::KECCAK256),
+            op::MLOAD | op::MSTORE | op::MSTORE8 | op::MSIZE => self.mark(FuzzFeatures::MEMORY),
+            op::CODECOPY | op::CALLDATACOPY | op::EXTCODECOPY | op::MCOPY => {
+                self.mark(FuzzFeatures::COPY)
+            }
+            op::SLOAD | op::SSTORE => self.mark(FuzzFeatures::STORAGE),
             op::BLOCKHASH | op::ORIGIN | op::DIFFICULTY | op::CHAINID | op::BASEFEE => {
-                self.mark("environment")
+                self.mark(FuzzFeatures::ENVIRONMENT)
             }
-            op::SLOTNUM => self.mark("slotnum"),
+            op::SLOTNUM => self.mark(FuzzFeatures::SLOTNUM),
             op::BALANCE | op::EXTCODESIZE | op::EXTCODEHASH | op::SELFBALANCE => {
-                self.mark("external_account")
+                self.mark(FuzzFeatures::EXTERNAL_ACCOUNT)
             }
-            op::LOG0..=op::LOG4 => self.mark("log"),
-            op::CALL => self.mark("call"),
-            op::STATICCALL => self.mark("staticcall"),
-            op::DELEGATECALL => self.mark("delegatecall"),
-            op::CALLCODE => self.mark("callcode"),
-            op::CREATE => self.mark("create"),
-            op::CREATE2 => self.mark("create2"),
-            op::RETURNDATASIZE | op::RETURNDATACOPY => self.mark("returndata"),
-            op::TLOAD | op::TSTORE => self.mark("transient_storage"),
-            op::BLOBHASH | op::BLOBBASEFEE => self.mark("blob"),
-            op::JUMP | op::JUMPI | op::JUMPDEST => self.mark("jump"),
-            op::DUP1..=op::DUP16 | op::SWAP1..=op::SWAP16 => self.mark("dup_swap"),
-            op::DUPN | op::SWAPN | op::EXCHANGE => self.mark("relative_stack"),
+            op::LOG0..=op::LOG4 => self.mark(FuzzFeatures::LOG),
+            op::CALL => self.mark(FuzzFeatures::CALL),
+            op::STATICCALL => self.mark(FuzzFeatures::STATICCALL),
+            op::DELEGATECALL => self.mark(FuzzFeatures::DELEGATECALL),
+            op::CALLCODE => self.mark(FuzzFeatures::CALLCODE),
+            op::CREATE => self.mark(FuzzFeatures::CREATE),
+            op::CREATE2 => self.mark(FuzzFeatures::CREATE2),
+            op::RETURNDATASIZE | op::RETURNDATACOPY => self.mark(FuzzFeatures::RETURNDATA),
+            op::TLOAD | op::TSTORE => self.mark(FuzzFeatures::TRANSIENT_STORAGE),
+            op::BLOBHASH | op::BLOBBASEFEE => self.mark(FuzzFeatures::BLOB),
+            op::JUMP | op::JUMPI | op::JUMPDEST => self.mark(FuzzFeatures::JUMP),
+            op::DUP1..=op::DUP16 | op::SWAP1..=op::SWAP16 => self.mark(FuzzFeatures::DUP_SWAP),
+            op::DUPN | op::SWAPN | op::EXCHANGE => self.mark(FuzzFeatures::RELATIVE_STACK),
             op::PUSH0 => {
-                self.mark("push");
-                self.mark("push0");
+                self.mark(FuzzFeatures::PUSH);
+                self.mark(FuzzFeatures::PUSH0);
             }
-            op::REVERT => self.mark("revert"),
-            op::RETURN => self.mark("return"),
-            op::INVALID => self.mark("invalid"),
-            op::SELFDESTRUCT => self.mark("selfdestruct"),
+            op::REVERT => self.mark(FuzzFeatures::REVERT),
+            op::RETURN => self.mark(FuzzFeatures::RETURN),
+            op::INVALID => self.mark(FuzzFeatures::INVALID),
+            op::SELFDESTRUCT => self.mark(FuzzFeatures::SELFDESTRUCT),
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn random_push_encoding() {
+        let mut rng = Gen::new(1);
+        let mut reference = Gen::new(1);
+        for _ in 0..1024 {
+            let mut program = Program::default();
+            program.push_random_width_word(&mut rng);
+            let len = reference.range_inclusive(1, 32);
+            let bytes = reference.bytes(len);
+            assert_eq!(program.code[0], op::PUSH1 + len as u8 - 1);
+            assert_eq!(&program.code[1..], bytes);
+            assert_eq!(program.stack_height, 1);
+            assert_eq!(program.features, FuzzFeatures::PUSH | FuzzFeatures::WIDE_PUSH);
+        }
+        assert_eq!(rng.bytes(32), reference.bytes(32));
+    }
+
+    #[test]
+    fn push_word_encoding() {
+        let mut values = vec![U256::ZERO, U256::MAX];
+        for bit in 0..256 {
+            let value = U256::ONE << bit;
+            values.extend([value - U256::ONE, value, value + U256::ONE]);
+        }
+        for value in values {
+            let mut program = Program::default();
+            program.push_word(value);
+            let width = if value <= U256::from(u64::MAX) { value.byte_len().max(1) } else { 32 };
+            let bytes = value.to_be_bytes::<32>();
+            assert_eq!(program.code[0], op::PUSH1 + width as u8 - 1);
+            assert_eq!(&program.code[1..], &bytes[32 - width..]);
+            assert_eq!(program.stack_height, 1);
+            assert_eq!(program.features, FuzzFeatures::PUSH);
         }
     }
 }
