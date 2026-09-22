@@ -339,6 +339,30 @@ impl<'a> State<'a> {
         }
     }
 
+    /// Copies one account's transaction overlay from another state.
+    ///
+    /// Does nothing when the source account is not loaded. Source slots overwrite matching target
+    /// slots; target-only slots are retained. Account metadata is copied, including original values
+    /// and lifecycle flags. This only updates the
+    /// in-flight transaction layer: accepted and backing database state must be transferred
+    /// separately, including any target-side committed storage wipe when the source transaction
+    /// overlay is not wiped. No database reads or journal entries are added; journals, logs,
+    /// pre-warmed sets and transient storage are left unchanged.
+    pub fn merge_transaction_account_from(&mut self, address: &Address, source: &State<'_>) {
+        let Some(account) = source.accounts.get(address) else { return };
+        self.accounts.insert(*address, account.clone());
+        if let Some(storage) = source.storage.get(address) {
+            let target = self.storage.entry(*address).or_default();
+            target.slots.extend(storage.slots.iter().map(|(key, slot)| (*key, *slot)));
+            target.wiped = storage.wiped;
+        }
+        if source.inner.selfdestructs.contains(address) {
+            self.inner.selfdestructs.insert(*address);
+        } else {
+            self.inner.selfdestructs.remove(address);
+        }
+    }
+
     /// Reads a storage slot from the committed state (accepted overlay and backing database),
     /// ignoring the in-flight transaction overlay.
     #[inline]
@@ -1246,5 +1270,65 @@ mod tests {
 
         assert_eq!(parent.account(&address, false).unwrap().nonce(), 1);
         assert_eq!(parent.storage_slot_untracked(&address, &key).unwrap(), Word::from(9));
+    }
+
+    #[test]
+    fn merge_transaction_account_retains_target_only_slots_and_source_metadata() {
+        let address = Address::with_last_byte(42);
+        let mut source_db = CacheDB::default();
+        source_db.insert_account_storage(&address, &Word::ZERO, &Word::from(5));
+        let mut target_db = CacheDB::default();
+        target_db.insert_account_storage(&address, &Word::ZERO, &Word::from(6));
+        let mut source = State::new(source_db);
+        let mut target = State::new(target_db);
+        source.account(&address, false).unwrap().set_balance(Word::from(17));
+        source.account(&address, false).unwrap().mark_destructed();
+        source.account(&address, false).unwrap().mark_created();
+        source.storage_slot(&address, Word::ZERO, false).unwrap().set(Word::from(11));
+        source.storage_slot(&address, Word::ZERO, false).unwrap().warm();
+        target.account(&address, false).unwrap().set_balance(Word::from(9));
+        target.storage_slot(&address, Word::ZERO, false).unwrap().set(Word::from(99));
+        target.storage_slot(&address, Word::ONE, false).unwrap().set(Word::from(22));
+        target.tstore(&address, &Word::ZERO, &Word::from(33));
+        let checkpoint = target.checkpoint();
+        target.merge_transaction_account_from(&address, &source);
+        assert_eq!(target.accounts[&address], source.accounts[&address]);
+        assert_eq!(
+            target.storage[&address].slots[&Word::ZERO],
+            source.storage[&address].slots[&Word::ZERO]
+        );
+        assert_eq!(target.get_storage(&address, &Word::ONE), Some(Word::from(22)));
+        assert!(target.inner.selfdestructs.contains(&address));
+        assert_eq!(target.tload(&address, &Word::ZERO), Word::from(33));
+        assert_eq!(target.checkpoint(), checkpoint);
+        target.storage_slot(&address, Word::ZERO, false).unwrap().set(Word::from(44));
+        target.rollback(checkpoint, crate::EvmFeatures::empty());
+        assert_eq!(target.get_storage(&address, &Word::ZERO), Some(Word::from(11)));
+        target.merge_transaction_account_from(&address, &State::new(EmptyDB::default()));
+        assert_eq!(target.get_storage(&address, &Word::ONE), Some(Word::from(22)));
+        assert!(target.inner.selfdestructs.contains(&address));
+        let mut live = State::new(EmptyDB::default());
+        live.account(&address, false).unwrap().set_balance(Word::ONE);
+        target.merge_transaction_account_from(&address, &live);
+        assert!(!target.inner.selfdestructs.contains(&address));
+    }
+
+    #[test]
+    fn merge_transaction_account_reinserts_retained_slots_after_wipe() {
+        let address = Address::with_last_byte(42);
+        let key = Word::ONE;
+        let mut target_db = CacheDB::default();
+        target_db.insert_account_storage(&address, &key, &Word::from(22));
+        let mut source = State::new(EmptyDB::default());
+        let mut target = State::new(target_db);
+        source.account(&address, false).unwrap();
+        source.storage(&address).wipe();
+        target.storage_slot(&address, key, false).unwrap();
+
+        target.merge_transaction_account_from(&address, &source);
+        assert_eq!(target.get_storage(&address, &key), Some(Word::from(22)));
+        target.commit_transaction();
+
+        assert_eq!(target.storage_slot_untracked(&address, &key).unwrap(), Word::from(22));
     }
 }
