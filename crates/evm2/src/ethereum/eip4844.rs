@@ -1,5 +1,5 @@
 use super::{
-    access_list_counts, effective_gas_price, execute_initial_frame, floor_gas,
+    PreparedTx, access_list_counts, effective_gas_price, execute_initial_frame, floor_gas,
     initial_gas_and_reservoir, intrinsic_gas, prepare_initial_frame, validate_block_gas_limit,
     validate_chain_id, validate_create_initcode, validate_execution_gas_limit_cap,
     validate_floor_gas, validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
@@ -32,6 +32,13 @@ pub fn handle<T: EvmTypes>(
 pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     req: TxRequest<'_, '_, T, TxEip4844Variant>,
 ) -> HandlerResult<TxResult<T>> {
+    execute_prepared::<T, H>(prepare_with_hooks::<T, H>(req)?)
+}
+
+/// Validates an EIP-4844 transaction and applies its pre-execution state changes.
+pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
+    req: TxRequest<'a, 'host, T, TxEip4844Variant>,
+) -> HandlerResult<PreparedTx<'a, 'host, T, TxEip4844Variant>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner().tx();
     let max_fee_per_gas = U256::from(tx.max_fee_per_gas);
@@ -99,6 +106,16 @@ pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let blob_basefee_cost = blob_gas_cost * req.host.block.blob_basefee;
     req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
     H::before_execution(req.host, req.envelope, caller, effective_gas_cost + blob_basefee_cost)?;
+
+    Ok(PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas })
+}
+
+/// Executes and settles a prepared EIP-4844 transaction.
+pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
+    prepared: PreparedTx<'_, '_, T, TxEip4844Variant>,
+) -> HandlerResult<TxResult<T>> {
+    let PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas } = prepared;
+    let tx = req.tx.inner().tx();
 
     let (execution_gas_limit, reservoir) =
         initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, initial_state_gas);

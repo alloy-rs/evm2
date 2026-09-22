@@ -51,7 +51,8 @@ const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug)]
 pub struct ExecuteConfig {
-    /// Whether to validate final post-state when fixtures contain it.
+    /// Whether to validate the full final-state allocation when fixtures contain `postState`.
+    /// Unexpected live accounts and non-zero storage are rejected.
     pub validate_post_state: bool,
     /// Whether to recompute each committed block's state root and compare it to
     /// the block header's `stateRoot`.
@@ -1125,20 +1126,18 @@ fn validate_post_state(
             )));
         }
 
-        if !expected_account.code.is_empty() {
-            let actual_code = info
-                .code
-                .as_ref()
-                .or_else(|| database.cache.contracts.get(&info.code_hash))
-                .map(|code| code.original_byte_slice())
-                .unwrap_or_default();
-            if actual_code != expected_account.code.as_ref() {
-                return Err(TestErrorKind::UnexpectedFailure(format!(
-                    "code mismatch for {address}: got 0x{}, expected 0x{}",
-                    alloy_primitives::hex::encode(actual_code),
-                    alloy_primitives::hex::encode(&expected_account.code)
-                )));
-            }
+        let actual_code = info
+            .code
+            .as_ref()
+            .or_else(|| database.cache.contracts.get(&info.code_hash))
+            .map(|code| code.original_byte_slice())
+            .unwrap_or_default();
+        if actual_code != expected_account.code.as_ref() {
+            return Err(TestErrorKind::UnexpectedFailure(format!(
+                "code mismatch for {address}: got 0x{}, expected 0x{}",
+                alloy_primitives::hex::encode(actual_code),
+                alloy_primitives::hex::encode(&expected_account.code)
+            )));
         }
 
         if let Some(storage) = database.cache.storage.get(address) {
@@ -1163,6 +1162,27 @@ fn validate_post_state(
                 return Err(TestErrorKind::UnexpectedFailure(format!(
                     "storage mismatch for {address}[{slot}]: got {actual_value}, expected {expected_value}"
                 )));
+            }
+        }
+    }
+    // `Some` denotes a live account, including an empty account retained before state clearing.
+    // Cached absent/deleted accounts (`None`) are not part of the final allocation.
+    for (address, info) in &database.cache.accounts {
+        if info.is_some() && !expected.contains_key(address) {
+            return Err(TestErrorKind::UnexpectedFailure(format!(
+                "unexpected account in post-state: {address}"
+            )));
+        }
+    }
+    // Storage is cached independently of account info, so also catch storage-only entries.
+    for (address, storage) in &database.cache.storage {
+        if !expected.contains_key(address) {
+            for (key, value) in &storage.slots {
+                if !value.is_zero() {
+                    return Err(TestErrorKind::UnexpectedFailure(format!(
+                        "unexpected storage for {address}[{key}]: got {value}, expected 0"
+                    )));
+                }
             }
         }
     }
@@ -1333,17 +1353,139 @@ fn fork_to_spec_id(fork: ForkSpec) -> SpecId {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "jit")]
-    use super::super::types::{SealEngine, State};
-    #[cfg(feature = "jit")]
-    use super::*;
+    use super::{
+        super::types::{SealEngine, State},
+        *,
+    };
     #[cfg(feature = "jit")]
     use evm2::interpreter::op;
-    #[cfg(feature = "jit")]
     use std::collections::BTreeMap;
 
     #[cfg(feature = "jit")]
     const BYTECODE_STORE42: &[u8] = &[op::PUSH1, 0x42, op::PUSH0, op::SSTORE, op::STOP];
+
+    #[test]
+    fn post_state_rejects_omitted_live_accounts() {
+        let address = Address::with_last_byte(1);
+        for account in [
+            Account { balance: U256::ONE, ..Default::default() },
+            Account { nonce: U256::ONE, ..Default::default() },
+            Account { code: Bytes::from_static(&[0x00]), ..Default::default() },
+            // Empty but live accounts also contribute to the state trie.
+            Account::default(),
+        ] {
+            let database = parse_state(&BTreeMap::from([(address, account)])).unwrap();
+            let err = validate_post_state(&database, &BTreeMap::new()).unwrap_err();
+            assert!(matches!(err, TestErrorKind::UnexpectedFailure(message)
+                if message == format!("unexpected account in post-state: {address}")));
+        }
+    }
+
+    #[test]
+    fn post_state_rejects_omitted_storage_without_live_account() {
+        let address = Address::with_last_byte(1);
+        for cached_absent in [false, true] {
+            let mut database = InMemoryDB::default();
+            if cached_absent {
+                database.cache.accounts.insert(address, None);
+            }
+            database.insert_account_storage(&address, &U256::ZERO, &U256::ONE);
+            let err = validate_post_state(&database, &BTreeMap::new()).unwrap_err();
+            assert!(matches!(err, TestErrorKind::UnexpectedFailure(message)
+                if message == format!("unexpected storage for {address}[0]: got 1, expected 0")));
+        }
+    }
+
+    #[test]
+    fn post_state_accepts_complete_allocation_with_absent_and_zero_storage_cache_entries() {
+        let address = Address::with_last_byte(1);
+        let absent = Address::with_last_byte(2);
+        let storage_only = Address::with_last_byte(3);
+        let expected = BTreeMap::from([(
+            address,
+            Account {
+                balance: U256::ONE,
+                nonce: U256::ONE,
+                code: Bytes::from_static(&[0x00]),
+                storage: BTreeMap::from([(U256::ZERO, U256::ONE)]),
+            },
+        )]);
+        let mut database = parse_state(&expected).unwrap();
+        database.cache.accounts.insert(absent, None);
+        for address in [address, absent, storage_only] {
+            database.insert_account_storage(&address, &U256::ONE, &U256::ZERO);
+        }
+        validate_post_state(&database, &expected).unwrap();
+    }
+
+    #[test]
+    fn post_state_checks_all_expected_account_fields() {
+        let address = Address::with_last_byte(1);
+        let expected = BTreeMap::from([(address, Account::default())]);
+        for (account, mismatch) in [
+            (Account { balance: U256::ONE, ..Default::default() }, "balance mismatch"),
+            (Account { nonce: U256::ONE, ..Default::default() }, "nonce mismatch"),
+            (Account { code: Bytes::from_static(&[0x00]), ..Default::default() }, "code mismatch"),
+            (
+                Account {
+                    storage: BTreeMap::from([(U256::ZERO, U256::ONE)]),
+                    ..Default::default()
+                },
+                "unexpected storage",
+            ),
+        ] {
+            let database = parse_state(&BTreeMap::from([(address, account)])).unwrap();
+            let err = validate_post_state(&database, &expected).unwrap_err();
+            assert!(
+                matches!(err, TestErrorKind::UnexpectedFailure(message)
+                if message.starts_with(mismatch)),
+                "expected {mismatch}"
+            );
+        }
+    }
+
+    #[test]
+    fn blockchain_post_state_is_full_validation_by_default() {
+        let address = Address::with_last_byte(1);
+        let mut suite = BlockchainTest(BTreeMap::from([(
+            "omitted-account".to_string(),
+            BlockchainTestCase {
+                genesis_block_header: BlockHeader::default(),
+                genesis_rlp: None,
+                blocks: Vec::new(),
+                post_state: Some(BTreeMap::new()),
+                pre: State(BTreeMap::from([(
+                    address,
+                    Account { balance: U256::ONE, ..Default::default() },
+                )])),
+                block_hashes: Vec::new(),
+                lastblockhash: B256::ZERO,
+                network: ForkSpec::Paris,
+                seal_engine: SealEngine::NoProof,
+            },
+        )]));
+        let run = |suite: &BlockchainTest, config| {
+            execute_suite(
+                Path::new("omitted-account.json"),
+                suite,
+                config,
+                &NameFilter::default(),
+                &mut NoopHook,
+            )
+        };
+        let err = run(&suite, ExecuteConfig::default()).unwrap_err();
+        assert!(matches!(err.kind, TestErrorKind::UnexpectedFailure(message)
+            if message == format!("unexpected account in post-state: {address}")));
+
+        let summary =
+            run(&suite, ExecuteConfig { validate_post_state: false, ..Default::default() })
+                .unwrap();
+        assert_eq!(summary.executed, 1);
+
+        let case = suite.0.get_mut("omitted-account").unwrap();
+        case.post_state = Some(case.pre.0.clone());
+        assert_eq!(run(&suite, ExecuteConfig::default()).unwrap().executed, 1);
+    }
 
     #[test]
     fn blockchain_tests_apply_ommer_rewards_before_merge() {
