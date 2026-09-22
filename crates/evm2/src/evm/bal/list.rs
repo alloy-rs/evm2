@@ -6,7 +6,10 @@ use crate::{
     evm::state::{AccountInfo, PendingState},
 };
 use alloc::vec::Vec;
-use alloy_eip7928::{AccountChanges as AlloyAccountChanges, BlockAccessList as AlloyBal};
+use alloy_eip7928::{
+    AccountChanges as AlloyAccountChanges, BlockAccessList as AlloyBal,
+    CodeChange as AlloyCodeChange, SlotChanges as AlloySlotChanges,
+};
 use alloy_primitives::{Address, U256, map::AddressMap};
 
 /// BAL structure.
@@ -26,6 +29,50 @@ impl Bal {
     /// Create a new BAL builder.
     pub fn new() -> Self {
         Self { accounts: AddressMap::default() }
+    }
+
+    /// Returns a canonical EIP-7928 [`AlloyBal`] without consuming this BAL.
+    ///
+    /// Builds the output directly from borrowed entries, cloning the change lists and sharing
+    /// the original bytecode bytes without cloning the intermediate maps or decoded bytecode.
+    /// Accounts are sorted by address, storage reads and writes by slot, and changes by block
+    /// access index. The source BAL is left unchanged.
+    pub fn to_alloy_bal(&self) -> AlloyBal {
+        let mut alloy_bal = AlloyBal::from_iter(self.accounts.iter().map(|(&address, account)| {
+            let mut storage_reads = Vec::new();
+            let mut storage_changes = Vec::new();
+            for (&slot, changes) in &account.storage.storage {
+                if changes.is_empty() {
+                    storage_reads.push(slot);
+                } else {
+                    storage_changes.push(AlloySlotChanges::new(slot, changes.changes.clone()));
+                }
+            }
+
+            let mut changes = AlloyAccountChanges {
+                address,
+                storage_changes,
+                storage_reads,
+                balance_changes: account.account_info.balance.changes.clone(),
+                nonce_changes: account.account_info.nonce.changes.clone(),
+                code_changes: account
+                    .account_info
+                    .code
+                    .changes
+                    .iter()
+                    .map(|change| {
+                        AlloyCodeChange::new(
+                            change.block_access_index,
+                            change.code.1.original_bytes(),
+                        )
+                    })
+                    .collect(),
+            };
+            changes.sort();
+            changes
+        }));
+        alloy_bal.sort_unstable_by_key(|account| account.address);
+        alloy_bal
     }
 
     /// Extend BAL with a transaction's detached [`PendingState`] at `bal_index`.
@@ -96,6 +143,14 @@ impl Bal {
             *value = bal_value;
         };
         Ok(())
+    }
+}
+
+impl From<&Bal> for AlloyBal {
+    /// Converts a borrowed BAL using [`Bal::to_alloy_bal`].
+    #[inline]
+    fn from(bal: &Bal) -> Self {
+        bal.to_alloy_bal()
     }
 }
 
@@ -288,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn into_alloy_bal_canonicalizes_eip_7928_ordering() {
+    fn alloy_bal_conversions_canonicalize_eip_7928_ordering() {
         let low_address = Address::with_last_byte(1);
         let high_address = Address::with_last_byte(2);
 
@@ -339,10 +394,15 @@ mod tests {
             },
         };
 
-        let alloy_bal = AlloyBal::from(Bal::from_iter([
+        let bal = Bal::from_iter([
             (high_address, AccountBal::default()),
             (low_address, unordered_account),
-        ]));
+        ]);
+        let original = bal.clone();
+        let alloy_bal = bal.to_alloy_bal();
+        assert_eq!(alloy_bal, AlloyBal::from(&bal));
+        assert_eq!(bal, original);
+        assert_eq!(alloy_bal, AlloyBal::from(bal));
 
         assert_eq!(
             alloy_bal.iter().map(|account| account.address).collect::<Vec<_>>(),
@@ -391,6 +451,15 @@ mod tests {
             account.code_changes.iter().map(|change| change.block_access_index).collect::<Vec<_>>(),
             vec![idx(3), idx(7)]
         );
+        assert_eq!(account.code_changes[0].new_code().as_ref(), &[3]);
+        assert_eq!(account.code_changes[1].new_code().as_ref(), &[7]);
+    }
+
+    #[test]
+    fn borrowed_empty_bal_converts_to_empty_alloy_bal() {
+        let bal = Bal::new();
+        assert!(bal.to_alloy_bal().is_empty());
+        assert!(AlloyBal::from(&bal).is_empty());
     }
 
     fn slot(original: U256, current: U256) -> StorageSlot {
