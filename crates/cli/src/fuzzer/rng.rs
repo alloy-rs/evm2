@@ -39,8 +39,12 @@ impl Gen {
 
     pub(crate) fn bytes(&mut self, len: usize) -> Vec<u8> {
         let mut out = vec![0; len];
-        self.rng.fill(&mut out[..]);
+        self.fill_bytes(&mut out);
         out
+    }
+
+    pub(crate) fn fill_bytes(&mut self, bytes: &mut [u8]) {
+        self.rng.fill(bytes);
     }
 
     pub(crate) fn small_word(&mut self, max: u64) -> U256 {

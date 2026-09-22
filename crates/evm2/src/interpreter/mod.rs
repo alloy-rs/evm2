@@ -89,8 +89,10 @@ pub enum InstrStop {
     CallNotAllowedInsideStatic,
     /// Invalid state modification in static call.
     StateChangeDuringStaticCall,
-    /// Invalid or undefined opcode.
-    InvalidOpcode,
+    /// Undefined opcode.
+    OpcodeNotFound,
+    /// Encountered the designated invalid opcode (`0xFE`).
+    InvalidFEOpcode,
     /// Invalid jump destination. Dynamic jumps points to invalid not jumpdest opcode.
     InvalidJump,
     /// The feature or opcode is not activated in this version of the EVM.

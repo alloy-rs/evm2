@@ -206,6 +206,7 @@ fn prepare_call<T: EvmTypesHost>(
         gas_limit,
         reservoir: gas.reservoir(),
         destination,
+        call_target: to,
         caller,
         input,
         value: call_value,
@@ -373,6 +374,7 @@ fn create_inner<T: EvmTypesHost>(
         gas_limit,
         reservoir: gas.reservoir(),
         destination,
+        call_target: destination,
         caller,
         code: Bytecode::new_legacy(input.clone()),
         input,
@@ -769,7 +771,7 @@ mod tests {
             op::DELEGATECALL,
         ])
         .spec(SpecId::FRONTIER));
-        assert_matches!(interp.err, InstrStop::InvalidOpcode);
+        assert_matches!(interp.err, InstrStop::NotActivated);
     }
 
     #[test]
@@ -812,7 +814,7 @@ mod tests {
             op::STATICCALL,
         ])
         .spec(SpecId::HOMESTEAD));
-        assert_matches!(interp.err, InstrStop::InvalidOpcode);
+        assert_matches!(interp.err, InstrStop::NotActivated);
     }
 
     #[test]
@@ -979,7 +981,7 @@ mod tests {
             op::CREATE2,
         ])
         .spec(SpecId::BYZANTIUM));
-        assert_matches!(interp.err, InstrStop::InvalidOpcode);
+        assert_matches!(interp.err, InstrStop::NotActivated);
     }
 
     #[test]

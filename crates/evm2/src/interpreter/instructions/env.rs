@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(interp.stack(), [Word::from(3)]);
 
         let interp = run(RunConfig::new([op::RETURNDATASIZE]).spec(SpecId::FRONTIER));
-        assert_matches!(interp.err, InstrStop::InvalidOpcode);
+        assert_matches!(interp.err, InstrStop::NotActivated);
     }
 
     #[test]
@@ -486,7 +486,7 @@ mod tests {
             op::RETURNDATACOPY,
         ))
         .spec(SpecId::FRONTIER));
-        assert_matches!(interp.err, InstrStop::InvalidOpcode);
+        assert_matches!(interp.err, InstrStop::NotActivated);
     }
 
     #[test]
@@ -502,6 +502,6 @@ mod tests {
         let interp = run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP])
             .host(&mut host)
             .spec(SpecId::BYZANTIUM));
-        assert_matches!(interp.err, InstrStop::InvalidOpcode);
+        assert_matches!(interp.err, InstrStop::NotActivated);
     }
 }

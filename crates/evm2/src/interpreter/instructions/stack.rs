@@ -365,12 +365,12 @@ mod tests {
     #[test]
     fn relative_stack_opcodes_are_not_enabled_before_amsterdam() {
         let interp = run(RunConfig::new([op::DUPN, 0x80]).spec(SpecId::OSAKA));
-        assert_matches!(interp.err, InstrStop::InvalidOpcode);
+        assert_matches!(interp.err, InstrStop::NotActivated);
 
         let interp = run(RunConfig::new([op::SWAPN, 0x80]).spec(SpecId::OSAKA));
-        assert_matches!(interp.err, InstrStop::InvalidOpcode);
+        assert_matches!(interp.err, InstrStop::NotActivated);
 
         let interp = run(RunConfig::new([op::EXCHANGE, 0x8e]).spec(SpecId::OSAKA));
-        assert_matches!(interp.err, InstrStop::InvalidOpcode);
+        assert_matches!(interp.err, InstrStop::NotActivated);
     }
 }

@@ -653,11 +653,7 @@ fn run_compiled_test_case_with_context(
 
 fn instruction_results_match_for_oracle(actual: InstrStop, expected: InstrStop) -> bool {
     actual == expected
-        || matches!(
-            (actual, expected),
-            (InstrStop::InvalidOpcode, InstrStop::NotActivated)
-                | (InstrStop::StackUnderflow, InstrStop::StackOverflow)
-        )
+        || matches!((actual, expected), (InstrStop::StackUnderflow, InstrStop::StackOverflow))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

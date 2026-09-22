@@ -81,7 +81,7 @@ fn erc7562_classifies_all_out_of_gas_statuses() {
         (Some(InstrStop::Return), false),
         (Some(InstrStop::Revert), false),
         (Some(InstrStop::OutOfFunds), false),
-        (Some(InstrStop::InvalidOpcode), false),
+        (Some(InstrStop::OpcodeNotFound), false),
         (Some(InstrStop::OutOfGas), true),
         (Some(InstrStop::MemoryOOG), true),
         (Some(InstrStop::MemoryLimitOOG), true),

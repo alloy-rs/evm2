@@ -1,7 +1,8 @@
 use crate::{
     EvmTypesHost,
     interpreter::{
-        InstrStop, Result, Word,
+        InstrStop, Result, Word, op,
+        opcode::OpCode,
         private::{GasInstructionCx, InstructionCx},
     },
     utils::{word_to_usize, word_to_usize_saturated},
@@ -89,15 +90,23 @@ fn return_inner<T: EvmTypesHost>(
 }
 
 #[instruction]
-pub fn invalid() -> Result {
+pub fn invalid(cx: _) -> Result {
     cold_path();
-    Err(InstrStop::InvalidOpcode)
+    let opcode = cx.pc.op();
+    Err(if opcode == op::INVALID {
+        InstrStop::InvalidFEOpcode
+    } else if OpCode::new(opcode).is_some() {
+        InstrStop::NotActivated
+    } else {
+        InstrStop::OpcodeNotFound
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::{
-        interpreter::{InstrStop, Word, op},
+        SpecId,
         test_utils::{RunConfig, push, run, run_stack},
     };
     use alloc::vec::Vec;
@@ -114,11 +123,28 @@ mod tests {
 
     #[test]
     fn invalid_opcode() {
-        let interp = run(RunConfig::new([op::INVALID]));
-        assert_matches!(interp.err, InstrStop::InvalidOpcode);
+        for gas_limit in [0, 100] {
+            for (opcode, expected) in [
+                (op::INVALID, InstrStop::InvalidFEOpcode),
+                (0x0c, InstrStop::OpcodeNotFound),
+                (op::PUSH0, InstrStop::NotActivated),
+                (op::TSTORE, InstrStop::NotActivated),
+                (op::DUPN, InstrStop::NotActivated),
+            ] {
+                let interp =
+                    run(RunConfig::new([opcode]).spec(SpecId::LONDON).gas_limit(gas_limit));
+                assert_eq!(interp.err, expected, "opcode={opcode:#x}, gas={gas_limit}");
+                assert_eq!(interp.gas_remaining(), gas_limit);
+                assert_eq!(interp.stack_len, 0);
 
-        let interp = run(RunConfig::new([0x0c]));
-        assert_matches!(interp.err, InstrStop::InvalidOpcode);
+                let interp = run(RunConfig::new([op::PUSH1, 0, op::POP, opcode])
+                    .spec(SpecId::LONDON)
+                    .gas_limit(gas_limit + 5));
+                assert_eq!(interp.err, expected, "opcode={opcode:#x}, gas={gas_limit}");
+                assert_eq!(interp.gas_remaining(), gas_limit);
+                assert_eq!(interp.stack_len, 0);
+            }
+        }
     }
 
     #[test]

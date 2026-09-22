@@ -1,59 +1,58 @@
 use crate::fuzzer::{
-    case::EvmCase,
-    normalize::{Outcome, OutcomeKind},
+    case::{EvmCase, FuzzTxKind},
+    features::FuzzFeatures,
+    normalize::{FuzzError, FuzzOutcomeKind, Outcome},
 };
+use alloy_primitives::map::HashMap;
 use evm2::SpecId;
-use std::collections::BTreeMap;
+use std::hash::Hash;
 
 #[derive(Debug, Default)]
 pub(crate) struct Coverage {
     cases: u64,
-    forks: BTreeMap<&'static str, u64>,
-    tx_kinds: BTreeMap<&'static str, u64>,
-    txs_per_case: BTreeMap<usize, u64>,
-    features: BTreeMap<String, u64>,
-    outcomes: BTreeMap<&'static str, u64>,
-    receipt_outcomes: BTreeMap<&'static str, u64>,
-    errors: BTreeMap<String, u64>,
+    forks: HashMap<SpecId, u64>,
+    tx_kinds: HashMap<FuzzTxKind, u64>,
+    txs_per_case: HashMap<usize, u64>,
+    features: HashMap<FuzzFeatures, u64>,
+    outcomes: HashMap<FuzzOutcomeKind, u64>,
+    receipt_outcomes: HashMap<FuzzOutcomeKind, u64>,
+    errors: HashMap<FuzzError, u64>,
 }
 
 impl Coverage {
     pub(crate) fn record_case(&mut self, case: &EvmCase) {
         self.cases += 1;
-        inc(&mut self.forks, spec_name(case.spec));
+        inc(&mut self.forks, case.spec);
         let tx_count = case.txs().count();
         inc(&mut self.txs_per_case, tx_count);
         for tx in case.txs() {
-            inc(&mut self.tx_kinds, tx.kind.name());
+            inc(&mut self.tx_kinds, tx.kind);
             if tx.is_create() {
-                inc_string(&mut self.features, "tx_create");
+                inc(&mut self.features, FuzzFeatures::TX_CREATE);
             }
             if let Some(precompile) = tx.direct_precompile() {
-                inc_string(&mut self.features, "precompile_direct_tx");
-                inc_string(&mut self.features, precompile.feature());
-                inc_string(
-                    &mut self.features,
-                    format!("precompile_input_{}", tx.precompile_input_shape(precompile)),
-                );
+                inc(&mut self.features, FuzzFeatures::PRECOMPILE_DIRECT_TX);
+                inc(&mut self.features, precompile.feature());
+                inc(&mut self.features, tx.precompile_input_shape(precompile));
                 if !precompile.is_enabled(case.spec) {
-                    inc_string(&mut self.features, "precompile_future_address");
+                    inc(&mut self.features, FuzzFeatures::PRECOMPILE_FUTURE_ADDRESS);
                 }
             }
             if !tx.kind.is_enabled(case.spec) {
-                inc_string(&mut self.features, "fork_invalid_tx");
+                inc(&mut self.features, FuzzFeatures::FORK_INVALID_TX);
             }
         }
-        for feature in &case.features {
-            inc_string(&mut self.features, feature);
+        for feature in case.features.iter() {
+            inc(&mut self.features, feature);
         }
     }
 
     pub(crate) fn record_outcome(&mut self, outcome: &Outcome) {
-        inc(&mut self.outcomes, outcome_kind_name(outcome.kind));
+        inc(&mut self.outcomes, outcome.kind);
         for receipt in &outcome.receipts {
-            inc(&mut self.receipt_outcomes, outcome_kind_name(receipt.kind));
+            inc(&mut self.receipt_outcomes, receipt.kind);
             if let Some(error) = &receipt.error {
-                inc_string(&mut self.errors, error);
+                inc(&mut self.errors, error.clone());
             }
         }
     }
@@ -75,65 +74,34 @@ impl Coverage {
         }
         println!("coverage:");
         println!("  cases: {}", self.cases);
-        print_counts("forks", &self.forks);
-        print_counts("tx kinds", &self.tx_kinds);
-        print_counts("txs/case", &self.txs_per_case);
-        print_counts("features", &self.features);
-        print_counts("outcomes", &self.outcomes);
-        print_counts("receipt outcomes", &self.receipt_outcomes);
-        print_counts("errors", &self.errors);
+        print_counts("forks", &self.forks, |spec| format!("{spec:?}").to_lowercase());
+        print_counts("tx kinds", &self.tx_kinds, ToString::to_string);
+        print_counts("txs/case", &self.txs_per_case, ToString::to_string);
+        print_counts("features", &self.features, ToString::to_string);
+        print_counts("outcomes", &self.outcomes, ToString::to_string);
+        print_counts("receipt outcomes", &self.receipt_outcomes, ToString::to_string);
+        print_counts("errors", &self.errors, ToString::to_string);
     }
 }
 
-fn inc<K: Ord>(counts: &mut BTreeMap<K, u64>, key: K) {
+fn inc<K: Eq + Hash>(counts: &mut HashMap<K, u64>, key: K) {
     *counts.entry(key).or_default() += 1;
 }
 
-fn merge_counts<K: Ord>(counts: &mut BTreeMap<K, u64>, other: BTreeMap<K, u64>) {
+fn merge_counts<K: Eq + Hash>(counts: &mut HashMap<K, u64>, other: HashMap<K, u64>) {
     for (key, count) in other {
         *counts.entry(key).or_default() += count;
     }
 }
 
-fn inc_string(counts: &mut BTreeMap<String, u64>, key: impl AsRef<str>) {
-    *counts.entry(key.as_ref().to_string()).or_default() += 1;
-}
-
-fn print_counts<K: std::fmt::Display>(label: &str, counts: &BTreeMap<K, u64>) {
+fn print_counts<K>(label: &str, counts: &HashMap<K, u64>, name: impl Fn(&K) -> String) {
     if counts.is_empty() {
         return;
     }
     println!("  {label}:");
+    let mut counts = counts.iter().map(|(key, count)| (name(key), count)).collect::<Vec<_>>();
+    counts.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
     for (key, count) in counts {
         println!("    {key}: {count}");
-    }
-}
-
-const fn outcome_kind_name(kind: OutcomeKind) -> &'static str {
-    match kind {
-        OutcomeKind::Success => "success",
-        OutcomeKind::RevertOrHalt => "revert_or_halt",
-        OutcomeKind::Error => "error",
-    }
-}
-
-const fn spec_name(spec: SpecId) -> &'static str {
-    match spec {
-        SpecId::FRONTIER => "frontier",
-        SpecId::HOMESTEAD => "homestead",
-        SpecId::TANGERINE => "tangerine",
-        SpecId::SPURIOUS_DRAGON => "spurious_dragon",
-        SpecId::BYZANTIUM => "byzantium",
-        SpecId::PETERSBURG => "petersburg",
-        SpecId::ISTANBUL => "istanbul",
-        SpecId::BERLIN => "berlin",
-        SpecId::LONDON => "london",
-        SpecId::MERGE => "merge",
-        SpecId::SHANGHAI => "shanghai",
-        SpecId::CANCUN => "cancun",
-        SpecId::PRAGUE => "prague",
-        SpecId::OSAKA => "osaka",
-        SpecId::AMSTERDAM => "amsterdam",
-        _ => "other",
     }
 }
