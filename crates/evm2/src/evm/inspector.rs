@@ -149,7 +149,7 @@ mod tests {
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnvExt, TxEnvExt},
         ethereum::{TxEnvelope, ethereum_tx_registry},
-        evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
+        evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State},
         interpreter::{
             GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageResult,
             MessageResultExt, Word, op,
@@ -158,7 +158,7 @@ mod tests {
         test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all},
         utils::address_to_word,
     };
-    use alloc::{boxed::Box, vec::Vec};
+    use alloc::{boxed::Box, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
     use core::assert_matches;
@@ -1133,5 +1133,106 @@ mod tests {
         assert_eq!(state.step_ends, 1);
         assert_eq!(state.calls, 0);
         assert_eq!(state.creates, 1);
+    }
+
+    /// Reproduces Foundry restoring a snapshot from a still-running child call.
+    #[test]
+    fn restored_snapshot_allows_child_and_parent_revert() {
+        #[derive(Default)]
+        struct SnapshotInspector {
+            snapshot: Option<State<'static>>,
+            restored: bool,
+            child_reverted: bool,
+        }
+
+        impl Inspector<BaseEvmTypes> for SnapshotInspector {
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                let marker = message.destination;
+                if marker == Address::with_last_byte(0x44) {
+                    self.snapshot = Some(interp.host().state().clone_with(EmptyDB::default()));
+                } else if marker == Address::with_last_byte(0x55) {
+                    *interp.host().state_mut() =
+                        self.snapshot.as_ref().unwrap().clone_with(EmptyDB::default());
+                    self.restored = true;
+                } else {
+                    return None;
+                }
+                Some(MessageResultExt {
+                    stop: InstrStop::Return,
+                    gas: GasTracker::new(message.gas_limit),
+                    ..Default::default()
+                })
+            }
+
+            fn call_end(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                if message.destination == Address::with_last_byte(0xbb) {
+                    assert_eq!(result.stop, InstrStop::Revert);
+                    assert_eq!(
+                        interp
+                            .host()
+                            .state_mut()
+                            .storage_slot_untracked(&Address::with_last_byte(0xaa), &Word::ZERO,)
+                            .unwrap(),
+                        Word::from(7),
+                    );
+                    self.child_reverted = true;
+                }
+            }
+        }
+
+        fn append_call(code: &mut Vec<u8>, target: Address) {
+            push_all(
+                code,
+                [
+                    Word::ZERO,
+                    Word::ZERO,
+                    Word::ZERO,
+                    Word::ZERO,
+                    Word::ZERO,
+                    address_to_word(&target),
+                    Word::from(200_000),
+                ],
+            );
+            code.extend([op::CALL, op::POP]);
+        }
+
+        let parent = Address::with_last_byte(0xaa);
+        let child = Address::with_last_byte(0xbb);
+        let mut parent_code = vec![op::PUSH1, 7, op::PUSH0, op::SSTORE];
+        append_call(&mut parent_code, Address::with_last_byte(0x44));
+        parent_code.extend([op::PUSH1, 8, op::PUSH0, op::SSTORE]);
+        append_call(&mut parent_code, child);
+        parent_code.extend([op::PUSH0, op::PUSH0, op::REVERT]);
+        let mut child_code = Vec::new();
+        append_call(&mut child_code, Address::with_last_byte(0x55));
+        child_code.extend([op::PUSH0, op::PUSH0, op::REVERT]);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &child,
+            AccountInfo::default().with_code(legacy_bytecode(child_code)),
+        );
+        let (result, inspector, mut evm) = run_evm_with_inspector_db(
+            db,
+            parent_code,
+            &MessageExt { destination: parent, ..Default::default() },
+            1_000_000,
+            SnapshotInspector::default(),
+        );
+        assert!(inspector.restored);
+        assert!(inspector.child_reverted);
+        assert_eq!(result.stop, InstrStop::Revert);
+        assert_eq!(
+            evm.state_mut().storage_slot_untracked(&parent, &Word::ZERO).unwrap(),
+            Word::ZERO,
+        );
     }
 }
