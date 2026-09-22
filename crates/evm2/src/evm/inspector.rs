@@ -19,12 +19,18 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     }
 
     /// Called before each instruction executes.
+    ///
+    /// Gas reflects all preceding instructions and hook edits. Gas changes made here apply to
+    /// the current instruction.
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
     }
 
     /// Called after each instruction executes.
+    ///
+    /// Gas includes the instruction's charges and is zero on out-of-gas errors. Dispatch
+    /// preserves gas changes made here; normal frame settlement still applies.
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
@@ -457,6 +463,187 @@ mod tests {
     }
 
     #[test]
+    fn inspector_gas_edits_survive_dispatch() {
+        #[derive(Default)]
+        struct GasInspector {
+            steps: usize,
+            ends: usize,
+        }
+
+        impl Inspector<BaseEvmTypes> for GasInspector {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                let mut gas = interp.gas();
+                gas.set_remaining(100);
+                gas.set_refunded(7);
+                interp.set_gas(gas);
+            }
+
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                let expected = [100, 128, 156, 184, 212, 236][self.steps];
+                assert_eq!(interp.gas().remaining(), expected);
+                assert_eq!(interp.gas().refunded(), 7);
+                interp.gas_mut().set_remaining(expected + 10);
+                self.steps += 1;
+            }
+
+            fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                let expected = [108, 136, 164, 192, 216, 246][self.ends];
+                assert_eq!(interp.gas().remaining(), expected);
+                if self.ends == 1 {
+                    assert_eq!(interp.stack().last(), Some(&Word::from(136)));
+                }
+                interp.gas_mut().set_remaining(expected + 20);
+                self.ends += 1;
+            }
+        }
+
+        let (result, inspector, _) = run_evm_with_inspector(
+            Vec::from([op::PUSH0, op::GAS, op::POP, op::PUSH0, op::MSTORE, op::STOP]),
+            &MessageExt::default(),
+            1000,
+            GasInspector::default(),
+        );
+        assert_eq!(result.stop, InstrStop::Stop);
+        assert_eq!(result.gas.remaining(), 266);
+        assert_eq!(result.gas.refunded(), 7);
+        assert_eq!((inspector.steps, inspector.ends), (6, 6));
+    }
+
+    #[test]
+    fn inspector_message_hooks_preserve_parent_gas_edits() {
+        #[derive(Default)]
+        struct GasInspector {
+            opcode: u8,
+            before: u64,
+            calls: usize,
+            ends: usize,
+        }
+
+        impl Inspector<BaseEvmTypes> for GasInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                self.opcode = interp.opcode();
+                self.before = interp.gas().remaining();
+            }
+
+            fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if matches!(self.opcode, op::CALL | op::CREATE) {
+                    assert_eq!(interp.gas().remaining(), 4100);
+                } else if self.opcode == op::GAS {
+                    assert_eq!(interp.stack().last(), Some(&Word::from(4098)));
+                }
+            }
+
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth == 0 {
+                    return None;
+                }
+                let expected = if self.opcode == op::CALL {
+                    self.before - 2600 - message.gas_limit
+                } else {
+                    self.before - 32000 - message.gas_limit
+                };
+                assert_eq!(interp.gas().remaining(), expected);
+                interp.gas_mut().set_remaining(5000);
+                self.calls += 1;
+                Some(MessageResultExt {
+                    stop: InstrStop::Return,
+                    gas: GasTracker::new(100),
+                    created_address: Some(Address::from([0x77; 20])),
+                    ..Default::default()
+                })
+            }
+
+            fn call_end(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                _result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                if message.depth > 0 {
+                    assert_eq!(interp.gas().remaining(), 5000);
+                    interp.gas_mut().set_remaining(4000);
+                    self.ends += 1;
+                }
+            }
+
+            fn create(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                self.call(interp, message)
+            }
+
+            fn create_end(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                self.call_end(interp, message, result);
+            }
+        }
+
+        for (mut code, opcode) in
+            [(call_code(Address::from([0x66; 20])), op::CALL), (create_code(), op::CREATE)]
+        {
+            code.extend([opcode, op::GAS, op::STOP]);
+            let (result, inspector, _) = run_evm_with_inspector(
+                code,
+                &MessageExt::default(),
+                100_000,
+                GasInspector::default(),
+            );
+            assert_eq!(result.stop, InstrStop::Stop);
+            assert_eq!(result.gas.remaining(), 4098);
+            assert_eq!((inspector.calls, inspector.ends), (1, 1));
+        }
+    }
+
+    #[test]
+    fn inspector_gas_is_valid_after_out_of_gas() {
+        struct GasInspector {
+            recover: bool,
+            failures: usize,
+        }
+
+        impl Inspector<BaseEvmTypes> for GasInspector {
+            fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if matches!(interp.result(), Err(InstrStop::OutOfGas | InstrStop::MemoryOOG)) {
+                    assert_eq!(interp.gas().remaining(), 0);
+                    self.failures += 1;
+                    if self.recover {
+                        interp.gas_mut().set_remaining(17);
+                        interp.set_stop(InstrStop::Stop);
+                    }
+                }
+            }
+        }
+
+        for (code, gas_limit, stop) in [
+            (vec![op::PUSH0], 1, InstrStop::OutOfGas),
+            (vec![op::PUSH0, op::PUSH0, op::MSTORE], 9, InstrStop::MemoryOOG),
+            (vec![op::PUSH0, op::SLOAD], 2, InstrStop::OutOfGas),
+        ] {
+            for recover in [false, true] {
+                let (result, inspector, _) = run_evm_with_inspector(
+                    code.clone(),
+                    &MessageExt::default(),
+                    gas_limit,
+                    GasInspector { recover, failures: 0 },
+                );
+                assert_eq!(inspector.failures, 1, "code={code:?}, result={result:?}");
+                assert_eq!(result.stop, if recover { InstrStop::Stop } else { stop });
+                assert_eq!(result.gas.remaining(), if recover { 17 } else { 0 });
+            }
+        }
+    }
+
+    #[test]
     fn step_can_stop_before_current_opcode_executes() {
         #[derive(Default)]
         struct StopOnStepInspector {
@@ -471,6 +658,7 @@ mod tests {
                 self.steps += 1;
                 if interp.opcode() == self.opcode {
                     self.stack = interp.stack().to_vec();
+                    interp.gas_mut().set_remaining(123);
                     interp.set_stop(InstrStop::Revert);
                 }
             }
@@ -491,6 +679,7 @@ mod tests {
         assert_eq!(inspector.stack, [Word::from(1), Word::from(2)]);
         assert_eq!(inspector.steps, 3);
         assert_eq!(inspector.step_ends, 2);
+        assert_eq!(result.gas.remaining(), 123);
     }
 
     #[test]
@@ -514,6 +703,7 @@ mod tests {
                 self.step_ends += 1;
                 if self.last_opcode == Some(self.opcode) {
                     self.stack = interp.stack().to_vec();
+                    interp.gas_mut().set_remaining(123);
                     interp.set_stop(InstrStop::Revert);
                 }
             }
@@ -530,6 +720,7 @@ mod tests {
         assert_eq!(inspector.stack, [Word::from(1)]);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
+        assert_eq!(result.gas.remaining(), 123);
     }
 
     #[test]
@@ -1367,5 +1558,33 @@ mod tests {
             evm.state_mut().storage_slot_untracked(&Address::ZERO, &Word::ZERO).unwrap(),
             Word::ZERO
         );
+    }
+
+    #[test]
+    fn inspector_gas_changes_survive_dispatch_errors() {
+        struct GasEdit;
+        impl Inspector<TestTypes> for GasEdit {
+            fn step_end(&mut self, interp: &mut Interpreter<'_, '_, TestTypes>) {
+                interp.gas_mut().set_remaining(1000);
+            }
+        }
+
+        for (code, gas_limit, expected) in [
+            (Vec::from([op::PUSH1, 0]), 2, InstrStop::OutOfGas),
+            (Vec::from([op::INVALID]), 10_000, InstrStop::InvalidFEOpcode),
+        ] {
+            let tx_env = TxEnvExt::default();
+            let message = Message::<TestTypes> {
+                gas_limit,
+                code: legacy_bytecode(code),
+                ..Default::default()
+            };
+            let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
+            let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+            let stop = interp.run_inspect(&config, &mut TestHost::default(), &mut GasEdit);
+
+            assert_eq!(stop, expected);
+            assert_eq!(interp.gas().remaining(), 1000);
+        }
     }
 }
