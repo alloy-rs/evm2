@@ -142,6 +142,13 @@ impl StateChangeSink for BlockStateAccumulator {
             self.storage_wipes.remove(&change.address);
             self.storage.retain(|key, _| key.address() != change.address);
         } else if self.accounts.get(&change.address).is_some_and(|delta| delta.original.is_none()) {
+            for (key, delta) in &mut self.storage {
+                if key.address() == change.address {
+                    delta.original = Word::ZERO;
+                }
+            }
+            self.storage
+                .retain(|key, delta| key.address() != change.address || !delta.current.is_zero());
             self.storage_wipes.remove(&change.address);
         }
         Ok(())
@@ -158,24 +165,27 @@ impl StateChangeSink for BlockStateAccumulator {
 
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
         let storage_key = StorageKey::new(change.address, change.key);
-        let storage_wiped = self.storage_wipes.contains(&change.address);
+        let account_created =
+            self.accounts.get(&change.address).is_some_and(|account| account.original.is_none());
+        let storage_replaced = self.storage_wipes.contains(&change.address) || account_created;
         match self.storage.entry(storage_key) {
             hash_map::Entry::Occupied(mut entry) => {
                 let delta = entry.get_mut();
                 delta.set_current(change.current);
-                if (storage_wiped && delta.current.is_zero())
-                    || (!storage_wiped && !delta.is_changed())
+                if (storage_replaced && delta.current.is_zero())
+                    || (!storage_replaced && !delta.is_changed())
                 {
                     entry.remove();
                 }
             }
             hash_map::Entry::Vacant(entry) => {
-                if (storage_wiped && change.current.is_zero())
-                    || (!storage_wiped && change.original == change.current)
+                if (storage_replaced && change.current.is_zero())
+                    || (!storage_replaced && change.original == change.current)
                 {
                     return Ok(());
                 }
-                entry.insert(Tracked::from_parts(change.original, change.current));
+                let original = if account_created { Word::ZERO } else { change.original };
+                entry.insert(Tracked::from_parts(original, change.current));
             }
         }
         Ok(())
@@ -433,6 +443,59 @@ mod tests {
         assert_eq!(storage.len(), 1);
         assert_eq!(storage[0].0.key(), key);
         assert_eq!(storage[0].1.current, Word::from(5));
+    }
+
+    #[test]
+    fn block_accumulator_reinserts_unchanged_slot_after_wiping_created_account() {
+        let address = Address::from([0x53; 20]);
+        let key = Word::from(1);
+        let account = AccountInfo::default().with_nonce(1);
+        let mut accumulator = BlockStateAccumulator::new();
+
+        changes(address, None, Some(account.clone()), true, slot(key, Word::ZERO, Word::from(5)))
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+        changes(
+            address,
+            Some(account.clone()),
+            Some(account),
+            true,
+            slot(key, Word::from(5), Word::from(5)),
+        )
+        .visit(&mut accumulator)
+        .expect("block accumulator is infallible");
+
+        assert!(accumulator.storage_wipes_sorted().is_empty(), "creation subsumes the wipe");
+        let storage = accumulator.storage_sorted();
+        assert_eq!(storage.len(), 1);
+        assert_eq!(storage[0].0.key(), key);
+        assert_eq!(storage[0].1.original, Word::ZERO);
+        assert_eq!(storage[0].1.current, Word::from(5));
+
+        let mut streamed = BlockStateAccumulator::new();
+        accumulator.visit(&mut streamed).expect("block accumulator is infallible");
+        assert_eq!(streamed.storage_sorted(), storage);
+    }
+
+    #[test]
+    fn block_accumulator_normalizes_storage_when_creation_arrives_after_slots() {
+        let address = Address::from([0x54; 20]);
+        let key = Word::from(1);
+        let account = AccountInfo::default().with_nonce(1);
+        let mut accumulator = BlockStateAccumulator::new();
+
+        changes(address, None, Some(account), true, slot(key, Word::from(5), Word::from(5)))
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+
+        assert!(accumulator.storage_wipes_sorted().is_empty(), "creation subsumes the wipe");
+        let storage = accumulator.storage_sorted();
+        assert_eq!(storage.len(), 1);
+        assert_eq!(storage[0].1, &Tracked::from_parts(Word::ZERO, Word::from(5)));
+
+        let mut streamed = BlockStateAccumulator::new();
+        accumulator.visit(&mut streamed).expect("block accumulator is infallible");
+        assert_eq!(streamed.storage_sorted(), storage);
     }
 
     #[test]

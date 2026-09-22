@@ -339,6 +339,30 @@ impl<'a> State<'a> {
         }
     }
 
+    /// Copies one account's transaction overlay from another state.
+    ///
+    /// Does nothing when the source account is not loaded. Source slots overwrite matching target
+    /// slots; target-only slots are retained. Account metadata is copied, including original values
+    /// and lifecycle flags. This only updates the
+    /// in-flight transaction layer: accepted and backing database state must be transferred
+    /// separately, including any target-side committed storage wipe when the source transaction
+    /// overlay is not wiped. No database reads or journal entries are added; journals, logs,
+    /// pre-warmed sets and transient storage are left unchanged.
+    pub fn merge_transaction_account_from(&mut self, address: &Address, source: &State<'_>) {
+        let Some(account) = source.accounts.get(address) else { return };
+        self.accounts.insert(*address, account.clone());
+        if let Some(storage) = source.storage.get(address) {
+            let target = self.storage.entry(*address).or_default();
+            target.slots.extend(storage.slots.iter().map(|(key, slot)| (*key, *slot)));
+            target.wiped = storage.wiped;
+        }
+        if source.inner.selfdestructs.contains(address) {
+            self.inner.selfdestructs.insert(*address);
+        } else {
+            self.inner.selfdestructs.remove(address);
+        }
+    }
+
     /// Clears a loaded account's touch status and its loaded slots' runtime warmth.
     ///
     /// This does not load state, record journal entries, or change account warmth or the
@@ -885,7 +909,7 @@ impl<'a> State<'a> {
             }
             for (&key, slot) in &storage.slots {
                 let value = &slot.value;
-                if value.is_changed() && (!storage.wiped || !value.current.is_zero()) {
+                if slot.is_changed(storage.wiped) {
                     sink.storage(StorageChange {
                         address,
                         key,
@@ -925,6 +949,74 @@ impl<'a> State<'a> {
             accounts: mem::take(&mut self.accounts),
             storage: mem::take(&mut self.storage),
             selfdestructs: mem::take(&mut self.inner.selfdestructs),
+        }
+    }
+
+    /// Copies loaded state for an isolated transaction, without transaction scratch.
+    ///
+    /// Account and slot originals become their current values, runtime slot warmth is cleared, and
+    /// account warmth is retained only for pre-warmed addresses. Other account metadata is
+    /// preserved.
+    pub fn prepare_isolated_state(&self) -> PendingState {
+        let mut accounts = self.accounts.clone();
+        for (address, account) in &mut accounts {
+            account.original = account.present.clone();
+            account.is_warm = self.inner.prewarm_set.is_warm(address);
+        }
+        let mut storage = self.storage.clone();
+        for overlay in storage.values_mut() {
+            for slot in overlay.slots.values_mut() {
+                slot.value = Tracked::new(slot.value.current);
+                slot.is_warm = false;
+            }
+        }
+        PendingState { accounts, storage, selfdestructs: self.inner.selfdestructs.clone() }
+    }
+
+    /// Merges an isolated transaction's returned state without adding journal entries.
+    ///
+    /// Existing account and slot originals are retained, as is existing account warmth. Slot
+    /// warmth is combined, current values are replaced, and account lifecycle flags are combined.
+    /// Newly loaded accounts and slots retain their child metadata. Journals, logs, pre-warmed
+    /// sets, transient storage and backing databases are unchanged.
+    pub fn merge_isolated_state(&mut self, child: PendingState) {
+        for (address, account) in child.accounts {
+            match self.accounts.entry(address) {
+                hash_map::Entry::Vacant(entry) => {
+                    entry.insert(account);
+                }
+                hash_map::Entry::Occupied(mut entry) => {
+                    let parent = entry.get_mut();
+                    parent.present = account.present;
+                    parent.is_touched |= account.is_touched;
+                    parent.is_destroyed |= account.is_destroyed;
+                    parent.just_created |= account.just_created;
+                    parent.code_changed |= account.code_changed;
+                }
+            }
+        }
+        for (address, storage) in child.storage {
+            let parent = self.storage.entry(address).or_default();
+            parent.wiped |= storage.wiped;
+            for (key, slot) in storage.slots {
+                match parent.slots.entry(key) {
+                    hash_map::Entry::Vacant(entry) => {
+                        entry.insert(slot);
+                    }
+                    hash_map::Entry::Occupied(mut entry) => {
+                        let parent = entry.get_mut();
+                        parent.value.current = slot.value.current;
+                        parent.is_warm |= slot.is_warm;
+                    }
+                }
+            }
+        }
+        for address in child.selfdestructs {
+            let still_pending =
+                self.accounts.get(&address).is_some_and(|account| account.is_destroyed);
+            if still_pending {
+                self.inner.selfdestructs.insert(address);
+            }
         }
     }
 
@@ -1067,6 +1159,192 @@ mod tests {
             assert_eq!(state.tload(&Address::ZERO, &Word::ZERO), Word::ZERO);
             assert!(state.logs().is_empty());
         }
+    }
+
+    #[test]
+    fn isolated_state_resets_originals_and_preserves_parent_metadata() {
+        let address = Address::with_last_byte(42);
+        let prewarmed = Address::with_last_byte(43);
+        let created = Address::with_last_byte(44);
+        let destroyed = Address::with_last_byte(45);
+        let wiped = Address::with_last_byte(46);
+        let child_only = Address::with_last_byte(47);
+        let mut parent = State::new(EmptyDB::default());
+        parent.account(&address, false).unwrap().warm();
+        parent.prewarm(&prewarmed);
+        assert!(parent.account(&prewarmed, false).unwrap().is_warm());
+        {
+            let mut created_account = parent.account(&created, false).unwrap();
+            created_account.set_balance(Word::ONE);
+            created_account.mark_created();
+        }
+        parent.account(&destroyed, false).unwrap().mark_destructed();
+        parent.storage(&wiped).wipe();
+        let mut slot = parent.storage_slot(&address, Word::ZERO, false).unwrap();
+        slot.set(Word::from(7));
+        slot.warm();
+        parent.tstore(&address, &Word::ZERO, &Word::from(9));
+        let checkpoint = parent.checkpoint();
+        let mut child = State::new(EmptyDB::default());
+        child.set_pending_state(parent.prepare_isolated_state());
+        assert!(!child.account(&address, false).unwrap().is_warm());
+        assert!(child.account(&prewarmed, false).unwrap().is_warm());
+        assert!(child.account(&created, false).unwrap().is_created());
+        assert!(child.account(&destroyed, false).unwrap().is_destructed());
+        assert!(child.storage(&wiped).is_wiped());
+        assert_eq!(child.tload(&address, &Word::ZERO), Word::ZERO);
+        let mut slot = child.storage_slot(&address, Word::ZERO, false).unwrap();
+        assert_eq!((slot.original(), slot.current()), (Word::from(7), Word::from(7)));
+        assert!(!slot.is_warm());
+        slot.set(Word::from(8));
+        child.storage_slot(&address, Word::ONE, false).unwrap().set(Word::from(10));
+        child.account(&child_only, false).unwrap().set_balance(Word::ONE);
+        child.storage_slot(&child_only, Word::ZERO, false).unwrap().set(Word::ONE);
+        parent.merge_isolated_state(child.take_pending_state());
+        assert_eq!(parent.checkpoint(), checkpoint);
+        let slot = parent.storage_slot(&address, Word::ZERO, false).unwrap();
+        assert_eq!((slot.original(), slot.current()), (Word::ZERO, Word::from(8)));
+        assert!(slot.is_warm());
+        assert_eq!(parent.get_storage(&address, &Word::ONE), Some(Word::from(10)));
+        assert_eq!(parent.tload(&address, &Word::ZERO), Word::from(9));
+        assert!(parent.accounts[&created].is_created());
+        assert!(parent.inner.selfdestructs.contains(&destroyed));
+        assert!(parent.storage[&wiped].wiped);
+        assert_eq!(parent.accounts[&child_only].present.as_ref().unwrap().balance, Word::ONE);
+        assert_eq!(parent.get_storage(&child_only, &Word::ZERO), Some(Word::ONE));
+    }
+
+    #[test]
+    fn isolated_state_rebases_account_original_and_preserves_parent_warmth() {
+        let address = Address::with_last_byte(42);
+        let cold_address = Address::with_last_byte(43);
+        let mut parent = State::new(EmptyDB::default());
+        parent.account(&address, false).unwrap().set_balance(Word::from(7));
+        parent.account(&cold_address, false).unwrap().set_balance(Word::ONE);
+        assert!(!parent.account(&address, false).unwrap().is_warm());
+        assert!(!parent.account(&cold_address, false).unwrap().is_warm());
+        parent.prewarm(&address);
+
+        let mut child = State::new(EmptyDB::default());
+        child.set_pending_state(parent.prepare_isolated_state());
+        assert_eq!(child.accounts[&address].original, child.accounts[&address].present);
+        assert!(child.account(&address, false).unwrap().is_warm());
+        assert!(!child.account(&cold_address, false).unwrap().is_warm());
+        child.account(&cold_address, false).unwrap().warm();
+        child.account(&address, false).unwrap().set_balance(Word::from(8));
+        parent.merge_isolated_state(child.take_pending_state());
+
+        assert!(parent.accounts[&address].original.is_none());
+        assert_eq!(parent.account(&address, false).unwrap().balance(), Word::from(8));
+        assert!(parent.account(&address, false).unwrap().is_warm());
+        assert!(!parent.account(&cold_address, false).unwrap().is_warm());
+    }
+
+    #[test]
+    fn isolated_state_reinserts_restored_slot_after_wipe() {
+        let address = Address::with_last_byte(42);
+        let key = Word::ONE;
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
+        db.insert_account_storage(&address, &key, &Word::from(5));
+        let mut parent = State::new(db);
+        parent.account(&address, false).unwrap();
+        parent.storage_slot(&address, key, false).unwrap();
+        parent.storage(&address).wipe();
+
+        let mut child = State::new(EmptyDB::default());
+        child.set_pending_state(parent.prepare_isolated_state());
+        child.storage_slot(&address, key, false).unwrap().set(Word::from(5));
+        parent.merge_isolated_state(child.take_pending_state());
+        assert_eq!(parent.get_storage(&address, &key), Some(Word::from(5)));
+        parent.commit_transaction();
+
+        assert_eq!(parent.storage_slot_untracked(&address, &key).unwrap(), Word::from(5));
+    }
+
+    #[test]
+    fn isolated_state_does_not_replay_finalized_eip8246_selfdestruct() {
+        let address = Address::with_last_byte(42);
+        let key = Word::ONE;
+        let mut child = State::new(EmptyDB::default());
+        {
+            let mut account = child.account(&address, false).unwrap();
+            account.set_balance(Word::from(5));
+            account.mark_destructed();
+        }
+        child.finalize_transaction_(Version::base(crate::SpecId::AMSTERDAM));
+        assert!(!child.accounts[&address].is_destroyed);
+        assert!(child.inner.selfdestructs.contains(&address));
+
+        let mut parent = State::new(EmptyDB::default());
+        parent.merge_isolated_state(child.take_pending_state());
+        assert!(!parent.inner.selfdestructs.contains(&address));
+        parent.account(&address, false).unwrap().set_nonce(1);
+        parent.storage_slot(&address, key, false).unwrap().set(Word::from(9));
+        parent.finalize_transaction_(Version::base(crate::SpecId::AMSTERDAM));
+
+        assert_eq!(parent.account(&address, false).unwrap().nonce(), 1);
+        assert_eq!(parent.storage_slot_untracked(&address, &key).unwrap(), Word::from(9));
+    }
+
+    #[test]
+    fn merge_transaction_account_retains_target_only_slots_and_source_metadata() {
+        let address = Address::with_last_byte(42);
+        let mut source_db = CacheDB::default();
+        source_db.insert_account_storage(&address, &Word::ZERO, &Word::from(5));
+        let mut target_db = CacheDB::default();
+        target_db.insert_account_storage(&address, &Word::ZERO, &Word::from(6));
+        let mut source = State::new(source_db);
+        let mut target = State::new(target_db);
+        source.account(&address, false).unwrap().set_balance(Word::from(17));
+        source.account(&address, false).unwrap().mark_destructed();
+        source.account(&address, false).unwrap().mark_created();
+        source.storage_slot(&address, Word::ZERO, false).unwrap().set(Word::from(11));
+        source.storage_slot(&address, Word::ZERO, false).unwrap().warm();
+        target.account(&address, false).unwrap().set_balance(Word::from(9));
+        target.storage_slot(&address, Word::ZERO, false).unwrap().set(Word::from(99));
+        target.storage_slot(&address, Word::ONE, false).unwrap().set(Word::from(22));
+        target.tstore(&address, &Word::ZERO, &Word::from(33));
+        let checkpoint = target.checkpoint();
+        target.merge_transaction_account_from(&address, &source);
+        assert_eq!(target.accounts[&address], source.accounts[&address]);
+        assert_eq!(
+            target.storage[&address].slots[&Word::ZERO],
+            source.storage[&address].slots[&Word::ZERO]
+        );
+        assert_eq!(target.get_storage(&address, &Word::ONE), Some(Word::from(22)));
+        assert!(target.inner.selfdestructs.contains(&address));
+        assert_eq!(target.tload(&address, &Word::ZERO), Word::from(33));
+        assert_eq!(target.checkpoint(), checkpoint);
+        target.storage_slot(&address, Word::ZERO, false).unwrap().set(Word::from(44));
+        target.rollback(checkpoint, crate::EvmFeatures::empty());
+        assert_eq!(target.get_storage(&address, &Word::ZERO), Some(Word::from(11)));
+        target.merge_transaction_account_from(&address, &State::new(EmptyDB::default()));
+        assert_eq!(target.get_storage(&address, &Word::ONE), Some(Word::from(22)));
+        assert!(target.inner.selfdestructs.contains(&address));
+        let mut live = State::new(EmptyDB::default());
+        live.account(&address, false).unwrap().set_balance(Word::ONE);
+        target.merge_transaction_account_from(&address, &live);
+        assert!(!target.inner.selfdestructs.contains(&address));
+    }
+
+    #[test]
+    fn merge_transaction_account_reinserts_retained_slots_after_wipe() {
+        let address = Address::with_last_byte(42);
+        let key = Word::ONE;
+        let mut target_db = CacheDB::default();
+        target_db.insert_account_storage(&address, &key, &Word::from(22));
+        let mut source = State::new(EmptyDB::default());
+        let mut target = State::new(target_db);
+        source.account(&address, false).unwrap();
+        source.storage(&address).wipe();
+        target.storage_slot(&address, key, false).unwrap();
+
+        target.merge_transaction_account_from(&address, &source);
+        assert_eq!(target.get_storage(&address, &key), Some(Word::from(22)));
+        target.commit_transaction();
+
+        assert_eq!(target.storage_slot_untracked(&address, &key).unwrap(), Word::from(22));
     }
 
     #[test]

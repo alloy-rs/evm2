@@ -1555,6 +1555,68 @@ mod tests {
     }
 
     #[test]
+    fn isolated_transaction_resets_transient_state_and_merges_storage() {
+        let target = Address::with_last_byte(0xbb);
+        let caller = Address::with_last_byte(0x99);
+        for reverts in [false, true] {
+            let mut parent = State::new(EmptyDB::default());
+            // Return the initial persistent and transient values, then write persistent storage.
+            let code = vec![
+                op::PUSH0,
+                op::SLOAD,
+                op::PUSH0,
+                op::MSTORE,
+                op::PUSH0,
+                op::TLOAD,
+                op::PUSH1,
+                32,
+                op::MSTORE,
+                op::PUSH1,
+                8,
+                op::PUSH0,
+                op::SSTORE,
+                op::PUSH1,
+                64,
+                op::PUSH0,
+                if reverts { op::REVERT } else { op::RETURN },
+            ];
+            parent.account(&target, false).unwrap().set_code_slow(legacy_bytecode(code));
+            parent.account(&caller, false).unwrap().set_balance(Word::from(1_000_000_000));
+            parent.storage_slot(&target, Word::ZERO, false).unwrap().set(Word::from(7));
+            parent.storage_slot(&target, Word::ZERO, false).unwrap().warm();
+            parent.tstore(&target, &Word::ZERO, &Word::from(9));
+            let checkpoint = parent.checkpoint();
+            let mut child = Evm::<BaseEvmTypes>::new(
+                SpecId::CANCUN,
+                BlockEnvExt::default(),
+                ethereum_tx_registry(SpecId::CANCUN),
+                EmptyDB::default(),
+                Precompiles::base(SpecId::CANCUN),
+            );
+            child.state_mut().set_pending_state(parent.prepare_isolated_state());
+            let tx = Recovered::new_unchecked(
+                TxEnvelope::Legacy(TxLegacy {
+                    to: TxKind::Call(target),
+                    gas_limit: 100_000,
+                    ..Default::default()
+                }),
+                caller,
+            );
+            let output = child.transact(&tx).unwrap().detach();
+            assert_eq!(output.result.status, !reverts);
+            assert_eq!(Word::from_be_slice(&output.result.output[..32]), Word::from(7));
+            assert_eq!(Word::from_be_slice(&output.result.output[32..]), Word::ZERO);
+            parent.merge_isolated_state(output.pending_state);
+            assert_eq!(parent.checkpoint(), checkpoint);
+            let slot = parent.storage_slot(&target, Word::ZERO, false).unwrap();
+            assert_eq!(slot.original(), Word::ZERO);
+            assert_eq!(slot.current(), Word::from(if reverts { 7 } else { 8 }));
+            assert!(slot.is_warm());
+            assert_eq!(parent.tload(&target, &Word::ZERO), Word::from(9));
+        }
+    }
+
+    #[test]
     fn inspector_gas_changes_survive_dispatch_errors() {
         struct GasEdit;
         impl Inspector<TestTypes> for GasEdit {

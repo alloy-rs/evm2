@@ -26,13 +26,12 @@ impl StorageOverlay {
     /// Returns the changed storage slots.
     ///
     /// A slot is changed when its current value differs from its transaction-boundary original,
-    /// except slots of a wiped overlay whose current value is zero: the wipe already deletes them.
+    /// except that a wiped overlay must reinsert every nonzero current value after the wipe.
     #[inline]
     pub fn changed_slots(&self) -> impl Iterator<Item = (&Word, &Tracked<Word>)> {
-        self.slots.iter().filter_map(|(key, slot)| {
-            (slot.value.is_changed() && (!self.wiped || !slot.value.current.is_zero()))
-                .then_some((key, &slot.value))
-        })
+        self.slots
+            .iter()
+            .filter_map(|(key, slot)| slot.is_changed(self.wiped).then_some((key, &slot.value)))
     }
 }
 
@@ -52,6 +51,12 @@ pub struct StorageSlot {
 }
 
 impl StorageSlot {
+    /// Whether this slot must be emitted as a write, reinserting nonzero values after a wipe.
+    #[inline]
+    pub(super) fn is_changed(&self, wiped: bool) -> bool {
+        if wiped { !self.value.current.is_zero() } else { self.value.is_changed() }
+    }
+
     /// Creates a freshly loaded slot whose original and current values are `value`, with the given
     /// EIP-2929 warmth.
     #[inline]
