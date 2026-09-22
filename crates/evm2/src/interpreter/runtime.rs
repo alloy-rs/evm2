@@ -13,7 +13,7 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes};
-use core::{fmt, ops::Range, ptr::NonNull};
+use core::{fmt, hint::cold_path, ops::Range, ptr::NonNull};
 use derive_where::derive_where;
 
 /// EVM interpreter.
@@ -550,6 +550,11 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
+        if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
+            cold_path();
+            // Failed charges may leave a wrapped counter until frame settlement.
+            self.0.gas.set_remaining(0);
+        }
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step_end(&mut self.0);
