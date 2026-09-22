@@ -455,7 +455,6 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     permissions:
-      id-token: write
       contents: read
     needs:
       - matrices
@@ -471,8 +470,6 @@ jobs:
       - fmt
       - deny
     steps:
-      - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@48ff2b0c97ede86c9f10d105424380b9605f790d
       - name: Decide whether the needed jobs succeeded or failed
         uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
         with:
