@@ -130,6 +130,7 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
         if M::INSPECT {
             imp::sync_loop_state(state, loop_state);
             M::step(state, pc, stack.len());
+            loop_state = imp::loop_state(state.gas_mut());
             if state.result().is_err() {
                 return finish_run(state, pc, stack.len(), loop_state);
             }
@@ -148,6 +149,7 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
         if M::INSPECT {
             imp::sync_loop_state(state, loop_state);
             M::step_end(state, pc, stack.len());
+            loop_state = imp::loop_state(state.gas_mut());
             if state.result().is_err() {
                 return finish_run(state, pc, stack.len(), loop_state);
             }

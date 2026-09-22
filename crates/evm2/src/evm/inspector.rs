@@ -1368,4 +1368,71 @@ mod tests {
             Word::ZERO
         );
     }
+    #[test]
+    fn inspector_gas_changes_survive_dispatch() {
+        struct GasEdit {
+            after: bool,
+            stop: bool,
+            opcode: u8,
+        }
+        impl Inspector<BaseEvmTypes> for GasEdit {
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                self.opcode = interp.opcode();
+                if !self.after && self.opcode == op::PUSH1 {
+                    interp.gas_mut().set_remaining(1000);
+                    if self.stop {
+                        interp.set_stop(InstrStop::Revert);
+                    }
+                }
+            }
+            fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if self.after && self.opcode == op::PUSH1 {
+                    interp.gas_mut().set_remaining(1000);
+                    if self.stop {
+                        interp.set_stop(InstrStop::Revert);
+                    }
+                }
+            }
+        }
+        for (after, stop, remaining) in
+            [(false, false, 995), (true, false, 998), (false, true, 1000), (true, true, 1000)]
+        {
+            let (result, _, _) = run_evm_with_inspector(
+                Vec::from([op::PUSH1, 7, op::POP, op::STOP]),
+                &MessageExt::default(),
+                10_000,
+                GasEdit { after, stop, opcode: 0 },
+            );
+            assert_eq!(result.stop, if stop { InstrStop::Revert } else { InstrStop::Stop });
+            assert_eq!(result.gas.remaining(), remaining);
+        }
+    }
+
+    #[test]
+    fn inspector_gas_changes_survive_dispatch_errors() {
+        struct GasEdit;
+        impl Inspector<TestTypes> for GasEdit {
+            fn step_end(&mut self, interp: &mut Interpreter<'_, '_, TestTypes>) {
+                interp.gas_mut().set_remaining(1000);
+            }
+        }
+
+        for (code, gas_limit, expected) in [
+            (Vec::from([op::PUSH1, 0]), 2, InstrStop::OutOfGas),
+            (Vec::from([op::INVALID]), 10_000, InstrStop::InvalidFEOpcode),
+        ] {
+            let tx_env = TxEnvExt::default();
+            let message = Message::<TestTypes> {
+                gas_limit,
+                code: legacy_bytecode(code),
+                ..Default::default()
+            };
+            let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
+            let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+            let stop = interp.run_inspect(&config, &mut TestHost::default(), &mut GasEdit);
+
+            assert_eq!(stop, expected);
+            assert_eq!(interp.gas().remaining(), 1000);
+        }
+    }
 }
