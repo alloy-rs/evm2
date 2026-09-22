@@ -870,7 +870,7 @@ impl<'a> State<'a> {
             }
             for (&key, slot) in &storage.slots {
                 let value = &slot.value;
-                if value.is_changed() && (!storage.wiped || !value.current.is_zero()) {
+                if if storage.wiped { !value.current.is_zero() } else { value.is_changed() } {
                     sink.storage(StorageChange {
                         address,
                         key,

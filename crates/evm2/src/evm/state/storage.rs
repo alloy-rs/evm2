@@ -26,11 +26,11 @@ impl StorageOverlay {
     /// Returns the changed storage slots.
     ///
     /// A slot is changed when its current value differs from its transaction-boundary original,
-    /// except slots of a wiped overlay whose current value is zero: the wipe already deletes them.
+    /// except that a wiped overlay must reinsert every nonzero current value after the wipe.
     #[inline]
     pub fn changed_slots(&self) -> impl Iterator<Item = (&Word, &Tracked<Word>)> {
         self.slots.iter().filter_map(|(key, slot)| {
-            (slot.value.is_changed() && (!self.wiped || !slot.value.current.is_zero()))
+            (if self.wiped { !slot.value.current.is_zero() } else { slot.value.is_changed() })
                 .then_some((key, &slot.value))
         })
     }

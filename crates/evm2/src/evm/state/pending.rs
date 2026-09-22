@@ -115,7 +115,7 @@ impl StateChangeSource for PendingState {
             }
             for (&key, slot) in &overlay.slots {
                 let value = &slot.value;
-                if value.is_changed() && (!overlay.wiped || !value.current.is_zero()) {
+                if if overlay.wiped { !value.current.is_zero() } else { value.is_changed() } {
                     sink.storage(StorageChange {
                         address,
                         key,
