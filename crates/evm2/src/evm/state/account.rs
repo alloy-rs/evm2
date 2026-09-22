@@ -1,5 +1,7 @@
 //! Account models held by the state overlay and emitted in transitions.
 
+#[cfg(feature = "account-ext")]
+use super::AccountExtension;
 use super::{DbResult, DynDatabase, JournalEntry, StateInner};
 use crate::{EvmFeatures, bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256};
@@ -8,9 +10,8 @@ use derive_where::derive_where;
 /// Account information loaded from the backing database or emitted in a state
 /// transition.
 ///
-/// Equality and hashing only consider [`Self::balance`], [`Self::nonce`], and
-/// [`Self::code_hash`]; [`Self::code`] is a cache keyed by the code hash and may or may not be
-/// populated.
+/// Equality compares the persisted account fields, including the optional extension.
+/// [`Self::code`] is a cache keyed by the code hash and may or may not be populated.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AccountInfo {
@@ -22,6 +23,16 @@ pub struct AccountInfo {
     pub code_hash: B256,
     /// Bytecode associated with this account.
     pub code: Option<Bytecode>,
+    /// Raw chain-specific data committed to the account leaf by the state provider.
+    ///
+    /// Empty extensions are omitted by Serde. Binary formats must delimit structs
+    /// (e.g. MessagePack); bincode and Postcard account encodings are unsupported.
+    #[cfg(feature = "account-ext")]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "AccountExtension::is_empty")
+    )]
+    pub extension: AccountExtension,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub _non_exhaustive: (),
@@ -33,16 +44,19 @@ pub struct AccountInfo {
 impl PartialEq for AccountInfo {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.balance == other.balance
+        let equal = self.balance == other.balance
             && self.nonce == other.nonce
-            && self.code_hash == other.code_hash
+            && self.code_hash == other.code_hash;
+        #[cfg(feature = "account-ext")]
+        let equal = equal && self.extension == other.extension;
+        equal
     }
 }
 
 impl Eq for AccountInfo {}
 
-/// Hashes the same fields compared by [`PartialEq`], skipping `code`, to uphold
-/// the `Eq`/`Hash` invariant that equal values hash equally.
+/// Hashes the Ethereum account fields. Extension-only differences may collide,
+/// but equal accounts always hash equally.
 impl core::hash::Hash for AccountInfo {
     #[inline]
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
@@ -60,6 +74,8 @@ impl Default for AccountInfo {
             nonce: 0,
             code_hash: KECCAK256_EMPTY,
             code: Some(Bytecode::default()),
+            #[cfg(feature = "account-ext")]
+            extension: AccountExtension::new(),
             _non_exhaustive: (),
         }
     }
@@ -69,17 +85,28 @@ impl AccountInfo {
     /// Creates a new [`AccountInfo`] with the given fields.
     #[inline]
     pub const fn new(balance: Word, nonce: u64, code_hash: B256, code: Bytecode) -> Self {
-        Self { balance, nonce, code_hash, code: Some(code), _non_exhaustive: () }
+        Self {
+            balance,
+            nonce,
+            code_hash,
+            code: Some(code),
+            #[cfg(feature = "account-ext")]
+            extension: AccountExtension::new(),
+            _non_exhaustive: (),
+        }
     }
 
     /// Clones this account without bytecode.
     #[inline]
-    pub(crate) const fn clone_no_code(&self) -> Self {
+    #[allow(clippy::missing_const_for_fn)] // Cloning a shared extension cannot be const.
+    pub(crate) fn clone_no_code(&self) -> Self {
         Self {
             balance: self.balance,
             nonce: self.nonce,
             code_hash: self.code_hash,
             code: None,
+            #[cfg(feature = "account-ext")]
+            extension: self.extension.clone(),
             _non_exhaustive: (),
         }
     }
@@ -114,7 +141,10 @@ impl AccountInfo {
     /// Returns whether this account is empty by the Spurious Dragon definition.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.balance.is_zero() && self.nonce == 0 && self.code_hash == KECCAK256_EMPTY
+        let empty = self.balance.is_zero() && self.nonce == 0 && self.code_hash == KECCAK256_EMPTY;
+        #[cfg(feature = "account-ext")]
+        let empty = empty && self.extension.is_empty();
+        empty
     }
 }
 
@@ -177,7 +207,7 @@ impl Account {
 
     /// Returns whether the account's info changed during the transaction.
     ///
-    /// This compares balance, nonce, code hash, and existence; it does not consider storage.
+    /// This compares persisted account fields and existence; it does not consider storage.
     #[inline]
     pub(crate) fn is_changed(&self) -> bool {
         self.original != self.present
@@ -545,6 +575,13 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub fn get_or_insert(&mut self) -> &mut AccountInfo {
         self.present_mut()
+    }
+
+    /// Updates the account payload, touching the account and recording a revert snapshot.
+    #[cfg(feature = "account-ext")]
+    pub fn set_extension(&mut self, extension: AccountExtension) {
+        self.touch();
+        self.present_mut().extension = extension;
     }
 
     /// Deletes the account at transaction finalization.

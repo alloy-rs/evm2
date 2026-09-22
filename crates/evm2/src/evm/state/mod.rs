@@ -2,6 +2,8 @@
 
 mod account;
 mod block;
+#[cfg(feature = "account-ext")]
+mod extension;
 mod journal;
 mod pending;
 mod storage;
@@ -12,6 +14,8 @@ mod tracked;
 pub(crate) use account::Account;
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
+#[cfg(feature = "account-ext")]
+pub use extension::AccountExtension;
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use pending::PendingState;
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
@@ -620,12 +624,16 @@ impl<'a> State<'a> {
         // Preserve any balance the address already held (e.g. funds sent before creation) and add
         // the endowment.
         let balance = target.balance().wrapping_add(*value);
+        #[cfg(feature = "account-ext")]
+        let extension = target.get().map(|info| info.extension.clone()).unwrap_or_default();
         *target.get_or_insert() = AccountInfo {
             nonce: u64::from(features.contains(EvmFeatures::EIP161)),
             balance,
             code_hash: KECCAK256_EMPTY,
             code: Some(Bytecode::default()),
             _non_exhaustive: (),
+            #[cfg(feature = "account-ext")]
+            extension,
         };
         target.mark_created();
         target.touch();

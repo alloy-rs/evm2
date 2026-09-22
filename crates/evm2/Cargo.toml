@@ -40,6 +40,9 @@ serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 # "async"
 corosensei = { workspace = true, optional = true }
 
+# "account-ext"
+triomphe = { workspace = true, optional = true }
+
 # ecrecover
 k256 = { workspace = true, features = ["ecdsa"] }
 secp256k1 = { workspace = true, features = [
@@ -85,6 +88,7 @@ aws-lc-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["serde", "std"] }
+rmp-serde.workspace = true
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
 postcard = { workspace = true, features = ["alloc"] }
@@ -132,6 +136,7 @@ std = [
     "c-kzg?/std",
     "secp256k1?/std",
     "serde?/std",
+    "triomphe?/std",
 ]
 
 async = ["std", "dep:corosensei"]
@@ -151,12 +156,16 @@ serde = [
     "blst?/serde",
     "c-kzg?/serde",
     "secp256k1?/serde",
+    "triomphe?/serde",
 ]
 arbitrary = [
     "alloy-consensus/arbitrary",
     "alloy-eips/arbitrary",
     "alloy-primitives/arbitrary",
 ]
+
+# Opt-in chain-specific account data; Ethereum builds keep the original account layout.
+account-ext = ["dep:triomphe"]
 
 map-hashbrown = ["alloy-primitives/map-hashbrown"]
 map-foldhash = ["alloy-primitives/map-foldhash"]
