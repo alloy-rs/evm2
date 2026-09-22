@@ -57,6 +57,7 @@ extern_table! {
         let dynamic_gas = instruction.dynamic_gas;
         if M::INSPECT {
             M::step(state, pc, stack.len());
+            remaining_gas.set(state.gas_mut().remaining());
             if state.result().is_err() {
                 cold_path();
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
@@ -68,6 +69,7 @@ extern_table! {
             if M::INSPECT {
                 state.gas_mut().set_remaining(remaining_gas.get());
                 M::step_end(state, pc, stack.len());
+                remaining_gas.set(state.gas_mut().remaining());
             }
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
@@ -89,12 +91,14 @@ extern_table! {
             state.set_result(Err(e));
             if M::INSPECT {
                 M::step_end(state, pc, stack.len());
+                remaining_gas.set(state.gas_mut().remaining());
             }
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         super::inc_pc(&mut pc, OP);
         if M::INSPECT {
             M::step_end(state, pc, stack.len());
+            remaining_gas.set(state.gas_mut().remaining());
             if state.result().is_err() {
                 cold_path();
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
