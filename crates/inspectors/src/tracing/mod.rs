@@ -5,7 +5,7 @@ use crate::{
     tracing::{
         arena::PushTraceKind,
         types::{
-            CallKind, CallTraceNode, RecordedMemory, StorageChange, StorageChangeReason,
+            CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
             TraceMemberOrder,
         },
         utils::gas_used,
@@ -13,7 +13,8 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
-use core::mem;
+use alloy_rpc_types_trace::parity::StorageDelta;
+use core::{mem, ops::Range};
 use evm2::{
     Evm, EvmFeatures, EvmTypes, Inspector, SpecId, TxResultExt,
     evm::JournalEntry,
@@ -511,6 +512,27 @@ impl TracingInspector {
 
         node.ordering.push(TraceMemberOrder::Step(step_idx));
         self.step_stack.push((trace_idx, step_idx));
+
+        if self.config.record_step_deltas {
+            let write_range = memory_write_range(op.get(), interp.stack().as_slice());
+            // Journal entries also include reads and omit same-value writes. VM traces need
+            // the operands of each successful SSTORE instead.
+            let storage = match (op.get(), interp.stack().as_slice()) {
+                (op::SSTORE, [.., value, key]) => Some(StorageDelta { key: *key, val: *value }),
+                _ => None,
+            };
+            if write_range.is_some()
+                || storage.is_some()
+                || node.trace.steps[step_idx].is_call_like_op()
+            {
+                node.trace.step_deltas.push(StepDelta {
+                    step: step_idx,
+                    write_range,
+                    storage,
+                    ..Default::default()
+                });
+            }
+        }
     }
 
     /// Fills the current trace with the output of a step.
@@ -597,6 +619,38 @@ impl TracingInspector {
 
         // set the status
         step.status = interp.result().err();
+
+        if self.config.record_step_deltas {
+            if step.status.is_some_and(|status| status.is_halt()) {
+                if let Some(delta) =
+                    node.trace.step_deltas.last_mut().filter(|delta| delta.step == step_idx)
+                {
+                    delta.storage = None;
+                }
+                return;
+            }
+            // Call results, returned memory and gas are already available in evm2's `step_end`.
+            // Gas credits cannot be recovered from the saturated unsigned gas cost.
+            let gas_remaining_after = (step.is_call_like_op()
+                || interp.gas().remaining() > step.gas_remaining)
+                .then_some(interp.gas().remaining());
+            if gas_remaining_after.is_some()
+                && node.trace.step_deltas.last().is_none_or(|delta| delta.step != step_idx)
+            {
+                node.trace.step_deltas.push(StepDelta { step: step_idx, ..Default::default() });
+            }
+            if let Some(delta) =
+                node.trace.step_deltas.last_mut().filter(|delta| delta.step == step_idx)
+            {
+                delta.gas_remaining_after = gas_remaining_after;
+                if step.is_call_like_op()
+                    && let Some(range) = &mut delta.write_range
+                {
+                    range.end = range.start + range.len().min(interp.return_data().len());
+                }
+                delta.record_memory_write(interp.memory().slice(0, interp.memory().len()));
+            }
+        }
     }
 }
 
@@ -786,4 +840,23 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
             tx_hash: tx_info.hash,
         }
     }
+}
+
+/// Returns the memory range the opcode writes, derived from its inputs on the stack.
+///
+/// Only writes are tracked: instructions that merely expand memory, like `MLOAD`, yield `None`.
+fn memory_write_range(op: u8, stack: &[U256]) -> Option<Range<usize>> {
+    let back = |index: usize| {
+        stack.get(stack.len().checked_sub(index + 1)?).and_then(|v| usize::try_from(*v).ok())
+    };
+    let (offset, size) = match op {
+        op::MSTORE => (back(0)?, 32),
+        op::MSTORE8 => (back(0)?, 1),
+        op::CALLDATACOPY | op::CODECOPY | op::RETURNDATACOPY | op::MCOPY => (back(0)?, back(2)?),
+        op::EXTCODECOPY => (back(1)?, back(3)?),
+        op::CALL | op::CALLCODE => (back(5)?, back(6)?),
+        op::DELEGATECALL | op::STATICCALL => (back(4)?, back(5)?),
+        _ => return None,
+    };
+    (size != 0).then_some(offset..offset.checked_add(size)?)
 }

@@ -82,6 +82,11 @@ pub struct TracingInspectorConfig {
     pub record_logs: bool,
     /// Whether to record immediate bytes for opcodes.
     pub record_immediate_bytes: bool,
+    /// Whether to record the deltas of each step: the memory and storage it writes and the
+    /// remaining gas after returning from a call or gaining gas.
+    ///
+    /// Required for parity `vmTrace`.
+    pub record_step_deltas: bool,
 }
 
 impl TracingInspectorConfig {
@@ -99,6 +104,7 @@ impl TracingInspectorConfig {
             exclude_precompile_calls: false,
             record_logs: true,
             record_immediate_bytes: true,
+            record_step_deltas: true,
         }
     }
 
@@ -116,6 +122,7 @@ impl TracingInspectorConfig {
             record_logs: false,
             record_opcodes_filter: None,
             record_immediate_bytes: false,
+            record_step_deltas: false,
         }
     }
 
@@ -135,6 +142,7 @@ impl TracingInspectorConfig {
             record_logs: false,
             record_opcodes_filter: None,
             record_immediate_bytes: false,
+            record_step_deltas: false,
         }
     }
 
@@ -154,9 +162,7 @@ impl TracingInspectorConfig {
             .set_steps(true)
             .set_bytecode(true)
             .set_stack_snapshots(StackSnapshotType::Pushes)
-            .set_memory_snapshots(true)
-            // also need statediffs for recording altered storage in `VmExecutedOperation.store`
-            .set_state_diffs(true)
+            .set_step_deltas(true)
     }
 
     /// Returns a config for geth style traces.
@@ -178,6 +184,7 @@ impl TracingInspectorConfig {
             record_logs: false,
             record_opcodes_filter: None,
             record_immediate_bytes: false,
+            record_step_deltas: false,
         }
     }
 
@@ -194,7 +201,7 @@ impl TracingInspectorConfig {
             .set_steps(needs_vm_trace)
             .set_bytecode(needs_vm_trace)
             .set_stack_snapshots(snap_type)
-            .set_memory_snapshots(needs_vm_trace)
+            .set_step_deltas(needs_vm_trace)
     }
 
     /// Returns a config for geth style traces based on the given [GethDefaultTracingOptions].
@@ -292,6 +299,7 @@ impl TracingInspectorConfig {
         self.record_logs |= other.record_logs;
         self.record_opcodes_filter = self.record_opcodes_filter.or(other.record_opcodes_filter);
         self.record_immediate_bytes |= other.record_immediate_bytes;
+        self.record_step_deltas |= other.record_step_deltas;
         self
     }
 
@@ -359,6 +367,13 @@ impl TracingInspectorConfig {
     /// Configure whether the tracer should record state diffs
     pub const fn set_state_diffs(mut self, record_state_diff: bool) -> Self {
         self.record_state_diff = record_state_diff;
+        self
+    }
+
+    /// Configure whether the tracer should record step deltas, see
+    /// [`Self::record_step_deltas`].
+    pub const fn set_step_deltas(mut self, record_step_deltas: bool) -> Self {
+        self.record_step_deltas = record_step_deltas;
         self
     }
 
@@ -522,19 +537,23 @@ mod tests {
         // not required
         assert!(!config.record_steps);
         assert!(!config.record_state_diff);
+        assert!(!config.record_step_deltas);
 
         let mut s = HashSet::default();
         s.insert(TraceType::VmTrace);
         let config = TracingInspectorConfig::from_parity_config(&s);
         assert!(config.record_steps);
         assert!(!config.record_state_diff);
+        assert!(config.record_step_deltas);
+        // the deltas replace full memory snapshots
+        assert!(!config.record_memory_snapshots);
 
         let mut s = HashSet::default();
         s.insert(TraceType::VmTrace);
         s.insert(TraceType::StateDiff);
         let config = TracingInspectorConfig::from_parity_config(&s);
         assert!(config.record_steps);
-        // not required for StateDiff
+        // VM storage writes use step deltas; StateDiff uses the execution result.
         assert!(!config.record_state_diff);
     }
 
