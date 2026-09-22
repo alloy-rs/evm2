@@ -168,18 +168,36 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "BAL does not support account extensions")]
-    fn bal_rejects_extension_only_writes() {
-        let original = AccountInfo::default();
-        let current = AccountInfo {
+    fn bal_ignores_extensions() {
+        let original = AccountInfo {
             extension: AccountExtension::copy_from_slice(&[1; 32]),
             ..Default::default()
         };
-        crate::evm::AccountInfoBal::default().update(
-            crate::evm::BlockAccessIndex(1),
-            &original,
-            &current,
-        );
+        let current = AccountInfo {
+            extension: AccountExtension::copy_from_slice(&[2; 32]),
+            ..Default::default()
+        };
+        let index = crate::evm::BlockAccessIndex(1);
+        let next_index = crate::evm::BlockAccessIndex(2);
+        let mut bal = crate::evm::AccountInfoBal::default();
+        bal.update(index, &original, &current);
+        assert_eq!(bal, crate::evm::AccountInfoBal::default());
+
+        let mut populated = original.clone();
+        assert!(!bal.populate_account_info(next_index, &mut populated));
+        assert_eq!(populated, original);
+
+        let current = current
+            .with_nonce(1)
+            .with_balance(U256::from(42))
+            .with_code(crate::bytecode::Bytecode::new_raw(alloy_primitives::bytes!("6000")));
+        bal.update(index, &original, &current);
+        assert!(bal.populate_account_info(next_index, &mut populated));
+        assert_eq!(populated.nonce, current.nonce);
+        assert_eq!(populated.balance, current.balance);
+        assert_eq!(populated.code_hash, current.code_hash);
+        assert_eq!(populated.code, current.code);
+        assert_eq!(populated.extension, original.extension);
     }
 
     #[cfg(feature = "serde")]
