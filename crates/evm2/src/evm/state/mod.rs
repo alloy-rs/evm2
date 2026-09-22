@@ -316,6 +316,9 @@ impl<'a> State<'a> {
     /// Does nothing for unloaded slots and leaves values and the pre-warmed set unchanged.
     /// Slots in the pre-warmed set remain effectively warm even when their runtime warmth is
     /// cleared.
+    ///
+    /// This call adds no journal entry; rolling back an existing storage-warming entry can
+    /// still clear the slot's runtime warmth.
     pub fn set_storage_warm(&mut self, address: &Address, key: Word, warm: bool) {
         if let Some(storage) = self.storage.get_mut(address)
             && let Some(slot) = storage.slots.get_mut(&key)
