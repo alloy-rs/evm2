@@ -97,12 +97,12 @@ tests! {
         }),
         invalid(@raw {
             bytecode: &[op::INVALID],
-            expected_return: InstrStop::InvalidOpcode,
+            expected_return: InstrStop::InvalidFEOpcode,
             expected_gas: 0,
         }),
         unknown(@raw {
             bytecode: &[0x21],
-            expected_return: InstrStop::InvalidOpcode,
+            expected_return: InstrStop::OpcodeNotFound,
             expected_gas: 0,
         }),
         underflow1(@raw {

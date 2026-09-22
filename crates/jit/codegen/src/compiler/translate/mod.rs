@@ -457,7 +457,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             goto_return!(fail InstrStop::NotActivated);
         }
         if data.flags.contains(InstFlags::UNKNOWN) {
-            goto_return!(fail InstrStop::InvalidOpcode);
+            goto_return!(fail InstrStop::OpcodeNotFound);
         }
 
         // Pay static gas for the current section.
@@ -1037,7 +1037,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.return_common(InstrStop::Revert);
                 goto_return!(no_branch);
             }
-            op::INVALID => goto_return!(fail InstrStop::InvalidOpcode),
+            op::INVALID => goto_return!(fail InstrStop::InvalidFEOpcode),
             op::SELFDESTRUCT => {
                 let sp = self.sp_after_inputs();
                 self.sync_diverging_stack_effect();
