@@ -45,7 +45,6 @@ triomphe = { workspace = true, optional = true }
 
 # nightly
 ruint = { workspace = true, optional = true }
-smallvec = { workspace = true, optional = true }
 
 # ecrecover
 k256 = { workspace = true, features = ["ecdsa"] }
@@ -191,8 +190,5 @@ nightly = [
     "derive-where/nightly",
     "dep:ruint",
     "ruint/nightly",
-    "dep:smallvec",
-    "smallvec/specialization",
-    "smallvec/may_dangle",
 ]
 no-tco = []
