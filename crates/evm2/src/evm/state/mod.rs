@@ -339,6 +339,21 @@ impl<'a> State<'a> {
         }
     }
 
+    /// Clears a loaded account's touch status and its loaded slots' runtime warmth.
+    ///
+    /// This does not load state, record journal entries, or change account warmth or the
+    /// pre-warmed set. Existing journal entries retain their normal rollback behavior.
+    pub fn clear_account_touch_and_storage_warmth(&mut self, address: &Address) {
+        if let Some(account) = self.accounts.get_mut(address) {
+            account.is_touched = false;
+        }
+        if let Some(storage) = self.storage.get_mut(address) {
+            for slot in storage.slots.values_mut() {
+                slot.is_warm = false;
+            }
+        }
+    }
+
     /// Reads a storage slot from the committed state (accepted overlay and backing database),
     /// ignoring the in-flight transaction overlay.
     #[inline]
@@ -1051,6 +1066,50 @@ mod tests {
             state.rollback(parent, EvmFeatures::empty());
             assert_eq!(state.tload(&Address::ZERO, &Word::ZERO), Word::ZERO);
             assert!(state.logs().is_empty());
+        }
+    }
+
+    #[test]
+    fn clears_account_touch_and_storage_warmth() {
+        let address = Address::with_last_byte(42);
+        let storage_only = Address::with_last_byte(43);
+        let mut state = State::new(EmptyDB::default());
+
+        {
+            let mut slot = state.storage_slot(&storage_only, Word::ZERO, false).unwrap();
+            slot.set(Word::ONE);
+            slot.warm();
+        }
+        state.clear_account_touch_and_storage_warmth(&storage_only);
+        assert!(state.accounts.is_empty());
+        {
+            let mut slot = state.storage_slot(&storage_only, Word::ZERO, false).unwrap();
+            assert_eq!(slot.current(), Word::ONE);
+            assert!(slot.warm(), "first access after cooling must be cold");
+            assert!(!slot.warm(), "the following access must be warm");
+        }
+
+        {
+            let mut account = state.account(&address, false).unwrap();
+            account.set_balance(Word::from(10));
+            account.touch();
+            account.warm();
+        }
+        for key in [Word::ZERO, Word::ONE] {
+            let mut slot = state.storage_slot(&address, key, false).unwrap();
+            slot.set(Word::from(7));
+            slot.warm();
+        }
+        state.prewarm_storage_slot(&address, Word::ONE);
+        let checkpoint = state.checkpoint();
+        state.clear_account_touch_and_storage_warmth(&address);
+        assert_eq!(state.checkpoint(), checkpoint);
+        assert!(!state.accounts[&address].is_touched);
+        assert!(state.accounts[&address].is_warm);
+        for key in [Word::ZERO, Word::ONE] {
+            let slot = state.storage_slot(&address, key, false).unwrap();
+            assert_eq!(slot.is_warm(), key == Word::ONE);
+            assert_eq!((slot.original(), slot.current()), (Word::ZERO, Word::from(7)));
         }
     }
 }
