@@ -556,6 +556,69 @@ fn vmtrace_records_storage_for_vm_only_requests() {
 }
 
 #[test]
+fn vmtrace_storage_reads_have_no_write_delta() {
+    // Read the same slot cold and warm, including when Geth storage snapshots are enabled.
+    for config in [TracingInspectorConfig::parity_vm_trace(), TracingInspectorConfig::all()] {
+        let inspector = inspect_code(&hex!("6007545060075400"), &[], SpecId::OSAKA, config);
+        if config.record_state_diff {
+            assert!(inspector.traces().nodes()[0].trace.steps[1].storage_change.is_some());
+        }
+        let trace = inspector.into_parity_builder().vm_trace();
+        for step in [&trace.ops[1], &trace.ops[4]] {
+            assert_eq!(step.op.as_deref(), Some("SLOAD"));
+            assert!(step.ex.as_ref().unwrap().store.is_none());
+        }
+    }
+}
+
+#[test]
+fn vmtrace_storage_writes_include_unchanged_values() {
+    // Write 42 twice, then zero twice, to slot 7. Only the value changes create journal entries.
+    let trace = trace_vm_code(&hex!("602a600755602a6007555f6007555f60075500"), &[]);
+    for (step, value) in [(2, 42), (5, 42), (8, 0), (11, 0)] {
+        let store = trace.ops[step].ex.as_ref().unwrap().store.as_ref().unwrap();
+        assert_eq!(store.key, U256::from(7));
+        assert_eq!(store.val, U256::from(value));
+    }
+}
+
+#[test]
+fn vmtrace_failed_storage_writes_have_no_delta() {
+    for (code, child, node_idx) in [
+        (&hex!("55")[..], &[][..], 0),   // No operands
+        (&hex!("5f55")[..], &[][..], 0), // Only one operand
+        // SSTORE in a static child
+        (&hex!("5f5f5f5f604361fffffa00")[..], &hex!("602a60075500")[..], 1),
+        // SSTORE in a child with insufficient gas
+        (&hex!("5f5f5f5f5f60436064f100")[..], &hex!("602a60075500")[..], 1),
+    ] {
+        let inspector =
+            inspect_code(code, child, SpecId::OSAKA, TracingInspectorConfig::parity_vm_trace());
+        let frame = &inspector.traces().nodes()[node_idx].trace;
+        assert!(frame.steps.last().unwrap().status.unwrap().is_halt());
+        assert!(frame.step_deltas.iter().all(|delta| delta.storage.is_none()));
+        let trace = inspector.into_parity_builder().vm_trace();
+        let frame = if node_idx == 0 {
+            &trace
+        } else {
+            trace.ops.iter().find_map(|step| step.sub.as_ref()).unwrap()
+        };
+        let failed = frame.ops.last().unwrap();
+        assert_eq!(failed.op.as_deref(), Some("SSTORE"));
+        assert!(failed.ex.is_none());
+    }
+}
+
+#[test]
+fn vmtrace_storage_write_is_preserved_when_frame_reverts() {
+    let trace = trace_vm_code(&hex!("602a6007555f5ffd"), &[]);
+    let store = trace.ops[2].ex.as_ref().unwrap().store.as_ref().unwrap();
+    assert_eq!(store.key, U256::from(7));
+    assert_eq!(store.val, U256::from(42));
+    assert_eq!(trace.ops.last().unwrap().op.as_deref(), Some("REVERT"));
+}
+
+#[test]
 fn vmtrace_faults_have_no_execution_delta() {
     for code in [&hex!("01")[..], &hex!("f1")[..], &hex!("fe")[..]] {
         let trace = trace_vm_code(code, &[]);
@@ -582,6 +645,35 @@ fn vmtrace_call_pushes_result_and_copies_return_memory() {
     let mem = call.ex.as_ref().unwrap().mem.as_ref().unwrap();
     assert_eq!(mem.off, 32);
     assert_eq!(mem.data.as_ref(), U256::from(42).to_be_bytes::<32>());
+}
+
+#[test]
+fn vmtrace_terminal_call_finalizes_delta_at_capture_limit() {
+    // No following opcode is needed to finalize the call, even if its child is not recorded.
+    for config in [
+        TracingInspectorConfig::parity_vm_trace(),
+        TracingInspectorConfig {
+            step_limit: core::num::NonZeroU64::new(8),
+            ..TracingInspectorConfig::parity_vm_trace()
+        },
+    ] {
+        let trace = inspect_code(
+            &hex!("602060205f5f5f604361fffff1"),
+            &hex!("602a5f5360015ff3"),
+            SpecId::OSAKA,
+            config,
+        )
+        .into_parity_builder()
+        .vm_trace();
+        let call = trace.ops.last().unwrap();
+        assert_eq!(call.op.as_deref(), Some("CALL"));
+        let ex = call.ex.as_ref().unwrap();
+        assert_eq!(ex.push, vec![U256::from(1)]);
+        let mem = ex.mem.as_ref().unwrap();
+        assert_eq!(mem.off, 32);
+        assert_eq!(mem.data.as_ref(), &[42]);
+        assert_eq!(ex.used, trace.ops[6].ex.as_ref().unwrap().used - call.cost);
+    }
 }
 
 #[test]

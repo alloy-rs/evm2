@@ -13,6 +13,7 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
+use alloy_rpc_types_trace::parity::StorageDelta;
 use core::{mem, ops::Range};
 use evm2::{
     Evm, EvmFeatures, EvmTypes, Inspector, SpecId, TxResultExt,
@@ -514,10 +515,20 @@ impl TracingInspector {
 
         if self.config.record_step_deltas {
             let write_range = memory_write_range(op.get(), interp.stack().as_slice());
-            if write_range.is_some() || node.trace.steps[step_idx].is_call_like_op() {
+            // Journal entries also include reads and omit same-value writes. VM traces need
+            // the operands of each successful SSTORE instead.
+            let storage = match (op.get(), interp.stack().as_slice()) {
+                (op::SSTORE, [.., value, key]) => Some(StorageDelta { key: *key, val: *value }),
+                _ => None,
+            };
+            if write_range.is_some()
+                || storage.is_some()
+                || node.trace.steps[step_idx].is_call_like_op()
+            {
                 node.trace.step_deltas.push(StepDelta {
                     step: step_idx,
                     write_range,
+                    storage,
                     ..Default::default()
                 });
             }
@@ -609,7 +620,15 @@ impl TracingInspector {
         // set the status
         step.status = interp.result().err();
 
-        if self.config.record_step_deltas && !step.status.is_some_and(|status| status.is_halt()) {
+        if self.config.record_step_deltas {
+            if step.status.is_some_and(|status| status.is_halt()) {
+                if let Some(delta) =
+                    node.trace.step_deltas.last_mut().filter(|delta| delta.step == step_idx)
+                {
+                    delta.storage = None;
+                }
+                return;
+            }
             // Call results, returned memory and gas are already available in evm2's `step_end`.
             // Gas credits cannot be recovered from the saturated unsigned gas cost.
             let gas_remaining_after = (step.is_call_like_op()

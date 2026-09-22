@@ -82,8 +82,8 @@ pub struct TracingInspectorConfig {
     pub record_logs: bool,
     /// Whether to record immediate bytes for opcodes.
     pub record_immediate_bytes: bool,
-    /// Whether to record the deltas of each step: the memory it writes and the remaining gas
-    /// after returning from a call or gaining gas.
+    /// Whether to record the deltas of each step: the memory and storage it writes and the
+    /// remaining gas after returning from a call or gaining gas.
     ///
     /// Required for parity `vmTrace`.
     pub record_step_deltas: bool,
@@ -163,8 +163,6 @@ impl TracingInspectorConfig {
             .set_bytecode(true)
             .set_stack_snapshots(StackSnapshotType::Pushes)
             .set_step_deltas(true)
-            // also need statediffs for recording altered storage in `VmExecutedOperation.store`
-            .set_state_diffs(true)
     }
 
     /// Returns a config for geth style traces.
@@ -204,7 +202,6 @@ impl TracingInspectorConfig {
             .set_bytecode(needs_vm_trace)
             .set_stack_snapshots(snap_type)
             .set_step_deltas(needs_vm_trace)
-            .set_state_diffs(needs_vm_trace)
     }
 
     /// Returns a config for geth style traces based on the given [GethDefaultTracingOptions].
@@ -546,7 +543,7 @@ mod tests {
         s.insert(TraceType::VmTrace);
         let config = TracingInspectorConfig::from_parity_config(&s);
         assert!(config.record_steps);
-        assert!(config.record_state_diff);
+        assert!(!config.record_state_diff);
         assert!(config.record_step_deltas);
         // the deltas replace full memory snapshots
         assert!(!config.record_memory_snapshots);
@@ -556,8 +553,8 @@ mod tests {
         s.insert(TraceType::StateDiff);
         let config = TracingInspectorConfig::from_parity_config(&s);
         assert!(config.record_steps);
-        // required for VmTrace
-        assert!(config.record_state_diff);
+        // VM storage writes use step deltas; StateDiff uses the execution result.
+        assert!(!config.record_state_diff);
     }
 
     #[test]

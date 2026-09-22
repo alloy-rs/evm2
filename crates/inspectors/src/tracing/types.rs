@@ -13,7 +13,8 @@ use alloy_rpc_types_trace::{
     geth::{CallFrame, CallLogFrame, GethDefaultTracingOptions, StructLog},
     parity::{
         Action, ActionType, CallAction, CallOutput, CallType, CreateAction, CreateOutput,
-        CreationMethod, MemoryDelta, SelfdestructAction, TraceOutput, TransactionTrace,
+        CreationMethod, MemoryDelta, SelfdestructAction, StorageDelta, TraceOutput,
+        TransactionTrace,
     },
 };
 use core::ops::Range;
@@ -111,7 +112,7 @@ pub struct CallTrace {
     pub steps: Vec<CallTraceStep>,
     /// The deltas recorded for [`Self::steps`], in step order.
     ///
-    /// Only steps that write memory, make a call or gain gas have an entry, and only if
+    /// Only steps that write memory or storage, make a call or gain gas have an entry, and only if
     /// [`record_step_deltas`] is enabled.
     ///
     /// [`record_step_deltas`]: crate::tracing::TracingInspectorConfig::record_step_deltas
@@ -753,8 +754,8 @@ impl CallTraceStep {
 
 /// The deltas a [`CallTraceStep`] produced, as reported by parity's `vmTrace`.
 ///
-/// Recorded in [`CallTrace::step_deltas`] for the steps that write memory, make a call or gain gas,
-/// when [`record_step_deltas`] is enabled.
+/// Recorded in [`CallTrace::step_deltas`] for the steps that write memory or storage, make a call
+/// or gain gas, when [`record_step_deltas`] is enabled.
 ///
 /// [`record_step_deltas`]: crate::tracing::TracingInspectorConfig::record_step_deltas
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -764,6 +765,8 @@ pub struct StepDelta {
     pub step: usize,
     /// The memory written by the step, if any.
     pub memory: Option<MemoryDelta>,
+    /// The storage key and value written by a successful SSTORE, including same-value writes.
+    pub storage: Option<StorageDelta>,
     /// The remaining gas after a call-like step or an instruction that gained gas.
     ///
     /// For all other steps the remaining gas after execution is `gas_remaining - gas_cost`.
