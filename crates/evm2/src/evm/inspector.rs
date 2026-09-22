@@ -1293,4 +1293,79 @@ mod tests {
             Word::ZERO,
         );
     }
+
+    #[test]
+    fn snapshot_restore_preserves_logs_without_reinspection() {
+        #[derive(Default)]
+        struct SnapshotInspector {
+            snapshot: Option<State<'static>>,
+            logs: usize,
+        }
+        impl Inspector<BaseEvmTypes> for SnapshotInspector {
+            fn log(&mut self, _log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
+                self.logs += 1;
+            }
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                match message.destination.as_slice()[19] {
+                    0x44 => {
+                        self.snapshot = Some(interp.host().state().clone_with(EmptyDB::default()))
+                    }
+                    0x55 => {
+                        let state = interp.host().state_mut();
+                        let logs = core::mem::take(state.logs_mut());
+                        let db = core::mem::replace(
+                            &mut state.overlay_db_mut().db,
+                            Box::new(EmptyDB::default()),
+                        );
+                        *state = self.snapshot.as_ref().unwrap().clone_with(db);
+                        *state.logs_mut() = logs;
+                    }
+                    _ => return None,
+                }
+                Some(MessageResultExt {
+                    stop: InstrStop::Return,
+                    gas: GasTracker::new(message.gas_limit),
+                    ..Default::default()
+                })
+            }
+        }
+        let mut code = Vec::new();
+        for marker in [0x44, 0x55] {
+            code.extend([
+                op::PUSH1,
+                marker,
+                op::PUSH0,
+                op::MSTORE8,
+                op::PUSH1,
+                1,
+                op::PUSH0,
+                op::LOG0,
+            ]);
+            code.extend(call_code(Address::with_last_byte(marker)));
+            code.extend([op::CALL, op::POP]);
+            if marker == 0x44 {
+                code.extend([op::PUSH1, 9, op::PUSH0, op::SSTORE]);
+            }
+        }
+        code.push(op::STOP);
+        let (result, inspector, mut evm) = run_evm_with_inspector(
+            code,
+            &MessageExt::default(),
+            100_000,
+            SnapshotInspector::default(),
+        );
+        assert_eq!(result.stop, InstrStop::Stop);
+        assert_eq!(evm.logs().len(), 2);
+        assert_eq!(evm.logs()[0].data.data.as_ref(), &[0x44]);
+        assert_eq!(evm.logs()[1].data.data.as_ref(), &[0x55]);
+        assert_eq!(inspector.logs, 2);
+        assert_eq!(
+            evm.state_mut().storage_slot_untracked(&Address::ZERO, &Word::ZERO).unwrap(),
+            Word::ZERO
+        );
+    }
 }
