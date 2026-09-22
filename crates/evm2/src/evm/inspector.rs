@@ -934,7 +934,7 @@ mod tests {
             FailingStepInspector::default(),
         );
 
-        assert_eq!(result.stop, InstrStop::InvalidOpcode);
+        assert_eq!(result.stop, InstrStop::InvalidFEOpcode);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
     }

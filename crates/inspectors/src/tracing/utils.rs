@@ -45,7 +45,10 @@ pub(crate) fn fmt_error_msg(res: InstrStop, kind: TraceStyle) -> Option<String> 
         InstrStop::InvalidOperandOOG => {
             if kind.is_parity() { "Out of gas" } else { "out of gas: invalid operand" }.to_string()
         }
-        InstrStop::InvalidOpcode => {
+        InstrStop::InvalidFEOpcode => {
+            if kind.is_parity() { "Bad instruction" } else { "invalid opcode: INVALID" }.to_string()
+        }
+        InstrStop::OpcodeNotFound => {
             if kind.is_parity() { "Bad instruction" } else { "invalid opcode" }.to_string()
         }
         InstrStop::StackOverflow => "Out of stack".to_string(),
@@ -139,6 +142,18 @@ mod tests {
     use super::*;
     use alloc::vec;
     use alloy_sol_types::{GenericContractError, SolInterface};
+
+    #[test]
+    fn invalid_instruction_errors() {
+        for (stop, geth, parity) in [
+            (InstrStop::InvalidFEOpcode, "invalid opcode: INVALID", "Bad instruction"),
+            (InstrStop::OpcodeNotFound, "invalid opcode", "Bad instruction"),
+            (InstrStop::NotActivated, "NotActivated", "NotActivated"),
+        ] {
+            assert_eq!(fmt_error_msg(stop, TraceStyle::Geth).as_deref(), Some(geth));
+            assert_eq!(fmt_error_msg(stop, TraceStyle::Parity).as_deref(), Some(parity));
+        }
+    }
 
     #[test]
     fn decode_revert_reason() {

@@ -1165,7 +1165,7 @@ bitflags::bitflags! {
         /// Always returns [`NotActivated`](evm2::interpreter::InstrStop::NotActivated) at runtime.
         const DISABLED = 1 << 4;
         /// The instruction is unknown.
-        /// Always returns [`InvalidOpcode`](evm2::interpreter::InstrStop::InvalidOpcode) at runtime.
+        /// Always returns [`OpcodeNotFound`](evm2::interpreter::InstrStop::OpcodeNotFound) at runtime.
         const UNKNOWN = 1 << 5;
 
         /// Instruction is a no-op: skip generating logic, but keep the gas calculation.

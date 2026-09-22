@@ -317,7 +317,7 @@ mod tests {
         let interp = run(RunConfig::new([op::PUSH1, 0, op::TLOAD, op::STOP])
             .host(&mut host)
             .spec(SpecId::SHANGHAI));
-        assert_matches!(interp.err, InstrStop::InvalidOpcode);
+        assert_matches!(interp.err, InstrStop::NotActivated);
         assert_eq!(interp.stack(), [0]);
     }
 
@@ -342,7 +342,7 @@ mod tests {
         let interp = run(RunConfig::new([op::PUSH1, 0, op::PUSH1, 0, op::TSTORE, op::STOP])
             .host(&mut host)
             .spec(SpecId::SHANGHAI));
-        assert_matches!(interp.err, InstrStop::InvalidOpcode);
+        assert_matches!(interp.err, InstrStop::NotActivated);
         assert_eq!(interp.stack(), [0, 0]);
     }
 

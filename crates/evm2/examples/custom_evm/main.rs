@@ -145,11 +145,11 @@ fn mainnet_fallback() -> HandlerResult<()> {
     let result = evm.transact(&tx)?.discard();
 
     println!(
-        "mainnet fallback: expected status=false stop=InvalidOpcode; got status={} stop={:?}",
+        "mainnet fallback: expected status=false stop=OpcodeNotFound; got status={} stop={:?}",
         result.status, result.stop,
     );
 
-    assert_eq!(result.stop, InstrStop::InvalidOpcode);
+    assert_eq!(result.stop, InstrStop::OpcodeNotFound);
     assert!(!result.status);
     Ok(())
 }
