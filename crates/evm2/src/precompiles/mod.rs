@@ -128,13 +128,6 @@ impl<T: EvmTypesHost> Precompiles<T> {
 }
 
 impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
-    fn move_precompiles(
-        &mut self,
-        moves: &[(Address, Address)],
-    ) -> Result<(), MovePrecompileError> {
-        self.as_map_mut().move_precompiles(moves.iter().copied())
-    }
-
     #[inline]
     fn addresses(&self) -> Vec<Address> {
         self.map.as_ref().addresses().collect()
@@ -154,6 +147,13 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
     #[inline]
     fn contains(&self, address: &Address) -> bool {
         self.map.as_ref().contains(address)
+    }
+
+    fn move_precompiles(
+        &mut self,
+        moves: &[(Address, Address)],
+    ) -> Result<(), MovePrecompileError> {
+        self.as_map_mut().move_precompiles(moves.iter().copied())
     }
 
     #[inline]

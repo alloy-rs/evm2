@@ -98,16 +98,6 @@ impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn PrecompileProvider<T> + 'a
 pub struct NoPrecompiles(());
 
 impl<T: EvmTypesHost> PrecompileProvider<T> for NoPrecompiles {
-    fn move_precompiles(
-        &mut self,
-        moves: &[(Address, Address)],
-    ) -> Result<(), MovePrecompileError> {
-        match moves.iter().find(|(source, dest)| source != dest) {
-            Some((source, _)) => Err(MovePrecompileError::NotAPrecompile(*source)),
-            None => Ok(()),
-        }
-    }
-
     #[inline]
     fn addresses(&self) -> Vec<Address> {
         Vec::new()
@@ -116,6 +106,16 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for NoPrecompiles {
     #[inline]
     fn contains(&self, _address: &Address) -> bool {
         false
+    }
+
+    fn move_precompiles(
+        &mut self,
+        moves: &[(Address, Address)],
+    ) -> Result<(), MovePrecompileError> {
+        match moves.iter().find(|(source, dest)| source != dest) {
+            Some((source, _)) => Err(MovePrecompileError::NotAPrecompile(*source)),
+            None => Ok(()),
+        }
     }
 
     #[inline]

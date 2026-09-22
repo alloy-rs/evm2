@@ -1114,6 +1114,11 @@ mod tests {
     }
 
     impl PrecompileProvider<BaseEvmTypes> for NonSendPrecompiles {
+        fn contains(&self, _address: &Address) -> bool {
+            let _ = Rc::strong_count(&self.marker);
+            false
+        }
+
         fn move_precompiles(
             &mut self,
             moves: &[(Address, Address)],
@@ -1122,11 +1127,6 @@ mod tests {
                 &mut Default::default(),
                 moves,
             )
-        }
-
-        fn contains(&self, _address: &Address) -> bool {
-            let _ = Rc::strong_count(&self.marker);
-            false
         }
 
         fn execute(
