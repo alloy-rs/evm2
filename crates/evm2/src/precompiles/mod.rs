@@ -149,6 +149,13 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
         self.map.as_ref().contains(address)
     }
 
+    fn move_precompiles(
+        &mut self,
+        moves: &[(Address, Address)],
+    ) -> Result<(), MovePrecompileError> {
+        self.as_map_mut().move_precompiles(moves.iter().copied())
+    }
+
     #[inline]
     fn execute(
         &mut self,

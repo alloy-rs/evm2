@@ -1119,6 +1119,16 @@ mod tests {
             false
         }
 
+        fn move_precompiles(
+            &mut self,
+            moves: &[(Address, Address)],
+        ) -> Result<(), crate::precompiles::MovePrecompileError> {
+            <crate::evm::precompile::NoPrecompiles as PrecompileProvider<BaseEvmTypes>>::move_precompiles(
+                &mut Default::default(),
+                moves,
+            )
+        }
+
         fn execute(
             &mut self,
             _evm: &mut Evm<'_, BaseEvmTypes>,

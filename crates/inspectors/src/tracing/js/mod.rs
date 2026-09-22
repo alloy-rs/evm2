@@ -504,7 +504,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         // determine contract and caller based on the call scheme
         let (caller, contract) = match message.kind {
             MessageKind::DelegateCall | MessageKind::CallCode => {
-                (message.destination, message.code_address)
+                (message.destination, message.call_target)
             }
             _ => (message.caller, message.destination),
         };
