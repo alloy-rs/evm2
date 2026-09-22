@@ -1,11 +1,9 @@
 //! Basic in-memory EVM host state.
 
 mod account;
+mod block;
 #[cfg(feature = "account-ext")]
 mod extension;
-#[cfg(feature = "account-ext")]
-pub use extension::AccountExtension;
-mod block;
 mod journal;
 mod pending;
 mod storage;
@@ -16,6 +14,8 @@ mod tracked;
 pub(crate) use account::Account;
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
+#[cfg(feature = "account-ext")]
+pub use extension::AccountExtension;
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use pending::PendingState;
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
