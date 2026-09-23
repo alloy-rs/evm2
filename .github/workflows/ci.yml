@@ -54,7 +54,7 @@ jobs:
 
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -64,11 +64,11 @@ jobs:
       - name: Install LLVM
         if: ${{ matrix.os == 'macos' }}
         run: .github/scripts/install_llvm.sh macos
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         if: ${{ !matrix.target }}
         with:
           toolchain: ${{ matrix.rust }}
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # master
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         if: ${{ matrix.target }}
         with:
           toolchain: ${{ matrix.rust }}
@@ -81,21 +81,21 @@ jobs:
           cache-on-failure: true
           cache-bin: false
       - name: Install nextest
-        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
         with:
           tool: nextest@0.9.140
           checksum: true
           fallback: none
         if: ${{ !matrix.command || matrix.command == 'nextest' }}
       - name: Install cross
-        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
         with:
           tool: cross@0.2.5
           checksum: true
           fallback: none
         if: ${{ matrix.command == 'cross-test' }}
       - name: Install wasmtime
-        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
         with:
           tool: wasmtime@47.0.2
           checksum: true
@@ -106,8 +106,10 @@ jobs:
       - name: Download EEST fixtures
         if: ${{ matrix.kind == 'eest' }}
         shell: bash
+        env:
+          INPUT_FIXTURE: ${{ matrix.fixture }}
         run: |
-          if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
+          if [[ "${INPUT_FIXTURE}" == "devnet" ]]; then
             export DEVNET_VERSION="tests-glamsterdam-devnet%40v8.1.4"
             export DEVNET_TAR="fixtures_glamsterdam-devnet.tar.gz"
             export EVM2_STATETEST_DEVNET_ONLY=1
@@ -116,57 +118,88 @@ jobs:
       - name: ${{ matrix.kind }}
         if: ${{ !matrix.command || matrix.command == 'nextest' }}
         shell: bash
+        env:
+          INPUT_CXX: ${{ matrix.cxx }}
+          INPUT_FIXTURE: ${{ matrix.fixture }}
+          INPUT_FLAGS: ${{ matrix.flags }}
+          INPUT_KIND: ${{ matrix.kind }}
+          INPUT_OS: ${{ matrix.os }}
         run: |
+          read -r -a matrix_flags <<< "$INPUT_FLAGS"
           package_flags=(--workspace)
-          if [[ -n "${{ matrix.cxx }}" ]]; then
-            export CXX="${{ matrix.cxx }}"
+          if [[ -n "${INPUT_CXX}" ]]; then
+            export CXX="${INPUT_CXX}"
             cargo clean -p mcl_rust
           fi
           extra_flags=()
-          if [[ "${{ matrix.kind }}" == "eest" ]]; then
+          if [[ "${INPUT_KIND}" == "eest" ]]; then
             package_flags=(-p evm2-eest)
             extra_flags+=(--ignore-default-filter)
             extra_flags+=(-E 'not test(/::(?:jit|aot)(?:$|::)/)')
-          elif [[ "${{ matrix.os }}" == "windows" ]]; then
+          elif [[ "${INPUT_OS}" == "windows" ]]; then
             package_flags+=(
               --exclude evm2-jit
               --exclude evm2-jit-*
             )
           fi
-          if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
+          if [[ "${INPUT_FIXTURE}" == "devnet" ]]; then
             export EVM2_STATETEST_ROOT="test-fixtures/devnet/state_tests"
             export EVM2_BLOCKCHAINTEST_ROOT="test-fixtures/devnet/blockchain_tests"
           fi
-          cargo nextest --profile ci run "${package_flags[@]}" --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
+          cargo nextest --profile ci run "${package_flags[@]}" --no-fail-fast "${matrix_flags[@]}" "${extra_flags[@]}"
       # Fetch on the protected host; cross containers do not inherit Aegis routing.
       - name: Fetch cross-test dependencies through Aegis
         if: ${{ matrix.command == 'cross-test' }}
-        run: cargo fetch --target ${{ matrix.target }}
+        env:
+          INPUT_TARGET: ${{ matrix.target }}
+        run: cargo fetch --target "${INPUT_TARGET}"
       - name: cross test
         if: ${{ matrix.command == 'cross-test' }}
         shell: bash
+        env:
+          INPUT_CXX: ${{ matrix.cxx }}
+          INPUT_FLAGS: ${{ matrix.flags }}
+          INPUT_TARGET: ${{ matrix.target }}
         run: |
-          if [[ -n "${{ matrix.cxx }}" ]]; then
-            export CXX="${{ matrix.cxx }}"
+          read -r -a matrix_flags <<< "$INPUT_FLAGS"
+          if [[ -n "${INPUT_CXX}" ]]; then
+            export CXX="${INPUT_CXX}"
           fi
-          cross test --offline --workspace --exclude evm2-eest --target ${{ matrix.target }} --no-fail-fast --lib --bins --tests ${{ matrix.flags }}
+          cross test --offline --workspace --exclude evm2-eest --target "${INPUT_TARGET}" --no-fail-fast --lib --bins --tests "${matrix_flags[@]}"
       - name: wasm build
         if: ${{ matrix.command == 'build' }}
         shell: bash
+        env:
+          INPUT_CXX: ${{ matrix.cxx }}
+          INPUT_FLAGS: ${{ matrix.flags }}
+          INPUT_TARGET: ${{ matrix.target }}
         run: |
-          if [[ -n "${{ matrix.cxx }}" ]]; then
-            export CXX="${{ matrix.cxx }}"
+          read -r -a matrix_flags <<< "$INPUT_FLAGS"
+          if [[ -n "${INPUT_CXX}" ]]; then
+            export CXX="${INPUT_CXX}"
           fi
-          cargo build -p evm2 --target ${{ matrix.target }} ${{ matrix.flags }}
+          cargo build -p evm2 --target "${INPUT_TARGET}" "${matrix_flags[@]}"
       - name: wasm test
         if: ${{ matrix.command == 'wasm-test' }}
+        shell: bash
         env:
+          INPUT_FLAGS: ${{ matrix.flags }}
+          INPUT_TARGET: ${{ matrix.target }}
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
           RUSTFLAGS: ${{ matrix.rustflags }}
-        run: cargo test -p evm2 --target ${{ matrix.target }} --no-fail-fast --lib --tests ${{ matrix.flags }}
+        run: |
+          read -r -a matrix_flags <<< "$INPUT_FLAGS"
+          cargo test -p evm2 --target "${INPUT_TARGET}" --no-fail-fast --lib --tests "${matrix_flags[@]}"
+
       - name: doctest
         if: ${{ matrix.kind == 'test' && !matrix.target }}
-        run: cargo test --workspace ${{ matrix.flags }} --doc
+        shell: bash
+        env:
+          INPUT_FLAGS: ${{ matrix.flags }}
+        run: |
+          read -r -a matrix_flags <<< "$INPUT_FLAGS"
+          cargo test --workspace "${matrix_flags[@]}" --doc
+
 
   jit:
     name: jit ${{ matrix.os }} ${{ matrix.mode }}
@@ -196,7 +229,7 @@ jobs:
             filter: test(statetests::jit)
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -206,18 +239,18 @@ jobs:
       - name: Install LLVM
         if: ${{ matrix.os == 'macos' }}
         run: .github/scripts/install_llvm.sh macos
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: stable
       - uses: rui314/setup-mold@10ca16bf91dc22e05ebdc935cad9c75ea248f621 # v1
         if: runner.os == 'Linux'
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
           cache-bin: false
       - name: Install nextest
-        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
         with:
           tool: nextest@0.9.140
           checksum: true
@@ -245,12 +278,13 @@ jobs:
         target: ["riscv32imac-unknown-none-elf", "riscv64imac-unknown-none-elf"]
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -273,16 +307,18 @@ jobs:
         flags: ["", "--all-targets"]
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install LLVM
         run: .github/scripts/install_llvm.sh ubuntu
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
       - uses: rui314/setup-mold@10ca16bf91dc22e05ebdc935cad9c75ea248f621 # v1
       - name: Install cargo-hack
-        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
         with:
           tool: cargo-hack@0.6.45
           checksum: true
@@ -303,11 +339,13 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
       - uses: rui314/setup-mold@10ca16bf91dc22e05ebdc935cad9c75ea248f621 # v1
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: taiki-e/cache-cargo-install-action@9ee83daaa7b96a6fab930949ecf1122bba04a389 # v3.0.8
@@ -325,11 +363,13 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -346,7 +386,7 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -360,14 +400,15 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install LLVM
         run: .github/scripts/install_llvm.sh ubuntu
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
+          toolchain: nightly
           components: clippy
       - uses: rui314/setup-mold@10ca16bf91dc22e05ebdc935cad9c75ea248f621 # v1
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
@@ -387,13 +428,15 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install LLVM
         run: .github/scripts/install_llvm.sh ubuntu
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: nightly
       - uses: rui314/setup-mold@10ca16bf91dc22e05ebdc935cad9c75ea248f621 # v1
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -413,12 +456,13 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959
+        uses: tempoxyz/gh-actions/actions/secure-runner@117919c943b804057be733b0c4034c5542e58959 # 2026-09-23T05-09-41Z-117919c9
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
+          toolchain: nightly
           components: rustfmt
       - run: cargo fmt --all --check
 
