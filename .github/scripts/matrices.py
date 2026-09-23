@@ -182,6 +182,7 @@ config = [
     for kind in kinds
     for rust in toolchains
     for flags in feature_sets
+    if rust == "nightly" or flags != "--all-features"
 ]
 
 
