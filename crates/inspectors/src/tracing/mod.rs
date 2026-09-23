@@ -728,7 +728,11 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         self.start_trace_on_call(
             usize::from(message.depth),
             to,
-            if self.config.record_inputs { message.input.clone() } else { Bytes::new() },
+            if self.config.record_inputs {
+                message.input.to_bytes(interp.host().call_memory())
+            } else {
+                Bytes::new()
+            },
             value,
             message.kind.into(),
             from,
@@ -761,7 +765,11 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         self.start_trace_on_call(
             usize::from(message.depth),
             message.destination,
-            if self.config.record_inputs { message.input.clone() } else { Bytes::new() },
+            if self.config.record_inputs {
+                message.input.to_bytes(interp.host().call_memory())
+            } else {
+                Bytes::new()
+            },
             message.value,
             message.kind.into(),
             message.caller,

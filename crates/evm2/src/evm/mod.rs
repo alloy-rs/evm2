@@ -122,8 +122,8 @@ use crate::{
     env::{BlockEnv, TxEnv},
     error::error_unavailable,
     interpreter::{
-        Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
-        MessageResult, MessageResultExt, Word,
+        CallMemory, Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Memory,
+        Message, MessageKind, MessageResult, MessageResultExt, Word,
     },
     registry::{HandlerError, HandlerResult, TxRegistry},
     trustme,
@@ -248,6 +248,7 @@ pub struct Evm<'a, T: EvmTypesHost> {
     precompiles: Box<dyn PrecompileProvider<T> + 'a>,
     #[derive_where(skip)]
     interpreter_pool: InterpreterPool<T>,
+    call_memory: CallMemory,
     #[derive_where(skip)]
     inspector: Option<Box<dyn Inspector<T> + 'a>>,
     #[derive_where(skip)]
@@ -377,6 +378,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             ext,
             precompiles,
             interpreter_pool: InterpreterPool::new(),
+            call_memory: CallMemory::default(),
             inspector: None,
             interpreter_runner: None,
             current_frame: None,
@@ -969,6 +971,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 }
 
+impl<T: EvmTypesHost> Evm<'_, T> {
+    /// Returns the live caller memory used to resolve call input ranges.
+    #[inline]
+    pub const fn call_memory(&self) -> &CallMemory {
+        &self.call_memory
+    }
+}
+
 struct ExecutionGuard<'guard, 'evm, T: EvmTypesHost> {
     evm: &'guard mut Evm<'evm, T>,
     was_running: bool,
@@ -978,6 +988,17 @@ impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     #[inline]
     fn drop(&mut self) {
         self.evm.running = self.was_running;
+    }
+}
+
+struct CallMemoryGuard<'guard, 'evm, T: EvmTypesHost> {
+    evm: &'guard mut Evm<'evm, T>,
+    memory: &'guard mut Memory,
+}
+
+impl<T: EvmTypesHost> Drop for CallMemoryGuard<'_, '_, T> {
+    fn drop(&mut self) {
+        *self.memory = self.evm.call_memory.pop();
     }
 }
 
@@ -1660,6 +1681,22 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         self.log(log);
     }
 
+    fn call_memory(&self) -> &CallMemory {
+        &self.call_memory
+    }
+
+    fn execute_message_with_memory(
+        &mut self,
+        tx_env: &TxEnv<T>,
+        message: &mut Message<T>,
+        memory: &mut Memory,
+        range: core::ops::Range<usize>,
+    ) -> MessageResult<T> {
+        message.input = self.call_memory.push(memory, range);
+        let guard = CallMemoryGuard { evm: self, memory };
+        guard.evm.execute_message(tx_env, message)
+    }
+
     #[inline]
     fn execute_message(&mut self, tx_env: &TxEnv<T>, message: &mut Message<T>) -> MessageResult<T> {
         if self.inspector.is_some() {
@@ -1888,6 +1925,9 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
 
+    #[cfg(feature = "std")]
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
     const TEST_TX_TYPE: u8 = 0x00;
     const TEST_PRECOMPILE: Address = Address::with_last_byte(0x42);
     const INNER_TEST_PRECOMPILE: Address = Address::with_last_byte(0x43);
@@ -2052,7 +2092,7 @@ mod tests {
             destination: address,
             call_target: address,
             caller: Address::ZERO,
-            input: Bytes::new(),
+            input: Default::default(),
             value: U256::ZERO,
             code: Bytecode::default(),
             code_address: address,
@@ -2143,7 +2183,7 @@ mod tests {
             evm.set_inspector(LogInspector::default());
             let mut message = precompile_message(TEST_PRECOMPILE);
             if revert {
-                message.input = Bytes::from_static(b"revert");
+                message.input = Bytes::from_static(b"revert").into();
             }
             let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
 
@@ -2819,7 +2859,7 @@ mod tests {
             assert_eq!(message.depth, 67);
             assert_eq!(message.destination, TEST_PRECOMPILE);
             assert_eq!(message.caller, Address::with_last_byte(0x7a));
-            assert_eq!(message.input, Bytes::from_static(b"message input"));
+            assert_eq!(message.input.as_slice(evm.call_memory()), b"message input");
             assert_eq!(message.value, U256::from(99));
             assert_eq!(message.code_address, TEST_PRECOMPILE);
             assert!(!message.disable_precompiles);
@@ -2840,7 +2880,7 @@ mod tests {
             destination: address,
             call_target: address,
             caller: Address::with_last_byte(0x7a),
-            input: Bytes::from_static(b"message input"),
+            input: Bytes::from_static(b"message input").into(),
             value: U256::from(99),
             code: Bytecode::default(),
             code_address: address,
@@ -3791,5 +3831,105 @@ mod tests {
 
         // Before EIP-8246 the self-destructed account (and its balance) is deleted at finalization.
         assert!(state.account_info_untracked(&contract).unwrap().is_none());
+    }
+
+    #[test]
+    fn call_input_range_survives_reentrant_execution_and_overlapping_output() {
+        let precompiles =
+            precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, message, _| {
+                let expected = message.input.to_bytes(evm.call_memory());
+                let tx_env = TxEnvExt::default();
+                let mut child = MessageExt {
+                    depth: message.depth + 1,
+                    gas_limit: 50_000,
+                    destination: Address::with_last_byte(0x80),
+                    code_address: Address::with_last_byte(0x80),
+                    input: message.input.clone(),
+                    code: legacy_bytecode([
+                        op::PUSH1,
+                        32,
+                        op::PUSH0,
+                        op::PUSH2,
+                        0x20,
+                        0,
+                        op::CALLDATACOPY,
+                        op::PUSH1,
+                        32,
+                        op::PUSH2,
+                        0x20,
+                        0,
+                        op::RETURN,
+                    ]),
+                    ..Default::default()
+                };
+                let result = Host::execute_message(evm, &tx_env, &mut child);
+                assert_eq!(result.stop, InstrStop::Return);
+                assert_eq!(result.output, expected);
+                assert_eq!(message.input.as_slice(evm.call_memory()), expected.as_ref());
+                Ok(PrecompileOutput::new(result.output))
+            })]);
+        let mut code = Vec::new();
+        for value in [0x11, 0x22] {
+            code.extend([op::PUSH1, value, op::PUSH1, 64, op::MSTORE]);
+            code.extend([op::PUSH1, 64, op::PUSH1, 64, op::PUSH1, 32, op::PUSH1, 64, op::PUSH0]);
+            push_address(&mut code, &TEST_PRECOMPILE);
+            code.extend([op::PUSH3, 1, 0, 0, op::CALL, op::POP]);
+            if value == 0x11 {
+                code.extend([op::PUSH1, 64, op::MLOAD, op::PUSH1, 96, op::MSTORE]);
+            }
+        }
+        code.extend([op::PUSH1, 64, op::PUSH1, 64, op::RETURN]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+        let tx_env = TxEnvExt::default();
+        let mut message =
+            MessageExt { gas_limit: 500_000, code: legacy_bytecode(code), ..Default::default() };
+        let result = Host::execute_message(&mut evm, &tx_env, &mut message);
+        assert_eq!(result.stop, InstrStop::Return);
+        let mut expected = [0; 64];
+        expected[31] = 0x22;
+        expected[63] = 0x11;
+        assert_eq!(result.output.as_ref(), expected);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn call_input_memory_is_restored_on_unwind() {
+        let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |_, _, _| {
+            panic!("precompile panic")
+        })]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+        let mut memory = Memory::new();
+        memory.resize(0, 32).unwrap();
+        memory.set(0, b"input");
+        let pointer = memory.as_slice().as_ptr();
+        let mut message = precompile_message(TEST_PRECOMPILE);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            Host::execute_message_with_memory(
+                &mut evm,
+                &TxEnvExt::default(),
+                &mut message,
+                &mut memory,
+                0..5,
+            )
+        }));
+        assert!(result.is_err());
+        assert_eq!(memory.as_slice().as_ptr(), pointer);
+        assert_eq!(memory.len(), 32);
+        assert_eq!(memory.slice(0, 5), b"input");
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| message.input.as_slice(evm.call_memory()))).is_err()
+        );
     }
 }

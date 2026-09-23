@@ -513,7 +513,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             if message.kind == MessageKind::DelegateCall { U256::ZERO } else { message.value };
         self.push_call(
             contract,
-            message.input.clone(),
+            message.input.to_bytes(interp.host().call_memory()),
             value,
             message.kind.into(),
             caller,
@@ -560,7 +560,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         self.register_precompiles(interp.host());
         self.push_call(
             message.destination,
-            message.input.clone(),
+            message.input.to_bytes(interp.host().call_memory()),
             message.value,
             message.kind.into(),
             message.caller,

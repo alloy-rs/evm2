@@ -1,10 +1,11 @@
-use super::{GasTracker, InstrStop, Message, Result, Word};
+use super::{CallMemory, GasTracker, InstrStop, Memory, Message, Result, Word};
 use crate::{
     BaseEvmTypes, EvmFeatures, EvmTypesHost, SpecId,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
 };
 use alloy_primitives::{Address, B256, Bytes, Log};
+use core::ops::Range;
 
 /// Result of executing a call/create message for an EVM type family.
 pub type MessageResult<T = BaseEvmTypes> = MessageResultExt<<T as EvmTypesHost>::MessageResultExt>;
@@ -157,6 +158,25 @@ pub trait Host<T: EvmTypesHost> {
         target: &Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop>;
+
+    /// Returns the live memory context for call inputs.
+    fn call_memory(&self) -> &CallMemory {
+        CallMemory::empty()
+    }
+
+    /// Executes a message with input from the given caller memory range.
+    ///
+    /// Hosts without a live memory context copy the input before execution.
+    fn execute_message_with_memory(
+        &mut self,
+        tx_env: &TxEnv<T>,
+        message: &mut Message<T>,
+        memory: &mut Memory,
+        range: Range<usize>,
+    ) -> MessageResult<T> {
+        message.input = Bytes::copy_from_slice(memory.slice(range.start, range.len())).into();
+        self.execute_message(tx_env, message)
+    }
 }
 
 #[cfg(test)]

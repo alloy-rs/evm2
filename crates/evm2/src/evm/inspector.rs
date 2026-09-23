@@ -1643,4 +1643,66 @@ mod tests {
             assert_eq!(interp.gas().remaining(), 1000);
         }
     }
+
+    #[test]
+    fn call_input_snapshot_survives_parent_memory_mutation() {
+        #[derive(Default)]
+        struct MutateMemoryInspector {
+            calls: usize,
+            retained: Option<Message>,
+        }
+
+        impl Inspector<BaseEvmTypes> for MutateMemoryInspector {
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth == 1 {
+                    self.calls += 1;
+                    assert_eq!(message.input.as_slice(interp.host().call_memory()), b"\x11");
+                    assert_ne!(
+                        message.input.as_slice(interp.host().call_memory()).as_ptr(),
+                        interp.memory().slice(0, 1).as_ptr()
+                    );
+                    interp.memory_mut().resize(0, 16_384).unwrap();
+                    interp.memory_mut().set(0, b"\x22");
+                    assert_eq!(message.input.as_slice(interp.host().call_memory()), b"\x11");
+                    self.retained = Some(message.clone().into_owned(interp.host().call_memory()));
+                }
+                None
+            }
+
+            fn call_end(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                if message.depth == 1 {
+                    assert_eq!(message.input.as_slice(interp.host().call_memory()), b"\x11");
+                    assert_eq!(result.output.as_ref(), b"\x11");
+                    interp.memory_mut().clear();
+                    interp.memory_mut().resize(0, 32).unwrap();
+                }
+            }
+        }
+
+        let mut code = vec![op::PUSH1, 0x11, op::PUSH0, op::MSTORE8];
+        push_all(&mut code, [1, 0, 1, 0, 0, 4, 1000]);
+        code.extend([op::CALL, op::POP, op::PUSH1, 1, op::PUSH0, op::RETURN]);
+        let (result, inspector, _) = run_evm_with_inspector(
+            code,
+            &MessageExt::default(),
+            50_000,
+            MutateMemoryInspector::default(),
+        );
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(result.output.as_ref(), b"\x11");
+        assert_eq!(inspector.calls, 1);
+        assert_eq!(
+            inspector.retained.unwrap().input.as_slice(&crate::interpreter::CallMemory::default()),
+            b"\x11"
+        );
+    }
 }
