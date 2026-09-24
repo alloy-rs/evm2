@@ -488,9 +488,11 @@ pub fn populate_state_diff(
             entry.balance = Delta::Added(info.balance);
             entry.nonce = Delta::Added(U64::from(info.nonce));
 
+            // Empty code is still marked as added for a new account.
             let account_code = load_account_code(db, info)?.unwrap_or_default();
             entry.code = Delta::Added(account_code);
 
+            // Only changed slots are added; unchanged zero-valued slots are omitted.
             for (key, slot) in changed_acc.changed_storage() {
                 entry.storage.insert((*key).into(), Delta::Added(slot.current.into()));
             }
