@@ -61,7 +61,7 @@ pub fn execute_code(
         ..MessageExt::default()
     };
     let tx_env = TxEnvExt { ext: CustomTxEnvExt { label: "execute-code" }, ..TxEnvExt::default() };
-    let mut result = req.host.execute_message(&tx_env, &mut message);
+    let mut result = req.host.execute_message(&tx_env, &mut message)?;
     result.ext = CustomMessageResultExt { handled_custom_message: true };
     Ok(evm2::TxResult::<CustomTypes> {
         status: result.stop.is_success(),

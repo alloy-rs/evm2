@@ -3,7 +3,7 @@ use super::{
     StackRef, Word,
 };
 use crate::{
-    EvmTypesHost, ExecutionConfig, SpecId, Version,
+    EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
     bytecode::Bytecode,
     env::TxEnv,
     evm::inspector::Inspector,
@@ -38,6 +38,7 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
 
     pub(in crate::interpreter) gas: Gas,
     pub(in crate::interpreter) result: Result,
+    error: Option<ExecutionError>,
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
@@ -77,6 +78,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             gas: Gas::new(0),
             memory: Memory::new(),
             result: Ok(()),
+            error: None,
             output: 0..0,
             tx_env: None,
             message: None,
@@ -317,9 +319,54 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.is_static = is_static;
     }
 
+    /// Converts a host failure into an instruction stop, retaining external errors only in this
+    /// frame.
+    #[inline]
+    pub fn fail(&mut self, error: impl Into<HostError>) -> InstrStop {
+        match error.into() {
+            HostError::Halt(stop) => stop,
+            HostError::Execution(error) => {
+                self.error = Some(error);
+                InstrStop::FatalExternalError
+            }
+        }
+    }
+
+    /// Runs an interpreter backend, returning an owned error and clearing frame-local error
+    /// storage. External backends retain their compact stop-code ABI inside this boundary.
+    pub fn run_with(
+        &mut self,
+        run: impl FnOnce(&mut Self) -> InstrStop,
+    ) -> Result<InstrStop, ExecutionError> {
+        struct Guard<'a, 'frame, 'host, T: EvmTypesHost>(&'a mut Interpreter<'frame, 'host, T>);
+        impl<T: EvmTypesHost> Drop for Guard<'_, '_, '_, T> {
+            fn drop(&mut self) {
+                self.0.error = None;
+                self.0.host = None;
+                self.0.inspector = None;
+            }
+        }
+        let guard = Guard(self);
+        debug_assert!(guard.0.error.is_none());
+        let stop = run(guard.0);
+        if let Some(error) = guard.0.error.take() {
+            return Err(error);
+        }
+        if stop.is_fatal() {
+            return Err(ExecutionError::Fatal(
+                "interpreter returned a fatal stop without an error".into(),
+            ));
+        }
+        Ok(stop)
+    }
+
     /// Runs the interpreter until it stops.
     #[inline]
-    pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host<'host>) -> InstrStop {
+    pub fn run(
+        &mut self,
+        config: &ExecutionConfig<T>,
+        host: &mut T::Host<'host>,
+    ) -> Result<InstrStop, ExecutionError> {
         self.run_inner(config.base_spec_id(), config.version(), host, None, config.instructions)
     }
 
@@ -330,7 +377,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         config: &ExecutionConfig<T>,
         host: &mut T::Host<'host>,
         inspector: &mut (dyn Inspector<T> + 'host),
-    ) -> InstrStop {
+    ) -> Result<InstrStop, ExecutionError> {
         self.run_inner(
             config.base_spec_id(),
             config.version(),
@@ -362,11 +409,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         host: &mut T::Host<'host>,
         inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
         instructions: &InstrTable<T>,
-    ) -> InstrStop {
+    ) -> Result<InstrStop, ExecutionError> {
         self.prepare_run(spec, version, host);
         self.inspector = inspector;
 
-        dispatch::run(self, instructions)
+        self.run_with(|interpreter| dispatch::run(interpreter, instructions))
     }
 }
 
@@ -384,6 +431,12 @@ impl<T: EvmTypesHost> fmt::Debug for InterpreterState<'_, '_, T> {
 }
 
 impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
+    /// Converts a host failure into an instruction stop in this frame.
+    #[inline]
+    pub fn fail(&mut self, error: impl Into<HostError>) -> InstrStop {
+        self.0.fail(error)
+    }
+
     #[inline]
     pub(crate) const fn wrap_mut<'a>(
         interp: &'a mut Interpreter<'frame, 'host, T>,
@@ -624,5 +677,33 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
         // SAFETY: Frames stored in the pool have had their frame-local references cleared by
         // `push`, and this borrow is tied to the pool borrow.
         Some(unsafe { trustme::decouple_interpreter_lt_mut(frame) })
+    }
+}
+
+#[cfg(test)]
+mod owned_error_tests {
+    use super::*;
+    use crate::{DatabaseError, env::TxEnvExt, interpreter::MessageExt, test_utils::TestTypes};
+
+    #[test]
+    fn owned_error_is_taken_on_exit_and_cleared_on_unwind() {
+        let tx = TxEnvExt::default();
+        let message = MessageExt::default();
+        let mut interpreter = Interpreter::<TestTypes>::new(&tx, &message);
+        let error = DatabaseError::new(core::fmt::Error, false);
+        let result = interpreter.run_with(|interpreter| interpreter.fail(error.clone()));
+        assert_eq!(result, Err(ExecutionError::Database(error.clone())));
+        assert!(interpreter.error.is_none());
+        assert_eq!(interpreter.run_with(|_| InstrStop::Stop), Ok(InstrStop::Stop));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            interpreter.run_with(|interpreter| {
+                interpreter.fail(error);
+                panic!("backend panicked after a host error");
+            })
+        }));
+        assert!(result.is_err());
+        assert!(interpreter.error.is_none());
+        assert_eq!(interpreter.run_with(|_| InstrStop::Stop), Ok(InstrStop::Stop));
     }
 }

@@ -1,7 +1,7 @@
 //! Transaction-scoped persistent storage overlay.
 
-use super::{DbResult, DynDatabase, JournalEntry, StateInner, Tracked};
-use crate::{ErrorCode, interpreter::Word};
+use super::{DynDatabase, JournalEntry, StateInner, Tracked};
+use crate::{LoadError, interpreter::Word};
 use alloy_primitives::{
     Address,
     map::{U256Map, hash_map},
@@ -136,11 +136,11 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     /// Loads the slot at `key` into the overlay, reading the backing database on first access, and
     /// returns a journaled handle to it.
     ///
-    /// When `skip_cold_load` is true and the slot is not already in the overlay, the cold database
-    /// read is skipped and [`ErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving the overlay
+    /// When `skip_cold_load` is true and the slot is cold, the access
+    /// is skipped and [`LoadError::ColdLoadSkipped`] is returned, leaving the overlay
     /// untouched. This mirrors [`State::account`](super::State::account)'s
     /// `skip_cold_load`/`ColdLoadSkipped` so callers can detect a cold access without paying for
-    /// the load. An already-loaded slot is always returned.
+    /// the load. Warm slots are loaded even when not yet present in the overlay.
     ///
     /// A slot is materialized in the overlay only once it is loaded, so the returned
     /// [`StorageSlotHandle`] always refers to a slot with a meaningful value. On first load the
@@ -154,7 +154,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         self,
         key: Word,
         skip_cold_load: bool,
-    ) -> DbResult<StorageSlotHandle<'a, 'db>> {
+    ) -> Result<StorageSlotHandle<'a, 'db>, LoadError> {
         let Self { address, storage, inner } = self;
         let slot = match storage.slots.entry(key) {
             hash_map::Entry::Occupied(entry) => {
@@ -167,14 +167,14 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                     && !slot.is_warm
                     && !inner.prewarm_set.is_storage_warm(&address, &key)
                 {
-                    return Err(ErrorCode::COLD_LOAD_SKIPPED);
+                    return Err(LoadError::ColdLoadSkipped);
                 }
                 slot
             }
             hash_map::Entry::Vacant(entry) => {
                 let is_warm = inner.prewarm_set.is_storage_warm(&address, &key);
                 if skip_cold_load && !is_warm {
-                    return Err(ErrorCode::COLD_LOAD_SKIPPED);
+                    return Err(LoadError::ColdLoadSkipped);
                 }
                 let value = if storage.wiped {
                     Word::ZERO

@@ -7,7 +7,7 @@
 //! it does not force a particular transaction or receipt representation onto
 //! the rest of the crate.
 
-use crate::{AnyError, ErrorCode, EvmTypesHost};
+use crate::{AnyError, DatabaseError, EvmTypesHost, ExecutionError, LoadError};
 use alloc::sync::Arc;
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, U256, map::HashMap};
@@ -20,9 +20,12 @@ pub type HandlerResult<T> = core::result::Result<T, HandlerError>;
 /// Registry, transaction validation, and transaction handler errors.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum HandlerError {
-    /// Host error propagated as a transaction handler failure.
-    #[error("fatal error {0:?}")]
-    Fatal(ErrorCode),
+    /// Database error propagated as a transaction handler failure.
+    #[error("database error: {0}")]
+    Database(DatabaseError),
+    /// Unrecoverable execution error.
+    #[error("fatal error: {0}")]
+    Fatal(AnyError),
     /// Typed error supplied by a custom transaction handler.
     #[error(transparent)]
     External(AnyError),
@@ -142,6 +145,25 @@ pub enum HandlerError {
     /// Unsupported caller for this handler.
     #[error("unsupported caller {0}")]
     UnsupportedCaller(Address),
+}
+
+impl From<DatabaseError> for HandlerError {
+    fn from(error: DatabaseError) -> Self {
+        Self::Database(error)
+    }
+}
+impl From<LoadError> for HandlerError {
+    fn from(error: LoadError) -> Self {
+        Self::Database(error.into())
+    }
+}
+impl From<ExecutionError> for HandlerError {
+    fn from(error: ExecutionError) -> Self {
+        match error {
+            ExecutionError::Database(error) => Self::Database(error),
+            ExecutionError::Fatal(error) => Self::Fatal(error),
+        }
+    }
 }
 
 impl HandlerError {
@@ -328,7 +350,7 @@ mod tests {
         BaseEvmConfigSelector, EvmFeatures, EvmTypesHost, SpecId,
         env::{BlockEnv, BlockEnvExt, TxEnv},
         evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
-        interpreter::{Host, InstrStop, Message, MessageResult, Word},
+        interpreter::{Host, Message, MessageResult, Word},
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256, Log};
@@ -392,7 +414,7 @@ mod tests {
             _address: &Address,
             _load_code: bool,
             _skip_cold_load: bool,
-        ) -> Result<AccountLoad, InstrStop> {
+        ) -> Result<AccountLoad, crate::HostError> {
             unimplemented!()
         }
 
@@ -400,11 +422,11 @@ mod tests {
             &mut self,
             _address: &Address,
             _features: EvmFeatures,
-        ) -> Result<bool, InstrStop> {
+        ) -> Result<bool, crate::HostError> {
             unimplemented!()
         }
 
-        fn block_hash(&mut self, _number: &Word) -> Result<B256, InstrStop> {
+        fn block_hash(&mut self, _number: &Word) -> Result<B256, crate::HostError> {
             unimplemented!()
         }
 
@@ -413,7 +435,7 @@ mod tests {
             _address: &Address,
             _key: &Word,
             _skip_cold_load: bool,
-        ) -> Result<SLoad, InstrStop> {
+        ) -> Result<SLoad, crate::HostError> {
             unimplemented!()
         }
 
@@ -423,7 +445,7 @@ mod tests {
             _key: &Word,
             _value: &Word,
             _skip_cold_load: bool,
-        ) -> Result<SStore, InstrStop> {
+        ) -> Result<SStore, crate::HostError> {
             unimplemented!()
         }
 
@@ -443,7 +465,7 @@ mod tests {
             &mut self,
             _tx_env: &TxEnv<TestTypes>,
             _message: &mut Message<TestTypes>,
-        ) -> MessageResult<TestTypes> {
+        ) -> Result<MessageResult<TestTypes>, crate::ExecutionError> {
             unimplemented!()
         }
 
@@ -452,7 +474,7 @@ mod tests {
             _contract: &Address,
             _target: &Address,
             _skip_cold_load: bool,
-        ) -> Result<SelfDestructResult, InstrStop> {
+        ) -> Result<SelfDestructResult, crate::HostError> {
             unimplemented!()
         }
     }

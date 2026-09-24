@@ -657,37 +657,37 @@ mod tests {
     };
     use alloy_primitives::{B256, U256, address};
     use evm2::{
-        AccountInfo, ErrorCode,
+        AccountInfo, DatabaseError,
         bytecode::Bytecode,
         evm::{CacheDB, DbResult, DynDatabase, EmptyDB},
         interpreter::{InstrStop, Word},
     };
 
     struct FailingDb {
-        error: ErrorCode,
+        error: DatabaseError,
     }
 
     impl FailingDb {
-        fn new(error: ErrorCode) -> Self {
+        fn new(error: DatabaseError) -> Self {
             Self { error }
         }
     }
 
     impl DynDatabase for FailingDb {
         fn get_account(&mut self, _address: &Address) -> DbResult<Option<AccountInfo>> {
-            Err(self.error)
+            Err(self.error.clone())
         }
 
         fn get_code_by_hash(&mut self, _code_hash: &B256) -> DbResult<Bytecode> {
-            Err(self.error)
+            Err(self.error.clone())
         }
 
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> DbResult<Word> {
-            Err(self.error)
+            Err(self.error.clone())
         }
 
         fn get_block_hash(&mut self, _number: &Word) -> DbResult<B256> {
-            Err(self.error)
+            Err(self.error.clone())
         }
     }
 
@@ -868,8 +868,8 @@ mod tests {
             },
         );
 
-        let error = ErrorCode::new_custom(7).unwrap();
-        let mut db = FailingDb::new(error);
+        let error = DatabaseError::new(evm2::AnyError::from("test database error"), true);
+        let mut db = FailingDb::new(error.clone());
         let builder = GethTraceBuilder::new(Vec::new());
 
         assert!(matches!(

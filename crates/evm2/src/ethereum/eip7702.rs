@@ -9,10 +9,7 @@ use super::{
 use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult, Version,
     env::TxEnvExt,
-    evm::{
-        error_handler,
-        handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
-    },
+    evm::handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
     interpreter::{GasTracker, Host, InstrStop, MessageResult, gas::EIP8038_ACCOUNT_WRITE},
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
@@ -98,7 +95,7 @@ pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
     warm_access_list(req.host, &tx.access_list);
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
+    req.host.state.account(&caller, false)?.bump_nonce();
     H::before_execution(req.host, envelope, caller, effective_gas_cost)?;
 
     Ok(PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas })
@@ -206,7 +203,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     // applied delegations, which stay) inside `execute_message`. The settle merges the frame gas
     // into `tx_gas`, which carries the authorization state gas into the block state-gas
     // accounting.
-    let mut result = req.host.execute_message(&tx_env, &mut message);
+    let mut result = req.host.execute_message(&tx_env, &mut message)?;
     settle_initial_frame_gas(&mut tx_gas, &mut result, charged_state_gas);
     settle(req.host, result)
 }
@@ -248,11 +245,11 @@ pub fn validate_one_auth<'a, T: EvmTypes>(
     let Some(authority) = authorization.authority() else {
         return Ok(None);
     };
-    let mut account = host.state.account(&authority, false).map_err(error_handler!(host))?;
+    let mut account = host.state.account(&authority, false)?;
     account.warm();
     let existed = account.exists();
     let authority_nonce = account.nonce();
-    let code = account.load_code().map_err(error_handler!(host))?;
+    let code = account.load_code()?;
     // Reject an authority that already carries non-delegation code; otherwise non-empty code is
     // necessarily a valid delegation.
     let delegated_now = !code.is_empty();
@@ -262,7 +259,7 @@ pub fn validate_one_auth<'a, T: EvmTypes>(
     if authorization.nonce() != authority_nonce {
         return Ok(None);
     }
-    let delegated_before_tx = account.original_code().map_err(error_handler!(host))?.is_eip7702();
+    let delegated_before_tx = account.original_code()?.is_eip7702();
     let clearing = authorization.address().is_zero();
     Ok(Some((authority, AppliedAuth { existed, delegated_before_tx, delegated_now, clearing })))
 }
@@ -462,10 +459,7 @@ pub fn apply_auth_list<'a, T: EvmTypes>(
         if accounting.accepted(authority, &auth).is_err() {
             return Ok(true);
         }
-        host.state
-            .account(&authority, false)
-            .map_err(error_handler!(host))?
-            .set_delegation(*authorization.address());
+        host.state.account(&authority, false)?.set_delegation(*authorization.address());
     }
     Ok(false)
 }

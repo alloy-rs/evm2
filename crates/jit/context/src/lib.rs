@@ -329,15 +329,17 @@ impl EvmCompilerFn {
     pub unsafe fn call_with_interpreter<'ctx, 'frame, 'host>(
         self,
         interpreter: &'ctx mut Interpreter<'frame, 'host, BaseEvmTypes>,
-    ) -> InstrStop {
-        let (mut ecx, stack, stack_len) =
-            unsafe { EvmContext::from_interpreter_with_stack(interpreter) };
-        let result = unsafe { self.call(&mut ecx, stack, stack_len) };
-        if result == InstrStop::OutOfGas {
-            ecx.gas.spend_all();
-        }
-        ecx.finish_interpreter_run();
-        result
+    ) -> Result<InstrStop, evm2::ExecutionError> {
+        interpreter.run_with(|interpreter| {
+            let (mut ecx, stack, stack_len) =
+                unsafe { EvmContext::from_interpreter_with_stack(interpreter) };
+            let result = unsafe { self.call(&mut ecx, stack, stack_len) };
+            if result == InstrStop::OutOfGas {
+                ecx.gas.spend_all();
+            }
+            ecx.finish_interpreter_run();
+            result
+        })
     }
 
     /// Calls the function.
@@ -809,6 +811,52 @@ impl EvmWord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiled_boundary_returns_owned_error_and_can_be_reused() {
+        use evm2::{
+            BaseEvmConfigSelector, DatabaseError, Evm, EvmConfigSelector, ExecutionError, SpecId,
+            env::{BlockEnvExt, TxEnvExt},
+            evm::{EmptyDB, precompile::NoPrecompiles},
+            interpreter::MessageExt,
+            registry::TxRegistry,
+        };
+        unsafe extern "C" fn fail(
+            mut ecx: NonNull<EvmContext<'_, '_, '_>>,
+            _stack: NonNull<EvmStack>,
+            _stack_len: NonNull<usize>,
+        ) -> InstrStop {
+            // SAFETY: The compiled invocation owns the live context.
+            unsafe { ecx.as_mut() }
+                .interpreter_mut()
+                .fail(DatabaseError::new(core::fmt::Error, false))
+        }
+        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
+            SpecId::OSAKA,
+        );
+        let tx = TxEnvExt::default();
+        let message = MessageExt::default();
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx, &message);
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            EmptyDB::default(),
+            NoPrecompiles::default(),
+        );
+        interpreter.prepare_run(SpecId::OSAKA, config.version(), &mut host);
+        // SAFETY: Both functions operate only on this initialized interpreter's context.
+        let error = unsafe { EvmCompilerFn::new(fail).call_with_interpreter(&mut interpreter) }
+            .unwrap_err();
+        let ExecutionError::Database(error) = error else { panic!("expected database error") };
+        assert!(!error.is_fatal());
+        assert!(error.downcast_ref::<core::fmt::Error>().is_some());
+        interpreter.prepare_run(SpecId::OSAKA, config.version(), &mut host);
+        assert_eq!(
+            unsafe { EvmCompilerFn::new(__test_fn).call_with_interpreter(&mut interpreter) },
+            Ok(InstrStop::Stop)
+        );
+    }
 
     #[test]
     fn conversions() {

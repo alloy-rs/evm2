@@ -393,7 +393,7 @@ mod tests {
         let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
         let mut message = MessageExt { gas_limit, code: bytecode, ..message.clone() };
-        let result = Host::execute_message(&mut evm, &tx_env, &mut message);
+        let result = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
         let inspector = evm.clear_inspector_as::<I>().unwrap();
         (result, inspector, evm)
     }
@@ -842,7 +842,7 @@ mod tests {
         let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
         let mut message = MessageExt { gas_limit: 100_000, code: bytecode, ..Default::default() };
-        let result = Host::execute_message(&mut evm, &tx_env, &mut message);
+        let result = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
 
         assert_matches!(result.stop, InstrStop::Stop);
         // The redirected call transferred the value to the replacement, not the target.
@@ -1174,7 +1174,10 @@ mod tests {
         // Host failures are injected through the mock host; this intentionally uses [`TestHost`].
         let target = Address::from([0x99; 20]);
         let mut host = TestHost {
-            selfdestruct_error: Some(InstrStop::FatalExternalError),
+            selfdestruct_error: Some(
+                crate::DatabaseError::new(crate::AnyError::from("selfdestruct failed"), true)
+                    .into(),
+            ),
             ..Default::default()
         };
         let mut inspector = SelfdestructInspector::default();
@@ -1192,7 +1195,7 @@ mod tests {
         let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
         let stop = interp.run_inspect(&config, &mut host, &mut inspector);
 
-        assert_eq!(stop, InstrStop::FatalExternalError);
+        assert_matches!(stop, Err(crate::ExecutionError::Database(error)) if error.is_fatal());
         assert_eq!(inspector.selfdestruct, None);
     }
 
@@ -1639,7 +1642,7 @@ mod tests {
             let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
             let stop = interp.run_inspect(&config, &mut TestHost::default(), &mut GasEdit);
 
-            assert_eq!(stop, expected);
+            assert_eq!(stop, Ok(expected));
             assert_eq!(interp.gas().remaining(), 1000);
         }
     }

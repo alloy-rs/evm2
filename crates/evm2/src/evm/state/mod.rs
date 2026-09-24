@@ -26,11 +26,11 @@ pub use tracked::Tracked;
 
 use super::{
     PrewarmSet,
-    bal::{Bal, BalError, BlockAccessIndex},
+    bal::{Bal, BlockAccessIndex},
     db::{CacheDB, DbResult, DynDatabase, EmptyDB, boxed_dyn_database},
 };
 use crate::{
-    ErrorCode, EvmFeatures, Version,
+    EvmFeatures, LoadError, Version,
     bytecode::Bytecode,
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap},
@@ -217,16 +217,6 @@ impl<'a> State<'a> {
     #[inline]
     pub fn clear_bal(&mut self) {
         self.inner.database.bal_context.clear_bal();
-    }
-
-    /// Takes the stashed BAL lookup error, if a read left one.
-    ///
-    /// Lets a caller report which address or slot a refused read wanted, which the
-    /// [`ErrorCode::BAL_NOT_COVERED`](crate::ErrorCode::BAL_NOT_COVERED) sentinel
-    /// on the returned error does not carry.
-    #[inline]
-    pub const fn take_bal_error(&mut self) -> Option<BalError> {
-        self.inner.database.bal_context.take_bal_error()
     }
 
     /// Sets whether reads not covered by the attached BAL fall back to the cache/database instead
@@ -467,11 +457,11 @@ impl<'a> State<'a> {
     /// Ensures the account is present in the transaction overlay, loading it from the backing
     /// database when it has not been loaded yet.
     ///
-    /// When `skip_cold` is true and the account is not already in the overlay, the cold database
-    /// read is skipped and [`ErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving the overlay
+    /// When `skip_cold` is true and the account is cold, the access
+    /// is skipped and [`LoadError::ColdLoadSkipped`] is returned, leaving the overlay
     /// untouched. This mirrors revm's `skip_cold_load`/`ColdLoadSkipped` so callers can detect a
     /// cold access without paying for the load. With `skip_cold` false (or when the account is
-    /// already in the overlay) the entry is always returned.
+    /// warm) the entry is loaded.
     ///
     /// A map entry exists only because it was loaded, so an occupied entry is returned as-is.
     ///
@@ -484,7 +474,7 @@ impl<'a> State<'a> {
         accounts: &'h mut AddressMap<Account>,
         address: &Address,
         skip_cold: bool,
-    ) -> DbResult<&'h mut Account> {
+    ) -> Result<&'h mut Account, LoadError> {
         match accounts.entry(*address) {
             hash_map::Entry::Occupied(entry) => {
                 // An already-loaded account has no cold database read to skip, so the skip only
@@ -493,14 +483,14 @@ impl<'a> State<'a> {
                 // execution is a cheap warm access and must not be forced out of gas.
                 let account = entry.into_mut();
                 if skip_cold && !account.is_warm && !inner.prewarm_set.is_warm(address) {
-                    return Err(ErrorCode::COLD_LOAD_SKIPPED);
+                    return Err(LoadError::ColdLoadSkipped);
                 }
                 Ok(account)
             }
             hash_map::Entry::Vacant(entry) => {
                 let is_warm = inner.prewarm_set.is_warm(address);
                 if skip_cold && !is_warm {
-                    return Err(ErrorCode::COLD_LOAD_SKIPPED);
+                    return Err(LoadError::ColdLoadSkipped);
                 }
                 let original = inner.database.get_account(address)?;
                 let present = original.clone();
@@ -517,15 +507,15 @@ impl<'a> State<'a> {
     /// through it are undone together by [`Self::rollback`]. The account is materialized as empty
     /// only when it is first mutated while absent. This mirrors revm's `AccountHandle`.
     ///
-    /// When `skip_cold_load` is true and the account has not been loaded into the overlay yet, the
-    /// cold database read is skipped and [`ErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving
+    /// When `skip_cold_load` is true and the account is cold, the
+    /// access is skipped and [`LoadError::ColdLoadSkipped`] is returned, leaving
     /// the overlay untouched. Callers that cannot afford a cold access use this to detect it
-    /// without paying for the load. An already-loaded account always yields a handle.
+    /// without paying for the load. Warm accounts yield a handle even when not loaded yet.
     pub fn account(
         &mut self,
         address: &Address,
         skip_cold_load: bool,
-    ) -> DbResult<AccountHandle<'_, 'a>> {
+    ) -> Result<AccountHandle<'_, 'a>, LoadError> {
         Self::account_raw(&mut self.inner, &mut self.accounts, address, skip_cold_load)
             .map(|tracked| AccountHandle::new(*address, tracked, &mut self.inner))
     }
@@ -551,15 +541,15 @@ impl<'a> State<'a> {
     /// Returns a journaled mutation handle to a single persistent storage slot of `address`.
     ///
     /// This is [`Self::storage`] narrowed to one slot — a convenience for callers that need
-    /// exactly one [`StorageSlotHandle`]. The slot is loaded on access (reading the backing
-    /// database on first touch) and never skips a cold load, so this returns a [`DbResult`]. See
+    /// exactly one [`StorageSlotHandle`]. The slot is loaded on access unless
+    /// `skip_cold_load` requests skipping a cold slot. See
     /// [`StorageHandle::into_slot`] for the per-slot semantics, including cold-load skipping.
     pub fn storage_slot(
         &mut self,
         address: &Address,
         key: Word,
         skip_cold_load: bool,
-    ) -> DbResult<StorageSlotHandle<'_, 'a>> {
+    ) -> Result<StorageSlotHandle<'_, 'a>, LoadError> {
         self.storage(address).into_slot(key, skip_cold_load)
     }
 

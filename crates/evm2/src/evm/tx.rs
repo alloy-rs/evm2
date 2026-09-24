@@ -1,7 +1,7 @@
 //! Transaction execution lifecycle and result types.
 
 use super::{BlockStateAccumulator, Evm, PendingState, StateChangeSink};
-use crate::{ErrorCode, EvmTypesHost, interpreter::InstrStop};
+use crate::{EvmTypesHost, interpreter::InstrStop};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, Log};
 use core::fmt;
@@ -13,7 +13,7 @@ pub type TxResult<T = crate::BaseEvmTypes> = TxResultExt<<T as EvmTypesHost>::Tx
 /// Transaction execution result without an owned state diff, parameterized by extension data.
 ///
 /// This is the result-only half of transaction execution: status, gas used, output, stop reason,
-/// logs, host error code, and extension data. Logs live here because they are execution
+/// logs, and extension data. Logs live here because they are execution
 /// output, not database state. Use [`ExecutedTx::detach`] only when an owned [`PendingState`]
 /// value is required.
 #[must_use = "transaction results contain execution status, gas, logs, and errors"]
@@ -41,8 +41,6 @@ pub struct TxResultExt<E = ()> {
     pub created_address: Option<Address>,
     /// Logs emitted by the transaction.
     pub logs: Vec<Log>,
-    /// Host error code raised during execution, if any.
-    pub error_code: Option<ErrorCode>,
     /// EVM type-specific extension data.
     pub ext: E,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
@@ -69,7 +67,6 @@ impl<E> TxResultExt<E> {
             output,
             created_address,
             logs,
-            error_code,
             ext,
             _non_exhaustive,
         } = self;
@@ -83,7 +80,6 @@ impl<E> TxResultExt<E> {
             output,
             created_address,
             logs,
-            error_code,
             ext: f(ext),
             _non_exhaustive,
         }

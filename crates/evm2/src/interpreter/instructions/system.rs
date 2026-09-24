@@ -87,7 +87,8 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     let additional_cold_cost = state.gas_params().cold_account_additional_cost();
     let remaining_gas = gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account = state.host().load_account(&to, true, skip_cold_load)?;
+    let account =
+        state.host().load_account(&to, true, skip_cold_load).map_err(|error| state.fail(error))?;
 
     let mut cost = 0;
     if account.is_cold {
@@ -103,8 +104,10 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
             return Err(InstrStop::OutOfGas);
         }
         let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
-        let delegated_account =
-            state.host().load_account(&delegated_address, true, skip_cold_load)?;
+        let delegated_account = state
+            .host()
+            .load_account(&delegated_address, true, skip_cold_load)
+            .map_err(|error| state.fail(error))?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
         }
@@ -117,7 +120,10 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         && should_charge_new_account_gas(
             features.contains(EvmFeatures::EIP161),
             transfers_value,
-            state.host().target_is_empty_for_new_account_gas(&to, features)?,
+            state
+                .host()
+                .target_is_empty_for_new_account_gas(&to, features)
+                .map_err(|error| state.fail(error))?,
         )
     {
         cost += u64::from(state.gas_params().get(GasId::NewAccountCost));
@@ -236,7 +242,8 @@ fn call_inner<T: EvmTypesHost>(
         prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)?;
 
     let tx_env = state.tx();
-    let mut result = state.host().execute_message(tx_env, &mut message);
+    let mut result =
+        state.host().execute_message(tx_env, &mut message).map_err(|error| state.fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
@@ -323,7 +330,7 @@ fn create_inner<T: EvmTypesHost>(
     let caller_info = if is_create2 && !state.feature(EvmFeatures::EIP8037) {
         None
     } else {
-        Some(state.host().load_account(&caller, false, false)?)
+        Some(state.host().load_account(&caller, false, false).map_err(|error| state.fail(error))?)
     };
     let destination = derive_create_destination(
         kind,
@@ -355,7 +362,11 @@ fn create_inner<T: EvmTypesHost>(
         // The destination is loaded here and made warm. Balance, nonce, and depth pre-access
         // failures return above before the destination is accessed.
         let features = state.version().features;
-        if state.host().target_is_empty_for_new_account_gas(&destination, features)? {
+        if state
+            .host()
+            .target_is_empty_for_new_account_gas(&destination, features)
+            .map_err(|error| state.fail(error))?
+        {
             gas.spend_state(state.gas_params().create_state_gas())?;
             charged_create_state_gas = true;
         }
@@ -387,7 +398,8 @@ fn create_inner<T: EvmTypesHost>(
         ext: T::MessageExt::default(),
         _non_exhaustive: (),
     };
-    let mut result = state.host().execute_message(tx_env, &mut message);
+    let mut result =
+        state.host().execute_message(tx_env, &mut message).map_err(|error| state.fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
@@ -418,7 +430,11 @@ pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let cold_load_gas = cx.state.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let destination = &cx.state.message().destination;
-    let res = cx.state.host().selfdestruct(destination, &target, skip_cold_load)?;
+    let res = cx
+        .state
+        .host()
+        .selfdestruct(destination, &target, skip_cold_load)
+        .map_err(|error| cx.state.fail(error))?;
     let should_charge_topup = should_charge_new_account_gas(
         cx.state.feature(EvmFeatures::EIP161),
         res.had_value,

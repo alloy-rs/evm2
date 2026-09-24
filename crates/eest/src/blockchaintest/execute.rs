@@ -29,7 +29,7 @@ use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use anstyle::{AnsiColor, Color, Style};
 use evm2::{
-    BaseEvmTypes, ErrorCode, Evm, Precompiles, SpecId, TxResult,
+    BaseEvmTypes, Evm, Precompiles, SpecId, TxResult,
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
@@ -741,7 +741,6 @@ fn print_db_stats(counts: DbStatsCounts) {
         counts.get_storage_same_address_longest_streak
     );
     eprintln!("{style}db stats{style:#}: get_block_hash={}", counts.get_block_hash);
-    eprintln!("{style}db stats{style:#}: error={}", counts.error);
 }
 
 #[inline]
@@ -920,7 +919,7 @@ fn run_system_call(
         let _ = executed.discard();
         let has_code = match evm.read_account_info(&address) {
             Ok(info) => info.is_some_and(|info| info.code_hash != KECCAK256_EMPTY),
-            Err(code) => return Err(database_error(evm, code)),
+            Err(code) => return Err(TestErrorKind::UnexpectedFailure(code.to_string())),
         };
         if has_code {
             return Err(TestErrorKind::SystemCall(label));
@@ -964,10 +963,6 @@ impl StateChangeSource for AccountStateChange {
             selfdestructed: false,
         })
     }
-}
-
-fn database_error(evm: &mut Evm<'_, BaseEvmTypes>, code: ErrorCode) -> TestErrorKind {
-    TestErrorKind::UnexpectedFailure(evm.database_mut().error(code).to_string())
 }
 
 fn parse_state(
@@ -1090,7 +1085,7 @@ fn increment_balance(
 ) -> Result<(), TestErrorKind> {
     let original = match evm.read_account_info(&address) {
         Ok(info) => info,
-        Err(code) => return Err(database_error(evm, code)),
+        Err(code) => return Err(TestErrorKind::UnexpectedFailure(code.to_string())),
     };
     let mut current = original.clone().unwrap_or_default();
     current.balance = current.balance.saturating_add(amount);
