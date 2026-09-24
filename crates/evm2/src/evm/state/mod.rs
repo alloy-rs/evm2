@@ -26,8 +26,8 @@ pub use tracked::Tracked;
 
 use super::{
     PrewarmSet,
-    bal::{Bal, BlockAccessIndex},
-    db::{CacheDB, DbResult, DynDatabase, EmptyDB, boxed_dyn_database},
+    bal::{Bal, BalContext, BlockAccessIndex},
+    db::{Cache, CacheDB, DbResult, DynDatabase, EmptyDB, boxed_dyn_database},
 };
 use crate::{
     EvmFeatures, LoadError, Version,
@@ -62,6 +62,47 @@ pub struct State<'a> {
     inner: StateInner<'a>,
 }
 
+/// Owned in-memory state without a backing database.
+///
+/// This can be kept across executions or sent to another thread. Restoring it requires supplying
+/// the database that should serve uncached reads.
+#[derive(Clone, Debug)]
+pub struct StateSnapshot {
+    accounts: AddressMap<Account>,
+    storage: AddressMap<StorageOverlay>,
+    transient_storage: StorageKeyMap<Word>,
+    cache: Cache,
+    bal_context: BalContext,
+    prewarm_set: PrewarmSet,
+    journal: Vec<JournalEntry>,
+    logs: Vec<Log>,
+    selfdestructs: AddressSet,
+}
+
+impl StateSnapshot {
+    /// Restores the captured state over a backing database.
+    pub fn into_state<'a>(self, db: impl DynDatabase + 'a) -> State<'a> {
+        State {
+            accounts: self.accounts,
+            storage: self.storage,
+            storage_pool: storage_pool::StoragePool::default(),
+            transient_storage: self.transient_storage,
+            inner: StateInner {
+                database: CacheDB {
+                    cache: self.cache,
+                    db: boxed_dyn_database(db),
+                    bal_context: self.bal_context,
+                    _non_exhaustive: (),
+                },
+                prewarm_set: self.prewarm_set,
+                journal: self.journal,
+                logs: self.logs,
+                selfdestructs: self.selfdestructs,
+            },
+        }
+    }
+}
+
 /// Clones in-memory state with [`EmptyDB`] as the backing database.
 /// Use [`State::clone_with`] to supply a database.
 impl Clone for State<'_> {
@@ -71,27 +112,24 @@ impl Clone for State<'_> {
 }
 
 impl State<'_> {
-    /// Clones in-memory state with `db` as the backing database.
-    pub fn clone_with<'a>(&self, db: impl DynDatabase + 'a) -> State<'a> {
-        State {
+    /// Captures all in-memory state without retaining the backing database.
+    pub fn snapshot(&self) -> StateSnapshot {
+        StateSnapshot {
             accounts: self.accounts.clone(),
             storage: self.storage.clone(),
-            // The pool holds only spare allocations, not state.
-            storage_pool: storage_pool::StoragePool::default(),
             transient_storage: self.transient_storage.clone(),
-            inner: StateInner {
-                database: CacheDB {
-                    cache: self.database.cache.clone(),
-                    db: boxed_dyn_database(db),
-                    bal_context: self.database.bal_context.clone(),
-                    _non_exhaustive: (),
-                },
-                prewarm_set: self.prewarm_set.clone(),
-                journal: self.journal.clone(),
-                logs: self.logs.clone(),
-                selfdestructs: self.selfdestructs.clone(),
-            },
+            cache: self.database.cache.clone(),
+            bal_context: self.database.bal_context.clone(),
+            prewarm_set: self.prewarm_set.clone(),
+            journal: self.journal.clone(),
+            logs: self.logs.clone(),
+            selfdestructs: self.selfdestructs.clone(),
         }
+    }
+
+    /// Clones in-memory state with `db` as the backing database.
+    pub fn clone_with<'a>(&self, db: impl DynDatabase + 'a) -> State<'a> {
+        self.snapshot().into_state(db)
     }
 }
 
@@ -1111,6 +1149,21 @@ mod tests {
     }
 
     #[test]
+    fn detached_snapshot_is_send_sync_and_uses_new_database() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<StateSnapshot>();
+
+        let uncached = Address::with_last_byte(43);
+        let state = State::new(EmptyDB::default());
+        let snapshot = state.snapshot();
+
+        let mut db = CacheDB::default();
+        db.insert_account_info(&uncached, AccountInfo::default().with_balance(Word::from(9)));
+        let mut restored = snapshot.into_state(db);
+        assert_eq!(restored.account(&uncached).unwrap().balance(), Word::from(9));
+    }
+
+    #[test]
     fn set_storage_warm_preserves_loaded_values() {
         let address = Address::with_last_byte(42);
         let key = Word::from(1);
@@ -1150,13 +1203,13 @@ mod tests {
             state.tstore(&Address::ZERO, &Word::ZERO, &Word::from(7));
             let kept_log: Log = Log { address: Address::with_last_byte(1), ..Default::default() };
             state.log(kept_log.clone());
-            let snapshot = state.clone();
+            let snapshot = state.snapshot();
             for slot in 1..=2 {
                 state.tstore(&Address::ZERO, &Word::from(slot), &Word::from(8));
             }
             state.log(Log::default());
             let child = state.checkpoint();
-            state = snapshot;
+            state = snapshot.into_state(EmptyDB::default());
             for n in 0..writes {
                 state.tstore(&Address::ZERO, &Word::ZERO, &Word::from(10 + n));
             }
