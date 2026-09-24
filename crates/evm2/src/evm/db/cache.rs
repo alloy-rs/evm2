@@ -62,6 +62,27 @@ pub struct Cache {
     pub _non_exhaustive: (),
 }
 
+impl Cache {
+    /// Merges another cache into this one, giving incoming entries precedence.
+    ///
+    /// Incoming account entries replace existing ones, including `None` entries. An incoming
+    /// storage wipe clears previously cached slots before inserting the incoming slots. Otherwise,
+    /// untouched slots and any existing storage wipe are preserved.
+    #[inline]
+    pub fn merge(&mut self, other: Self) {
+        self.accounts.extend(other.accounts);
+        self.contracts.extend(other.contracts);
+        self.block_hashes.extend(other.block_hashes);
+        for (address, storage) in other.storage {
+            let target = self.storage.entry(address).or_default();
+            if storage.wiped {
+                target.wipe();
+            }
+            target.slots.extend(storage.slots);
+        }
+    }
+}
+
 impl Default for Cache {
     #[inline]
     fn default() -> Self {
@@ -425,6 +446,73 @@ mod tests {
     use alloc::{string::ToString, sync::Arc, vec};
     use alloy_eip7928::{BalanceChange, NonceChange, StorageChange};
     use alloy_primitives::Bytes;
+
+    #[test]
+    fn merge_storage_preserves_wipe_semantics() {
+        let address = Address::repeat_byte(1);
+        for existing_wiped in [false, true] {
+            for incoming_wiped in [false, true] {
+                let mut db = CacheDB::new(crate::evm::Db::new(CountingDB {
+                    account: Some(AccountInfo::empty()),
+                    storage: Word::from(99),
+                    ..Default::default()
+                }));
+                let existing = db.cache.storage.entry(address).or_default();
+                existing.wiped = existing_wiped;
+                existing.slots.insert(Word::ZERO, Word::from(10));
+                existing.slots.insert(Word::ONE, Word::from(20));
+
+                let mut incoming = Cache::default();
+                let storage = incoming.storage.entry(address).or_default();
+                storage.wiped = incoming_wiped;
+                storage.slots.insert(Word::ONE, Word::from(30));
+                storage.slots.insert(Word::from(2), Word::from(40));
+                db.cache.merge(incoming);
+
+                assert_eq!(
+                    db.get_storage(&address, &Word::ZERO).unwrap(),
+                    if incoming_wiped { Word::ZERO } else { Word::from(10) }
+                );
+                assert_eq!(db.get_storage(&address, &Word::ONE).unwrap(), Word::from(30));
+                assert_eq!(db.get_storage(&address, &Word::from(2)).unwrap(), Word::from(40));
+                assert_eq!(
+                    db.get_storage(&address, &Word::from(3)).unwrap(),
+                    if existing_wiped || incoming_wiped { Word::ZERO } else { Word::from(99) }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn merge_incoming_entries_take_precedence() {
+        let address = Address::repeat_byte(1);
+        let untouched = Address::repeat_byte(2);
+        let added = Address::repeat_byte(3);
+        let info = AccountInfo::empty().with_balance(Word::ONE);
+        let code = Bytecode::new_raw(Bytes::from_static(&[op::STOP]));
+        let hash = code.hash_slow();
+        let mut cache = Cache::default();
+        cache.accounts.insert(address, Some(info.clone()));
+        cache.accounts.insert(untouched, Some(info.clone()));
+        cache.contracts.insert(hash, Bytecode::default());
+        cache.block_hashes.insert(Word::ONE, B256::ZERO);
+
+        let mut incoming = Cache::default();
+        incoming.accounts.insert(address, None);
+        incoming.accounts.insert(added, Some(info.clone()));
+        incoming.contracts.insert(hash, code.clone());
+        incoming.block_hashes.insert(Word::ONE, hash);
+        incoming.storage.entry(added).or_default().slots.insert(Word::ZERO, Word::ONE);
+        cache.merge(incoming);
+
+        assert_eq!(cache.accounts[&address], None);
+        assert_eq!(cache.accounts[&untouched], Some(info.clone()));
+        assert_eq!(cache.accounts[&added], Some(info));
+        assert_eq!(cache.contracts[&hash], code);
+        assert_eq!(cache.block_hashes[&Word::ONE], hash);
+        assert_eq!(cache.storage[&added].slots[&Word::ZERO], Word::ONE);
+        assert!(!cache.storage[&added].wiped);
+    }
 
     #[derive(Debug, Default)]
     struct CountingDB {
