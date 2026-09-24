@@ -261,7 +261,7 @@ impl BalContext {
         };
         match (info.balance, info.nonce, code) {
             (Some(balance), Some(nonce), Some((hash, code))) => Ok(BalAccountLookup::Complete(
-                AccountInfo::new(balance, nonce, *hash, code.clone()),
+                AccountInfo::new(balance, nonce, *hash, Some(code.clone())),
             )),
             _ => Ok(BalAccountLookup::Partial(info)),
         }

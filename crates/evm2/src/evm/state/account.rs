@@ -84,25 +84,20 @@ impl AccountInfo {
     /// and no cached bytecode.
     #[inline]
     pub const fn empty() -> Self {
-        Self {
-            balance: U256::ZERO,
-            nonce: 0,
-            code_hash: KECCAK256_EMPTY,
-            code: None,
-            #[cfg(feature = "account-ext")]
-            extension: super::AccountExtension::new(),
-            _non_exhaustive: (),
-        }
+        Self::new(U256::ZERO, 0, KECCAK256_EMPTY, None)
     }
 
-    /// Creates a new [`AccountInfo`] with the given fields.
+    /// Creates a new [`AccountInfo`] with the given fields and optional cached bytecode.
+    ///
+    /// `None` means the bytecode is not cached; `code_hash` still identifies the account's code.
+    /// The caller is responsible for `code_hash` matching the bytecode when it is provided.
     #[inline]
-    pub const fn new(balance: Word, nonce: u64, code_hash: B256, code: Bytecode) -> Self {
+    pub const fn new(balance: Word, nonce: u64, code_hash: B256, code: Option<Bytecode>) -> Self {
         Self {
             balance,
             nonce,
             code_hash,
-            code: Some(code),
+            code,
             #[cfg(feature = "account-ext")]
             extension: super::AccountExtension::new(),
             _non_exhaustive: (),
