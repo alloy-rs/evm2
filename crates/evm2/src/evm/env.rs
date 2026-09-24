@@ -68,6 +68,45 @@ pub struct BlockEnvExt<E = ()> {
     pub _non_exhaustive: (),
 }
 
+impl<E> BlockEnvExt<E> {
+    /// Replaces the extension, preserving all other block environment fields.
+    #[inline]
+    pub fn with_ext<F>(self, ext: F) -> BlockEnvExt<F> {
+        self.map_ext(|_| ext)
+    }
+
+    /// Transforms the extension, preserving all other block environment fields.
+    #[inline]
+    pub fn map_ext<F>(self, f: impl FnOnce(E) -> F) -> BlockEnvExt<F> {
+        let Self {
+            number,
+            beneficiary,
+            timestamp,
+            gas_limit,
+            basefee,
+            difficulty,
+            prevrandao,
+            blob_basefee,
+            slot_num,
+            ext,
+            _non_exhaustive,
+        } = self;
+        BlockEnvExt {
+            number,
+            beneficiary,
+            timestamp,
+            gas_limit,
+            basefee,
+            difficulty,
+            prevrandao,
+            blob_basefee,
+            slot_num,
+            ext: f(ext),
+            _non_exhaustive,
+        }
+    }
+}
+
 impl<E: Default> Default for BlockEnvExt<E> {
     #[inline]
     fn default() -> Self {
