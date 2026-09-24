@@ -950,7 +950,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// [`ExecutedTx::discard`].
     pub fn transact(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        let result = handler.call(tx, self);
+        let result = handler.execute(tx, self);
         match result {
             Ok(result) => self.finish_executed_tx(result),
             Err(err) => {
@@ -967,6 +967,21 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// overlay is not detached.
     pub fn call_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         self.transact(tx).map(ExecutedTx::discard)
+    }
+
+    /// Validates a transaction through its registered handler without executing user calls.
+    ///
+    /// The handler may apply pre-execution writes such as nonce increments and fee deductions.
+    /// Transaction state is discarded on both success and error, while accepted state and cached
+    /// database reads are retained. Custom EVM extension state remains the handler's
+    /// responsibility.
+    ///
+    /// Uses the active validation rules; callers must configure any pool-specific relaxations.
+    pub fn validate_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<()> {
+        let result =
+            self.registry.try_get_by_type(tx.ty()).and_then(|handler| handler.validate(tx, self));
+        self.state.clear_transaction_state();
+        result
     }
 
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte on an async
@@ -1806,7 +1821,7 @@ mod tests {
         ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
         precompiles::{Precompile, PrecompileError, PrecompileId, PrecompileMap},
-        registry::{HandlerError, TxRequest},
+        registry::{HandlerError, TxRequest, handler},
         test_utils::{legacy_bytecode, push_address},
     };
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
@@ -2121,7 +2136,7 @@ mod tests {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             TxEnvelope::as_legacy,
-            handle_lifecycle_tx,
+            handler(|_| Ok(()), |req, ()| handle_lifecycle_tx(req)),
         );
         let mut database = InMemoryDB::default();
         database.insert_account_info(
@@ -2142,7 +2157,7 @@ mod tests {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             TxEnvelope::as_legacy,
-            handle_read_only_tx,
+            handler(|_| Ok(()), |req, ()| handle_read_only_tx(req)),
         );
         let mut database = InMemoryDB::default();
         database.insert_account_info(
@@ -2870,8 +2885,11 @@ mod tests {
 
     #[test]
     fn dispatches_transaction_by_typed_2718_type() {
-        let registry =
-            TxRegistry::new().with_handler(TEST_TX_TYPE, TxEnvelope::as_legacy, handle_test_tx);
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(|_| Ok(()), |req, ()| handle_test_tx(req)),
+        );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnvExt::default(),
@@ -2886,8 +2904,11 @@ mod tests {
 
     #[test]
     fn dispatches_transaction_without_evm_config() {
-        let registry =
-            TxRegistry::new().with_handler(TEST_TX_TYPE, TxEnvelope::as_legacy, handle_test_tx);
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(|_| Ok(()), |req, ()| handle_test_tx(req)),
+        );
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA),
             SpecId::OSAKA,
@@ -2929,7 +2950,7 @@ mod tests {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             TxEnvelope::as_legacy,
-            handle_test_tx_version,
+            handler(|_| Ok(()), |req, ()| handle_test_tx_version(req)),
         );
         let mut version = crate::Version::new(SpecId::OSAKA);
         version.tx_gas_limit_cap = 42;
@@ -2948,8 +2969,11 @@ mod tests {
 
     #[test]
     fn dispatches_transaction_iter() {
-        let registry =
-            TxRegistry::new().with_handler(TEST_TX_TYPE, TxEnvelope::as_legacy, handle_test_tx);
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(|_| Ok(()), |req, ()| handle_test_tx(req)),
+        );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnvExt::default(),
@@ -2974,7 +2998,11 @@ mod tests {
         }
 
         let mut evm = lifecycle_evm();
-        evm.registry.register(TEST_TX_TYPE, TxEnvelope::as_legacy, fail);
+        evm.registry.register(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(|_| Ok(()), |req, ()| fail(req)),
+        );
         let error = evm.transact(&test_tx(7)).map(ExecutedTx::discard).unwrap_err();
         let HandlerError::Fatal(error) = error else { panic!("expected fatal handler error") };
         assert_eq!(error.to_string(), "handler failed");
@@ -2983,7 +3011,11 @@ mod tests {
             evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
             Word::from(1)
         );
-        evm.registry.register(TEST_TX_TYPE, TxEnvelope::as_legacy, handle_lifecycle_tx);
+        evm.registry.register(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(|_| Ok(()), |req, ()| handle_lifecycle_tx(req)),
+        );
         assert!(evm.transact(&test_tx(9)).unwrap().commit().status);
     }
 
@@ -3974,5 +4006,55 @@ mod tests {
             assert_eq!(steps.load(Ordering::Relaxed), 0);
         }
         assert!(evm.call_tx(&tx).unwrap().status);
+    }
+
+    #[test]
+    fn validate_tx_discards_preparation_writes_on_success_and_error() {
+        let mut evm = lifecycle_evm();
+        let errors = [
+            HandlerError::InsufficientFunds,
+            HandlerError::Database(crate::DatabaseError::new(fmt::Error, true)),
+            HandlerError::Database(crate::DatabaseError::new(fmt::Error, false)),
+            HandlerError::Fatal("preparation failed".into()),
+        ];
+        let expected = errors.clone();
+        evm.registry.register(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                move |req: &mut TxRequest<'_, '_, BaseEvmTypes, TxLegacy>| {
+                    req.host
+                        .state
+                        .storage(&LIFECYCLE_ACCOUNT)
+                        .into_slot(LIFECYCLE_STORAGE_KEY)?
+                        .write(Word::from(99));
+                    req.host.state.account(&LIFECYCLE_ACCOUNT)?.bump_nonce();
+                    req.host.state.log(Log {
+                        address: LIFECYCLE_ACCOUNT,
+                        data: LogData::new_unchecked(vec![], Bytes::new()),
+                    });
+                    if let Some(error) = errors.get(req.tx.nonce as usize) {
+                        return Err(error.clone());
+                    }
+                    Ok(())
+                },
+                |_, ()| panic!("validation must not execute user calls"),
+            ),
+        );
+
+        for nonce in [4, 0, 1, 2, 3, 4] {
+            assert_eq!(
+                evm.validate_tx(&test_tx(nonce)),
+                expected.get(nonce as usize).cloned().map_or(Ok(()), Err)
+            );
+            assert!(evm.logs().is_empty());
+            assert_eq!(evm.state.account(&LIFECYCLE_ACCOUNT).unwrap().nonce(), 0);
+            assert_eq!(
+                evm.state
+                    .storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY)
+                    .unwrap(),
+                Word::from(1)
+            );
+        }
     }
 }

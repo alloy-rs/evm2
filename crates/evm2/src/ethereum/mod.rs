@@ -18,13 +18,16 @@ use crate::{
     Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
     env::TxEnv,
-    evm::{AccountInfo, handler::GasSettlement},
+    evm::{
+        AccountInfo,
+        handler::{DefaultTxHandlerHooks, GasSettlement},
+    },
     interpreter::{
         GasTracker, Host, InstrStop, Message, MessageExt, MessageKind, MessageResult,
         MessageResultExt, Word,
         gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS, WARM_STORAGE_READ_COST},
     },
-    registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
+    registry::{HandlerError, HandlerResult, TxRegistry, handler},
     utils::num_words,
     version::GasId,
 };
@@ -55,19 +58,13 @@ pub type RecoveredTxEnvelope = Recovered<TxEnvelope>;
 
 /// Transaction state produced by validation and pre-execution processing for the standard
 /// Ethereum handlers.
-pub struct PreparedTx<'a, 'host: 'a, T: EvmTypes, Tx> {
-    pub(super) req: TxRequest<'a, 'host, T, Tx>,
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedTx {
     pub(super) caller: Address,
     pub(super) gas_price: U256,
     pub(super) intrinsic: u64,
     pub(super) initial_state_gas: u64,
     pub(super) floor_gas: u64,
-}
-
-impl<T: EvmTypes, Tx> core::fmt::Debug for PreparedTx<'_, '_, T, Tx> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("PreparedTx").finish_non_exhaustive()
-    }
 }
 
 impl From<EthereumTxEnvelope<TxEip4844>> for TxEnvelope {
@@ -230,20 +227,54 @@ impl Transaction for TxEnvelope {
 pub fn ethereum_tx_registry<T: EvmTypes<Tx = TxEnvelope>>(
     spec_id: SpecId,
 ) -> TxRegistry<T, TxResult<T>> {
-    let mut registry =
-        TxRegistry::new().with_handler(0, TxEnvelope::as_legacy, legacy::handle::<T>);
+    let mut registry = TxRegistry::new().with_handler(
+        0,
+        TxEnvelope::as_legacy,
+        handler(
+            legacy::prepare_with_hooks::<T, DefaultTxHandlerHooks>,
+            legacy::execute_prepared::<T, DefaultTxHandlerHooks>,
+        ),
+    );
 
     if spec_id.enables(SpecId::BERLIN) {
-        registry.register(1, TxEnvelope::as_eip2930, eip2930::handle::<T>);
+        registry.register(
+            1,
+            TxEnvelope::as_eip2930,
+            handler(
+                eip2930::prepare_with_hooks::<T, DefaultTxHandlerHooks>,
+                eip2930::execute_prepared::<T, DefaultTxHandlerHooks>,
+            ),
+        );
     }
     if spec_id.enables(SpecId::LONDON) {
-        registry.register(2, TxEnvelope::as_eip1559, eip1559::handle::<T>);
+        registry.register(
+            2,
+            TxEnvelope::as_eip1559,
+            handler(
+                eip1559::prepare_with_hooks::<T, DefaultTxHandlerHooks>,
+                eip1559::execute_prepared::<T, DefaultTxHandlerHooks>,
+            ),
+        );
     }
     if spec_id.enables(SpecId::CANCUN) {
-        registry.register(3, TxEnvelope::as_eip4844, eip4844::handle::<T>);
+        registry.register(
+            3,
+            TxEnvelope::as_eip4844,
+            handler(
+                eip4844::prepare_with_hooks::<T, DefaultTxHandlerHooks>,
+                eip4844::execute_prepared::<T, DefaultTxHandlerHooks>,
+            ),
+        );
     }
     if spec_id.enables(SpecId::PRAGUE) {
-        registry.register(4, TxEnvelope::as_eip7702, eip7702::handle::<T>);
+        registry.register(
+            4,
+            TxEnvelope::as_eip7702,
+            handler(
+                eip7702::prepare_with_hooks::<T, DefaultTxHandlerHooks>,
+                eip7702::execute_prepared::<T, DefaultTxHandlerHooks>,
+            ),
+        );
     }
 
     registry
@@ -954,7 +985,10 @@ mod tests {
         let registry = TxRegistry::new().with_handler(
             0,
             TxEnvelope::as_legacy,
-            legacy::handle_with_hooks::<BaseEvmTypes, CalldataSurcharge>,
+            handler(
+                legacy::prepare_with_hooks::<BaseEvmTypes, CalldataSurcharge>,
+                legacy::execute_prepared::<BaseEvmTypes, CalldataSurcharge>,
+            ),
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::PRAGUE,
@@ -964,7 +998,9 @@ mod tests {
             Precompiles::base(SpecId::PRAGUE),
         );
 
+        let validation = evm.validate_tx(&tx);
         let result = evm.transact(&tx).map(crate::evm::ExecutedTx::discard);
+        assert_eq!(validation, result.as_ref().map(|_| ()).map_err(Clone::clone));
         if gas_limit < 31_050 {
             assert_eq!(
                 result,
