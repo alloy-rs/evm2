@@ -32,6 +32,19 @@ pub struct MessageResultExt<E = ()> {
 }
 
 impl<E> MessageResultExt<E> {
+    /// Replaces the extension, preserving all other message result fields.
+    #[inline]
+    pub fn with_ext<F>(self, ext: F) -> MessageResultExt<F> {
+        self.map_ext(|_| ext)
+    }
+
+    /// Transforms the extension, preserving all other message result fields.
+    #[inline]
+    pub fn map_ext<F>(self, f: impl FnOnce(E) -> F) -> MessageResultExt<F> {
+        let Self { stop, gas, output, created_address, ext, _non_exhaustive } = self;
+        MessageResultExt { stop, gas, output, created_address, ext: f(ext), _non_exhaustive }
+    }
+
     /// Returns whether the message committed state changes.
     #[inline]
     pub const fn is_success(&self) -> bool {

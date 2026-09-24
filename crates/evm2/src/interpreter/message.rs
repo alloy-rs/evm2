@@ -88,6 +88,55 @@ pub struct MessageExt<E = ()> {
     pub _non_exhaustive: (),
 }
 
+impl<E> MessageExt<E> {
+    /// Replaces the extension, preserving all other message fields.
+    #[inline]
+    pub fn with_ext<F>(self, ext: F) -> MessageExt<F> {
+        self.map_ext(|_| ext)
+    }
+
+    /// Transforms the extension, preserving all other message fields.
+    #[inline]
+    pub fn map_ext<F>(self, f: impl FnOnce(E) -> F) -> MessageExt<F> {
+        let Self {
+            kind,
+            depth,
+            gas_limit,
+            reservoir,
+            destination,
+            call_target,
+            caller,
+            input,
+            value,
+            code,
+            code_address,
+            disable_precompiles,
+            caller_is_static,
+            salt,
+            ext,
+            _non_exhaustive,
+        } = self;
+        MessageExt {
+            kind,
+            depth,
+            gas_limit,
+            reservoir,
+            destination,
+            call_target,
+            caller,
+            input,
+            value,
+            code,
+            code_address,
+            disable_precompiles,
+            caller_is_static,
+            salt,
+            ext: f(ext),
+            _non_exhaustive,
+        }
+    }
+}
+
 /// Derives the contract address a create message deploys to, i.e. its
 /// [`destination`](MessageExt::destination).
 ///

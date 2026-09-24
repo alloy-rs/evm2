@@ -451,6 +451,22 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         &self.registry
     }
 
+    /// Replaces the EVM instance-specific extension state, preserving the rest of the EVM.
+    ///
+    /// The extension type is fixed by [`EvmTypesHost::EvmExt`].
+    #[inline]
+    pub fn with_ext(self, ext: T::EvmExt) -> Self {
+        self.map_ext(|_| ext)
+    }
+
+    /// Transforms the EVM instance-specific extension state, preserving the rest of the EVM.
+    ///
+    /// The extension type is fixed by [`EvmTypesHost::EvmExt`].
+    #[inline]
+    pub fn map_ext(self, f: impl FnOnce(T::EvmExt) -> T::EvmExt) -> Self {
+        Self { ext: f(self.ext), ..self }
+    }
+
     /// Returns the EVM instance-specific extension state.
     #[inline]
     pub const fn ext(&self) -> &T::EvmExt {
