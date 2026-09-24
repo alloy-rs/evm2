@@ -21,15 +21,6 @@ pub enum PrecompileHalt {
     /// Blake2 wrong final indicator flag
     #[error("wrong final indicator flag for blake2")]
     Blake2WrongFinalIndicatorFlag,
-    /// Modexp errors
-    #[error("modexp exp overflow")]
-    ModexpExpOverflow,
-    /// Modexp base overflow
-    #[error("modexp base overflow")]
-    ModexpBaseOverflow,
-    /// Modexp mod overflow
-    #[error("modexp mod overflow")]
-    ModexpModOverflow,
     /// Modexp limit all input sizes.
     #[error("Modexp limit all input sizes.")]
     ModexpEip7823LimitSize,
@@ -112,9 +103,6 @@ pub enum PrecompileHalt {
     /// KZG G1 point not in correct subgroup
     #[error("kzg g1 point not in correct subgroup")]
     KzgG1PointNotInSubgroup,
-    /// KZG input length error
-    #[error("kzg invalid input length")]
-    KzgInvalidInputLength,
     /// secp256k1 ecrecover failed
     #[error("secp256k1 signature recovery failed")]
     Secp256k1RecoverFailed,
@@ -228,7 +216,6 @@ mod tests {
     #[test]
     fn fatal_instr_stop_becomes_fatal_error() {
         assert!(PrecompileError::from(InstrStop::FatalExternalError).is_fatal());
-        assert!(PrecompileError::from(InstrStop::FatalPrecompileError).is_fatal());
     }
 
     #[test]

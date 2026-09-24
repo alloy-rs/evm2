@@ -1,6 +1,5 @@
 use crate::{execution::ExecutionResourceError, tx::TxBuildError};
 use alloy_primitives::{B256, Bytes};
-use evm2::registry::HandlerError;
 use std::{io, path::PathBuf};
 use thiserror::Error;
 
@@ -85,9 +84,6 @@ pub(crate) enum TestErrorKind {
     /// Transaction request could not be converted to a consensus transaction.
     #[error("could not build consensus transaction: {0}")]
     BuildTransaction(String),
-    /// EVM execution failed.
-    #[error(transparent)]
-    Evm(#[from] HandlerError),
     /// Execution resource initialization failed.
     #[error(transparent)]
     ExecutionResource(#[from] ExecutionResourceError),
