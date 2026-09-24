@@ -50,6 +50,45 @@ pub struct TxResultExt<E = ()> {
 }
 
 impl<E> TxResultExt<E> {
+    /// Replaces the extension, preserving all other transaction result fields.
+    #[inline]
+    pub fn with_ext<F>(self, ext: F) -> TxResultExt<F> {
+        self.map_ext(|_| ext)
+    }
+
+    /// Transforms the extension, preserving all other transaction result fields.
+    #[inline]
+    pub fn map_ext<F>(self, f: impl FnOnce(E) -> F) -> TxResultExt<F> {
+        let Self {
+            status,
+            total_gas_spent,
+            state_gas_spent,
+            refunded,
+            floor_gas,
+            stop,
+            output,
+            created_address,
+            logs,
+            error_code,
+            ext,
+            _non_exhaustive,
+        } = self;
+        TxResultExt {
+            status,
+            total_gas_spent,
+            state_gas_spent,
+            refunded,
+            floor_gas,
+            stop,
+            output,
+            created_address,
+            logs,
+            error_code,
+            ext: f(ext),
+            _non_exhaustive,
+        }
+    }
+
     /// Returns the receipt gas-used value: `max(total_gas_spent - refunded, floor_gas)`.
     #[inline]
     pub const fn tx_gas_used(&self) -> u64 {

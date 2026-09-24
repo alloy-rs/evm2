@@ -24,6 +24,21 @@ pub struct TxEnvExt<E = ()> {
     pub _non_exhaustive: (),
 }
 
+impl<E> TxEnvExt<E> {
+    /// Replaces the extension, preserving all other transaction environment fields.
+    #[inline]
+    pub fn with_ext<F>(self, ext: F) -> TxEnvExt<F> {
+        self.map_ext(|_| ext)
+    }
+
+    /// Transforms the extension, preserving all other transaction environment fields.
+    #[inline]
+    pub fn map_ext<F>(self, f: impl FnOnce(E) -> F) -> TxEnvExt<F> {
+        let Self { origin, gas_price, chain_id, blob_hashes, ext, _non_exhaustive } = self;
+        TxEnvExt { origin, gas_price, chain_id, blob_hashes, ext: f(ext), _non_exhaustive }
+    }
+}
+
 impl<E: Default> Default for TxEnvExt<E> {
     #[inline]
     fn default() -> Self {
