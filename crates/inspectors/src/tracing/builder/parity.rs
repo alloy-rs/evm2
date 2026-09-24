@@ -482,8 +482,8 @@ pub fn populate_state_diff(
 
         let info = changed_acc.current.as_ref().expect("deleted accounts handled above");
 
-        // Account birth also includes value transfers and fee recipients, not just CREATE.
-        // Preserve the omission of empty, non-created accounts (e.g. zero-value calls).
+        // An absent prestate account is added if it has nonempty final state or
+        // the EVM marked it created (which can preserve an empty account).
         if !existed && (changed_acc.created || !info.is_empty()) {
             entry.balance = Delta::Added(info.balance);
             entry.nonce = Delta::Added(U64::from(info.nonce));
