@@ -10,7 +10,7 @@
 use crate::{AnyError, DatabaseError, EvmTypesHost, ExecutionError};
 use alloc::sync::Arc;
 use alloy_consensus::transaction::Recovered;
-use alloy_primitives::{Address, U256, map::HashMap};
+use alloy_primitives::{U256, map::HashMap};
 use core::{error::Error, fmt, marker::PhantomData};
 use thiserror::Error;
 
@@ -98,12 +98,6 @@ pub enum HandlerError {
         /// Transaction initcode size.
         got: usize,
     },
-    /// Sender could not transfer transaction value to the target.
-    #[error("out of funds")]
-    OutOfFunds,
-    /// Signature recovery failed.
-    #[error("could not recover signer")]
-    SignerRecoveryFailed,
     /// Fee cap is lower than the block base fee.
     #[error("fee cap less than base fee: max_fee_per_gas {max_fee_per_gas}, base_fee {base_fee}")]
     FeeCapLessThanBaseFee {
@@ -142,9 +136,6 @@ pub enum HandlerError {
     /// Priority fee is greater than max fee.
     #[error("priority fee greater than max fee")]
     PriorityFeeGreaterThanMaxFee,
-    /// Unsupported caller for this handler.
-    #[error("unsupported caller {0}")]
-    UnsupportedCaller(Address),
 }
 
 impl From<DatabaseError> for HandlerError {
