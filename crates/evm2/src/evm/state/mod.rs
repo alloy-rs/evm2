@@ -632,18 +632,15 @@ impl<'a> State<'a> {
 
         {
             let mut from_account = self.account(from)?;
-            let Some(new_from_balance) = from_account.balance().checked_sub(*value) else {
+            if from_account.balance() < *value {
                 return Ok(false);
-            };
-            // `set_balance` touches the account, matching the touch the prior `transfer` performed.
-            from_account.set_balance(new_from_balance);
-            from_account.touch();
+            }
+            from_account.add_balance(Word::ZERO.wrapping_sub(*value));
         }
         {
             let mut to_account = self.account(to)?;
             let new_to_balance = to_account.balance().saturating_add(*value);
-            to_account.set_balance(new_to_balance);
-            to_account.touch();
+            to_account.add_balance(new_to_balance.wrapping_sub(to_account.balance()));
         }
         Ok(true)
     }
@@ -671,29 +668,18 @@ impl<'a> State<'a> {
         // caller untouched, matching the prior `transfer` behaviour.
         if !value.is_zero() {
             let mut caller_account = self.account(caller)?;
-            let Some(new_caller_balance) = caller_account.balance().checked_sub(*value) else {
+            if caller_account.balance() < *value {
                 return Ok(Err(InstrStop::OutOfFunds));
-            };
-            caller_account.set_balance(new_caller_balance);
+            }
+            caller_account.add_balance(Word::ZERO.wrapping_sub(*value));
         }
 
         let mut target = self.account(address)?;
-        // Preserve any balance the address already held (e.g. funds sent before creation) and add
-        // the endowment.
-        let balance = target.balance().wrapping_add(*value);
-        #[cfg(feature = "account-ext")]
-        let extension = target.get().map(|info| info.extension.clone()).unwrap_or_default();
-        *target.get_or_insert() = AccountInfo {
-            nonce: u64::from(features.contains(EvmFeatures::EIP161)),
-            balance,
-            code_hash: KECCAK256_EMPTY,
-            code: Some(Bytecode::default()),
-            _non_exhaustive: (),
-            #[cfg(feature = "account-ext")]
-            extension,
-        };
+        // Creation restores the previous nonce/code but reverses endowment as a transfer.
+        target.add_balance(*value);
+        target.set_nonce(u64::from(features.contains(EvmFeatures::EIP161)));
+        target.set_code_slow(Bytecode::default());
         target.mark_created();
-        target.touch();
         Ok(Ok(()))
     }
 
@@ -772,6 +758,10 @@ impl<'a> State<'a> {
                 JournalEntry::AccountChange {
                     address,
                     previous,
+                    previous_origin_absent,
+                    balance_delta: _,
+                    nonce_is_delta: _,
+                    nonce_bumped: _,
                     previous_is_warm,
                     previous_is_touched,
                     previous_is_destroyed,
@@ -788,6 +778,8 @@ impl<'a> State<'a> {
                     }
                     if let Some(entry) = self.accounts.get_mut(&address) {
                         entry.present = previous;
+                        entry.present_origin_absent =
+                            previous_origin_absent && entry.present.is_some();
                         entry.is_warm = previous_is_warm;
                         // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
                         if !(features.contains(EvmFeatures::EIP161)
@@ -1006,6 +998,7 @@ impl<'a> State<'a> {
                 hash_map::Entry::Occupied(mut entry) => {
                     let parent = entry.get_mut();
                     parent.present = account.present;
+                    parent.present_origin_absent = account.present_origin_absent;
                     parent.is_touched |= account.is_touched;
                     parent.is_destroyed |= account.is_destroyed;
                     parent.just_created |= account.just_created;
@@ -1344,6 +1337,50 @@ mod tests {
         live.account(&address).unwrap().set_balance(Word::ONE);
         target.merge_transaction_account_from(&address, &live);
         assert!(!target.inner.selfdestructs.contains(&address));
+    }
+
+    #[test]
+    fn overrides_use_recorded_deltas_after_unjournaled_account_merge() {
+        let address = Address::with_last_byte(48);
+        let sender = Address::with_last_byte(49);
+        let features = crate::Version::base(crate::SpecId::CANCUN).features;
+        for isolated in [false, true] {
+            for transferred in [false, true] {
+                let mut db = CacheDB::default();
+                db.insert_account_info(
+                    &address,
+                    AccountInfo::default().with_balance(Word::from(100)),
+                );
+                db.insert_account_info(
+                    &sender,
+                    AccountInfo::default().with_balance(Word::from(100)),
+                );
+                let mut parent = State::new(db);
+                let checkpoint = parent.checkpoint();
+                if transferred {
+                    assert!(parent.transfer(&sender, &address, &Word::from(3)).unwrap());
+                } else {
+                    parent.account(&address).unwrap().touch();
+                }
+
+                let mut child = State::new(EmptyDB::default());
+                child.set_pending_state(parent.prepare_isolated_state());
+                child.account(&address).unwrap().set_balance(Word::from(150));
+                if isolated {
+                    parent.merge_isolated_state(child.take_pending_state());
+                } else {
+                    parent.merge_transaction_account_from(&address, &child);
+                }
+
+                parent.account(&address).unwrap().override_balance(Word::from(200));
+                parent.rollback(checkpoint, features);
+                assert_eq!(
+                    parent.account(&address).unwrap().balance(),
+                    Word::from(if transferred { 197 } else { 200 }),
+                    "isolated={isolated}, transferred={transferred}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -197,4 +197,34 @@ mod tests {
         let decoded: (Vec<AccountInfo>, u64) = rmp_serde::from_slice(&encoded).unwrap();
         assert_eq!(record, decoded);
     }
+
+    #[test]
+    fn extension_rollback_preserves_balance_and_nonce_overrides() {
+        let address = Address::repeat_byte(5);
+        let original = AccountInfo {
+            balance: U256::from(100),
+            nonce: 7,
+            extension: AccountExtension::copy_from_slice(&[1]),
+            ..Default::default()
+        };
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, original.clone());
+        let mut state = State::new(db);
+        let sender = Address::repeat_byte(6);
+        state.account(&sender).unwrap().set_balance(U256::from(100));
+        let checkpoint = state.checkpoint();
+        assert!(state.transfer(&sender, &address, &U256::from(3)).unwrap());
+        {
+            let mut account = state.account(&address).unwrap();
+            assert!(account.bump_nonce());
+            account.set_extension(AccountExtension::copy_from_slice(&[2]));
+            account.override_balance(U256::from(109));
+            account.override_nonce(9);
+        }
+        state.rollback(checkpoint, Version::base(SpecId::CANCUN).features);
+        let account = state.account(&address).unwrap();
+        assert_eq!(account.balance(), U256::from(106));
+        assert_eq!(account.nonce(), 8);
+        assert_eq!(account.get().unwrap().extension, original.extension);
+    }
 }
