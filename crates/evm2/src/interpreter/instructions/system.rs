@@ -455,15 +455,15 @@ pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::{
-        SpecId,
-        constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
-        interpreter::{InstrStop, MessageExt, MessageKind, MessageResultExt, Word, op},
+        ExecutionError, SpecId,
+        constants::MAX_INITCODE_SIZE,
+        interpreter::{MessageResultExt, op},
         test_utils::{RunConfig, TestHost, push, push_all, run},
         utils::address_to_word,
     };
     use alloc::vec::Vec;
-    use alloy_primitives::{Address, Bytes};
     use core::assert_matches;
 
     #[test]
@@ -502,13 +502,8 @@ mod tests {
     #[test]
     fn call_propagates_fatal_child_result() {
         let target = Address::from([0x22; 20]);
-        let mut host = TestHost {
-            execute_result: MessageResultExt {
-                stop: InstrStop::FatalPrecompileError,
-                ..MessageResultExt::default()
-            },
-            ..Default::default()
-        };
+        let error = ExecutionError::Fatal("child call failed".into());
+        let mut host = TestHost { execute_error: Some(error.clone()), ..Default::default() };
         let mut code = Vec::new();
         push_all(
             &mut code,
@@ -526,7 +521,8 @@ mod tests {
 
         let interp = run(RunConfig::new(code).host(&mut host));
 
-        assert_matches!(interp.err, InstrStop::FatalPrecompileError);
+        assert_matches!(interp.err, InstrStop::FatalExternalError);
+        assert_eq!(interp.execution_error, Some(error));
         assert!(interp.stack().is_empty());
     }
 
@@ -857,20 +853,16 @@ mod tests {
 
     #[test]
     fn create_propagates_fatal_child_result() {
-        let mut host = TestHost {
-            execute_result: MessageResultExt {
-                stop: InstrStop::FatalPrecompileError,
-                ..MessageResultExt::default()
-            },
-            ..Default::default()
-        };
+        let error = ExecutionError::Fatal("child create failed".into());
+        let mut host = TestHost { execute_error: Some(error.clone()), ..Default::default() };
         let mut code = Vec::new();
         push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
         code.extend([op::CREATE, op::STOP]);
 
         let interp = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
 
-        assert_matches!(interp.err, InstrStop::FatalPrecompileError);
+        assert_matches!(interp.err, InstrStop::FatalExternalError);
+        assert_eq!(interp.execution_error, Some(error));
         assert!(interp.stack().is_empty());
     }
 

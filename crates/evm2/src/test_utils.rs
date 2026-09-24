@@ -46,6 +46,7 @@ pub(crate) struct TestHost {
     pub(crate) transient_storage: StorageKeyMap<Word>,
     pub(crate) logs: Vec<Log>,
     pub(crate) execute_result: MessageResult<TestTypes>,
+    pub(crate) execute_error: Option<crate::ExecutionError>,
     pub(crate) selfdestruct_result: SelfDestructResult,
     pub(crate) selfdestruct_error: Option<crate::HostError>,
     pub(crate) calls: Vec<Message<TestTypes>>,
@@ -74,6 +75,7 @@ impl Default for TestHost {
                 stop: InstrStop::Return,
                 ..MessageResultExt::default()
             },
+            execute_error: None,
             selfdestruct_result: SelfDestructResult::default(),
             selfdestruct_error: None,
             calls: Vec::new(),
@@ -208,7 +210,10 @@ impl Host<TestTypes> for TestHost {
         self.call_static_flags
             .push(message.caller_is_static || message.kind == MessageKind::StaticCall);
         self.calls.push(message.clone());
-        Ok(self.execute_result.clone())
+        match self.execute_error.clone() {
+            Some(error) => Err(error),
+            None => Ok(self.execute_result.clone()),
+        }
     }
 
     fn selfdestruct(
