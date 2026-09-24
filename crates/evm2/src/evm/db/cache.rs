@@ -2,7 +2,7 @@
 
 use super::{DbResult, DynDatabase, EmptyDB};
 use crate::{
-    AnyError, ErrorCode,
+    DatabaseError,
     bytecode::Bytecode,
     evm::{
         bal::BalContext,
@@ -311,7 +311,7 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
         // uncovered account errors before the cache or backing database is consulted.
         let bal_account = match self.bal_context.get_bal_account(address) {
             Ok(bal_account) => bal_account,
-            Err(err) => return Err(self.bal_context.store_error(err)),
+            Err(err) => return Err(DatabaseError::new(err, false)),
         };
 
         // Resolve the raw account from the cache or backing database. The cache always stores the
@@ -353,7 +353,7 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
         match self.bal_context.bal_storage(address, key) {
             Ok(Some(value)) => return Ok(value),
             Ok(None) => {}
-            Err(err) => return Err(self.bal_context.store_error(err)),
+            Err(err) => return Err(DatabaseError::new(err, false)),
         }
 
         // A cached slot can be a locally committed write even when the backing account is absent.
@@ -395,14 +395,6 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
             Entry::Vacant(entry) => Ok(*entry.insert(self.db.get_block_hash(number)?)),
         }
     }
-
-    #[inline]
-    fn error(&mut self, code: ErrorCode) -> AnyError {
-        if let Some(err) = self.bal_context.take_error(code) {
-            return err;
-        }
-        self.db.error(code)
-    }
 }
 
 mod typed {
@@ -410,28 +402,30 @@ mod typed {
     use crate::evm::Database;
 
     impl<ExtDB: DynDatabase> Database for CacheDB<ExtDB> {
-        type Error = AnyError;
+        type Error = DatabaseError;
+
+        fn is_fatal(error: &Self::Error) -> bool {
+            error.is_fatal()
+        }
 
         #[inline]
         fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
-            DynDatabase::get_account(self, address).map_err(|code| DynDatabase::error(self, code))
+            DynDatabase::get_account(self, address)
         }
 
         #[inline]
         fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
             DynDatabase::get_code_by_hash(self, code_hash)
-                .map_err(|code| DynDatabase::error(self, code))
         }
 
         #[inline]
         fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error> {
             DynDatabase::get_storage(self, address, key)
-                .map_err(|code| DynDatabase::error(self, code))
         }
 
         #[inline]
         fn get_block_hash(&mut self, number: &Word) -> Result<B256, Self::Error> {
-            DynDatabase::get_block_hash(self, number).map_err(|code| DynDatabase::error(self, code))
+            DynDatabase::get_block_hash(self, number)
         }
     }
 }
@@ -702,13 +696,15 @@ mod tests {
 
         // Slot 9 is not listed in the BAL for a covered account -> BAL is invalid for this access.
         let code = cache.get_storage(&address, &Word::from(9)).unwrap_err();
-        assert_eq!(code, ErrorCode::BAL_NOT_COVERED);
-        assert!(cache.error(code).to_string().contains("not found in BAL"));
+        assert!(!code.is_fatal());
+        assert!(code.downcast_ref::<crate::evm::bal::BalError>().is_some());
+        assert!(code.to_string().contains("not found in BAL"));
 
         // An account entirely absent from the BAL also errors.
         let missing = Address::with_last_byte(2);
         let code = cache.get_account(&missing).unwrap_err();
-        assert_eq!(code, ErrorCode::BAL_NOT_COVERED);
+        assert!(!code.is_fatal());
+        assert!(code.downcast_ref::<crate::evm::bal::BalError>().is_some());
     }
 
     #[test]

@@ -9,12 +9,14 @@
 use super::{Evm, ExecutedTx, TxResult, TxResultExt};
 #[cfg(feature = "async")]
 use super::{SendEvmRef, r#async};
+#[cfg(feature = "async")]
+use crate::registry::HandlerError;
 use crate::{
     EvmTypes,
     env::TxEnvExt,
     ethereum::{execute_initial_frame, prepare_initial_frame},
     interpreter::GasTracker,
-    registry::{HandlerError, HandlerResult},
+    registry::HandlerResult,
     version::{EvmFeatures, GasId},
 };
 use alloc::vec::Vec;
@@ -106,13 +108,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
     pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
-        self.clear_top_level_error_state();
         // System calls are not inspected.
         let inspector = self.inspector.take();
         let result = self.execute_system_call(tx);
         self.inspector = inspector;
         match result {
-            Ok(outcome) => Ok(self.finish_executed_tx(outcome)),
+            Ok(outcome) => self.finish_executed_tx(outcome),
             Err(error) => {
                 self.state.clear_transaction_state();
                 Err(error)
@@ -163,10 +164,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             &mut tx_gas,
             SYSTEM_CALL_GAS_LIMIT,
             reservoir,
-        );
-        if let Some(code) = self.error_code {
-            return Err(HandlerError::Fatal(code));
-        }
+        )?;
         let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());
         let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
             result.gas.refunded() as u64
@@ -237,7 +235,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmTypes, ErrorCode, Precompiles, SpecId,
+        BaseEvmTypes, Precompiles, SpecId,
         bytecode::Bytecode,
         env::BlockEnvExt,
         evm::{AccountInfo, InMemoryDB},
@@ -441,10 +439,8 @@ mod tests {
 
         let result = evm.system_call(SystemTx::new(FATAL_PRECOMPILE_ADDRESS, Bytes::new()));
 
-        assert_eq!(
-            result.map(ExecutedTx::discard),
-            Err(HandlerError::Fatal(ErrorCode::FATAL_PRECOMPILE))
-        );
-        assert_eq!(evm.error_code(), Some(ErrorCode::FATAL_PRECOMPILE));
+        let error = result.map(ExecutedTx::discard).unwrap_err();
+        let HandlerError::Fatal(error) = error else { panic!("expected fatal precompile error") };
+        assert!(error.downcast_ref::<TestPrecompileError>().is_some());
     }
 }

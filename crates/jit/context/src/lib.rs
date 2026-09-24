@@ -322,6 +322,8 @@ impl EvmCompilerFn {
 
     /// Calls the function by re-using an evm2 interpreter's resources.
     ///
+    /// Execution errors remain in the interpreter for the EVM to extract after the runner returns.
+    ///
     /// # Safety
     ///
     /// The caller must ensure that the function is safe to call for this interpreter state.
@@ -809,6 +811,64 @@ impl EvmWord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use evm2::{
+        DatabaseError, Evm, ExecutionConfig, ExecutionError, InterpreterRunner,
+        bytecode::Bytecode,
+        env::{BlockEnvExt, TxEnvExt},
+        evm::{EmptyDB, precompile::NoPrecompiles},
+        interpreter::MessageExt,
+        registry::TxRegistry,
+    };
+
+    #[derive(Debug)]
+    struct TestRunner(EvmCompilerFn);
+
+    impl InterpreterRunner<BaseEvmTypes> for TestRunner {
+        fn run<'frame, 'host>(
+            &self,
+            config: &ExecutionConfig<BaseEvmTypes>,
+            interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
+            host: &mut Evm<'host, BaseEvmTypes>,
+        ) -> Option<InstrStop> {
+            interpreter.prepare_run(config.base_spec_id(), config.version(), host);
+            // SAFETY: The test functions only access this initialized interpreter's context.
+            Some(unsafe { self.0.call_with_interpreter(interpreter) })
+        }
+    }
+
+    #[test]
+    fn compiled_boundary_returns_owned_error_and_can_be_reused() {
+        unsafe extern "C" fn fail(
+            mut ecx: NonNull<EvmContext<'_, '_, '_>>,
+            _stack: NonNull<EvmStack>,
+            _stack_len: NonNull<usize>,
+        ) -> InstrStop {
+            // SAFETY: The compiled invocation owns the live context.
+            unsafe { ecx.as_mut() }
+                .interpreter_mut()
+                .fail(DatabaseError::new(core::fmt::Error, false))
+        }
+        let tx = TxEnvExt::default();
+        let mut message = MessageExt {
+            gas_limit: 30_000,
+            code: Bytecode::new_legacy(Bytes::from_static(&[0x00])),
+            ..MessageExt::default()
+        };
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            EmptyDB::default(),
+            NoPrecompiles::default(),
+        );
+        host.set_interpreter_runner(TestRunner(EvmCompilerFn::new(fail)));
+        let error = host.execute_message(&tx, &mut message).unwrap_err();
+        let ExecutionError::Database(error) = error else { panic!("expected database error") };
+        assert!(!error.is_fatal());
+        assert!(error.downcast_ref::<core::fmt::Error>().is_some());
+        host.set_interpreter_runner(TestRunner(EvmCompilerFn::new(__test_fn)));
+        assert_eq!(host.execute_message(&tx, &mut message).unwrap().stop, InstrStop::Stop);
+    }
 
     #[test]
     fn conversions() {

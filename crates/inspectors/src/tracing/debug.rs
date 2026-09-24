@@ -13,7 +13,7 @@ use alloy_rpc_types_trace::geth::{
     StateGasTrace, erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    ErrorCode, EvmTypes, EvmTypesHost, Inspector, NoopInspector, TxResultWithState,
+    DatabaseError, EvmTypes, EvmTypesHost, Inspector, NoopInspector, TxResultWithState,
     env::BlockEnv,
     evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
@@ -392,5 +392,5 @@ pub enum DebugInspectorError {
     JsInspector(#[from] crate::tracing::js::JsInspectorError),
     /// Database operation failed
     #[error("database error {0:?}")]
-    Database(ErrorCode),
+    Database(DatabaseError),
 }

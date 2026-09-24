@@ -9,10 +9,7 @@ use super::{
 use crate::{
     EvmTypes, TxResult,
     env::TxEnvExt,
-    evm::{
-        error_handler,
-        handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
-    },
+    evm::handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
     interpreter::GasTracker,
     registry::{HandlerError, HandlerResult, TxRequest},
     utils::b256_to_word,
@@ -104,7 +101,7 @@ pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     let blob_basefee_cost = blob_gas_cost * req.host.block.blob_basefee;
-    req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
+    req.host.state.account(&caller)?.bump_nonce();
     H::before_execution(req.host, req.envelope, caller, effective_gas_cost + blob_basefee_cost)?;
 
     Ok(PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas })
@@ -145,7 +142,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
         &mut tx_gas,
         execution_gas_limit,
         reservoir,
-    );
+    )?;
     H::settle_transaction(
         req.host,
         req.envelope,

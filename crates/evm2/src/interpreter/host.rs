@@ -1,6 +1,6 @@
 use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
-    BaseEvmTypes, EvmFeatures, EvmTypesHost, SpecId,
+    BaseEvmTypes, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionError, HostError, SpecId,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
 };
@@ -122,17 +122,17 @@ pub trait Host<T: EvmTypesHost> {
         address: &Address,
         load_code: bool,
         skip_cold_load: bool,
-    ) -> Result<AccountLoad, InstrStop>;
+    ) -> Result<AccountLoad, HostError>;
 
     /// Returns whether an account is empty/non-existent for new-account gas checks.
     fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,
         features: EvmFeatures,
-    ) -> Result<bool, InstrStop>;
+    ) -> Result<bool, DatabaseError>;
 
     /// Returns a historical block hash.
-    fn block_hash(&mut self, number: &Word) -> Result<B256, InstrStop>;
+    fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError>;
 
     /// Loads a persistent storage slot.
     fn sload(
@@ -140,7 +140,7 @@ pub trait Host<T: EvmTypesHost> {
         address: &Address,
         key: &Word,
         skip_cold_load: bool,
-    ) -> Result<SLoad, InstrStop>;
+    ) -> Result<SLoad, HostError>;
 
     /// Stores a persistent storage slot.
     fn sstore(
@@ -149,7 +149,7 @@ pub trait Host<T: EvmTypesHost> {
         key: &Word,
         value: &Word,
         skip_cold_load: bool,
-    ) -> Result<SStore, InstrStop>;
+    ) -> Result<SStore, HostError>;
 
     /// Loads a transient storage slot.
     fn tload(&mut self, address: &Address, key: &Word) -> Word;
@@ -161,7 +161,11 @@ pub trait Host<T: EvmTypesHost> {
     fn log(&mut self, log: Log);
 
     /// Executes a message inside this host.
-    fn execute_message(&mut self, tx_env: &TxEnv<T>, message: &mut Message<T>) -> MessageResult<T>;
+    fn execute_message(
+        &mut self,
+        tx_env: &TxEnv<T>,
+        message: &mut Message<T>,
+    ) -> Result<MessageResult<T>, ExecutionError>;
 
     /// Registers the current contract for self-destruction.
     fn selfdestruct(
@@ -169,7 +173,7 @@ pub trait Host<T: EvmTypesHost> {
         contract: &Address,
         target: &Address,
         skip_cold_load: bool,
-    ) -> Result<SelfDestructResult, InstrStop>;
+    ) -> Result<SelfDestructResult, HostError>;
 }
 
 #[cfg(test)]

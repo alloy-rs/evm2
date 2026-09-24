@@ -518,7 +518,7 @@ fn run_compiled_test_case_with_context(
     };
     let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
     let mut int_host = prepare_host(spec_id);
-    let int_stop = interpreter.run(&config, &mut int_host);
+    let int_stop = interpreter.run(&config, &mut int_host).unwrap();
     let int_result = int_stop;
     let interpreter_output = interpreter.output();
 

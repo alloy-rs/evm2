@@ -2,7 +2,6 @@
 
 use super::{AccountBal, Bal, BalError, BlockAccessIndex};
 use crate::{
-    AnyError, ErrorCode,
     evm::state::{
         Account, AccountChangeRef, AccountInfo, PendingState, StateChangeSink, StorageChange,
         StorageOverlay,
@@ -52,15 +51,12 @@ pub struct BalContext {
     /// writes are recorded under, and reads served at, a distinct index.
     bal_index: BlockAccessIndex,
     /// Whether reads not covered by the attached [`Self::bal`] fall back to the cache/database
-    /// instead of returning [`ErrorCode::BAL_NOT_COVERED`].
+    /// instead of returning a BAL coverage error.
     ///
     /// During block validation an access outside the BAL means the BAL is invalid, so this
     /// defaults to `false`. Enabling it allows executing transactions that are not part of the
     /// block (e.g. RPC calls) on top of BAL-positioned state.
     allow_db_fallback: bool,
-    /// Last BAL lookup error, surfaced through [`Self::take_error`] after a read returns
-    /// [`ErrorCode::BAL_NOT_COVERED`].
-    bal_error: Option<BalError>,
 }
 
 impl BalContext {
@@ -100,7 +96,7 @@ impl BalContext {
     }
 
     /// Sets whether reads not covered by the attached BAL fall back to the cache/database instead
-    /// of returning [`ErrorCode::BAL_NOT_COVERED`], and returns `self`.
+    /// of returning a BAL coverage error, and returns `self`.
     #[inline]
     pub const fn with_allow_db_fallback(mut self, allow: bool) -> Self {
         self.allow_db_fallback = allow;
@@ -311,39 +307,6 @@ impl BalContext {
             Err(BalError::SlotNotFound { .. }) if self.allow_db_fallback => Ok(None),
             Err(err) => Err(err),
         }
-    }
-
-    /// Stashes a BAL lookup error for later retrieval through [`Self::take_error`] and returns the
-    /// sentinel [`ErrorCode::BAL_NOT_COVERED`].
-    #[inline]
-    pub const fn store_error(&mut self, err: BalError) -> ErrorCode {
-        self.bal_error = Some(err);
-        ErrorCode::BAL_NOT_COVERED
-    }
-
-    /// Takes the stashed BAL lookup error, if a read left one.
-    ///
-    /// [`Self::take_error`] resolves through the database's error hook, which is
-    /// reached only from inside execution. This exposes the same error to a caller
-    /// holding the [`Evm`](crate::Evm) afterwards, so a refused read can be
-    /// reported with the address or slot that was missing rather than the
-    /// [`ErrorCode::BAL_NOT_COVERED`] sentinel alone.
-    #[inline]
-    pub const fn take_bal_error(&mut self) -> Option<BalError> {
-        self.bal_error.take()
-    }
-
-    /// Takes the stashed BAL error as an [`AnyError`] when `code` is
-    /// [`ErrorCode::BAL_NOT_COVERED`].
-    ///
-    /// Returns `None` for any other code so the caller can fall back to the wrapped database's
-    /// error resolution.
-    #[inline]
-    pub fn take_error(&mut self, code: ErrorCode) -> Option<AnyError> {
-        if code != ErrorCode::BAL_NOT_COVERED {
-            return None;
-        }
-        self.bal_error.take().map(AnyError::new)
     }
 }
 
@@ -563,16 +526,11 @@ mod tests {
     }
 
     #[test]
-    fn take_bal_error_returns_the_stashed_lookup_failure() {
-        let mut context = BalContext::new().with_bal(Arc::new(Bal::new()));
-
-        let err = context.get_bal_account(&ADDRESS).unwrap_err();
-        let code = context.store_error(err);
-        assert_eq!(code, ErrorCode::BAL_NOT_COVERED);
-
-        // Names the address the refused read wanted, which the sentinel does not.
-        assert_eq!(context.take_bal_error(), Some(BalError::AccountNotFound { address: ADDRESS }));
-        // Taken once, so a later read does not see a stale failure.
-        assert_eq!(context.take_bal_error(), None);
+    fn uncovered_read_returns_the_lookup_failure() {
+        let context = BalContext::new().with_bal(Arc::new(Bal::new()));
+        assert_eq!(
+            context.get_bal_account(&ADDRESS).unwrap_err(),
+            BalError::AccountNotFound { address: ADDRESS }
+        );
     }
 }

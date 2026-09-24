@@ -644,7 +644,7 @@ mod tests {
 
         let checkpoint = state.checkpoint();
         {
-            let mut account = state.account(&address, false).unwrap();
+            let mut account = state.account(&address).unwrap();
             assert!(!account.exists());
             assert!(account.warm(), "first access is cold");
             assert!(!account.warm(), "second access is warm");
@@ -656,7 +656,7 @@ mod tests {
             ])));
         }
 
-        assert!(state.account(&address, false).unwrap().is_warm());
+        assert!(state.account(&address).unwrap().is_warm());
         let info = state
             .account_info_untracked(&address)
             .unwrap()
@@ -666,7 +666,7 @@ mod tests {
         assert_ne!(info.code_hash, KECCAK256_EMPTY);
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.account(&address, false).unwrap().is_warm());
+        assert!(!state.account(&address).unwrap().is_warm());
         assert!(state.account_info_untracked(&address).unwrap().is_none());
         assert!(!state.take_pending_state().is_changed());
     }
@@ -679,10 +679,10 @@ mod tests {
         let code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01]));
         let mut state = State::new(CacheDB::default());
 
-        state.account(&address, false).unwrap().get_or_insert().set_code(code.clone());
+        state.account(&address).unwrap().get_or_insert().set_code(code.clone());
         state.commit_transaction();
 
-        let loaded = state.account(&address, false).unwrap().load_code().unwrap();
+        let loaded = state.account(&address).unwrap().load_code().unwrap();
         assert_eq!(loaded, code);
     }
 
@@ -706,7 +706,7 @@ mod tests {
 
         let checkpoint = state.checkpoint();
         {
-            let mut account = state.account(&address, false).unwrap();
+            let mut account = state.account(&address).unwrap();
             account.set_balance(Word::from(999));
             account.set_nonce(5);
             assert!(account.bump_nonce());
@@ -737,7 +737,7 @@ mod tests {
 
         let checkpoint = state.checkpoint();
         {
-            let account = state.account(&address, false).unwrap();
+            let account = state.account(&address).unwrap();
             assert_eq!(account.balance(), Word::from(5));
             assert_eq!(account.nonce(), 0);
         }
@@ -748,7 +748,7 @@ mod tests {
 
     #[test]
     fn journaled_account_skip_cold_load_signals_skip() {
-        use crate::ErrorCode;
+        use crate::LoadError;
 
         let address = Address::from([0x8a; 20]);
         let mut database = CacheDB::default();
@@ -756,14 +756,14 @@ mod tests {
         let mut state = State::new(database);
 
         // A cold, not-yet-loaded account signals the skip instead of reading the database.
-        assert!(matches!(state.account(&address, true), Err(ErrorCode::COLD_LOAD_SKIPPED)));
+        assert!(matches!(state.account_with_skip(&address, true), Err(LoadError::ColdLoadSkipped)));
         // Skipping leaves the overlay untouched, so a later non-skipped load still works.
-        assert_eq!(state.account(&address, false).unwrap().balance(), Word::from(5));
+        assert_eq!(state.account(&address).unwrap().balance(), Word::from(5));
         // Residency alone does not make a cold access affordable: a loaded-but-cold account still
         // signals the skip, since warmth — not overlay residency — decides the cold surcharge.
-        assert!(matches!(state.account(&address, true), Err(ErrorCode::COLD_LOAD_SKIPPED)));
+        assert!(matches!(state.account_with_skip(&address, true), Err(LoadError::ColdLoadSkipped)));
         // Once warmed, the affordable warm access yields a handle even when skipping is requested.
-        state.account(&address, false).unwrap().warm();
-        assert!(state.account(&address, true).is_ok());
+        state.account(&address).unwrap().warm();
+        assert!(state.account_with_skip(&address, true).is_ok());
     }
 }

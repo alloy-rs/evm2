@@ -176,7 +176,8 @@ impl From<HandlerError> for FuzzError {
             HandlerError::TxGasLimitGreaterThanCap { gas_limit, cap } => {
                 Self::Transaction(InvalidTransaction::TxGasLimitGreaterThanCap { gas_limit, cap })
             }
-            error @ (HandlerError::Fatal(_)
+            error @ (HandlerError::Database(_)
+            | HandlerError::Fatal(_)
             | HandlerError::External(_)
             | HandlerError::WrongTransactionType { .. }
             | HandlerError::InvalidChainId { .. }

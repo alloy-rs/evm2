@@ -8,10 +8,7 @@ use super::{
 use crate::{
     EvmTypes, TxResult,
     env::TxEnvExt,
-    evm::{
-        error_handler,
-        handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
-    },
+    evm::handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
     interpreter::GasTracker,
     registry::{HandlerResult, TxRequest},
 };
@@ -65,7 +62,7 @@ pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
 
     warm_base_accounts(req.host, caller, tx.to);
 
-    req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
+    req.host.state.account(&caller)?.bump_nonce();
     H::before_execution(req.host, req.envelope, caller, max_gas_cost)?;
 
     Ok(PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas })
@@ -97,7 +94,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
         &mut tx_gas,
         execution_gas_limit,
         reservoir,
-    );
+    )?;
     H::settle_transaction(
         req.host,
         req.envelope,

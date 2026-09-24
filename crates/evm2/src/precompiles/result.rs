@@ -1,4 +1,4 @@
-use crate::{AnyError, evm::precompile::PrecompileOutput};
+use crate::{AnyError, DatabaseError, evm::precompile::PrecompileOutput};
 use alloc::{borrow::Cow, string::String};
 use alloy_primitives::Bytes;
 use thiserror::Error;
@@ -137,6 +137,9 @@ impl From<crate::interpreter::InstrStop> for PrecompileError {
 /// Precompile error type.
 #[derive(Clone, Debug, Error)]
 pub enum PrecompileError {
+    /// A classified database failure that aborts execution.
+    #[error(transparent)]
+    Database(#[from] DatabaseError),
     /// Precompile reverted.
     #[error("revert")]
     Revert(Bytes),
@@ -155,9 +158,11 @@ impl PrecompileError {
         Self::Fatal(AnyError::new(err))
     }
 
-    /// Returns `true` if the error is fatal.
+    /// Returns `true` if the error aborts transaction execution rather than reverting a call.
+    /// For database failures, [`DatabaseError::is_fatal`] distinguishes internal failures
+    /// from invalid execution input.
     pub const fn is_fatal(&self) -> bool {
-        matches!(self, Self::Fatal(_))
+        matches!(self, Self::Fatal(_) | Self::Database(_))
     }
 
     /// Returns the halt reason, if this is a halt error.
@@ -194,6 +199,24 @@ impl From<&'static str> for PrecompileError {
     #[inline]
     fn from(err: &'static str) -> Self {
         Self::Fatal(err.into())
+    }
+}
+
+impl From<crate::ExecutionError> for PrecompileError {
+    fn from(error: crate::ExecutionError) -> Self {
+        match error {
+            crate::ExecutionError::Database(error) => Self::Database(error),
+            crate::ExecutionError::Fatal(error) => Self::Fatal(error),
+        }
+    }
+}
+
+impl From<crate::HostError> for PrecompileError {
+    fn from(error: crate::HostError) -> Self {
+        match error {
+            crate::HostError::Halt(stop) => stop.into(),
+            crate::HostError::Execution(error) => error.into(),
+        }
     }
 }
 

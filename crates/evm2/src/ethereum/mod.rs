@@ -15,10 +15,10 @@ pub mod legacy;
 pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
-    Evm, EvmFeatures, EvmTypes, SpecId, TxResult, TxResultExt, Version,
+    Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
     env::TxEnv,
-    evm::{AccountInfo, error_handler, handler::GasSettlement},
+    evm::{AccountInfo, handler::GasSettlement},
     interpreter::{
         GasTracker, Host, InstrStop, Message, MessageExt, MessageKind, MessageResult,
         MessageResultExt, Word,
@@ -406,9 +406,9 @@ pub fn validate_sender<'a, T: EvmTypes>(
     let has_balance_top_up = host.feature(EvmFeatures::BALANCE_TOP_UP);
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
 
-    let mut sender = host.state.account(&caller, false).map_err(error_handler!(host))?;
+    let mut sender = host.state.account(&caller)?;
     if has_eip3607 && sender.code_hash() != KECCAK256_EMPTY {
-        let code = sender.load_code().map_err(error_handler!(host))?;
+        let code = sender.load_code()?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
         }
@@ -456,10 +456,7 @@ pub fn charge_upfront<'a, T: EvmTypes>(
     if !host.feature(EvmFeatures::FEE_CHARGE) {
         return Ok(());
     }
-    host.state
-        .account(&caller, false)
-        .map_err(error_handler!(host))?
-        .add_balance(Word::ZERO.wrapping_sub(max_gas_cost));
+    host.state.account(&caller)?.add_balance(Word::ZERO.wrapping_sub(max_gas_cost));
     Ok(())
 }
 
@@ -540,10 +537,10 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
     let message = match to {
         TxKind::Call(to) => {
             let (recipient_is_empty, mut code) = {
-                let mut account = host.state.account(&to, false).map_err(error_handler!(host))?;
+                let mut account = host.state.account(&to)?;
                 // A nonexistent recipient reads as an empty account (EIP-161).
                 let recipient_is_empty = account.get().is_none_or(AccountInfo::is_empty);
-                (recipient_is_empty, account.load_code().map_err(error_handler!(host))?)
+                (recipient_is_empty, account.load_code()?)
             };
             let mut code_address = to;
             let mut disable_precompiles = false;
@@ -570,22 +567,20 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                         return Ok(None);
                     }
                     let skip_cold_load = tx_gas.remaining() < cold_additional;
-                    let Ok(load) =
-                        Host::load_account(host, &delegated_address, true, skip_cold_load)
-                    else {
-                        return Ok(None);
-                    };
+                    let load =
+                        match Host::load_account(host, &delegated_address, true, skip_cold_load) {
+                            Ok(load) => load,
+                            Err(HostError::Halt(_)) => return Ok(None),
+                            Err(HostError::Execution(error)) => return Err(error.into()),
+                        };
                     if load.is_cold && tx_gas.spend(cold_additional).is_err() {
                         return Ok(None);
                     }
                     code = load.code;
                 } else {
-                    let mut account = host
-                        .state
-                        .account(&delegated_address, false)
-                        .map_err(error_handler!(host))?;
+                    let mut account = host.state.account(&delegated_address)?;
                     account.warm();
-                    code = account.load_code().map_err(error_handler!(host))?;
+                    code = account.load_code()?;
                 }
                 code_address = delegated_address;
                 disable_precompiles = true;
@@ -612,12 +607,8 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
         TxKind::Create => {
             let destination = caller.create(nonce);
             if host.feature(EvmFeatures::EIP8037) {
-                let target_alive = host
-                    .state
-                    .account(&destination, false)
-                    .map_err(error_handler!(host))?
-                    .get()
-                    .is_some_and(|info| !info.is_empty());
+                let target_alive =
+                    host.state.account(&destination)?.get().is_some_and(|info| !info.is_empty());
                 if !target_alive {
                     let create_state_gas = host.version().gas_params.create_state_gas();
                     if tx_gas.spend_state(create_state_gas).is_err() {
@@ -685,16 +676,16 @@ pub fn execute_initial_frame<T: EvmTypes>(
     tx_gas: &mut GasTracker,
     execution_gas_limit: u64,
     reservoir: u64,
-) -> MessageResult<T> {
+) -> Result<MessageResult<T>, crate::ExecutionError> {
     let Some(InitialFrame { mut message, charged_state_gas }) = frame else {
-        return runtime_oog_result(execution_gas_limit, reservoir);
+        return Ok(runtime_oog_result(execution_gas_limit, reservoir));
     };
 
     // Failed execution has already been rolled back to the message's own checkpoint inside
     // `execute_message`; the settle merges the frame gas into the transaction-level gas.
-    let mut result = host.execute_message(tx_env, &mut message);
+    let mut result = host.execute_message(tx_env, &mut message)?;
     settle_initial_frame_gas(tx_gas, &mut result, charged_state_gas);
-    result
+    Ok(result)
 }
 
 /// Builds the result for a transaction whose EIP-2780 runtime gas phase ran out of gas
@@ -728,10 +719,7 @@ pub fn default_settle_gas<'a, T: EvmTypes>(
         let gas_used = result.tx_gas_used();
         let gas_remaining = gas_limit.saturating_sub(gas_used);
         let caller_refund = U256::from(gas_remaining) * gas_price;
-        host.state
-            .account(&caller, false)
-            .map_err(error_handler!(host))?
-            .add_balance(caller_refund);
+        host.state.account(&caller)?.add_balance(caller_refund);
         let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
             gas_price.saturating_sub(host.block.basefee)
         } else {
@@ -739,10 +727,7 @@ pub fn default_settle_gas<'a, T: EvmTypes>(
         };
         let beneficiary = host.block.beneficiary;
         let beneficiary_reward = U256::from(gas_used) * beneficiary_gas_price;
-        host.state
-            .account(&beneficiary, false)
-            .map_err(error_handler!(host))?
-            .add_balance(beneficiary_reward);
+        host.state.account(&beneficiary)?.add_balance(beneficiary_reward);
     }
     Ok(result)
 }
@@ -761,9 +746,6 @@ pub fn finalize_gas<'a, T: EvmTypes>(
         state_refund,
         result,
     } = settlement;
-    if let Some(code) = host.error_code {
-        return Err(HandlerError::Fatal(code));
-    }
 
     let max_refund_quotient = u64::from(host.version().gas_params.get(GasId::MaxRefundQuotient));
     // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
@@ -1283,7 +1265,7 @@ mod tests {
         assert!(message.disable_precompiles);
         assert_eq!(charged_state_gas, 0);
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
 
         assert_eq!(result.stop, InstrStop::Return);
         assert_eq!(result.output.len(), 32);

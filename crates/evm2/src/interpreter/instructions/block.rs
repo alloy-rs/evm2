@@ -12,7 +12,7 @@ pub fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
         } else {
-            b256_to_word(cx.state.host().block_hash(number)?)
+            b256_to_word(cx.state.host().block_hash(number).map_err(|error| cx.state.fail(error))?)
         }
     } else {
         Word::ZERO
@@ -56,7 +56,12 @@ pub fn chainid(cx: _) -> Result<out> {
 #[instruction]
 pub fn selfbalance(cx: _) -> Result<out> {
     let destination = &cx.state.message().destination;
-    *out = cx.state.host().load_account(destination, false, false)?.balance;
+    *out = cx
+        .state
+        .host()
+        .load_account(destination, false, false)
+        .map_err(|error| cx.state.fail(error))?
+        .balance;
 }
 
 #[instruction]
@@ -128,7 +133,7 @@ mod tests {
         code.push(op::STOP);
 
         let interp = run(RunConfig::new(code).host(&mut host));
-        assert_matches!(interp.err, InstrStop::FatalExternalError);
+        assert_matches!(interp.execution_error, Some(crate::ExecutionError::Database(error)) if error.is_fatal());
     }
 
     #[test]

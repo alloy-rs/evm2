@@ -5,9 +5,8 @@
 //! suspended and the outer async task returns `Poll::Pending`.
 
 use crate::{
-    AnyError, ErrorCode,
+    DatabaseError,
     bytecode::Bytecode,
-    error::error_unavailable,
     evm::{AccountInfo, DbResult, DynDatabase, NonStaticAny},
     interpreter::Word,
 };
@@ -407,6 +406,11 @@ pub trait AsyncDatabase: NonStaticAny {
     /// Database error type.
     type Error: Error + Send + Sync + 'static;
 
+    /// Whether a concrete database error indicates an internal failure rather than invalid input.
+    fn is_fatal(_error: &Self::Error) -> bool {
+        true
+    }
+
     /// Loads account information.
     fn get_account(
         &mut self,
@@ -436,14 +440,13 @@ pub trait AsyncDatabase: NonStaticAny {
 /// Adapter that exposes an [`AsyncDatabase`] through the synchronous [`DynDatabase`] interface.
 pub struct AsyncDb<D: AsyncDatabase> {
     db: D,
-    error: Option<AnyError>,
 }
 
 impl<D: AsyncDatabase> AsyncDb<D> {
     /// Creates a new async database adapter.
     #[inline]
     pub const fn new(db: D) -> Self {
-        Self { db, error: None }
+        Self { db }
     }
 
     /// Returns the wrapped database.
@@ -464,23 +467,14 @@ impl<D: AsyncDatabase> AsyncDb<D> {
         self.db
     }
 
-    /// Takes the stored database or async execution error.
-    #[inline]
-    pub const fn take_error(&mut self) -> Option<AnyError> {
-        self.error.take()
-    }
-
-    #[inline]
-    fn store_error(&mut self, error: impl Error + Send + Sync + 'static) -> ErrorCode {
-        self.error = Some(AnyError::new(error));
-        ErrorCode::STORED_ERROR
-    }
-
     #[inline]
     fn database_result<T>(&mut self, result: AsyncResult<T, D::Error>) -> DbResult<T> {
         result.map_err(|error| match error {
-            AsyncError::Inner(error) => self.store_error(error),
-            error => self.store_error(error),
+            AsyncError::Inner(error) => {
+                let fatal = D::is_fatal(&error);
+                DatabaseError::new(error, fatal)
+            }
+            error => DatabaseError::new(error, true),
         })
     }
 }
@@ -520,16 +514,6 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
             block_on_current_result(db.get_block_hash(*number))
         };
         self.database_result(result)
-    }
-
-    #[inline]
-    fn error(&mut self, code: ErrorCode) -> AnyError {
-        if code == ErrorCode::STORED_ERROR
-            && let Some(error) = self.error.clone()
-        {
-            return error;
-        }
-        error_unavailable(code)
     }
 }
 
@@ -653,15 +637,16 @@ mod tests {
     }
 
     #[test]
-    fn async_database_stores_database_error() {
+    fn async_database_returns_owned_database_error() {
         let mut db = AsyncDb::new(FailingDb);
         let address = Address::ZERO;
         let key = Word::from(7);
         let code = on_fiber(|| DynDatabase::get_storage(&mut db, &address, &key).unwrap_err());
         let code = poll_ready(code).unwrap();
 
-        assert_eq!(db.error(code).to_string(), "storage read failed");
-        assert_eq!(db.error(code).to_string(), "storage read failed");
+        assert_eq!(code.to_string(), "storage read failed");
+        assert!(code.is_fatal());
+        assert!(code.downcast_ref::<TestError>().is_some());
     }
 
     #[test]
@@ -869,14 +854,8 @@ mod tests {
         let key = Word::from(7);
         let code = DynDatabase::get_storage(&mut db, &address, &key).unwrap_err();
 
-        assert_eq!(
-            db.error(code).to_string(),
-            "async host operation requires EVM async fiber execution"
-        );
-        assert_eq!(
-            db.error(code).to_string(),
-            "async host operation requires EVM async fiber execution"
-        );
+        assert_eq!(code.to_string(), "async host operation requires EVM async fiber execution");
+        assert!(code.is_fatal());
     }
 
     #[test]
@@ -939,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn system_call_async_clears_stale_error_code() {
+    fn system_call_async_succeeds_after_database_error() {
         let contract = Address::from([0x42; 20]);
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
@@ -956,15 +935,13 @@ mod tests {
             Address::ZERO,
         );
 
-        assert_matches!(evm.transact(&tx), Err(HandlerError::Fatal(_)));
-        assert!(evm.error_code().is_some());
+        assert_matches!(evm.transact(&tx), Err(HandlerError::Database(_)));
 
         let result = poll_ready(evm.system_call_async(SystemTx::new(contract, Bytes::new())))
             .unwrap()
             .discard();
 
         assert!(result.status);
-        assert_eq!(result.error_code, None);
     }
 
     #[test]
