@@ -1117,8 +1117,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             inspector.call(frame, message)
         };
 
-        let mut result =
-            inspected.map(Ok).unwrap_or_else(|| guard.evm.execute_message_impl(tx_env, message));
+        let mut result = if let Some(error) = frame.take_error() {
+            Err(error)
+        } else {
+            inspected.map(Ok).unwrap_or_else(|| guard.evm.execute_message_impl(tx_env, message))
+        };
 
         if let Ok(result) = &mut result {
             if is_create {
@@ -1126,6 +1129,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             } else {
                 inspector.call_end(frame, message, result);
             }
+        }
+
+        if let Some(error) = frame.take_error() {
+            result = Err(error);
         }
 
         if let Some(frame) = top_frame {
@@ -3796,5 +3803,176 @@ mod tests {
 
         // Before EIP-8246 the self-destructed account (and its balance) is deleted at finalization.
         assert!(state.account_info_untracked(&contract).unwrap().is_none());
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum FailingInspectorHook {
+        Initialize,
+        Call,
+        CallEnd,
+        Create,
+        CreateEnd,
+        Step,
+        StepEnd,
+    }
+
+    struct FailingInspector {
+        hook: FailingInspectorHook,
+        depth: u16,
+        error: Option<ExecutionError>,
+        override_outcome: bool,
+        steps: Arc<AtomicUsize>,
+    }
+
+    impl FailingInspector {
+        fn fail_hook(
+            &mut self,
+            hook: FailingInspectorHook,
+            depth: u16,
+            interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        ) -> bool {
+            if self.hook == hook
+                && self.depth == depth
+                && let Some(error) = self.error.take()
+            {
+                let stop = interp.fail(error);
+                if matches!(hook, FailingInspectorHook::Step | FailingInspectorHook::StepEnd) {
+                    interp.set_stop(stop);
+                }
+                return true;
+            }
+            false
+        }
+    }
+
+    impl Inspector<BaseEvmTypes> for FailingInspector {
+        fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            self.fail_hook(FailingInspectorHook::Initialize, interp.message().depth, interp);
+        }
+
+        fn call(
+            &mut self,
+            interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            message: &mut Message,
+        ) -> Option<MessageResult> {
+            (self.fail_hook(FailingInspectorHook::Call, message.depth, interp)
+                && self.override_outcome)
+                .then(MessageResultExt::default)
+        }
+
+        fn call_end(
+            &mut self,
+            interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            message: &Message,
+            _result: &mut MessageResult,
+        ) {
+            self.fail_hook(FailingInspectorHook::CallEnd, message.depth, interp);
+        }
+
+        fn create(
+            &mut self,
+            interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            message: &mut Message,
+        ) -> Option<MessageResult> {
+            (self.fail_hook(FailingInspectorHook::Create, message.depth, interp)
+                && self.override_outcome)
+                .then(MessageResultExt::default)
+        }
+
+        fn create_end(
+            &mut self,
+            interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            message: &Message,
+            _result: &mut MessageResult,
+        ) {
+            self.fail_hook(FailingInspectorHook::CreateEnd, message.depth, interp);
+        }
+
+        fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            self.steps.fetch_add(1, Ordering::Relaxed);
+            self.fail_hook(FailingInspectorHook::Step, interp.message().depth, interp);
+        }
+
+        fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            self.fail_hook(FailingInspectorHook::StepEnd, interp.message().depth, interp);
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::initialize(FailingInspectorHook::Initialize, false)]
+    #[case::call(FailingInspectorHook::Call, false)]
+    #[case::call_override(FailingInspectorHook::Call, true)]
+    #[case::call_end(FailingInspectorHook::CallEnd, false)]
+    #[case::create(FailingInspectorHook::Create, false)]
+    #[case::create_override(FailingInspectorHook::Create, true)]
+    #[case::create_end(FailingInspectorHook::CreateEnd, false)]
+    #[case::step(FailingInspectorHook::Step, false)]
+    #[case::step_end(FailingInspectorHook::StepEnd, false)]
+    fn inspector_error_is_owned_and_evm_can_be_reused(
+        #[case] hook: FailingInspectorHook,
+        #[case] override_outcome: bool,
+        #[values(false, true)] nested: bool,
+    ) {
+        let caller = Address::repeat_byte(0xaa);
+        let parent = Address::repeat_byte(0xbb);
+        let child = Address::repeat_byte(0xcc);
+        let create = matches!(hook, FailingInspectorHook::Create | FailingInspectorHook::CreateEnd);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &child,
+            AccountInfo::default().with_code(legacy_bytecode([op::STOP])),
+        );
+        let to = if nested {
+            let mut code = if create { vec![op::PUSH0; 3] } else { vec![op::PUSH0; 5] };
+            if create {
+                code.push(op::CREATE);
+            } else {
+                push_address(&mut code, &child);
+                code.extend([op::GAS, op::CALL]);
+            }
+            code.extend([op::POP, op::STOP]);
+            database.insert_account_info(
+                &parent,
+                AccountInfo::default().with_code(legacy_bytecode(code)),
+            );
+            TxKind::Call(parent)
+        } else if create {
+            TxKind::Create
+        } else {
+            TxKind::Call(child)
+        };
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy { gas_limit: 1_000_000, to, ..TxLegacy::default() }),
+            caller,
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::OSAKA),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let error = ExecutionError::Fatal("inspector failed".into());
+        let steps = Arc::new(AtomicUsize::new(0));
+        evm.set_inspector(FailingInspector {
+            hook,
+            depth: u16::from(nested),
+            error: Some(error.clone()),
+            override_outcome,
+            steps: steps.clone(),
+        });
+
+        assert_eq!(evm.call_tx(&tx).unwrap_err(), HandlerError::from(error));
+        if !nested
+            && matches!(
+                hook,
+                FailingInspectorHook::Initialize
+                    | FailingInspectorHook::Call
+                    | FailingInspectorHook::Create
+            )
+        {
+            assert_eq!(steps.load(Ordering::Relaxed), 0);
+        }
+        assert!(evm.call_tx(&tx).unwrap().status);
     }
 }

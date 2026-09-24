@@ -105,6 +105,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
         self.memory.clear();
         self.result = Ok(());
+        self.error = None;
         self.output = 0..0;
         self.tx_env = Some(tx_env);
         self.message = Some(message);
@@ -116,6 +117,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.tx_env = None;
         self.message = None;
         self.version = None;
+        self.host = None;
+        self.inspector = None;
     }
 
     #[cfg(test)]
@@ -336,7 +339,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     pub(crate) fn finish_run(&mut self, stop: InstrStop) -> Result<InstrStop, ExecutionError> {
         self.host = None;
         self.inspector = None;
-        if let Some(error) = self.error.take() {
+        if let Some(error) = self.take_error() {
             return Err(error);
         }
         if stop.is_fatal() {
@@ -400,9 +403,17 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.prepare_run(spec, version, host);
         self.inspector = inspector;
 
-        debug_assert!(self.error.is_none());
-        let stop = dispatch::run(self, instructions);
+        let stop = if self.error.is_some() {
+            InstrStop::FatalExternalError
+        } else {
+            dispatch::run(self, instructions)
+        };
         self.finish_run(stop)
+    }
+
+    /// Takes an owned error recorded by an instruction or inspector hook.
+    pub(crate) const fn take_error(&mut self) -> Option<ExecutionError> {
+        self.error.take()
     }
 }
 
