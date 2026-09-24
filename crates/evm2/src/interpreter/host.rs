@@ -1,6 +1,6 @@
 use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
-    BaseEvmTypes, EvmFeatures, EvmTypesHost, ExecutionError, HostError, SpecId,
+    BaseEvmTypes, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionError, HostError, SpecId,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
 };
@@ -129,10 +129,10 @@ pub trait Host<T: EvmTypesHost> {
         &mut self,
         address: &Address,
         features: EvmFeatures,
-    ) -> Result<bool, crate::DatabaseError>;
+    ) -> Result<bool, DatabaseError>;
 
     /// Returns a historical block hash.
-    fn block_hash(&mut self, number: &Word) -> Result<B256, crate::DatabaseError>;
+    fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError>;
 
     /// Loads a persistent storage slot.
     fn sload(

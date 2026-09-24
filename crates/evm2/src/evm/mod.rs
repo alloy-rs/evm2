@@ -115,8 +115,8 @@ use self::{
     precompile::{PrecompileOutput, PrecompileProvider, boxed_precompile_provider},
 };
 use crate::{
-    EvmConfigSelector, EvmTypes, EvmTypesHost, ExecutionConfig, ExecutionError, HostError,
-    LoadError, PrecompileError, PrecompileHalt, SpecId,
+    DatabaseError, EvmConfigSelector, EvmTypes, EvmTypesHost, ExecutionConfig, ExecutionError,
+    HostError, LoadError, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
     constants::{CALL_DEPTH_LIMIT, EIP7708_TRANSFER_TOPIC},
     env::{BlockEnv, TxEnv},
@@ -936,16 +936,6 @@ where
 {
 }
 
-struct InterpreterFrameGuard<'guard, 'host, T: EvmTypesHost> {
-    evm: &'guard mut Evm<'host, T>,
-    previous: Option<NonNull<Interpreter<'static, 'static, T>>>,
-}
-impl<T: EvmTypesHost> Drop for InterpreterFrameGuard<'_, '_, T> {
-    fn drop(&mut self) {
-        self.evm.current_frame = self.previous;
-    }
-}
-
 impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// Dispatches the transaction to its handler and returns an executed transaction handle.
     ///
@@ -1441,11 +1431,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             // interpreter run.
             unsafe { trustme::decouple_lt_mut(inspector) }
         });
-        let previous = guard
+        let prev_frame = guard
             .evm
             .current_frame
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
-        let guard = InterpreterFrameGuard { evm: guard.evm, previous };
         let interpreter_runner = guard.evm.interpreter_runner.clone();
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(execution_config, guard.evm, inspector)
@@ -1456,6 +1445,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             interp_ref.run(execution_config, guard.evm)
         };
+        guard.evm.current_frame = prev_frame;
         guard.evm.interpreter_pool.push(interp);
         stop
     }
@@ -1523,11 +1513,11 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         &mut self,
         address: &Address,
         features: EvmFeatures,
-    ) -> Result<bool, crate::DatabaseError> {
+    ) -> Result<bool, DatabaseError> {
         Ok(self.state.account(address)?.is_empty_for_new_account_gas(features))
     }
 
-    fn block_hash(&mut self, number: &Word) -> Result<B256, crate::DatabaseError> {
+    fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError> {
         self.state.block_hash(number)
     }
 
@@ -2197,39 +2187,6 @@ mod tests {
             error.downcast_ref::<BalError>(),
             Some(&BalError::AccountNotFound { address: LIFECYCLE_ACCOUNT })
         );
-    }
-
-    #[test]
-    fn interpreter_unwind_restores_parent_frame() {
-        #[derive(Debug)]
-        struct PanickingRunner;
-        impl InterpreterRunner<BaseEvmTypes> for PanickingRunner {
-            fn run<'frame, 'host>(
-                &self,
-                _config: &ExecutionConfig<BaseEvmTypes>,
-                interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
-                _host: &mut Evm<'host, BaseEvmTypes>,
-            ) -> Option<Result<InstrStop, ExecutionError>> {
-                Some(interpreter.run_with(|interpreter| {
-                    interpreter.fail(ExecutionError::Fatal("test failure".into()));
-                    panic!("backend panic");
-                }))
-            }
-        }
-        let mut evm = read_only_evm();
-        evm.set_interpreter_runner(PanickingRunner);
-        let tx = TxEnvExt::default();
-        let message = MessageExt::default();
-        assert!(
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                || evm.run_interpreter(&tx, &message)
-            ))
-            .is_err()
-        );
-        assert!(evm.current_frame.is_none());
-        assert!(!evm.running);
-        evm.clear_interpreter_runner();
-        assert_eq!(evm.run_interpreter(&tx, &message), Ok(InstrStop::Stop));
     }
 
     #[test]

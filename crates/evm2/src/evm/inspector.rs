@@ -143,8 +143,8 @@ impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn Inspector<T> + 'a {
 mod tests {
     use super::Inspector;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmTypesHost, ExecutionConfig, Precompiles,
-        SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, DatabaseError, Evm, EvmTypesHost, ExecutionConfig,
+        Precompiles, SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnvExt, TxEnvExt},
@@ -1175,8 +1175,7 @@ mod tests {
         let target = Address::from([0x99; 20]);
         let mut host = TestHost {
             selfdestruct_error: Some(
-                crate::DatabaseError::new(crate::AnyError::from("selfdestruct failed"), true)
-                    .into(),
+                DatabaseError::new(crate::AnyError::from("selfdestruct failed"), true).into(),
             ),
             ..Default::default()
         };

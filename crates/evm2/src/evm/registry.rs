@@ -417,11 +417,11 @@ mod tests {
             &mut self,
             _address: &Address,
             _features: EvmFeatures,
-        ) -> Result<bool, crate::DatabaseError> {
+        ) -> Result<bool, DatabaseError> {
             unimplemented!()
         }
 
-        fn block_hash(&mut self, _number: &Word) -> Result<B256, crate::DatabaseError> {
+        fn block_hash(&mut self, _number: &Word) -> Result<B256, DatabaseError> {
             unimplemented!()
         }
 

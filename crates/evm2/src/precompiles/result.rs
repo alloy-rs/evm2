@@ -1,4 +1,4 @@
-use crate::{AnyError, evm::precompile::PrecompileOutput};
+use crate::{AnyError, DatabaseError, evm::precompile::PrecompileOutput};
 use alloc::{borrow::Cow, string::String};
 use alloy_primitives::Bytes;
 use thiserror::Error;
@@ -139,7 +139,7 @@ impl From<crate::interpreter::InstrStop> for PrecompileError {
 pub enum PrecompileError {
     /// A classified database failure that aborts execution.
     #[error(transparent)]
-    Database(#[from] crate::DatabaseError),
+    Database(#[from] DatabaseError),
     /// Precompile reverted.
     #[error("revert")]
     Revert(Bytes),
@@ -159,7 +159,7 @@ impl PrecompileError {
     }
 
     /// Returns `true` if the error aborts transaction execution rather than reverting a call.
-    /// For database failures, [`crate::DatabaseError::is_fatal`] distinguishes internal failures
+    /// For database failures, [`DatabaseError::is_fatal`] distinguishes internal failures
     /// from invalid execution input.
     pub const fn is_fatal(&self) -> bool {
         matches!(self, Self::Fatal(_) | Self::Database(_))

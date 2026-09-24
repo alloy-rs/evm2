@@ -338,18 +338,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         &mut self,
         run: impl FnOnce(&mut Self) -> InstrStop,
     ) -> Result<InstrStop, ExecutionError> {
-        struct Guard<'a, 'frame, 'host, T: EvmTypesHost>(&'a mut Interpreter<'frame, 'host, T>);
-        impl<T: EvmTypesHost> Drop for Guard<'_, '_, '_, T> {
-            fn drop(&mut self) {
-                self.0.error = None;
-                self.0.host = None;
-                self.0.inspector = None;
-            }
-        }
-        let guard = Guard(self);
-        debug_assert!(guard.0.error.is_none());
-        let stop = run(guard.0);
-        if let Some(error) = guard.0.error.take() {
+        debug_assert!(self.error.is_none());
+        let stop = run(self);
+        self.host = None;
+        self.inspector = None;
+        if let Some(error) = self.error.take() {
             return Err(error);
         }
         if stop.is_fatal() {
@@ -686,23 +679,13 @@ mod owned_error_tests {
     use crate::{DatabaseError, env::TxEnvExt, interpreter::MessageExt, test_utils::TestTypes};
 
     #[test]
-    fn owned_error_is_taken_on_exit_and_cleared_on_unwind() {
+    fn owned_error_is_taken_on_exit() {
         let tx = TxEnvExt::default();
         let message = MessageExt::default();
         let mut interpreter = Interpreter::<TestTypes>::new(&tx, &message);
         let error = DatabaseError::new(core::fmt::Error, false);
         let result = interpreter.run_with(|interpreter| interpreter.fail(error.clone()));
-        assert_eq!(result, Err(ExecutionError::Database(error.clone())));
-        assert!(interpreter.error.is_none());
-        assert_eq!(interpreter.run_with(|_| InstrStop::Stop), Ok(InstrStop::Stop));
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            interpreter.run_with(|interpreter| {
-                interpreter.fail(error);
-                panic!("backend panicked after a host error");
-            })
-        }));
-        assert!(result.is_err());
+        assert_eq!(result, Err(ExecutionError::Database(error)));
         assert!(interpreter.error.is_none());
         assert_eq!(interpreter.run_with(|_| InstrStop::Stop), Ok(InstrStop::Stop));
     }

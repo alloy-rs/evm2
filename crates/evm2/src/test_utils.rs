@@ -1,5 +1,5 @@
 use crate::{
-    BaseEvmConfigSelector, EvmFeatures, EvmTypesHost, ExecutionConfig, SpecId,
+    BaseEvmConfigSelector, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, BlockEnvExt, TxEnv, TxEnvExt},
@@ -122,7 +122,7 @@ impl Host<TestTypes> for TestHost {
         &mut self,
         address: &Address,
         features: EvmFeatures,
-    ) -> Result<bool, crate::DatabaseError> {
+    ) -> Result<bool, DatabaseError> {
         self.new_account_checks.push(*address);
         if features.contains(EvmFeatures::EIP161) {
             return Ok(!self.exists || self.is_empty);
@@ -130,12 +130,9 @@ impl Host<TestTypes> for TestHost {
         Ok(!self.exists && !self.is_touched)
     }
 
-    fn block_hash(&mut self, number: &Word) -> Result<B256, crate::DatabaseError> {
+    fn block_hash(&mut self, number: &Word) -> Result<B256, DatabaseError> {
         if self.missing_block_hash {
-            return Err(crate::DatabaseError::new(
-                crate::AnyError::from("missing block hash"),
-                true,
-            ));
+            return Err(DatabaseError::new(crate::AnyError::from("missing block hash"), true));
         }
         Ok(B256::with_last_byte(number.wrapping_to::<u8>()))
     }
