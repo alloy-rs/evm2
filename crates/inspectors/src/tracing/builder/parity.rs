@@ -5,7 +5,7 @@ use crate::tracing::{
     utils::load_account_code,
 };
 use alloc::{string::ToString, vec, vec::Vec};
-use alloy_primitives::{Address, U64, U256, map::HashSet};
+use alloy_primitives::{Address, U64, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
 use core::iter::Peekable;
@@ -460,6 +460,7 @@ pub fn populate_state_diff(
             continue;
         }
 
+        let existed = db_acc.is_some();
         let db_acc = db_acc.unwrap_or_default();
         let entry = state_diff.entry(*addr).or_default();
 
@@ -481,20 +482,17 @@ pub fn populate_state_diff(
 
         let info = changed_acc.current.as_ref().expect("deleted accounts handled above");
 
-        // we check if this account was created during the transaction
-        // where the smart contract was not touched before being created (no balance)
-        if changed_acc.created && db_acc.balance == U256::ZERO {
-            // This only applies to newly created accounts without balance
-            // A non existing touched account (e.g. `to` that does not exist) is excluded here
+        // An absent prestate account is added if it has nonempty final state or
+        // the EVM marked it created (which can preserve an empty account).
+        if !existed && (changed_acc.created || !info.is_empty()) {
             entry.balance = Delta::Added(info.balance);
             entry.nonce = Delta::Added(U64::from(info.nonce));
 
-            // accounts without code are marked as added
+            // Empty code is still marked as added for a new account.
             let account_code = load_account_code(db, info)?.unwrap_or_default();
             entry.code = Delta::Added(account_code);
 
-            // new storage values are marked as added,
-            // however we're filtering changed here to avoid adding entries for the zero value
+            // Only changed slots are added; unchanged zero-valued slots are omitted.
             for (key, slot) in changed_acc.changed_storage() {
                 entry.storage.insert((*key).into(), Delta::Added(slot.current.into()));
             }
