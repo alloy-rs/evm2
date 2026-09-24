@@ -80,6 +80,21 @@ impl Default for AccountInfo {
 }
 
 impl AccountInfo {
+    /// Creates an empty account with zero balance and nonce, the empty code hash,
+    /// and no cached bytecode.
+    #[inline]
+    pub const fn empty() -> Self {
+        Self {
+            balance: U256::ZERO,
+            nonce: 0,
+            code_hash: KECCAK256_EMPTY,
+            code: None,
+            #[cfg(feature = "account-ext")]
+            extension: super::AccountExtension::new(),
+            _non_exhaustive: (),
+        }
+    }
+
     /// Creates a new [`AccountInfo`] with the given fields.
     #[inline]
     pub const fn new(balance: Word, nonce: u64, code_hash: B256, code: Bytecode) -> Self {
