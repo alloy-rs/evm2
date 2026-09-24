@@ -27,15 +27,16 @@ pub fn handle<T: EvmTypes>(
 
 /// Executes an EIP-4844 transaction using Ethereum rules and custom handler hooks.
 pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
-    req: TxRequest<'_, '_, T, TxEip4844Variant>,
+    mut req: TxRequest<'_, '_, T, TxEip4844Variant>,
 ) -> HandlerResult<TxResult<T>> {
-    execute_prepared::<T, H>(prepare_with_hooks::<T, H>(req)?)
+    let prepared = prepare_with_hooks::<T, H>(&mut req)?;
+    execute_prepared::<T, H>(req, prepared)
 }
 
 /// Validates an EIP-4844 transaction and applies its pre-execution state changes.
-pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
-    req: TxRequest<'a, 'host, T, TxEip4844Variant>,
-) -> HandlerResult<PreparedTx<'a, 'host, T, TxEip4844Variant>> {
+pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
+    req: &mut TxRequest<'_, '_, T, TxEip4844Variant>,
+) -> HandlerResult<PreparedTx> {
     let caller = req.tx.signer();
     let tx = req.tx.inner().tx();
     let max_fee_per_gas = U256::from(tx.max_fee_per_gas);
@@ -104,14 +105,15 @@ pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
     req.host.state.account(&caller)?.bump_nonce();
     H::before_execution(req.host, req.envelope, caller, effective_gas_cost + blob_basefee_cost)?;
 
-    Ok(PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas })
+    Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas })
 }
 
 /// Executes and settles a prepared EIP-4844 transaction.
 pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
-    prepared: PreparedTx<'_, '_, T, TxEip4844Variant>,
+    req: TxRequest<'_, '_, T, TxEip4844Variant>,
+    prepared: PreparedTx,
 ) -> HandlerResult<TxResult<T>> {
-    let PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas } = prepared;
+    let PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas } = prepared;
     let tx = req.tx.inner().tx();
 
     let (execution_gas_limit, reservoir) =

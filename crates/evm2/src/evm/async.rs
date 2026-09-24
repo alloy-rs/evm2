@@ -534,7 +534,7 @@ mod tests {
         evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider, SystemTx},
         interpreter::{GasTracker, Message, Word, op},
         precompile::PrecompileOutput,
-        registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
+        registry::{HandlerError, HandlerResult, TxRegistry, TxRequest, handler},
     };
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, TxKind};
@@ -664,7 +664,7 @@ mod tests {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             crate::ethereum::TxEnvelope::as_legacy,
-            handle_test_tx,
+            handler(|_| Ok(()), |req, ()| handle_test_tx(req)),
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
@@ -685,7 +685,7 @@ mod tests {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             crate::ethereum::TxEnvelope::as_legacy,
-            handle_test_tx,
+            handler(|_| Ok(()), |req, ()| handle_test_tx(req)),
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
@@ -707,7 +707,7 @@ mod tests {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             crate::ethereum::TxEnvelope::as_legacy,
-            handle_test_tx,
+            handler(|_| Ok(()), |req, ()| handle_test_tx(req)),
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
@@ -747,7 +747,7 @@ mod tests {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             crate::ethereum::TxEnvelope::as_legacy,
-            handle_test_tx,
+            handler(|_| Ok(()), |req, ()| handle_test_tx(req)),
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
@@ -787,7 +787,7 @@ mod tests {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
             crate::ethereum::TxEnvelope::as_legacy,
-            handle_test_tx,
+            handler(|_| Ok(()), |req, ()| handle_test_tx(req)),
         );
         let database = Db::new(NonSendDb { marker: Rc::clone(&marker) });
         let precompiles = NonSendPrecompiles { marker: Rc::clone(&marker) };

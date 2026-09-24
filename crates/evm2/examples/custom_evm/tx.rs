@@ -9,7 +9,7 @@ use evm2::{
     bytecode::Bytecode,
     env::TxEnvExt,
     interpreter::{Host, MessageExt},
-    registry::{HandlerResult, TxRegistry, TxRequest},
+    registry::{HandlerResult, TxRegistry, TxRequest, handler},
 };
 
 pub const EXECUTE_CODE_TX_TYPE: u8 = 0x7f;
@@ -48,18 +48,24 @@ impl ExecuteCodeTx {
     }
 }
 
-pub fn execute_code(
-    req: TxRequest<'_, '_, CustomTypes, ExecuteCodeTx>,
-) -> HandlerResult<evm2::TxResult<CustomTypes>> {
-    // The transaction handler owns policy; the interpreter still executes a normal message.
-    let mut message = MessageExt {
+pub fn prepare_code(
+    req: &mut TxRequest<'_, '_, CustomTypes, ExecuteCodeTx>,
+) -> HandlerResult<MessageExt<CustomMessageExt>> {
+    Ok(MessageExt {
         gas_limit: req.tx.gas_limit,
         destination: req.tx.target,
         code: Bytecode::new_legacy(req.tx.code.clone()),
         code_address: req.tx.target,
         ext: CustomMessageExt { is_system: false },
         ..MessageExt::default()
-    };
+    })
+}
+
+pub fn execute_code(
+    req: TxRequest<'_, '_, CustomTypes, ExecuteCodeTx>,
+    mut message: MessageExt<CustomMessageExt>,
+) -> HandlerResult<evm2::TxResult<CustomTypes>> {
+    // The transaction handler owns policy; the interpreter still executes a normal message.
     let tx_env = TxEnvExt { ext: CustomTxEnvExt { label: "execute-code" }, ..TxEnvExt::default() };
     let mut result = req.host.execute_message(&tx_env, &mut message)?;
     result.ext = CustomMessageResultExt { handled_custom_message: true };
@@ -78,6 +84,6 @@ pub fn custom_registry() -> TxRegistry<CustomTypes, evm2::TxResult<CustomTypes>>
     TxRegistry::new().with_handler(
         EXECUTE_CODE_TX_TYPE,
         CustomEnvelope::as_execute_code,
-        execute_code,
+        handler(prepare_code, execute_code),
     )
 }
