@@ -85,7 +85,7 @@ pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
     warm_access_list(req.host, &tx.access_list);
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    req.host.state.account(&caller, false)?.bump_nonce();
+    req.host.state.account(&caller)?.bump_nonce();
     H::before_execution(req.host, req.envelope, caller, effective_gas_cost)?;
 
     Ok(PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas })

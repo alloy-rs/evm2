@@ -129,10 +129,10 @@ pub trait Host<T: EvmTypesHost> {
         &mut self,
         address: &Address,
         features: EvmFeatures,
-    ) -> Result<bool, HostError>;
+    ) -> Result<bool, crate::DatabaseError>;
 
     /// Returns a historical block hash.
-    fn block_hash(&mut self, number: &Word) -> Result<B256, HostError>;
+    fn block_hash(&mut self, number: &Word) -> Result<B256, crate::DatabaseError>;
 
     /// Loads a persistent storage slot.
     fn sload(

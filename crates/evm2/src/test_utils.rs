@@ -122,7 +122,7 @@ impl Host<TestTypes> for TestHost {
         &mut self,
         address: &Address,
         features: EvmFeatures,
-    ) -> Result<bool, crate::HostError> {
+    ) -> Result<bool, crate::DatabaseError> {
         self.new_account_checks.push(*address);
         if features.contains(EvmFeatures::EIP161) {
             return Ok(!self.exists || self.is_empty);
@@ -130,13 +130,12 @@ impl Host<TestTypes> for TestHost {
         Ok(!self.exists && !self.is_touched)
     }
 
-    fn block_hash(&mut self, number: &Word) -> Result<B256, crate::HostError> {
+    fn block_hash(&mut self, number: &Word) -> Result<B256, crate::DatabaseError> {
         if self.missing_block_hash {
             return Err(crate::DatabaseError::new(
                 crate::AnyError::from("missing block hash"),
                 true,
-            )
-            .into());
+            ));
         }
         Ok(B256::with_last_byte(number.wrapping_to::<u8>()))
     }

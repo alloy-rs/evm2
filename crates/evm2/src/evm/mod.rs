@@ -1202,11 +1202,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
         // `destination` already holds the contract address (derived when the message was
         // constructed); warm it before running the initcode.
-        self.state.account(&message.destination, false)?.warm();
+        self.state.account(&message.destination)?.warm();
 
         if message.depth > 0
-            && let Err(code) =
-                self.state.account(&message.caller, false).map(|mut a| a.bump_nonce())
+            && let Err(code) = self.state.account(&message.caller).map(|mut a| a.bump_nonce())
         {
             return Err(code.into());
         }
@@ -1249,7 +1248,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
             if let Err(code) = self
                 .state
-                .account(address, false)
+                .account(address)
                 .map(|mut a| a.set_code_slow(Bytecode::new_legacy(output.clone())))
             {
                 self.state.rollback(checkpoint, self.features);
@@ -1492,7 +1491,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, HostError> {
-        let mut account = match self.state.account(address, skip_cold_load) {
+        let mut account = match self.state.account_with_skip(address, skip_cold_load) {
             Ok(account) => account,
             Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
             Err(code) => return Err(code.into()),
@@ -1524,15 +1523,12 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         &mut self,
         address: &Address,
         features: EvmFeatures,
-    ) -> Result<bool, HostError> {
-        match self.state.account(address, false) {
-            Ok(account) => Ok(account.is_empty_for_new_account_gas(features)),
-            Err(code) => Err(code.into()),
-        }
+    ) -> Result<bool, crate::DatabaseError> {
+        Ok(self.state.account(address)?.is_empty_for_new_account_gas(features))
     }
 
-    fn block_hash(&mut self, number: &Word) -> Result<B256, HostError> {
-        self.state.block_hash(number).map_err(HostError::from)
+    fn block_hash(&mut self, number: &Word) -> Result<B256, crate::DatabaseError> {
+        self.state.block_hash(number)
     }
 
     fn sload(
@@ -1542,7 +1538,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SLoad, HostError> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
-        let mut slot = match self.state.storage(address).into_slot(*key, skip_cold_load) {
+        let mut slot = match self.state.storage(address).into_slot_with_skip(*key, skip_cold_load) {
             Ok(slot) => slot,
             // SLOAD's out-of-gas is the cold-access charge itself, so the slot was never accessed
             // and is not recorded in the block access list (unlike SSTORE, which first pays the
@@ -1567,7 +1563,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         // implicit storage read. When the cold access is unaffordable the read is skipped, so the
         // slot stays out of the EIP-7928 block access list (the warm-read cost has already been
         // paid by the instruction, so an affordable warm slot is still read on OOG).
-        let mut slot = match self.state.storage(address).into_slot(*key, skip_cold_load) {
+        let mut slot = match self.state.storage(address).into_slot_with_skip(*key, skip_cold_load) {
             Ok(slot) => slot,
             Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
             Err(code) => return Err(code.into()),
@@ -1621,13 +1617,13 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, HostError> {
         let is_cold = if self.feature(EvmFeatures::EIP2929) {
-            match self.state.account(target, skip_cold_load).map(|mut a| a.warm()) {
+            match self.state.account_with_skip(target, skip_cold_load).map(|mut a| a.warm()) {
                 Ok(is_cold) => is_cold,
                 Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
                 Err(code) => return Err(code.into()),
             }
         } else {
-            if let Err(code) = self.state.account(target, false).map(|mut a| a.warm()) {
+            if let Err(code) = self.state.account(target).map(|mut a| a.warm()) {
                 return Err(code.into());
             }
             false
@@ -1637,14 +1633,14 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         }
         let target_is_empty_for_new_account_gas =
             self.target_is_empty_for_new_account_gas(target, self.features)?;
-        let previously_destroyed = self.state.account(contract, false)?.is_destructed();
+        let previously_destroyed = self.state.account(contract)?.is_destructed();
         let balance = self
             .state
             .account_info_untracked(contract)
             .map_err(HostError::from)?
             .map_or(Word::ZERO, |info| info.balance);
         let should_destroy = if self.feature(EvmFeatures::EIP6780) {
-            self.state.account(contract, false)?.is_created()
+            self.state.account(contract)?.is_created()
         } else {
             true
         };
@@ -1660,9 +1656,9 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             // this burn, leaving the balance untouched; finalization resets the account
             // to balance-only.
             let delta = Word::ZERO.wrapping_sub(balance);
-            self.state.account(contract, false)?.add_balance(delta);
+            self.state.account(contract)?.add_balance(delta);
         }
-        if should_destroy && let Ok(mut account) = self.state.account(contract, false) {
+        if should_destroy && let Ok(mut account) = self.state.account(contract) {
             account.mark_destructed();
         }
         Ok(SelfDestructResult {
@@ -1922,11 +1918,7 @@ mod tests {
         req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
     ) -> HandlerResult<TxResult> {
         let value = Word::from(req.tx.nonce);
-        req.host
-            .state
-            .storage(&LIFECYCLE_ACCOUNT)
-            .into_slot(LIFECYCLE_STORAGE_KEY, false)?
-            .write(value);
+        req.host.state.storage(&LIFECYCLE_ACCOUNT).into_slot(LIFECYCLE_STORAGE_KEY)?.write(value);
         req.host.state.log(Log {
             address: LIFECYCLE_ACCOUNT,
             data: LogData::new_unchecked(vec![], Bytes::new()),
@@ -1937,12 +1929,11 @@ mod tests {
     fn handle_read_only_tx(
         req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
     ) -> HandlerResult<TxResult> {
-        let account = req.host.state.account(&LIFECYCLE_ACCOUNT, false)?;
+        let account = req.host.state.account(&LIFECYCLE_ACCOUNT)?;
         assert_eq!(account.balance(), Word::from(1));
         drop(account);
 
-        let slot =
-            req.host.state.storage(&LIFECYCLE_ACCOUNT).into_slot(LIFECYCLE_STORAGE_KEY, false)?;
+        let slot = req.host.state.storage(&LIFECYCLE_ACCOUNT).into_slot(LIFECYCLE_STORAGE_KEY)?;
         assert_eq!(slot.current(), Word::from(1));
 
         Ok(TxResultExt { status: true, ..TxResultExt::default() })
@@ -3509,7 +3500,7 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::FRONTIER),
         );
-        evm.state.account(&target, false).unwrap().touch();
+        evm.state.account(&target).unwrap().touch();
 
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
         let pending = evm.state.take_pending_state();
@@ -3701,7 +3692,7 @@ mod tests {
         let from = Address::from([0x01; 20]);
         let to = Address::from([0x02; 20]);
         let mut state = State::new(InMemoryDB::default());
-        state.account(&from, false).unwrap().add_balance(U256::from(10));
+        state.account(&from).unwrap().add_balance(U256::from(10));
 
         assert!(state.transfer(&from, &to, &U256::from(7)).unwrap());
         assert_eq!(
@@ -3778,7 +3769,7 @@ mod tests {
         database.insert_account_storage(&contract, &Word::ZERO, &Word::from(9));
         let mut state = State::new(database);
 
-        state.account(&contract, false).unwrap().mark_destructed();
+        state.account(&contract).unwrap().mark_destructed();
         state.finalize_transaction_(Version::base(SpecId::AMSTERDAM));
 
         // EIP-8246: the balance is preserved and the account becomes balance-only (nonce 0, no
@@ -3804,14 +3795,14 @@ mod tests {
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut state = State::new(database);
 
-        state.account(&contract, false).unwrap().mark_destructed();
+        state.account(&contract).unwrap().mark_destructed();
         state.finalize_transaction_(Version::base(SpecId::AMSTERDAM));
         let pending = state.take_pending_state();
 
         state.set_pending_state(pending);
         state.commit_transaction();
 
-        assert!(!state.account(&contract, false).unwrap().is_destructed());
+        assert!(!state.account(&contract).unwrap().is_destructed());
     }
 
     #[test]
@@ -3822,7 +3813,7 @@ mod tests {
         database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut state = State::new(database);
 
-        state.account(&contract, false).unwrap().mark_destructed();
+        state.account(&contract).unwrap().mark_destructed();
         state.finalize_transaction_(Version::base(SpecId::AMSTERDAM));
 
         // A zero-balance balance-only account is empty and deleted by EIP-161.
@@ -3840,7 +3831,7 @@ mod tests {
         );
         let mut state = State::new(database);
 
-        state.account(&contract, false).unwrap().mark_destructed();
+        state.account(&contract).unwrap().mark_destructed();
         state.finalize_transaction_(Version::base(SpecId::PRAGUE));
 
         // Before EIP-8246 the self-destructed account (and its balance) is deleted at finalization.

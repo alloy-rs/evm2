@@ -95,7 +95,7 @@ pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
     warm_access_list(req.host, &tx.access_list);
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    req.host.state.account(&caller, false)?.bump_nonce();
+    req.host.state.account(&caller)?.bump_nonce();
     H::before_execution(req.host, envelope, caller, effective_gas_cost)?;
 
     Ok(PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas })
@@ -245,7 +245,7 @@ pub fn validate_one_auth<'a, T: EvmTypes>(
     let Some(authority) = authorization.authority() else {
         return Ok(None);
     };
-    let mut account = host.state.account(&authority, false)?;
+    let mut account = host.state.account(&authority)?;
     account.warm();
     let existed = account.exists();
     let authority_nonce = account.nonce();
@@ -459,7 +459,7 @@ pub fn apply_auth_list<'a, T: EvmTypes>(
         if accounting.accepted(authority, &auth).is_err() {
             return Ok(true);
         }
-        host.state.account(&authority, false)?.set_delegation(*authorization.address());
+        host.state.account(&authority)?.set_delegation(*authorization.address());
     }
     Ok(false)
 }

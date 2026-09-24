@@ -62,7 +62,7 @@ pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
 
     warm_base_accounts(req.host, caller, tx.to);
 
-    req.host.state.account(&caller, false)?.bump_nonce();
+    req.host.state.account(&caller)?.bump_nonce();
     H::before_execution(req.host, req.envelope, caller, max_gas_cost)?;
 
     Ok(PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas })

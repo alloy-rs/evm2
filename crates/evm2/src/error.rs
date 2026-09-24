@@ -109,16 +109,6 @@ pub enum LoadError {
     Database(#[from] DatabaseError),
 }
 
-impl From<LoadError> for DatabaseError {
-    fn from(error: LoadError) -> Self {
-        match error {
-            LoadError::Database(error) => error,
-            // Callers without a cold-load budget must never request a skipped load.
-            LoadError::ColdLoadSkipped => Self::new(error, true),
-        }
-    }
-}
-
 /// An error that aborts execution instead of becoming an EVM revert or halt.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ExecutionError {
@@ -128,12 +118,6 @@ pub enum ExecutionError {
     /// An unrecoverable precompile or execution failure.
     #[error("{0}")]
     Fatal(AnyError),
-}
-
-impl From<LoadError> for ExecutionError {
-    fn from(error: LoadError) -> Self {
-        Self::Database(error.into())
-    }
 }
 
 /// Failure of an interpreter host operation.

@@ -406,7 +406,7 @@ pub fn validate_sender<'a, T: EvmTypes>(
     let has_balance_top_up = host.feature(EvmFeatures::BALANCE_TOP_UP);
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
 
-    let mut sender = host.state.account(&caller, false)?;
+    let mut sender = host.state.account(&caller)?;
     if has_eip3607 && sender.code_hash() != KECCAK256_EMPTY {
         let code = sender.load_code()?;
         if !code.is_empty() && !code.is_eip7702() {
@@ -456,7 +456,7 @@ pub fn charge_upfront<'a, T: EvmTypes>(
     if !host.feature(EvmFeatures::FEE_CHARGE) {
         return Ok(());
     }
-    host.state.account(&caller, false)?.add_balance(Word::ZERO.wrapping_sub(max_gas_cost));
+    host.state.account(&caller)?.add_balance(Word::ZERO.wrapping_sub(max_gas_cost));
     Ok(())
 }
 
@@ -537,7 +537,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
     let message = match to {
         TxKind::Call(to) => {
             let (recipient_is_empty, mut code) = {
-                let mut account = host.state.account(&to, false)?;
+                let mut account = host.state.account(&to)?;
                 // A nonexistent recipient reads as an empty account (EIP-161).
                 let recipient_is_empty = account.get().is_none_or(AccountInfo::is_empty);
                 (recipient_is_empty, account.load_code()?)
@@ -577,7 +577,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     }
                     code = load.code;
                 } else {
-                    let mut account = host.state.account(&delegated_address, false)?;
+                    let mut account = host.state.account(&delegated_address)?;
                     account.warm();
                     code = account.load_code()?;
                 }
@@ -606,11 +606,8 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
         TxKind::Create => {
             let destination = caller.create(nonce);
             if host.feature(EvmFeatures::EIP8037) {
-                let target_alive = host
-                    .state
-                    .account(&destination, false)?
-                    .get()
-                    .is_some_and(|info| !info.is_empty());
+                let target_alive =
+                    host.state.account(&destination)?.get().is_some_and(|info| !info.is_empty());
                 if !target_alive {
                     let create_state_gas = host.version().gas_params.create_state_gas();
                     if tx_gas.spend_state(create_state_gas).is_err() {
@@ -721,7 +718,7 @@ pub fn default_settle_gas<'a, T: EvmTypes>(
         let gas_used = result.tx_gas_used();
         let gas_remaining = gas_limit.saturating_sub(gas_used);
         let caller_refund = U256::from(gas_remaining) * gas_price;
-        host.state.account(&caller, false)?.add_balance(caller_refund);
+        host.state.account(&caller)?.add_balance(caller_refund);
         let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
             gas_price.saturating_sub(host.block.basefee)
         } else {
@@ -729,7 +726,7 @@ pub fn default_settle_gas<'a, T: EvmTypes>(
         };
         let beneficiary = host.block.beneficiary;
         let beneficiary_reward = U256::from(gas_used) * beneficiary_gas_price;
-        host.state.account(&beneficiary, false)?.add_balance(beneficiary_reward);
+        host.state.account(&beneficiary)?.add_balance(beneficiary_reward);
     }
     Ok(result)
 }

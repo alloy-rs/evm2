@@ -7,7 +7,7 @@
 //! it does not force a particular transaction or receipt representation onto
 //! the rest of the crate.
 
-use crate::{AnyError, DatabaseError, EvmTypesHost, ExecutionError, LoadError};
+use crate::{AnyError, DatabaseError, EvmTypesHost, ExecutionError};
 use alloc::sync::Arc;
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, U256, map::HashMap};
@@ -150,11 +150,6 @@ pub enum HandlerError {
 impl From<DatabaseError> for HandlerError {
     fn from(error: DatabaseError) -> Self {
         Self::Database(error)
-    }
-}
-impl From<LoadError> for HandlerError {
-    fn from(error: LoadError) -> Self {
-        Self::Database(error.into())
     }
 }
 impl From<ExecutionError> for HandlerError {
@@ -422,11 +417,11 @@ mod tests {
             &mut self,
             _address: &Address,
             _features: EvmFeatures,
-        ) -> Result<bool, crate::HostError> {
+        ) -> Result<bool, crate::DatabaseError> {
             unimplemented!()
         }
 
-        fn block_hash(&mut self, _number: &Word) -> Result<B256, crate::HostError> {
+        fn block_hash(&mut self, _number: &Word) -> Result<B256, crate::DatabaseError> {
             unimplemented!()
         }
 
