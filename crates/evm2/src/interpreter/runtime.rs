@@ -1,6 +1,6 @@
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking, StackMut,
-    StackRef, Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result,
+    StackBacking, StackMut, StackRef, Word,
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, SpecId, Version,
@@ -368,6 +368,57 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
         dispatch::run(self, instructions)
     }
+
+    /// Executes a child call using the given range of this frame's memory as input.
+    ///
+    /// Inspector execution snapshots the input before hooks can mutate parent memory.
+    ///
+    /// # Safety
+    ///
+    /// The host installed by `prepare_run` must remain alive for this call.
+    #[inline]
+    #[doc(hidden)]
+    pub unsafe fn execute_call(
+        &mut self,
+        mut message: Message<T>,
+        input_range: Range<usize>,
+    ) -> MessageResult<T> {
+        let tx_env = self.tx_env();
+        // SAFETY: The host is installed for this synchronous interpreter run.
+        let host = unsafe { self.host.unwrap_unchecked().as_mut() };
+        if self.inspector.is_some() || input_range.is_empty() {
+            message.input =
+                Bytes::copy_from_slice(self.memory.slice(input_range.start, input_range.len()))
+                    .into();
+            host.execute_message(tx_env, &mut message)
+        } else {
+            host.execute_message_with_memory(tx_env, &mut message, &mut self.memory, input_range)
+        }
+    }
+
+    /// Copies call input into this frame's memory, padding with zeros.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the destination range is out of bounds or the call input is no longer live.
+    ///
+    /// # Safety
+    ///
+    /// The host installed by `prepare_run` must remain alive for this call.
+    #[inline]
+    #[doc(hidden)]
+    pub unsafe fn copy_input_to_memory(
+        &mut self,
+        memory_offset: usize,
+        input_offset: usize,
+        len: usize,
+    ) {
+        // SAFETY: The host is installed for this run. Caller buffers are separate from frame
+        // memory.
+        let memory = unsafe { self.host.unwrap_unchecked().as_ref() }.call_memory();
+        let input = self.message().input.as_slice(memory);
+        self.memory.set_data(memory_offset, input_offset, len, input);
+    }
 }
 
 /// Interpreter state exposed to instruction implementations.
@@ -468,6 +519,13 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         // SAFETY: `message` is initialized at the beginning of `run` and remains set for
         // instruction execution.
         unsafe { self.0.message.unwrap_unchecked() }
+    }
+
+    /// Returns the active call input bytes.
+    #[inline]
+    pub fn input(&mut self) -> &[u8] {
+        let message = self.message();
+        message.input.as_slice(self.host().call_memory())
     }
 
     /// Returns whether the active frame forbids state-changing operations.

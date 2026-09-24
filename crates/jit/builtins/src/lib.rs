@@ -233,7 +233,7 @@ pub unsafe extern "C" fn __revmc_builtin_origin(ecx: &EvmContext, slot: &mut Evm
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_calldataload(
-    ecx: &EvmContext,
+    ecx: &mut EvmContext,
     offset_ptr: &mut EvmWord,
 ) {
     do_calldataload(ecx, offset_ptr, word_to_usize_saturated(offset_ptr.to_u256()));
@@ -241,20 +241,20 @@ pub unsafe extern "C" fn __revmc_builtin_calldataload(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_calldataload_c(
-    ecx: &EvmContext,
+    ecx: &mut EvmContext,
     offset_ptr: &mut EvmWord,
     offset: u64,
 ) {
     do_calldataload(ecx, offset_ptr, offset as usize);
 }
 
-fn do_calldataload(ecx: &EvmContext, out: &mut EvmWord, offset: usize) {
+fn do_calldataload(ecx: &mut EvmContext, out: &mut EvmWord, offset: usize) {
     let mut word = B256::ZERO;
-    let input = ecx.input();
+    let message = ecx.message();
+    let input = message.input.as_slice(ecx.host().call_memory());
     let input_len = input.len();
     if offset < input_len {
         let count = 32.min(input_len - offset);
-        let input = ecx.input().as_ref();
         // SAFETY: `count` is bounded by the calldata length.
         // This is `word[..count].copy_from_slice(input[offset..offset + count])`, written using
         // raw pointers as apparently the compiler cannot optimize the slice version, and using
@@ -278,9 +278,7 @@ pub unsafe extern "C" fn __revmc_builtin_calldatacopy(
         let memory_offset = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
         let data_offset = word_to_usize_saturated(data_offset.to_u256());
-        let input = ecx.input().as_ref();
-        let input = unsafe { core::slice::from_raw_parts(input.as_ptr(), input.len()) };
-        ecx.memory_mut().set_data(memory_offset, data_offset, len, input);
+        unsafe { ecx.interpreter_mut().copy_input_to_memory(memory_offset, data_offset, len) };
     }
     Ok(())
 }
@@ -732,7 +730,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         call_target: destination,
         caller,
         code: Bytecode::new_legacy(code.clone()),
-        input: code,
+        input: code.into(),
         value,
         code_address: caller,
         disable_precompiles: false,
@@ -800,12 +798,12 @@ pub unsafe extern "C" fn __revmc_builtin_call(
     pop!(sp; in_offset, in_len, out_offset, out_len);
 
     let in_len = word_to_usize(in_len.to_u256())?;
-    let input = if in_len != 0 {
+    let in_offset = if in_len != 0 {
         let in_offset = word_to_usize(in_offset.to_u256())?;
         ensure_memory(ecx, in_offset, in_len)?;
-        Bytes::copy_from_slice(ecx.memory().slice(in_offset, in_len))
+        in_offset
     } else {
-        Bytes::new()
+        usize::MAX
     };
 
     let out_len = word_to_usize(out_len.to_u256())?;
@@ -831,7 +829,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         }
         CallKind::StaticCall => (to, current.destination, U256::ZERO, resolved_code_address),
     };
-    let mut message = MessageExt {
+    let message = MessageExt {
         kind: call_kind.into(),
         depth: current.depth.saturating_add(1),
         gas_limit,
@@ -839,7 +837,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         destination,
         call_target: to,
         caller,
-        input,
+        input: Default::default(),
         value: call_value,
         code: loaded_code,
         code_address,
@@ -850,8 +848,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         _non_exhaustive: (),
     };
 
-    let tx_env = ecx.tx_env();
-    let mut result = ecx.host().execute_message(tx_env, &mut message);
+    let mut result = unsafe { ecx.interpreter_mut().execute_call(message, in_offset..in_offset + in_len) };
     if result.stop.is_fatal() {
         return Err(result.stop.into());
     }
@@ -1052,7 +1049,7 @@ mod tests {
         env::{BlockEnvExt, TxEnvExt},
         ethereum::ethereum_tx_registry,
         evm::{AccountInfo, EmptyDB, InMemoryDB, inspector::Inspector},
-        interpreter::{GasTracker, Message, MessageResult, MessageResultExt, op},
+        interpreter::{CallMemory, GasTracker, Message, MessageResult, MessageResultExt, op},
     };
     use evm2_jit_context::EvmStack;
 
@@ -1086,16 +1083,16 @@ mod tests {
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.call_static_flags
                 .push(interp.is_static() || message.kind == MessageKind::StaticCall);
-            self.calls.push(message.clone());
+            self.calls.push(message.clone().into_owned(interp.host().call_memory()));
             Some(self.execute_result.clone())
         }
 
         fn create(
             &mut self,
-            _interp: &mut evm2::interpreter::Interpreter<'_, '_, BaseEvmTypes>,
+            interp: &mut evm2::interpreter::Interpreter<'_, '_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
-            self.creates.push(message.clone());
+            self.creates.push(message.clone().into_owned(interp.host().call_memory()));
             Some(self.execute_result.clone())
         }
     }
@@ -1216,7 +1213,7 @@ mod tests {
         assert_eq!(inspector.calls[0].kind, MessageKind::Call);
         assert_eq!(inspector.calls[0].destination, target);
         assert_eq!(inspector.calls[0].caller, caller);
-        assert_eq!(inspector.calls[0].input.as_ref(), b"in");
+        assert_eq!(inspector.calls[0].input.as_slice(&CallMemory::default()), b"in");
         assert!(!inspector.call_static_flags[0]);
     }
 
@@ -1380,7 +1377,7 @@ mod tests {
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
         assert_eq!(inspector.creates.len(), 1);
         assert_eq!(inspector.creates[0].kind, MessageKind::Create);
-        assert_eq!(inspector.creates[0].input.as_ref(), initcode);
+        assert_eq!(inspector.creates[0].input.as_slice(&CallMemory::default()), initcode);
     }
 
     #[test]
@@ -1426,7 +1423,7 @@ mod tests {
         let inspector = host.clear_inspector_as::<MessageInspector>().unwrap();
         assert_eq!(inspector.creates.len(), 1);
         assert_eq!(inspector.creates[0].kind, MessageKind::Create2);
-        assert_eq!(inspector.creates[0].input.as_ref(), initcode);
+        assert_eq!(inspector.creates[0].input.as_slice(&CallMemory::default()), initcode);
         assert_eq!(inspector.creates[0].salt, B256::from(salt.to_be_bytes()));
     }
 

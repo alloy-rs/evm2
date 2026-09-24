@@ -1,7 +1,13 @@
-use super::{Gas, InstrStop, Result, Word};
+use super::{CallInput, Gas, InstrStop, Result, Word};
 use crate::{utils::num_words, version::GasParams};
 use alloc::vec::Vec;
-use core::{cmp::min, fmt, hint::cold_path, ops::Range};
+use core::{
+    cmp::min,
+    fmt,
+    hint::cold_path,
+    ops::Range,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 /// Linear EVM memory.
 pub struct Memory {
@@ -256,6 +262,55 @@ unsafe fn set_data(dst: &mut [u8], src: &[u8], dst_offset: usize, src_offset: us
     unsafe { dst.get_unchecked_mut(dst_offset + src_len..dst_offset + len).fill(0) };
 }
 
+/// Live caller memory used to resolve call input ranges.
+///
+/// Each suspended caller retains its buffer here until the child call returns.
+#[derive(Debug, Default)]
+pub struct CallMemory {
+    frames: Vec<(u64, Memory)>,
+    id: usize,
+    generation: u64,
+}
+
+impl CallMemory {
+    pub(crate) fn empty() -> &'static Self {
+        static EMPTY: CallMemory = CallMemory { frames: Vec::new(), id: 0, generation: 0 };
+        &EMPTY
+    }
+
+    pub(crate) fn push(&mut self, memory: &mut Memory, range: Range<usize>) -> CallInput {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
+        if self.id == 0 {
+            self.id = NEXT_ID
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .expect("call memory ID overflow");
+        }
+        assert!(range.start <= range.end && range.end <= memory.len());
+        self.generation = self.generation.checked_add(1).expect("call memory generation overflow");
+        let input = CallInput::memory(self.id, self.frames.len(), self.generation, range);
+        self.frames.push((self.generation, core::mem::replace(memory, Memory::with_capacity(0))));
+        input
+    }
+
+    pub(crate) fn pop(&mut self) -> Memory {
+        self.frames.pop().expect("missing caller memory").1
+    }
+
+    pub(super) fn slice(
+        &self,
+        pool: usize,
+        frame: usize,
+        generation: u64,
+        range: Range<usize>,
+    ) -> &[u8] {
+        assert_eq!(pool, self.id, "call input belongs to another memory context");
+        let (current_generation, memory) =
+            self.frames.get(frame).expect("call input is no longer live");
+        assert_eq!(generation, *current_generation, "call input is no longer live");
+        &memory.as_slice()[range]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,5 +374,67 @@ mod tests {
         );
         assert_eq!(memory.len(), 64);
         assert_eq!(gas.memory().words_num, 2);
+    }
+
+    #[test]
+    fn call_input_range_preserves_allocation_and_nested_frames() {
+        let mut context = CallMemory::default();
+        let mut parent = Memory::new();
+        parent.resize(0, 64).unwrap();
+        parent.set(16, b"parent");
+        let pointer = parent.slice(16, 6).as_ptr();
+        let input = context.push(&mut parent, 16..22);
+        assert_eq!(input.as_slice(&context).as_ptr(), pointer);
+        assert_eq!(input.as_slice(&context), b"parent");
+        let snapshot = input.to_bytes(&context);
+
+        let mut child = Memory::new();
+        child.resize(0, 8192).unwrap();
+        child.set(4096, b"child");
+        let nested = context.push(&mut child, 4096..4101);
+        assert_eq!(nested.as_slice(&context), b"child");
+        assert_eq!(input.as_slice(&context), b"parent");
+        child = context.pop();
+        parent = context.pop();
+        assert_eq!(parent.slice(16, 6).as_ptr(), pointer);
+        assert_eq!(child.slice(4096, 5), b"child");
+        parent.set(16, b"change");
+        assert_eq!(snapshot.as_ref(), b"parent");
+    }
+
+    #[test]
+    #[should_panic(expected = "call input is no longer live")]
+    fn call_input_range_rejects_returned_frame() {
+        let mut context = CallMemory::default();
+        let mut memory = Memory::new();
+        memory.resize(0, 32).unwrap();
+        let input = context.push(&mut memory, 0..32);
+        let _ = context.pop();
+        let _ = input.as_slice(&context);
+    }
+
+    #[test]
+    #[should_panic(expected = "call input is no longer live")]
+    fn call_input_range_rejects_reused_frame() {
+        let mut context = CallMemory::default();
+        let mut memory = Memory::new();
+        memory.resize(0, 32).unwrap();
+        let input = context.push(&mut memory, 0..32);
+        memory = context.pop();
+        let _ = context.push(&mut memory, 0..32);
+        let _ = input.as_slice(&context);
+    }
+
+    #[test]
+    #[should_panic(expected = "call input belongs to another memory context")]
+    fn call_input_range_rejects_other_memory_context() {
+        let mut first = CallMemory::default();
+        let mut second = CallMemory::default();
+        let mut memory = Memory::new();
+        memory.resize(0, 32).unwrap();
+        let input = first.push(&mut memory, 0..32);
+        memory = first.pop();
+        let _ = second.push(&mut memory, 0..32);
+        let _ = input.as_slice(&second);
     }
 }

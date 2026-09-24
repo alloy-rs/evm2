@@ -71,7 +71,7 @@ pub fn callvalue(cx: _) -> out {
 #[instruction]
 pub fn calldataload(cx: _, [offset]: [Word]) -> out {
     let offset = word_to_usize_saturated(*offset);
-    let input = cx.state.message().input.as_ref();
+    let input = cx.state.input();
     let mut word = B256::ZERO;
     if offset < input.len() {
         let len = 32.min(input.len() - offset);
@@ -89,9 +89,19 @@ pub fn calldatasize(cx: _) -> out {
 pub fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
     let len = word_to_usize(*len)?;
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
-    let input = cx.state.message().input.as_ref();
-    let gas_params = cx.state.gas_params();
-    copy_data(cx.gas, &mut cx.state.0.memory, gas_params, memory_offset, data_offset, len, input)
+    if len != 0 {
+        let memory_offset = word_to_usize(*memory_offset)?;
+        cx.state.resize_memory(cx.gas, memory_offset, len)?;
+        // SAFETY: The host remains installed while the instruction executes.
+        unsafe {
+            cx.state.0.copy_input_to_memory(
+                memory_offset,
+                word_to_usize_saturated(*data_offset),
+                len,
+            )
+        };
+    }
+    Ok(())
 }
 
 #[instruction]
@@ -256,7 +266,7 @@ mod tests {
     fn calldataload_opcode() {
         let input = Bytes::from(Vec::from([1_u8, 2, 3]));
         let mut host = TestHost::default();
-        let message = MessageExt { input, ..test_message() };
+        let message = MessageExt { input: input.into(), ..test_message() };
 
         let interp = run(RunConfig::new([op::PUSH0, op::CALLDATALOAD, op::STOP])
             .host(&mut host)
@@ -277,7 +287,7 @@ mod tests {
     fn calldatasize_opcode() {
         let input = Bytes::from(Vec::from([1_u8, 2, 3, 4]));
         let mut host = TestHost::default();
-        let message = MessageExt { input, ..test_message() };
+        let message = MessageExt { input: input.into(), ..test_message() };
         let interp =
             run(RunConfig::new([op::CALLDATASIZE, op::STOP]).host(&mut host).message(message));
         assert_matches!(interp.err, InstrStop::Stop);
@@ -288,7 +298,7 @@ mod tests {
     fn calldatacopy_opcode() {
         let input = Bytes::from(Vec::from([0xaa_u8, 0xbb, 0xcc]));
         let mut host = TestHost::default();
-        let message = MessageExt { input, ..test_message() };
+        let message = MessageExt { input: input.into(), ..test_message() };
         let mut code = Vec::new();
         push(&mut code, 2);
         push(&mut code, 1);
