@@ -40,20 +40,33 @@ fn main() -> Result<()> {
 
 See [`crates/evm2/examples/custom_evm`](crates/evm2/examples/custom_evm) for the complete version.
 
-## Benchmarks
+## Feature flags
 
-```sh
-cargo bench -p evm2-cli --bench evm
-EVM2_BENCH_REVM=1 cargo bench -p evm2-cli --bench evm
-```
+All features of the `evm2` crate are listed below. Use `default-features = false` to disable the default set.
 
-## Development
-
-```sh
-cargo fmt --all
-cargo cl
-cargo nextest run
-```
+| Feature | Default | Description |
+| --- | --- | --- |
+| `default` | Yes | Enables the features marked below. |
+| `std` | Yes | Enables Rust standard library support. |
+| `async` | No | Enables asynchronous host I/O through stackful coroutines; requires `std`. |
+| `serde` | No | Enables serialization and deserialization with Serde. |
+| `arbitrary` | No | Enables arbitrary test data generation in Alloy dependencies. |
+| `account-ext` | No | Enables chain-specific account data. |
+| `map-hashbrown` | No | Uses hashbrown for Alloy maps and sets. |
+| `map-foldhash` | Yes | Uses foldhash as the default hasher for Alloy maps and sets. |
+| `asm-keccak` | Yes | Uses the assembly Keccak implementation. |
+| `sha3-keccak` | No | Enables the RustCrypto SHA-3 Keccak implementation. |
+| `secp256k1` | Yes | Uses libsecp256k1 for the ECRECOVER precompile. |
+| `gmp` | Yes | Uses GMP for the modular exponentiation precompile. |
+| `bn` | No | Uses substrate-bn for BN254 precompiles when `bn254-mcl` is disabled. |
+| `c-kzg` | No | Uses c-kzg for KZG point evaluation. |
+| `blst` | Yes | Uses blst for BLS12-381 precompiles and KZG verification when `c-kzg` is disabled. |
+| `bn254-mcl` | Yes | Uses MCL for BN254 precompiles; requires `std`. |
+| `portable` | Yes | Enables portable builds of the enabled blst and c-kzg backends. |
+| `p256-aws-lc-rs` | Yes | Uses AWS-LC for the P256VERIFY precompile. |
+| `parse` | Yes | Enables parsing opcode names into `OpCode` values. |
+| `nightly` | No | Enables nightly Rust optimizations. |
+| `no-tco` | No | Disables automatic selection of the tail-call interpreter backend. |
 
 ## Supported Rust Versions (MSRV)
 
