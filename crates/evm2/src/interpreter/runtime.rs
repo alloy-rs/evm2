@@ -332,14 +332,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         }
     }
 
-    /// Runs an interpreter backend, returning an owned error and clearing frame-local error
-    /// storage. External backends retain their compact stop-code ABI inside this boundary.
-    pub fn run_with(
-        &mut self,
-        run: impl FnOnce(&mut Self) -> InstrStop,
-    ) -> Result<InstrStop, ExecutionError> {
-        debug_assert!(self.error.is_none());
-        let stop = run(self);
+    /// Finishes a backend run, returning its owned error and clearing execution references.
+    pub(crate) fn finish_run(&mut self, stop: InstrStop) -> Result<InstrStop, ExecutionError> {
         self.host = None;
         self.inspector = None;
         if let Some(error) = self.error.take() {
@@ -406,7 +400,9 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.prepare_run(spec, version, host);
         self.inspector = inspector;
 
-        self.run_with(|interpreter| dispatch::run(interpreter, instructions))
+        debug_assert!(self.error.is_none());
+        let stop = dispatch::run(self, instructions);
+        self.finish_run(stop)
     }
 }
 
@@ -684,9 +680,10 @@ mod owned_error_tests {
         let message = MessageExt::default();
         let mut interpreter = Interpreter::<TestTypes>::new(&tx, &message);
         let error = DatabaseError::new(core::fmt::Error, false);
-        let result = interpreter.run_with(|interpreter| interpreter.fail(error.clone()));
+        let stop = interpreter.fail(error.clone());
+        let result = interpreter.finish_run(stop);
         assert_eq!(result, Err(ExecutionError::Database(error)));
         assert!(interpreter.error.is_none());
-        assert_eq!(interpreter.run_with(|_| InstrStop::Stop), Ok(InstrStop::Stop));
+        assert_eq!(interpreter.finish_run(InstrStop::Stop), Ok(InstrStop::Stop));
     }
 }

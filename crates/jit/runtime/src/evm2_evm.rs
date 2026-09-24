@@ -33,7 +33,7 @@ impl InterpreterRunner<BaseEvmTypes> for JitInterpreterRunner {
         config: &ExecutionConfig<BaseEvmTypes>,
         interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &mut Evm<'host, BaseEvmTypes>,
-    ) -> Option<Result<InstrStop, evm2::ExecutionError>> {
+    ) -> Option<InstrStop> {
         run_interpreter(&self.backend, config, interpreter, host)
     }
 }
@@ -48,7 +48,7 @@ pub fn run_interpreter<'frame, 'host>(
     config: &ExecutionConfig<BaseEvmTypes>,
     interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
     host: &mut Evm<'host, BaseEvmTypes>,
-) -> Option<Result<InstrStop, evm2::ExecutionError>> {
+) -> Option<InstrStop> {
     // Disabled runners must not hash code merely to discover that lookup is unavailable.
     if !backend.enabled() {
         return None;
@@ -282,7 +282,7 @@ mod tests {
 
         assert_eq!(
             run_interpreter(&backend, &config, &mut interpreter, &mut host),
-            Some(Ok(InstrStop::Return)),
+            Some(InstrStop::Return),
         );
         assert_eq!(interpreter.output().len(), 32);
         assert_eq!(interpreter.output()[31], 0x42);
@@ -346,7 +346,7 @@ mod tests {
 
         assert_eq!(
             run_interpreter(&backend, &config, &mut interpreter, &mut host),
-            Some(Ok(InstrStop::Return)),
+            Some(InstrStop::Return),
         );
         assert_eq!(interpreter.output().len(), 32);
         assert_eq!(interpreter.output()[31], 1);
@@ -413,7 +413,7 @@ mod tests {
 
         assert_eq!(
             run_interpreter(&backend, &config, &mut interpreter, &mut host),
-            Some(Ok(InstrStop::Return)),
+            Some(InstrStop::Return),
         );
         assert_eq!(interpreter.output().len(), 32);
         assert_eq!(interpreter.output()[31], 0);
@@ -489,7 +489,7 @@ mod tests {
 
         assert_eq!(
             run_interpreter(&backend, &config, &mut interpreter, &mut host),
-            Some(Ok(InstrStop::Stop)),
+            Some(InstrStop::Stop),
         );
         let beneficiary_balance = host.read_account_info(&beneficiary).unwrap().unwrap().balance;
         assert_eq!(beneficiary_balance, initial_beneficiary_balance);
@@ -554,9 +554,9 @@ mod tests {
             let stop = if with_jit {
                 run_interpreter(&backend, &config, &mut interpreter, &mut host).unwrap()
             } else {
-                interpreter.run(&config, &mut host)
+                interpreter.run(&config, &mut host).unwrap()
             };
-            (stop.unwrap(), interpreter.gas().spent(), interpreter.gas().refunded())
+            (stop, interpreter.gas().spent(), interpreter.gas().refunded())
         };
 
         let interpreter = run(false);

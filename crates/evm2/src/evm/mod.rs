@@ -186,16 +186,19 @@ pub use prewarm_set::PrewarmSet;
 
 /// Optional external interpreter runner.
 ///
-/// Returning `Some(result)` means the runner executed the frame. Returning `None` makes the EVM run
+/// Returning `Some(stop)` means the runner executed the frame. Returning `None` makes the EVM run
 /// the regular interpreter for the same frame.
 pub trait InterpreterRunner<T: EvmTypesHost>: core::fmt::Debug + Send + Sync + 'static {
     /// Attempts to execute `interpreter` with an external backend.
+    ///
+    /// Record execution errors with [`Interpreter::fail`]; the EVM extracts them after this
+    /// method returns.
     fn run<'frame, 'host>(
         &self,
         config: &ExecutionConfig<T>,
         interpreter: &mut Interpreter<'frame, 'host, T>,
         host: &mut T::Host<'host>,
-    ) -> Option<Result<InstrStop, ExecutionError>>;
+    ) -> Option<InstrStop>;
 }
 
 /// EVM host and transaction dispatcher.
@@ -1441,7 +1444,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else if let Some(runner) = interpreter_runner
             && let Some(stop) = runner.run(execution_config, interp_ref, guard.evm)
         {
-            stop
+            interp_ref.finish_run(stop)
         } else {
             interp_ref.run(execution_config, guard.evm)
         };
@@ -1872,9 +1875,9 @@ mod tests {
             _config: &ExecutionConfig<BaseEvmTypes>,
             _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
             _host: &mut Evm<'host, BaseEvmTypes>,
-        ) -> Option<Result<InstrStop, ExecutionError>> {
+        ) -> Option<InstrStop> {
             self.calls.fetch_add(1, Ordering::Relaxed);
-            self.stop.map(Ok)
+            self.stop
         }
     }
 

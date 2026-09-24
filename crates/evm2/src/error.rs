@@ -117,7 +117,7 @@ pub enum ExecutionError {
     Database(#[from] DatabaseError),
     /// An unrecoverable precompile or execution failure.
     #[error("{0}")]
-    Fatal(AnyError),
+    Fatal(#[source] AnyError),
 }
 
 /// Failure of an interpreter host operation.

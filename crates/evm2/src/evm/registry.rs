@@ -22,10 +22,10 @@ pub type HandlerResult<T> = core::result::Result<T, HandlerError>;
 pub enum HandlerError {
     /// Database error propagated as a transaction handler failure.
     #[error("database error: {0}")]
-    Database(DatabaseError),
+    Database(#[source] DatabaseError),
     /// Unrecoverable execution error.
     #[error("fatal error: {0}")]
-    Fatal(AnyError),
+    Fatal(#[source] AnyError),
     /// Typed error supplied by a custom transaction handler.
     #[error(transparent)]
     External(AnyError),
