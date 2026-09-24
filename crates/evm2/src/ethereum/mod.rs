@@ -15,7 +15,7 @@ pub mod legacy;
 pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
-    Evm, EvmFeatures, EvmTypes, SpecId, TxResult, TxResultExt, Version,
+    Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
     bytecode::Bytecode,
     env::TxEnv,
     evm::{AccountInfo, handler::GasSettlement},
@@ -567,11 +567,12 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                         return Ok(None);
                     }
                     let skip_cold_load = tx_gas.remaining() < cold_additional;
-                    let Ok(load) =
-                        Host::load_account(host, &delegated_address, true, skip_cold_load)
-                    else {
-                        return Ok(None);
-                    };
+                    let load =
+                        match Host::load_account(host, &delegated_address, true, skip_cold_load) {
+                            Ok(load) => load,
+                            Err(HostError::Halt(_)) => return Ok(None),
+                            Err(HostError::Execution(error)) => return Err(error.into()),
+                        };
                     if load.is_cold && tx_gas.spend(cold_additional).is_err() {
                         return Ok(None);
                     }

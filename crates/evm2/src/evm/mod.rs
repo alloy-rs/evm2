@@ -1648,8 +1648,8 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             let delta = Word::ZERO.wrapping_sub(balance);
             self.state.account(contract)?.add_balance(delta);
         }
-        if should_destroy && let Ok(mut account) = self.state.account(contract) {
-            account.mark_destructed();
+        if should_destroy {
+            self.state.account(contract)?.mark_destructed();
         }
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
