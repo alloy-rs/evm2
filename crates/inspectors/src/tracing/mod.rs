@@ -39,6 +39,10 @@ pub use config::{OpcodeFilter, StackSnapshotType, TracingInspectorConfig};
 mod fourbyte;
 pub use fourbyte::FourByteInspector;
 
+mod limits;
+use limits::TraceBudget;
+pub use limits::{TraceLimitBehavior, TraceLimits};
+
 mod opcount;
 pub use opcount::OpcodeCountInspector;
 
@@ -83,6 +87,8 @@ pub(crate) const fn final_refunded<E>(gas: &TxResultExt<E>) -> u64 {
 pub struct TracingInspector {
     /// Configures what and how the inspector records traces.
     config: TracingInspectorConfig,
+    /// Tracks retained and copied trace bytes.
+    budget: TraceBudget,
     /// Records all call traces
     traces: CallTraceArena,
     /// Tracks active calls
@@ -118,6 +124,22 @@ impl TracingInspector {
         Self { config, ..Default::default() }
     }
 
+    /// Configures the byte budget for recorded trace data.
+    pub const fn with_limits(mut self, limits: TraceLimits) -> Self {
+        self.budget.limits = limits;
+        self
+    }
+
+    /// Returns the number of retained or copied bytes counted against the budget.
+    pub const fn recorded_bytes(&self) -> usize {
+        self.budget.recorded
+    }
+
+    /// Returns whether recording omitted a byte buffer after reaching the budget.
+    pub const fn limit_exceeded(&self) -> bool {
+        self.budget.exceeded
+    }
+
     /// Resets the inspector to its initial state of [Self::new].
     /// This makes the inspector ready to be used again.
     ///
@@ -135,6 +157,7 @@ impl TracingInspector {
             features,
             // kept
             config,
+            budget,
             reusable_step_vecs,
         } = self;
 
@@ -157,6 +180,8 @@ impl TracingInspector {
         spec_id.take();
         *features = EvmFeatures::empty();
         *last_journal_len = 0;
+        budget.recorded = 0;
+        budget.exceeded = false;
     }
 
     /// Resets the inspector to it's initial state of [Self::new].
@@ -425,7 +450,8 @@ impl TracingInspector {
 
         let trace_idx = self.last_trace_idx();
 
-        let record = self.config.should_record_opcode(op)
+        let record = !self.budget.exceeded()
+            && self.config.should_record_opcode(op)
             && self.config.step_limit.is_none_or(|limit| self.recorded_steps < limit.get());
         if !record {
             // Push a sentinel so that the upcoming `step_end` stays paired with this step.
@@ -439,16 +465,21 @@ impl TracingInspector {
         // Reuse the memory from the previous step if:
         // - there is not opcode filter -- in this case we cannot rely on the order of steps
         // - it exists and has not modified memory
-        let memory = self.config.record_memory_snapshots.then(|| {
-            if self.config.record_opcodes_filter.is_none()
-                && let Some(prev) = node.trace.steps.last()
-                && !prev.op.modifies_memory()
-                && let Some(memory) = &prev.memory
-            {
-                return memory.clone();
-            }
-            RecordedMemory::new(interp.memory().slice(0, interp.memory().len()))
-        });
+        let memory = self
+            .config
+            .record_memory_snapshots
+            .then(|| {
+                if self.config.record_opcodes_filter.is_none()
+                    && let Some(prev) = node.trace.steps.last()
+                    && !prev.op.modifies_memory()
+                    && let Some(memory) = &prev.memory
+                {
+                    return Some(memory.clone());
+                }
+                let bytes = interp.memory().slice(0, interp.memory().len());
+                self.budget.reserve(bytes.len()).then(|| RecordedMemory::new(bytes))
+            })
+            .flatten();
 
         let stack = if self.config.record_stack_snapshots.is_all()
             || self.config.record_stack_snapshots.is_full()
@@ -476,7 +507,9 @@ impl TracingInspector {
             if size != 0 {
                 let pc = interp.pc() + 1;
                 let bytes = interp.bytecode().as_slice().get(pc..pc + size).unwrap_or_default();
-                immediate_bytes = Some(Bytes::copy_from_slice(bytes));
+                if self.budget.reserve(bytes.len()) {
+                    immediate_bytes = Some(Bytes::copy_from_slice(bytes));
+                }
             }
         }
 
@@ -648,7 +681,10 @@ impl TracingInspector {
                 {
                     range.end = range.start + range.len().min(interp.return_data().len());
                 }
-                delta.record_memory_write(interp.memory().slice(0, interp.memory().len()));
+                delta.record_memory_write(
+                    interp.memory().slice(0, interp.memory().len()),
+                    &mut self.budget,
+                );
             }
         }
     }
@@ -671,6 +707,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         if self.config.record_steps {
             self.start_step(interp);
         }
+        self.budget.halt(interp, true);
     }
 
     #[inline]
@@ -678,6 +715,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         if self.config.record_steps {
             self.fill_step_on_step_end(interp);
         }
+        self.budget.halt(interp, true);
     }
 
     fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
@@ -725,16 +763,25 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             !message.disable_precompiles && self.is_precompile_call(interp.host(), &to, &value)
         });
 
+        let input = if self.config.record_inputs
+            && (message.depth == 0 || self.budget.reserve(message.input.len()))
+        {
+            message.input.clone()
+        } else {
+            Bytes::new()
+        };
         self.start_trace_on_call(
             usize::from(message.depth),
             to,
-            if self.config.record_inputs { message.input.clone() } else { Bytes::new() },
+            input,
             value,
             message.kind.into(),
             from,
             message.gas_limit,
             maybe_precompile,
         );
+
+        self.budget.halt(interp, false);
 
         None
     }
@@ -758,16 +805,24 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         }
         self.features = interp.version().features;
 
+        let input = if self.config.record_inputs
+            && (message.depth == 0 || self.budget.reserve(message.input.len()))
+        {
+            message.input.clone()
+        } else {
+            Bytes::new()
+        };
         self.start_trace_on_call(
             usize::from(message.depth),
             message.destination,
-            if self.config.record_inputs { message.input.clone() } else { Bytes::new() },
+            input,
             message.value,
             message.kind.into(),
             message.caller,
             message.gas_limit,
             Some(false),
         );
+        self.budget.halt(interp, false);
         None
     }
 
