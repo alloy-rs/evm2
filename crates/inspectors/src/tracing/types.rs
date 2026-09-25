@@ -769,8 +769,9 @@ pub struct StepDelta {
     pub step: usize,
     /// The memory written by the step, if any.
     pub memory: Option<MemoryDelta>,
-    /// The storage key and value written by a successful SSTORE, including same-value writes.
-    pub storage: Option<StorageDelta>,
+    /// The storage written by an `SSTORE`, taken from its operands, so it is also set when the
+    /// value does not change.
+    pub store: Option<StorageDelta>,
     /// The remaining gas after a call-like step or an instruction that gained gas.
     ///
     /// For all other steps the remaining gas after execution is `gas_remaining - gas_cost`.

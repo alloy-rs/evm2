@@ -585,7 +585,7 @@ fn vmtrace_storage_writes_include_unchanged_values() {
 }
 
 #[test]
-fn vmtrace_failed_storage_writes_have_no_delta() {
+fn vmtrace_failed_storage_writes_have_no_execution_delta() {
     for (code, child, node_idx) in [
         (&hex!("55")[..], &[][..], 0),   // No operands
         (&hex!("5f55")[..], &[][..], 0), // Only one operand
@@ -598,7 +598,6 @@ fn vmtrace_failed_storage_writes_have_no_delta() {
             inspect_code(code, child, SpecId::OSAKA, TracingInspectorConfig::parity_vm_trace());
         let frame = &inspector.traces().nodes()[node_idx].trace;
         assert!(frame.steps.last().unwrap().status.unwrap().is_halt());
-        assert!(frame.step_deltas.iter().all(|delta| delta.storage.is_none()));
         let trace = inspector.into_parity_builder().vm_trace();
         let frame = if node_idx == 0 {
             &trace
