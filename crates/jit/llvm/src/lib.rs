@@ -1222,9 +1222,10 @@ impl EvmLlvmBuilder<'_> {
             if inline { ".inline" } else { "" },
             fmt_ty(len.get_type().into()),
         );
+        let len_ty = len.get_type();
         let memcpy = self.get_or_add_function(&name, |this| {
             this.ty_void.fn_type(
-                &[this.ty_ptr.into(), this.ty_ptr.into(), this.ty_i64.into(), this.ty_i1.into()],
+                &[this.ty_ptr.into(), this.ty_ptr.into(), len_ty.into(), this.ty_i1.into()],
                 false,
             )
         });
