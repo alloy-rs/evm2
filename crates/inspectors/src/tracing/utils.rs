@@ -103,11 +103,11 @@ pub(crate) fn load_account_code(
     db: &mut dyn DynDatabase,
     account: &AccountInfo,
 ) -> DbResult<Option<Bytes>> {
-    if let Some(code) = &account.code {
-        return Ok(Some(code.original_bytes()));
-    }
     if account.code_hash == KECCAK256_EMPTY {
         return Ok(None);
+    }
+    if let Some(code) = &account.code {
+        return Ok(Some(code.original_bytes()));
     }
     db.get_code_by_hash(&account.code_hash).map(|code| Some(code.original_bytes()))
 }
