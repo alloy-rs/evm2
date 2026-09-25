@@ -144,7 +144,7 @@ pub fn diff(evm2: &ReplayOutcome, revm: &ReplayOutcome) -> Vec<Mismatch> {
             continue;
         }
         for (field, lhs, rhs) in [
-            ("block_gas_used", left.gas_used, right.gas_used),
+            ("block_gas_used", left.block_gas_used, right.block_gas_used),
             ("block_execution_gas_used", left.execution_gas_used, right.execution_gas_used),
             ("block_state_gas_used", left.state_gas_used, right.state_gas_used),
         ] {
