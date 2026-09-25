@@ -548,20 +548,15 @@ impl TracingInspector {
 
         if self.config.record_step_deltas {
             let write_range = memory_write_range(op.get(), interp.stack().as_slice());
-            // Journal entries also include reads and omit same-value writes. VM traces need
-            // the operands of each successful SSTORE instead.
-            let storage = match (op.get(), interp.stack().as_slice()) {
-                (op::SSTORE, [.., value, key]) => Some(StorageDelta { key: *key, val: *value }),
-                _ => None,
-            };
+            let store = storage_write(op.get(), interp.stack().as_slice());
             if write_range.is_some()
-                || storage.is_some()
+                || store.is_some()
                 || node.trace.steps[step_idx].is_call_like_op()
             {
                 node.trace.step_deltas.push(StepDelta {
                     step: step_idx,
+                    store,
                     write_range,
-                    storage,
                     ..Default::default()
                 });
             }
@@ -655,11 +650,6 @@ impl TracingInspector {
 
         if self.config.record_step_deltas {
             if step.status.is_some_and(|status| status.is_halt()) {
-                if let Some(delta) =
-                    node.trace.step_deltas.last_mut().filter(|delta| delta.step == step_idx)
-                {
-                    delta.storage = None;
-                }
                 return;
             }
             // Call results, returned memory and gas are already available in evm2's `step_end`.
@@ -914,4 +904,14 @@ fn memory_write_range(op: u8, stack: &[U256]) -> Option<Range<usize>> {
         _ => return None,
     };
     (size != 0).then_some(offset..offset.checked_add(size)?)
+}
+
+/// Returns the storage write of an `SSTORE`, derived from its inputs on the stack.
+///
+/// This is independent of the journal, which has no entry for a warm write of the unchanged value.
+const fn storage_write(op: u8, stack: &[U256]) -> Option<StorageDelta> {
+    match (op, stack) {
+        (op::SSTORE, [.., val, key]) => Some(StorageDelta { key: *key, val: *val }),
+        _ => None,
+    }
 }
