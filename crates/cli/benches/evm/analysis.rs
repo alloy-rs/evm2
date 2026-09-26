@@ -1,47 +1,27 @@
+use crate::fixture::Suites;
 use alloy_primitives::Bytes;
-use criterion::{Criterion, Throughput, black_box};
+use criterion::{BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::bytecode::Bytecode;
-use std::path::{Path, PathBuf};
+use evm2_cli::evm_bench::BenchCase;
+use std::borrow::Cow;
 
-/// Account that holds the contract in most fixtures.
-const TARGET: &str = "0xcccccccccccccccccccccccccccccccccccccccc";
+/// Legacy bytecode analysis of a benchmark transaction's entry contract.
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedBench {
+    name: Cow<'static, str>,
+    code: Bytes,
+}
 
-/// Fixture files and accounts whose code to analyze.
-const CONTRACTS: &[(&str, &str, &str)] = &[
-    ("push0_proxy", "push0_proxy.json", TARGET),
-    ("eip2935", "eip2935.json", TARGET),
-    ("hash_10k", "hash_10k.json", TARGET),
-    ("counter", "counter.json", TARGET),
-    ("usdc_proxy", "usdc_proxy.json", TARGET),
-    ("weth", "weth.json", TARGET),
-    ("erc20", "erc20_transfer.json", TARGET),
-    ("curve", "curve-stableswap-2pool.json", TARGET),
-    ("snailtracer", "snailtracer.json", TARGET),
-    ("uniswap_v2_pair", "uniswap_v2_pair.json", TARGET),
-    ("univ2_router", "univ2_router.json", TARGET),
-    ("fiat_token", "fiat_token.json", TARGET),
-    ("seaport", "seaport.json", TARGET),
-    ("burntpix", "burntpix.json", "0x49206861766520746f6f206d7563682074696d65"),
-    ("onchain_lm_data", "onchain-lm-v2.json", "0x17178489592e2d8cf1146bc43304e91f0719325c"),
-];
-
-pub(crate) fn analysis(c: &mut Criterion) {
-    let mut group = c.benchmark_group("analysis");
-    for &(name, file, address) in CONTRACTS {
-        let code = load(file, address);
-        group.throughput(Throughput::Bytes(code.len() as u64));
-        group.bench_function(name, |b| b.iter(|| Bytecode::new_legacy(black_box(code.clone()))));
+impl PreparedBench {
+    pub(crate) fn load(bench: &BenchCase, suites: &Suites) -> Option<Self> {
+        let spec = bench.transaction_spec().expect("transaction benchmark must have a spec");
+        let code = suites.get(bench.fixture_path).case(&bench.name, spec).entry_bytecode()?;
+        Some(Self { name: bench.name.clone(), code })
     }
-    group.finish();
-}
 
-fn load(file: &str, address: &str) -> Bytes {
-    let path = workspace_path("data").join(file);
-    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    let (_, test) = json.as_object().unwrap().iter().next().unwrap();
-    serde_json::from_value(test["pre"][address]["code"].clone()).unwrap()
-}
-
-fn workspace_path(path: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path)
+    pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
+        group.bench_function(format!("{}/analysis", self.name), |b| {
+            b.iter(|| Bytecode::new_legacy(black_box(self.code.clone())))
+        });
+    }
 }

@@ -55,6 +55,10 @@ fn evm(c: &mut Criterion) {
                 prepared.sanity_check();
                 prepared.bench(&mut group);
 
+                if let Some(prepared) = analysis::PreparedBench::load(bench, &suites) {
+                    prepared.bench(&mut group);
+                }
+
                 #[cfg(feature = "jit")]
                 if let Some(prepared) = jit::PreparedBench::load(bench, &suites, &mut jit_compiler)
                 {
@@ -133,5 +137,5 @@ fn expand_cases(benches: &[evm_bench::Bench], suites: &fixture::Suites) -> Vec<B
     cases
 }
 
-criterion_group!(benches, evm, analysis::analysis);
+criterion_group!(benches, evm);
 criterion_main!(benches);
