@@ -11,11 +11,17 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
-  RUSTFLAGS: -Csymbol-mangling-version=v0
 
 jobs:
   codspeed:
+    name: codspeed (${{ matrix.shard }})
     runs-on: depot-ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [interpreter, jit-burntpix, jit-rest]
+    env:
+      EVM2_BENCH_SHARD: ${{ matrix.shard }}
     permissions:
       id-token: write
       contents: read

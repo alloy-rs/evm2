@@ -480,10 +480,10 @@ impl JitBackend {
     /// lazily starts it using the config provided at construction time.
     pub fn set_enabled(&self, enabled: bool) -> eyre::Result<()> {
         debug!(enabled, "set_enabled");
-        self.inner.enabled.store(enabled, Ordering::Relaxed);
         if enabled {
             self.ensure_started()?;
         }
+        self.inner.enabled.store(enabled, Ordering::Relaxed);
         Ok(())
     }
 
