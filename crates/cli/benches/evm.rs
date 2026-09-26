@@ -6,8 +6,6 @@ use criterion::{
 use evm2_cli::evm_bench::{self, BenchCase, BenchCaseKind, BenchKind};
 use std::{env, time::Duration};
 
-#[path = "evm/analysis.rs"]
-mod analysis;
 #[path = "evm/fixture.rs"]
 mod fixture;
 #[cfg(feature = "jit")]
@@ -75,10 +73,6 @@ fn evm(c: &mut Criterion) {
                     let prepared = support::PreparedBench::load(bench, &suites);
                     prepared.sanity_check();
                     prepared.bench(&mut group);
-
-                    if let Some(prepared) = analysis::PreparedBench::load(bench, &suites) {
-                        prepared.bench(&mut group);
-                    }
                 }
 
                 #[cfg(feature = "jit")]

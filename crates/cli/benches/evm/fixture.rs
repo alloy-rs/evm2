@@ -1,5 +1,7 @@
 use alloy_consensus::{TxLegacy, transaction::Recovered};
-use alloy_primitives::{B256, Bytes, TxKind, U256};
+#[cfg(feature = "jit")]
+use alloy_primitives::Bytes;
+use alloy_primitives::{B256, TxKind, U256};
 use evm2::{
     SpecId, Version,
     bytecode::Bytecode,
@@ -148,6 +150,7 @@ impl Case<'_> {
         )
     }
 
+    #[cfg(feature = "jit")]
     pub(crate) fn entry_bytecode(&self) -> Option<Bytes> {
         let target = self.unit.transaction.to?;
         let account = self.unit.pre.get(&target)?;
