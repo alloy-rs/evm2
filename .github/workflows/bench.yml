@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [burntpix, onchain_lm_v2, rest]
+        shard: [interpreter, jit]
     env:
       EVM2_BENCH_SHARD: ${{ matrix.shard }}
     permissions:
