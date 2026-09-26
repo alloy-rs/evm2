@@ -51,7 +51,8 @@ fn analyze_scalar(code: &[u8], table: &mut [u8], pc: usize) -> usize {
     let mut iterator = start.wrapping_add(pc);
     let end = range.end;
     let mut prev_byte: u8 = 0;
-    // The instruction before a nonzero `pc` is either a PUSH or followed by two more bytes.
+    // Stands in for the instruction before a nonzero `pc`. It is a PUSH, or the loop below sees
+    // two more instructions or a PUSH, so the padding never depends on its opcode otherwise.
     let mut last_byte = if pc == 0 { op::STOP } else { op::PUSH1 };
 
     while iterator < end {
@@ -59,8 +60,9 @@ fn analyze_scalar(code: &[u8], table: &mut [u8], pc: usize) -> usize {
         last_byte = unsafe { *iterator };
         if last_byte == op::JUMPDEST {
             // SAFETY: Jumps are max length of the code.
-            let pc = unsafe { iterator.offset_from_unsigned(start) };
-            unsafe { *table.get_unchecked_mut(pc / 8) |= 1 << (pc % 8) };
+            let offset = unsafe { iterator.offset_from_unsigned(start) };
+            // SAFETY: `table` has a bit for each byte of `code`.
+            unsafe { *table.get_unchecked_mut(offset / 8) |= 1 << (offset % 8) };
             iterator = unsafe { iterator.add(1) };
         } else {
             let push_offset = last_byte.wrapping_sub(op::PUSH1);
@@ -117,11 +119,11 @@ trait Kernel {
     /// Jump destination bits of a block, one per byte.
     type Bits: Into<u128>;
 
-    /// Block length in bytes.
-    const LEN: usize = 8 * size_of::<Self::Bits>();
-
     /// Offset of the first instruction in a block.
     type Entry: Entry;
+
+    /// Block length in bytes.
+    const LEN: usize = 8 * size_of::<Self::Bits>();
 
     /// Returns the JUMPDEST bits of the block at `ptr` that start an instruction, and moves
     /// `entry` to the next block.
@@ -281,7 +283,8 @@ mod tests {
         code
     }
 
-    /// Checks that `simd`, followed by the scalar loop, matches [`reference`] on random bytecode.
+    /// Checks that `simd`, followed by the scalar loop, matches [`reference`] on bytecode ending
+    /// in PUSH instructions, and on random bytecode.
     pub(super) fn check_simd(simd: impl Fn(&[u8], &mut [u8]) -> usize) {
         let check = |code: &[u8]| {
             let mut table = vec![0; code.len().div_ceil(8)];

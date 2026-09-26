@@ -1,7 +1,7 @@
 //! Jump destination analysis with SSE4.1, AVX2, and AVX-512 VBMI.
 //!
-//! The algorithm follows Nethermind's `JumpDestinationAnalyzer`. For every byte of a block, the
-//! successor map holds the offset of the next instruction if one started at that byte. Squaring
+//! For every byte of a block, the successor map holds the offset of the next instruction if one
+//! started at that byte. Squaring
 //! the map repeatedly yields the maps for 2, 4, 8, ... instructions, and the widest one gives the
 //! offset where the path from the block's entry leaves the block, which is the entry of the next
 //! block. For each byte, a binary search down the maps then finds the furthest instruction on the
@@ -35,6 +35,7 @@ const END_OFFSETS64: __m512i =
 /// Second table of `vpermt2b`, which keeps offsets past the block.
 const EXITS64: __m512i = unsafe { core::mem::transmute(lanes::<64>(64, 64)) };
 
+/// Returns whether the CPU supports all of the given target features.
 macro_rules! detected {
     ($($feature:tt),+ $(,)?) => {
         cfg!(all($(target_feature = $feature),+)) || {

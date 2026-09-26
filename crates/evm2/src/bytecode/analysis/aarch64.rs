@@ -41,9 +41,6 @@ impl Entry for uint8x16_t {
     }
 }
 
-/// 16-byte blocks with NEON.
-struct Neon;
-
 /// Looks up each position in the successor map, keeping positions past the block.
 #[inline]
 #[target_feature(enable = "neon")]
@@ -103,6 +100,9 @@ fn to_bitmap(s: [uint8x16_t; 4]) -> u64 {
     let quads = vpaddq_u8(vpaddq_u8(s[0], s[1]), vpaddq_u8(s[2], s[3]));
     vgetq_lane_u64::<0>(vreinterpretq_u64_u8(vpaddq_u8(quads, quads)))
 }
+
+/// 16-byte blocks with NEON.
+struct Neon;
 
 impl Kernel for Neon {
     type Bits = u16;
