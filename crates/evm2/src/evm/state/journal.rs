@@ -44,8 +44,16 @@ pub enum JournalEntry {
     AccountChange {
         /// Account address.
         address: Address,
-        /// Previous present account value.
+        /// Snapshot payload, rewritten by explicit field overrides.
         previous: Option<AccountInfo>,
+        /// Whether the snapshot originated from an absent account before override rewriting.
+        previous_origin_absent: bool,
+        /// Wrapping balance delta applied by this handle, or `None` after an absolute assignment.
+        balance_delta: Option<Word>,
+        /// Whether nonce changes in this handle were increments (including no change).
+        nonce_is_delta: bool,
+        /// Whether this handle incremented the nonce once.
+        nonce_bumped: bool,
         /// Previous warm flag.
         previous_is_warm: bool,
         /// Previous touched flag.
