@@ -3,7 +3,9 @@ use crate::tracing::types::{
     CallTrace, CallTraceStep, RecordedMemory, StorageChange, StorageChangeReason,
 };
 use evm2::{
-    evm::EmptyDB,
+    AccountInfo,
+    bytecode::Bytecode,
+    evm::{CacheDB, EmptyDB},
     interpreter::{InstrStop, opcode::OpCode},
 };
 
@@ -282,5 +284,52 @@ fn storage_snapshots_keep_empty_reads_and_custom_changes() {
             frame.struct_logs[3].storage,
             (!disable_storage).then(|| { BTreeMap::from([(B256::ZERO, U256::from(2).into())]) })
         );
+    }
+}
+
+#[test]
+fn erc7562_omits_empty_code_contract_sizes_with_or_without_cached_code() {
+    let empty_address = Address::with_last_byte(1);
+    let contract_address = Address::with_last_byte(2);
+    let code = Bytecode::new_legacy(vec![op::PUSH1, 0x01, op::STOP].into());
+
+    for cached in [true, false] {
+        for opcode in [op::EXTCODESIZE, op::EXTCODECOPY, op::EXTCODEHASH] {
+            let mut db = CacheDB::new(EmptyDB::default());
+            let mut empty_account = AccountInfo::default();
+            if !cached {
+                empty_account.code = None;
+            }
+            // insert_account_info clears cached code, so preserve it explicitly here.
+            db.cache.accounts.insert(empty_address, Some(empty_account));
+            db.insert_account_info(
+                &contract_address,
+                AccountInfo::default().with_code(code.clone()),
+            );
+            let steps = [empty_address, contract_address]
+                .into_iter()
+                .map(|address| {
+                    let mut step = test_step(0, opcode);
+                    step.stack =
+                        Some(vec![U256::from_be_bytes(address.into_word().0)].into_boxed_slice());
+                    step
+                })
+                .collect();
+            let builder = GethTraceBuilder::new(vec![CallTraceNode {
+                trace: CallTrace { steps, ..Default::default() },
+                ..Default::default()
+            }]);
+            let frame = builder.geth_erc7562_traces(Erc7562Config::default(), 0, &mut db).unwrap();
+
+            assert_eq!(
+                frame.contract_size,
+                HashMap::from_iter([(contract_address, ContractSize { contract_size: 3, opcode })]),
+                "cached {cached}, opcode {opcode}"
+            );
+            assert_eq!(
+                frame.ext_code_access_info,
+                vec![format!("{empty_address:?}"), format!("{contract_address:?}")]
+            );
+        }
     }
 }
