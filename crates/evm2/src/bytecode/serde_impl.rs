@@ -147,4 +147,28 @@ mod tests {
             assert_eq!(bytecode_roundtrip.original_byte_slice(), bytes);
         }
     }
+
+    #[test]
+    fn serde_preserves_original_bytes_without_analysis() {
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[0x5b, 0x60]));
+        let json = serde_json::to_string(&bytecode).unwrap();
+        let binary = postcard::to_allocvec(&bytecode).unwrap();
+        assert_eq!(json, r#""0x5b60""#);
+        assert!(bytecode.0.jump_table.get().is_none());
+
+        for restored in [
+            serde_json::from_str::<Bytecode>(&json).unwrap(),
+            postcard::from_bytes::<Bytecode>(&binary).unwrap(),
+            serde_json::from_str::<Bytecode>(
+                r#"{"LegacyAnalyzed":{"bytecode":"0x5b60ff","original_len":2,"jump_table":{}}}"#,
+            )
+            .unwrap(),
+        ] {
+            assert_eq!(restored, bytecode);
+            assert_eq!(restored.bytes_slice(), bytecode.bytes_slice());
+            assert!(restored.0.jump_table.get().is_none());
+            assert!(restored.legacy_jump_table().unwrap().is_valid(0));
+            assert!(!restored.legacy_jump_table().unwrap().is_valid(1));
+        }
+    }
 }

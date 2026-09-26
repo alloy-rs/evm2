@@ -108,8 +108,10 @@ impl Case<'_> {
     pub(crate) fn state(&self) -> InMemoryDB {
         let mut db = InMemoryDB::default();
         for (address, account) in &self.unit.pre {
-            let mut info =
-                AccountInfo::default().with_code(Bytecode::new_legacy(account.code.clone()));
+            let bytecode = Bytecode::new_legacy(account.code.clone());
+            // Keep first-use jump analysis outside the timed execution.
+            let _ = bytecode.legacy_jump_table();
+            let mut info = AccountInfo::default().with_code(bytecode);
             info.balance = account.balance;
             info.nonce = account.nonce;
             db.insert_account_info(address, info);
