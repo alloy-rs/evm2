@@ -75,10 +75,10 @@ fn evm(c: &mut Criterion) {
                     let prepared = support::PreparedBench::load(bench, &suites);
                     prepared.sanity_check();
                     prepared.bench(&mut group);
-                }
 
-                if let Some(prepared) = analysis::PreparedBench::load(bench, &suites) {
-                    prepared.bench(&mut group);
+                    if let Some(prepared) = analysis::PreparedBench::load(bench, &suites) {
+                        prepared.bench(&mut group);
+                    }
                 }
 
                 #[cfg(feature = "jit")]
