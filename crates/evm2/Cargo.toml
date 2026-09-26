@@ -98,11 +98,6 @@ postcard = { workspace = true, features = ["alloc"] }
 rand = { workspace = true, features = ["std"] }
 ark-std = { workspace = true }
 rstest.workspace = true
-criterion.workspace = true
-
-[[bench]]
-name = "analysis"
-harness = false
 
 [[example]]
 name = "custom_evm"

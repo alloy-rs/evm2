@@ -6,6 +6,8 @@ use criterion::{
 use evm2_cli::evm_bench::{self, BenchCase, BenchCaseKind, BenchKind};
 use std::{env, time::Duration};
 
+#[path = "evm/analysis.rs"]
+mod analysis;
 #[path = "evm/fixture.rs"]
 mod fixture;
 #[cfg(feature = "jit")]
@@ -131,5 +133,5 @@ fn expand_cases(benches: &[evm_bench::Bench], suites: &fixture::Suites) -> Vec<B
     cases
 }
 
-criterion_group!(benches, evm);
+criterion_group!(benches, evm, analysis::analysis);
 criterion_main!(benches);
