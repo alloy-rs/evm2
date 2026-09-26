@@ -20,6 +20,9 @@ use derive_where::derive_where;
 #[derive_where(Debug)]
 pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     pub(in crate::interpreter) bytecode: Bytecode,
+    // Borrows the immutable allocations owned by `bytecode`. Cleared before replacing it;
+    // accessors must shorten the erased lifetime to the borrow of this interpreter.
+    bytecode_ref: Option<BytecodeRef<'static>>,
     pub(in crate::interpreter) memory: Memory,
     pub(in crate::interpreter) return_data: Bytes,
 
@@ -44,8 +47,9 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     is_static: bool,
 }
 
-// SAFETY: The interpreter's internal pointers are always valid. `pc` points into owned bytecode,
-// frame-local references are cleared before pooling, and host/inspector pointers are installed for
+// SAFETY: The interpreter's internal pointers are always valid. `pc` and `bytecode_ref` point into
+// immutable owned bytecode and its jump table. Frame-local references are cleared before pooling,
+// and host/inspector pointers are installed for
 // execution and not used after the owning execution context is gone. The `Sync` bounds make the
 // retained shared frame references safe to transfer between threads.
 unsafe impl<T> Send for Interpreter<'_, '_, T>
@@ -74,6 +78,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         Self {
             pc: bytecode.original_byte_slice().as_ptr(),
             bytecode,
+            bytecode_ref: None,
             stack_len: 0,
             gas: Gas::new(0),
             memory: Memory::new(),
@@ -100,6 +105,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         let gas_limit = message.gas_limit;
         let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
         self.pc = bytecode.original_byte_slice().as_ptr();
+        self.bytecode_ref = None;
         self.bytecode = bytecode;
         self.stack_len = 0;
         self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
@@ -174,7 +180,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Returns the active bytecode.
     #[inline]
     pub fn bytecode(&self) -> BytecodeRef<'_> {
-        BytecodeRef::new(&self.bytecode)
+        self.bytecode_ref.unwrap_or_else(|| BytecodeRef::new(&self.bytecode))
     }
 
     /// Returns the original active bytecode bytes.
@@ -381,6 +387,13 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     #[doc(hidden)]
     pub fn prepare_run(&mut self, spec: SpecId, version: &Version, host: &mut T::Host<'host>) {
+        if self.bytecode_ref.is_none() {
+            // SAFETY: The view borrows immutable allocations retained by our owned `Bytecode`,
+            // so moving the interpreter does not invalidate it. `init` clears the view before
+            // replacing the owner, and accessors tie the returned view to `&self`.
+            let bytecode = unsafe { trustme::decouple_lt(&self.bytecode) };
+            self.bytecode_ref = Some(BytecodeRef::new(bytecode));
+        }
         self.memory.set_memory_limit(version.memory_limit);
         // SAFETY: `version` remains alive for the duration of this interpreter run.
         let version = unsafe { trustme::decouple_lt(version) };
@@ -494,8 +507,10 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     /// Returns the active bytecode.
     #[inline]
-    pub fn bytecode(&self) -> BytecodeRef<'_> {
-        BytecodeRef::new(&self.0.bytecode)
+    pub const fn bytecode(&self) -> BytecodeRef<'_> {
+        // SAFETY: `prepare_run` initializes the view before instruction execution. It remains
+        // valid across call/resume cycles and is only cleared when initializing a new frame.
+        unsafe { self.0.bytecode_ref.unwrap_unchecked() }
     }
 
     /// Returns the host implementation.
@@ -696,5 +711,110 @@ mod owned_error_tests {
         assert_eq!(result, Err(ExecutionError::Database(error)));
         assert!(interpreter.error.is_none());
         assert_eq!(interpreter.finish_run(InstrStop::Stop), Ok(InstrStop::Stop));
+    }
+}
+
+#[cfg(test)]
+mod bytecode_cache_tests {
+    use super::*;
+    use crate::{
+        BaseEvmConfigSelector,
+        bytecode::JumpTable,
+        env::TxEnvExt,
+        interpreter::{MessageExt, op},
+        test_utils::{TestHost, TestTypes, legacy_bytecode},
+    };
+
+    #[test]
+    fn cache_survives_moves_and_repeated_runs() {
+        let tx = TxEnvExt::default();
+        let message = MessageExt {
+            code: legacy_bytecode([op::PUSH1, 3, op::JUMP, op::JUMPDEST, op::STOP]),
+            gas_limit: 1_000,
+            ..MessageExt::default()
+        };
+        let mut interp = Interpreter::<TestTypes>::new(&tx, &message);
+        assert!(interp.bytecode_ref.is_none());
+        // Inspectors can query bytecode before the first run.
+        assert!(interp.bytecode().is_valid_jumpdest(3));
+        assert!(interp.bytecode_ref.is_none());
+
+        let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+        let mut host = TestHost::default();
+        assert_eq!(interp.run(&config, &mut host), Ok(InstrStop::Stop));
+        assert!(interp.bytecode_ref.is_some());
+        let original_ptr = interp.bytecode().as_slice().as_ptr();
+
+        let mut interp = Box::new(interp);
+        interp.set_pc(0);
+        interp.set_result(Ok(()));
+        assert_eq!(interp.run(&config, &mut host), Ok(InstrStop::Stop));
+        assert_eq!(interp.bytecode().as_slice().as_ptr(), original_ptr);
+        assert!(interp.bytecode().is_valid_jumpdest(3));
+        assert_eq!(interp.gas().remaining(), 976);
+    }
+
+    #[test]
+    fn pooled_frame_discards_old_jump_destinations() {
+        let tx = TxEnvExt::default();
+        let first = MessageExt {
+            code: legacy_bytecode([op::PUSH1, 3, op::JUMP, op::JUMPDEST, op::STOP]),
+            gas_limit: 1_000,
+            ..MessageExt::default()
+        };
+        let second = MessageExt {
+            // Byte 3 resembles a jump destination but is PUSH data.
+            code: legacy_bytecode([op::PUSH1, 3, op::PUSH1, op::JUMPDEST, op::POP, op::JUMP]),
+            gas_limit: 1_000,
+            ..MessageExt::default()
+        };
+        let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+        let mut host = TestHost::default();
+        let mut pool = InterpreterPool::<TestTypes>::new();
+        let mut interp = pool.pop(&tx, &first);
+        let frame_ptr = &raw const *interp;
+        assert_eq!(interp.run(&config, &mut host), Ok(InstrStop::Stop));
+        pool.push(interp);
+
+        let mut interp = pool.pop(&tx, &second);
+        assert_eq!(&raw const *interp, frame_ptr);
+        assert!(interp.bytecode_ref.is_none());
+        assert_eq!(interp.run(&config, &mut host), Ok(InstrStop::InvalidJump));
+        assert!(!interp.bytecode().is_valid_jumpdest(3));
+        assert_eq!(interp.bytecode().as_slice(), second.code.original_byte_slice());
+        pool.push(interp);
+
+        let empty = MessageExt::default();
+        let mut interp = pool.pop(&tx, &empty);
+        assert_eq!(interp.run(&config, &mut host), Ok(InstrStop::Stop));
+        assert!(interp.bytecode().is_empty());
+        assert!(!interp.bytecode().is_valid_jumpdest(3));
+    }
+
+    #[test]
+    fn inspected_execution_uses_supplied_jump_table() {
+        let tx = TxEnvExt::default();
+        let code = legacy_bytecode([op::PUSH1, 3, op::JUMP, op::JUMPDEST, op::STOP]);
+        // Deliberately exclude the JUMPDEST to detect accidental reanalysis of trusted code.
+        let code = unsafe {
+            Bytecode::new_analyzed(code.bytes().clone(), 5, JumpTable::from_slice(&[0], 5))
+        };
+        let message = MessageExt { code, gas_limit: 1_000, ..MessageExt::default() };
+        let mut interp = Interpreter::<TestTypes>::new(&tx, &message);
+        let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+        let mut host = TestHost::default();
+        assert_eq!(
+            interp.run_inspect(&config, &mut host, &mut CacheInspector),
+            Ok(InstrStop::InvalidJump)
+        );
+    }
+
+    struct CacheInspector;
+
+    impl Inspector<TestTypes> for CacheInspector {
+        fn step(&mut self, interp: &mut Interpreter<'_, '_, TestTypes>) {
+            assert!(interp.bytecode_ref.is_some());
+            assert!(!interp.bytecode().is_valid_jumpdest(3));
+        }
     }
 }
