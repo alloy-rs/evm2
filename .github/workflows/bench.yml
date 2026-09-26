@@ -15,7 +15,14 @@ env:
 
 jobs:
   codspeed:
+    name: codspeed (${{ matrix.shard }})
     runs-on: depot-ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [burntpix, onchain_lm_v2, rest]
+    env:
+      EVM2_BENCH_SHARD: ${{ matrix.shard }}
     permissions:
       id-token: write
       contents: read

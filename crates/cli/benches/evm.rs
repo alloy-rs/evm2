@@ -36,10 +36,29 @@ fn evm(c: &mut Criterion) {
     let mut group = c.benchmark_group("evm");
     apply_default_budget(&mut group);
 
-    let benches = evm_bench::BENCHES;
+    let shard = env::var("EVM2_BENCH_SHARD").ok();
+    assert!(
+        matches!(shard.as_deref(), None | Some("burntpix" | "onchain_lm_v2" | "rest")),
+        "unknown EVM2_BENCH_SHARD: {shard:?}"
+    );
+    // Select before loading fixtures or preparing JIT code: Criterion's filters run too late.
+    let benches = evm_bench::BENCHES
+        .iter()
+        .copied()
+        .filter(|bench| {
+            shard.as_deref().is_none_or(|shard| {
+                shard
+                    == match bench.name {
+                        "burntpix" => "burntpix",
+                        "onchain_lm_v2" => "onchain_lm_v2",
+                        _ => "rest",
+                    }
+            })
+        })
+        .collect::<Vec<_>>();
     let suites =
         fixture::Suites::load(benches.iter().filter_map(|bench| bench.transaction_fixture_path()));
-    let cases = expand_cases(benches, &suites);
+    let cases = expand_cases(&benches, &suites);
 
     let bench_revm = env::var_os("EVM2_BENCH_REVM").is_some();
 
