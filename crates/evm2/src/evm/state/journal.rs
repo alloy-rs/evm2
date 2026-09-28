@@ -38,13 +38,13 @@ impl StateCheckpoint {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum JournalEntry {
-    /// Account overlay snapshot recorded before the first mutation made through an
-    /// [`AccountHandle`](super::AccountHandle), reverting the present account value and all
-    /// per-account flags in one entry.
+    /// Account structure and flag snapshot recorded by an [`AccountHandle`](super::AccountHandle).
+    /// Balance and nonce are preserved for their field-specific journal entries.
     AccountChange {
         /// Account address.
         address: Address,
-        /// Previous present account value.
+        /// Previous account payload. Balance and nonce are restored by their field-specific
+        /// entries and otherwise preserved from the live account.
         previous: Option<AccountInfo>,
         /// Previous warm flag.
         previous_is_warm: bool,
@@ -56,6 +56,32 @@ pub enum JournalEntry {
         previous_just_created: bool,
         /// Previous code-changed flag.
         previous_code_changed: bool,
+    },
+    /// An absolute balance assignment.
+    BalanceChange {
+        /// Account address.
+        address: Address,
+        /// Balance before the assignment.
+        previous: Word,
+    },
+    /// A relative balance change.
+    BalanceDelta {
+        /// Account address.
+        address: Address,
+        /// Wrapping delta applied to the balance.
+        delta: Word,
+    },
+    /// An absolute nonce assignment.
+    NonceChange {
+        /// Account address.
+        address: Address,
+        /// Nonce before the assignment.
+        previous: u64,
+    },
+    /// A nonce increment.
+    NonceBump {
+        /// Account address.
+        address: Address,
     },
     /// Persistent storage changed.
     StorageChange {
