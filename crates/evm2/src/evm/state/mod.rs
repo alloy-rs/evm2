@@ -757,11 +757,11 @@ impl<'a> State<'a> {
             match entry {
                 JournalEntry::AccountChange {
                     address,
-                    previous,
+                    mut previous,
                     previous_origin_absent,
-                    balance_delta: _,
-                    nonce_is_delta: _,
-                    nonce_bumped: _,
+                    balance_delta,
+                    nonce_is_delta,
+                    nonce_bumped,
                     previous_is_warm,
                     previous_is_touched,
                     previous_is_destroyed,
@@ -777,6 +777,28 @@ impl<'a> State<'a> {
                         self.selfdestructs.insert(address);
                     }
                     if let Some(entry) = self.accounts.get_mut(&address) {
+                        if let Some(delta) = balance_delta {
+                            let balance = entry
+                                .present
+                                .as_ref()
+                                .map_or(Word::ZERO, |info| info.balance)
+                                .wrapping_sub(delta);
+                            if previous.is_some() || !balance.is_zero() {
+                                previous.get_or_insert_with(AccountInfo::default).balance = balance;
+                            }
+                        }
+                        if nonce_is_delta {
+                            let nonce = entry.present.as_ref().map_or(0, |info| info.nonce);
+                            let nonce = if nonce_bumped { nonce.saturating_sub(1) } else { nonce };
+                            if previous.is_some() || nonce != 0 {
+                                previous.get_or_insert_with(AccountInfo::default).nonce = nonce;
+                            }
+                        }
+                        if previous_origin_absent
+                            && previous.as_ref().is_some_and(AccountInfo::is_empty)
+                        {
+                            previous = None;
+                        }
                         entry.present = previous;
                         entry.present_origin_absent =
                             previous_origin_absent && entry.present.is_some();

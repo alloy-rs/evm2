@@ -44,9 +44,9 @@ pub enum JournalEntry {
     AccountChange {
         /// Account address.
         address: Address,
-        /// Snapshot payload, rewritten by explicit field overrides.
+        /// Snapshot payload used for absolute rollback and account metadata.
         previous: Option<AccountInfo>,
-        /// Whether the snapshot originated from an absent account before override rewriting.
+        /// Whether the snapshot originated from an absent account.
         previous_origin_absent: bool,
         /// Wrapping balance delta applied by this handle, or `None` after an absolute assignment.
         balance_delta: Option<Word>,
