@@ -101,7 +101,7 @@ jobs:
           checksum: true
           fallback: none
         if: ${{ matrix.command == 'wasm-test' }}
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         if: ${{ matrix.kind == 'eest' }}
       - name: Download EEST fixtures
         if: ${{ matrix.kind == 'eest' }}
@@ -255,7 +255,7 @@ jobs:
           tool: nextest@0.9.140
           checksum: true
           fallback: none
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Download EEST fixtures
         run: ./scripts/setup_test_fixtures.py
       - name: eest ${{ matrix.mode }}
@@ -390,7 +390,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: crate-ci/typos@d43b6c087ac471e2ea7b8af622ff15f05c0c365b # v1.50.1
+      - uses: crate-ci/typos@512fc24f32f44ab01972217aaaf3dc86ec234d53 # v1.50.2
 
   clippy:
     runs-on: depot-ubuntu-latest
