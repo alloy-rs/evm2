@@ -177,8 +177,8 @@ pub use state::AccountExtension;
 pub use state::{
     AccountChangeRef, AccountHandle, AccountInfo, BlockStateAccumulator, JournalEntry,
     NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource, StateCheckpoint,
-    StateInner, StorageChange, StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle, Tee,
-    Tracked,
+    StateInner, StateSnapshot, StorageChange, StorageHandle, StorageOverlay, StorageSlot,
+    StorageSlotHandle, Tee, Tracked,
 };
 
 mod prewarm_set;
@@ -1944,9 +1944,10 @@ mod tests {
     fn handle_read_only_tx(
         req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
     ) -> HandlerResult<TxResult> {
-        let account = req.host.state.account(&LIFECYCLE_ACCOUNT)?;
-        assert_eq!(account.balance(), Word::from(1));
-        drop(account);
+        {
+            let account = req.host.state.account(&LIFECYCLE_ACCOUNT)?;
+            assert_eq!(account.balance(), Word::from(1));
+        }
 
         let slot = req.host.state.storage(&LIFECYCLE_ACCOUNT).into_slot(LIFECYCLE_STORAGE_KEY)?;
         assert_eq!(slot.current(), Word::from(1));

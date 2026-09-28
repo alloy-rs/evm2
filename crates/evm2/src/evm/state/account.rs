@@ -177,8 +177,6 @@ pub(crate) struct Account {
     pub(crate) original: Option<AccountInfo>,
     /// Present account overlay after mutations. `None` means the account is absent/deleted.
     pub(crate) present: Option<AccountInfo>,
-    /// Whether `present` exists only because an override survived rollback from an absent account.
-    pub(crate) present_origin_absent: bool,
     /// Whether this account is warm in the current transaction.
     pub(crate) is_warm: bool,
     /// Whether this account is touched for transaction-finalization account-lifetime rules.
@@ -246,11 +244,9 @@ impl Account {
 /// handle ties that overlay slot to the revert journal so a mutation and its rollback bookkeeping
 /// cannot drift apart, mirroring revm's `AccountHandle`.
 ///
-/// The first mutation captures the overlay entry and its access flags. Balance transfers and
-/// nonce bumps retain relative undo operations; setters restore absolute values. On drop it flushes
-/// that snapshot as a single [`JournalEntry::AccountChange`], which
-/// [`State::rollback`](super::State::rollback) replays to restore its fields and access flags. A
-/// handle used only for reads records nothing, so it emits no journal entry.
+/// Mutations record account structure and flags separately from balance and nonce operations.
+/// Relative operations remain relative during rollback, while setters restore absolute values. A
+/// handle used only for reads records nothing.
 ///
 /// The handle also carries the shared [`StateInner`] (backing database, revert journal, and
 /// transaction-initial base warm set), so it can journal mutations, load code on demand, and answer
@@ -265,17 +261,8 @@ pub struct AccountHandle<'a, 'db> {
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
     inner: &'a mut StateInner<'db>,
-    /// Revert entry capturing the overlay as it was before the first mutation made through this
-    /// handle. `Some` once a change has been recorded; on drop it is pushed onto the journal as a
-    /// single [`JournalEntry::AccountChange`].
-    snapshot: Option<JournalEntry>,
-}
-
-impl Drop for AccountHandle<'_, '_> {
-    #[inline]
-    fn drop(&mut self) {
-        self.flush_change();
-    }
+    /// Whether this handle has recorded its pre-mutation account structure and flags.
+    structure_recorded: bool,
 }
 
 /// Returns a freshly materialized empty account overlay.
@@ -293,51 +280,34 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         tracked: &'a mut Account,
         inner: &'a mut StateInner<'db>,
     ) -> Self {
-        Self { address, tracked, inner, snapshot: None }
+        Self { address, tracked, inner, structure_recorded: false }
     }
 
-    /// Records the pre-mutation revert entry the first time a change is made through this handle.
-    /// Subsequent calls are no-ops, so the whole handle session flushes a single
-    /// [`JournalEntry::AccountChange`] on drop.
+    /// Records account structure and flags before this handle's first mutation.
     #[inline]
     fn record_change(&mut self) {
-        if self.snapshot.is_none() {
-            let previous_origin_absent =
-                self.tracked.present.is_none() || self.tracked.present_origin_absent;
-            self.snapshot = Some(JournalEntry::AccountChange {
-                address: self.address,
-                previous: self.tracked.present.clone(),
-                previous_origin_absent,
-                balance_delta: Some(Word::ZERO),
-                nonce_is_delta: true,
-                nonce_bumped: false,
-                previous_is_warm: self.tracked.is_warm,
-                previous_is_touched: self.tracked.is_touched,
-                previous_is_destroyed: self.tracked.is_destroyed,
-                previous_just_created: self.tracked.just_created,
-                previous_code_changed: self.tracked.code_changed,
-            });
+        if self.structure_recorded {
+            return;
         }
+        self.inner.journal.push(JournalEntry::AccountChange {
+            address: self.address,
+            previous: self.tracked.present.clone(),
+            previous_is_warm: self.tracked.is_warm,
+            previous_is_touched: self.tracked.is_touched,
+            previous_is_destroyed: self.tracked.is_destroyed,
+            previous_just_created: self.tracked.just_created,
+            previous_code_changed: self.tracked.code_changed,
+        });
+        self.structure_recorded = true;
     }
 
-    /// Flushes the handle before an unjournaled override changes the live account.
+    /// Records account structure when a field mutation also materializes or touches the account.
     #[inline]
-    fn flush_change(&mut self) {
-        if let Some(entry) = self.snapshot.take() {
-            self.inner.journal.push(entry);
+    fn prepare_field_change(&mut self) {
+        if self.tracked.present.is_none() || !self.tracked.is_touched {
+            self.record_change();
         }
-    }
-
-    /// Removes an empty payload that exists only because an override materialized an absent
-    /// account.
-    #[inline]
-    fn restore_override_absence(&mut self) {
-        if self.tracked.present_origin_absent
-            && self.tracked.present.as_ref().is_some_and(AccountInfo::is_empty)
-        {
-            self.tracked.present = None;
-            self.tracked.present_origin_absent = false;
-        }
+        self.tracked.is_touched = true;
     }
 
     /// Returns the account address.
@@ -356,6 +326,12 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub const fn exists(&self) -> bool {
         self.tracked.present.is_some()
+    }
+
+    /// Returns whether the account existed at the transaction boundary.
+    #[inline]
+    pub const fn originally_exists(&self) -> bool {
+        self.tracked.original.is_some()
     }
 
     /// Returns the account balance, or zero when the account is absent.
@@ -492,8 +468,10 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
             self.record_change();
             self.tracked.is_destroyed = true;
             self.inner.selfdestructs.insert(self.address);
+            self.tracked.is_touched = true;
+        } else if !self.tracked.is_touched {
+            self.touch();
         }
-        self.touch();
     }
 
     /// Marks the account warm for EIP-2929 gas accounting, recording a revert snapshot when this
@@ -514,19 +492,16 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Sets the account balance, touching the account and recording a revert snapshot.
     #[inline]
     pub fn set_balance(&mut self, balance: Word) {
-        self.touch();
-        self.record_change();
-        if let Some(JournalEntry::AccountChange { balance_delta, .. }) = &mut self.snapshot {
-            *balance_delta = None;
-        }
-        self.tracked.present_origin_absent = false;
+        self.prepare_field_change();
+        self.inner
+            .journal
+            .push(JournalEntry::BalanceChange { address: self.address, previous: self.balance() });
         self.tracked.present.get_or_insert_with(empty_account).balance = balance;
     }
 
     /// Adds a signed balance delta by wrapping two's-complement values, touching the account.
     ///
     /// A zero delta only touches the account, matching the EVM's value-bearing-call semantics.
-    /// Explicit balance overrides preserve this relative operation across rollback.
     #[inline]
     pub fn add_balance(&mut self, delta: Word) {
         if delta.is_zero() {
@@ -534,26 +509,18 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
             return;
         }
         let balance = self.balance().wrapping_add(delta);
-        self.touch();
-        self.record_change();
-        if let Some(JournalEntry::AccountChange { balance_delta: Some(total), .. }) =
-            &mut self.snapshot
-        {
-            *total = total.wrapping_add(delta);
-        }
-        self.tracked.present_origin_absent = false;
+        self.prepare_field_change();
+        self.inner.journal.push(JournalEntry::BalanceDelta { address: self.address, delta });
         self.tracked.present.get_or_insert_with(empty_account).balance = balance;
     }
 
     /// Sets the account nonce, touching the account and recording a revert snapshot.
     #[inline]
     pub fn set_nonce(&mut self, nonce: u64) {
-        self.touch();
-        self.record_change();
-        if let Some(JournalEntry::AccountChange { nonce_is_delta, .. }) = &mut self.snapshot {
-            *nonce_is_delta = false;
-        }
-        self.tracked.present_origin_absent = false;
+        self.prepare_field_change();
+        self.inner
+            .journal
+            .push(JournalEntry::NonceChange { address: self.address, previous: self.nonce() });
         self.tracked.present.get_or_insert_with(empty_account).nonce = nonce;
     }
 
@@ -562,21 +529,12 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Returns `false` without changing the nonce when it is already at the maximum value.
     #[inline]
     pub fn bump_nonce(&mut self) -> bool {
-        self.touch();
         let Some(nonce) = self.nonce().checked_add(1) else {
+            self.touch();
             return false;
         };
-        if matches!(
-            self.snapshot,
-            Some(JournalEntry::AccountChange { nonce_is_delta: true, nonce_bumped: true, .. })
-        ) {
-            self.flush_change();
-        }
-        self.record_change();
-        if let Some(JournalEntry::AccountChange { nonce_bumped, .. }) = &mut self.snapshot {
-            *nonce_bumped = true;
-        }
-        self.tracked.present_origin_absent = false;
+        self.prepare_field_change();
+        self.inner.journal.push(JournalEntry::NonceBump { address: self.address });
         self.tracked.present.get_or_insert_with(empty_account).nonce = nonce;
         true
     }
@@ -587,9 +545,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// have the hash computed.
     #[inline]
     pub fn set_code(&mut self, code_hash: B256, code: Bytecode) {
-        self.touch();
         self.record_change();
-        self.tracked.present_origin_absent = false;
+        self.tracked.is_touched = true;
         let account = self.tracked.present.get_or_insert_with(empty_account);
         account.code_hash = code_hash;
         account.code = Some(code);
@@ -624,13 +581,12 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     fn present_mut(&mut self) -> &mut AccountInfo {
         self.record_change();
-        if let Some(JournalEntry::AccountChange { balance_delta, nonce_is_delta, .. }) =
-            &mut self.snapshot
-        {
-            *balance_delta = None;
-            *nonce_is_delta = false;
-        }
-        self.tracked.present_origin_absent = false;
+        self.inner
+            .journal
+            .push(JournalEntry::BalanceChange { address: self.address, previous: self.balance() });
+        self.inner
+            .journal
+            .push(JournalEntry::NonceChange { address: self.address, previous: self.nonce() });
         self.tracked.present.get_or_insert_with(empty_account)
     }
 
@@ -640,16 +596,11 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub(crate) fn mark_created(&mut self) {
         self.record_change();
-        self.tracked.present_origin_absent = false;
         self.tracked.mark_created();
     }
 
     /// Records a revert snapshot and returns the live account, materializing an empty one when it
     /// is currently absent.
-    ///
-    /// Because arbitrary mutable access can replace either field, this creates absolute rollback
-    /// boundaries for both balance and nonce. Use field-specific setters when other fields must
-    /// remain transparent to explicit overrides.
     #[inline]
     pub fn get_or_insert(&mut self) -> &mut AccountInfo {
         self.present_mut()
@@ -658,33 +609,38 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Updates the account payload, touching the account and recording a revert snapshot.
     #[cfg(feature = "account-ext")]
     pub fn set_extension(&mut self, extension: super::AccountExtension) {
-        self.touch();
         self.record_change();
-        self.tracked.present_origin_absent = false;
+        self.tracked.is_touched = true;
         self.tracked.present.get_or_insert_with(empty_account).extension = extension;
     }
 
-    /// Overrides the balance without journaling the assignment or touching the account.
-    /// Earlier transfers still revert by their original amounts; absolute journaled assignments
-    /// still restore their saved values. Intended for simulation state overrides.
-    ///
-    /// Callers must also use this method for every ordered restoration or cleanup of an override.
-    /// An ordinary setter would journal that restoration.
+    /// Overrides the balance without journaling or touching the account.
     pub fn override_balance(&mut self, balance: Word) {
-        self.flush_change();
-        self.tracked.present_origin_absent |= self.tracked.present.is_none();
-        self.tracked.present.get_or_insert_with(empty_account).balance = balance;
-        self.restore_override_absence();
+        if let Some(account) = self.tracked.present.as_mut() {
+            account.balance = balance;
+        } else if !balance.is_zero() {
+            self.tracked.present = Some(AccountInfo::default().with_balance(balance));
+        }
     }
 
-    /// Overrides the nonce without journaling the assignment or touching the account.
-    /// Earlier nonce bumps still revert by decrementing; absolute journaled assignments still
-    /// restore their saved values. Intended for simulation state overrides.
+    /// Overrides the nonce without journaling or touching the account.
+    /// Earlier nonce bumps still revert by decrementing the overridden value.
     pub fn override_nonce(&mut self, nonce: u64) {
-        self.flush_change();
-        self.tracked.present_origin_absent |= self.tracked.present.is_none();
-        self.tracked.present.get_or_insert_with(empty_account).nonce = nonce;
-        self.restore_override_absence();
+        if let Some(account) = self.tracked.present.as_mut() {
+            account.nonce = nonce;
+        } else if nonce != 0 {
+            self.tracked.present = Some(AccountInfo::default().with_nonce(nonce));
+        }
+    }
+
+    /// Dematerializes an empty account without journaling or changing its access metadata.
+    ///
+    /// This only checks the account payload. The caller is responsible for deciding that account
+    /// absence, including any creation and storage lifetime, should be restored.
+    pub fn dematerialize_if_empty(&mut self) {
+        if self.tracked.present.as_ref().is_some_and(AccountInfo::is_empty) {
+            self.tracked.present = None;
+        }
     }
 
     /// Deletes the account at transaction finalization.
@@ -696,7 +652,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub(crate) fn delete_for_finalization(&mut self) {
         self.tracked.present = None;
-        self.tracked.present_origin_absent = false;
     }
 
     /// Resets a self-destructed account to a balance-only account for EIP-8246 finalization.
@@ -710,7 +665,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     pub(crate) fn reset_selfdestructed_for_finalization(&mut self) {
         let balance = self.balance();
         self.tracked.is_destroyed = false;
-        self.tracked.present_origin_absent = false;
         self.tracked.present = Some(AccountInfo::default().with_balance(balance));
     }
 }
@@ -865,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn overrides_preserve_transfer_and_nonce_bump_undo() {
+    fn overrides_preserve_relative_undo() {
         let address = Address::with_last_byte(0x81);
         let sender = Address::with_last_byte(0x82);
         let mut db = CacheDB::default();
@@ -879,45 +833,57 @@ mod tests {
 
         assert!(state.transfer(&sender, &address, &Word::from(8)).unwrap());
         assert!(state.account(&address).unwrap().bump_nonce());
-        {
-            let mut account = state.account(&address).unwrap();
-            account.touch();
-            account.override_balance(Word::from(109));
-            account.override_nonce(9);
-        }
+        state.account(&address).unwrap().override_balance(Word::from(109));
+        state.account(&address).unwrap().override_nonce(9);
+
         state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
-        let account = state.account(&address).unwrap();
-        assert_eq!(account.balance(), Word::from(101));
-        assert_eq!(account.nonce(), 8);
-        drop(account);
+        {
+            let account = state.account(&address).unwrap();
+            assert_eq!(account.balance(), Word::from(101));
+            assert_eq!(account.nonce(), 8);
+        }
         assert_eq!(state.account(&sender).unwrap().balance(), Word::from(100));
     }
 
     #[test]
-    fn absolute_changes_and_creation_still_restore_saved_values() {
+    fn setters_remain_absolute_across_overrides() {
         let address = Address::with_last_byte(0x83);
-        let sender = Address::with_last_byte(0x84);
-        let features = crate::Version::base(crate::SpecId::CANCUN).features;
         let mut db = CacheDB::default();
-        db.insert_account_info(&sender, AccountInfo::default().with_balance(Word::from(100)));
+        db.insert_account_info(
+            &address,
+            AccountInfo::default().with_balance(Word::from(100)).with_nonce(7),
+        );
         let mut state = State::new(db);
         let checkpoint = state.checkpoint();
         {
-            let mut account = state.account(&sender).unwrap();
-            account.set_balance(Word::from(90));
-            account.set_nonce(5);
+            let mut account = state.account(&address).unwrap();
+            account.set_balance(Word::from(100));
+            account.set_nonce(8);
             account.override_balance(Word::from(200));
             account.override_nonce(9);
         }
-        state.rollback(checkpoint, features);
-        assert_eq!(state.account(&sender).unwrap().balance(), Word::from(100));
-        assert_eq!(state.account(&sender).unwrap().nonce(), 0);
 
+        state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
+        let account = state.account(&address).unwrap();
+        assert_eq!(account.balance(), Word::from(100));
+        assert_eq!(account.nonce(), 7);
+    }
+
+    #[test]
+    fn creation_endowment_remains_relative_across_overrides() {
+        let address = Address::with_last_byte(0x8a);
+        let sender = Address::with_last_byte(0x8b);
+        let mut db = CacheDB::default();
+        db.insert_account_info(&sender, AccountInfo::default().with_balance(Word::from(100)));
+        let mut state = State::new(db);
+        let features = crate::Version::base(crate::SpecId::CANCUN).features;
         let checkpoint = state.checkpoint();
+
         state.create_account(&sender, &address, &Word::from(3), features).unwrap().unwrap();
         state.account(&address).unwrap().override_balance(Word::from(109));
         state.account(&address).unwrap().override_nonce(9);
         state.rollback(checkpoint, features);
+
         let account = state.account(&address).unwrap();
         assert_eq!(account.balance(), Word::from(106));
         assert_eq!(account.nonce(), 0);
@@ -925,21 +891,69 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_balance_assignment_remains_absolute() {
-        let address = Address::with_last_byte(0x85);
-        let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(50)));
-        let mut state = State::new(db);
-        let checkpoint = state.checkpoint();
-        state.account(&address).unwrap().set_balance(Word::from(50));
-        state.account(&address).unwrap().override_balance(Word::from(109));
-        state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
-        assert_eq!(state.account(&address).unwrap().balance(), Word::from(50));
+    fn caller_owned_absence_cleanup_handles_rolled_back_materialization() {
+        let address = Address::with_last_byte(0x84);
+        let sender = Address::with_last_byte(0x85);
+        let features = crate::Version::base(crate::SpecId::CANCUN).features;
+        for (journaled, overridden) in
+            [(Word::ZERO, Word::from(9)), (Word::from(10), Word::from(20))]
+        {
+            let mut db = CacheDB::default();
+            db.insert_account_info(&sender, AccountInfo::default().with_balance(Word::from(100)));
+            let mut state = State::new(db);
+            let checkpoint = state.checkpoint();
+            if journaled.is_zero() {
+                assert!(state.account(&address).unwrap().bump_nonce());
+            } else {
+                assert!(state.transfer(&sender, &address, &journaled).unwrap());
+            }
+            let (previous, originally_absent) = {
+                let mut account = state.account(&address).unwrap();
+                let previous = account.balance();
+                let originally_absent = !account.originally_exists();
+                account.override_balance(overridden);
+                (previous, originally_absent)
+            };
+
+            state.rollback(checkpoint, features);
+            let mut account = state.account(&address).unwrap();
+            let restored = account.balance().wrapping_add(previous).wrapping_sub(overridden);
+            account.override_balance(restored);
+            if originally_absent {
+                account.dematerialize_if_empty();
+            }
+            assert!(!account.exists(), "journaled={journaled}, overridden={overridden}");
+        }
     }
 
     #[test]
-    fn zero_nonce_override_saturates_multiple_bump_undos() {
-        let address = Address::with_last_byte(0x86);
+    fn caller_controls_empty_account_dematerialization() {
+        let historical = Address::with_last_byte(0x8c);
+        let surviving = Address::with_last_byte(0x8d);
+        let mut state = State::new(CacheDB::default());
+        {
+            let mut account = state.account(&historical).unwrap();
+            account.tracked.mark_created();
+            account.tracked.present = None;
+            account.override_balance(Word::from(9));
+            account.override_balance(Word::ZERO);
+            account.dematerialize_if_empty();
+            assert!(!account.exists());
+        }
+        {
+            let mut account = state.account(&surviving).unwrap();
+            account.override_balance(Word::from(9));
+            account.mark_created();
+            account.override_balance(Word::ZERO);
+            assert!(account.exists());
+            assert!(account.is_created());
+            assert!(account.get().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn zero_nonce_override_saturates_bump_undo() {
+        let address = Address::with_last_byte(0x87);
         let mut state = State::new(CacheDB::default());
         let checkpoint = state.checkpoint();
         {
@@ -948,6 +962,7 @@ mod tests {
             assert!(account.bump_nonce());
             account.override_nonce(0);
         }
+
         state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
         let account = state.account(&address).unwrap();
         assert_eq!(account.nonce(), 0);
@@ -955,172 +970,9 @@ mod tests {
     }
 
     #[test]
-    fn override_cleanup_restores_absent_account() {
-        let address = Address::with_last_byte(0x89);
-        let sender = Address::with_last_byte(0x8a);
-        let features = crate::Version::base(crate::SpecId::CANCUN).features;
-        for relative_changes in [false, true] {
-            let mut db = CacheDB::default();
-            db.insert_account_info(&sender, AccountInfo::default().with_balance(Word::from(100)));
-            let mut state = State::new(db);
-            let checkpoint = state.checkpoint();
-            let (old_balance, old_nonce) = if relative_changes {
-                assert!(state.transfer(&sender, &address, &Word::from(3)).unwrap());
-                assert!(state.account(&address).unwrap().bump_nonce());
-                (Word::from(3), 1)
-            } else {
-                state.account(&address).unwrap().touch();
-                (Word::ZERO, 0)
-            };
-            {
-                let mut account = state.account(&address).unwrap();
-                account.override_balance(Word::from(9));
-                account.override_nonce(9);
-                account.override_balance(old_balance);
-                account.override_nonce(old_nonce);
-            }
-            state.rollback(checkpoint, features);
-            assert!(!state.account(&address).unwrap().exists());
-            state.commit_transaction();
-            assert!(state.account_info_untracked(&address).unwrap().is_none());
-        }
-
-        let mut state = State::new(CacheDB::default());
-        let parent = state.checkpoint();
-        let child = state.checkpoint();
-        {
-            let mut account = state.account(&address).unwrap();
-            account.touch();
-            account.override_balance(Word::from(9));
-            account.override_nonce(9);
-        }
-        state.rollback(child, features);
-        {
-            let mut account = state.account(&address).unwrap();
-            account.touch();
-            account.override_balance(Word::ZERO);
-            account.override_nonce(0);
-        }
-        state.rollback(parent, features);
-        assert!(!state.account(&address).unwrap().exists());
-        state.commit_transaction();
-        assert!(state.account_info_untracked(&address).unwrap().is_none());
-    }
-
-    #[test]
-    fn creation_replaces_override_only_absence_provenance() {
-        let address = Address::with_last_byte(0x8e);
-        let caller = Address::with_last_byte(0x8f);
-        let key = Word::from(1);
-        let version = crate::Version::base(crate::SpecId::CANCUN);
-        for rollback_creation in [false, true] {
-            let mut db = CacheDB::default();
-            db.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(100)));
-            let mut state = State::new(db);
-            let parent = state.checkpoint();
-            {
-                let mut account = state.account(&address).unwrap();
-                account.touch();
-                account.override_balance(Word::from(9));
-            }
-            let creation = state.checkpoint();
-            state
-                .create_account(&caller, &address, &Word::ZERO, version.features)
-                .unwrap()
-                .unwrap();
-
-            if rollback_creation {
-                state.rollback(creation, version.features);
-                state.account(&address).unwrap().override_balance(Word::ZERO);
-                state.rollback(parent, version.features);
-                assert!(!state.account(&address).unwrap().exists());
-                continue;
-            }
-
-            state.storage_slot(&address, key).unwrap().set(Word::from(1));
-            {
-                let mut account = state.account(&address).unwrap();
-                account.override_nonce(0);
-                account.override_balance(Word::ZERO);
-                assert!(account.is_created());
-            }
-            state.finalize_transaction_(version);
-            assert!(!state.account(&address).unwrap().exists());
-            state.commit_transaction();
-            assert_eq!(state.storage_slot_untracked(&address, &key).unwrap(), Word::ZERO);
-        }
-    }
-
-    #[test]
-    fn repeated_balance_overrides_support_lifo_cleanup() {
-        let address = Address::with_last_byte(0x8b);
-        let sender = Address::with_last_byte(0x8c);
-        let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(100)));
-        db.insert_account_info(&sender, AccountInfo::default().with_balance(Word::from(100)));
-        let mut state = State::new(db);
-        let checkpoint = state.checkpoint();
-        assert!(state.transfer(&sender, &address, &Word::from(3)).unwrap());
-        {
-            let mut account = state.account(&address).unwrap();
-            account.override_balance(Word::from(109));
-            account.override_balance(Word::from(200));
-            account.override_balance(Word::from(109));
-            account.override_balance(Word::from(103));
-        }
-        state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
-        assert_eq!(state.account(&address).unwrap().balance(), Word::from(100));
-    }
-
-    #[test]
-    fn override_lifo_cleanup_runs_after_frame_rollback() {
-        let address = Address::with_last_byte(0x90);
-        let sender = Address::with_last_byte(0x91);
-        let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(100)));
-        db.insert_account_info(&sender, AccountInfo::default().with_balance(Word::from(100)));
-        let mut state = State::new(db);
-        let checkpoint = state.checkpoint();
-
-        assert!(state.transfer(&sender, &address, &Word::from(10)).unwrap());
-        let first_saved_balance = state.account(&address).unwrap().balance();
-        state.account(&address).unwrap().override_balance(Word::from(200));
-        assert!(state.transfer(&sender, &address, &Word::from(5)).unwrap());
-        let second_saved_balance = state.account(&address).unwrap().balance();
-        state.account(&address).unwrap().override_balance(Word::from(300));
-
-        state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
-        assert_eq!(state.account(&address).unwrap().balance(), Word::from(285));
-        state.account(&address).unwrap().override_balance(second_saved_balance);
-        assert_eq!(state.account(&address).unwrap().balance(), Word::from(205));
-        state.account(&address).unwrap().override_balance(first_saved_balance);
-        assert_eq!(state.account(&address).unwrap().balance(), Word::from(110));
-        assert_eq!(state.account(&sender).unwrap().balance(), Word::from(100));
-    }
-
-    #[test]
-    fn absent_override_cleanup_runs_after_frame_rollback() {
-        let address = Address::with_last_byte(0x92);
-        let mut state = State::new(CacheDB::default());
-        let checkpoint = state.checkpoint();
-        {
-            let mut account = state.account(&address).unwrap();
-            account.touch();
-            account.override_balance(Word::from(9));
-        }
-
-        state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
-        assert_eq!(state.account(&address).unwrap().balance(), Word::from(9));
-        state.account(&address).unwrap().override_balance(Word::ZERO);
-        assert!(!state.account(&address).unwrap().exists());
-        state.commit_transaction();
-        assert!(state.account_info_untracked(&address).unwrap().is_none());
-    }
-
-    #[test]
-    fn override_between_child_and_parent_rollback_preserves_parent_undo() {
-        let address = Address::with_last_byte(0x87);
-        let sender = Address::with_last_byte(0x88);
+    fn override_between_nested_rollbacks_preserves_parent_undo() {
+        let address = Address::with_last_byte(0x88);
+        let sender = Address::with_last_byte(0x89);
         let mut db = CacheDB::default();
         db.insert_account_info(
             &address,
@@ -1136,6 +988,7 @@ mod tests {
         assert!(state.transfer(&sender, &address, &Word::from(5)).unwrap());
         assert!(state.account(&address).unwrap().bump_nonce());
         state.rollback(child, features);
+
         {
             let mut account = state.account(&address).unwrap();
             assert_eq!((account.balance(), account.nonce()), (Word::from(103), 8));

@@ -36,25 +36,48 @@ fn evm(c: &mut Criterion) {
     let mut group = c.benchmark_group("evm");
     apply_default_budget(&mut group);
 
-    let benches = evm_bench::BENCHES;
+    let shard = env::var("EVM2_BENCH_SHARD").ok();
+    assert!(
+        matches!(shard.as_deref(), None | Some("interpreter" | "jit-burntpix" | "jit-rest")),
+        "unknown EVM2_BENCH_SHARD: {shard:?}"
+    );
+    let bench_interpreter = matches!(shard.as_deref(), None | Some("interpreter"));
+    assert!(
+        bench_interpreter || cfg!(feature = "jit"),
+        "JIT benchmark shards require the jit feature"
+    );
+
+    // burntpix takes roughly half the JIT runtime. Filter before fixture loading and JIT setup.
+    let benches = evm_bench::BENCHES
+        .iter()
+        .copied()
+        .filter(|bench| match shard.as_deref() {
+            Some("jit-burntpix") => bench.name == "burntpix",
+            Some("jit-rest") => bench.name != "burntpix",
+            _ => true,
+        })
+        .collect::<Vec<_>>();
     let suites =
         fixture::Suites::load(benches.iter().filter_map(|bench| bench.transaction_fixture_path()));
-    let cases = expand_cases(benches, &suites);
+    let cases = expand_cases(&benches, &suites);
 
-    let bench_revm = env::var_os("EVM2_BENCH_REVM").is_some();
+    let bench_revm = bench_interpreter && env::var_os("EVM2_BENCH_REVM").is_some();
 
     #[cfg(feature = "jit")]
-    let mut jit_compiler = jit::Compiler::new();
+    let mut jit_compiler = (shard.as_deref() != Some("interpreter")).then(jit::Compiler::new);
 
     for bench in &cases {
         match bench.kind {
             BenchCaseKind::Transaction { .. } => {
-                let prepared = support::PreparedBench::load(bench, &suites);
-                prepared.sanity_check();
-                prepared.bench(&mut group);
+                if bench_interpreter {
+                    let prepared = support::PreparedBench::load(bench, &suites);
+                    prepared.sanity_check();
+                    prepared.bench(&mut group);
+                }
 
                 #[cfg(feature = "jit")]
-                if let Some(prepared) = jit::PreparedBench::load(bench, &suites, &mut jit_compiler)
+                if let Some(compiler) = &mut jit_compiler
+                    && let Some(prepared) = jit::PreparedBench::load(bench, &suites, compiler)
                 {
                     prepared.sanity_check();
                     prepared.bench(&mut group);
@@ -66,6 +89,7 @@ fn evm(c: &mut Criterion) {
                     prepared.bench(&mut group);
                 }
             }
+            BenchCaseKind::BlockchainReplay if !bench_interpreter => {}
             BenchCaseKind::BlockchainReplay => {
                 let prepared = mainnet::PreparedBench::load(bench);
                 prepared.sanity_check();

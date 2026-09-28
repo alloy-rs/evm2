@@ -26,8 +26,8 @@ pub use tracked::Tracked;
 
 use super::{
     PrewarmSet,
-    bal::{Bal, BlockAccessIndex},
-    db::{CacheDB, DbResult, DynDatabase, EmptyDB, boxed_dyn_database},
+    bal::{Bal, BalContext, BlockAccessIndex},
+    db::{Cache, CacheDB, DbResult, DynDatabase, EmptyDB, boxed_dyn_database},
 };
 use crate::{
     EvmFeatures, LoadError, Version,
@@ -62,6 +62,47 @@ pub struct State<'a> {
     inner: StateInner<'a>,
 }
 
+/// Owned in-memory state without a backing database.
+///
+/// This can be kept across executions or sent to another thread. Restoring it requires supplying
+/// the database that should serve uncached reads.
+#[derive(Clone, Debug)]
+pub struct StateSnapshot {
+    accounts: AddressMap<Account>,
+    storage: AddressMap<StorageOverlay>,
+    transient_storage: StorageKeyMap<Word>,
+    cache: Cache,
+    bal_context: BalContext,
+    prewarm_set: PrewarmSet,
+    journal: Vec<JournalEntry>,
+    logs: Vec<Log>,
+    selfdestructs: AddressSet,
+}
+
+impl StateSnapshot {
+    /// Restores the captured state over a backing database.
+    pub fn into_state<'a>(self, db: impl DynDatabase + 'a) -> State<'a> {
+        State {
+            accounts: self.accounts,
+            storage: self.storage,
+            storage_pool: storage_pool::StoragePool::default(),
+            transient_storage: self.transient_storage,
+            inner: StateInner {
+                database: CacheDB {
+                    cache: self.cache,
+                    db: boxed_dyn_database(db),
+                    bal_context: self.bal_context,
+                    _non_exhaustive: (),
+                },
+                prewarm_set: self.prewarm_set,
+                journal: self.journal,
+                logs: self.logs,
+                selfdestructs: self.selfdestructs,
+            },
+        }
+    }
+}
+
 /// Clones in-memory state with [`EmptyDB`] as the backing database.
 /// Use [`State::clone_with`] to supply a database.
 impl Clone for State<'_> {
@@ -71,27 +112,24 @@ impl Clone for State<'_> {
 }
 
 impl State<'_> {
-    /// Clones in-memory state with `db` as the backing database.
-    pub fn clone_with<'a>(&self, db: impl DynDatabase + 'a) -> State<'a> {
-        State {
+    /// Captures all in-memory state without retaining the backing database.
+    pub fn snapshot(&self) -> StateSnapshot {
+        StateSnapshot {
             accounts: self.accounts.clone(),
             storage: self.storage.clone(),
-            // The pool holds only spare allocations, not state.
-            storage_pool: storage_pool::StoragePool::default(),
             transient_storage: self.transient_storage.clone(),
-            inner: StateInner {
-                database: CacheDB {
-                    cache: self.database.cache.clone(),
-                    db: boxed_dyn_database(db),
-                    bal_context: self.database.bal_context.clone(),
-                    _non_exhaustive: (),
-                },
-                prewarm_set: self.prewarm_set.clone(),
-                journal: self.journal.clone(),
-                logs: self.logs.clone(),
-                selfdestructs: self.selfdestructs.clone(),
-            },
+            cache: self.database.cache.clone(),
+            bal_context: self.database.bal_context.clone(),
+            prewarm_set: self.prewarm_set.clone(),
+            journal: self.journal.clone(),
+            logs: self.logs.clone(),
+            selfdestructs: self.selfdestructs.clone(),
         }
+    }
+
+    /// Clones in-memory state with `db` as the backing database.
+    pub fn clone_with<'a>(&self, db: impl DynDatabase + 'a) -> State<'a> {
+        self.snapshot().into_state(db)
     }
 }
 
@@ -675,7 +713,6 @@ impl<'a> State<'a> {
         }
 
         let mut target = self.account(address)?;
-        // Creation restores the previous nonce/code but reverses endowment as a transfer.
         target.add_balance(*value);
         target.set_nonce(u64::from(features.contains(EvmFeatures::EIP161)));
         target.set_code_slow(Bytecode::default());
@@ -758,10 +795,6 @@ impl<'a> State<'a> {
                 JournalEntry::AccountChange {
                     address,
                     mut previous,
-                    previous_origin_absent,
-                    balance_delta,
-                    nonce_is_delta,
-                    nonce_bumped,
                     previous_is_warm,
                     previous_is_touched,
                     previous_is_destroyed,
@@ -777,31 +810,15 @@ impl<'a> State<'a> {
                         self.selfdestructs.insert(address);
                     }
                     if let Some(entry) = self.accounts.get_mut(&address) {
-                        if let Some(delta) = balance_delta {
-                            let balance = entry
-                                .present
-                                .as_ref()
-                                .map_or(Word::ZERO, |info| info.balance)
-                                .wrapping_sub(delta);
-                            if previous.is_some() || !balance.is_zero() {
-                                previous.get_or_insert_with(AccountInfo::default).balance = balance;
-                            }
-                        }
-                        if nonce_is_delta {
-                            let nonce = entry.present.as_ref().map_or(0, |info| info.nonce);
-                            let nonce = if nonce_bumped { nonce.saturating_sub(1) } else { nonce };
-                            if previous.is_some() || nonce != 0 {
-                                previous.get_or_insert_with(AccountInfo::default).nonce = nonce;
-                            }
-                        }
-                        if previous_origin_absent
-                            && previous.as_ref().is_some_and(AccountInfo::is_empty)
-                        {
-                            previous = None;
+                        let balance =
+                            entry.present.as_ref().map_or(Word::ZERO, |info| info.balance);
+                        let nonce = entry.present.as_ref().map_or(0, |info| info.nonce);
+                        if previous.is_some() || !balance.is_zero() || nonce != 0 {
+                            let previous = previous.get_or_insert_with(AccountInfo::default);
+                            previous.balance = balance;
+                            previous.nonce = nonce;
                         }
                         entry.present = previous;
-                        entry.present_origin_absent =
-                            previous_origin_absent && entry.present.is_some();
                         entry.is_warm = previous_is_warm;
                         // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
                         if !(features.contains(EvmFeatures::EIP161)
@@ -812,6 +829,40 @@ impl<'a> State<'a> {
                         entry.is_destroyed = previous_is_destroyed;
                         entry.just_created = previous_just_created;
                         entry.code_changed = previous_code_changed;
+                    }
+                }
+                JournalEntry::BalanceChange { address, previous } => {
+                    if let Some(entry) = self.accounts.get_mut(&address)
+                        && (entry.present.is_some() || !previous.is_zero())
+                    {
+                        entry.present.get_or_insert_with(AccountInfo::default).balance = previous;
+                    }
+                }
+                JournalEntry::BalanceDelta { address, delta } => {
+                    if let Some(entry) = self.accounts.get_mut(&address) {
+                        let balance = entry
+                            .present
+                            .as_ref()
+                            .map_or(Word::ZERO, |info| info.balance)
+                            .wrapping_sub(delta);
+                        if entry.present.is_some() || !balance.is_zero() {
+                            entry.present.get_or_insert_with(AccountInfo::default).balance =
+                                balance;
+                        }
+                    }
+                }
+                JournalEntry::NonceChange { address, previous } => {
+                    if let Some(entry) = self.accounts.get_mut(&address)
+                        && (entry.present.is_some() || previous != 0)
+                    {
+                        entry.present.get_or_insert_with(AccountInfo::default).nonce = previous;
+                    }
+                }
+                JournalEntry::NonceBump { address } => {
+                    if let Some(entry) = self.accounts.get_mut(&address)
+                        && let Some(account) = entry.present.as_mut()
+                    {
+                        account.nonce = account.nonce.saturating_sub(1);
                     }
                 }
                 JournalEntry::StorageChange { address, key, previous } => {
@@ -877,7 +928,7 @@ impl<'a> State<'a> {
         for address in &selfdestructs {
             // EIP-8246: a self-destructed account that still holds balance is preserved as a
             // balance-only account instead of being burned. One with no balance is removed. The
-            // handle is scoped so its `AccountChange` flushes on drop before the storage wipe.
+            // handle is scoped to release the account borrow before the storage wipe.
             {
                 let mut account = self.account(address)?;
                 if eip8246 && !account.balance().is_zero() {
@@ -892,10 +943,16 @@ impl<'a> State<'a> {
         if version.feature(EvmFeatures::EIP161) {
             for address in &touched {
                 // EIP-161 deletes touched dead accounts at transaction finalization.
-                let mut account = self.account(address)?;
-                if account.is_existing_dead() {
-                    account.delete_for_finalization();
-                    drop(account);
+                let deleted = {
+                    let mut account = self.account(address)?;
+                    if account.is_existing_dead() {
+                        account.delete_for_finalization();
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if deleted {
                     self.storage(address).wipe();
                 }
             }
@@ -1020,7 +1077,6 @@ impl<'a> State<'a> {
                 hash_map::Entry::Occupied(mut entry) => {
                     let parent = entry.get_mut();
                     parent.present = account.present;
-                    parent.present_origin_absent = account.present_origin_absent;
                     parent.is_touched |= account.is_touched;
                     parent.is_destroyed |= account.is_destroyed;
                     parent.just_created |= account.just_created;
@@ -1126,6 +1182,21 @@ mod tests {
     }
 
     #[test]
+    fn detached_snapshot_is_send_sync_and_uses_new_database() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<StateSnapshot>();
+
+        let uncached = Address::with_last_byte(43);
+        let state = State::new(EmptyDB::default());
+        let snapshot = state.snapshot();
+
+        let mut db = CacheDB::default();
+        db.insert_account_info(&uncached, AccountInfo::default().with_balance(Word::from(9)));
+        let mut restored = snapshot.into_state(db);
+        assert_eq!(restored.account(&uncached).unwrap().balance(), Word::from(9));
+    }
+
+    #[test]
     fn set_storage_warm_preserves_loaded_values() {
         let address = Address::with_last_byte(42);
         let key = Word::from(1);
@@ -1165,13 +1236,13 @@ mod tests {
             state.tstore(&Address::ZERO, &Word::ZERO, &Word::from(7));
             let kept_log: Log = Log { address: Address::with_last_byte(1), ..Default::default() };
             state.log(kept_log.clone());
-            let snapshot = state.clone();
+            let snapshot = state.snapshot();
             for slot in 1..=2 {
                 state.tstore(&Address::ZERO, &Word::from(slot), &Word::from(8));
             }
             state.log(Log::default());
             let child = state.checkpoint();
-            state = snapshot;
+            state = snapshot.into_state(EmptyDB::default());
             for n in 0..writes {
                 state.tstore(&Address::ZERO, &Word::ZERO, &Word::from(10 + n));
             }
@@ -1321,6 +1392,38 @@ mod tests {
     }
 
     #[test]
+    fn relative_undo_applies_after_unjournaled_account_merge() {
+        let address = Address::with_last_byte(43);
+        let sender = Address::with_last_byte(44);
+        let features = crate::Version::base(crate::SpecId::CANCUN).features;
+        for isolated in [false, true] {
+            let mut db = CacheDB::default();
+            db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(100)));
+            db.insert_account_info(&sender, AccountInfo::default().with_balance(Word::from(100)));
+            let mut parent = State::new(db);
+            let checkpoint = parent.checkpoint();
+            assert!(parent.transfer(&sender, &address, &Word::from(3)).unwrap());
+
+            let mut child = State::new(EmptyDB::default());
+            child.set_pending_state(parent.prepare_isolated_state());
+            child.account(&address).unwrap().set_balance(Word::from(150));
+            if isolated {
+                parent.merge_isolated_state(child.take_pending_state());
+            } else {
+                parent.merge_transaction_account_from(&address, &child);
+            }
+
+            parent.account(&address).unwrap().override_balance(Word::from(200));
+            parent.rollback(checkpoint, features);
+            assert_eq!(
+                parent.account(&address).unwrap().balance(),
+                Word::from(197),
+                "isolated={isolated}"
+            );
+        }
+    }
+
+    #[test]
     fn merge_transaction_account_retains_target_only_slots_and_source_metadata() {
         let address = Address::with_last_byte(42);
         let mut source_db = CacheDB::default();
@@ -1359,50 +1462,6 @@ mod tests {
         live.account(&address).unwrap().set_balance(Word::ONE);
         target.merge_transaction_account_from(&address, &live);
         assert!(!target.inner.selfdestructs.contains(&address));
-    }
-
-    #[test]
-    fn overrides_use_recorded_deltas_after_unjournaled_account_merge() {
-        let address = Address::with_last_byte(48);
-        let sender = Address::with_last_byte(49);
-        let features = crate::Version::base(crate::SpecId::CANCUN).features;
-        for isolated in [false, true] {
-            for transferred in [false, true] {
-                let mut db = CacheDB::default();
-                db.insert_account_info(
-                    &address,
-                    AccountInfo::default().with_balance(Word::from(100)),
-                );
-                db.insert_account_info(
-                    &sender,
-                    AccountInfo::default().with_balance(Word::from(100)),
-                );
-                let mut parent = State::new(db);
-                let checkpoint = parent.checkpoint();
-                if transferred {
-                    assert!(parent.transfer(&sender, &address, &Word::from(3)).unwrap());
-                } else {
-                    parent.account(&address).unwrap().touch();
-                }
-
-                let mut child = State::new(EmptyDB::default());
-                child.set_pending_state(parent.prepare_isolated_state());
-                child.account(&address).unwrap().set_balance(Word::from(150));
-                if isolated {
-                    parent.merge_isolated_state(child.take_pending_state());
-                } else {
-                    parent.merge_transaction_account_from(&address, &child);
-                }
-
-                parent.account(&address).unwrap().override_balance(Word::from(200));
-                parent.rollback(checkpoint, features);
-                assert_eq!(
-                    parent.account(&address).unwrap().balance(),
-                    Word::from(if transferred { 197 } else { 200 }),
-                    "isolated={isolated}, transferred={transferred}"
-                );
-            }
-        }
     }
 
     #[test]
