@@ -376,7 +376,7 @@ impl ParityTraceBuilder {
                 .unwrap_or_else(|| step.gas_remaining.saturating_sub(step.gas_cost)),
             push: step.push_stack.clone().unwrap_or_default().into(),
             mem: delta.and_then(|delta| delta.memory.clone()),
-            store: delta.and_then(|delta| delta.storage),
+            store: delta.and_then(|delta| delta.store),
         });
 
         VmInstruction {

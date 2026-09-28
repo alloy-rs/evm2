@@ -557,15 +557,16 @@ fn vmtrace_records_storage_for_vm_only_requests() {
 
 #[test]
 fn vmtrace_storage_reads_have_no_write_delta() {
-    // Read the same slot cold and warm, including when Geth storage snapshots are enabled.
+    // Read the same slot cold and warm, then write and read transient storage.
     for config in [TracingInspectorConfig::parity_vm_trace(), TracingInspectorConfig::all()] {
-        let inspector = inspect_code(&hex!("6007545060075400"), &[], SpecId::OSAKA, config);
+        let inspector = inspect_code(&hex!("5f545f54602a5f5d5f5c00"), &[], SpecId::OSAKA, config);
         if config.record_state_diff {
             assert!(inspector.traces().nodes()[0].trace.steps[1].storage_change.is_some());
         }
         let trace = inspector.into_parity_builder().vm_trace();
-        for step in [&trace.ops[1], &trace.ops[4]] {
-            assert_eq!(step.op.as_deref(), Some("SLOAD"));
+        for (pc, opcode) in [(1, "SLOAD"), (3, "SLOAD"), (7, "TSTORE"), (9, "TLOAD")] {
+            let step = trace.ops.iter().find(|step| step.pc == pc).unwrap();
+            assert_eq!(step.op.as_deref(), Some(opcode));
             assert!(step.ex.as_ref().unwrap().store.is_none());
         }
     }
@@ -573,9 +574,10 @@ fn vmtrace_storage_reads_have_no_write_delta() {
 
 #[test]
 fn vmtrace_storage_writes_include_unchanged_values() {
-    // Write 42 twice, then zero twice, to slot 7. Only the value changes create journal entries.
-    let trace = trace_vm_code(&hex!("602a600755602a6007555f6007555f60075500"), &[]);
-    for (step, value) in [(2, 42), (5, 42), (8, 0), (11, 0)] {
+    // Write zero to a cold slot, then 42 twice and zero twice. Unchanged values lack write journal
+    // entries.
+    let trace = trace_vm_code(&hex!("5f600755602a600755602a6007555f6007555f60075500"), &[]);
+    for (step, value) in [(2, 0), (5, 42), (8, 42), (11, 0), (14, 0)] {
         let store = trace.ops[step].ex.as_ref().unwrap().store.as_ref().unwrap();
         assert_eq!(store.key, U256::from(7));
         assert_eq!(store.val, U256::from(value));
@@ -583,7 +585,7 @@ fn vmtrace_storage_writes_include_unchanged_values() {
 }
 
 #[test]
-fn vmtrace_failed_storage_writes_have_no_delta() {
+fn vmtrace_failed_storage_writes_have_no_execution_delta() {
     for (code, child, node_idx) in [
         (&hex!("55")[..], &[][..], 0),   // No operands
         (&hex!("5f55")[..], &[][..], 0), // Only one operand
@@ -596,7 +598,6 @@ fn vmtrace_failed_storage_writes_have_no_delta() {
             inspect_code(code, child, SpecId::OSAKA, TracingInspectorConfig::parity_vm_trace());
         let frame = &inspector.traces().nodes()[node_idx].trace;
         assert!(frame.steps.last().unwrap().status.unwrap().is_halt());
-        assert!(frame.step_deltas.iter().all(|delta| delta.storage.is_none()));
         let trace = inspector.into_parity_builder().vm_trace();
         let frame = if node_idx == 0 {
             &trace
@@ -616,6 +617,16 @@ fn vmtrace_storage_write_is_preserved_when_frame_reverts() {
     assert_eq!(store.key, U256::from(7));
     assert_eq!(store.val, U256::from(42));
     assert_eq!(trace.ops.last().unwrap().op.as_deref(), Some("REVERT"));
+}
+
+#[test]
+fn vmtrace_storage_write_is_preserved_when_child_reverts() {
+    let trace = trace_vm_code(&hex!("5f5f5f5f5f604361fffff100"), &hex!("602a5f555f5ffd"));
+    let sub = trace.ops[7].sub.as_ref().unwrap();
+    let store = sub.ops[2].ex.as_ref().unwrap().store.as_ref().unwrap();
+    assert_eq!(store.key, U256::ZERO);
+    assert_eq!(store.val, U256::from(42));
+    assert_eq!(sub.ops.last().unwrap().op.as_deref(), Some("REVERT"));
 }
 
 #[test]
