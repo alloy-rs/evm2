@@ -20,6 +20,9 @@ use derive_where::derive_where;
 #[derive_where(Debug)]
 pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     pub(in crate::interpreter) bytecode: Bytecode,
+    // Borrows the immutable allocations owned by `bytecode`. Cleared before replacing it;
+    // accessors must shorten the erased lifetime to the borrow of this interpreter.
+    bytecode_ref: Option<BytecodeRef<'static>>,
     pub(in crate::interpreter) memory: Memory,
     pub(in crate::interpreter) return_data: Bytes,
 
@@ -44,8 +47,9 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     is_static: bool,
 }
 
-// SAFETY: The interpreter's internal pointers are always valid. `pc` points into owned bytecode,
-// frame-local references are cleared before pooling, and host/inspector pointers are installed for
+// SAFETY: The interpreter's internal pointers are always valid. `pc` and `bytecode_ref` point into
+// immutable owned bytecode and its jump table. Frame-local references are cleared before pooling,
+// and host/inspector pointers are installed for
 // execution and not used after the owning execution context is gone. The `Sync` bounds make the
 // retained shared frame references safe to transfer between threads.
 unsafe impl<T> Send for Interpreter<'_, '_, T>
@@ -74,6 +78,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         Self {
             pc: bytecode.original_byte_slice().as_ptr(),
             bytecode,
+            bytecode_ref: None,
             stack_len: 0,
             gas: Gas::new(0),
             memory: Memory::new(),
@@ -100,6 +105,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         let gas_limit = message.gas_limit;
         let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
         self.pc = bytecode.original_byte_slice().as_ptr();
+        self.bytecode_ref = None;
         self.bytecode = bytecode;
         self.stack_len = 0;
         self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
@@ -174,7 +180,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Returns the active bytecode.
     #[inline]
     pub fn bytecode(&self) -> BytecodeRef<'_> {
-        BytecodeRef::new(&self.bytecode)
+        self.bytecode_ref.unwrap_or_else(|| BytecodeRef::new(&self.bytecode))
     }
 
     /// Returns the original active bytecode bytes.
@@ -381,6 +387,13 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     #[doc(hidden)]
     pub fn prepare_run(&mut self, spec: SpecId, version: &Version, host: &mut T::Host<'host>) {
+        if self.bytecode_ref.is_none() {
+            // SAFETY: The view borrows immutable allocations retained by our owned `Bytecode`,
+            // so moving the interpreter does not invalidate it. `init` clears the view before
+            // replacing the owner, and accessors tie the returned view to `&self`.
+            let bytecode = unsafe { trustme::decouple_lt(&self.bytecode) };
+            self.bytecode_ref = Some(BytecodeRef::new(bytecode));
+        }
         self.memory.set_memory_limit(version.memory_limit);
         // SAFETY: `version` remains alive for the duration of this interpreter run.
         let version = unsafe { trustme::decouple_lt(version) };
@@ -494,8 +507,10 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     /// Returns the active bytecode.
     #[inline]
-    pub fn bytecode(&self) -> BytecodeRef<'_> {
-        BytecodeRef::new(&self.0.bytecode)
+    pub const fn bytecode(&self) -> BytecodeRef<'_> {
+        // SAFETY: `prepare_run` initializes the view before instruction execution. It remains
+        // valid across call/resume cycles and is only cleared when initializing a new frame.
+        unsafe { self.0.bytecode_ref.unwrap_unchecked() }
     }
 
     /// Returns the host implementation.
