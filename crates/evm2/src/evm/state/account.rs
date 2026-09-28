@@ -515,9 +515,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub fn set_balance(&mut self, balance: Word) {
         self.touch();
-        if self.balance() == balance {
-            return;
-        }
         self.record_change();
         if let Some(JournalEntry::AccountChange { balance_delta, .. }) = &mut self.snapshot {
             *balance_delta = None;
@@ -868,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn foundry_overrides_preserve_transfer_and_nonce_bump_undo() {
+    fn overrides_preserve_transfer_and_nonce_bump_undo() {
         let address = Address::with_last_byte(0x81);
         let sender = Address::with_last_byte(0x82);
         let mut db = CacheDB::default();
@@ -928,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_balance_does_not_hide_a_later_override() {
+    fn unchanged_balance_assignment_remains_absolute() {
         let address = Address::with_last_byte(0x85);
         let mut db = CacheDB::default();
         db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(50)));
@@ -937,11 +934,11 @@ mod tests {
         state.account(&address).unwrap().set_balance(Word::from(50));
         state.account(&address).unwrap().override_balance(Word::from(109));
         state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
-        assert_eq!(state.account(&address).unwrap().balance(), Word::from(109));
+        assert_eq!(state.account(&address).unwrap().balance(), Word::from(50));
     }
 
     #[test]
-    fn repeated_nonce_overrides_preserve_saturating_bump_undo() {
+    fn zero_nonce_override_saturates_multiple_bump_undos() {
         let address = Address::with_last_byte(0x86);
         let mut state = State::new(CacheDB::default());
         let checkpoint = state.checkpoint();
@@ -950,10 +947,11 @@ mod tests {
             assert!(account.bump_nonce());
             assert!(account.bump_nonce());
             account.override_nonce(0);
-            account.override_nonce(9);
         }
         state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
-        assert_eq!(state.account(&address).unwrap().nonce(), 7);
+        let account = state.account(&address).unwrap();
+        assert_eq!(account.nonce(), 0);
+        assert!(!account.exists());
     }
 
     #[test]
@@ -1072,6 +1070,51 @@ mod tests {
         }
         state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
         assert_eq!(state.account(&address).unwrap().balance(), Word::from(100));
+    }
+
+    #[test]
+    fn override_lifo_cleanup_runs_after_frame_rollback() {
+        let address = Address::with_last_byte(0x90);
+        let sender = Address::with_last_byte(0x91);
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(100)));
+        db.insert_account_info(&sender, AccountInfo::default().with_balance(Word::from(100)));
+        let mut state = State::new(db);
+        let checkpoint = state.checkpoint();
+
+        assert!(state.transfer(&sender, &address, &Word::from(10)).unwrap());
+        let first_saved_balance = state.account(&address).unwrap().balance();
+        state.account(&address).unwrap().override_balance(Word::from(200));
+        assert!(state.transfer(&sender, &address, &Word::from(5)).unwrap());
+        let second_saved_balance = state.account(&address).unwrap().balance();
+        state.account(&address).unwrap().override_balance(Word::from(300));
+
+        state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
+        assert_eq!(state.account(&address).unwrap().balance(), Word::from(285));
+        state.account(&address).unwrap().override_balance(second_saved_balance);
+        assert_eq!(state.account(&address).unwrap().balance(), Word::from(205));
+        state.account(&address).unwrap().override_balance(first_saved_balance);
+        assert_eq!(state.account(&address).unwrap().balance(), Word::from(110));
+        assert_eq!(state.account(&sender).unwrap().balance(), Word::from(100));
+    }
+
+    #[test]
+    fn absent_override_cleanup_runs_after_frame_rollback() {
+        let address = Address::with_last_byte(0x92);
+        let mut state = State::new(CacheDB::default());
+        let checkpoint = state.checkpoint();
+        {
+            let mut account = state.account(&address).unwrap();
+            account.touch();
+            account.override_balance(Word::from(9));
+        }
+
+        state.rollback(checkpoint, crate::Version::base(crate::SpecId::CANCUN).features);
+        assert_eq!(state.account(&address).unwrap().balance(), Word::from(9));
+        state.account(&address).unwrap().override_balance(Word::ZERO);
+        assert!(!state.account(&address).unwrap().exists());
+        state.commit_transaction();
+        assert!(state.account_info_untracked(&address).unwrap().is_none());
     }
 
     #[test]
