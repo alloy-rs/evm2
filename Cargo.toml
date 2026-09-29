@@ -84,7 +84,6 @@ bitvec = { version = "1", default-features = false }
 boa_engine = { version = "0.22", default-features = false }
 boa_gc = { version = "0.22", default-features = false }
 num-bigint = { version = "0.5", default-features = false }
-cfg-if = { version = "1.0", default-features = false }
 derive-where = { version = "1.6", default-features = false }
 colorchoice = { version = "1.0", default-features = false }
 clap = { version = "4.5", default-features = false, features = [

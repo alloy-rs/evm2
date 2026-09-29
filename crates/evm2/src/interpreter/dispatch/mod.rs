@@ -7,11 +7,12 @@ use crate::{
     trustme,
 };
 
-cfg_if::cfg_if! {
-    if #[cfg(tco)] {
+core::cfg_select! {
+    tco => {
         mod tco;
         use tco as imp;
-    } else {
+    }
+    _ => {
         mod table;
         use table as imp;
     }

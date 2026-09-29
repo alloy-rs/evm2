@@ -59,12 +59,10 @@ fn analyze_simd(code: &[u8], table: &mut [u8]) -> usize {
     if code.len() < 16 {
         return 0;
     }
-    cfg_if::cfg_if! {
-        if #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] {
-            x86::analyze(code, table)
-        } else if #[cfg(target_arch = "aarch64")] {
-            aarch64::analyze(code, table)
-        } else {
+    core::cfg_select! {
+        any(target_arch = "x86", target_arch = "x86_64") => x86::analyze(code, table),
+        target_arch = "aarch64" => aarch64::analyze(code, table),
+        _ => {
             let _ = table;
             0
         }
