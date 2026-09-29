@@ -1,13 +1,17 @@
 //! Parity tests
 
 use crate::utils::{
-    AccountInfo, CacheDB, Context, DatabaseCommit, EmptyDB, ExecutionResult, Output, SpecId,
-    TransactTo, TxEnv, deploy_contract, inspect_deploy_contract, print_traces,
+    AccountInfo, Bytecode, CacheDB, Context, DatabaseCommit, EmptyDB, ExecutionResult, Output,
+    SpecId, TransactTo, TxEnv, deploy_contract, inspect_deploy_contract, print_traces,
 };
 use alloy_primitives::{Address, U256, address, hex, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
-use alloy_rpc_types_trace::parity::{
-    Action, CallAction, CallType, CreationMethod, SelfdestructAction, TraceType,
+use alloy_rpc_types_trace::{
+    filter::TraceFilter,
+    parity::{
+        Action, CallAction, CallType, CreationMethod, SelfdestructAction, TraceType,
+        TransactionTrace,
+    },
 };
 use evm2_inspectors::tracing::{
     TracingInspector, TracingInspectorConfig, parity::populate_state_diff,
@@ -805,6 +809,180 @@ fn vmtrace_failed_child_pushes_zero_and_parent_resumes() {
             trace.ops[7].ex.as_ref().unwrap().used - trace.ops[8].cost,
             trace.ops[8].ex.as_ref().unwrap().used
         );
+    }
+}
+
+/// Returns Parity and geth call-frame errors in call order.
+fn frame_errors(inspector: &TracingInspector) -> (Vec<String>, Vec<String>) {
+    let parity = inspector
+        .clone()
+        .into_parity_builder()
+        .into_transaction_traces()
+        .into_iter()
+        .filter_map(|trace| trace.error)
+        .collect();
+    let mut geth = Vec::new();
+    let mut frames = vec![inspector.geth_builder().geth_call_traces(Default::default(), 0)];
+    while let Some(frame) = frames.pop() {
+        geth.extend(frame.error);
+        frames.extend(frame.calls.into_iter().rev());
+    }
+    (parity, geth)
+}
+
+#[test]
+fn reverted_create_reports_gas_and_revert_data() {
+    let initcode = hex!("63deadbeef5f526004601cfd");
+    let factory = Address::with_last_byte(0x42);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &factory,
+        AccountInfo::default().with_code(Bytecode::new_raw(
+            hex!("6b63deadbeef5f526004601cfd5f52600c60145ff000").into(),
+        )),
+    );
+    let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
+        TracingInspector::new(TracingInspectorConfig::default_parity()),
+    );
+    for (kind, data, creator) in [
+        (TransactTo::Create, initcode.into(), Address::ZERO),
+        (TransactTo::Call(factory), Default::default(), factory),
+    ] {
+        evm.inspect_tx(TxEnv { gas_limit: 1_000_000, kind, data, ..Default::default() }).unwrap();
+        let traces = evm.inspector.clone().into_parity_builder().into_transaction_traces();
+        evm.inspector.fuse();
+        let create = traces.last().unwrap();
+        assert!(create.action.is_create());
+        assert_eq!(create.error.as_deref(), Some("Reverted"));
+        let json = serde_json::to_value(create).unwrap();
+        assert_eq!(
+            json["result"],
+            serde_json::json!({ "gasUsed": "0x11", "output": "0xdeadbeef" })
+        );
+        assert_eq!(serde_json::from_value::<TransactionTrace>(json).unwrap(), *create);
+
+        let to = TraceFilter { to_address: vec![creator.create(0)], ..Default::default() };
+        let from = TraceFilter { from_address: vec![creator], ..Default::default() };
+        assert!(!to.matcher().matches(create));
+        assert!(from.matcher().matches(create));
+    }
+
+    for (initcode, expected) in [
+        (&hex!("602a5f5360015ff3")[..], Some((Address::ZERO.create(0), hex!("2a")))),
+        (&hex!("fe")[..], None),
+    ] {
+        evm.inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Create,
+            data: initcode.to_vec().into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let traces = evm.inspector.clone().into_parity_builder().into_transaction_traces();
+        evm.inspector.fuse();
+        let result = traces[0]
+            .result
+            .as_ref()
+            .map(|result| result.as_create().map(|output| (output.address, output.code.to_vec())));
+        assert_eq!(result, expected.map(|(address, code)| Some((address, code.to_vec()))));
+    }
+}
+
+#[test]
+fn failed_frames_use_parity_labels() {
+    for (code, child, spec, labels) in [
+        (
+            &hex!("5f5f5f5ff5505f5f5f5ff500")[..],
+            &[][..],
+            SpecId::PRAGUE,
+            ["Contract address collision", "contract address collision"],
+        ),
+        (
+            &hex!("5f5f5f5f604361fffffa00")[..],
+            &hex!("602a5f5500")[..],
+            SpecId::PRAGUE,
+            ["Mutable Call In Static Context", "write protection"],
+        ),
+        (
+            &hex!("5f5f5f5f604361fffffa00")[..],
+            &hex!("5f5f5f5f6001604461fffff1")[..],
+            SpecId::PRAGUE,
+            ["Mutable Call In Static Context", "write protection"],
+        ),
+        (
+            &hex!("60015f5f3e00")[..],
+            &[][..],
+            SpecId::PRAGUE,
+            ["Out of bounds", "return data out of bounds"],
+        ),
+        (&hex!("01")[..], &[][..], SpecId::PRAGUE, ["Stack underflow", "stack underflow"]),
+        (&hex!("5f5f5f5e")[..], &[][..], SpecId::SHANGHAI, ["Bad instruction", "invalid opcode"]),
+        (
+            &hex!("646160015ff35f526005601b5ff000")[..],
+            &[][..],
+            SpecId::PRAGUE,
+            ["Out of gas", "max code size exceeded"],
+        ),
+        (
+            &hex!("6760ef5f5360015ff35f52600860185ff000")[..],
+            &[][..],
+            SpecId::PRAGUE,
+            ["Invalid code", "invalid code: must not begin with 0xef"],
+        ),
+        (
+            &hex!("61c0015f5ff000")[..],
+            &[][..],
+            SpecId::PRAGUE,
+            ["Out of gas", "max initcode size exceeded"],
+        ),
+        (
+            &hex!("600060006000600060003060645a03f100")[..],
+            &[][..],
+            SpecId::HOMESTEAD,
+            ["Max call depth exceeded", "max call depth exceeded"],
+        ),
+    ] {
+        let inspector = inspect_code(code, child, spec, TracingInspectorConfig::default_parity());
+        let (parity, geth) = frame_errors(&inspector);
+        assert_eq!(parity, [labels[0]], "{code:x?}");
+        assert_eq!(geth, [labels[1]], "{code:x?}");
+    }
+}
+
+#[test]
+fn create_nonce_overflow_is_a_failed_frame() {
+    for nonce in [u64::MAX, u64::MAX - 1] {
+        let factory = Address::with_last_byte(0x42);
+        let mut db = CacheDB::<EmptyDB>::default();
+        db.insert_account_info(
+            &factory,
+            AccountInfo {
+                nonce,
+                ..AccountInfo::default().with_code(Bytecode::new_raw(hex!("5f5f5ff000").into()))
+            },
+        );
+        let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
+            TracingInspector::new(TracingInspectorConfig::default_parity()),
+        );
+        evm.inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(factory),
+            ..Default::default()
+        })
+        .unwrap();
+        let (parity, geth) = frame_errors(&evm.inspector);
+        let traces = evm.inspector.clone().into_parity_builder().into_transaction_traces();
+        assert!(traces[1].action.is_create());
+        if nonce == u64::MAX {
+            assert_eq!(parity, ["Nonce overflow"]);
+            assert_eq!(geth, ["nonce uint64 overflow"]);
+            assert!(traces[1].result.is_none());
+            let call = evm.inspector.geth_builder().geth_call_traces(Default::default(), 0);
+            assert_eq!(call.calls[0].gas_used, U256::ZERO);
+        } else {
+            assert!(parity.is_empty() && geth.is_empty());
+            assert!(traces[1].result.as_ref().is_some_and(|result| result.as_create().is_some()));
+        }
     }
 }
 

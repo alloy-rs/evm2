@@ -19,7 +19,7 @@ use evm2::{
     Evm, EvmFeatures, EvmTypes, Inspector, SpecId, TxResultExt,
     evm::JournalEntry,
     interpreter::{
-        Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
+        InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
     },
 };
@@ -819,10 +819,19 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     fn create_end(
         &mut self,
         _interp: &mut Interpreter<'_, '_, T>,
-        _message: &Message<T>,
+        message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
+        let trace_idx = self.last_trace_idx();
         self.fill_trace_on_call_end(result);
+        // A nested CREATE whose creator nonce cannot be incremented returns successfully but
+        // without an address, leaving its gas unspent.
+        if message.depth > 0 && result.created_address.is_none() && result.stop == InstrStop::Return
+        {
+            let trace = &mut self.traces.arena[trace_idx].trace;
+            trace.status = Some(InstrStop::NonceOverflow);
+            trace.success = false;
+        }
     }
 
     fn selfdestruct(
