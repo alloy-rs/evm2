@@ -534,6 +534,7 @@ mod tests {
         evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider, SystemTx},
         interpreter::{GasTracker, Message, Word, op},
         precompile::PrecompileOutput,
+        precompiles::PrecompileId,
         registry::{HandlerError, HandlerResult, TxRegistry, TxRequest, handler},
     };
     use alloy_consensus::{TxLegacy, transaction::Recovered};
@@ -1091,6 +1092,10 @@ mod tests {
     }
 
     impl PrecompileProvider<BaseEvmTypes> for NonSendPrecompiles {
+        fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
+            Vec::new()
+        }
+
         fn contains(&self, _address: &Address) -> bool {
             let _ = Rc::strong_count(&self.marker);
             false

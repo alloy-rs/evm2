@@ -3,9 +3,7 @@
 use crate::{
     EvmConfig, EvmTypesHost, SpecId,
     constants::{
-        BLOB_BASE_FEE_UPDATE_FRACTION_AMSTERDAM, BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN,
-        BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE, MAX_CODE_SIZE, MAX_CODE_SIZE_AMSTERDAM,
-        MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
+        MAX_CODE_SIZE, MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
     },
     interpreter::{instructions as instr, op},
 };
@@ -46,8 +44,6 @@ pub struct Version {
     pub max_initcode_size: usize,
     /// Maximum blobs allowed in a single blob transaction.
     pub max_blobs_per_tx: usize,
-    /// Blob base fee update fraction.
-    pub blob_base_fee_update_fraction: u64,
 
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
@@ -95,16 +91,6 @@ const fn base_max_blobs_per_tx(spec_id: SpecId) -> usize {
     }
 }
 
-const fn base_blob_base_fee_update_fraction(spec_id: SpecId) -> u64 {
-    if spec_id.enables(SpecId::AMSTERDAM) {
-        BLOB_BASE_FEE_UPDATE_FRACTION_AMSTERDAM
-    } else if spec_id.enables(SpecId::PRAGUE) {
-        BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE
-    } else {
-        BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN
-    }
-}
-
 const DEFAULT_MEMORY_LIMIT: u64 = (1 << 32) - 1;
 const DEFAULT_CHAIN_ID: u64 = 1;
 
@@ -119,7 +105,6 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_code_size: MAX_CODE_SIZE,
             max_initcode_size: MAX_INITCODE_SIZE,
             max_blobs_per_tx: MAX_BLOBS_PER_BLOCK_DENCUN,
-            blob_base_fee_update_fraction: BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN,
             _non_exhaustive: (),
         }
     }; SpecId::COUNT];
@@ -135,7 +120,6 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_code_size: base_max_code_size(spec_id),
             max_initcode_size: base_max_initcode_size(spec_id),
             max_blobs_per_tx: base_max_blobs_per_tx(spec_id),
-            blob_base_fee_update_fraction: base_blob_base_fee_update_fraction(spec_id),
             _non_exhaustive: (),
         };
         i += 1;
@@ -281,7 +265,6 @@ mod tests {
         assert_eq!(osaka.max_code_size, MAX_CODE_SIZE);
         assert_eq!(osaka.max_initcode_size, MAX_INITCODE_SIZE);
         assert_eq!(osaka.max_blobs_per_tx, MAX_BLOBS_PER_BLOCK_DENCUN);
-        assert_eq!(osaka.blob_base_fee_update_fraction, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE);
 
         let amsterdam = Version::base(SpecId::AMSTERDAM);
         assert!(amsterdam.feature(EvmFeatures::TX_CHAIN_ID_CHECK));
@@ -294,18 +277,12 @@ mod tests {
         assert_eq!(amsterdam.max_code_size, MAX_CODE_SIZE_AMSTERDAM);
         assert_eq!(amsterdam.max_initcode_size, MAX_INITCODE_SIZE_AMSTERDAM);
         assert_eq!(amsterdam.max_blobs_per_tx, MAX_BLOBS_PER_BLOCK_DENCUN);
-        assert_eq!(
-            amsterdam.blob_base_fee_update_fraction,
-            BLOB_BASE_FEE_UPDATE_FRACTION_AMSTERDAM
-        );
 
         let cancun = Version::base(SpecId::CANCUN);
         assert_eq!(cancun.max_blobs_per_tx, MAX_BLOBS_PER_BLOCK_DENCUN);
-        assert_eq!(cancun.blob_base_fee_update_fraction, BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN);
 
         let prague = Version::base(SpecId::PRAGUE);
         assert_eq!(prague.max_blobs_per_tx, 9);
-        assert_eq!(prague.blob_base_fee_update_fraction, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE);
     }
 
     #[test]
