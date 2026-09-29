@@ -469,14 +469,8 @@ pub fn populate_state_diff(
             entry.balance = Delta::Removed(db_acc.balance);
             entry.nonce = Delta::Removed(U64::from(db_acc.nonce));
             entry.code = Delta::Removed(load_account_code(db, &db_acc)?.unwrap_or_default());
-            // PendingState contains accessed slots only. Read pre-state because the stream
-            // can report wiped slots as zero-valued reads.
-            for key in changed_acc.storage.keys() {
-                let original = db.get_storage(addr, key)?;
-                if !original.is_zero() {
-                    entry.storage.insert((*key).into(), Delta::Removed(original.into()));
-                }
-            }
+            // Deletion wipes all storage, which the removed account implies. PendingState
+            // holds only accessed slots, so listing them would produce a partial diff.
             continue;
         }
 
