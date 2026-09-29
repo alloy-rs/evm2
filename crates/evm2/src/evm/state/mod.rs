@@ -670,18 +670,15 @@ impl<'a> State<'a> {
 
         {
             let mut from_account = self.account(from)?;
-            let Some(new_from_balance) = from_account.balance().checked_sub(*value) else {
+            if from_account.balance() < *value {
                 return Ok(false);
-            };
-            // `set_balance` touches the account, matching the touch the prior `transfer` performed.
-            from_account.set_balance(new_from_balance);
-            from_account.touch();
+            }
+            from_account.add_balance(Word::ZERO.wrapping_sub(*value));
         }
         {
             let mut to_account = self.account(to)?;
             let new_to_balance = to_account.balance().saturating_add(*value);
-            to_account.set_balance(new_to_balance);
-            to_account.touch();
+            to_account.add_balance(new_to_balance.wrapping_sub(to_account.balance()));
         }
         Ok(true)
     }
@@ -709,29 +706,17 @@ impl<'a> State<'a> {
         // caller untouched, matching the prior `transfer` behaviour.
         if !value.is_zero() {
             let mut caller_account = self.account(caller)?;
-            let Some(new_caller_balance) = caller_account.balance().checked_sub(*value) else {
+            if caller_account.balance() < *value {
                 return Ok(Err(InstrStop::OutOfFunds));
-            };
-            caller_account.set_balance(new_caller_balance);
+            }
+            caller_account.add_balance(Word::ZERO.wrapping_sub(*value));
         }
 
         let mut target = self.account(address)?;
-        // Preserve any balance the address already held (e.g. funds sent before creation) and add
-        // the endowment.
-        let balance = target.balance().wrapping_add(*value);
-        #[cfg(feature = "account-ext")]
-        let extension = target.get().map(|info| info.extension.clone()).unwrap_or_default();
-        *target.get_or_insert() = AccountInfo {
-            nonce: u64::from(features.contains(EvmFeatures::EIP161)),
-            balance,
-            code_hash: KECCAK256_EMPTY,
-            code: Some(Bytecode::default()),
-            _non_exhaustive: (),
-            #[cfg(feature = "account-ext")]
-            extension,
-        };
+        target.add_balance(*value);
+        target.set_nonce(u64::from(features.contains(EvmFeatures::EIP161)));
+        target.set_code_slow(Bytecode::default());
         target.mark_created();
-        target.touch();
         Ok(Ok(()))
     }
 
@@ -809,7 +794,7 @@ impl<'a> State<'a> {
             match entry {
                 JournalEntry::AccountChange {
                     address,
-                    previous,
+                    mut previous,
                     previous_is_warm,
                     previous_is_touched,
                     previous_is_destroyed,
@@ -825,6 +810,14 @@ impl<'a> State<'a> {
                         self.selfdestructs.insert(address);
                     }
                     if let Some(entry) = self.accounts.get_mut(&address) {
+                        let balance =
+                            entry.present.as_ref().map_or(Word::ZERO, |info| info.balance);
+                        let nonce = entry.present.as_ref().map_or(0, |info| info.nonce);
+                        if previous.is_some() || !balance.is_zero() || nonce != 0 {
+                            let previous = previous.get_or_insert_with(AccountInfo::default);
+                            previous.balance = balance;
+                            previous.nonce = nonce;
+                        }
                         entry.present = previous;
                         entry.is_warm = previous_is_warm;
                         // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
@@ -836,6 +829,40 @@ impl<'a> State<'a> {
                         entry.is_destroyed = previous_is_destroyed;
                         entry.just_created = previous_just_created;
                         entry.code_changed = previous_code_changed;
+                    }
+                }
+                JournalEntry::BalanceChange { address, previous } => {
+                    if let Some(entry) = self.accounts.get_mut(&address)
+                        && (entry.present.is_some() || !previous.is_zero())
+                    {
+                        entry.present.get_or_insert_with(AccountInfo::default).balance = previous;
+                    }
+                }
+                JournalEntry::BalanceDelta { address, delta } => {
+                    if let Some(entry) = self.accounts.get_mut(&address) {
+                        let balance = entry
+                            .present
+                            .as_ref()
+                            .map_or(Word::ZERO, |info| info.balance)
+                            .wrapping_sub(delta);
+                        if entry.present.is_some() || !balance.is_zero() {
+                            entry.present.get_or_insert_with(AccountInfo::default).balance =
+                                balance;
+                        }
+                    }
+                }
+                JournalEntry::NonceChange { address, previous } => {
+                    if let Some(entry) = self.accounts.get_mut(&address)
+                        && (entry.present.is_some() || previous != 0)
+                    {
+                        entry.present.get_or_insert_with(AccountInfo::default).nonce = previous;
+                    }
+                }
+                JournalEntry::NonceBump { address } => {
+                    if let Some(entry) = self.accounts.get_mut(&address)
+                        && let Some(account) = entry.present.as_mut()
+                    {
+                        account.nonce = account.nonce.saturating_sub(1);
                     }
                 }
                 JournalEntry::StorageChange { address, key, previous } => {
@@ -901,7 +928,7 @@ impl<'a> State<'a> {
         for address in &selfdestructs {
             // EIP-8246: a self-destructed account that still holds balance is preserved as a
             // balance-only account instead of being burned. One with no balance is removed. The
-            // handle is scoped so its `AccountChange` flushes on drop before the storage wipe.
+            // handle is scoped to release the account borrow before the storage wipe.
             {
                 let mut account = self.account(address)?;
                 if eip8246 && !account.balance().is_zero() {
@@ -916,10 +943,16 @@ impl<'a> State<'a> {
         if version.feature(EvmFeatures::EIP161) {
             for address in &touched {
                 // EIP-161 deletes touched dead accounts at transaction finalization.
-                let mut account = self.account(address)?;
-                if account.is_existing_dead() {
-                    account.delete_for_finalization();
-                    drop(account);
+                let deleted = {
+                    let mut account = self.account(address)?;
+                    if account.is_existing_dead() {
+                        account.delete_for_finalization();
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if deleted {
                     self.storage(address).wipe();
                 }
             }
@@ -1356,6 +1389,38 @@ mod tests {
 
         assert_eq!(parent.account(&address).unwrap().nonce(), 1);
         assert_eq!(parent.storage_slot_untracked(&address, &key).unwrap(), Word::from(9));
+    }
+
+    #[test]
+    fn relative_undo_applies_after_unjournaled_account_merge() {
+        let address = Address::with_last_byte(43);
+        let sender = Address::with_last_byte(44);
+        let features = crate::Version::base(crate::SpecId::CANCUN).features;
+        for isolated in [false, true] {
+            let mut db = CacheDB::default();
+            db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(100)));
+            db.insert_account_info(&sender, AccountInfo::default().with_balance(Word::from(100)));
+            let mut parent = State::new(db);
+            let checkpoint = parent.checkpoint();
+            assert!(parent.transfer(&sender, &address, &Word::from(3)).unwrap());
+
+            let mut child = State::new(EmptyDB::default());
+            child.set_pending_state(parent.prepare_isolated_state());
+            child.account(&address).unwrap().set_balance(Word::from(150));
+            if isolated {
+                parent.merge_isolated_state(child.take_pending_state());
+            } else {
+                parent.merge_transaction_account_from(&address, &child);
+            }
+
+            parent.account(&address).unwrap().override_balance(Word::from(200));
+            parent.rollback(checkpoint, features);
+            assert_eq!(
+                parent.account(&address).unwrap().balance(),
+                Word::from(197),
+                "isolated={isolated}"
+            );
+        }
     }
 
     #[test]
