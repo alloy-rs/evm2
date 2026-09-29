@@ -8,13 +8,16 @@ extern crate self as evm2;
 
 extern crate alloc;
 
+#[cfg(feature = "nightly")]
+use ruint as _;
+
 pub mod bytecode;
 pub mod constants;
 mod error;
 pub mod ethereum;
 pub mod interpreter;
 pub mod utils;
-pub use error::{AnyError, ErrorCode};
+pub use error::{AnyError, DatabaseError, ExecutionError, HostError, LoadError};
 
 pub mod evm;
 #[doc(hidden)]

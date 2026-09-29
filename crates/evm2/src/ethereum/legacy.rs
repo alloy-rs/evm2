@@ -8,10 +8,7 @@ use super::{
 use crate::{
     EvmTypes, TxResult,
     env::TxEnvExt,
-    evm::{
-        error_handler,
-        handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
-    },
+    evm::handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
     interpreter::GasTracker,
     registry::{HandlerResult, TxRequest},
 };
@@ -25,15 +22,16 @@ pub fn handle<T: EvmTypes>(req: TxRequest<'_, '_, T, TxLegacy>) -> HandlerResult
 
 /// Executes a legacy transaction using Ethereum rules and custom handler hooks.
 pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
-    req: TxRequest<'_, '_, T, TxLegacy>,
+    mut req: TxRequest<'_, '_, T, TxLegacy>,
 ) -> HandlerResult<TxResult<T>> {
-    execute_prepared::<T, H>(prepare_with_hooks::<T, H>(req)?)
+    let prepared = prepare_with_hooks::<T, H>(&mut req)?;
+    execute_prepared::<T, H>(req, prepared)
 }
 
 /// Validates a legacy transaction and applies its pre-execution state changes.
-pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
-    req: TxRequest<'a, 'host, T, TxLegacy>,
-) -> HandlerResult<PreparedTx<'a, 'host, T, TxLegacy>> {
+pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
+    req: &mut TxRequest<'_, '_, T, TxLegacy>,
+) -> HandlerResult<PreparedTx> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let gas_price = U256::from(tx.gas_price);
@@ -65,17 +63,18 @@ pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
 
     warm_base_accounts(req.host, caller, tx.to);
 
-    req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
+    req.host.state.account(&caller)?.bump_nonce();
     H::before_execution(req.host, req.envelope, caller, max_gas_cost)?;
 
-    Ok(PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas })
+    Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas })
 }
 
 /// Executes and settles a prepared legacy transaction.
 pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
-    prepared: PreparedTx<'_, '_, T, TxLegacy>,
+    req: TxRequest<'_, '_, T, TxLegacy>,
+    prepared: PreparedTx,
 ) -> HandlerResult<TxResult<T>> {
-    let PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas } = prepared;
+    let PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas } = prepared;
     let tx = req.tx.inner();
 
     let (execution_gas_limit, reservoir) =
@@ -97,7 +96,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
         &mut tx_gas,
         execution_gas_limit,
         reservoir,
-    );
+    )?;
     H::settle_transaction(
         req.host,
         req.envelope,

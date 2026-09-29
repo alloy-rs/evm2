@@ -392,7 +392,7 @@ pub unsafe extern "C" fn __revmc_builtin_blockhash(
 
     if diff <= BLOCK_HASH_HISTORY {
         let requested_number = U256::from(word_to_u64_saturated(requested_number));
-        let hash = ecx.host().block_hash(&requested_number)?;
+        let hash = ecx.host().block_hash(&requested_number).map_err(|error| ecx.interpreter_mut().fail(error))?;
         *number_ptr = EvmWord::from_be_bytes(hash);
     } else {
         // Too old, return 0
@@ -487,7 +487,7 @@ pub unsafe extern "C" fn __revmc_builtin_sload(
     let skip_cold =
         ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
     let storage =
-        ecx.host().sload(address, &key, skip_cold).map_err(|stop| host_error_stop(stop, skip_cold))?;
+        ecx.host().sload(address, &key, skip_cold).map_err(|stop| ecx.interpreter_mut().fail(stop))?;
     if storage.is_cold {
         ecx.gas.spend(additional_cold_cost)?;
     }
@@ -533,7 +533,7 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
     let state_load = ecx
         .host()
         .sstore(target, &index, &value, skip_cold)
-        .map_err(|stop| host_error_stop(stop, skip_cold))?;
+        .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
 
     let dynamic_gas = ecx.gas_params().sstore_dynamic_gas(is_eip2200, &state_load);
     ecx.gas.spend(dynamic_gas)?;
@@ -679,7 +679,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     let caller_info = if is_create2 && !ecx.enables(EvmFeatures::EIP8037) {
         None
     } else {
-        Some(ecx.host().load_account(&caller, false, false)?)
+        Some(ecx.host().load_account(&caller, false, false).map_err(|error| ecx.interpreter_mut().fail(error))?)
     };
     let destination = derive_create_destination(
         kind,
@@ -708,7 +708,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
 
         // The destination is loaded here and made warm. Balance, nonce, and depth pre-access
         // failures return above before the destination is accessed.
-        if ecx.host().target_is_empty_for_new_account_gas(&destination, version.features)? {
+        if ecx.host().target_is_empty_for_new_account_gas(&destination, version.features).map_err(|error| ecx.interpreter_mut().fail(error))? {
             ecx.gas.spend_state(version.gas_params.create_state_gas())?;
             charged_create_state_gas = true;
         }
@@ -739,7 +739,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         ext: (),
         _non_exhaustive: (),
     };
-    let mut result = ecx.host().execute_message(tx_env, &mut message);
+    let mut result = ecx.host().execute_message(tx_env, &mut message).map_err(|error| ecx.interpreter_mut().fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop.into());
     }
@@ -848,7 +848,8 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         _non_exhaustive: (),
     };
 
-    let mut result = unsafe { ecx.interpreter_mut().execute_call(message, in_offset..in_offset + in_len) };
+    let mut result = unsafe { ecx.interpreter_mut().execute_call(message, in_offset..in_offset + in_len) }
+        .map_err(|error| ecx.interpreter_mut().fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop.into());
     }
@@ -895,7 +896,7 @@ fn load_acc_and_calc_gas(
     let account = ecx
         .host()
         .load_account(&to, true, skip_cold_load)
-        .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
+        .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
 
     let mut cost = 0;
     if account.is_cold {
@@ -915,7 +916,7 @@ fn load_acc_and_calc_gas(
         let delegated_account = ecx
             .host()
             .load_account(&delegated_address, true, skip_cold_load)
-            .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
+            .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
         }
@@ -927,7 +928,7 @@ fn load_acc_and_calc_gas(
         && should_charge_new_account_gas(
             features.contains(EvmFeatures::EIP161),
             transfers_value,
-            ecx.host().target_is_empty_for_new_account_gas(&to, features)?,
+            ecx.host().target_is_empty_for_new_account_gas(&to, features).map_err(|error| ecx.interpreter_mut().fail(error))?,
         )
     {
         cost += u64::from(version.gas_params.get(GasId::NewAccountCost));
@@ -1017,7 +1018,7 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
     let res = ecx
         .host()
         .selfdestruct(address, &target, skip_cold_load)
-        .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
+        .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
 
     // EIP-161: State trie clearing (invariant-preserving alternative)
     let should_charge_topup =

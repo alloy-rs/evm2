@@ -7,10 +7,10 @@
 //! it does not force a particular transaction or receipt representation onto
 //! the rest of the crate.
 
-use crate::{AnyError, ErrorCode, EvmTypesHost};
+use crate::{AnyError, DatabaseError, EvmTypesHost, ExecutionError};
 use alloc::sync::Arc;
 use alloy_consensus::transaction::Recovered;
-use alloy_primitives::{Address, U256, map::HashMap};
+use alloy_primitives::{U256, map::HashMap};
 use core::{error::Error, fmt, marker::PhantomData};
 use thiserror::Error;
 
@@ -20,9 +20,12 @@ pub type HandlerResult<T> = core::result::Result<T, HandlerError>;
 /// Registry, transaction validation, and transaction handler errors.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum HandlerError {
-    /// Host error propagated as a transaction handler failure.
-    #[error("fatal error {0:?}")]
-    Fatal(ErrorCode),
+    /// Database error propagated as a transaction handler failure.
+    #[error("database error: {0}")]
+    Database(#[source] DatabaseError),
+    /// Unrecoverable execution error.
+    #[error("fatal error: {0}")]
+    Fatal(#[source] AnyError),
     /// Typed error supplied by a custom transaction handler.
     #[error(transparent)]
     External(AnyError),
@@ -95,12 +98,6 @@ pub enum HandlerError {
         /// Transaction initcode size.
         got: usize,
     },
-    /// Sender could not transfer transaction value to the target.
-    #[error("out of funds")]
-    OutOfFunds,
-    /// Signature recovery failed.
-    #[error("could not recover signer")]
-    SignerRecoveryFailed,
     /// Fee cap is lower than the block base fee.
     #[error("fee cap less than base fee: max_fee_per_gas {max_fee_per_gas}, base_fee {base_fee}")]
     FeeCapLessThanBaseFee {
@@ -139,9 +136,20 @@ pub enum HandlerError {
     /// Priority fee is greater than max fee.
     #[error("priority fee greater than max fee")]
     PriorityFeeGreaterThanMaxFee,
-    /// Unsupported caller for this handler.
-    #[error("unsupported caller {0}")]
-    UnsupportedCaller(Address),
+}
+
+impl From<DatabaseError> for HandlerError {
+    fn from(error: DatabaseError) -> Self {
+        Self::Database(error)
+    }
+}
+impl From<ExecutionError> for HandlerError {
+    fn from(error: ExecutionError) -> Self {
+        match error {
+            ExecutionError::Database(error) => Self::Database(error),
+            ExecutionError::Fatal(error) => Self::Fatal(error),
+        }
+    }
 }
 
 impl HandlerError {
@@ -172,21 +180,60 @@ pub struct TxRequest<'a, 'host, T: EvmTypesHost, Tx> {
     pub _non_exhaustive: (),
 }
 
-/// A typed transaction handler.
+/// A typed transaction handler with shared validation and execution rules.
 ///
-/// `Tx` remains concrete. This is what gives handlers strong type guarantees
-/// even though the registry itself is type-erased.
+/// `Tx` remains concrete even though the registry itself is type-erased. Use [`handler`]
+/// to implement both entry points with preparation and execution closures.
 pub trait TxHandler<T: EvmTypesHost, Tx, Output> {
-    /// Executes the handler.
-    fn call(&self, req: TxRequest<'_, '_, T, Tx>) -> HandlerResult<Output>;
+    /// Validates the transaction without executing its user calls.
+    ///
+    /// Validation may apply pre-execution writes. The caller owns discarding these writes
+    /// and any other transaction-local state on both success and error.
+    fn validate(&self, req: TxRequest<'_, '_, T, Tx>) -> HandlerResult<()>;
+
+    /// Validates and executes the transaction.
+    fn execute(&self, req: TxRequest<'_, '_, T, Tx>) -> HandlerResult<Output>;
 }
 
-impl<T: EvmTypesHost, Tx, Output, F> TxHandler<T, Tx, Output> for F
+/// Builds a handler from shared preparation and execution closures.
+///
+/// Validation runs `prepare` and drops its result. Execution runs `prepare` exactly once,
+/// then passes its result and the request to `execute`. Preparation results stay concrete
+/// inside the adapter and are never boxed or exposed through the erased registry.
+///
+/// The prepared value must not borrow the request or host. It may own a context guard;
+/// that guard is dropped after validation or when the execution closure releases it.
+pub fn handler<T, Tx, Output, Prepared, P, E>(
+    prepare: P,
+    execute: E,
+) -> impl TxHandler<T, Tx, Output>
 where
-    F: for<'a, 'host> Fn(TxRequest<'a, 'host, T, Tx>) -> HandlerResult<Output>,
+    T: EvmTypesHost,
+    P: Fn(&mut TxRequest<'_, '_, T, Tx>) -> HandlerResult<Prepared>,
+    E: Fn(TxRequest<'_, '_, T, Tx>, Prepared) -> HandlerResult<Output>,
 {
-    fn call(&self, req: TxRequest<'_, '_, T, Tx>) -> HandlerResult<Output> {
-        self(req)
+    FnHandler { prepare, execute, _prepared: PhantomData }
+}
+
+struct FnHandler<P, E, Prepared> {
+    prepare: P,
+    execute: E,
+    _prepared: PhantomData<fn() -> Prepared>,
+}
+
+impl<T, Tx, Output, Prepared, P, E> TxHandler<T, Tx, Output> for FnHandler<P, E, Prepared>
+where
+    T: EvmTypesHost,
+    P: Fn(&mut TxRequest<'_, '_, T, Tx>) -> HandlerResult<Prepared>,
+    E: Fn(TxRequest<'_, '_, T, Tx>, Prepared) -> HandlerResult<Output>,
+{
+    fn validate(&self, mut req: TxRequest<'_, '_, T, Tx>) -> HandlerResult<()> {
+        (self.prepare)(&mut req).map(|_| ())
+    }
+
+    fn execute(&self, mut req: TxRequest<'_, '_, T, Tx>) -> HandlerResult<Output> {
+        let prepared = (self.prepare)(&mut req)?;
+        (self.execute)(req, prepared)
     }
 }
 
@@ -204,21 +251,39 @@ impl<T: EvmTypesHost, Output> fmt::Debug for AnyTxHandler<T, Output> {
 
 impl<T: EvmTypesHost, Output> AnyTxHandler<T, Output> {
     /// Executes the erased handler against an envelope and host.
-    pub fn call<'host>(
+    pub fn execute<'host>(
         &self,
         env: &Recovered<T::Tx>,
         host: &mut T::Host<'host>,
     ) -> HandlerResult<Output> {
-        self.inner.call(env, host)
+        self.inner.execute(env, host)
+    }
+
+    /// Validates an envelope using the registered handler without executing user calls.
+    ///
+    /// This does not discard pre-execution writes or transaction-local state. The caller
+    /// owns cleanup; [`crate::Evm::validate_tx`] provides validation with state cleanup.
+    pub fn validate<'host>(
+        &self,
+        env: &Recovered<T::Tx>,
+        host: &mut T::Host<'host>,
+    ) -> HandlerResult<()> {
+        self.inner.validate(env, host)
     }
 }
 
 trait ErasedTxHandler<T: EvmTypesHost, Output>: Send + Sync {
-    fn call<'host>(
+    fn execute<'host>(
         &self,
         env: &Recovered<T::Tx>,
         host: &mut T::Host<'host>,
     ) -> HandlerResult<Output>;
+
+    fn validate<'host>(
+        &self,
+        env: &Recovered<T::Tx>,
+        host: &mut T::Host<'host>,
+    ) -> HandlerResult<()>;
 }
 
 struct HandlerAdapter<Tx, H, F> {
@@ -240,14 +305,29 @@ where
     H: TxHandler<T, Tx, Output> + Send + Sync,
     F: for<'a> Fn(&'a T::Tx) -> Option<&'a Tx> + Send + Sync,
 {
-    fn call<'host>(
+    fn execute<'host>(
         &self,
         env: &Recovered<T::Tx>,
         host: &mut T::Host<'host>,
     ) -> HandlerResult<Output> {
         let tx = (self.extract)(env.inner())
             .ok_or(HandlerError::WrongTransactionType { expected: self.type_id })?;
-        self.handler.call(TxRequest {
+        self.handler.execute(TxRequest {
+            envelope: env.inner(),
+            tx: Recovered::new_unchecked(tx, env.signer()),
+            host,
+            _non_exhaustive: (),
+        })
+    }
+
+    fn validate<'host>(
+        &self,
+        env: &Recovered<T::Tx>,
+        host: &mut T::Host<'host>,
+    ) -> HandlerResult<()> {
+        let tx = (self.extract)(env.inner())
+            .ok_or(HandlerError::WrongTransactionType { expected: self.type_id })?;
+        self.handler.validate(TxRequest {
             envelope: env.inner(),
             tx: Recovered::new_unchecked(tx, env.signer()),
             host,
@@ -328,10 +408,11 @@ mod tests {
         BaseEvmConfigSelector, EvmFeatures, EvmTypesHost, SpecId,
         env::{BlockEnv, BlockEnvExt, TxEnv},
         evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
-        interpreter::{Host, InstrStop, Message, MessageResult, Word},
+        interpreter::{Host, Message, MessageResult, Word},
     };
-    use alloc::vec::Vec;
+    use alloc::{rc::Rc, string::ToString, vec::Vec};
     use alloy_primitives::{Address, B256, Log};
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug, thiserror::Error)]
     #[error("typed handler error")]
@@ -392,7 +473,7 @@ mod tests {
             _address: &Address,
             _load_code: bool,
             _skip_cold_load: bool,
-        ) -> Result<AccountLoad, InstrStop> {
+        ) -> Result<AccountLoad, crate::HostError> {
             unimplemented!()
         }
 
@@ -400,11 +481,11 @@ mod tests {
             &mut self,
             _address: &Address,
             _features: EvmFeatures,
-        ) -> Result<bool, InstrStop> {
+        ) -> Result<bool, DatabaseError> {
             unimplemented!()
         }
 
-        fn block_hash(&mut self, _number: &Word) -> Result<B256, InstrStop> {
+        fn block_hash(&mut self, _number: &Word) -> Result<B256, DatabaseError> {
             unimplemented!()
         }
 
@@ -413,7 +494,7 @@ mod tests {
             _address: &Address,
             _key: &Word,
             _skip_cold_load: bool,
-        ) -> Result<SLoad, InstrStop> {
+        ) -> Result<SLoad, crate::HostError> {
             unimplemented!()
         }
 
@@ -423,7 +504,7 @@ mod tests {
             _key: &Word,
             _value: &Word,
             _skip_cold_load: bool,
-        ) -> Result<SStore, InstrStop> {
+        ) -> Result<SStore, crate::HostError> {
             unimplemented!()
         }
 
@@ -443,7 +524,7 @@ mod tests {
             &mut self,
             _tx_env: &TxEnv<TestTypes>,
             _message: &mut Message<TestTypes>,
-        ) -> MessageResult<TestTypes> {
+        ) -> Result<MessageResult<TestTypes>, crate::ExecutionError> {
             unimplemented!()
         }
 
@@ -452,7 +533,7 @@ mod tests {
             _contract: &Address,
             _target: &Address,
             _skip_cold_load: bool,
-        ) -> Result<SelfDestructResult, InstrStop> {
+        ) -> Result<SelfDestructResult, crate::HostError> {
             unimplemented!()
         }
     }
@@ -497,7 +578,7 @@ mod tests {
         type_id: u8,
         env: &Envelope,
     ) -> HandlerResult<Receipt> {
-        registry.try_get_by_type(type_id)?.call(
+        registry.try_get_by_type(type_id)?.execute(
             &Recovered::new_unchecked(env.clone(), Address::ZERO),
             &mut TestHost { block: BlockEnvExt::default() },
         )
@@ -506,8 +587,8 @@ mod tests {
     #[test]
     fn dispatches_to_typed_handlers_from_erased_registry() {
         let mut registry = TxRegistry::<TestTypes, Receipt>::new();
-        registry.register(0x01, transfer, handle_transfer);
-        registry.register(0x02, create, handle_create);
+        registry.register(0x01, transfer, handler(|_| Ok(()), |req, ()| handle_transfer(req)));
+        registry.register(0x02, create, handler(|_| Ok(()), |req, ()| handle_create(req)));
 
         let transfer_receipt =
             call_registered(&registry, 0x01, &Envelope::Transfer(TransferTx { amount: 7 }))
@@ -523,7 +604,7 @@ mod tests {
     #[test]
     fn reports_unsupported_and_mismatched_types() {
         let mut registry = TxRegistry::<TestTypes, Receipt>::new();
-        registry.register(0x01, transfer, handle_transfer);
+        registry.register(0x01, transfer, handler(|_| Ok(()), |req, ()| handle_transfer(req)));
 
         assert_eq!(
             call_registered(&registry, 0xff, &Envelope::Transfer(TransferTx { amount: 7 })),
@@ -533,5 +614,79 @@ mod tests {
             call_registered(&registry, 0x01, &Envelope::Create(CreateTx { initcode: Vec::new() })),
             Err(HandlerError::WrongTransactionType { expected: 0x01 })
         );
+    }
+
+    #[test]
+    fn validation_and_execution_share_preparation() {
+        let prepared_count = Arc::new(AtomicUsize::new(0));
+        let executed_count = Arc::new(AtomicUsize::new(0));
+        let mut registry = TxRegistry::<TestTypes, Receipt>::new();
+        registry.register(
+            0x01,
+            transfer,
+            handler(
+                {
+                    let prepared_count = prepared_count.clone();
+                    move |req: &mut TxRequest<'_, '_, TestTypes, TransferTx>| {
+                        prepared_count.fetch_add(1, Ordering::Relaxed);
+                        if req.tx.amount == 1 {
+                            return Err(HandlerError::InsufficientFunds);
+                        }
+                        // Prepared values need not be Send even though the registry is Send + Sync.
+                        Ok(Rc::new(req.tx.amount))
+                    }
+                },
+                {
+                    let executed_count = executed_count.clone();
+                    move |_, prepared| {
+                        executed_count.fetch_add(1, Ordering::Relaxed);
+                        if *prepared == 2 {
+                            return Err(HandlerError::Fatal("execution failed".into()));
+                        }
+                        Ok(receipt(*prepared))
+                    }
+                },
+            ),
+        );
+        let handler = registry.try_get_by_type(0x01).unwrap();
+        let mut host = TestHost { block: BlockEnvExt::default() };
+        for amount in 0..3 {
+            let tx =
+                Recovered::new_unchecked(Envelope::Transfer(TransferTx { amount }), Address::ZERO);
+            let validation = handler.validate(&tx, &mut host);
+            let execution = handler.execute(&tx, &mut host);
+            match amount {
+                0 => {
+                    assert_eq!(validation, Ok(()));
+                    assert_eq!(execution, Ok(receipt(0)));
+                    assert_eq!(prepared_count.load(Ordering::Relaxed), 2);
+                    assert_eq!(executed_count.load(Ordering::Relaxed), 1);
+                }
+                1 => {
+                    assert_eq!(validation, Err(HandlerError::InsufficientFunds));
+                    assert_eq!(execution, Err(HandlerError::InsufficientFunds));
+                }
+                2 => {
+                    assert_eq!(validation, Ok(()));
+                    let Err(HandlerError::Fatal(error)) = execution else {
+                        panic!("expected fatal execution error, got {execution:?}");
+                    };
+                    assert_eq!(error.to_string(), "execution failed");
+                }
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(prepared_count.load(Ordering::Relaxed), 6);
+        assert_eq!(executed_count.load(Ordering::Relaxed), 2);
+
+        let wrong = Recovered::new_unchecked(
+            Envelope::Create(CreateTx { initcode: Vec::new() }),
+            Address::ZERO,
+        );
+        assert_eq!(
+            handler.validate(&wrong, &mut host),
+            Err(HandlerError::WrongTransactionType { expected: 0x01 })
+        );
+        assert_eq!(prepared_count.load(Ordering::Relaxed), 6);
     }
 }

@@ -19,7 +19,7 @@ use evm2::{
     Evm, EvmFeatures, EvmTypes, Inspector, SpecId, TxResultExt,
     evm::JournalEntry,
     interpreter::{
-        Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
+        InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
     },
 };
@@ -38,6 +38,10 @@ pub use config::{OpcodeFilter, StackSnapshotType, TracingInspectorConfig};
 
 mod fourbyte;
 pub use fourbyte::FourByteInspector;
+
+mod limits;
+use limits::TraceBudget;
+pub use limits::{TraceLimitBehavior, TraceLimits};
 
 mod opcount;
 pub use opcount::OpcodeCountInspector;
@@ -83,6 +87,8 @@ pub(crate) const fn final_refunded<E>(gas: &TxResultExt<E>) -> u64 {
 pub struct TracingInspector {
     /// Configures what and how the inspector records traces.
     config: TracingInspectorConfig,
+    /// Tracks retained and copied trace bytes.
+    budget: TraceBudget,
     /// Records all call traces
     traces: CallTraceArena,
     /// Tracks active calls
@@ -118,6 +124,22 @@ impl TracingInspector {
         Self { config, ..Default::default() }
     }
 
+    /// Configures the byte budget for recorded trace data.
+    pub const fn with_limits(mut self, limits: TraceLimits) -> Self {
+        self.budget.limits = limits;
+        self
+    }
+
+    /// Returns the number of retained or copied bytes counted against the budget.
+    pub const fn recorded_bytes(&self) -> usize {
+        self.budget.recorded
+    }
+
+    /// Returns whether recording omitted a byte buffer after reaching the budget.
+    pub const fn limit_exceeded(&self) -> bool {
+        self.budget.exceeded
+    }
+
     /// Resets the inspector to its initial state of [Self::new].
     /// This makes the inspector ready to be used again.
     ///
@@ -135,6 +157,7 @@ impl TracingInspector {
             features,
             // kept
             config,
+            budget,
             reusable_step_vecs,
         } = self;
 
@@ -157,6 +180,8 @@ impl TracingInspector {
         spec_id.take();
         *features = EvmFeatures::empty();
         *last_journal_len = 0;
+        budget.recorded = 0;
+        budget.exceeded = false;
     }
 
     /// Resets the inspector to it's initial state of [Self::new].
@@ -425,7 +450,8 @@ impl TracingInspector {
 
         let trace_idx = self.last_trace_idx();
 
-        let record = self.config.should_record_opcode(op)
+        let record = !self.budget.exceeded()
+            && self.config.should_record_opcode(op)
             && self.config.step_limit.is_none_or(|limit| self.recorded_steps < limit.get());
         if !record {
             // Push a sentinel so that the upcoming `step_end` stays paired with this step.
@@ -439,16 +465,21 @@ impl TracingInspector {
         // Reuse the memory from the previous step if:
         // - there is not opcode filter -- in this case we cannot rely on the order of steps
         // - it exists and has not modified memory
-        let memory = self.config.record_memory_snapshots.then(|| {
-            if self.config.record_opcodes_filter.is_none()
-                && let Some(prev) = node.trace.steps.last()
-                && !prev.op.modifies_memory()
-                && let Some(memory) = &prev.memory
-            {
-                return memory.clone();
-            }
-            RecordedMemory::new(interp.memory().slice(0, interp.memory().len()))
-        });
+        let memory = self
+            .config
+            .record_memory_snapshots
+            .then(|| {
+                if self.config.record_opcodes_filter.is_none()
+                    && let Some(prev) = node.trace.steps.last()
+                    && !prev.op.modifies_memory()
+                    && let Some(memory) = &prev.memory
+                {
+                    return Some(memory.clone());
+                }
+                let bytes = interp.memory().slice(0, interp.memory().len());
+                self.budget.reserve(bytes.len()).then(|| RecordedMemory::new(bytes))
+            })
+            .flatten();
 
         let stack = if self.config.record_stack_snapshots.is_all()
             || self.config.record_stack_snapshots.is_full()
@@ -476,7 +507,9 @@ impl TracingInspector {
             if size != 0 {
                 let pc = interp.pc() + 1;
                 let bytes = interp.bytecode().as_slice().get(pc..pc + size).unwrap_or_default();
-                immediate_bytes = Some(Bytes::copy_from_slice(bytes));
+                if self.budget.reserve(bytes.len()) {
+                    immediate_bytes = Some(Bytes::copy_from_slice(bytes));
+                }
             }
         }
 
@@ -515,20 +548,15 @@ impl TracingInspector {
 
         if self.config.record_step_deltas {
             let write_range = memory_write_range(op.get(), interp.stack().as_slice());
-            // Journal entries also include reads and omit same-value writes. VM traces need
-            // the operands of each successful SSTORE instead.
-            let storage = match (op.get(), interp.stack().as_slice()) {
-                (op::SSTORE, [.., value, key]) => Some(StorageDelta { key: *key, val: *value }),
-                _ => None,
-            };
+            let store = storage_write(op.get(), interp.stack().as_slice());
             if write_range.is_some()
-                || storage.is_some()
+                || store.is_some()
                 || node.trace.steps[step_idx].is_call_like_op()
             {
                 node.trace.step_deltas.push(StepDelta {
                     step: step_idx,
+                    store,
                     write_range,
-                    storage,
                     ..Default::default()
                 });
             }
@@ -622,11 +650,6 @@ impl TracingInspector {
 
         if self.config.record_step_deltas {
             if step.status.is_some_and(|status| status.is_halt()) {
-                if let Some(delta) =
-                    node.trace.step_deltas.last_mut().filter(|delta| delta.step == step_idx)
-                {
-                    delta.storage = None;
-                }
                 return;
             }
             // Call results, returned memory and gas are already available in evm2's `step_end`.
@@ -648,7 +671,10 @@ impl TracingInspector {
                 {
                     range.end = range.start + range.len().min(interp.return_data().len());
                 }
-                delta.record_memory_write(interp.memory().slice(0, interp.memory().len()));
+                delta.record_memory_write(
+                    interp.memory().slice(0, interp.memory().len()),
+                    &mut self.budget,
+                );
             }
         }
     }
@@ -671,6 +697,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         if self.config.record_steps {
             self.start_step(interp);
         }
+        self.budget.halt(interp, true);
     }
 
     #[inline]
@@ -678,6 +705,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         if self.config.record_steps {
             self.fill_step_on_step_end(interp);
         }
+        self.budget.halt(interp, true);
     }
 
     fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
@@ -725,20 +753,25 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             !message.disable_precompiles && self.is_precompile_call(interp.host(), &to, &value)
         });
 
+        let input = if self.config.record_inputs
+            && (message.depth == 0 || self.budget.reserve(message.input.len()))
+        {
+            message.input.to_bytes(interp.host().call_memory())
+        } else {
+            Bytes::new()
+        };
         self.start_trace_on_call(
             usize::from(message.depth),
             to,
-            if self.config.record_inputs {
-                message.input.to_bytes(interp.host().call_memory())
-            } else {
-                Bytes::new()
-            },
+            input,
             value,
             message.kind.into(),
             from,
             message.gas_limit,
             maybe_precompile,
         );
+
+        self.budget.halt(interp, false);
 
         None
     }
@@ -762,30 +795,43 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         }
         self.features = interp.version().features;
 
+        let input = if self.config.record_inputs
+            && (message.depth == 0 || self.budget.reserve(message.input.len()))
+        {
+            message.input.to_bytes(interp.host().call_memory())
+        } else {
+            Bytes::new()
+        };
         self.start_trace_on_call(
             usize::from(message.depth),
             message.destination,
-            if self.config.record_inputs {
-                message.input.to_bytes(interp.host().call_memory())
-            } else {
-                Bytes::new()
-            },
+            input,
             message.value,
             message.kind.into(),
             message.caller,
             message.gas_limit,
             Some(false),
         );
+        self.budget.halt(interp, false);
         None
     }
 
     fn create_end(
         &mut self,
         _interp: &mut Interpreter<'_, '_, T>,
-        _message: &Message<T>,
+        message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
+        let trace_idx = self.last_trace_idx();
         self.fill_trace_on_call_end(result);
+        // A nested CREATE whose creator nonce cannot be incremented returns successfully but
+        // without an address, leaving its gas unspent.
+        if message.depth > 0 && result.created_address.is_none() && result.stop == InstrStop::Return
+        {
+            let trace = &mut self.traces.arena[trace_idx].trace;
+            trace.status = Some(InstrStop::NonceOverflow);
+            trace.success = false;
+        }
     }
 
     fn selfdestruct(
@@ -850,15 +896,16 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
     }
 }
 
-/// Returns the memory range the opcode writes, derived from its inputs on the stack.
+/// Returns the memory range whose contents after execution the opcode reports, derived from its
+/// inputs on the stack.
 ///
-/// Only writes are tracked: instructions that merely expand memory, like `MLOAD`, yield `None`.
+/// This is the range the opcode writes, or for `MLOAD` the word it reads, as in Parity's `vmTrace`.
 fn memory_write_range(op: u8, stack: &[U256]) -> Option<Range<usize>> {
     let back = |index: usize| {
         stack.get(stack.len().checked_sub(index + 1)?).and_then(|v| usize::try_from(*v).ok())
     };
     let (offset, size) = match op {
-        op::MSTORE => (back(0)?, 32),
+        op::MLOAD | op::MSTORE => (back(0)?, 32),
         op::MSTORE8 => (back(0)?, 1),
         op::CALLDATACOPY | op::CODECOPY | op::RETURNDATACOPY | op::MCOPY => (back(0)?, back(2)?),
         op::EXTCODECOPY => (back(1)?, back(3)?),
@@ -867,4 +914,14 @@ fn memory_write_range(op: u8, stack: &[U256]) -> Option<Range<usize>> {
         _ => return None,
     };
     (size != 0).then_some(offset..offset.checked_add(size)?)
+}
+
+/// Returns the storage write of an `SSTORE`, derived from its inputs on the stack.
+///
+/// This is independent of the journal, which has no entry for a warm write of the unchanged value.
+const fn storage_write(op: u8, stack: &[U256]) -> Option<StorageDelta> {
+    match (op, stack) {
+        (op::SSTORE, [.., val, key]) => Some(StorageDelta { key: *key, val: *val }),
+        _ => None,
+    }
 }

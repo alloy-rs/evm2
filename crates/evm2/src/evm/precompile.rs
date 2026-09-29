@@ -46,9 +46,7 @@ pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     }
 
     /// Returns precompile addresses and identifiers.
-    fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
-        Vec::new()
-    }
+    fn precompile_ids(&self) -> Vec<(Address, PrecompileId)>;
 
     /// Returns whether `address` has a registered precompile.
     fn contains(&self, address: &Address) -> bool;
@@ -100,6 +98,11 @@ pub struct NoPrecompiles(());
 impl<T: EvmTypesHost> PrecompileProvider<T> for NoPrecompiles {
     #[inline]
     fn addresses(&self) -> Vec<Address> {
+        Vec::new()
+    }
+
+    #[inline]
+    fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
         Vec::new()
     }
 

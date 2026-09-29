@@ -26,7 +26,7 @@ fn main() {
         ..MessageExt::default()
     };
 
-    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
+    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
     assert_eq!(result.stop, InstrStop::Return);
     assert_eq!(result.output.len(), 32);
 
@@ -84,13 +84,12 @@ fn staticcall_precompile(
         ..MessageExt::default()
     };
 
-    let result = Host::execute_message(evm, &TxEnvExt::default(), &mut child);
+    let result = Host::execute_message(evm, &TxEnvExt::default(), &mut child)?;
     gas.merge_child_gas(result.gas, result.stop);
 
     match result.stop {
         stop if stop.is_success() => Ok(PrecompileOutput::new(result.output)),
         stop if stop.is_revert() => Err(PrecompileError::Revert(result.output)),
-        stop if stop.is_fatal() => Err(stop.into()),
         stop => Err(PrecompileHalt::Other(format!("subcall halted with {stop:?}").into()).into()),
     }
 }

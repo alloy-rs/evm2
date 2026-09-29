@@ -176,17 +176,15 @@ impl From<HandlerError> for FuzzError {
             HandlerError::TxGasLimitGreaterThanCap { gas_limit, cap } => {
                 Self::Transaction(InvalidTransaction::TxGasLimitGreaterThanCap { gas_limit, cap })
             }
-            error @ (HandlerError::Fatal(_)
+            error @ (HandlerError::Database(_)
+            | HandlerError::Fatal(_)
             | HandlerError::External(_)
             | HandlerError::WrongTransactionType { .. }
             | HandlerError::InvalidChainId { .. }
             | HandlerError::GasLimitMoreThanBlock { .. }
             | HandlerError::CreateInitCodeSizeLimit { .. }
-            | HandlerError::OutOfFunds
-            | HandlerError::SignerRecoveryFailed
             | HandlerError::FeeCapLessThanBaseFee { .. }
-            | HandlerError::BlobFeeCapLessThanBlobBaseFee { .. }
-            | HandlerError::UnsupportedCaller(_)) => Self::Evm2(error),
+            | HandlerError::BlobFeeCapLessThanBlobBaseFee { .. }) => Self::Evm2(error),
         }
     }
 }

@@ -2,7 +2,7 @@
 
 use super::{DbResult, DynDatabase, EmptyDB};
 use crate::{
-    AnyError, ErrorCode,
+    DatabaseError,
     bytecode::Bytecode,
     evm::{
         bal::BalContext,
@@ -60,6 +60,27 @@ pub struct Cache {
     pub block_hashes: U256Map<B256>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
+}
+
+impl Cache {
+    /// Merges another cache into this one, giving incoming entries precedence.
+    ///
+    /// Incoming account entries replace existing ones, including `None` entries. An incoming
+    /// storage wipe clears previously cached slots before inserting the incoming slots. Otherwise,
+    /// untouched slots and any existing storage wipe are preserved.
+    #[inline]
+    pub fn merge(&mut self, other: Self) {
+        self.accounts.extend(other.accounts);
+        self.contracts.extend(other.contracts);
+        self.block_hashes.extend(other.block_hashes);
+        for (address, storage) in other.storage {
+            let target = self.storage.entry(address).or_default();
+            if storage.wiped {
+                target.wipe();
+            }
+            target.slots.extend(storage.slots);
+        }
+    }
 }
 
 impl Default for Cache {
@@ -290,7 +311,7 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
         // uncovered account errors before the cache or backing database is consulted.
         let bal_account = match self.bal_context.get_bal_account(address) {
             Ok(bal_account) => bal_account,
-            Err(err) => return Err(self.bal_context.store_error(err)),
+            Err(err) => return Err(DatabaseError::new(err, false)),
         };
 
         // Resolve the raw account from the cache or backing database. The cache always stores the
@@ -332,7 +353,7 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
         match self.bal_context.bal_storage(address, key) {
             Ok(Some(value)) => return Ok(value),
             Ok(None) => {}
-            Err(err) => return Err(self.bal_context.store_error(err)),
+            Err(err) => return Err(DatabaseError::new(err, false)),
         }
 
         // A cached slot can be a locally committed write even when the backing account is absent.
@@ -374,14 +395,6 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
             Entry::Vacant(entry) => Ok(*entry.insert(self.db.get_block_hash(number)?)),
         }
     }
-
-    #[inline]
-    fn error(&mut self, code: ErrorCode) -> AnyError {
-        if let Some(err) = self.bal_context.take_error(code) {
-            return err;
-        }
-        self.db.error(code)
-    }
 }
 
 mod typed {
@@ -389,28 +402,30 @@ mod typed {
     use crate::evm::Database;
 
     impl<ExtDB: DynDatabase> Database for CacheDB<ExtDB> {
-        type Error = AnyError;
+        type Error = DatabaseError;
+
+        fn is_fatal(error: &Self::Error) -> bool {
+            error.is_fatal()
+        }
 
         #[inline]
         fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
-            DynDatabase::get_account(self, address).map_err(|code| DynDatabase::error(self, code))
+            DynDatabase::get_account(self, address)
         }
 
         #[inline]
         fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
             DynDatabase::get_code_by_hash(self, code_hash)
-                .map_err(|code| DynDatabase::error(self, code))
         }
 
         #[inline]
         fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error> {
             DynDatabase::get_storage(self, address, key)
-                .map_err(|code| DynDatabase::error(self, code))
         }
 
         #[inline]
         fn get_block_hash(&mut self, number: &Word) -> Result<B256, Self::Error> {
-            DynDatabase::get_block_hash(self, number).map_err(|code| DynDatabase::error(self, code))
+            DynDatabase::get_block_hash(self, number)
         }
     }
 }
@@ -425,6 +440,73 @@ mod tests {
     use alloc::{string::ToString, sync::Arc, vec};
     use alloy_eip7928::{BalanceChange, NonceChange, StorageChange};
     use alloy_primitives::Bytes;
+
+    #[test]
+    fn merge_storage_preserves_wipe_semantics() {
+        let address = Address::repeat_byte(1);
+        for existing_wiped in [false, true] {
+            for incoming_wiped in [false, true] {
+                let mut db = CacheDB::new(crate::evm::Db::new(CountingDB {
+                    account: Some(AccountInfo::empty()),
+                    storage: Word::from(99),
+                    ..Default::default()
+                }));
+                let existing = db.cache.storage.entry(address).or_default();
+                existing.wiped = existing_wiped;
+                existing.slots.insert(Word::ZERO, Word::from(10));
+                existing.slots.insert(Word::ONE, Word::from(20));
+
+                let mut incoming = Cache::default();
+                let storage = incoming.storage.entry(address).or_default();
+                storage.wiped = incoming_wiped;
+                storage.slots.insert(Word::ONE, Word::from(30));
+                storage.slots.insert(Word::from(2), Word::from(40));
+                db.cache.merge(incoming);
+
+                assert_eq!(
+                    db.get_storage(&address, &Word::ZERO).unwrap(),
+                    if incoming_wiped { Word::ZERO } else { Word::from(10) }
+                );
+                assert_eq!(db.get_storage(&address, &Word::ONE).unwrap(), Word::from(30));
+                assert_eq!(db.get_storage(&address, &Word::from(2)).unwrap(), Word::from(40));
+                assert_eq!(
+                    db.get_storage(&address, &Word::from(3)).unwrap(),
+                    if existing_wiped || incoming_wiped { Word::ZERO } else { Word::from(99) }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn merge_incoming_entries_take_precedence() {
+        let address = Address::repeat_byte(1);
+        let untouched = Address::repeat_byte(2);
+        let added = Address::repeat_byte(3);
+        let info = AccountInfo::empty().with_balance(Word::ONE);
+        let code = Bytecode::new_raw(Bytes::from_static(&[op::STOP]));
+        let hash = code.hash_slow();
+        let mut cache = Cache::default();
+        cache.accounts.insert(address, Some(info.clone()));
+        cache.accounts.insert(untouched, Some(info.clone()));
+        cache.contracts.insert(hash, Bytecode::default());
+        cache.block_hashes.insert(Word::ONE, B256::ZERO);
+
+        let mut incoming = Cache::default();
+        incoming.accounts.insert(address, None);
+        incoming.accounts.insert(added, Some(info.clone()));
+        incoming.contracts.insert(hash, code.clone());
+        incoming.block_hashes.insert(Word::ONE, hash);
+        incoming.storage.entry(added).or_default().slots.insert(Word::ZERO, Word::ONE);
+        cache.merge(incoming);
+
+        assert_eq!(cache.accounts[&address], None);
+        assert_eq!(cache.accounts[&untouched], Some(info.clone()));
+        assert_eq!(cache.accounts[&added], Some(info));
+        assert_eq!(cache.contracts[&hash], code);
+        assert_eq!(cache.block_hashes[&Word::ONE], hash);
+        assert_eq!(cache.storage[&added].slots[&Word::ZERO], Word::ONE);
+        assert!(!cache.storage[&added].wiped);
+    }
 
     #[derive(Debug, Default)]
     struct CountingDB {
@@ -614,13 +696,15 @@ mod tests {
 
         // Slot 9 is not listed in the BAL for a covered account -> BAL is invalid for this access.
         let code = cache.get_storage(&address, &Word::from(9)).unwrap_err();
-        assert_eq!(code, ErrorCode::BAL_NOT_COVERED);
-        assert!(cache.error(code).to_string().contains("not found in BAL"));
+        assert!(!code.is_fatal());
+        assert!(code.downcast_ref::<crate::evm::bal::BalError>().is_some());
+        assert!(code.to_string().contains("not found in BAL"));
 
         // An account entirely absent from the BAL also errors.
         let missing = Address::with_last_byte(2);
         let code = cache.get_account(&missing).unwrap_err();
-        assert_eq!(code, ErrorCode::BAL_NOT_COVERED);
+        assert!(!code.is_fatal());
+        assert!(code.downcast_ref::<crate::evm::bal::BalError>().is_some());
     }
 
     #[test]

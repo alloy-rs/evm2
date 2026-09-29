@@ -9,10 +9,7 @@ use super::{
 use crate::{
     EvmTypes, TxResult,
     env::TxEnvExt,
-    evm::{
-        error_handler,
-        handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
-    },
+    evm::handler::{DefaultTxHandlerHooks, GasSettlement, TxHandlerHooks},
     interpreter::GasTracker,
     registry::{HandlerResult, TxRequest},
 };
@@ -26,15 +23,16 @@ pub fn handle<T: EvmTypes>(req: TxRequest<'_, '_, T, TxEip1559>) -> HandlerResul
 
 /// Executes an EIP-1559 transaction using Ethereum rules and custom handler hooks.
 pub fn handle_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
-    req: TxRequest<'_, '_, T, TxEip1559>,
+    mut req: TxRequest<'_, '_, T, TxEip1559>,
 ) -> HandlerResult<TxResult<T>> {
-    execute_prepared::<T, H>(prepare_with_hooks::<T, H>(req)?)
+    let prepared = prepare_with_hooks::<T, H>(&mut req)?;
+    execute_prepared::<T, H>(req, prepared)
 }
 
 /// Validates an EIP-1559 transaction and applies its pre-execution state changes.
-pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
-    req: TxRequest<'a, 'host, T, TxEip1559>,
-) -> HandlerResult<PreparedTx<'a, 'host, T, TxEip1559>> {
+pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
+    req: &mut TxRequest<'_, '_, T, TxEip1559>,
+) -> HandlerResult<PreparedTx> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let max_fee_per_gas = U256::from(tx.max_fee_per_gas);
@@ -88,17 +86,18 @@ pub fn prepare_with_hooks<'a, 'host: 'a, T: EvmTypes, H: TxHandlerHooks<T>>(
     warm_access_list(req.host, &tx.access_list);
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    req.host.state.account(&caller, false).map_err(error_handler!(req.host))?.bump_nonce();
+    req.host.state.account(&caller)?.bump_nonce();
     H::before_execution(req.host, req.envelope, caller, effective_gas_cost)?;
 
-    Ok(PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas })
+    Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas })
 }
 
 /// Executes and settles a prepared EIP-1559 transaction.
 pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
-    prepared: PreparedTx<'_, '_, T, TxEip1559>,
+    req: TxRequest<'_, '_, T, TxEip1559>,
+    prepared: PreparedTx,
 ) -> HandlerResult<TxResult<T>> {
-    let PreparedTx { req, caller, gas_price, intrinsic, initial_state_gas, floor_gas } = prepared;
+    let PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas } = prepared;
     let tx = req.tx.inner();
 
     let (execution_gas_limit, reservoir) =
@@ -120,7 +119,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
         &mut tx_gas,
         execution_gas_limit,
         reservoir,
-    );
+    )?;
     H::settle_transaction(
         req.host,
         req.envelope,

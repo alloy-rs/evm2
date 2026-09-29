@@ -423,7 +423,6 @@ fn print_db_stats(counts: DbStatsCounts) {
         counts.get_storage_same_address_longest_streak
     );
     eprintln!("{style}db stats{style:#}: get_block_hash={}", counts.get_block_hash);
-    eprintln!("{style}db stats{style:#}: error={}", counts.error);
 }
 
 #[inline]

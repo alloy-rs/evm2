@@ -65,12 +65,6 @@ pub enum InstrStop {
     CallTooDeep,
     /// Insufficient funds for transfer.
     OutOfFunds,
-    /// Revert if `CREATE`/`CREATE2` starts with `0xEF00`.
-    CreateInitCodeStartingEF00,
-    /// Invalid EVM Object Format (EOF) init code.
-    InvalidEOFInitCode,
-    /// `ExtDelegateCall` calling a non EOF contract.
-    InvalidExtDelegateCallTarget,
 
     // Halt Codes
     /// Out of gas error.
@@ -105,8 +99,6 @@ pub enum InstrStop {
     OutOfOffset,
     /// Address collision during contract creation.
     CreateCollision,
-    /// Payment amount overflow.
-    OverflowPayment,
     /// Error in precompiled contract execution.
     PrecompileError,
     /// Nonce overflow.
@@ -117,8 +109,6 @@ pub enum InstrStop {
     CreateContractStartingWithEF,
     /// Exceeded init code size limit (EIP-3860:  Limit and meter initcode).
     CreateInitCodeSizeLimit,
-    /// Fatal precompile error.
-    FatalPrecompileError,
     /// Fatal external error. Returned by database.
     FatalExternalError,
     /// Invalid encoding of an instruction's immediate operand.
@@ -136,15 +126,7 @@ impl InstrStop {
     /// Returns whether execution reverted without an exceptional halt.
     #[inline]
     pub const fn is_revert(self) -> bool {
-        matches!(
-            self,
-            Self::Revert
-                | Self::CallTooDeep
-                | Self::OutOfFunds
-                | Self::CreateInitCodeStartingEF00
-                | Self::InvalidEOFInitCode
-                | Self::InvalidExtDelegateCallTarget
-        )
+        matches!(self, Self::Revert | Self::CallTooDeep | Self::OutOfFunds)
     }
 
     /// Returns whether execution halted exceptionally.
@@ -170,6 +152,6 @@ impl InstrStop {
     /// Returns whether execution hit a fatal host/extension boundary error.
     #[inline]
     pub const fn is_fatal(self) -> bool {
-        matches!(self, Self::FatalPrecompileError | Self::FatalExternalError)
+        matches!(self, Self::FatalExternalError)
     }
 }

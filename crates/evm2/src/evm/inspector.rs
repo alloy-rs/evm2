@@ -143,8 +143,8 @@ impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn Inspector<T> + 'a {
 mod tests {
     use super::Inspector;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmTypesHost, ExecutionConfig, Precompiles,
-        SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, DatabaseError, Evm, EvmTypesHost, ExecutionConfig,
+        Precompiles, SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnvExt, TxEnvExt},
@@ -393,7 +393,7 @@ mod tests {
         let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
         let mut message = MessageExt { gas_limit, code: bytecode, ..message.clone() };
-        let result = Host::execute_message(&mut evm, &tx_env, &mut message);
+        let result = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
         let inspector = evm.clear_inspector_as::<I>().unwrap();
         (result, inspector, evm)
     }
@@ -842,7 +842,7 @@ mod tests {
         let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
         let mut message = MessageExt { gas_limit: 100_000, code: bytecode, ..Default::default() };
-        let result = Host::execute_message(&mut evm, &tx_env, &mut message);
+        let result = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
 
         assert_matches!(result.stop, InstrStop::Stop);
         // The redirected call transferred the value to the replacement, not the target.
@@ -1174,7 +1174,9 @@ mod tests {
         // Host failures are injected through the mock host; this intentionally uses [`TestHost`].
         let target = Address::from([0x99; 20]);
         let mut host = TestHost {
-            selfdestruct_error: Some(InstrStop::FatalExternalError),
+            selfdestruct_error: Some(
+                DatabaseError::new(crate::AnyError::from("selfdestruct failed"), true).into(),
+            ),
             ..Default::default()
         };
         let mut inspector = SelfdestructInspector::default();
@@ -1192,7 +1194,7 @@ mod tests {
         let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
         let stop = interp.run_inspect(&config, &mut host, &mut inspector);
 
-        assert_eq!(stop, InstrStop::FatalExternalError);
+        assert_matches!(stop, Err(crate::ExecutionError::Database(error)) if error.is_fatal());
         assert_eq!(inspector.selfdestruct, None);
     }
 
@@ -1331,7 +1333,7 @@ mod tests {
             fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 let address = interp.message().destination;
                 let state = interp.host().state_mut();
-                state.storage_slot(&address, Word::ZERO, false).unwrap().set(Word::from(7));
+                state.storage_slot(&address, Word::ZERO).unwrap().set(Word::from(7));
                 if self.prewarmed {
                     state.prewarm_storage_slot(&address, Word::ZERO);
                 }
@@ -1580,10 +1582,10 @@ mod tests {
                 op::PUSH0,
                 if reverts { op::REVERT } else { op::RETURN },
             ];
-            parent.account(&target, false).unwrap().set_code_slow(legacy_bytecode(code));
-            parent.account(&caller, false).unwrap().set_balance(Word::from(1_000_000_000));
-            parent.storage_slot(&target, Word::ZERO, false).unwrap().set(Word::from(7));
-            parent.storage_slot(&target, Word::ZERO, false).unwrap().warm();
+            parent.account(&target).unwrap().set_code_slow(legacy_bytecode(code));
+            parent.account(&caller).unwrap().set_balance(Word::from(1_000_000_000));
+            parent.storage_slot(&target, Word::ZERO).unwrap().set(Word::from(7));
+            parent.storage_slot(&target, Word::ZERO).unwrap().warm();
             parent.tstore(&target, &Word::ZERO, &Word::from(9));
             let checkpoint = parent.checkpoint();
             let mut child = Evm::<BaseEvmTypes>::new(
@@ -1608,7 +1610,7 @@ mod tests {
             assert_eq!(Word::from_be_slice(&output.result.output[32..]), Word::ZERO);
             parent.merge_isolated_state(output.pending_state);
             assert_eq!(parent.checkpoint(), checkpoint);
-            let slot = parent.storage_slot(&target, Word::ZERO, false).unwrap();
+            let slot = parent.storage_slot(&target, Word::ZERO).unwrap();
             assert_eq!(slot.original(), Word::ZERO);
             assert_eq!(slot.current(), Word::from(if reverts { 7 } else { 8 }));
             assert!(slot.is_warm());
@@ -1639,7 +1641,7 @@ mod tests {
             let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
             let stop = interp.run_inspect(&config, &mut TestHost::default(), &mut GasEdit);
 
-            assert_eq!(stop, expected);
+            assert_eq!(stop, Ok(expected));
             assert_eq!(interp.gas().remaining(), 1000);
         }
     }

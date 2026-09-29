@@ -75,15 +75,10 @@ impl JumpTable {
         Self::from_vec(alloc::vec![0; bytes], bit_len)
     }
 
+    /// Returns the raw bytes of the jump map for writing.
     #[inline]
-    pub(crate) fn set(&mut self, pc: usize) {
-        debug_assert!(pc < self.bit_len, "jump table bit index exceeds bit length");
-        let (byte, bit) = (pc / 8, pc % 8);
-        // SAFETY: callers only set PCs inside the bytecode length, and debug
-        // builds assert the bit length above.
-        unsafe {
-            *self.table.to_mut().get_unchecked_mut(byte) |= 1 << bit;
-        }
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
+        self.table.to_mut()
     }
 
     /// Constructs a jump map from raw bytes and length.

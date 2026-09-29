@@ -9,12 +9,14 @@
 use super::{Evm, ExecutedTx, TxResult, TxResultExt};
 #[cfg(feature = "async")]
 use super::{SendEvmRef, r#async};
+#[cfg(feature = "async")]
+use crate::registry::HandlerError;
 use crate::{
     EvmTypes,
     env::TxEnvExt,
     ethereum::{execute_initial_frame, prepare_initial_frame},
     interpreter::GasTracker,
-    registry::{HandlerError, HandlerResult},
+    registry::HandlerResult,
     version::{EvmFeatures, GasId},
 };
 use alloc::vec::Vec;
@@ -25,7 +27,7 @@ use core::future::Future;
 /// Caller address used by execution-layer system calls.
 pub const SYSTEM_ADDRESS: Address = address!("0xfffffffffffffffffffffffffffffffffffffffe");
 
-/// Gas limit used by execution-layer system calls.
+/// Default gas limit used by execution-layer system calls.
 pub const SYSTEM_CALL_GAS_LIMIT: u64 = 30_000_000;
 
 /// Upper bound on the number of new storage slots a single system call is expected to write.
@@ -65,6 +67,8 @@ pub struct SystemTx {
     pub system_contract_address: Address,
     /// Calldata.
     pub data: Bytes,
+    /// Execution gas limit. Defaults to [`SYSTEM_CALL_GAS_LIMIT`].
+    pub gas_limit: u64,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -76,6 +80,7 @@ impl Default for SystemTx {
             caller: SYSTEM_ADDRESS,
             system_contract_address: Address::ZERO,
             data: Bytes::new(),
+            gas_limit: SYSTEM_CALL_GAS_LIMIT,
             _non_exhaustive: (),
         }
     }
@@ -94,6 +99,13 @@ impl SystemTx {
         self.caller = caller;
         self
     }
+
+    /// Sets the execution gas limit without changing the EIP-8037 state-gas reservoir.
+    #[inline]
+    pub const fn with_gas_limit(mut self, gas_limit: u64) -> Self {
+        self.gas_limit = gas_limit;
+        self
+    }
 }
 
 impl<'a, T: EvmTypes> Evm<'a, T> {
@@ -101,18 +113,17 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     ///
     /// System calls bypass normal transaction validation, nonce updates, fee charging, gas refunds,
     /// and beneficiary rewards. They execute a top-level `CALL` with zero value and
-    /// [`SYSTEM_CALL_GAS_LIMIT`] gas, then finalize and return an executed transaction handle.
+    /// [`SystemTx::gas_limit`] gas, then finalize and return an executed transaction handle.
     ///
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
     pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
-        self.clear_top_level_error_state();
         // System calls are not inspected.
         let inspector = self.inspector.take();
         let result = self.execute_system_call(tx);
         self.inspector = inspector;
         match result {
-            Ok(outcome) => Ok(self.finish_executed_tx(outcome)),
+            Ok(outcome) => self.finish_executed_tx(outcome),
             Err(error) => {
                 self.state.clear_transaction_state();
                 Err(error)
@@ -126,7 +137,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// registry handler to execute system-call semantics and return the outcome to the outer
     /// transaction lifecycle for finalization.
     pub fn execute_system_call(&mut self, tx: SystemTx) -> HandlerResult<TxResult<T>> {
-        let SystemTx { caller, system_contract_address, data, .. } = tx;
+        let SystemTx { caller, system_contract_address, data, gas_limit, .. } = tx;
         self.state.prewarm(&system_contract_address);
         let tx_env = TxEnvExt {
             origin: caller,
@@ -145,8 +156,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         } else {
             0
         };
-        let mut tx_gas =
-            GasTracker::new_with_execution_gas_and_reservoir(SYSTEM_CALL_GAS_LIMIT, reservoir);
+        let mut tx_gas = GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
         let frame = prepare_initial_frame(
             self,
             caller,
@@ -156,18 +166,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             U256::ZERO,
             &mut tx_gas,
         )?;
-        let result = execute_initial_frame(
-            self,
-            &tx_env,
-            frame,
-            &mut tx_gas,
-            SYSTEM_CALL_GAS_LIMIT,
-            reservoir,
-        );
-        if let Some(code) = self.error_code {
-            return Err(HandlerError::Fatal(code));
-        }
-        let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());
+        let result =
+            execute_initial_frame(self, &tx_env, frame, &mut tx_gas, gas_limit, reservoir)?;
+        let gas_spent = gas_limit.saturating_sub(result.gas.remaining());
         let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
             result.gas.refunded() as u64
         } else {
@@ -237,7 +238,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmTypes, ErrorCode, Precompiles, SpecId,
+        BaseEvmTypes, Precompiles, SpecId,
         bytecode::Bytecode,
         env::BlockEnvExt,
         evm::{AccountInfo, InMemoryDB},
@@ -441,10 +442,81 @@ mod tests {
 
         let result = evm.system_call(SystemTx::new(FATAL_PRECOMPILE_ADDRESS, Bytes::new()));
 
-        assert_eq!(
-            result.map(ExecutedTx::discard),
-            Err(HandlerError::Fatal(ErrorCode::FATAL_PRECOMPILE))
+        let error = result.map(ExecutedTx::discard).unwrap_err();
+        let HandlerError::Fatal(error) = error else { panic!("expected fatal precompile error") };
+        assert!(error.downcast_ref::<TestPrecompileError>().is_some());
+    }
+
+    #[rstest::rstest]
+    #[case(None, SYSTEM_CALL_GAS_LIMIT)]
+    #[case(Some(100), 100)]
+    #[case(Some(250_000_000), 250_000_000)]
+    fn system_call_uses_configured_gas_limit(
+        #[values(SpecId::OSAKA, SpecId::AMSTERDAM)] spec: SpecId,
+        #[case] gas_limit: Option<u64>,
+        #[case] expected_limit: u64,
+    ) {
+        let contract = Address::from([0x42; 20]);
+        // Return the gas available at the start of execution (after GAS charges its own cost).
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::GAS,
+            op::PUSH0,
+            op::MSTORE,
+            op::PUSH1,
+            32,
+            op::PUSH0,
+            op::RETURN,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut evm = TestEvm::new(
+            spec,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(spec),
         );
-        assert_eq!(evm.error_code(), Some(ErrorCode::FATAL_PRECOMPILE));
+        let mut tx = SystemTx::new(contract, Bytes::new());
+        if let Some(gas_limit) = gas_limit {
+            tx = tx.with_gas_limit(gas_limit);
+        }
+
+        let result = evm.system_call(tx).unwrap().discard();
+
+        assert!(result.status);
+        assert_eq!(U256::from_be_slice(&result.output), U256::from(expected_limit - 2));
+        assert_eq!(result.total_gas_spent, 15);
+        assert_eq!(result.state_gas_spent, 0);
+    }
+
+    #[test]
+    fn system_call_exhausts_configured_gas_limit() {
+        let contract = Address::from([0x42; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH1,
+            1,
+            op::PUSH0,
+            op::SSTORE,
+            op::STOP,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut evm = TestEvm::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let result = evm
+            .system_call(SystemTx::new(contract, Bytes::new()).with_gas_limit(3_000))
+            .unwrap()
+            .detach();
+
+        assert!(!result.result.status);
+        assert_eq!(result.result.stop, InstrStop::OutOfGas);
+        assert_eq!(result.result.total_gas_spent, 3_000);
+        assert!(!result.pending_state.is_changed());
     }
 }

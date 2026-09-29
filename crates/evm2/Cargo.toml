@@ -43,6 +43,9 @@ corosensei = { workspace = true, optional = true }
 # "account-ext"
 triomphe = { workspace = true, optional = true }
 
+# nightly
+ruint = { workspace = true, optional = true }
+
 # ecrecover
 k256 = { workspace = true, features = ["ecdsa"] }
 secp256k1 = { workspace = true, features = [
@@ -137,6 +140,7 @@ std = [
     "secp256k1?/std",
     "serde?/std",
     "triomphe?/std",
+    "ruint?/std",
 ]
 
 async = ["std", "dep:corosensei"]
@@ -157,6 +161,7 @@ serde = [
     "c-kzg?/serde",
     "secp256k1?/serde",
     "triomphe?/serde",
+    "ruint?/serde",
 ]
 arbitrary = [
     "alloy-consensus/arbitrary",
@@ -182,5 +187,10 @@ portable = ["c-kzg?/portable", "blst?/portable"]
 p256-aws-lc-rs = ["dep:aws-lc-rs"]
 parse = ["dep:paste", "dep:phf"]
 
-nightly = []
+nightly = [
+    "alloy-primitives/nightly",
+    "derive-where/nightly",
+    "dep:ruint",
+    "ruint/nightly",
+]
 no-tco = []

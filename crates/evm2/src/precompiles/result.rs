@@ -1,4 +1,4 @@
-use crate::{AnyError, evm::precompile::PrecompileOutput};
+use crate::{AnyError, DatabaseError, evm::precompile::PrecompileOutput};
 use alloc::{borrow::Cow, string::String};
 use alloy_primitives::Bytes;
 use thiserror::Error;
@@ -21,15 +21,6 @@ pub enum PrecompileHalt {
     /// Blake2 wrong final indicator flag
     #[error("wrong final indicator flag for blake2")]
     Blake2WrongFinalIndicatorFlag,
-    /// Modexp errors
-    #[error("modexp exp overflow")]
-    ModexpExpOverflow,
-    /// Modexp base overflow
-    #[error("modexp base overflow")]
-    ModexpBaseOverflow,
-    /// Modexp mod overflow
-    #[error("modexp mod overflow")]
-    ModexpModOverflow,
     /// Modexp limit all input sizes.
     #[error("Modexp limit all input sizes.")]
     ModexpEip7823LimitSize,
@@ -112,9 +103,6 @@ pub enum PrecompileHalt {
     /// KZG G1 point not in correct subgroup
     #[error("kzg g1 point not in correct subgroup")]
     KzgG1PointNotInSubgroup,
-    /// KZG input length error
-    #[error("kzg invalid input length")]
-    KzgInvalidInputLength,
     /// secp256k1 ecrecover failed
     #[error("secp256k1 signature recovery failed")]
     Secp256k1RecoverFailed,
@@ -137,6 +125,9 @@ impl From<crate::interpreter::InstrStop> for PrecompileError {
 /// Precompile error type.
 #[derive(Clone, Debug, Error)]
 pub enum PrecompileError {
+    /// A classified database failure that aborts execution.
+    #[error(transparent)]
+    Database(#[from] DatabaseError),
     /// Precompile reverted.
     #[error("revert")]
     Revert(Bytes),
@@ -155,9 +146,11 @@ impl PrecompileError {
         Self::Fatal(AnyError::new(err))
     }
 
-    /// Returns `true` if the error is fatal.
+    /// Returns `true` if the error aborts transaction execution rather than reverting a call.
+    /// For database failures, [`DatabaseError::is_fatal`] distinguishes internal failures
+    /// from invalid execution input.
     pub const fn is_fatal(&self) -> bool {
-        matches!(self, Self::Fatal(_))
+        matches!(self, Self::Fatal(_) | Self::Database(_))
     }
 
     /// Returns the halt reason, if this is a halt error.
@@ -197,6 +190,24 @@ impl From<&'static str> for PrecompileError {
     }
 }
 
+impl From<crate::ExecutionError> for PrecompileError {
+    fn from(error: crate::ExecutionError) -> Self {
+        match error {
+            crate::ExecutionError::Database(error) => Self::Database(error),
+            crate::ExecutionError::Fatal(error) => Self::Fatal(error),
+        }
+    }
+}
+
+impl From<crate::HostError> for PrecompileError {
+    fn from(error: crate::HostError) -> Self {
+        match error {
+            crate::HostError::Halt(stop) => stop.into(),
+            crate::HostError::Execution(error) => error.into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,7 +216,6 @@ mod tests {
     #[test]
     fn fatal_instr_stop_becomes_fatal_error() {
         assert!(PrecompileError::from(InstrStop::FatalExternalError).is_fatal());
-        assert!(PrecompileError::from(InstrStop::FatalPrecompileError).is_fatal());
     }
 
     #[test]

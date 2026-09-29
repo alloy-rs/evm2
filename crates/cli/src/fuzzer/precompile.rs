@@ -204,9 +204,9 @@ fn modexp_input(rng: &mut Gen) -> Vec<u8> {
         }
         _ => {
             let mut input = vec![0; 96];
-            input[30] = 4;
-            input[62] = 4;
-            input[94] = 4;
+            input[31] = 4;
+            input[63] = 4;
+            input[95] = 4;
             input
         }
     }

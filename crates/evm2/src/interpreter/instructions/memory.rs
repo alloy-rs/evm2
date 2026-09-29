@@ -106,7 +106,7 @@ mod tests {
             MessageExt { gas_limit: 10_000, code: legacy_bytecode(code), ..MessageExt::default() };
         let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
         let mut host = TestHost::default();
-        let err = interp.run(&config, &mut host);
+        let err = interp.run(&config, &mut host).unwrap();
 
         assert_matches!(err, InstrStop::MemoryLimitOOG);
         assert_eq!(interp.memory().len(), 0);
@@ -128,7 +128,7 @@ mod tests {
             MessageExt { gas_limit: 17, code: legacy_bytecode(code), ..MessageExt::default() };
         let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
         let mut host = TestHost::default();
-        let err = interp.run(&config, &mut host);
+        let err = interp.run(&config, &mut host).unwrap();
 
         assert_matches!(err, InstrStop::MemoryOOG);
         assert_eq!(interp.memory().len(), 0);

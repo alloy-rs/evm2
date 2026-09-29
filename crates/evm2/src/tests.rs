@@ -19,7 +19,7 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
         code: legacy_bytecode(code),
         ..Default::default()
     };
-    let result = Host::execute_message(evm, &TxEnvExt::default(), &mut message);
+    let result = Host::execute_message(evm, &TxEnvExt::default(), &mut message).unwrap();
     assert!(result.stop.is_success());
 }
 
@@ -44,7 +44,7 @@ fn evm_executes_storage_transaction() {
     run_tx(&mut evm, contract, [op::PUSH1, 0x2a, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
     assert_eq!(
-        evm.state.storage_slot(&contract, Word::from(1), false).unwrap().current(),
+        evm.state.storage_slot(&contract, Word::from(1)).unwrap().current(),
         Word::from(0x2a)
     );
 }
@@ -81,14 +81,8 @@ fn evm_runs_transactions_against_initial_state() {
     );
     run_tx(&mut evm, contract, [op::PUSH1, 0x07, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
-    assert_eq!(
-        evm.state.storage_slot(&contract, Word::from(1), false).unwrap().current(),
-        Word::from(7)
-    );
-    assert_eq!(
-        evm.state.storage_slot(&contract, Word::from(2), false).unwrap().current(),
-        Word::from(42)
-    );
+    assert_eq!(evm.state.storage_slot(&contract, Word::from(1)).unwrap().current(), Word::from(7));
+    assert_eq!(evm.state.storage_slot(&contract, Word::from(2)).unwrap().current(), Word::from(42));
 }
 
 #[test]
@@ -133,7 +127,7 @@ fn evm_propagates_child_sstore_negative_refund() {
         code: legacy_bytecode(parent_code),
         ..Default::default()
     };
-    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
+    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
 
     assert!(result.stop.is_success());
     assert_eq!(result.gas.refunded(), 0);
@@ -156,7 +150,7 @@ fn evm_reports_invalid_transaction_execution() {
         code: legacy_bytecode([op::PUSH1, 0x01, op::SSTORE]),
         ..Default::default()
     };
-    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);
+    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
 
     assert_eq!(result.stop, InstrStop::StackUnderflow);
 }

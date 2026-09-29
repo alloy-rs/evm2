@@ -103,11 +103,11 @@ mod tests {
         let mut state = State::new(CacheDB::default());
 
         let checkpoint = state.checkpoint();
-        state.account(&address, false).unwrap().mark_destructed();
+        state.account(&address).unwrap().mark_destructed();
 
-        assert!(state.account(&address, false).unwrap().is_destructed());
+        assert!(state.account(&address).unwrap().is_destructed());
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.account(&address, false).unwrap().is_destructed());
+        assert!(!state.account(&address).unwrap().is_destructed());
     }
 
     #[test]
@@ -152,12 +152,12 @@ mod tests {
         let mut state = State::new(database);
 
         let checkpoint = state.checkpoint();
-        state.account(&precompile3, false).unwrap().touch();
-        state.account(&other, false).unwrap().touch();
+        state.account(&precompile3).unwrap().touch();
+        state.account(&other).unwrap().touch();
 
         state.rollback(checkpoint, Version::base(SpecId::SPURIOUS_DRAGON).features);
-        assert!(state.account(&precompile3, false).unwrap().is_touched());
-        assert!(!state.account(&other, false).unwrap().is_touched());
+        assert!(state.account(&precompile3).unwrap().is_touched());
+        assert!(!state.account(&other).unwrap().is_touched());
     }
 
     #[test]
@@ -174,18 +174,18 @@ mod tests {
         assert!(state.journal.is_empty());
 
         let checkpoint = state.checkpoint();
-        assert!(state.account(&frame_account, false).unwrap().warm());
-        assert!(state.storage_slot(&frame_storage, key, false).unwrap().warm());
+        assert!(state.account(&frame_account).unwrap().warm());
+        assert!(state.storage_slot(&frame_storage, key).unwrap().warm());
         // The load itself is an un-journaled read cache; warming the frame account records an
         // AccountChange and warming the slot records StorageWarmed: two revertible entries in
         // total.
         assert_eq!(state.journal.len(), 2);
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(state.account(&base_account, false).unwrap().is_warm());
-        assert!(state.storage_slot(&base_storage, key, false).unwrap().is_warm());
-        assert!(!state.account(&frame_account, false).unwrap().is_warm());
-        assert!(!state.storage_slot(&frame_storage, key, false).unwrap().is_warm());
+        assert!(state.account(&base_account).unwrap().is_warm());
+        assert!(state.storage_slot(&base_storage, key).unwrap().is_warm());
+        assert!(!state.account(&frame_account).unwrap().is_warm());
+        assert!(!state.storage_slot(&frame_storage, key).unwrap().is_warm());
     }
 
     #[test]
@@ -200,12 +200,12 @@ mod tests {
 
         let pending = state.take_pending_state();
         assert!(pending.is_empty());
-        assert!(state.account(&account, false).unwrap().is_warm());
-        assert!(state.storage_slot(&storage_account, key, false).unwrap().is_warm());
+        assert!(state.account(&account).unwrap().is_warm());
+        assert!(state.storage_slot(&storage_account, key).unwrap().is_warm());
 
         state.clear_transaction_state();
-        assert!(!state.account(&account, false).unwrap().is_warm());
-        assert!(!state.storage_slot(&storage_account, key, false).unwrap().is_warm());
+        assert!(!state.account(&account).unwrap().is_warm());
+        assert!(!state.storage_slot(&storage_account, key).unwrap().is_warm());
     }
 
     #[test]
@@ -217,14 +217,14 @@ mod tests {
 
         state.prewarm(&account);
         let checkpoint = state.checkpoint();
-        assert!(state.account(&account, false).unwrap().exists());
-        assert!(state.account(&account, false).unwrap().get().is_some());
+        assert!(state.account(&account).unwrap().exists());
+        assert!(state.account(&account).unwrap().get().is_some());
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         // The load is an un-journaled read cache, so it survives rollback. Warmth comes from the
         // non-revertible base warm set, and the unchanged cached entry emits no state change.
         assert!(state.prewarm_set().is_warm(&account));
-        assert!(state.account(&account, false).unwrap().is_warm());
+        assert!(state.account(&account).unwrap().is_warm());
         assert!(!state.take_pending_state().is_changed());
     }
 
@@ -238,11 +238,11 @@ mod tests {
 
         state.prewarm_storage_slot(&account, key);
         let checkpoint = state.checkpoint();
-        state.storage(&account).into_slot(key, false).unwrap().write(Word::from(7));
-        assert_eq!(state.storage_slot(&account, key, false).unwrap().current(), Word::from(7));
+        state.storage(&account).into_slot(key).unwrap().write(Word::from(7));
+        assert_eq!(state.storage_slot(&account, key).unwrap().current(), Word::from(7));
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(state.storage_slot(&account, key, false).unwrap().is_warm());
+        assert!(state.storage_slot(&account, key).unwrap().is_warm());
         assert!(!state.take_pending_state().is_changed());
     }
 
@@ -257,14 +257,14 @@ mod tests {
         let mut state = State::new(database);
 
         let checkpoint = state.checkpoint();
-        assert!(state.storage_slot(&account, key, false).unwrap().warm());
-        assert_eq!(state.storage(&account).into_slot(key, false).unwrap().current(), value);
+        assert!(state.storage_slot(&account, key).unwrap().warm());
+        assert_eq!(state.storage(&account).into_slot(key).unwrap().current(), value);
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.storage_slot(&account, key, false).unwrap().is_warm());
-        assert_eq!(state.storage_slot(&account, key, false).unwrap().current(), value);
+        assert!(!state.storage_slot(&account, key).unwrap().is_warm());
+        assert_eq!(state.storage_slot(&account, key).unwrap().current(), value);
         assert!(!state.take_pending_state().is_changed());
 
-        assert!(state.storage_slot(&account, key, false).unwrap().warm());
+        assert!(state.storage_slot(&account, key).unwrap().warm());
     }
 }

@@ -20,6 +20,38 @@ fn js_result(
 }
 
 #[test]
+fn test_geth_jstracer_bigint_compatibility() {
+    let code = r#"{
+        fault: function() {},
+        result: function(ctx) {
+            return {
+                adjustedValue: ctx.value.add(bigInt('ff', 16)).subtract(1).toString(),
+                valueType: typeof ctx.value.valueOf(),
+                value: ctx.value.valueOf()
+            };
+        }
+    }"#;
+    let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
+    let mut evm = Context::mainnet()
+        .with_db(CacheDB::new(EmptyDB::default()))
+        .build_mainnet()
+        .with_inspector(insp);
+    let res = evm
+        .inspect_tx(TxEnv {
+            caller: Address::ZERO,
+            gas_limit: 100_000,
+            kind: TransactTo::Call(address!("0000000000000000000000000000000000001000")),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success());
+
+    let (context, insp) = evm.ctx_inspector();
+    let result = js_result(insp, &res, context);
+    assert_eq!(result, json!({"adjustedValue": "254", "valueType": "number", "value": 0}));
+}
+
+#[test]
 fn test_geth_jstracer_revert() {
     /*
     pragma solidity ^0.8.13;

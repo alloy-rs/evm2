@@ -1,7 +1,7 @@
 //! Database helpers for the EVM state overlay.
 
 use super::{NonStaticAny, state::AccountInfo};
-use crate::{AnyError, ErrorCode, bytecode::Bytecode, error::error_unavailable, interpreter::Word};
+use crate::{DatabaseError, bytecode::Bytecode, interpreter::Word};
 use alloc::{boxed::Box, string::ToString};
 use alloy_primitives::{Address, B256, keccak256};
 use auto_impl::auto_impl;
@@ -11,13 +11,19 @@ mod cache;
 pub use cache::{AccountStorageCache, Cache, CacheDB, InMemoryDB};
 
 /// Result of a database operation.
-pub type DbResult<T> = Result<T, ErrorCode>;
+pub type DbResult<T> = Result<T, DatabaseError>;
 
 /// Backing database implementation with a concrete error type.
 #[auto_impl(&mut, Box)]
 pub trait Database: NonStaticAny {
     /// Database error type.
     type Error: Error + Send + Sync + 'static;
+
+    /// Whether a concrete database error is an internal failure rather than invalid input.
+    fn is_fatal(error: &Self::Error) -> bool {
+        let _ = error;
+        true
+    }
 
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
@@ -39,7 +45,6 @@ pub trait Database: NonStaticAny {
 #[derive(Clone, Debug)]
 pub struct Db<T: Database> {
     db: T,
-    result: Result<(), AnyError>,
 }
 
 impl<T: Database + Default> Default for Db<T> {
@@ -53,7 +58,7 @@ impl<T: Database> Db<T> {
     /// Creates a new database adapter.
     #[inline]
     pub const fn new(db: T) -> Self {
-        Self { db, result: Ok(()) }
+        Self { db }
     }
 
     /// Returns the wrapped database.
@@ -73,55 +78,39 @@ impl<T: Database> Db<T> {
     pub fn into_inner(self) -> T {
         self.db
     }
-
-    /// Returns the stored database result.
-    #[inline]
-    pub const fn result(&self) -> Result<(), &AnyError> {
-        self.result.as_ref().copied()
-    }
-
-    /// Takes the stored database result.
-    #[inline]
-    pub const fn take_result(&mut self) -> Result<(), AnyError> {
-        core::mem::replace(&mut self.result, Ok(()))
-    }
-
-    #[inline]
-    fn store_error(&mut self, err: T::Error) -> ErrorCode {
-        self.result = Err(AnyError::new(err));
-        ErrorCode::STORED_ERROR
-    }
 }
 
 impl<T: Database> DynDatabase for Db<T> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        self.db.get_account(address).map_err(|err| self.store_error(err))
+        self.db.get_account(address).map_err(|err| {
+            let fatal = T::is_fatal(&err);
+            DatabaseError::new(err, fatal)
+        })
     }
 
     #[inline]
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
-        self.db.get_code_by_hash(code_hash).map_err(|err| self.store_error(err))
+        self.db.get_code_by_hash(code_hash).map_err(|err| {
+            let fatal = T::is_fatal(&err);
+            DatabaseError::new(err, fatal)
+        })
     }
 
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        self.db.get_storage(address, key).map_err(|err| self.store_error(err))
+        self.db.get_storage(address, key).map_err(|err| {
+            let fatal = T::is_fatal(&err);
+            DatabaseError::new(err, fatal)
+        })
     }
 
     #[inline]
     fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
-        self.db.get_block_hash(number).map_err(|err| self.store_error(err))
-    }
-
-    #[inline]
-    fn error(&mut self, code: ErrorCode) -> AnyError {
-        if code == ErrorCode::STORED_ERROR
-            && let Err(err) = self.result.clone()
-        {
-            return err;
-        }
-        error_unavailable(code)
+        self.db.get_block_hash(number).map_err(|err| {
+            let fatal = T::is_fatal(&err);
+            DatabaseError::new(err, fatal)
+        })
     }
 }
 
@@ -142,11 +131,6 @@ pub trait DynDatabase: NonStaticAny {
     /// Callers only request numbers inside the `BLOCKHASH` window, so a hash the database cannot
     /// provide is a database failure reported through the error, never a benign miss.
     fn get_block_hash(&mut self, number: &Word) -> DbResult<B256>;
-
-    /// Retrieves the full error for a previously returned error code.
-    fn error(&mut self, code: ErrorCode) -> AnyError {
-        error_unavailable(code)
-    }
 }
 
 /// Counts calls made through a [`DynDatabase`].
@@ -164,8 +148,6 @@ pub struct DbStatsCounts {
     pub get_storage_same_address_longest_streak: u64,
     /// Number of block hash loads.
     pub get_block_hash: u64,
-    /// Number of error lookups.
-    pub error: u64,
 }
 
 impl core::ops::AddAssign for DbStatsCounts {
@@ -179,7 +161,6 @@ impl core::ops::AddAssign for DbStatsCounts {
             .get_storage_same_address_longest_streak
             .max(rhs.get_storage_same_address_longest_streak);
         self.get_block_hash += rhs.get_block_hash;
-        self.error += rhs.error;
     }
 }
 
@@ -205,7 +186,6 @@ impl<D> DbStats<D> {
                 get_storage_same_address_repeats: 0,
                 get_storage_same_address_longest_streak: 0,
                 get_block_hash: 0,
-                error: 0,
             },
             last_storage_address: None,
             storage_address_streak: 0,
@@ -274,12 +254,6 @@ impl<D: DynDatabase> DynDatabase for DbStats<D> {
     fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
         self.counts.get_block_hash += 1;
         self.db.get_block_hash(number)
-    }
-
-    #[inline]
-    fn error(&mut self, code: ErrorCode) -> AnyError {
-        self.counts.error += 1;
-        self.db.error(code)
     }
 }
 

@@ -1,7 +1,7 @@
-//! Error code handles for host errors.
+//! Owned errors crossing database and execution boundaries.
 
 use alloc::{string::String, sync::Arc};
-use core::{error::Error, fmt, num::NonZeroUsize};
+use core::{error::Error, fmt};
 
 /// Type-erased host error.
 #[derive(Clone, Debug)]
@@ -68,94 +68,86 @@ impl From<&str> for AnyError {
     }
 }
 
-/// Lightweight handle for a host error.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ErrorCode(NonZeroUsize);
+/// An owned database failure, retaining whether it invalidates input or indicates an internal
+/// failure.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{error}")]
+pub struct DatabaseError {
+    #[source]
+    error: AnyError,
+    fatal: bool,
+}
 
-impl ErrorCode {
-    /// Number of reserved internal error codes.
-    pub const RESERVED_COUNT: usize = 255;
-
-    pub(crate) const STORED_ERROR: Self = Self::new_reserved(1);
-
-    /// Reserved code signalling that a cold load was skipped because the caller could not afford
-    /// the cold access.
-    pub const COLD_LOAD_SKIPPED: Self = Self::new_reserved(2);
-
-    /// Reserved code signalling that precompile execution stopped on a fatal error.
-    pub const FATAL_PRECOMPILE: Self = Self::new_reserved(3);
-
-    /// Reserved code signalling that a read is not covered by the attached EIP-7928 Block Access
-    /// List and database fallback is disabled, so the BAL is invalid for this access.
-    pub const BAL_NOT_COVERED: Self = Self::new_reserved(4);
-
-    #[inline]
-    const fn new_reserved(code: usize) -> Self {
-        assert!(code > 0 && code <= Self::RESERVED_COUNT);
-        Self::new_raw(code).unwrap()
+impl DatabaseError {
+    /// Wraps a database error and its classification before erasing the concrete type.
+    pub fn new(error: impl Error + Send + Sync + 'static, fatal: bool) -> Self {
+        if let Some(error) = (&error as &dyn Error).downcast_ref::<Self>() {
+            return error.clone();
+        }
+        Self { error: AnyError::new(error), fatal }
     }
 
-    #[inline]
-    const fn new_raw(code: usize) -> Option<Self> {
-        let Some(code) = NonZeroUsize::new(code) else {
-            return None;
-        };
-        Some(Self(code))
+    /// Whether the failure is internal, rather than invalid execution input.
+    pub const fn is_fatal(&self) -> bool {
+        self.fatal
     }
 
-    /// Creates a custom error code outside the reserved internal range.
-    #[inline]
-    pub const fn new_custom(code: usize) -> Option<Self> {
-        let Some(code) = code.checked_add(Self::RESERVED_COUNT + 1) else {
-            return None;
-        };
-        Self::new_raw(code)
-    }
-
-    /// Returns the raw error code.
-    #[inline]
-    pub const fn get(self) -> usize {
-        self.0.get()
+    /// Returns the concrete error when its type matches.
+    pub fn downcast_ref<E: Error + 'static>(&self) -> Option<&E> {
+        self.error.downcast_ref()
     }
 }
 
-pub(crate) fn error_unavailable(code: ErrorCode) -> AnyError {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    struct ErrorUnavailable(ErrorCode);
+/// A state load can be skipped before reading a cold account or slot.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum LoadError {
+    /// The requested cold load was skipped without reading the database.
+    #[error("cold load skipped")]
+    ColdLoadSkipped,
+    /// The backing database failed.
+    #[error(transparent)]
+    Database(#[from] DatabaseError),
+}
 
-    impl fmt::Display for ErrorUnavailable {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "error code {:?} is unavailable", self.0)
+/// An error that aborts execution instead of becoming an EVM revert or halt.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ExecutionError {
+    /// An owned, classified database error.
+    #[error(transparent)]
+    Database(#[from] DatabaseError),
+    /// An unrecoverable precompile or execution failure.
+    #[error("{0}")]
+    Fatal(#[source] AnyError),
+}
+
+/// Failure of an interpreter host operation.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum HostError {
+    /// A normal EVM stop, such as out of gas.
+    #[error("{0:?}")]
+    Halt(crate::interpreter::InstrStop),
+    /// An error that must escape the EVM call stack.
+    #[error(transparent)]
+    Execution(#[from] ExecutionError),
+}
+
+impl From<DatabaseError> for HostError {
+    fn from(error: DatabaseError) -> Self {
+        Self::Execution(error.into())
+    }
+}
+
+impl From<LoadError> for HostError {
+    fn from(error: LoadError) -> Self {
+        match error {
+            LoadError::ColdLoadSkipped => Self::Halt(crate::interpreter::InstrStop::OutOfGas),
+            LoadError::Database(error) => error.into(),
         }
     }
-
-    impl Error for ErrorUnavailable {}
-
-    AnyError::new(ErrorUnavailable(code))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reserved_codes_stay_in_reserved_range() {
-        assert_eq!(ErrorCode::STORED_ERROR.get(), 1);
-        assert_eq!(ErrorCode::COLD_LOAD_SKIPPED.get(), 2);
-        assert_eq!(ErrorCode::FATAL_PRECOMPILE.get(), 3);
-        assert!(ErrorCode::FATAL_PRECOMPILE.get() <= ErrorCode::RESERVED_COUNT);
-    }
-
-    #[test]
-    fn custom_codes_start_after_reserved_range() {
-        assert_eq!(ErrorCode::new_custom(0).unwrap().get(), ErrorCode::RESERVED_COUNT + 1);
-        assert_eq!(ErrorCode::new_custom(1).unwrap().get(), ErrorCode::RESERVED_COUNT + 2);
-    }
-
-    #[test]
-    fn custom_code_overflow_returns_none() {
-        let last_custom = usize::MAX - ErrorCode::RESERVED_COUNT - 1;
-        assert_eq!(ErrorCode::new_custom(last_custom).unwrap().get(), usize::MAX);
-        assert!(ErrorCode::new_custom(last_custom + 1).is_none());
+impl From<crate::interpreter::InstrStop> for HostError {
+    fn from(stop: crate::interpreter::InstrStop) -> Self {
+        Self::Halt(stop)
     }
 }

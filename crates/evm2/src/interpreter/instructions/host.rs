@@ -24,7 +24,11 @@ pub fn sload(cx: _, [key]: [Word]) -> Result<out> {
     let skip_cold_load =
         cx.state.feature(EvmFeatures::EIP2929) && cx.gas.remaining() < additional_cold_cost;
     let destination = &cx.state.message().destination;
-    let load = cx.state.host().sload(destination, key, skip_cold_load)?;
+    let load = cx
+        .state
+        .host()
+        .sload(destination, key, skip_cold_load)
+        .map_err(|error| cx.state.fail(error))?;
     if load.is_cold {
         cx.gas.spend(additional_cold_cost)?;
     }
@@ -53,7 +57,11 @@ pub fn sstore(cx: _, [key, value]: [Word]) -> Result {
     let skip_cold_load = cx.state.feature(EvmFeatures::EIP2929)
         && cx.gas.remaining() < cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into();
     let destination = &cx.state.message().destination;
-    let state_load = cx.state.host().sstore(destination, key, value, skip_cold_load)?;
+    let state_load = cx
+        .state
+        .host()
+        .sstore(destination, key, value, skip_cold_load)
+        .map_err(|error| cx.state.fail(error))?;
 
     // EIP-2200 net gas metering depends on original, present, and new slot values:
     // clean slots pay set/reset costs, dirty slots generally only pay the load cost,

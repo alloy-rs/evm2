@@ -87,7 +87,7 @@ fn main() {
 }
 
 /// Executes one transaction over pre-block state with reads served from `bal` at
-/// `index`. A read the BAL does not cover returns `ErrorCode::BAL_NOT_COVERED`,
+/// `index`. A read the BAL does not cover returns a nonfatal database error carrying `BalError`,
 /// which during validation means the BAL is invalid (use
 /// `set_allow_bal_db_fallback(true)` to instead fall through to the database, e.g.
 /// for RPC calls on BAL-positioned state).

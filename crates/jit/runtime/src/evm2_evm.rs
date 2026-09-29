@@ -554,7 +554,7 @@ mod tests {
             let stop = if with_jit {
                 run_interpreter(&backend, &config, &mut interpreter, &mut host).unwrap()
             } else {
-                interpreter.run(&config, &mut host)
+                interpreter.run(&config, &mut host).unwrap()
             };
             (stop, interpreter.gas().spent(), interpreter.gas().refunded())
         };

@@ -115,15 +115,15 @@ mod tests {
         let version = Version::base(SpecId::CANCUN);
         let outer = state.checkpoint();
         let changed = AccountExtension::copy_from_slice(&[2; 32]);
-        state.account(&address, false).unwrap().set_extension(changed.clone());
+        state.account(&address).unwrap().set_extension(changed.clone());
         let inner = state.checkpoint();
-        state.account(&address, false).unwrap().set_extension(AccountExtension::new());
+        state.account(&address).unwrap().set_extension(AccountExtension::new());
         state.rollback(inner, version.features);
-        assert_eq!(state.account(&address, false).unwrap().get().unwrap().extension, changed);
+        assert_eq!(state.account(&address).unwrap().get().unwrap().extension, changed);
         state.rollback(outer, version.features);
-        assert_eq!(state.account(&address, false).unwrap().get(), Some(&original));
+        assert_eq!(state.account(&address).unwrap().get(), Some(&original));
 
-        state.account(&address, false).unwrap().set_extension(changed.clone());
+        state.account(&address).unwrap().set_extension(changed.clone());
         state.finalize_transaction(version).unwrap();
         let pending = state.take_pending_state();
         let mut block = BlockStateAccumulator::new();
@@ -133,10 +133,10 @@ mod tests {
         assert_eq!(account.current.as_ref().unwrap().extension.as_ptr(), changed.as_ptr());
         state.set_pending_state(pending);
         state.commit_transaction();
-        assert_eq!(state.account(&address, false).unwrap().get().unwrap().extension, changed);
+        assert_eq!(state.account(&address).unwrap().get().unwrap().extension, changed);
 
         // Reverting the extension in a later transaction cancels the net block update.
-        state.account(&address, false).unwrap().set_extension(original.extension);
+        state.account(&address).unwrap().set_extension(original.extension);
         state.take_pending_state().visit(&mut block).unwrap();
         assert_eq!(block.accounts().count(), 0);
     }
@@ -148,23 +148,23 @@ mod tests {
         let version = Version::base(SpecId::CANCUN);
         let mut state = State::new(CacheDB::default());
         let extension = AccountExtension::copy_from_slice(&[4; 32]);
-        state.account(&address, false).unwrap().set_extension(extension.clone());
+        state.account(&address).unwrap().set_extension(extension.clone());
         state.finalize_transaction(version).unwrap();
-        assert!(!state.account(&address, false).unwrap().get().unwrap().is_empty());
+        assert!(!state.account(&address).unwrap().get().unwrap().is_empty());
         state.commit_transaction();
 
         let checkpoint = state.checkpoint();
         state.create_account(&caller, &address, &U256::ZERO, version.features).unwrap().unwrap();
-        let info = state.account(&address, false).unwrap().get().unwrap().clone();
+        let info = state.account(&address).unwrap().get().unwrap().clone();
         assert_eq!(info.extension, extension);
         assert_eq!(info.nonce, 1);
         state.rollback(checkpoint, version.features);
-        assert_eq!(state.account(&address, false).unwrap().nonce(), 0);
-        assert_eq!(state.account(&address, false).unwrap().get().unwrap().extension, extension);
+        assert_eq!(state.account(&address).unwrap().nonce(), 0);
+        assert_eq!(state.account(&address).unwrap().get().unwrap().extension, extension);
 
-        state.account(&address, false).unwrap().set_extension(AccountExtension::new());
+        state.account(&address).unwrap().set_extension(AccountExtension::new());
         state.finalize_transaction(version).unwrap();
-        assert!(state.account(&address, false).unwrap().get().is_none());
+        assert!(state.account(&address).unwrap().get().is_none());
     }
 
     #[cfg(feature = "serde")]
