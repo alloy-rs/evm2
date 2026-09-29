@@ -896,15 +896,16 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
     }
 }
 
-/// Returns the memory range the opcode writes, derived from its inputs on the stack.
+/// Returns the memory range whose contents after execution the opcode reports, derived from its
+/// inputs on the stack.
 ///
-/// Only writes are tracked: instructions that merely expand memory, like `MLOAD`, yield `None`.
+/// This is the range the opcode writes, or for `MLOAD` the word it reads, as in Parity's `vmTrace`.
 fn memory_write_range(op: u8, stack: &[U256]) -> Option<Range<usize>> {
     let back = |index: usize| {
         stack.get(stack.len().checked_sub(index + 1)?).and_then(|v| usize::try_from(*v).ok())
     };
     let (offset, size) = match op {
-        op::MSTORE => (back(0)?, 32),
+        op::MLOAD | op::MSTORE => (back(0)?, 32),
         op::MSTORE8 => (back(0)?, 1),
         op::CALLDATACOPY | op::CODECOPY | op::RETURNDATACOPY | op::MCOPY => (back(0)?, back(2)?),
         op::EXTCODECOPY => (back(1)?, back(3)?),

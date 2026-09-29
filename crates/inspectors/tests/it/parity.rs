@@ -10,7 +10,7 @@ use alloy_rpc_types_trace::{
     filter::TraceFilter,
     parity::{
         Action, CallAction, CallType, CreationMethod, SelfdestructAction, TraceType,
-        TransactionTrace,
+        TransactionTrace, VmTrace,
     },
 };
 use evm2_inspectors::tracing::{
@@ -590,9 +590,13 @@ fn vmtrace_storage_writes_include_unchanged_values() {
 
 #[test]
 fn vmtrace_failed_storage_writes_have_no_execution_delta() {
+    for (code, executed) in [(&hex!("55")[..], 0), (&hex!("5f55")[..], 1)] {
+        let trace = trace_vm_code(code, &[]);
+        assert_eq!(trace.ops.len(), executed);
+        assert!(trace.ops.iter().all(|op| op.op.as_deref() != Some("SSTORE")));
+    }
+
     for (code, child, node_idx) in [
-        (&hex!("55")[..], &[][..], 0),   // No operands
-        (&hex!("5f55")[..], &[][..], 0), // Only one operand
         // SSTORE in a static child
         (&hex!("5f5f5f5f604361fffffa00")[..], &hex!("602a60075500")[..], 1),
         // SSTORE in a child with insufficient gas
@@ -635,10 +639,111 @@ fn vmtrace_storage_write_is_preserved_when_child_reverts() {
 
 #[test]
 fn vmtrace_faults_have_no_execution_delta() {
-    for code in [&hex!("01")[..], &hex!("f1")[..], &hex!("fe")[..]] {
+    // An MLOAD out of gas and a JUMP to an invalid destination halt after they began executing.
+    for code in [&hex!("63ffffffff51")[..], &hex!("5f56")[..]] {
         let trace = trace_vm_code(code, &[]);
-        assert!(trace.ops[0].ex.is_none(), "{trace:?}");
+        let fault = trace.ops.last().unwrap();
+        assert_eq!(fault.pc, code.len() - 1, "{trace:?}");
+        assert!(fault.ex.is_none() && fault.sub.is_none(), "{trace:?}");
     }
+}
+
+#[test]
+fn vmtrace_omits_operations_rejected_before_execution() {
+    let overflow = [0x5f; 1025];
+    for (code, executed) in [
+        (&hex!("600101")[..], 1),
+        (&hex!("5ffe")[..], 1),
+        (&hex!("5f0c")[..], 1),
+        (&hex!("5ff1")[..], 1),
+        (&overflow[..], 1024),
+    ] {
+        let trace = trace_vm_code(code, &[]);
+        assert_eq!(trace.ops.len(), executed, "{code:x?}");
+        assert!(trace.ops.iter().all(|op| op.ex.is_some()), "{trace:?}");
+    }
+
+    let config = TracingInspectorConfig::parity_vm_trace();
+    for (code, spec, executed) in [
+        (&hex!("5f5f5f5e")[..], SpecId::SHANGHAI, 3),
+        (&hex!("5fe65b")[..], SpecId::AMSTERDAM, 1),
+        (&hex!("5f5fe75b")[..], SpecId::AMSTERDAM, 2),
+        (&hex!("5f5fe85b")[..], SpecId::AMSTERDAM, 2),
+    ] {
+        let trace = inspect_code(code, &[], spec, config).into_parity_builder().vm_trace();
+        assert_eq!(trace.ops.len(), executed, "{trace:?}");
+    }
+}
+
+#[test]
+fn vmtrace_has_no_implicit_stop() {
+    for (code, pcs) in [(&hex!("6001600201")[..], &[0, 2, 4][..]), (&hex!("60")[..], &[0][..])] {
+        let trace = trace_vm_code(code, &[]);
+        assert_eq!(trace.ops.iter().map(|op| op.pc).collect::<Vec<_>>(), pcs);
+    }
+
+    let trace = trace_vm_code(&hex!("5f5f5f5f5f604361fffff100"), &hex!("600150"));
+    let sub = trace.ops[7].sub.as_ref().unwrap();
+    assert_eq!(sub.ops.iter().map(|op| op.pc).collect::<Vec<_>>(), [0, 2]);
+}
+
+#[test]
+fn vmtrace_mload_reports_the_loaded_word() {
+    let trace = trace_vm_code(&hex!("602a5f525f5160405100"), &[]);
+    for (idx, off, word) in [(4, 0, U256::from(42)), (6, 64, U256::ZERO)] {
+        assert_eq!(trace.ops[idx].op.as_deref(), Some("MLOAD"));
+        let mem = trace.ops[idx].ex.as_ref().unwrap().mem.as_ref().unwrap();
+        assert_eq!(mem.off, off);
+        assert_eq!(mem.data.as_ref(), word.to_be_bytes::<32>());
+    }
+}
+
+#[test]
+fn vmtrace_precompile_and_empty_code_calls_have_empty_subtraces() {
+    let trace = trace_vm_code(&hex!("5f5f5f5f5f600461fffff1505f5f5f5f5f604361fffff100"), &[]);
+    for call in [&trace.ops[7], &trace.ops[16]] {
+        assert_eq!(call.sub, Some(VmTrace::default()), "{trace:?}");
+    }
+
+    for (code, op) in [
+        (&hex!("60015f5260016020525f5f60405f5f600661fffff100")[..], "CALL"),
+        (&hex!("5f5f5f5ff5505f5f5f5ff500")[..], "CREATE2"),
+    ] {
+        let trace = trace_vm_code(code, &[]);
+        let call = trace.ops.iter().rev().find(|call| call.op.as_deref() == Some(op)).unwrap();
+        assert_eq!(call.ex.as_ref().unwrap().push, vec![U256::ZERO]);
+        assert_eq!(call.sub, Some(VmTrace::default()), "{trace:?}");
+    }
+}
+
+#[test]
+fn vmtrace_failed_precheck_has_no_subtrace() {
+    for code in [
+        &hex!("5f5f5f5f6001604361fffff1505f5f5f5f5f604361fffff100")[..],
+        &hex!("5f5f6001f0505f5f5f5f5f604361fffff100")[..],
+    ] {
+        let trace = trace_vm_code(code, &hex!("00"));
+        let calls = trace
+            .ops
+            .iter()
+            .filter(|op| matches!(op.op.as_deref(), Some("CALL" | "CREATE")))
+            .collect::<Vec<_>>();
+        assert_eq!(calls[0].ex.as_ref().unwrap().push, vec![U256::ZERO]);
+        assert!(calls[0].sub.is_none(), "{trace:?}");
+        assert_eq!(calls[1].sub.as_ref().unwrap().ops.len(), 1);
+    }
+
+    let code = hex!("600060006000600060003060645a03f100");
+    let trace =
+        inspect_code(&code, &[], SpecId::HOMESTEAD, TracingInspectorConfig::parity_vm_trace())
+            .into_parity_builder()
+            .vm_trace();
+    let (mut frame, mut depth) = (&trace, 0);
+    while let Some(sub) = frame.ops.iter().find_map(|op| op.sub.as_ref()) {
+        frame = sub;
+        depth += 1;
+    }
+    assert_eq!(depth, 1024);
 }
 
 #[test]
@@ -777,7 +882,7 @@ fn vmtrace_nested_sibling_calls_keep_their_own_subtraces() {
 fn vmtrace_precompile_does_not_steal_the_next_calls_subtrace() {
     let trace =
         trace_vm_code(&hex!("5f5f5f5f5f600461fffff1505f5f5f5f5f604361fffff100"), &hex!("60015000"));
-    assert!(trace.ops[7].sub.is_none());
+    assert!(trace.ops[7].sub.as_ref().unwrap().ops.is_empty());
     assert_eq!(trace.ops[16].sub.as_ref().unwrap().ops.len(), 3);
     assert_eq!(trace.ops[7].ex.as_ref().unwrap().push, vec![U256::from(1)]);
 }
