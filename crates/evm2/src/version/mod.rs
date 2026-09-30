@@ -67,6 +67,31 @@ impl Version {
     pub const fn feature(&self, feature: EvmFeatures) -> bool {
         self.features.contains(feature)
     }
+
+    /// Returns the transaction gas caps as `(tx_gas_limit_cap, execution_gas_cap)`, where
+    /// `u64::MAX` means uncapped.
+    ///
+    /// - `tx_gas_limit_cap` bounds the transaction gas limit (`tx.gas`).
+    /// - `execution_gas_cap` bounds the execution gas a transaction requires upfront, i.e.
+    ///   `max(intrinsic_gas, floor_gas)`.
+    ///
+    /// Without EIP-8037, [`tx_gas_limit_cap`](Self::tx_gas_limit_cap) (EIP-7825) bounds `tx.gas`
+    /// itself, which also bounds the execution gas. With EIP-8037, `tx.gas` may exceed it because
+    /// the excess funds the state-gas reservoir, so it only bounds the required execution gas.
+    ///
+    /// The Ethereum transaction handlers enforce these caps through
+    /// [`validate_tx_gas_limit_cap`](crate::ethereum::validate_tx_gas_limit_cap) and
+    /// [`validate_execution_gas_limit_cap`](crate::ethereum::validate_execution_gas_limit_cap).
+    /// Stateless validators, such as a transaction pool, can use this to apply the same caps
+    /// without executing the transaction.
+    #[inline]
+    pub const fn tx_gas_caps(&self) -> (u64, u64) {
+        if self.feature(EvmFeatures::EIP8037) {
+            (u64::MAX, self.tx_gas_limit_cap)
+        } else {
+            (self.tx_gas_limit_cap, u64::MAX)
+        }
+    }
 }
 
 const fn base_tx_gas_limit_cap(spec_id: SpecId) -> u64 {
@@ -331,6 +356,22 @@ mod tests {
         // The surcharge is Amsterdam-only: pre-Amsterdam EXTCODESIZE == EXTCODEHASH.
         let prague = opcode_config(SpecId::PRAGUE);
         assert_eq!(prague.static_gas(op::EXTCODESIZE), prague.static_gas(op::EXTCODEHASH));
+    }
+
+    #[test]
+    fn tx_gas_caps() {
+        let prague = Version::base(SpecId::PRAGUE);
+        assert_eq!(prague.tx_gas_caps(), (u64::MAX, u64::MAX));
+
+        let osaka = Version::base(SpecId::OSAKA);
+        assert_eq!(osaka.tx_gas_caps(), (MAX_TX_GAS_LIMIT_OSAKA, u64::MAX));
+
+        let amsterdam = Version::base(SpecId::AMSTERDAM);
+        assert_eq!(amsterdam.tx_gas_caps(), (u64::MAX, MAX_TX_GAS_LIMIT_OSAKA));
+
+        let mut amsterdam_without_eip8037 = Version::new(SpecId::AMSTERDAM);
+        amsterdam_without_eip8037.features.remove(EvmFeatures::EIP8037);
+        assert_eq!(amsterdam_without_eip8037.tx_gas_caps(), (MAX_TX_GAS_LIMIT_OSAKA, u64::MAX));
     }
 }
 
