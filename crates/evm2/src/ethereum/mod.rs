@@ -334,10 +334,14 @@ pub fn validate_block_gas_limit(
 /// Validates the transaction gas limit against the active transaction cap.
 pub const fn validate_tx_gas_limit_cap(version: &Version, tx_gas_limit: u64) -> HandlerResult<()> {
     // EIP-7825 caps each transaction gas limit to 2^24 in Osaka. Amsterdam/EIP-8037
-    // replaces this with a execution-gas cap while allowing extra transaction gas to serve as
-    // the state-gas reservoir.
-    let cap = version.tx_gas_limit_cap;
-    if !version.feature(EvmFeatures::EIP8037) && tx_gas_limit > cap {
+    // replaces this with an execution-gas cap while allowing extra transaction gas to serve as
+    // the state-gas reservoir, subject to a total transaction gas limit of 2^32 - 1.
+    let cap = if version.feature(EvmFeatures::EIP8037) {
+        u32::MAX as u64
+    } else {
+        version.tx_gas_limit_cap
+    };
+    if tx_gas_limit > cap {
         return Err(HandlerError::TxGasLimitGreaterThanCap { gas_limit: tx_gas_limit, cap });
     }
     Ok(())
@@ -1350,5 +1354,23 @@ mod tests {
                 cap: amsterdam_without_eip8037.tx_gas_limit_cap,
             })
         );
+    }
+
+    #[test]
+    fn amsterdam_enforces_total_gas_limit() {
+        let amsterdam = Version::base(SpecId::AMSTERDAM);
+        let cap = u32::MAX as u64;
+        assert_eq!(validate_tx_gas_limit_cap(amsterdam, cap), Ok(()));
+        for gas_limit in [cap + 1, u64::MAX] {
+            assert_eq!(
+                validate_tx_gas_limit_cap(amsterdam, gas_limit),
+                Err(HandlerError::TxGasLimitGreaterThanCap { gas_limit, cap })
+            );
+        }
+
+        let mut without_eip8037 = Version::new(SpecId::AMSTERDAM);
+        without_eip8037.features.remove(EvmFeatures::EIP8037);
+        without_eip8037.tx_gas_limit_cap = u64::MAX;
+        assert_eq!(validate_tx_gas_limit_cap(&without_eip8037, cap + 1), Ok(()));
     }
 }
