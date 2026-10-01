@@ -58,10 +58,11 @@ pub(crate) fn ecrecover_bytes(sig: &[u8; 64], recid: u8, msg: &[u8; 32]) -> Opti
 }
 
 // Select the correct implementation based on the enabled features.
-cfg_if::cfg_if! {
-    if #[cfg(feature = "secp256k1")] {
+core::cfg_select! {
+    feature = "secp256k1" => {
         pub(crate) use bitcoin_secp256k1::ecrecover;
-    } else {
+    }
+    _ => {
         pub(crate) use k256::ecrecover;
     }
 }

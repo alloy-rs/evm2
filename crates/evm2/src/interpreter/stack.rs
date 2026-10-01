@@ -93,7 +93,8 @@ impl<'a> StackRef<'a> {
     /// Returns the `n`th stack word from the top.
     #[inline]
     pub fn peek(&self, n: usize) -> Option<Word> {
-        self.as_slice().get(self.len().checked_sub(n + 1)?).copied()
+        let depth = n.checked_add(1)?;
+        self.as_slice().get(self.len().checked_sub(depth)?).copied()
     }
 
     /// Returns `N` stack words from the top.
@@ -281,7 +282,8 @@ impl<'a> StackMut<'a> {
     /// Returns the `n`th stack word from the top.
     #[inline]
     pub fn peek(&self, n: usize) -> Option<Word> {
-        self.as_slice().get(self.len().checked_sub(n + 1)?).copied()
+        let depth = n.checked_add(1)?;
+        self.as_slice().get(self.len().checked_sub(depth)?).copied()
     }
 
     /// Returns `N` stack words from the top.
@@ -665,6 +667,22 @@ mod tests {
         let stack = StackRef::new(&backing, 3);
         assert_eq!(stack.peekn::<3>(), Some([Word::from(2), Word::from(1), Word::from(0)]));
         assert_eq!(stack.peekn::<4>(), None);
+    }
+
+    #[test]
+    fn peek_overflow() {
+        // `n + 1` must not overflow: an out-of-range index returns `None` instead of panicking in
+        // debug builds while silently wrapping in release builds.
+        run_with_len(3, |stack| {
+            assert_eq!(stack.peek(usize::MAX), None);
+        });
+
+        let mut backing = [MaybeUninit::new(Word::ZERO); StackRef::CAPACITY];
+        for (i, word) in backing.iter_mut().take(3).enumerate() {
+            word.write(Word::from(i));
+        }
+        let stack = StackRef::new(&backing, 3);
+        assert_eq!(stack.peek(usize::MAX), None);
     }
 
     #[test]

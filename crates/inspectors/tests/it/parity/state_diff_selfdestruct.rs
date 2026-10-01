@@ -10,7 +10,7 @@ fn existing_account_selfdestruct_across_cancun() {
             let target = Address::with_last_byte(0x42);
             let parent = Address::with_last_byte(0x43);
             // Read an unchanged slot, overwrite a nonzero slot, write a new slot, read zero,
-            // then selfdestruct. Deletion must use the original values, including read-only slots.
+            // then selfdestruct.
             let code = Bytecode::new_raw(
                 hex!("600054506009600155600360025560035450600060045533ff").into(),
             );
@@ -67,18 +67,10 @@ fn existing_account_selfdestruct_across_cancun() {
                 assert_eq!(diff.balance, Delta::Removed(U256::from(69)));
                 assert_eq!(diff.nonce, Delta::Removed(U64::from(1)));
                 assert_eq!(diff.code, Delta::Removed(code.original_bytes()));
-                assert_eq!(diff.storage.len(), 3);
-                assert_eq!(diff.storage[&B256::ZERO], Delta::Removed(U256::from(7).into()));
-                assert_eq!(
-                    diff.storage[&B256::with_last_byte(1)],
-                    Delta::Removed(U256::from(8).into())
-                );
-                assert_eq!(
-                    diff.storage[&B256::with_last_byte(4)],
-                    Delta::Removed(U256::from(10).into())
-                );
+                assert!(diff.storage.is_empty());
                 let json = serde_json::to_value(diff).unwrap();
                 assert_eq!(json["nonce"], serde_json::json!({"-": "0x1"}));
+                assert_eq!(json["storage"], serde_json::json!({}));
             } else {
                 assert_eq!(diff.balance, Delta::changed(U256::from(69), U256::ZERO));
                 assert_eq!(diff.nonce, Delta::Unchanged);
@@ -196,4 +188,47 @@ fn selfdestruct_preserves_balance_only_account() {
         assert_eq!(diff.nonce, Delta::Unchanged);
         assert!(!diff.code.is_removed());
     }
+}
+
+#[test]
+fn deleted_account_diff_does_not_depend_on_accessed_slots() {
+    let target = Address::with_last_byte(0x42);
+    let diffs = [&hex!("60005450600960015533ff")[..], &hex!("33ff")[..]].map(|code| {
+        let code = Bytecode::new_raw(code.to_vec().into());
+        let mut db = CacheDB::<EmptyDB>::default();
+        db.insert_account_info(
+            &target,
+            AccountInfo { balance: U256::from(69), nonce: 1, ..Default::default() }.with_code(code),
+        );
+        db.insert_account_storage(&target, &U256::ZERO, &U256::from(7));
+        db.insert_account_storage(&target, &U256::from(1), &U256::from(8));
+        let mut evm = Context::mainnet()
+            .modify_cfg_chained(|cfg| cfg.spec = SpecId::SHANGHAI)
+            .with_db(db)
+            .build_mainnet_with_inspector(TracingInspector::new(
+                TracingInspectorConfig::default_parity(),
+            ));
+        let result = evm
+            .inspect_tx(
+                TxEnv::builder().kind(TransactTo::Call(target)).gas_limit(200_000).build_fill(),
+            )
+            .unwrap();
+        assert!(result.result.is_success());
+        assert!(result.state.account_info(&target).is_none());
+        let traces = evm
+            .inspector
+            .into_parity_builder()
+            .into_trace_results_with_state(
+                &result.tx_result,
+                &HashSet::from_iter([TraceType::StateDiff]),
+                &mut evm.ctx.db,
+            )
+            .unwrap();
+        let diff = traces.state_diff.unwrap()[&target].clone();
+        assert!(diff.storage.is_empty());
+        diff
+    });
+    assert_eq!(diffs[0].balance, diffs[1].balance);
+    assert_eq!(diffs[0].nonce, diffs[1].nonce);
+    assert_eq!(diffs[0].storage, diffs[1].storage);
 }

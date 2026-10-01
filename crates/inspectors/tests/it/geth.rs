@@ -25,7 +25,7 @@ fn test_calltracer_invalid_opcode_errors() {
     for (opcode, expected) in [
         (op::INVALID, "invalid opcode: INVALID"),
         (0x0c, "invalid opcode"),
-        (op::PUSH0, "NotActivated"),
+        (op::PUSH0, "invalid opcode"),
     ] {
         for nested in [false, true] {
             let options =

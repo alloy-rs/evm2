@@ -331,27 +331,28 @@ pub fn validate_block_gas_limit(
     Ok(())
 }
 
-/// Validates the transaction gas limit against the active transaction cap.
+/// Validates the transaction gas limit against the active transaction gas limit cap.
+///
+/// See [`Version::tx_gas_caps`].
 pub const fn validate_tx_gas_limit_cap(version: &Version, tx_gas_limit: u64) -> HandlerResult<()> {
-    // EIP-7825 caps each transaction gas limit to 2^24 in Osaka. Amsterdam/EIP-8037
-    // replaces this with a execution-gas cap while allowing extra transaction gas to serve as
-    // the state-gas reservoir.
-    let cap = version.tx_gas_limit_cap;
-    if !version.feature(EvmFeatures::EIP8037) && tx_gas_limit > cap {
+    let (cap, _) = version.tx_gas_caps();
+    if tx_gas_limit > cap {
         return Err(HandlerError::TxGasLimitGreaterThanCap { gas_limit: tx_gas_limit, cap });
     }
     Ok(())
 }
 
-/// Validates the execution-gas portion against the active transaction cap.
+/// Validates the execution-gas portion against the active execution gas cap.
+///
+/// See [`Version::tx_gas_caps`].
 pub const fn validate_execution_gas_limit_cap(
     version: &Version,
     tx_gas_limit: u64,
     intrinsic: u64,
     floor_gas: u64,
 ) -> HandlerResult<()> {
-    let cap = version.tx_gas_limit_cap;
-    if version.feature(EvmFeatures::EIP8037) && tx_gas_limit > cap {
+    let (_, cap) = version.tx_gas_caps();
+    if tx_gas_limit > cap {
         let required_execution_gas = if intrinsic > floor_gas { intrinsic } else { floor_gas };
         if required_execution_gas > cap {
             return Err(HandlerError::TxGasLimitGreaterThanCap {

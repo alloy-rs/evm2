@@ -85,20 +85,25 @@ pub(crate) fn verify_kzg_proof(
     y: &[u8; 32],
     proof: &[u8; 48],
 ) -> bool {
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "c-kzg")] {
-            use c_kzg::{Bytes48, Bytes32};
+    core::cfg_select! {
+        feature = "c-kzg" => {
+            use c_kzg::{Bytes32, Bytes48};
 
             let as_bytes48 = |bytes: &[u8; 48]| -> &Bytes48 { unsafe { &*bytes.as_ptr().cast() } };
             let as_bytes32 = |bytes: &[u8; 32]| -> &Bytes32 { unsafe { &*bytes.as_ptr().cast() } };
 
             let kzg_settings = c_kzg::ethereum_kzg_settings(8);
-            kzg_settings.verify_kzg_proof(as_bytes48(commitment), as_bytes32(z), as_bytes32(y), as_bytes48(proof)).unwrap_or(false)
-        } else if #[cfg(feature = "blst")] {
-            blst::verify_kzg_proof(commitment, z, y, proof)
-        } else {
-            arkworks::verify_kzg_proof(commitment, z, y, proof)
+            kzg_settings
+                .verify_kzg_proof(
+                    as_bytes48(commitment),
+                    as_bytes32(z),
+                    as_bytes32(y),
+                    as_bytes48(proof),
+                )
+                .unwrap_or(false)
         }
+        feature = "blst" => blst::verify_kzg_proof(commitment, z, y, proof),
+        _ => arkworks::verify_kzg_proof(commitment, z, y, proof),
     }
 }
 #[cfg(test)]
