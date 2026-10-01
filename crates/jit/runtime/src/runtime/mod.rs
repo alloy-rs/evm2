@@ -289,9 +289,12 @@ impl JitBackend {
 
     /// Enqueues an explicit JIT compilation request for the given bytecode.
     ///
-    /// Blocks if the command channel is full to guarantee delivery.
+    /// Blocks if the command channel is full to guarantee delivery. If the backend
+    /// could not be started, the request is dropped and a warning is logged.
     pub fn compile_jit(&self, req: LookupRequest) {
-        let _ = self.ensure_started();
+        if !self.ensure_started_for_enqueue() {
+            return;
+        }
         let cmd = Command::CompileJit(CompileJitRequest {
             key: req.key,
             bytecode: req.code,
@@ -349,9 +352,12 @@ impl JitBackend {
 
     /// Enqueues a batch of AOT preparation requests.
     ///
-    /// Blocks if the command channel is full to guarantee delivery.
+    /// Blocks if the command channel is full to guarantee delivery. If the backend
+    /// could not be started, the requests are dropped and a warning is logged.
     pub fn prepare_aot_batch(&self, reqs: Vec<AotRequest>) {
-        let _ = self.ensure_started();
+        if !self.ensure_started_for_enqueue() {
+            return;
+        }
         let owned: Vec<PrepareAotRequest> = reqs
             .into_iter()
             .map(|r| PrepareAotRequest {
@@ -391,6 +397,23 @@ impl JitBackend {
             self.recv_compile_completion(rx.clone())?;
         }
         Ok(())
+    }
+
+    /// Ensures a backend thread is running before a command is enqueued, returning whether the
+    /// command can actually be delivered.
+    ///
+    /// [`compile_jit`](Self::compile_jit) and [`prepare_aot_batch`](Self::prepare_aot_batch) block
+    /// until the bounded command channel has room, which requires a consumer. When startup fails,
+    /// [`ensure_started`](Self::ensure_started) restores the lazy-spawn state, so the receiver
+    /// stays alive but nothing ever drains the channel: enqueueing would fill it and then park the
+    /// caller forever. In that case the command is dropped and logged instead — see
+    /// [`try_send_control`](Self::try_send_control) for the same invariant.
+    fn ensure_started_for_enqueue(&self) -> bool {
+        if let Err(err) = self.ensure_started() {
+            warn!(%err, "failed to start JIT backend, dropping command");
+            return false;
+        }
+        true
     }
 
     /// Clears the in-memory resident compiled map.
