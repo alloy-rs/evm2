@@ -24,7 +24,7 @@ use crate::{
     },
     interpreter::{
         GasTracker, Host, InstrStop, Message, MessageExt, MessageKind, MessageResult,
-        MessageResultExt, Word,
+        MessageResultExt,
         gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS, WARM_STORAGE_READ_COST},
     },
     registry::{HandlerError, HandlerResult, TxRegistry, handler},
