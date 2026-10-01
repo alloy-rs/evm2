@@ -3,7 +3,6 @@
 use crate::tracing::{config::TraceStyle, utils, utils::convert_memory};
 use alloc::{
     boxed::Box,
-    format,
     string::{String, ToString},
     vec::Vec,
 };
@@ -750,7 +749,7 @@ impl CallTraceStep {
     /// Returns the error message if it is an erroneous result.
     #[inline]
     pub(crate) fn as_error(&self) -> Option<String> {
-        self.is_error().then(|| format!("{:?}", self.status))
+        self.status.and_then(|status| utils::fmt_error_msg(status, TraceStyle::Geth))
     }
 
     /// Returns `DecodedTraceStep` from `CallTraceStep`.
