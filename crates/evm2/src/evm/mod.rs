@@ -223,6 +223,9 @@ pub struct Evm<'a, T: EvmTypesHost> {
     inspector: Option<Box<dyn Inspector<T> + 'a>>,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
+    /// Transaction environment visible while a native precompile is executing.
+    #[derive_where(skip)]
+    precompile_tx_env: Option<TxEnv<T>>,
     /// The currently running interpreter frame, if any.
     ///
     /// This is passed to the inspector call and create hooks as the parent frame.
@@ -347,6 +350,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
             interpreter_runner: None,
+            precompile_tx_env: None,
             current_frame: None,
             running: false,
             #[cfg(feature = "async")]
@@ -363,12 +367,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn execute_precompile(
         &mut self,
+        tx_env: &TxEnv<T>,
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Result<PrecompileOutput, PrecompileError> {
         let guard = self.enter_execution();
-        let precompiles = guard.evm.precompiles.as_mut() as *mut dyn PrecompileProvider<T>;
-        let evm_ptr = guard.evm as *mut Self;
+        let previous = guard.evm.precompile_tx_env.replace(tx_env.clone());
+        let context = PrecompileTxEnvGuard { evm: guard.evm, previous };
+        let precompiles = context.evm.precompiles.as_mut() as *mut dyn PrecompileProvider<T>;
+        let evm_ptr = context.evm as *mut Self;
         // SAFETY: Precompile execution may need access to both the provider and the host EVM.
         // The provider is not moved or replaced during this call, and `execute` is expected to
         // preserve `Evm` invariants while using the host reference.
@@ -377,6 +384,17 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 .execute(&mut *evm_ptr, message, gas)
                 .expect("precompile was checked before execution")
         }
+    }
+
+    /// Returns the original transaction environment during native execution.
+    ///
+    /// Precompiles making interpreter subcalls must clone this environment before
+    /// borrowing the EVM mutably, rather than constructing a default environment.
+    /// Nested calls restore the parent's context on return or unwinding. Outside
+    /// precompile execution this returns `None`.
+    #[inline]
+    pub fn precompile_tx_env(&self) -> Option<&TxEnv<T>> {
+        self.precompile_tx_env.as_ref()
     }
 
     #[inline]
@@ -910,6 +928,17 @@ struct ExecutionGuard<'guard, 'evm, T: EvmTypesHost> {
     was_running: bool,
 }
 
+struct PrecompileTxEnvGuard<'guard, 'evm, T: EvmTypesHost> {
+    evm: &'guard mut Evm<'evm, T>,
+    previous: Option<TxEnv<T>>,
+}
+
+impl<T: EvmTypesHost> Drop for PrecompileTxEnvGuard<'_, '_, T> {
+    fn drop(&mut self) {
+        self.evm.precompile_tx_env = self.previous.take();
+    }
+}
+
 impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     #[inline]
     fn drop(&mut self) {
@@ -1354,7 +1383,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         }
         if self.contains_precompile(message) {
-            return self.execute_call_precompile(checkpoint, message);
+            return self.execute_call_precompile(checkpoint, tx_env, message);
         }
         let stop = self.run_interpreter(tx_env, message)?;
         Ok(self.finish_call_message_run(checkpoint, stop))
@@ -1364,11 +1393,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     fn execute_call_precompile(
         &mut self,
         checkpoint: StateCheckpoint,
+        tx_env: &TxEnv<T>,
         message: &Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         let mut gas =
             GasTracker::new_with_execution_gas_and_reservoir(message.gas_limit, message.reservoir);
-        let execution = self.execute_precompile(message, &mut gas);
+        let execution = self.execute_precompile(tx_env, message, &mut gas);
         let (stop, output) = match execution {
             Ok(_) | Err(PrecompileError::Revert(_)) if gas.remaining() > message.gas_limit => {
                 (InstrStop::PrecompileOOG, Bytes::new())
@@ -2443,7 +2473,8 @@ mod tests {
             precompiles,
         );
         let message = precompile_message(TEST_PRECOMPILE);
-        let _ = evm.execute_precompile(&message, &mut GasTracker::new(30_000));
+        let _ =
+            evm.execute_precompile(&TxEnvExt::default(), &message, &mut GasTracker::new(30_000));
     }
 
     #[test]
@@ -2545,7 +2576,8 @@ mod tests {
         );
         let message = precompile_message(TEST_PRECOMPILE);
 
-        evm.execute_precompile(&message, &mut GasTracker::new(30_000)).unwrap();
+        evm.execute_precompile(&TxEnvExt::default(), &message, &mut GasTracker::new(30_000))
+            .unwrap();
     }
 
     #[test]
@@ -2850,7 +2882,7 @@ mod tests {
             _non_exhaustive: (),
         };
         let output = evm
-            .execute_precompile(&message, &mut GasTracker::new(30_000))
+            .execute_precompile(&TxEnvExt::default(), &message, &mut GasTracker::new(30_000))
             .expect("precompile succeeds");
 
         assert_eq!(U256::from_be_slice(output.bytes()), U256::from(17));
@@ -2861,7 +2893,7 @@ mod tests {
         let precompiles = precompiles_with([
             test_precompile(TEST_PRECOMPILE, |evm, _, gas| {
                 let message = precompile_message(INNER_TEST_PRECOMPILE);
-                evm.execute_precompile(&message, gas)
+                evm.execute_precompile(&TxEnvExt::default(), &message, gas)
             }),
             test_precompile(INNER_TEST_PRECOMPILE, |_, _, _| {
                 Ok(PrecompileOutput::new(Bytes::from_static(b"inner")))
@@ -2877,10 +2909,119 @@ mod tests {
         let message = precompile_message(TEST_PRECOMPILE);
 
         let output = evm
-            .execute_precompile(&message, &mut GasTracker::new(30_000))
+            .execute_precompile(&TxEnvExt::default(), &message, &mut GasTracker::new(30_000))
             .expect("precompile succeeds");
 
         assert_eq!(output.bytes(), b"inner");
+    }
+
+    #[test]
+    fn precompile_transaction_context_is_scoped_and_nested() {
+        let origin = Address::with_last_byte(0x77);
+        let precompiles = precompiles_with([
+            test_precompile(TEST_PRECOMPILE, |evm, _, gas| {
+                let parent_env = evm.precompile_tx_env().expect("parent context").clone();
+                assert_eq!(parent_env.origin, Address::with_last_byte(0x77));
+                assert_eq!(parent_env.gas_price, U256::from(19));
+                assert_eq!(parent_env.chain_id, U256::from(42431));
+                assert_eq!(parent_env.blob_hashes, vec![U256::from(123)]);
+                let mut child_env = parent_env.clone();
+                child_env.gas_price = U256::from(23);
+                let message = precompile_message(INNER_TEST_PRECOMPILE);
+                let output = evm.execute_precompile(&child_env, &message, gas)?;
+                assert_eq!(evm.precompile_tx_env(), Some(&parent_env));
+                Ok(output)
+            }),
+            test_precompile(INNER_TEST_PRECOMPILE, |evm, _, _| {
+                let env = evm.precompile_tx_env().expect("nested context");
+                assert_eq!(env.origin, Address::with_last_byte(0x77));
+                assert_eq!(env.gas_price, U256::from(23));
+                assert_eq!(env.chain_id, U256::from(42431));
+                assert_eq!(env.blob_hashes, vec![U256::from(123)]);
+                Ok(PrecompileOutput::new(Bytes::from_static(b"context")))
+            }),
+        ]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+        let tx_env = TxEnvExt {
+            origin,
+            gas_price: U256::from(19),
+            chain_id: U256::from(42431),
+            blob_hashes: vec![U256::from(123)],
+            ..TxEnvExt::default()
+        };
+        assert!(evm.precompile_tx_env().is_none());
+        let output =
+            Host::execute_message(&mut evm, &tx_env, &mut precompile_message(TEST_PRECOMPILE))
+                .unwrap();
+        assert_eq!(output.output, Bytes::from_static(b"context"));
+        assert!(evm.precompile_tx_env().is_none());
+    }
+
+    #[test]
+    fn precompile_transaction_context_restores_after_revert_and_fatal_error() {
+        for fatal in [false, true] {
+            let precompile = if fatal {
+                test_precompile(TEST_PRECOMPILE, |evm, _, _| {
+                    assert_eq!(
+                        evm.precompile_tx_env().unwrap().origin,
+                        Address::with_last_byte(0x77)
+                    );
+                    Err(PrecompileError::Fatal("context test".into()))
+                })
+            } else {
+                test_precompile(TEST_PRECOMPILE, |evm, _, _| {
+                    assert_eq!(
+                        evm.precompile_tx_env().unwrap().origin,
+                        Address::with_last_byte(0x77)
+                    );
+                    Err(PrecompileError::Revert(Bytes::from_static(b"reverted")))
+                })
+            };
+            let mut evm = Evm::<BaseEvmTypes>::new(
+                SpecId::OSAKA,
+                BlockEnvExt::default(),
+                TxRegistry::new(),
+                InMemoryDB::default(),
+                precompiles_with([precompile]),
+            );
+            let tx_env = TxEnvExt { origin: Address::with_last_byte(0x77), ..TxEnvExt::default() };
+            let result =
+                Host::execute_message(&mut evm, &tx_env, &mut precompile_message(TEST_PRECOMPILE));
+            assert_eq!(result.is_err(), fatal);
+            assert!(evm.precompile_tx_env().is_none());
+            assert!(!evm.running);
+        }
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn precompile_transaction_context_restores_during_unwinding() {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
+                assert!(evm.precompile_tx_env().is_some());
+                panic!("test precompile unwind");
+            })]),
+        );
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = Host::execute_message(
+                &mut evm,
+                &TxEnvExt::default(),
+                &mut precompile_message(TEST_PRECOMPILE),
+            );
+        }));
+        assert!(result.is_err());
+        assert!(evm.precompile_tx_env().is_none());
+        assert!(!evm.running);
     }
 
     #[test]
