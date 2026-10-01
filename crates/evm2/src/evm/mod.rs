@@ -112,7 +112,7 @@
 
 use self::{
     inspector::{Inspector, boxed_inspector},
-    precompile::{PrecompileOutput, PrecompileProvider, boxed_precompile_provider},
+    precompile::{PrecompileOutput, PrecompileProvider, shared_precompile_provider},
 };
 use crate::{
     DatabaseError, EvmConfigSelector, EvmTypes, EvmTypesHost, ExecutionConfig, ExecutionError,
@@ -216,7 +216,7 @@ pub struct Evm<'a, T: EvmTypesHost> {
     #[derive_where(skip)]
     ext: T::EvmExt,
     #[derive_where(skip)]
-    precompiles: Box<dyn PrecompileProvider<T> + 'a>,
+    precompiles: Arc<dyn PrecompileProvider<T> + 'a>,
     #[derive_where(skip)]
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
@@ -318,7 +318,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             block,
             registry,
             boxed_dyn_database(database),
-            boxed_precompile_provider(precompiles),
+            shared_precompile_provider(precompiles),
             ext,
         )
     }
@@ -330,7 +330,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         block: BlockEnv<T>,
         registry: TxRegistry<T, TxResult<T>>,
         database: Box<dyn DynDatabase + 'a>,
-        precompiles: Box<dyn PrecompileProvider<T> + 'a>,
+        precompiles: Arc<dyn PrecompileProvider<T> + 'a>,
         ext: T::EvmExt,
     ) -> Self {
         assert_eq!(
@@ -374,16 +374,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let guard = self.enter_execution();
         let previous = guard.evm.precompile_tx_env.replace(tx_env.clone());
         let context = PrecompileTxEnvGuard { evm: guard.evm, previous };
-        let precompiles = context.evm.precompiles.as_mut() as *mut dyn PrecompileProvider<T>;
-        let evm_ptr = context.evm as *mut Self;
-        // SAFETY: Precompile execution may need access to both the provider and the host EVM.
-        // The provider is not moved or replaced during this call, and `execute` is expected to
-        // preserve `Evm` invariants while using the host reference.
-        unsafe {
-            (&mut *precompiles)
-                .execute(&mut *evm_ptr, message, gas)
-                .expect("precompile was checked before execution")
-        }
+        // Retain a shared handle outside the EVM before borrowing the host.
+        // Nested native calls clone this same provider without overlapping
+        // exclusive provider/host references or removing native dispatch.
+        let precompiles = Arc::clone(&context.evm.precompiles);
+        precompiles
+            .execute(context.evm, message, gas)
+            .expect("precompile was checked before execution")
     }
 
     /// Returns the original transaction environment during native execution.
@@ -393,7 +390,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Nested calls restore the parent's context on return or unwinding. Outside
     /// precompile execution this returns `None`.
     #[inline]
-    pub fn precompile_tx_env(&self) -> Option<&TxEnv<T>> {
+    pub const fn precompile_tx_env(&self) -> Option<&TxEnv<T>> {
         self.precompile_tx_env.as_ref()
     }
 
@@ -519,7 +516,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             execution_config.base_spec_id(),
             "execution config spec mismatch"
         );
-        let precompiles = boxed_precompile_provider(precompiles);
+        let precompiles = shared_precompile_provider(precompiles);
         self.replace_execution_config(execution_config, spec_id, registry, precompiles);
     }
 
@@ -548,7 +545,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             execution_config.base_spec_id(),
             "execution config spec mismatch"
         );
-        let precompiles = boxed_precompile_provider(precompiles);
+        let precompiles = shared_precompile_provider(precompiles);
         self.block = block;
         self.replace_execution_config(execution_config, spec_id, registry, precompiles);
     }
@@ -559,7 +556,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
         registry: TxRegistry<T, TxResult<T>>,
-        precompiles: Box<dyn PrecompileProvider<T> + 'a>,
+        precompiles: Arc<dyn PrecompileProvider<T> + 'a>,
     ) {
         self.spec_id = spec_id;
         self.features = execution_config.version().features;
@@ -759,14 +756,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn precompiles_mut(&mut self) -> &mut (dyn PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
-        self.precompiles.as_mut()
+        Arc::get_mut(&mut self.precompiles)
+            .expect("idle precompile provider must be exclusively owned")
     }
 
     /// Replaces the precompile provider.
     #[inline]
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
-        self.precompiles = boxed_precompile_provider(precompiles);
+        self.precompiles = shared_precompile_provider(precompiles);
         self.evm_send = false;
     }
 
@@ -786,7 +784,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         'a: 'static,
     {
         self.assert_precompiles_downcast_mutable();
-        self.precompiles.as_mut().downcast_mut()
+        self.precompiles_mut().downcast_mut()
     }
 
     /// Returns the active execution inspector.
@@ -2913,6 +2911,70 @@ mod tests {
             .expect("precompile succeeds");
 
         assert_eq!(output.bytes(), b"inner");
+    }
+
+    #[test]
+    fn shared_provider_retains_state_across_reentry_and_releases_idle_mutation() {
+        #[derive(Default)]
+        struct StatefulProvider {
+            trace: core::cell::RefCell<Vec<(Address, bool)>>,
+        }
+        impl PrecompileProvider<BaseEvmTypes> for StatefulProvider {
+            fn contains(&self, address: &Address) -> bool {
+                matches!(*address, TEST_PRECOMPILE | INNER_TEST_PRECOMPILE)
+            }
+            fn move_precompiles(
+                &mut self,
+                moves: &[(Address, Address)],
+            ) -> Result<(), crate::precompiles::MovePrecompileError> {
+                assert!(moves.is_empty());
+                Ok(())
+            }
+            fn execute(
+                &self,
+                evm: &mut Evm<'_, BaseEvmTypes>,
+                message: &Message,
+                gas: &mut GasTracker,
+            ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+                self.trace.borrow_mut().push((message.code_address, true));
+                let result = if message.code_address == TEST_PRECOMPILE {
+                    let env = evm.precompile_tx_env().unwrap().clone();
+                    evm.execute_precompile(&env, &precompile_message(INNER_TEST_PRECOMPILE), gas)
+                } else {
+                    Ok(PrecompileOutput::new(Bytes::from_static(b"inner")))
+                };
+                self.trace.borrow_mut().push((message.code_address, false));
+                Some(result)
+            }
+        }
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            StatefulProvider::default(),
+        );
+        let output = evm
+            .execute_precompile(
+                &TxEnvExt::default(),
+                &precompile_message(TEST_PRECOMPILE),
+                &mut GasTracker::new(30_000),
+            )
+            .unwrap();
+        assert_eq!(output.bytes(), b"inner");
+        assert_eq!(
+            *evm.precompiles_as::<StatefulProvider>().unwrap().trace.borrow(),
+            vec![
+                (TEST_PRECOMPILE, true),
+                (INNER_TEST_PRECOMPILE, true),
+                (INNER_TEST_PRECOMPILE, false),
+                (TEST_PRECOMPILE, false),
+            ]
+        );
+        // Every active dispatch handle was released, allowing configuration
+        // mutation again without removing native dispatch during child calls.
+        evm.precompiles_mut().move_precompiles(&[]).unwrap();
+        evm.precompiles_as_mut::<StatefulProvider>().unwrap().trace.get_mut().clear();
     }
 
     #[test]
