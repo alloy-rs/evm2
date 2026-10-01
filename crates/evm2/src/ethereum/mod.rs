@@ -487,7 +487,9 @@ pub fn charge_upfront<'a, T: EvmTypes>(
     if !host.feature(EvmFeatures::FEE_CHARGE) {
         return Ok(());
     }
-    host.state.account(&caller)?.add_balance(Word::ZERO.wrapping_sub(max_gas_cost));
+    let mut account = host.state.account(&caller)?;
+    let balance = account.balance().saturating_sub(max_gas_cost);
+    account.set_balance(balance);
     Ok(())
 }
 
@@ -1253,6 +1255,29 @@ mod tests {
             evm.state.account_info_untracked(&caller).unwrap().unwrap().balance,
             U256::from(100)
         );
+    }
+
+    #[test]
+    fn charge_upfront_saturates_insufficient_balance() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(10)));
+
+        let mut version = Version::new(SpecId::OSAKA);
+        version.features.remove(EvmFeatures::BALANCE_CHECK);
+        version.features.remove(EvmFeatures::BALANCE_TOP_UP);
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
+        charge_upfront(&mut evm, caller, U256::from(100)).unwrap();
+        assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().balance, U256::ZERO);
     }
 
     #[test]
