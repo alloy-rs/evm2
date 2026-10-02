@@ -192,7 +192,7 @@ macro_rules! builtins {
                 const KECCAK256CC: u8 = _0_1;
 
                 const CALLDATALOADC: u8 = _0_1;
-                const SLOADC: u8 = _0_1;
+                const SLOADC: u8 = SLOAD;
 
                 const MRESIZE: u8 = _0_0;
 
