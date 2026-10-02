@@ -2920,6 +2920,10 @@ mod tests {
             trace: core::cell::RefCell<Vec<(Address, bool)>>,
         }
         impl PrecompileProvider<BaseEvmTypes> for StatefulProvider {
+            fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
+                Vec::new()
+            }
+
             fn contains(&self, address: &Address) -> bool {
                 matches!(*address, TEST_PRECOMPILE | INNER_TEST_PRECOMPILE)
             }
