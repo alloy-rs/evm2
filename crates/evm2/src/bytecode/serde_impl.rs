@@ -35,9 +35,7 @@ impl<'de> Deserialize<'de> for Bytecode {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
             match BytecodeSerde::deserialize(deserializer)? {
-                BytecodeSerde::New(bytes) => {
-                    Self::new_raw_checked(bytes).map_err(serde::de::Error::custom)
-                }
+                BytecodeSerde::New(bytes) => Ok(from_original_bytes(bytes)),
                 BytecodeSerde::Old(bytecode_serde_old) => match bytecode_serde_old {
                     BytecodeSerdeOld::LegacyAnalyzed { bytecode, original_len } => {
                         if original_len > bytecode.len() {
@@ -68,8 +66,16 @@ impl Visitor<'_> for BytecodeVisitor {
     }
 
     fn visit_bytes<E: Error>(self, value: &[u8]) -> Result<Self::Value, E> {
-        Bytecode::new_raw_checked(Bytes::copy_from_slice(value)).map_err(Error::custom)
+        Ok(from_original_bytes(Bytes::copy_from_slice(value)))
     }
+}
+
+/// Decodes bytecode from its serialized original bytes.
+///
+/// Legacy code may start with the EIP-7702 magic without being a valid delegation (e.g. code
+/// deployed before EIP-3541), so it falls back to legacy instead of failing to round-trip.
+fn from_original_bytes(bytes: Bytes) -> Bytecode {
+    Bytecode::new_raw_checked(bytes.clone()).unwrap_or_else(|_| Bytecode::new_legacy(bytes))
 }
 
 #[cfg(test)]
@@ -88,6 +94,22 @@ mod tests {
             assert_eq!(deserialized.kind(), BytecodeKind::Legacy);
             assert_eq!(deserialized.eip7702_address(), None);
             assert_eq!(deserialized.original_byte_slice(), bytes);
+        }
+    }
+
+    #[test]
+    fn serde_roundtrip_legacy_with_eip7702_magic() {
+        let bytes = Bytes::from_static(&hex!("ef0100"));
+        let bytecode = Bytecode::new_legacy(bytes.clone());
+
+        let json = serde_json::to_string(&bytecode).unwrap();
+        let binary = postcard::to_allocvec(&bytecode).unwrap();
+        for restored in [
+            serde_json::from_str::<Bytecode>(&json).unwrap(),
+            postcard::from_bytes::<Bytecode>(&binary).unwrap(),
+        ] {
+            assert_eq!(restored.kind(), BytecodeKind::Legacy);
+            assert_eq!(restored.original_byte_slice(), &bytes[..]);
         }
     }
 
