@@ -589,7 +589,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             let frame_result = FrameResult {
                 gas_used: result.gas.spent(),
                 output: result.output.clone(),
-                error: None,
+                error: utils::fmt_error_msg(result.stop, TraceStyle::Geth),
             };
             if let Err(err) = self.try_exit(frame_result) {
                 *result = js_error_to_revert(err);

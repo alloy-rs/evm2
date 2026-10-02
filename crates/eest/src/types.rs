@@ -181,9 +181,6 @@ pub enum SpecName {
     Osaka,
     /// Amsterdam.
     Amsterdam,
-    /// Unknown fork.
-    #[serde(other)]
-    Unknown,
 }
 
 impl SpecName {
@@ -211,7 +208,7 @@ impl SpecName {
             Self::Osaka => Some(SpecId::OSAKA),
             Self::Amsterdam => Some(SpecId::AMSTERDAM),
             // Skip Constantinople due to the pre-Petersburg reentrancy bug.
-            Self::Constantinople | Self::Unknown => None,
+            Self::Constantinople => None,
         }
     }
 }
