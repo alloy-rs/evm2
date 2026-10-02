@@ -397,18 +397,58 @@ impl JitBackend {
     ///
     /// All compiled programs are removed from the map. Active references
     /// held by callers remain valid until dropped.
+    ///
+    /// Never blocks: if the backend thread is not running, the map is cleared in place
+    /// instead of queueing a command that nothing would drain — see
+    /// [`try_send_control`](Self::try_send_control) for the same invariant.
     pub fn clear_resident(&self) {
-        let _ = self.inner.tx.send(Command::ClearResident);
+        if self.inner.started.load(Ordering::Relaxed) {
+            let _ = self.inner.tx.send(Command::ClearResident);
+            return;
+        }
+        self.inner.shared.resident.clear();
     }
 
     /// Clears persisted artifacts from the artifact store.
+    ///
+    /// Never blocks: if the backend thread is not running, the store is cleared in place
+    /// instead of queueing a command that nothing would drain.
     pub fn clear_persisted(&self) {
-        let _ = self.inner.tx.send(Command::ClearPersisted);
+        if self.inner.started.load(Ordering::Relaxed) {
+            let _ = self.inner.tx.send(Command::ClearPersisted);
+            return;
+        }
+        self.clear_store_without_backend();
     }
 
     /// Clears both the resident map and persisted artifacts.
+    ///
+    /// Never blocks, like [`clear_resident`](Self::clear_resident) and
+    /// [`clear_persisted`](Self::clear_persisted).
     pub fn clear_all(&self) {
-        let _ = self.inner.tx.send(Command::ClearAll);
+        if self.inner.started.load(Ordering::Relaxed) {
+            let _ = self.inner.tx.send(Command::ClearAll);
+            return;
+        }
+        self.inner.shared.resident.clear();
+        self.clear_store_without_backend();
+    }
+
+    /// Clears the artifact store directly, for a backend that is not running.
+    ///
+    /// Unlike `pause`/`resume`, a clear still has work to do when no backend thread exists:
+    /// artifacts persisted by an earlier run are still on disk. The store therefore cannot be
+    /// skipped the way [`try_send_control`](Self::try_send_control) skips control commands; it is
+    /// cleared in place. The store lives in the pending lazy-spawn config until the backend thread
+    /// takes it over, so a backend that never started still has it.
+    fn clear_store_without_backend(&self) {
+        let guard = self.inner.lazy_spawn.lock().unwrap();
+        let Some(store) = guard.as_ref().and_then(|lazy| lazy.config.store.as_deref()) else {
+            return;
+        };
+        if let Err(e) = store.clear() {
+            warn!(error = %e, "failed to clear artifact store");
+        }
     }
 
     /// Returns whether the runtime is enabled.

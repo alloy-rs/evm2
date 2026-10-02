@@ -208,6 +208,39 @@ impl ArtifactStore for FailingStore {
     }
 }
 
+/// A store that counts `clear` calls.
+struct CountingStore {
+    cleared: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ArtifactStore for CountingStore {
+    fn load_all(&self) -> eyre::Result<Vec<(ArtifactKey, StoredArtifact)>> {
+        Ok(vec![])
+    }
+
+    fn load(&self, _key: &ArtifactKey) -> eyre::Result<Option<StoredArtifact>> {
+        Ok(None)
+    }
+
+    fn store(
+        &self,
+        _key: &ArtifactKey,
+        _manifest: &ArtifactManifest,
+        _dylib_bytes: &[u8],
+    ) -> eyre::Result<()> {
+        Ok(())
+    }
+
+    fn delete(&self, _key: &ArtifactKey) -> eyre::Result<()> {
+        Ok(())
+    }
+
+    fn clear(&self) -> eyre::Result<()> {
+        self.cleared.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 // ===========================================================================
 // Tests: startup / basic.
 // ===========================================================================
@@ -459,6 +492,45 @@ fn pause_resume_never_block_without_backend_thread() {
     let stats = tb.stats();
     assert_eq!(stats.command_queue_len, 0);
     assert_eq!(stats.commands_dropped, 0);
+}
+
+#[test]
+fn clear_commands_never_block_without_backend_thread() {
+    // The clears share the hazard of `pause_resume_never_block_without_backend_thread`: they are
+    // called on a runtime whose backend thread may never have been spawned (`JitBackend::disabled`)
+    // or failed to start, and nothing drains the bounded command channel in that state. Unlike
+    // pause/resume the clears still have work to do, so they are applied in place rather than
+    // skipped.
+    let cleared = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: false,
+        store: Some(Arc::new(CountingStore { cleared: Arc::clone(&cleared) })),
+        tuning: RuntimeTuning { channel_capacity: 2, ..Default::default() },
+        ..Default::default()
+    });
+
+    let backend = tb.backend.clone();
+    let (done_tx, done_rx) = chan::bounded(1);
+    std::thread::spawn(move || {
+        // More clears than the channel can hold: deadlocks without the started check.
+        for _ in 0..16 {
+            backend.clear_resident();
+            backend.clear_persisted();
+            backend.clear_all();
+        }
+        let _ = done_tx.send(());
+    });
+
+    done_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("clear commands blocked without a backend thread");
+
+    // Nothing was queued: every clear was applied in place.
+    let stats = tb.stats();
+    assert_eq!(stats.command_queue_len, 0);
+    assert_eq!(stats.commands_dropped, 0);
+    // `clear_persisted` and `clear_all` each reached the store in every round.
+    assert_eq!(cleared.load(std::sync::atomic::Ordering::Relaxed), 32);
 }
 
 #[test]
