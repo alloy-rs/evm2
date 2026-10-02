@@ -1,10 +1,10 @@
 //! Transfer tests
 
 use crate::utils::{
-    CacheDB, Context, DatabaseCommit, EmptyDB, ExecutionResult, Output, SpecId, TestDbExt,
-    TransactTo, TxEnv,
+    AccountInfo, Bytecode, CacheDB, Context, DatabaseCommit, EmptyDB, ExecutionResult, Output,
+    SpecId, TestDbExt, TransactTo, TxEnv,
 };
-use alloy_primitives::{Address, U256, hex};
+use alloy_primitives::{Address, U256, address, hex};
 use evm2_inspectors::{
     tracing::{TracingInspector, TracingInspectorConfig},
     transfer::{TransferInspector, TransferKind, TransferOperation},
@@ -108,7 +108,7 @@ fn test_internal_transfers() {
 }
 
 #[test]
-fn records_failed_create_transfer_attempt() {
+fn discards_failed_create_transfer() {
     let deployer = Address::ZERO;
     let mut db = CacheDB::new(EmptyDB::default());
     db.load_account(deployer).info.balance = U256::from(u64::MAX);
@@ -128,13 +128,73 @@ fn records_failed_create_transfer_attempt() {
         .unwrap();
 
     assert!(!res.result.is_success());
+    assert_eq!(evm.inspector().transfers(), &[]);
+}
+
+#[test]
+fn discards_failed_call_transfers_and_logs() {
+    let deployer = Address::ZERO;
+    let caller = address!("0x1000000000000000000000000000000000000000");
+    let reverter = address!("0x2000000000000000000000000000000000000000");
+    let recipient = address!("0x00000000000000000000000000000000000000ff");
+
+    // Calls `reverter` with 1 wei, `recipient` with 100 wei (more than the balance), and
+    // `recipient` with 2 wei.
+    let caller_code = hex!(
+        "600060006000600060017320000000000000000000000000000000000000005af150"
+        "6000600060006000606460ff5af150"
+        "6000600060006000600260ff5af150"
+        "00"
+    );
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.load_account(deployer).info.balance = U256::from(u64::MAX);
+    db.insert_account_info(
+        &caller,
+        AccountInfo { code: Some(Bytecode::new_legacy(caller_code.into())), ..Default::default() },
+    );
+    db.insert_account_info(
+        &reverter,
+        AccountInfo {
+            code: Some(Bytecode::new_legacy(hex!("60006000fd").into())),
+            ..Default::default()
+        },
+    );
+
+    let context = Context::mainnet().with_db(db).modify_cfg_chained(|c| c.spec = SpecId::LONDON);
+    let mut evm =
+        context.build_mainnet_with_inspector(TransferInspector::new(false).with_logs(true));
+    let res = evm
+        .inspect_tx(TxEnv {
+            caller: deployer,
+            gas_limit: 1000000,
+            kind: TransactTo::Call(caller),
+            value: U256::from(10),
+            nonce: 0,
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert!(res.result.is_success());
     assert_eq!(
         evm.inspector().transfers(),
-        &[TransferOperation {
-            kind: TransferKind::Create,
-            from: deployer,
-            to: deployer.create(0),
-            value: U256::from(10),
-        }]
+        &[
+            TransferOperation {
+                kind: TransferKind::Call,
+                from: deployer,
+                to: caller,
+                value: U256::from(10),
+            },
+            TransferOperation {
+                kind: TransferKind::Call,
+                from: caller,
+                to: recipient,
+                value: U256::from(2),
+            },
+        ]
     );
+    let logs = &res.tx_result.result.logs;
+    assert_eq!(logs.len(), 2);
+    assert_eq!(logs[0].topics()[2], caller.into_word());
+    assert_eq!(logs[1].topics()[1], caller.into_word());
+    assert_eq!(logs[1].topics()[2], recipient.into_word());
 }
