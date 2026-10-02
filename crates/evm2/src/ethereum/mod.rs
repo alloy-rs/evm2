@@ -882,11 +882,11 @@ pub fn intrinsic_gas(
     value: U256,
 ) -> u64 {
     let params = &version.gas_params;
-    let non_zero_multiplier = if version.feature(EvmFeatures::EIP2028) { 16 } else { 68 };
-    let mut gas = 0;
-    for byte in input {
-        gas += if *byte == 0 { 4 } else { non_zero_multiplier };
-    }
+    let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
+    let zero_data_len = input.iter().filter(|v| **v == 0).count() as u64;
+    let non_zero_data_len = input.len() as u64 - zero_data_len;
+    let tokens = zero_data_len + non_zero_data_len * non_zero_multiplier;
+    let mut gas = tokens * u64::from(params.get(GasId::TxTokenCost));
     gas += access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressCost));
     gas += access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyCost));
 
@@ -897,7 +897,7 @@ pub fn intrinsic_gas(
         let is_self_transfer = matches!(to, TxKind::Call(to) if to == caller);
         gas += eip2780_base_to_value_gas(version, is_create, is_self_transfer, value);
     } else {
-        gas += 21_000;
+        gas += u64::from(params.get(GasId::TxBaseStipend));
         if is_create && version.feature(EvmFeatures::EIP2) {
             gas += u64::from(params.get(GasId::TxCreateCost));
         }
@@ -1081,6 +1081,21 @@ mod tests {
             // EIP-8038 sets the per-item access-list base to the cold-minus-warm
             // premium: 2,900 per address and 2,000 per storage key.
             (12_000 + 3000) + (2900 + 20 * 64) + (2000 + 32 * 64)
+        );
+    }
+
+    #[test]
+    fn intrinsic_gas_reads_calldata_and_base_costs_from_gas_params() {
+        let input = Bytes::from_static(&[0, 1, 2]);
+        let sender = Address::with_last_byte(0xaa);
+        let mut version = Version::new(SpecId::PRAGUE);
+        version.gas_params.set(GasId::TxTokenCost, 3);
+        version.gas_params.set(GasId::TxTokenNonZeroByteMultiplier, 5);
+        version.gas_params.set(GasId::TxBaseStipend, 10_000);
+
+        assert_eq!(
+            intrinsic_gas(&version, sender, TxKind::Call(Address::ZERO), &input, 0, 0, U256::ZERO),
+            10_000 + (1 + 2 * 5) * 3
         );
     }
 
