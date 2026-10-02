@@ -6,7 +6,7 @@ use crate::{
     interpreter::{GasTracker, Message},
     precompiles::{MovePrecompileError, PrecompileId},
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use alloy_primitives::{Address, Bytes};
 use auto_impl::auto_impl;
 
@@ -51,6 +51,16 @@ pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     /// Returns whether `address` has a registered precompile.
     fn contains(&self, address: &Address) -> bool;
 
+    /// Returns whether this call message should enter native precompile dispatch.
+    ///
+    /// Implementations that share an address with bytecode can inspect the selector,
+    /// call kind, and target here. A rejected message executes its bytecode. This
+    /// method must not mutate state: it can be evaluated before a frame is run.
+    #[inline]
+    fn contains_message(&self, message: &Message<T>) -> bool {
+        self.contains(&message.code_address)
+    }
+
     /// Relocates installed precompiles, validating all sources before changing the provider.
     ///
     /// Entries whose source and destination match are ignored. Wrappers must preserve the
@@ -59,8 +69,13 @@ pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     -> Result<(), MovePrecompileError>;
 
     /// Executes the precompile at `address`, if one is registered.
+    ///
+    /// Execution uses a shared provider reference so a child call can reenter
+    /// dispatch. Execution state belongs in the EVM journal or in scoped interior
+    /// mutability; do not hold an exclusive interior borrow across a child call.
+    /// Provider configuration may only be mutated while EVM execution is idle.
     fn execute(
-        &mut self,
+        &self,
         evm: &mut Evm<'_, T>,
         message: &Message<T>,
         gas: &mut GasTracker,
@@ -68,10 +83,10 @@ pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
 }
 
 #[inline]
-pub(crate) fn boxed_precompile_provider<'a, T: EvmTypesHost>(
+pub(crate) fn shared_precompile_provider<'a, T: EvmTypesHost>(
     precompiles: impl PrecompileProvider<T> + 'a,
-) -> Box<dyn PrecompileProvider<T> + 'a> {
-    Box::new(precompiles)
+) -> Arc<dyn PrecompileProvider<T> + 'a> {
+    Arc::new(precompiles)
 }
 
 impl<'a, T: EvmTypesHost> core::ops::Deref for dyn PrecompileProvider<T> + 'a {
@@ -123,7 +138,7 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for NoPrecompiles {
 
     #[inline]
     fn execute(
-        &mut self,
+        &self,
         _evm: &mut Evm<'_, T>,
         _message: &Message<T>,
         _gas: &mut GasTracker,
