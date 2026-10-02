@@ -398,57 +398,26 @@ impl JitBackend {
     /// All compiled programs are removed from the map. Active references
     /// held by callers remain valid until dropped.
     ///
-    /// Never blocks: if the backend thread is not running, the map is cleared in place
-    /// instead of queueing a command that nothing would drain — see
-    /// [`try_send_control`](Self::try_send_control) for the same invariant.
+    /// Before startup, clears the map in place instead of queueing an undrained command.
+    /// May block waiting for startup or for space in the running backend's command channel.
     pub fn clear_resident(&self) {
-        if self.inner.started.load(Ordering::Relaxed) {
-            let _ = self.inner.tx.send(Command::ClearResident);
-            return;
-        }
-        self.inner.shared.resident.clear();
+        self.send_clear(Command::ClearResident);
     }
 
     /// Clears persisted artifacts from the artifact store.
     ///
-    /// Never blocks: if the backend thread is not running, the store is cleared in place
-    /// instead of queueing a command that nothing would drain.
+    /// Before startup, clears the store in place instead of queueing an undrained command.
+    /// May block on store I/O, startup, or the running backend's command channel.
     pub fn clear_persisted(&self) {
-        if self.inner.started.load(Ordering::Relaxed) {
-            let _ = self.inner.tx.send(Command::ClearPersisted);
-            return;
-        }
-        self.clear_store_without_backend();
+        self.send_clear(Command::ClearPersisted);
     }
 
     /// Clears both the resident map and persisted artifacts.
     ///
-    /// Never blocks, like [`clear_resident`](Self::clear_resident) and
-    /// [`clear_persisted`](Self::clear_persisted).
+    /// Before startup, clears both in place instead of queueing an undrained command.
+    /// May block on store I/O, startup, or the running backend's command channel.
     pub fn clear_all(&self) {
-        if self.inner.started.load(Ordering::Relaxed) {
-            let _ = self.inner.tx.send(Command::ClearAll);
-            return;
-        }
-        self.inner.shared.resident.clear();
-        self.clear_store_without_backend();
-    }
-
-    /// Clears the artifact store directly, for a backend that is not running.
-    ///
-    /// Unlike `pause`/`resume`, a clear still has work to do when no backend thread exists:
-    /// artifacts persisted by an earlier run are still on disk. The store therefore cannot be
-    /// skipped the way [`try_send_control`](Self::try_send_control) skips control commands; it is
-    /// cleared in place. The store lives in the pending lazy-spawn config until the backend thread
-    /// takes it over, so a backend that never started still has it.
-    fn clear_store_without_backend(&self) {
-        let guard = self.inner.lazy_spawn.lock().unwrap();
-        let Some(store) = guard.as_ref().and_then(|lazy| lazy.config.store.as_deref()) else {
-            return;
-        };
-        if let Err(e) = store.clear() {
-            warn!(error = %e, "failed to clear artifact store");
-        }
+        self.send_clear(Command::ClearAll);
     }
 
     /// Returns whether the runtime is enabled.
@@ -534,6 +503,10 @@ impl JitBackend {
 
     /// Spawns the backend thread if it hasn't been started yet.
     fn ensure_started(&self) -> eyre::Result<()> {
+        self.ensure_started_with(std::thread::Builder::new())
+    }
+
+    fn ensure_started_with(&self, builder: std::thread::Builder) -> eyre::Result<()> {
         let mut guard = self.inner.lazy_spawn.lock().unwrap();
         let Some(lazy) = guard.take() else {
             return Ok(());
@@ -564,22 +537,30 @@ impl JitBackend {
             }
         }
 
-        drop(guard);
-
         let (done_tx, done_rx) = chan::bounded::<()>(1);
         let shared = Arc::clone(&self.inner.shared);
+        let backend_rx = rx.clone();
+        let backend_config = config.clone();
 
-        let thread = std::thread::Builder::new()
+        let thread = match builder
             .name(config.thread_name.clone())
             .spawn(move || {
-                let result = backend::run(shared, rx, config);
+                let result = backend::run(shared, backend_rx, backend_config);
                 let _ = done_tx.send(());
                 result
             })
-            .wrap_err("failed to spawn backend thread")?;
+            .wrap_err("failed to spawn backend thread")
+        {
+            Ok(thread) => thread,
+            Err(error) => {
+                *guard = Some(LazySpawnState { rx, config });
+                return Err(error);
+            }
+        };
 
         *self.inner.thread.lock().unwrap() = Some(BackendThread { handle: thread, done_rx });
         self.inner.started.store(true, Ordering::Relaxed);
+        drop(guard);
         Ok(())
     }
 
@@ -648,6 +629,27 @@ impl JitBackend {
 
         let library = Arc::new(LoadedLibrary::new(library));
         Ok(CompiledProgram::new_aot(key.runtime, func, library))
+    }
+
+    /// Applies a clear before startup, or queues it after the backend takes ownership.
+    /// The startup lock serializes this decision with AOT preload and thread creation.
+    fn send_clear(&self, command: Command) {
+        let guard = self.inner.lazy_spawn.lock().unwrap();
+        let Some(lazy) = guard.as_ref() else {
+            drop(guard);
+            let _ = self.inner.tx.send(command);
+            return;
+        };
+
+        if matches!(command, Command::ClearResident | Command::ClearAll) {
+            self.inner.shared.resident.clear();
+        }
+        if matches!(command, Command::ClearPersisted | Command::ClearAll)
+            && let Some(store) = lazy.config.store.as_deref()
+            && let Err(error) = store.clear()
+        {
+            warn!(%error, "failed to clear artifact store");
+        }
     }
 }
 
