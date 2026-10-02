@@ -274,7 +274,11 @@ impl ReplayFixture {
         let summary = execute_blockchain_tests_suite(
             Path::new(&self.name),
             &self.suite,
-            BlockchainTestExecuteConfig { validate_post_state: false, ..Default::default() },
+            BlockchainTestExecuteConfig {
+                validate_post_state: false,
+                compare_receipt_root: true,
+                ..Default::default()
+            },
             &NameFilter::default(),
             &mut recorder,
         )
