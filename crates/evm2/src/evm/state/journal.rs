@@ -267,4 +267,151 @@ mod tests {
 
         assert!(state.storage_slot(&account, key).unwrap().warm());
     }
+
+    #[test]
+    fn consecutive_account_snapshots_keep_the_earliest_entry() {
+        let address = Address::with_last_byte(0x20);
+        let mut state = State::new(CacheDB::default());
+        let checkpoint = state.checkpoint();
+        state.account(&address).unwrap().set_balance(Word::from(10));
+        state.account(&address).unwrap().set_nonce(2);
+        state.account(&address).unwrap().warm();
+        state.account(&address).unwrap().mark_created();
+        state.account(&address).unwrap().mark_destructed();
+        assert_eq!(state.journal.len(), 1);
+
+        state.rollback(checkpoint, Version::base(SpecId::CANCUN).features);
+        let account = state.account(&address).unwrap();
+        assert!(!account.exists());
+        assert!(!account.is_touched());
+        assert!(!account.is_warm());
+        assert!(!account.is_created());
+        assert!(!account.is_destructed());
+    }
+
+    #[test]
+    fn account_snapshots_do_not_skip_intervening_journal_entries() {
+        let address = Address::with_last_byte(0x21);
+        let other = Address::with_last_byte(0x22);
+        for barrier in 0..3 {
+            let mut state = State::new(CacheDB::default());
+            let checkpoint = state.checkpoint();
+            state.account(&address).unwrap().set_balance(Word::from(10));
+            match barrier {
+                0 => state.account(&other).unwrap().set_balance(Word::from(20)),
+                1 => state.tstore(&address, &Word::ZERO, &Word::from(20)),
+                _ => {
+                    state.storage_slot(&address, Word::ZERO).unwrap().write(Word::from(20));
+                }
+            }
+            let entries = state.journal.len();
+            state.account(&address).unwrap().set_balance(Word::from(30));
+            state.account(&address).unwrap().set_nonce(3);
+            assert_eq!(state.journal.len(), entries + 1);
+
+            state.rollback(checkpoint, Version::base(SpecId::CANCUN).features);
+            assert!(!state.account(&address).unwrap().exists());
+            assert!(!state.account(&other).unwrap().exists());
+            assert_eq!(state.tload(&address, &Word::ZERO), Word::ZERO);
+            assert_eq!(state.storage_slot(&address, Word::ZERO).unwrap().current(), Word::ZERO);
+        }
+    }
+
+    #[test]
+    fn account_snapshot_deduplication_respects_nested_checkpoints_and_rollback() {
+        let address = Address::with_last_byte(0x23);
+        let mut state = State::new(CacheDB::default());
+        let features = Version::base(SpecId::CANCUN).features;
+        let parent = state.checkpoint();
+        state.account(&address).unwrap().set_balance(Word::from(1));
+        let child = state.checkpoint();
+        assert_eq!(state.checkpoint(), child);
+        state.account(&address).unwrap().set_balance(Word::from(2));
+        state.account(&address).unwrap().set_balance(Word::from(3));
+        assert_eq!(state.journal.len(), 2);
+        let grandchild = state.checkpoint();
+        state.account(&address).unwrap().set_balance(Word::from(4));
+        state.account(&address).unwrap().set_balance(Word::from(5));
+        assert_eq!(state.journal.len(), 3);
+
+        state.rollback(grandchild, features);
+        assert_eq!(state.account(&address).unwrap().balance(), Word::from(3));
+        state.rollback(child.clone(), features);
+        assert_eq!(state.account(&address).unwrap().balance(), Word::from(1));
+        state.account(&address).unwrap().set_balance(Word::from(6));
+        state.account(&address).unwrap().set_balance(Word::from(7));
+        assert_eq!(state.journal.len(), 2);
+        state.rollback(child, features);
+        assert_eq!(state.account(&address).unwrap().balance(), Word::from(1));
+        state.rollback(parent, features);
+        assert!(!state.account(&address).unwrap().exists());
+    }
+
+    #[test]
+    fn state_snapshots_preserve_account_deduplication_boundaries() {
+        let address = Address::with_last_byte(0x24);
+        for new_checkpoint in [false, true] {
+            let mut state = State::new(CacheDB::default());
+            let mut checkpoint = state.checkpoint();
+            state.account(&address).unwrap().set_balance(Word::from(1));
+            if new_checkpoint {
+                checkpoint = state.checkpoint();
+            }
+            let mut restored = state.snapshot().into_state(CacheDB::default());
+            restored.account(&address).unwrap().set_balance(Word::from(2));
+            restored.account(&address).unwrap().set_balance(Word::from(3));
+            assert_eq!(restored.journal.len(), 1 + usize::from(new_checkpoint));
+
+            restored.rollback(checkpoint, Version::base(SpecId::CANCUN).features);
+            let account = restored.account(&address).unwrap();
+            assert_eq!(account.exists(), new_checkpoint);
+            assert_eq!(account.balance(), Word::from(u64::from(new_checkpoint)));
+        }
+    }
+
+    #[test]
+    fn clearing_transaction_state_resets_account_deduplication_boundary() {
+        let address = Address::with_last_byte(0x25);
+        let mut state = State::new(CacheDB::default());
+        state.account(&address).unwrap().set_nonce(1);
+        state.checkpoint();
+        state.clear_transaction_state();
+        state.account(&address).unwrap().set_nonce(2);
+        state.account(&address).unwrap().set_nonce(3);
+        assert_eq!(state.journal.len(), 1);
+    }
+
+    #[test]
+    fn deduplicated_account_overrides_preserve_the_earliest_snapshot() {
+        let address = Address::with_last_byte(0x26);
+        for initial_override in [false, true] {
+            let mut state = State::new(CacheDB::default());
+            let checkpoint = state.checkpoint();
+            {
+                let mut account = state.account(&address).unwrap();
+                if initial_override {
+                    account.override_balance(Word::from(100));
+                    account.override_nonce(7);
+                } else {
+                    account.set_balance(Word::from(100));
+                    account.set_nonce(7);
+                }
+            }
+            state.account(&address).unwrap().override_balance(Word::from(200));
+            state.account(&address).unwrap().override_nonce(8);
+            assert_eq!(state.journal.len(), 1);
+            {
+                let account = state.account(&address).unwrap();
+                assert_eq!((account.balance(), account.nonce()), (Word::from(200), 8));
+            }
+
+            state.rollback(checkpoint, Version::base(SpecId::CANCUN).features);
+            let account = state.account(&address).unwrap();
+            if initial_override {
+                assert_eq!((account.balance(), account.nonce()), (Word::from(100), 7));
+            } else {
+                assert!(!account.exists());
+            }
+        }
+    }
 }

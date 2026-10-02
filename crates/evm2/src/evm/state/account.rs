@@ -248,7 +248,8 @@ impl Account {
 /// value plus the warm/touched/destroyed/created/code-changed flags); on drop the handle flushes
 /// that snapshot as a single [`JournalEntry::AccountChange`], which
 /// [`State::rollback`](super::State::rollback) replays to restore the whole entry at once. A handle
-/// used only for reads records nothing, so it emits no journal entry.
+/// used only for reads records nothing, so it emits no journal entry. Consecutive snapshots for
+/// the same account within a checkpoint retain only the earliest entry.
 ///
 /// The handle also carries the shared [`StateInner`] (backing database, revert journal, and
 /// transaction-initial base warm set), so it can journal mutations, load code on demand, and answer
@@ -265,7 +266,8 @@ pub struct AccountHandle<'a, 'db> {
     inner: &'a mut StateInner<'db>,
     /// Revert entry capturing the overlay as it was before the first mutation made through this
     /// handle. `Some` once a change has been recorded; on drop it is pushed onto the journal as a
-    /// single [`JournalEntry::AccountChange`].
+    /// single [`JournalEntry::AccountChange`] unless the last entry already covers this account
+    /// within the same checkpoint.
     snapshot: Option<JournalEntry>,
 }
 
@@ -273,6 +275,12 @@ impl Drop for AccountHandle<'_, '_> {
     #[inline]
     fn drop(&mut self) {
         if let Some(entry) = self.snapshot.take() {
+            if self.inner.journal.len() > self.inner.last_checkpoint
+                && let Some(JournalEntry::AccountChange { address, .. }) = self.inner.journal.last()
+                && *address == self.address
+            {
+                return;
+            }
             self.inner.journal.push(entry);
         }
     }
@@ -297,7 +305,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     }
 
     /// Records the pre-mutation revert entry the first time a change is made through this handle.
-    /// Subsequent calls are no-ops, so the whole handle session flushes a single
+    /// Subsequent calls are no-ops, so the whole handle session flushes at most one
     /// [`JournalEntry::AccountChange`] on drop.
     #[inline]
     fn record_change(&mut self) {
