@@ -50,6 +50,18 @@ pub trait TxHandlerHooks<T: EvmTypes>: Sized {
         Ok(())
     }
 
+    /// Selects authorization gas accounting for the shared EIP-7702 execution handler.
+    ///
+    /// The default preserves Ethereum's fork-dependent runtime charges and refunds. Chains
+    /// that fully charge authorizations in `adjust_intrinsic_gas` can select
+    /// [`Intrinsic`](crate::ethereum::eip7702::AuthGasPolicy::Intrinsic) to suppress both.
+    fn eip7702_auth_gas_policy(
+        _host: &Evm<'_, T>,
+        _envelope: &T::Tx,
+    ) -> crate::ethereum::eip7702::AuthGasPolicy {
+        crate::ethereum::eip7702::AuthGasPolicy::Ethereum
+    }
+
     /// Settles a transaction after execution and rollback handling.
     fn settle_transaction(
         host: &mut Evm<'_, T>,
