@@ -395,11 +395,11 @@ macro_rules! define_precompiles {
             #[allow(non_snake_case)]
             $vis const fn $name<T: $crate::EvmTypesHost>() -> $crate::precompiles::Precompile<T> {
                 fn run<T: $crate::EvmTypesHost>(
-                    _evm: &mut $crate::Evm<'_, T>,
+                    evm: &mut $crate::Evm<'_, T>,
                     message: &$crate::interpreter::Message<T>,
                     gas: &mut $crate::interpreter::GasTracker,
                 ) -> $crate::precompiles::PrecompileResult {
-                    $f(message.input.as_ref(), gas)
+                    $f(message.input.as_slice(evm.call_memory()), gas)
                 }
 
                 $crate::precompiles::Precompile::new(

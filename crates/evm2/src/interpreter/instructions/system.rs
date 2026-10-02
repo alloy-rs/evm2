@@ -159,7 +159,7 @@ fn prepare_call<T: EvmTypesHost>(
     kind: MessageKind,
     message: &mut Message<T>,
     return_memory_range: &mut Range<usize>,
-) -> Result<u64> {
+) -> Result<(u64, Range<usize>)> {
     let has_value = match kind {
         MessageKind::Call | MessageKind::CallCode => true,
         MessageKind::DelegateCall | MessageKind::StaticCall => false,
@@ -192,7 +192,6 @@ fn prepare_call<T: EvmTypesHost>(
             kind == MessageKind::Call,
             local_gas_limit,
         )?;
-    let input = memory_range_bytes(state, input_range)?;
 
     let current = state.message();
     let (destination, caller, call_value, code_address) = match kind {
@@ -214,7 +213,7 @@ fn prepare_call<T: EvmTypesHost>(
         destination,
         call_target: to,
         caller,
-        input,
+        input: Default::default(),
         value: call_value,
         code: loaded_code,
         code_address,
@@ -226,7 +225,7 @@ fn prepare_call<T: EvmTypesHost>(
     };
     *return_memory_range = prepared_return_memory_range;
 
-    Ok(new_account_state_gas)
+    Ok((new_account_state_gas, input_range))
 }
 
 #[inline(never)]
@@ -238,12 +237,12 @@ fn call_inner<T: EvmTypesHost>(
 ) -> Result {
     let mut message = Message::<T>::default();
     let mut return_memory_range = 0..0;
-    let new_account_state_gas =
+    let (new_account_state_gas, input_range) =
         prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)?;
 
-    let tx_env = state.tx();
+    // SAFETY: The host remains installed while the instruction executes.
     let mut result =
-        state.host().execute_message(tx_env, &mut message).map_err(|error| state.fail(error))?;
+        unsafe { state.0.execute_call(message, input_range) }.map_err(|error| state.fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
@@ -388,7 +387,7 @@ fn create_inner<T: EvmTypesHost>(
         call_target: destination,
         caller,
         code: Bytecode::new_legacy(input.clone()),
-        input,
+        input: input.into(),
         value,
         code_address: caller,
         disable_precompiles: false,

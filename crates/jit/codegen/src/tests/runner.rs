@@ -261,7 +261,7 @@ fn def_message(gas_limit: u64) -> Message<BaseEvmTypes> {
     Message::<BaseEvmTypes> {
         destination: DEF_ADDR,
         caller: DEF_CALLER,
-        input: Bytes::from_static(DEF_CD),
+        input: Bytes::from_static(DEF_CD).into(),
         value: DEF_VALUE,
         code_address: DEF_ADDR,
         gas_limit,

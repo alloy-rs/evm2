@@ -209,7 +209,7 @@ impl Host<TestTypes> for TestHost {
         }
         self.call_static_flags
             .push(message.caller_is_static || message.kind == MessageKind::StaticCall);
-        self.calls.push(message.clone());
+        self.calls.push(message.clone().into_owned(self.call_memory()));
         match self.execute_error.clone() {
             Some(error) => Err(error),
             None => Ok(self.execute_result.clone()),

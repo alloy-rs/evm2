@@ -512,7 +512,7 @@ mod tests {
             gas_limit: 0xcd79195900 - 21_368,
             destination: outer,
             caller,
-            input: Bytes::copy_from_slice(&input),
+            input: Bytes::copy_from_slice(&input).into(),
             value: Word::from(10),
             code: Bytecode::new_legacy(Bytes::copy_from_slice(&outer_code)),
             code_address: outer,
