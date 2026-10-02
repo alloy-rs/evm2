@@ -135,18 +135,31 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     // instead and never runs out of gas: an execution refund for each already-existing authority,
     // and under EIP-8037 a state refund credited directly back to the reservoir so it stays state
     // gas — per execution-specs `set_delegation` (`state_gas_reservoir += refund`), deliberately
-    // not routed through execution gas first.
-    let (auth_oog, state_refund, execution_refund) = if req.host.feature(EvmFeatures::EIP2780) {
-        let mut auth_charges =
-            RuntimeAuthCharges::new(req.host.version(), &mut tx_gas, caller, tx.to, tx.value);
-        let oog = apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut auth_charges)?;
-        (oog, 0, 0)
-    } else {
-        let mut auth_refunds = AuthRefunds::new(req.host.version());
-        apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut auth_refunds)?;
-        let AuthRefunds { state_refund, execution_refund, .. } = auth_refunds;
-        tx_gas.set_reservoir(tx_gas.reservoir() + state_refund);
-        (false, state_refund, execution_refund)
+    // not routed through execution gas first. The intrinsic policy keeps hook-provided
+    // authorization costs without adding runtime charges or returning refunds.
+    let (auth_oog, state_refund, execution_refund) = match (
+        H::eip7702_auth_gas_policy(req.host, envelope),
+        req.host.feature(EvmFeatures::EIP2780),
+    ) {
+        (AuthGasPolicy::Intrinsic, _) => {
+            let oog =
+                apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut IntrinsicAuth)?;
+            (oog, 0, 0)
+        }
+        (AuthGasPolicy::Ethereum, true) => {
+            let mut auth_charges =
+                RuntimeAuthCharges::new(req.host.version(), &mut tx_gas, caller, tx.to, tx.value);
+            let oog =
+                apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut auth_charges)?;
+            (oog, 0, 0)
+        }
+        (AuthGasPolicy::Ethereum, false) => {
+            let mut auth_refunds = AuthRefunds::new(req.host.version());
+            apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut auth_refunds)?;
+            let AuthRefunds { state_refund, execution_refund, .. } = auth_refunds;
+            tx_gas.set_reservoir(tx_gas.reservoir() + state_refund);
+            (false, state_refund, execution_refund)
+        }
     };
 
     // Applies the pre-Amsterdam authorization execution refund (zero under EIP-2780) and settles
@@ -464,4 +477,250 @@ pub fn apply_auth_list<'a, T: EvmTypes>(
         host.state.account(&authority)?.set_delegation(*authorization.address());
     }
     Ok(false)
+}
+
+/// Authorization gas accounting selected by [`TxHandlerHooks::eip7702_auth_gas_policy`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AuthGasPolicy {
+    /// Ethereum's fork-dependent runtime charges or intrinsic-cost refunds.
+    #[default]
+    Ethereum,
+    /// All authorization costs were charged intrinsically by the transaction handler.
+    ///
+    /// Authorizations are still validated and applied normally, but incur no further charges
+    /// or refunds, including for rejected entries. The handler must include their costs in
+    /// [`TxHandlerHooks::adjust_intrinsic_gas`]. Execution failure does not undo these costs.
+    Intrinsic,
+}
+
+/// Authorization costs are already paid and never refunded.
+struct IntrinsicAuth;
+
+impl AuthAccounting for IntrinsicAuth {
+    fn rejected(&mut self) {}
+
+    fn accepted(&mut self, _authority: Address, _auth: &AppliedAuth) -> Result<(), InstrStop> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        BaseEvmTypes, ExecutionConfig, Precompiles, SpecId,
+        bytecode::Bytecode,
+        env::BlockEnv,
+        ethereum::{LazyTxEip7702, TxEnvelope},
+        evm::{AccountInfo, InMemoryDB},
+        registry::{TxRegistry, handler},
+    };
+    use alloc::vec;
+    use alloy_consensus::{TxEip7702, transaction::Recovered};
+    use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
+    use alloy_primitives::Bytes;
+
+    const CALLER: Address = Address::repeat_byte(0xaa);
+    const AUTHORITY: Address = Address::repeat_byte(0xbb);
+    const TARGET: Address = Address::repeat_byte(0xcc);
+    const INTRINSIC_STATE: u64 = 333_333;
+    const FLOOR: u64 = 123_456;
+
+    struct IntrinsicHooks;
+
+    impl TxHandlerHooks<BaseEvmTypes> for IntrinsicHooks {
+        fn adjust_intrinsic_gas(
+            _host: &mut Evm<'_, BaseEvmTypes>,
+            _envelope: &TxEnvelope,
+            intrinsic: &mut u64,
+            initial_state_gas: &mut u64,
+            floor_gas: &mut u64,
+        ) -> HandlerResult<()> {
+            *intrinsic += 777;
+            *initial_state_gas += INTRINSIC_STATE;
+            *floor_gas = FLOOR;
+            Ok(())
+        }
+
+        fn eip7702_auth_gas_policy(
+            _host: &Evm<'_, BaseEvmTypes>,
+            _envelope: &TxEnvelope,
+        ) -> AuthGasPolicy {
+            AuthGasPolicy::Intrinsic
+        }
+    }
+
+    struct RefundableHooks;
+
+    impl TxHandlerHooks<BaseEvmTypes> for RefundableHooks {
+        fn adjust_intrinsic_gas(
+            host: &mut Evm<'_, BaseEvmTypes>,
+            _envelope: &TxEnvelope,
+            _intrinsic: &mut u64,
+            initial_state_gas: &mut u64,
+            _floor_gas: &mut u64,
+        ) -> HandlerResult<()> {
+            *initial_state_gas += host.version().gas_params.eip7702_auth_state_gas();
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum AuthCase {
+        New,
+        Existing,
+        Redelegation,
+        Clearing,
+        Rejected,
+    }
+
+    fn setup<H: TxHandlerHooks<BaseEvmTypes> + 'static>(
+        runtime_charges: bool,
+        case: AuthCase,
+        opcode: u8,
+    ) -> (Evm<'static, BaseEvmTypes>, Recovered<TxEnvelope>) {
+        let mut version = Version::new(SpecId::AMSTERDAM);
+        version.chain_id = 1;
+        version.tx_gas_limit_cap = 1_000_000;
+        version.features.set(EvmFeatures::EIP2780, runtime_charges);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &TARGET,
+            AccountInfo::default()
+                .with_code(Bytecode::new_legacy(Bytes::from(vec![0x5f, 0x5f, opcode]))),
+        );
+        let nonce = u64::from(!matches!(case, AuthCase::New));
+        if nonce != 0 {
+            let mut account = AccountInfo::default().with_nonce(nonce);
+            if matches!(case, AuthCase::Redelegation | AuthCase::Clearing) {
+                account = account.with_code(Bytecode::new_eip7702(TARGET));
+            }
+            db.insert_account_info(&AUTHORITY, account);
+        }
+        let authorization = RecoveredAuthorization::new_unchecked(
+            Authorization {
+                chain_id: U256::from(if matches!(case, AuthCase::Rejected) { 2 } else { 1 }),
+                nonce,
+                address: if matches!(case, AuthCase::Clearing) { Address::ZERO } else { TARGET },
+            },
+            RecoveredAuthority::Valid(AUTHORITY),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Eip7702(LazyTxEip7702::from_cached_recovered_authorizations(
+                TxEip7702 { chain_id: 1, gas_limit: 1_500_000, to: TARGET, ..Default::default() },
+                vec![authorization],
+            )),
+            CALLER,
+        );
+        let registry = TxRegistry::new().with_handler(
+            4,
+            TxEnvelope::as_eip7702,
+            handler(prepare_with_hooks::<BaseEvmTypes, H>, execute_prepared::<BaseEvmTypes, H>),
+        );
+        let evm = Evm::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::AMSTERDAM, version),
+            SpecId::AMSTERDAM,
+            BlockEnv::<BaseEvmTypes>::default(),
+            registry,
+            db,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        (evm, tx)
+    }
+
+    fn assert_authorization(evm: &mut Evm<'_, BaseEvmTypes>, case: AuthCase) {
+        let mut account = evm.state_mut().account(&AUTHORITY).unwrap();
+        let expected_nonce = match case {
+            AuthCase::New | AuthCase::Rejected => 1,
+            _ => 2,
+        };
+        assert_eq!(account.nonce(), expected_nonce);
+        let expected_target = if matches!(case, AuthCase::Clearing | AuthCase::Rejected) {
+            None
+        } else {
+            Some(TARGET)
+        };
+        assert_eq!(account.load_code().unwrap().eip7702_address(), expected_target);
+    }
+
+    #[rstest::rstest]
+    fn intrinsic_policy_preserves_prepared_costs_and_authorizations(
+        #[values(false, true)] runtime_charges: bool,
+        #[values(
+            AuthCase::New,
+            AuthCase::Existing,
+            AuthCase::Redelegation,
+            AuthCase::Clearing,
+            AuthCase::Rejected
+        )]
+        case: AuthCase,
+        #[values(0x00, 0xfd, 0xfe)] opcode: u8,
+    ) {
+        let (mut evm, tx) = setup::<IntrinsicHooks>(runtime_charges, case, opcode);
+        let intrinsic =
+            intrinsic_gas(evm.version(), CALLER, TARGET.into(), &Bytes::new(), 0, 0, U256::ZERO)
+                + u64::from(evm.version().gas_params[GasId::TxEip7702PerEmptyAccountCost])
+                + 777;
+        let result = evm.transact(&tx).unwrap().commit();
+        assert_eq!(result.status, opcode == 0x00);
+        assert_eq!(result.stop.is_revert(), opcode == 0xfd);
+        assert_eq!(result.stop.is_halt(), opcode == 0xfe);
+        assert_eq!(result.state_gas_spent, INTRINSIC_STATE);
+        assert_eq!(result.refunded, 0);
+        assert_eq!(result.floor_gas, FLOOR);
+        assert_eq!(
+            result.total_gas_spent,
+            INTRINSIC_STATE + if opcode == 0xfe { 1_000_000 } else { intrinsic + 4 }
+        );
+        assert_authorization(&mut evm, case);
+    }
+
+    #[rstest::rstest]
+    fn default_policy_preserves_conditional_runtime_state_charges(
+        #[values(
+            AuthCase::New,
+            AuthCase::Existing,
+            AuthCase::Redelegation,
+            AuthCase::Clearing,
+            AuthCase::Rejected
+        )]
+        case: AuthCase,
+        #[values(0x00, 0xfd, 0xfe)] opcode: u8,
+    ) {
+        let (mut evm, tx) = setup::<DefaultTxHandlerHooks>(true, case, opcode);
+        let params = &evm.version().gas_params;
+        let expected = match case {
+            AuthCase::New => params.eip7702_auth_state_gas(),
+            AuthCase::Existing => u64::from(params[GasId::TxEip7702PerAuthState]),
+            _ => 0,
+        };
+        let result = evm.transact(&tx).unwrap().commit();
+        assert_eq!(result.status, opcode == 0x00);
+        assert_eq!(result.state_gas_spent, expected);
+        assert_authorization(&mut evm, case);
+    }
+
+    #[rstest::rstest]
+    fn default_policy_preserves_intrinsic_state_refunds(
+        #[values(
+            AuthCase::New,
+            AuthCase::Existing,
+            AuthCase::Redelegation,
+            AuthCase::Clearing,
+            AuthCase::Rejected
+        )]
+        case: AuthCase,
+    ) {
+        let (mut evm, tx) = setup::<RefundableHooks>(false, case, 0x00);
+        let params = &evm.version().gas_params;
+        let expected = match case {
+            AuthCase::New => params.eip7702_auth_state_gas(),
+            AuthCase::Existing => u64::from(params[GasId::TxEip7702PerAuthState]),
+            _ => 0,
+        };
+        let result = evm.transact(&tx).unwrap().commit();
+        assert!(result.status);
+        assert_eq!(result.state_gas_spent, expected);
+        assert_authorization(&mut evm, case);
+    }
 }
