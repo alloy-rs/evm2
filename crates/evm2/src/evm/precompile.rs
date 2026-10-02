@@ -53,6 +53,16 @@ pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     /// Returns whether `address` has a registered precompile.
     fn contains(&self, address: &Address) -> bool;
 
+    /// Returns whether this call message should enter native precompile dispatch.
+    ///
+    /// Implementations that share an address with bytecode can inspect the selector,
+    /// call kind, and target here. A rejected message executes its bytecode. This
+    /// method must not mutate state: it can be evaluated before a frame is run.
+    #[inline]
+    fn contains_message(&self, message: &Message<T>) -> bool {
+        self.contains(&message.code_address)
+    }
+
     /// Relocates installed precompiles, validating all sources before changing the provider.
     ///
     /// Entries whose source and destination match are ignored. Wrappers must preserve the

@@ -361,7 +361,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline]
     fn contains_precompile(&self, message: &Message<T>) -> bool {
-        !message.disable_precompiles && self.precompiles.contains(&message.code_address)
+        !message.disable_precompiles && self.precompiles.contains_message(message)
     }
 
     #[inline]
@@ -2923,6 +2923,11 @@ mod tests {
             fn contains(&self, address: &Address) -> bool {
                 matches!(*address, TEST_PRECOMPILE | INNER_TEST_PRECOMPILE)
             }
+            fn contains_message(&self, message: &Message) -> bool {
+                self.contains(&message.code_address)
+                    && (message.code_address != TEST_PRECOMPILE
+                        || message.input.first() == Some(&0x01))
+            }
             fn move_precompiles(
                 &mut self,
                 moves: &[(Address, Address)],
@@ -2954,6 +2959,13 @@ mod tests {
             InMemoryDB::default(),
             StatefulProvider::default(),
         );
+        let mut bytecode_message = precompile_message(TEST_PRECOMPILE);
+        bytecode_message.input = Bytes::from_static(&[0x02]);
+        assert!(!evm.contains_precompile(&bytecode_message));
+        bytecode_message.input = Bytes::from_static(&[0x01]);
+        assert!(evm.contains_precompile(&bytecode_message));
+        bytecode_message.disable_precompiles = true;
+        assert!(!evm.contains_precompile(&bytecode_message));
         let output = evm
             .execute_precompile(
                 &TxEnvExt::default(),
