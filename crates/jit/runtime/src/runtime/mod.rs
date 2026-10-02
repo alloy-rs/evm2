@@ -397,18 +397,27 @@ impl JitBackend {
     ///
     /// All compiled programs are removed from the map. Active references
     /// held by callers remain valid until dropped.
+    ///
+    /// Before startup, clears the map in place instead of queueing an undrained command.
+    /// May block waiting for startup or for space in the running backend's command channel.
     pub fn clear_resident(&self) {
-        let _ = self.inner.tx.send(Command::ClearResident);
+        self.send_clear(Command::ClearResident);
     }
 
     /// Clears persisted artifacts from the artifact store.
+    ///
+    /// Before startup, clears the store in place instead of queueing an undrained command.
+    /// May block on store I/O, startup, or the running backend's command channel.
     pub fn clear_persisted(&self) {
-        let _ = self.inner.tx.send(Command::ClearPersisted);
+        self.send_clear(Command::ClearPersisted);
     }
 
     /// Clears both the resident map and persisted artifacts.
+    ///
+    /// Before startup, clears both in place instead of queueing an undrained command.
+    /// May block on store I/O, startup, or the running backend's command channel.
     pub fn clear_all(&self) {
-        let _ = self.inner.tx.send(Command::ClearAll);
+        self.send_clear(Command::ClearAll);
     }
 
     /// Returns whether the runtime is enabled.
@@ -494,6 +503,10 @@ impl JitBackend {
 
     /// Spawns the backend thread if it hasn't been started yet.
     fn ensure_started(&self) -> eyre::Result<()> {
+        self.ensure_started_with(std::thread::Builder::new())
+    }
+
+    fn ensure_started_with(&self, builder: std::thread::Builder) -> eyre::Result<()> {
         let mut guard = self.inner.lazy_spawn.lock().unwrap();
         let Some(lazy) = guard.take() else {
             return Ok(());
@@ -524,22 +537,30 @@ impl JitBackend {
             }
         }
 
-        drop(guard);
-
         let (done_tx, done_rx) = chan::bounded::<()>(1);
         let shared = Arc::clone(&self.inner.shared);
+        let backend_rx = rx.clone();
+        let backend_config = config.clone();
 
-        let thread = std::thread::Builder::new()
+        let thread = match builder
             .name(config.thread_name.clone())
             .spawn(move || {
-                let result = backend::run(shared, rx, config);
+                let result = backend::run(shared, backend_rx, backend_config);
                 let _ = done_tx.send(());
                 result
             })
-            .wrap_err("failed to spawn backend thread")?;
+            .wrap_err("failed to spawn backend thread")
+        {
+            Ok(thread) => thread,
+            Err(error) => {
+                *guard = Some(LazySpawnState { rx, config });
+                return Err(error);
+            }
+        };
 
         *self.inner.thread.lock().unwrap() = Some(BackendThread { handle: thread, done_rx });
         self.inner.started.store(true, Ordering::Relaxed);
+        drop(guard);
         Ok(())
     }
 
@@ -608,6 +629,27 @@ impl JitBackend {
 
         let library = Arc::new(LoadedLibrary::new(library));
         Ok(CompiledProgram::new_aot(key.runtime, func, library))
+    }
+
+    /// Applies a clear before startup, or queues it after the backend takes ownership.
+    /// The startup lock serializes this decision with AOT preload and thread creation.
+    fn send_clear(&self, command: Command) {
+        let guard = self.inner.lazy_spawn.lock().unwrap();
+        let Some(lazy) = guard.as_ref() else {
+            drop(guard);
+            let _ = self.inner.tx.send(command);
+            return;
+        };
+
+        if matches!(command, Command::ClearResident | Command::ClearAll) {
+            self.inner.shared.resident.clear();
+        }
+        if matches!(command, Command::ClearPersisted | Command::ClearAll)
+            && let Some(store) = lazy.config.store.as_deref()
+            && let Err(error) = store.clear()
+        {
+            warn!(%error, "failed to clear artifact store");
+        }
     }
 }
 
