@@ -9,6 +9,7 @@
 use crate::{
     interpreter::GasTracker,
     precompiles::{PrecompileOutput, PrecompileResult},
+    utils::bool_to_bytes32,
 };
 use alloy_primitives::{B256, B512, Bytes};
 
@@ -41,7 +42,7 @@ pub fn run_osaka(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 fn p256_verify_inner(input: &[u8], gas: &mut GasTracker, gas_cost: u64) -> PrecompileResult {
     gas.spend(gas_cost)?;
     let result = if verify_impl_with_crypto(input, crate::precompiles::crypto()) {
-        B256::with_last_byte(1).into()
+        bool_to_bytes32(true)
     } else {
         Bytes::new()
     };
