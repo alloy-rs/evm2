@@ -4,8 +4,8 @@ use alloc::{vec, vec::Vec};
 use alloy_primitives::{Address, B256, Log, LogData, U256, address, b256};
 use alloy_sol_types::SolValue;
 use evm2::{
-    EvmTypesHost, Inspector,
-    interpreter::{Host, Interpreter, Message, MessageKind, MessageResult},
+    Evm, EvmTypes, Inspector,
+    interpreter::{Interpreter, Message, MessageKind, MessageResult},
 };
 
 /// Sender of ETH transfer log per `eth_simulateV1` spec.
@@ -19,12 +19,17 @@ pub const TRANSFER_EVENT_TOPIC: B256 =
 
 /// An [Inspector] that collects internal ETH transfers.
 ///
+/// Transfers made by a call or create that fails, including transfers in its subcalls, are
+/// discarded together with their logs.
+///
 /// This can be used to construct an `eth_simulateV1` response. For `ots_getInternalOperations`,
 /// use [InternalOperationsInspector](crate::otterscan::InternalOperationsInspector).
 #[derive(Debug, Default, Clone)]
 pub struct TransferInspector {
     internal_only: bool,
     transfers: Vec<TransferOperation>,
+    /// Checkpoints of the call and create frames currently executing.
+    checkpoints: Vec<TransferCheckpoint>,
     /// If enabled, will insert ERC20-style transfer logs emitted by [TRANSFER_LOG_EMITTER] for
     /// each ETH transfer.
     ///
@@ -38,7 +43,7 @@ impl TransferInspector {
     /// If `internal_only` is set to `true`, only internal transfers are collected, in other words,
     /// the top level call is ignored.
     pub const fn new(internal_only: bool) -> Self {
-        Self { internal_only, transfers: Vec::new(), insert_logs: false }
+        Self { internal_only, transfers: Vec::new(), checkpoints: Vec::new(), insert_logs: false }
     }
 
     /// Creates a new transfer inspector that only collects internal transfers.
@@ -67,7 +72,9 @@ impl TransferInspector {
         self.transfers.iter()
     }
 
-    fn on_transfer<T: EvmTypesHost>(&mut self, message: &Message<T>, host: &mut T::Host<'_>) {
+    fn on_transfer<T: EvmTypes>(&mut self, message: &Message<T>, host: &mut Evm<'_, T>) {
+        self.checkpoints.push(TransferCheckpoint { transfers: self.transfers.len(), log: None });
+
         let kind = match message.kind {
             MessageKind::Call | MessageKind::CallCode => TransferKind::Call,
             MessageKind::Create => TransferKind::Create,
@@ -98,12 +105,26 @@ impl TransferInspector {
                 address: TRANSFER_LOG_EMITTER,
                 data: LogData::new_unchecked(vec![TRANSFER_EVENT_TOPIC, from, to], data.into()),
             };
+            if let Some(checkpoint) = self.checkpoints.last_mut() {
+                checkpoint.log = Some(host.logs().len());
+            }
             host.log(log);
+        }
+    }
+
+    fn on_transfer_end<T: EvmTypes>(&mut self, result: &MessageResult<T>, host: &mut Evm<'_, T>) {
+        let Some(checkpoint) = self.checkpoints.pop() else { return };
+        if result.is_success() {
+            return;
+        }
+        self.transfers.truncate(checkpoint.transfers);
+        if let Some(log) = checkpoint.log {
+            host.state_mut().logs_mut().truncate(log);
         }
     }
 }
 
-impl<T: EvmTypesHost> Inspector<T> for TransferInspector {
+impl<T: EvmTypes> Inspector<T> for TransferInspector {
     fn call(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,
@@ -113,6 +134,15 @@ impl<T: EvmTypesHost> Inspector<T> for TransferInspector {
         None
     }
 
+    fn call_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        _message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        self.on_transfer_end::<T>(result, interp.host());
+    }
+
     fn create(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,
@@ -120,6 +150,15 @@ impl<T: EvmTypesHost> Inspector<T> for TransferInspector {
     ) -> Option<MessageResult<T>> {
         self.on_transfer::<T>(message, interp.host());
         None
+    }
+
+    fn create_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        _message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        self.on_transfer_end::<T>(result, interp.host());
     }
 
     fn selfdestruct(
@@ -163,4 +202,13 @@ pub enum TransferKind {
     Create2,
     /// A SELFDESTRUCT operation
     SelfDestruct,
+}
+
+/// Transfer state at the start of a call or create frame.
+#[derive(Clone, Copy, Debug)]
+struct TransferCheckpoint {
+    /// Number of transfers recorded before the frame.
+    transfers: usize,
+    /// Index of the transfer log inserted for the frame.
+    log: Option<usize>,
 }
