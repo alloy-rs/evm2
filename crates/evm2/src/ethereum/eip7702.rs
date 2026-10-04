@@ -39,18 +39,18 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let envelope = req.envelope;
-    if tx.authorization_list.is_empty() {
-        return Err(HandlerError::EmptyAuthorizationList);
-    }
     let max_fee_per_gas = U256::from(tx.max_fee_per_gas);
     let max_priority_fee_per_gas = U256::from(tx.max_priority_fee_per_gas);
     let gas_price =
         effective_gas_price(max_fee_per_gas, max_priority_fee_per_gas, req.host.block.basefee);
 
-    validate_priority_fee(req.host.version(), max_fee_per_gas, max_priority_fee_per_gas)?;
-    validate_gas_price(req.host.version(), gas_price, req.host.block.basefee)?;
     validate_chain_id(req.host.version(), Some(tx.chain_id), false)?;
     validate_tx_gas_limit_cap(req.host.version(), tx.gas_limit)?;
+    validate_priority_fee(req.host.version(), max_fee_per_gas, max_priority_fee_per_gas)?;
+    validate_gas_price(req.host.version(), gas_price, req.host.block.basefee)?;
+    if tx.authorization_list.is_empty() {
+        return Err(HandlerError::EmptyAuthorizationList);
+    }
     validate_block_gas_limit(req.host.version(), tx.gas_limit, req.host.block.gas_limit)?;
     validate_create_initcode(req.host.version(), tx.to.into(), &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
