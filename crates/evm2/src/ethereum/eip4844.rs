@@ -45,12 +45,12 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         effective_gas_price(max_fee_per_gas, max_priority_fee_per_gas, req.host.block.basefee);
     let max_fee_per_blob_gas = U256::from(tx.max_fee_per_blob_gas);
 
+    validate_chain_id(req.host.version(), Some(tx.chain_id), false)?;
+    validate_tx_gas_limit_cap(req.host.version(), tx.gas_limit)?;
     validate_priority_fee(req.host.version(), max_fee_per_gas, max_priority_fee_per_gas)?;
     validate_gas_price(req.host.version(), gas_price, req.host.block.basefee)?;
-    validate_chain_id(req.host.version(), Some(tx.chain_id), false)?;
     validate_blob_fee(max_fee_per_blob_gas, req.host.block.blob_basefee)?;
     validate_blobs(&tx.blob_versioned_hashes, req.host.version().max_blobs_per_tx)?;
-    validate_tx_gas_limit_cap(req.host.version(), tx.gas_limit)?;
     validate_block_gas_limit(req.host.version(), tx.gas_limit, req.host.block.gas_limit)?;
     validate_create_initcode(req.host.version(), tx.to.into(), &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
@@ -174,11 +174,11 @@ fn validate_blobs(blobs: &[alloy_primitives::B256], max_blobs: usize) -> Handler
     if blobs.is_empty() {
         return Err(HandlerError::EmptyBlobs);
     }
-    if blobs.len() > max_blobs {
-        return Err(HandlerError::TooManyBlobs { have: blobs.len(), max: max_blobs });
-    }
     if blobs.iter().any(|blob| blob[0] != VERSIONED_HASH_VERSION_KZG) {
         return Err(HandlerError::BlobVersionNotSupported);
+    }
+    if blobs.len() > max_blobs {
+        return Err(HandlerError::TooManyBlobs { have: blobs.len(), max: max_blobs });
     }
     Ok(())
 }
