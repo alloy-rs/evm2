@@ -174,11 +174,11 @@ fn validate_blobs(blobs: &[alloy_primitives::B256], max_blobs: usize) -> Handler
     if blobs.is_empty() {
         return Err(HandlerError::EmptyBlobs);
     }
-    if blobs.len() > max_blobs {
-        return Err(HandlerError::TooManyBlobs { have: blobs.len(), max: max_blobs });
-    }
     if blobs.iter().any(|blob| blob[0] != VERSIONED_HASH_VERSION_KZG) {
         return Err(HandlerError::BlobVersionNotSupported);
+    }
+    if blobs.len() > max_blobs {
+        return Err(HandlerError::TooManyBlobs { have: blobs.len(), max: max_blobs });
     }
     Ok(())
 }
