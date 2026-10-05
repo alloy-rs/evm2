@@ -564,4 +564,21 @@ mod tests {
         assert!(bytecode.inner().jump_table.get().is_none());
         assert_eq!(bytecode.jump_table().len(), raw.len());
     }
+
+    #[test]
+    fn empty_debug_matches_shared_form() {
+        let empty = Bytecode::new();
+        let shared = Bytecode(Some(Arc::new(BytecodeInner {
+            kind: BytecodeKind::Legacy,
+            bytecode: Bytes::from_static(&[op::STOP]),
+            original_len: 0,
+            jump_table: OnceLock::new(),
+            hash: OnceLock::new(),
+        })));
+        for bytecode in [&empty, &shared] {
+            let _ = bytecode.hash_slow();
+            let _ = bytecode.jump_table();
+        }
+        assert_eq!(format!("{empty:?}"), format!("{shared:?}"));
+    }
 }
