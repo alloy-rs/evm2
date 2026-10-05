@@ -368,8 +368,12 @@ impl Bytecode {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "std"))]
+    extern crate std;
+
     use super::*;
     use crate::interpreter::op;
+    use alloc::format;
     use alloy_primitives::{Address, Bytes};
     use std::hash::{BuildHasher, RandomState};
 
@@ -568,17 +572,9 @@ mod tests {
     #[test]
     fn empty_debug_matches_shared_form() {
         let empty = Bytecode::new();
-        let shared = Bytecode(Some(Arc::new(BytecodeInner {
-            kind: BytecodeKind::Legacy,
-            bytecode: Bytes::from_static(&[op::STOP]),
-            original_len: 0,
-            jump_table: OnceLock::new(),
-            hash: OnceLock::new(),
-        })));
-        for bytecode in [&empty, &shared] {
-            let _ = bytecode.hash_slow();
-            let _ = bytecode.jump_table();
-        }
-        assert_eq!(format!("{empty:?}"), format!("{shared:?}"));
+        let shared = Arc::new(empty.inner());
+        let _ = empty.hash_slow();
+        let _ = empty.jump_table();
+        assert_eq!(format!("{empty:?}"), format!("Bytecode({shared:?})"));
     }
 }
