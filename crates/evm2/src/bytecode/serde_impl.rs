@@ -154,7 +154,7 @@ mod tests {
         let json = serde_json::to_string(&bytecode).unwrap();
         let binary = postcard::to_allocvec(&bytecode).unwrap();
         assert_eq!(json, r#""0x5b60""#);
-        assert!(bytecode.0.jump_table.get().is_none());
+        assert!(bytecode.inner().jump_table.get().is_none());
 
         for restored in [
             serde_json::from_str::<Bytecode>(&json).unwrap(),
@@ -166,7 +166,7 @@ mod tests {
         ] {
             assert_eq!(restored, bytecode);
             assert_eq!(restored.bytes_slice(), bytecode.bytes_slice());
-            assert!(restored.0.jump_table.get().is_none());
+            assert!(restored.inner().jump_table.get().is_none());
             assert!(restored.legacy_jump_table().unwrap().is_valid(0));
             assert!(!restored.legacy_jump_table().unwrap().is_valid(1));
         }
