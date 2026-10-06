@@ -87,6 +87,7 @@ impl PendingState {
                 self.pending.insert_account(change.address, change.original.cloned(), current);
                 let account = self.pending.accounts.get_mut(&change.address).unwrap();
                 account.just_created = change.created;
+                account.is_touched = true;
                 if change.selfdestructed {
                     self.pending.selfdestructs.insert(change.address);
                 }
@@ -133,6 +134,9 @@ impl PendingState {
             (entry.is_changed()
                 || entry.is_created()
                 || selfdestructed
+                || (entry.is_touched
+                    && entry.original.is_some()
+                    && entry.present.as_ref().is_some_and(AccountInfo::is_empty))
                 || storage.is_some_and(|s| s.wiped || s.changed_slots().next().is_some()))
             .then_some((
                 AccountChangeRef {
