@@ -42,6 +42,41 @@ pub struct PendingState {
 }
 
 impl PendingState {
+    /// Borrows changed accounts together with their transaction storage overlays.
+    ///
+    /// Includes accounts whose metadata stayed unchanged but whose storage changed or was wiped.
+    /// Consumers can apply [`StorageOverlay::changed_slots`] directly without regrouping the
+    /// flat change stream. Loaded-but-unchanged accounts and slots are omitted.
+    pub fn changed_accounts(
+        &self,
+    ) -> impl Iterator<Item = (AccountChangeRef<'_>, Option<&StorageOverlay>)> {
+        self.accounts.iter().filter_map(|(&address, entry)| {
+            let storage = self.storage.get(&address);
+            let selfdestructed = self.selfdestructs.contains(&address);
+            (entry.is_changed()
+                || entry.is_created()
+                || selfdestructed
+                || storage.is_some_and(|s| s.wiped || s.changed_slots().next().is_some()))
+            .then_some((
+                AccountChangeRef {
+                    address,
+                    original: entry.original.as_ref(),
+                    current: entry.present.as_ref(),
+                    created: entry.is_created(),
+                    selfdestructed,
+                },
+                storage,
+            ))
+        })
+    }
+
+    /// Borrows bytecode changed by the transaction, keyed by code hash.
+    pub fn changed_bytecodes(
+        &self,
+    ) -> impl Iterator<Item = (alloy_primitives::B256, &crate::bytecode::Bytecode)> {
+        self.accounts.values().filter_map(Account::changed_code)
+    }
+
     /// Returns whether the transaction loaded no accounts and no storage.
     #[inline]
     pub fn is_empty(&self) -> bool {
