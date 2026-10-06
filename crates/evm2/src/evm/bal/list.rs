@@ -484,6 +484,8 @@ mod tests {
             accounts: AddressMap::from_iter([(address, account)]),
             storage: AddressMap::from_iter([(address, overlay)]),
             selfdestructs: Default::default(),
+            recycle: None,
+            spare_storage: Default::default(),
         };
 
         let mut bal = Bal::new();
@@ -525,6 +527,8 @@ mod tests {
             accounts: AddressMap::from_iter([(address, account)]),
             storage: AddressMap::from_iter([(address, overlay)]),
             selfdestructs: AddressSet::from_iter([address]),
+            recycle: None,
+            spare_storage: Default::default(),
         };
 
         let mut bal = Bal::new();

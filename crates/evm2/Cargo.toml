@@ -28,6 +28,7 @@ derive-where.workspace = true
 thiserror.workspace = true
 typeid.workspace = true
 cfg-if.workspace = true
+crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # no_std
 once_cell = { workspace = true, features = ["alloc"] }

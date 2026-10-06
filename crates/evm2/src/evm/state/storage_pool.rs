@@ -10,7 +10,7 @@ const MAX_TOTAL_CAPACITY: usize = 16_384;
 
 /// Retains only empty allocations. Active transaction maps and the accepted cache are separate.
 #[derive(Debug, Default)]
-pub(super) struct StoragePool {
+pub(crate) struct StoragePool {
     maps: Vec<U256Map<StorageSlot>>,
     capacity: usize,
 }

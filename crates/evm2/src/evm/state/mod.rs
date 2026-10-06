@@ -56,6 +56,7 @@ pub struct State<'a> {
     storage: AddressMap<StorageOverlay>,
     /// Empty slot-map allocations retained between transactions, under fixed capacity limits.
     storage_pool: storage_pool::StoragePool,
+    detached_pool: Option<alloc::sync::Arc<crossbeam_queue::ArrayQueue<pending::RecycledState>>>,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
     transient_storage: StorageKeyMap<Word>,
     /// Inner state.
@@ -78,6 +79,7 @@ impl State<'_> {
             storage: self.storage.clone(),
             // The pool holds only spare allocations, not state.
             storage_pool: storage_pool::StoragePool::default(),
+            detached_pool: None,
             transient_storage: self.transient_storage.clone(),
             inner: StateInner {
                 database: CacheDB {
@@ -143,6 +145,7 @@ impl<'a> State<'a> {
             accounts: AddressMap::default(),
             storage: AddressMap::default(),
             storage_pool: storage_pool::StoragePool::default(),
+            detached_pool: None,
             transient_storage: StorageKeyMap::default(),
             inner: StateInner {
                 database: CacheDB::new(initial),
@@ -444,6 +447,7 @@ impl<'a> State<'a> {
             storage_pool,
             transient_storage,
             inner: StateInner { prewarm_set, journal, selfdestructs, logs, database: _ },
+            ..
         } = self;
         accounts.clear();
         storage_pool.clear(storage);
@@ -963,10 +967,39 @@ impl<'a> State<'a> {
     /// The remaining transaction scratch (journal, logs, warm sets, transient storage) is left for
     /// [`Self::clear_transaction_state`].
     pub(crate) fn take_pending_state(&mut self) -> PendingState {
-        PendingState {
+        let pending = PendingState {
             accounts: mem::take(&mut self.accounts),
             storage: mem::take(&mut self.storage),
             selfdestructs: mem::take(&mut self.inner.selfdestructs),
+            recycle: self.detached_pool.clone(),
+            spare_storage: if self.detached_pool.is_some() {
+                mem::take(&mut self.storage_pool)
+            } else {
+                Default::default()
+            },
+        };
+        if let Some(recycled) = self.detached_pool.as_ref().and_then(|pool| pool.pop()) {
+            self.accounts = recycled.accounts;
+            self.storage = recycled.storage;
+            self.inner.selfdestructs = recycled.selfdestructs;
+            self.storage_pool = recycled.spare_storage;
+        }
+        pending
+    }
+
+    /// Enables bounded allocation reuse for detached states consumed asynchronously.
+    ///
+    /// Call before transferring a detached output to its consumer. Its account and storage
+    /// allocations are cleared and returned when that output is dropped; execution never waits
+    /// for the consumer. Subsequent detached outputs participate automatically. Clones remain
+    /// independent, and the queue retains at most sixteen cleared transaction buffers.
+    pub fn recycle_detached_state(&mut self, pending: &mut PendingState) {
+        if pending.recycle.is_none() {
+            let pool = self
+                .detached_pool
+                .get_or_insert_with(|| alloc::sync::Arc::new(crossbeam_queue::ArrayQueue::new(16)));
+            pending.recycle = Some(pool.clone());
+            pending.spare_storage = mem::take(&mut self.storage_pool);
         }
     }
 
@@ -988,7 +1021,13 @@ impl<'a> State<'a> {
                 slot.is_warm = false;
             }
         }
-        PendingState { accounts, storage, selfdestructs: self.inner.selfdestructs.clone() }
+        PendingState {
+            accounts,
+            storage,
+            selfdestructs: self.inner.selfdestructs.clone(),
+            recycle: None,
+            spare_storage: Default::default(),
+        }
     }
 
     /// Merges an isolated transaction's returned state without adding journal entries.
@@ -997,8 +1036,8 @@ impl<'a> State<'a> {
     /// warmth is combined, current values are replaced, and account lifecycle flags are combined.
     /// Newly loaded accounts and slots retain their child metadata. Journals, logs, pre-warmed
     /// sets, transient storage and backing databases are unchanged.
-    pub fn merge_isolated_state(&mut self, child: PendingState) {
-        for (address, account) in child.accounts {
+    pub fn merge_isolated_state(&mut self, mut child: PendingState) {
+        for (address, account) in mem::take(&mut child.accounts) {
             match self.accounts.entry(address) {
                 hash_map::Entry::Vacant(entry) => {
                     entry.insert(account);
@@ -1013,7 +1052,7 @@ impl<'a> State<'a> {
                 }
             }
         }
-        for (address, storage) in child.storage {
+        for (address, storage) in mem::take(&mut child.storage) {
             let parent = self.storage.entry(address).or_default();
             parent.wiped |= storage.wiped;
             for (key, slot) in storage.slots {
@@ -1029,7 +1068,7 @@ impl<'a> State<'a> {
                 }
             }
         }
-        for address in child.selfdestructs {
+        for address in mem::take(&mut child.selfdestructs) {
             let still_pending =
                 self.accounts.get(&address).is_some_and(|account| account.is_destroyed);
             if still_pending {
@@ -1045,11 +1084,14 @@ impl<'a> State<'a> {
     /// selfdestruct set become the transaction layer again, as if the transaction had just been
     /// finalized. Other transaction scratch (journal, logs, warm sets, transient storage) is not
     /// affected.
-    pub fn set_pending_state(&mut self, pending: PendingState) {
-        let PendingState { accounts, storage, selfdestructs } = pending;
-        self.accounts = accounts;
-        self.storage = storage;
-        self.inner.selfdestructs = selfdestructs;
+    pub fn set_pending_state(&mut self, mut pending: PendingState) {
+        self.storage_pool.clear(&mut self.storage);
+        if pending.recycle.take().is_some() {
+            self.storage_pool = mem::take(&mut pending.spare_storage);
+        }
+        self.accounts = mem::take(&mut pending.accounts);
+        self.storage = mem::take(&mut pending.storage);
+        self.inner.selfdestructs = mem::take(&mut pending.selfdestructs);
     }
 
     /// Accepts the current transaction's state transition into the accepted overlay.
@@ -1070,6 +1112,53 @@ impl<'a> State<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detached_buffers_return_empty_and_clones_remain_independent() {
+        let address = Address::with_last_byte(1);
+        let mut pending = PendingState::default();
+        pending.insert_account(address, None, Some(AccountInfo::empty()));
+        pending.insert_storage(address, Word::from(1), Word::ZERO, Word::from(7));
+        let accounts_capacity = pending.accounts.capacity();
+        let slots_capacity = pending.storage[&address].slots.capacity();
+        let mut state = State::new(EmptyDB::default());
+        state.set_pending_state(pending);
+        let mut first = state.take_pending_state();
+        state.recycle_detached_state(&mut first);
+        let clone = first.clone();
+        assert_eq!(first, clone);
+        assert!(clone.recycle.is_none());
+        drop(clone);
+        assert_eq!(state.detached_pool.as_ref().unwrap().len(), 0);
+        drop(first);
+        assert_eq!(state.detached_pool.as_ref().unwrap().len(), 1);
+        let second = state.take_pending_state();
+        assert!(state.accounts.is_empty());
+        assert_eq!(state.accounts.capacity(), accounts_capacity);
+        assert!(state.storage.is_empty());
+        let slots = state.storage_pool.take();
+        assert!(slots.is_empty());
+        assert_eq!(slots.capacity(), slots_capacity);
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn detached_buffer_queue_is_bounded_and_reattachment_preserves_state() {
+        let address = Address::with_last_byte(1);
+        let mut state = State::new(EmptyDB::default());
+        let mut pending = PendingState::default();
+        pending.insert_account(address, None, Some(AccountInfo::empty()));
+        pending.insert_storage(address, Word::from(1), Word::ZERO, Word::from(7));
+        state.set_pending_state(pending);
+        let mut first = state.take_pending_state();
+        let expected = first.clone();
+        state.recycle_detached_state(&mut first);
+        state.set_pending_state(first);
+        assert_eq!(state.take_pending_state(), expected);
+        let outputs: Vec<_> = (0..32).map(|_| state.take_pending_state()).collect();
+        drop(outputs);
+        assert_eq!(state.detached_pool.as_ref().unwrap().len(), 16);
+    }
 
     #[test]
     fn clone_preserves_state_and_detaches_database() {

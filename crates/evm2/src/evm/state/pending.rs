@@ -5,10 +5,12 @@ use super::{
     StorageOverlay, StorageSlot, Tracked,
 };
 use crate::interpreter::Word;
+use alloc::sync::Arc;
 use alloy_primitives::{
     Address,
     map::{AddressMap, AddressSet},
 };
+use crossbeam_queue::ArrayQueue;
 
 /// A transaction's finalized-but-uncommitted state, moved out of the EVM.
 ///
@@ -27,7 +29,7 @@ use alloy_primitives::{
 ///
 /// A detached pending state can also be reattached to an EVM with
 /// [`State::set_pending_state`](super::State::set_pending_state).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct PendingState {
     /// Accounts loaded by the transaction: transaction-boundary original info, present info, and
     /// account-lifetime flags.
@@ -39,6 +41,65 @@ pub struct PendingState {
     pub(crate) storage: AddressMap<StorageOverlay>,
     /// Accounts selfdestructed by the transaction.
     pub(crate) selfdestructs: AddressSet,
+    pub(crate) recycle: Option<Arc<ArrayQueue<RecycledState>>>,
+    pub(crate) spare_storage: super::storage_pool::StoragePool,
+}
+
+/// Cleared transaction allocations returned after an asynchronous consumer releases state.
+#[derive(Debug, Default)]
+pub(crate) struct RecycledState {
+    pub(super) accounts: AddressMap<Account>,
+    pub(super) storage: AddressMap<StorageOverlay>,
+    pub(super) selfdestructs: AddressSet,
+    pub(crate) spare_storage: super::storage_pool::StoragePool,
+}
+
+impl Clone for PendingState {
+    fn clone(&self) -> Self {
+        // Allocation ownership is not transaction state. Clones do not join the return pool.
+        Self {
+            accounts: self.accounts.clone(),
+            storage: self.storage.clone(),
+            selfdestructs: self.selfdestructs.clone(),
+            recycle: None,
+            spare_storage: Default::default(),
+        }
+    }
+}
+
+impl PartialEq for PendingState {
+    fn eq(&self, other: &Self) -> bool {
+        self.accounts == other.accounts
+            && self.storage == other.storage
+            && self.selfdestructs == other.selfdestructs
+    }
+}
+impl Eq for PendingState {}
+
+impl Drop for PendingState {
+    fn drop(&mut self) {
+        let Some(pool) = self.recycle.take() else { return };
+        // Bound outer tables as well as the per-account slot maps.
+        if self.accounts.capacity() > 4_096 {
+            self.accounts = Default::default();
+        }
+        if self.selfdestructs.capacity() > 4_096 {
+            self.selfdestructs = Default::default();
+        }
+        self.accounts.clear();
+        self.selfdestructs.clear();
+        self.spare_storage.clear(&mut self.storage);
+        if self.storage.capacity() > 4_096 {
+            self.storage = Default::default();
+        }
+        // A full queue simply drops these allocations. It retains no live transaction data.
+        let _ = pool.push(RecycledState {
+            accounts: core::mem::take(&mut self.accounts),
+            storage: core::mem::take(&mut self.storage),
+            selfdestructs: core::mem::take(&mut self.selfdestructs),
+            spare_storage: core::mem::take(&mut self.spare_storage),
+        });
+    }
 }
 
 impl PendingState {
