@@ -175,7 +175,7 @@ fn inspector() -> HandlerResult<()> {
     let expected_opcodes = [op::PUSH1, op::PUSH1, op::LOG0, opcode::CUSTOM_OPCODE, op::STOP];
 
     println!(
-        "inspector: expected status=true initialized=1 steps=5 step_ends=5 logs=1 calls=0 opcodes={expected_opcodes:?}; got status={} initialized={} steps={} step_ends={} logs={} calls={} opcodes={:?}",
+        "inspector: expected status=true initialized=1 steps=5 step_ends=5 logs=1 calls=1 opcodes={expected_opcodes:?}; got status={} initialized={} steps={} step_ends={} logs={} calls={} opcodes={:?}",
         result.status,
         inspector_state.initialized,
         inspector_state.steps,
@@ -190,7 +190,7 @@ fn inspector() -> HandlerResult<()> {
     assert_eq!(inspector_state.steps, expected_opcodes.len());
     assert_eq!(inspector_state.step_ends, expected_opcodes.len());
     assert_eq!(inspector_state.logs, 1);
-    assert_eq!(inspector_state.calls, 0);
+    assert_eq!(inspector_state.calls, 1);
     assert_eq!(inspector_state.opcodes, expected_opcodes);
     Ok(())
 }
