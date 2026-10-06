@@ -42,6 +42,83 @@ pub struct PendingState {
 }
 
 impl PendingState {
+    /// Owns a borrowed transaction change stream, including account lifecycle markers.
+    ///
+    /// Native execution already produces this representation; this constructor is for sources
+    /// such as system updates that only expose callbacks.
+    pub fn from_source(source: &impl StateChangeSource) -> Self {
+        #[derive(Default)]
+        struct Builder {
+            pending: PendingState,
+            code: alloy_primitives::map::B256Map<crate::bytecode::Bytecode>,
+        }
+        impl StateChangeSink for Builder {
+            type Error = core::convert::Infallible;
+            fn bytecode(
+                &mut self,
+                hash: alloy_primitives::B256,
+                code: &crate::bytecode::Bytecode,
+            ) -> Result<(), Self::Error> {
+                self.code.entry(hash).or_insert_with(|| code.clone());
+                Ok(())
+            }
+            fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
+                let storage = self.pending.storage.entry(address).or_default();
+                storage.wiped = true;
+                storage.slots.clear();
+                Ok(())
+            }
+            fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+                self.pending.insert_storage(
+                    change.address,
+                    change.key,
+                    change.original,
+                    change.current,
+                );
+                Ok(())
+            }
+            fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+                let mut current = change.current.cloned();
+                if let Some(info) = &mut current
+                    && info.code.is_none()
+                {
+                    info.code = self.code.get(&info.code_hash).cloned();
+                }
+                self.pending.insert_account(change.address, change.original.cloned(), current);
+                let account = self.pending.accounts.get_mut(&change.address).unwrap();
+                account.just_created = change.created;
+                if change.selfdestructed {
+                    self.pending.selfdestructs.insert(change.address);
+                }
+                Ok(())
+            }
+            fn account_read(
+                &mut self,
+                address: Address,
+                info: Option<&AccountInfo>,
+            ) -> Result<(), Self::Error> {
+                self.pending.accounts.entry(address).or_insert_with(|| Account {
+                    original: info.cloned(),
+                    present: info.cloned(),
+                    ..Default::default()
+                });
+                Ok(())
+            }
+            fn storage_read(
+                &mut self,
+                address: Address,
+                key: Word,
+                value: Word,
+            ) -> Result<(), Self::Error> {
+                self.pending.insert_storage(address, key, value, value);
+                Ok(())
+            }
+        }
+        let mut builder = Builder::default();
+        let Ok(()) = source.visit(&mut builder);
+        builder.pending
+    }
+
     /// Borrows changed accounts together with their transaction storage overlays.
     ///
     /// Includes accounts whose metadata stayed unchanged but whose storage changed or was wiped.
@@ -204,6 +281,17 @@ mod tests {
         assert_eq!(slots.len(), 1);
         assert_eq!(*slots[0].0, Word::from(1));
         assert_eq!(slots[0].1.current, Word::from(7));
+        let rebuilt = PendingState::from_source(&pending);
+        let rebuilt_changes = rebuilt.changed_accounts().collect::<Vec<_>>();
+        assert_eq!(rebuilt_changes.len(), 1);
+        assert!(rebuilt_changes[0].1.unwrap().wiped);
+        assert_eq!(rebuilt_changes[0].1.unwrap().changed_slots().count(), 1);
+        pending.accounts.get_mut(&address).unwrap().just_created = true;
+        pending.selfdestructs.insert(address);
+        let rebuilt = PendingState::from_source(&pending);
+        let change = rebuilt.changed_accounts().next().unwrap().0;
+        assert!(change.created);
+        assert!(change.selfdestructed);
     }
 
     #[test]
