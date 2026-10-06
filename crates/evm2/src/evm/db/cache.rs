@@ -166,12 +166,18 @@ impl<ExtDB> CacheDB<ExtDB> {
         self.bal_context.commit(accounts, storage);
 
         for (&address, overlay) in storage {
+            let mut slots = overlay.changed_slots();
+            let first = slots.next();
+            if !overlay.wiped && first.is_none() {
+                continue;
+            }
+            let cached = self.cache.storage.entry(address).or_default();
             if overlay.wiped {
-                self.cache.storage.entry(address).or_default().wipe();
+                cached.wipe();
             }
-            for (&key, slot) in overlay.changed_slots() {
-                self.cache.storage.entry(address).or_default().slots.insert(key, slot.current);
-            }
+            cached
+                .slots
+                .extend(first.into_iter().chain(slots).map(|(&key, slot)| (key, slot.current)));
         }
 
         for (&address, entry) in accounts {
@@ -440,6 +446,25 @@ mod tests {
     use alloc::{string::ToString, sync::Arc, vec};
     use alloy_eip7928::{BalanceChange, NonceChange, StorageChange};
     use alloy_primitives::Bytes;
+
+    #[test]
+    fn commit_storage_keeps_reads_uncached_and_reinserts_wiped_values() {
+        let address = Address::with_last_byte(1);
+        let mut cache = CacheDB::default();
+        let mut pending = PendingState::default();
+        pending.insert_storage(address, Word::ONE, Word::from(7), Word::from(7));
+        cache.commit_pending(&pending);
+        assert!(!cache.cache.storage.contains_key(&address));
+
+        cache.insert_account_storage(&address, &Word::from(2), &Word::from(9));
+        pending.storage.get_mut(&address).unwrap().wiped = true;
+        pending.insert_storage(address, Word::from(2), Word::from(9), Word::ZERO);
+        cache.commit_pending(&pending);
+        let storage = &cache.cache.storage[&address];
+        assert!(storage.wiped);
+        assert_eq!(storage.slots.len(), 1);
+        assert_eq!(storage.slots[&Word::ONE], Word::from(7));
+    }
 
     #[test]
     fn merge_storage_preserves_wipe_semantics() {
