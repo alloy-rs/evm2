@@ -55,7 +55,8 @@ pub const LOOP_ITERATION_LIMIT: u64 = 200_000;
 /// The recursion limit for function calls.
 ///
 /// Once exceeded, the function will throw an error.
-pub const RECURSION_LIMIT: usize = 10_000;
+/// Kept below Boa's default because recursive accessors also consume native stack space.
+pub const RECURSION_LIMIT: usize = 128;
 
 /// Reused pre-execution data for one call depth. Parents remain pending during child execution.
 #[derive(Debug, Default)]
@@ -279,7 +280,8 @@ impl JsInspector {
 
     /// Applies the runtime limits to the JS context.
     ///
-    /// By default
+    /// Increasing the recursion limit can overflow the native stack when tracing code uses
+    /// recursive property accessors.
     pub fn set_runtime_limits(&mut self, limits: RuntimeLimits) {
         self.ctx.set_runtime_limits(limits);
     }
@@ -923,6 +925,7 @@ mod tests {
     use alloc::{string::ToString, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
+    use boa_engine::error::{EngineError, RuntimeLimitError};
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId,
         bytecode::Bytecode,
@@ -1621,5 +1624,44 @@ mod tests {
         assert_eq!(obj["stackPeek"], json!("1"));
         assert_eq!(obj["value"], json!("0"));
         assert_eq!(obj["balance"], json!("0"));
+    }
+
+    #[test]
+    fn test_runtime_limits() {
+        let inspector = JsInspector::new(
+            "{fault: function() {}, result: function() {}}".into(),
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        assert_eq!(inspector.ctx.runtime_limits().recursion_limit(), RECURSION_LIMIT);
+        assert_eq!(inspector.ctx.runtime_limits().loop_iteration_limit(), LOOP_ITERATION_LIMIT);
+    }
+
+    #[test]
+    fn test_accessor_recursion_limit() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                for setup in [
+                    "const obj = {get x() {return this.x;}}; obj.x;",
+                    "const obj = {set x(value) {this.x = value;}}; obj.x = 1;",
+                    "async function* f() {} f().return({get then() {this.then;}});",
+                ] {
+                    let code = format!(
+                        "{{setup: function() {{{setup}}}, fault: function() {{}}, result: function() {{}}}}"
+                    );
+                    let error = JsInspector::new(code, serde_json::Value::Null).unwrap_err();
+                    let JsInspectorError::SetupCallFailed(error) = error else {
+                        panic!("unexpected error: {error}");
+                    };
+                    assert!(matches!(
+                        error.as_engine(),
+                        Some(EngineError::RuntimeLimit(RuntimeLimitError::Recursion))
+                    ));
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
