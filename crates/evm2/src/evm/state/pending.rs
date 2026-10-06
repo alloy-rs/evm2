@@ -84,9 +84,12 @@ impl PendingState {
                 {
                     info.code = self.code.get(&info.code_hash).cloned();
                 }
+                let code_changed =
+                    current.as_ref().is_some_and(|info| self.code.contains_key(&info.code_hash));
                 self.pending.insert_account(change.address, change.original.cloned(), current);
                 let account = self.pending.accounts.get_mut(&change.address).unwrap();
                 account.just_created = change.created;
+                account.code_changed = code_changed;
                 account.is_touched = true;
                 if change.selfdestructed {
                     self.pending.selfdestructs.insert(change.address);
@@ -265,6 +268,29 @@ impl StateChangeSource for PendingState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_reconstruction_preserves_explicit_same_hash_code_changes() {
+        struct Source(AccountInfo);
+        impl StateChangeSource for Source {
+            fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
+                sink.bytecode(self.0.code_hash, self.0.code.as_ref().unwrap())?;
+                sink.account(AccountChangeRef {
+                    address: Address::with_last_byte(1),
+                    original: Some(&self.0),
+                    current: Some(&self.0),
+                    created: true,
+                    selfdestructed: false,
+                })
+            }
+        }
+        let code = crate::bytecode::Bytecode::new_raw(alloy_primitives::bytes!("6000"));
+        let source = Source(AccountInfo::empty().with_code(code));
+        let pending = PendingState::from_source(&source);
+        assert_eq!(pending.changed_bytecodes().count(), 1);
+        let rebuilt = PendingState::from_source(&pending);
+        assert_eq!(rebuilt.changed_bytecodes().count(), 1);
+    }
 
     #[test]
     fn grouped_changes_reinsert_unchanged_nonzero_storage_after_wipe() {
