@@ -186,6 +186,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn grouped_changes_reinsert_unchanged_nonzero_storage_after_wipe() {
+        let address = Address::with_last_byte(1);
+        let info = AccountInfo { nonce: 1, ..Default::default() };
+        let mut pending = PendingState::default();
+        pending.insert_account(address, Some(info.clone()), Some(info));
+        pending.insert_storage(address, Word::from(1), Word::from(7), Word::from(7));
+        pending.insert_storage(address, Word::from(2), Word::from(8), Word::ZERO);
+        assert!(pending.changed_accounts().next().is_some());
+        pending.storage.get_mut(&address).unwrap().wiped = true;
+        let changes = pending.changed_accounts().collect::<Vec<_>>();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].0.address, address);
+        let storage = changes[0].1.unwrap();
+        assert!(storage.wiped);
+        let slots = storage.changed_slots().collect::<Vec<_>>();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(*slots[0].0, Word::from(1));
+        assert_eq!(slots[0].1.current, Word::from(7));
+    }
+
+    #[test]
     fn inserts_account_and_storage() {
         let address = Address::with_last_byte(0xaa);
         let key = Word::from(1);
