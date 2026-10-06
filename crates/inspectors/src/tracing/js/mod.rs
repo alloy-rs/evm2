@@ -530,7 +530,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             pc: interp.pc() as u64,
             op: interp.opcode(),
             gas_remaining: interp.gas().remaining(),
-            refund: interp.gas().refunded() as u64,
+            refund: interp.gas().refunded().max(0) as u64,
             stack: interp.stack().as_slice(),
             memory: interp.memory().as_slice(),
         });
