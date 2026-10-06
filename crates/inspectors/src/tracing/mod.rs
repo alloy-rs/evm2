@@ -499,7 +499,7 @@ impl TracingInspector {
         };
 
         let gas_used =
-            gas_used(interp.spec(), interp.gas().spent(), interp.gas().refunded() as u64);
+            gas_used(interp.spec(), interp.gas().spent(), interp.gas().refunded().max(0) as u64);
 
         let mut immediate_bytes = None;
         if self.config.record_immediate_bytes {
@@ -523,7 +523,7 @@ impl TracingInspector {
             memory,
             returndata,
             gas_remaining: interp.gas().remaining(),
-            gas_refund_counter: interp.gas().refunded() as u64,
+            gas_refund_counter: interp.gas().refunded().max(0) as u64,
             gas_used,
             immediate_bytes,
 
