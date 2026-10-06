@@ -249,7 +249,13 @@ impl StateChangeSource for PendingState {
 
         for (&address, entry) in &self.accounts {
             let selfdestructed = self.selfdestructs.contains(&address);
-            if entry.is_changed() || entry.is_created() || selfdestructed {
+            if entry.is_changed()
+                || entry.is_created()
+                || selfdestructed
+                || (entry.is_touched
+                    && entry.original.is_some()
+                    && entry.present.as_ref().is_some_and(AccountInfo::is_empty))
+            {
                 sink.account(AccountChangeRef {
                     address,
                     original: entry.original.as_ref(),
@@ -268,6 +274,20 @@ impl StateChangeSource for PendingState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_reconstruction_preserves_touched_preexisting_empty_accounts() {
+        let address = Address::with_last_byte(1);
+        let info = AccountInfo::empty();
+        let mut pending = PendingState::default();
+        pending.insert_account(address, Some(info.clone()), Some(info));
+        pending.accounts.get_mut(&address).unwrap().is_touched = true;
+        let rebuilt = PendingState::from_source(&pending);
+        let change = rebuilt.changed_accounts().next().unwrap().0;
+        assert_eq!(change.address, address);
+        assert!(change.original.unwrap().is_empty());
+        assert!(change.current.unwrap().is_empty());
+    }
 
     #[test]
     fn source_reconstruction_preserves_explicit_same_hash_code_changes() {
