@@ -1,6 +1,14 @@
 //! Transaction handler extension points.
 
-use crate::{Evm, EvmTypes, TxResult, interpreter::MessageResult, registry::HandlerResult};
+use crate::{
+    Evm, EvmTypes, TxResult,
+    ethereum::{
+        LazyTxEip7702,
+        eip7702::{self, AuthorizationResult},
+    },
+    interpreter::{GasTracker, MessageResult},
+    registry::HandlerResult,
+};
 use alloy_primitives::{Address, U256};
 use derive_where::derive_where;
 
@@ -50,16 +58,20 @@ pub trait TxHandlerHooks<T: EvmTypes>: Sized {
         Ok(())
     }
 
-    /// Selects authorization gas accounting for the shared EIP-7702 execution handler.
+    /// Validates and applies authorizations before the initial execution frame is created.
     ///
-    /// The default preserves Ethereum's fork-dependent runtime charges and refunds. Chains
-    /// that fully charge authorizations in `adjust_intrinsic_gas` can select
-    /// [`Intrinsic`](crate::ethereum::eip7702::AuthGasPolicy::Intrinsic) to suppress both.
-    fn eip7702_auth_gas_policy(
-        _host: &Evm<'_, T>,
+    /// The default preserves Ethereum's fork-dependent runtime charges and refunds. Custom
+    /// implementations can reuse [`eip7702::apply_auth_list`] with their own accounting.
+    /// The handler credits the returned refunds and rolls back delegations on authorization
+    /// out-of-gas; hooks must not credit the returned refunds themselves.
+    fn apply_authorizations(
+        host: &mut Evm<'_, T>,
         _envelope: &T::Tx,
-    ) -> crate::ethereum::eip7702::AuthGasPolicy {
-        crate::ethereum::eip7702::AuthGasPolicy::Ethereum
+        tx: &LazyTxEip7702,
+        caller: Address,
+        gas: &mut GasTracker,
+    ) -> HandlerResult<AuthorizationResult> {
+        eip7702::apply_authorizations(host, tx, caller, gas)
     }
 
     /// Settles a transaction after execution and rollback handling.

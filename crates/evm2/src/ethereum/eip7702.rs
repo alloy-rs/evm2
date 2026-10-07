@@ -128,39 +128,10 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     // the checkpoint back.
     let runtime_checkpoint = req.host.state.checkpoint();
 
-    // The authorization gas phase. Under EIP-2780 (ethereum/EIPs#11844) the runtime charges are
-    // metered on the transaction-level gas tracker as the delegations are applied, stopping at the
-    // first unaffordable charge — later authorities are never loaded, keeping them out of the
-    // block access list. Pre-Amsterdam the pessimistic per-auth intrinsic charge is refilled
-    // instead and never runs out of gas: an execution refund for each already-existing authority,
-    // and under EIP-8037 a state refund credited directly back to the reservoir so it stays state
-    // gas — per execution-specs `set_delegation` (`state_gas_reservoir += refund`), deliberately
-    // not routed through execution gas first. The intrinsic policy keeps hook-provided
-    // authorization costs without adding runtime charges or returning refunds.
-    let (auth_oog, state_refund, execution_refund) = match (
-        H::eip7702_auth_gas_policy(req.host, envelope),
-        req.host.feature(EvmFeatures::EIP2780),
-    ) {
-        (AuthGasPolicy::Intrinsic, _) => {
-            let oog =
-                apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut IntrinsicAuth)?;
-            (oog, 0, 0)
-        }
-        (AuthGasPolicy::Ethereum, true) => {
-            let mut auth_charges =
-                RuntimeAuthCharges::new(req.host.version(), &mut tx_gas, caller, tx.to, tx.value);
-            let oog =
-                apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut auth_charges)?;
-            (oog, 0, 0)
-        }
-        (AuthGasPolicy::Ethereum, false) => {
-            let mut auth_refunds = AuthRefunds::new(req.host.version());
-            apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut auth_refunds)?;
-            let AuthRefunds { state_refund, execution_refund, .. } = auth_refunds;
-            tx_gas.set_reservoir(tx_gas.reservoir() + state_refund);
-            (false, state_refund, execution_refund)
-        }
-    };
+    let AuthorizationResult { out_of_gas: auth_oog, state_refund, execution_refund } =
+        H::apply_authorizations(req.host, envelope, tx, caller, &mut tx_gas)?;
+    // Refund intrinsic state gas directly to the reservoir, preserving it as state gas.
+    tx_gas.set_reservoir(tx_gas.reservoir() + state_refund);
 
     // Applies the pre-Amsterdam authorization execution refund (zero under EIP-2780) and settles
     // the transaction with the hook-provided intrinsic state gas (charged upfront, before
@@ -479,28 +450,41 @@ pub fn apply_auth_list<'a, T: EvmTypes>(
     Ok(false)
 }
 
-/// Authorization gas accounting selected by [`TxHandlerHooks::eip7702_auth_gas_policy`].
+/// Gas accounting produced while applying an authorization list.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AuthGasPolicy {
-    /// Ethereum's fork-dependent runtime charges or intrinsic-cost refunds.
-    #[default]
-    Ethereum,
-    /// All authorization costs were charged intrinsically by the transaction handler.
-    ///
-    /// Authorizations are still validated and applied normally, but incur no further charges
-    /// or refunds, including for rejected entries. The handler must include their costs in
-    /// [`TxHandlerHooks::adjust_intrinsic_gas`]. Execution failure does not undo these costs.
-    Intrinsic,
+pub struct AuthorizationResult {
+    /// Whether a runtime charge failed. The handler rolls back the authorization checkpoint.
+    pub out_of_gas: bool,
+    /// Intrinsic state gas to return directly to the transaction's reservoir.
+    pub state_refund: u64,
+    /// Execution gas refund to include during transaction settlement.
+    pub execution_refund: u64,
 }
 
-/// Authorization costs are already paid and never refunded.
-struct IntrinsicAuth;
-
-impl AuthAccounting for IntrinsicAuth {
-    fn rejected(&mut self) {}
-
-    fn accepted(&mut self, _authority: Address, _auth: &AppliedAuth) -> Result<(), InstrStop> {
-        Ok(())
+/// Applies authorizations with Ethereum's fork-dependent gas accounting.
+///
+/// EIP-2780 meters runtime charges as delegations are applied, stopping before loading later
+/// authorities if a charge fails. Earlier forks refund pessimistic intrinsic costs instead.
+/// The caller must credit the returned refunds and roll back delegations on out-of-gas.
+pub fn apply_authorizations<T: EvmTypes>(
+    host: &mut Evm<'_, T>,
+    tx: &super::LazyTxEip7702,
+    caller: Address,
+    gas: &mut GasTracker,
+) -> HandlerResult<AuthorizationResult> {
+    let chain_id = host.version().chain_id;
+    if host.feature(EvmFeatures::EIP2780) {
+        let mut charges = RuntimeAuthCharges::new(host.version(), gas, caller, tx.to, tx.value);
+        let out_of_gas = apply_auth_list(host, chain_id, &tx.authorization_list, &mut charges)?;
+        Ok(AuthorizationResult { out_of_gas, ..Default::default() })
+    } else {
+        let mut refunds = AuthRefunds::new(host.version());
+        apply_auth_list(host, chain_id, &tx.authorization_list, &mut refunds)?;
+        Ok(AuthorizationResult {
+            state_refund: refunds.state_refund,
+            execution_refund: refunds.execution_refund,
+            ..Default::default()
+        })
     }
 }
 
@@ -542,11 +526,44 @@ mod tests {
             Ok(())
         }
 
-        fn eip7702_auth_gas_policy(
-            _host: &Evm<'_, BaseEvmTypes>,
+        fn apply_authorizations(
+            host: &mut Evm<'_, BaseEvmTypes>,
             _envelope: &TxEnvelope,
-        ) -> AuthGasPolicy {
-            AuthGasPolicy::Intrinsic
+            tx: &LazyTxEip7702,
+            _caller: Address,
+            _gas: &mut GasTracker,
+        ) -> HandlerResult<AuthorizationResult> {
+            let chain_id = host.version().chain_id;
+            let out_of_gas =
+                apply_auth_list(host, chain_id, &tx.authorization_list, &mut IntrinsicAuth)?;
+            Ok(AuthorizationResult { out_of_gas, ..Default::default() })
+        }
+    }
+
+    struct IntrinsicAuth;
+
+    impl AuthAccounting for IntrinsicAuth {
+        fn rejected(&mut self) {}
+
+        fn accepted(&mut self, _authority: Address, _auth: &AppliedAuth) -> Result<(), InstrStop> {
+            Ok(())
+        }
+    }
+
+    struct OutOfGasHooks;
+
+    impl TxHandlerHooks<BaseEvmTypes> for OutOfGasHooks {
+        fn apply_authorizations(
+            host: &mut Evm<'_, BaseEvmTypes>,
+            envelope: &TxEnvelope,
+            tx: &LazyTxEip7702,
+            caller: Address,
+            gas: &mut GasTracker,
+        ) -> HandlerResult<AuthorizationResult> {
+            IntrinsicHooks::apply_authorizations(host, envelope, tx, caller, gas)?;
+            // Fail after applying a delegation to exercise the shared rollback path.
+            let out_of_gas = gas.spend_state(tx.gas_limit).is_err();
+            Ok(AuthorizationResult { out_of_gas, ..Default::default() })
         }
     }
 
@@ -644,7 +661,7 @@ mod tests {
     }
 
     #[rstest::rstest]
-    fn intrinsic_policy_preserves_prepared_costs_and_authorizations(
+    fn intrinsic_hook_preserves_prepared_costs_and_authorizations(
         #[values(false, true)] runtime_charges: bool,
         #[values(
             AuthCase::New,
@@ -676,7 +693,7 @@ mod tests {
     }
 
     #[rstest::rstest]
-    fn default_policy_preserves_conditional_runtime_state_charges(
+    fn default_hook_preserves_conditional_runtime_state_charges(
         #[values(
             AuthCase::New,
             AuthCase::Existing,
@@ -701,7 +718,7 @@ mod tests {
     }
 
     #[rstest::rstest]
-    fn default_policy_preserves_intrinsic_state_refunds(
+    fn default_hook_preserves_intrinsic_state_refunds(
         #[values(
             AuthCase::New,
             AuthCase::Existing,
@@ -722,5 +739,18 @@ mod tests {
         assert!(result.status);
         assert_eq!(result.state_gas_spent, expected);
         assert_authorization(&mut evm, case);
+    }
+
+    #[rstest::rstest]
+    fn hook_out_of_gas_rolls_back_authorizations(#[values(false, true)] runtime_charges: bool) {
+        let (mut evm, tx) = setup::<OutOfGasHooks>(runtime_charges, AuthCase::New, 0xfe);
+        let result = evm.transact(&tx).unwrap().commit();
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert_eq!(result.total_gas_spent, 1_000_000);
+        assert_eq!(result.state_gas_spent, 0);
+        assert_eq!(result.refunded, 0);
+        let mut account = evm.state_mut().account(&AUTHORITY).unwrap();
+        assert_eq!(account.nonce(), 0);
+        assert!(account.load_code().unwrap().is_empty());
     }
 }
