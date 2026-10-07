@@ -1081,17 +1081,18 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     /// Fires the inspector call/create hooks around message execution.
     ///
-    /// This is invoked for every message when an inspector is installed; hook overrides skip
-    /// execution entirely, including the call depth check.
+    /// This also accepts an outcome produced before message execution, such as a transaction's
+    /// runtime gas halt. Hook overrides skip execution entirely, including the call depth check.
     #[inline(never)]
     fn execute_message_inspected<'frame>(
         &mut self,
         tx_env: &'frame TxEnv<T>,
         message: &'frame mut Message<T>,
+        execute: impl FnOnce(&mut Self, &mut Message<T>) -> Result<MessageResult<T>, ExecutionError>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         let guard = self.enter_execution();
         let Some(inspector) = guard.evm.inspector.as_deref_mut() else {
-            return guard.evm.execute_message_impl(tx_env, message);
+            return execute(guard.evm, message);
         };
         // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
         // replacement while the hooks are running.
@@ -1135,7 +1136,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let mut result = if let Some(error) = frame.take_error() {
             Err(error)
         } else {
-            inspected.map(Ok).unwrap_or_else(|| guard.evm.execute_message_impl(tx_env, message))
+            inspected.map(Ok).unwrap_or_else(|| execute(guard.evm, message))
         };
 
         if let Ok(result) = &mut result {
@@ -1155,6 +1156,22 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         }
 
         result
+    }
+
+    /// Reports a result produced before execution through the ordinary message hooks.
+    pub(crate) fn inspect_message_result(
+        &mut self,
+        tx_env: &TxEnv<T>,
+        message: &mut Message<T>,
+        result: MessageResult<T>,
+    ) -> Result<MessageResult<T>, ExecutionError> {
+        let mut result = if self.inspector.is_some() {
+            self.execute_message_inspected(tx_env, message, |_, _| Ok(result))?
+        } else {
+            result
+        };
+        result.gas.settle_gas(result.stop);
+        Ok(result)
     }
 
     #[inline(never)]
@@ -1615,7 +1632,9 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     ) -> Result<MessageResult<T>, ExecutionError> {
         let checkpoint = self.state.checkpoint();
         let result = if self.inspector.is_some() {
-            self.execute_message_inspected(tx_env, message)
+            self.execute_message_inspected(tx_env, message, |evm, message| {
+                evm.execute_message_impl(tx_env, message)
+            })
         } else {
             self.execute_message_impl(tx_env, message)
         };

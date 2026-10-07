@@ -39,6 +39,9 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
 
     /// Called before a call message executes.
     ///
+    /// Valid transactions that halt in the runtime gas phase also emit the top-level hook pair.
+    /// They do not emit interpreter initialization or instruction hooks.
+    ///
     /// The interpreter is the currently running frame whose instruction produced the message; for
     /// the top-level message it is a frame initialized with the message itself.
     #[inline]
@@ -66,6 +69,9 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     }
 
     /// Called before a create message executes.
+    ///
+    /// Valid transactions that halt in the runtime gas phase also emit the top-level hook pair.
+    /// They do not emit interpreter initialization or instruction hooks.
     ///
     /// The interpreter is the currently running frame whose instruction produced the message; for
     /// the top-level message it is a frame initialized with the message itself.
@@ -1646,3 +1652,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod runtime_oog_tests;

@@ -92,11 +92,11 @@ fn erc7562_classifies_all_out_of_gas_statuses() {
         assert_eq!(status.is_some_and(InstrStop::is_out_of_gas), expected);
         for frame_status in [false, true] {
             let mut step = test_step(0, op::KECCAK256);
-            step.status = status;
+            step.status = if frame_status { None } else { status };
             let builder = GethTraceBuilder::new(vec![CallTraceNode {
                 trace: CallTrace {
                     status: if frame_status { status } else { None },
-                    steps: if frame_status { vec![] } else { vec![step] },
+                    steps: vec![step],
                     ..Default::default()
                 },
                 ..Default::default()
