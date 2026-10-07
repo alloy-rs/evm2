@@ -6,7 +6,7 @@ use crate::{
     evm::{AccountInfo, InMemoryDB},
     interpreter::{GasTracker, InstrStop, MessageResultExt},
 };
-use alloc::{vec, vec::Vec};
+use alloc::{string::ToString, vec, vec::Vec};
 use alloy_consensus::{
     TxEip1559, TxEip2930, TxEip4844, TxEip7702, TxLegacy,
     transaction::{Recovered, Transaction},
