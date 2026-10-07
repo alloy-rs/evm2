@@ -34,11 +34,6 @@ pub struct PendingState {
     /// Accounts loaded by the transaction: transaction-boundary original info, present info, and
     /// account-lifetime flags.
     pub(crate) accounts: AddressMap<Account>,
-    /// Per-account storage overlays loaded by the transaction.
-    ///
-    /// Accounts whose storage was loaded are normally present in [`Self::accounts`] as well, since
-    /// executing an account loads it.
-    pub(crate) storage: AddressMap<StorageOverlay>,
     /// Accounts selfdestructed by the transaction.
     pub(crate) selfdestructs: AddressSet,
     pub(crate) recycle: Option<Arc<ArrayQueue<RecycledState>>>,
@@ -49,7 +44,6 @@ pub struct PendingState {
 #[derive(Debug, Default)]
 pub(crate) struct RecycledState {
     pub(super) accounts: AddressMap<Account>,
-    pub(super) storage: AddressMap<StorageOverlay>,
     pub(super) selfdestructs: AddressSet,
     pub(crate) spare_storage: super::storage_pool::StoragePool,
 }
@@ -59,7 +53,6 @@ impl Clone for PendingState {
         // Allocation ownership is not transaction state. Clones do not join the return pool.
         Self {
             accounts: self.accounts.clone(),
-            storage: self.storage.clone(),
             selfdestructs: self.selfdestructs.clone(),
             recycle: None,
             spare_storage: Default::default(),
@@ -69,9 +62,7 @@ impl Clone for PendingState {
 
 impl PartialEq for PendingState {
     fn eq(&self, other: &Self) -> bool {
-        self.accounts == other.accounts
-            && self.storage == other.storage
-            && self.selfdestructs == other.selfdestructs
+        self.accounts == other.accounts && self.selfdestructs == other.selfdestructs
     }
 }
 impl Eq for PendingState {}
@@ -86,16 +77,14 @@ impl Drop for PendingState {
         if self.selfdestructs.capacity() > 4_096 {
             self.selfdestructs = Default::default();
         }
+        for account in self.accounts.values_mut() {
+            self.spare_storage.clear_overlay(&mut account.storage);
+        }
         self.accounts.clear();
         self.selfdestructs.clear();
-        self.spare_storage.clear(&mut self.storage);
-        if self.storage.capacity() > 4_096 {
-            self.storage = Default::default();
-        }
         // A full queue simply drops these allocations. It retains no live transaction data.
         let _ = pool.push(RecycledState {
             accounts: core::mem::take(&mut self.accounts),
-            storage: core::mem::take(&mut self.storage),
             selfdestructs: core::mem::take(&mut self.selfdestructs),
             spare_storage: core::mem::take(&mut self.spare_storage),
         });
@@ -124,7 +113,7 @@ impl PendingState {
                 Ok(())
             }
             fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
-                let storage = self.pending.storage.entry(address).or_default();
+                let storage = &mut self.pending.accounts.entry(address).or_default().storage;
                 storage.wiped = true;
                 storage.slots.clear();
                 Ok(())
@@ -162,11 +151,12 @@ impl PendingState {
                 address: Address,
                 info: Option<&AccountInfo>,
             ) -> Result<(), Self::Error> {
-                self.pending.accounts.entry(address).or_insert_with(|| Account {
-                    original: info.cloned(),
-                    present: info.cloned(),
-                    ..Default::default()
-                });
+                let account = self.pending.accounts.entry(address).or_default();
+                if !account.is_loaded {
+                    account.original = info.cloned();
+                    account.present = info.cloned();
+                    account.is_loaded = true;
+                }
                 Ok(())
             }
             fn storage_read(
@@ -193,25 +183,27 @@ impl PendingState {
         &self,
     ) -> impl Iterator<Item = (AccountChangeRef<'_>, Option<&StorageOverlay>)> {
         self.accounts.iter().filter_map(|(&address, entry)| {
-            let storage = self.storage.get(&address);
+            let storage = &entry.storage;
             let selfdestructed = self.selfdestructs.contains(&address);
-            (entry.is_changed()
-                || entry.is_created()
-                || selfdestructed
-                || (entry.is_touched
-                    && entry.original.is_some()
-                    && entry.present.as_ref().is_some_and(AccountInfo::is_empty))
-                || storage.is_some_and(|s| s.wiped || s.changed_slots().next().is_some()))
-            .then_some((
-                AccountChangeRef {
-                    address,
-                    original: entry.original.as_ref(),
-                    current: entry.present.as_ref(),
-                    created: entry.is_created(),
-                    selfdestructed,
-                },
-                storage,
-            ))
+            let has_storage_changes = storage.wiped || storage.changed_slots().next().is_some();
+            (entry.is_loaded
+                && (entry.is_changed()
+                    || entry.is_created()
+                    || selfdestructed
+                    || (entry.is_touched
+                        && entry.original.is_some()
+                        && entry.present.as_ref().is_some_and(AccountInfo::is_empty))
+                    || has_storage_changes))
+                .then_some((
+                    AccountChangeRef {
+                        address,
+                        original: entry.original.as_ref(),
+                        current: entry.present.as_ref(),
+                        created: entry.is_created(),
+                        selfdestructed,
+                    },
+                    has_storage_changes.then_some(storage),
+                ))
         })
     }
 
@@ -225,7 +217,7 @@ impl PendingState {
     /// Returns whether the transaction loaded no accounts and no storage.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.accounts.is_empty() && self.storage.is_empty()
+        self.accounts.is_empty()
     }
 
     /// Returns the current account information when the account is present in pending state.
@@ -243,15 +235,16 @@ impl PendingState {
     ) {
         let code_changed = original.as_ref().map(|account| account.code_hash)
             != current.as_ref().map(|account| account.code_hash);
-        self.accounts.insert(
-            address,
-            Account { original, present: current, code_changed, ..Account::default() },
-        );
+        let account = self.accounts.entry(address).or_default();
+        account.original = original;
+        account.present = current;
+        account.is_loaded = true;
+        account.code_changed = code_changed;
     }
 
     /// Inserts a storage slot's transaction-boundary original and current values.
     pub fn insert_storage(&mut self, address: Address, key: Word, original: Word, current: Word) {
-        self.storage.entry(address).or_default().slots.insert(
+        self.accounts.entry(address).or_default().storage.slots.insert(
             key,
             StorageSlot {
                 value: Tracked::from_parts(original, current),
@@ -267,10 +260,9 @@ impl PendingState {
     #[cfg(test)]
     pub(crate) fn is_changed(&self) -> bool {
         self.accounts.values().any(Account::is_changed)
-            || self
-                .storage
-                .values()
-                .any(|overlay| overlay.wiped || overlay.changed_slots().next().is_some())
+            || self.accounts.values().any(|account| {
+                account.storage.wiped || account.storage.changed_slots().next().is_some()
+            })
     }
 }
 
@@ -289,7 +281,8 @@ impl StateChangeSource for PendingState {
             sink.bytecode(code_hash, code)?;
         }
 
-        for (&address, overlay) in &self.storage {
+        for (&address, entry) in &self.accounts {
+            let overlay = &entry.storage;
             if overlay.wiped {
                 sink.storage_wipe(address)?;
             }
@@ -310,12 +303,13 @@ impl StateChangeSource for PendingState {
 
         for (&address, entry) in &self.accounts {
             let selfdestructed = self.selfdestructs.contains(&address);
-            if entry.is_changed()
-                || entry.is_created()
-                || selfdestructed
-                || (entry.is_touched
-                    && entry.original.is_some()
-                    && entry.present.as_ref().is_some_and(AccountInfo::is_empty))
+            if entry.is_loaded
+                && (entry.is_changed()
+                    || entry.is_created()
+                    || selfdestructed
+                    || (entry.is_touched
+                        && entry.original.is_some()
+                        && entry.present.as_ref().is_some_and(AccountInfo::is_empty)))
             {
                 sink.account(AccountChangeRef {
                     address,
@@ -324,7 +318,7 @@ impl StateChangeSource for PendingState {
                     created: entry.is_created(),
                     selfdestructed,
                 })?;
-            } else {
+            } else if entry.is_loaded {
                 sink.account_read(address, entry.present.as_ref())?;
             }
         }
@@ -382,7 +376,7 @@ mod tests {
         pending.insert_storage(address, Word::from(1), Word::from(7), Word::from(7));
         pending.insert_storage(address, Word::from(2), Word::from(8), Word::ZERO);
         assert!(pending.changed_accounts().next().is_some());
-        pending.storage.get_mut(&address).unwrap().wiped = true;
+        pending.accounts.get_mut(&address).unwrap().storage.wiped = true;
         let changes = pending.changed_accounts().collect::<Vec<_>>();
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].0.address, address);
@@ -420,7 +414,7 @@ mod tests {
         assert_eq!(state.accounts[&address].original, Some(original));
         assert_eq!(state.accounts[&address].present, Some(current));
         assert_eq!(
-            state.storage[&address].slots[&key].value,
+            state.accounts[&address].storage.slots[&key].value,
             Tracked::from_parts(Word::from(2), Word::from(3))
         );
     }

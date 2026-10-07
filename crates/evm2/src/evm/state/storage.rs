@@ -406,7 +406,7 @@ mod tests {
         assert_eq!(state.storage_slot(&account, cold_key).unwrap().current(), Word::ZERO);
 
         let pending = state.take_pending_state();
-        let overlay = pending.storage.get(&account).expect("wipe must be emitted");
+        let overlay = &pending.accounts.get(&account).expect("wipe must be emitted").storage;
         assert!(overlay.wiped);
         assert!(overlay.changed_slots().next().is_none());
     }

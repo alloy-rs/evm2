@@ -8,7 +8,7 @@ use crate::{
         bal::BalContext,
         state::{
             Account, AccountChangeRef, AccountInfo, PendingState, StateChangeSink,
-            StateChangeSource, StorageChange, StorageOverlay,
+            StateChangeSource, StorageChange,
         },
     },
     interpreter::Word,
@@ -149,23 +149,20 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// storage slots, code, and account info are then applied to the cache; the wrapped backing
     /// database is not written.
     pub fn commit_pending(&mut self, pending: &PendingState) {
-        self.commit(&pending.accounts, &pending.storage);
+        self.commit(&pending.accounts);
     }
 
     /// Accepts a committed transaction's pending accounts and storage overlays into this cache.
     ///
     /// Same as [`Self::commit_pending`], operating on the transaction layers directly so the
     /// overlay need not be detached.
-    pub(crate) fn commit(
-        &mut self,
-        accounts: &AddressMap<Account>,
-        storage: &AddressMap<StorageOverlay>,
-    ) {
+    pub(crate) fn commit(&mut self, accounts: &AddressMap<Account>) {
         // When BAL construction is enabled, fold the transaction's pending post-state into the
         // builder before applying the changes to the cache.
-        self.bal_context.commit(accounts, storage);
+        self.bal_context.commit(accounts);
 
-        for (&address, overlay) in storage {
+        for (&address, entry) in accounts {
+            let overlay = &entry.storage;
             let mut slots = overlay.changed_slots();
             let first = slots.next();
             if !overlay.wiped && first.is_none() {
@@ -457,7 +454,7 @@ mod tests {
         assert!(!cache.cache.storage.contains_key(&address));
 
         cache.insert_account_storage(&address, &Word::from(2), &Word::from(9));
-        pending.storage.get_mut(&address).unwrap().wiped = true;
+        pending.accounts.get_mut(&address).unwrap().storage.wiped = true;
         pending.insert_storage(address, Word::from(2), Word::from(9), Word::ZERO);
         cache.commit_pending(&pending);
         let storage = &cache.cache.storage[&address];

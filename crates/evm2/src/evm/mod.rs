@@ -2301,9 +2301,9 @@ mod tests {
         let pending = evm.state.take_pending_state();
         assert!(
             !pending
-                .storage
+                .accounts
                 .get(&contract)
-                .is_some_and(|overlay| overlay.slots.contains_key(&Word::from(1)))
+                .is_some_and(|account| account.storage.slots.contains_key(&Word::from(1)))
         );
     }
 
@@ -2356,9 +2356,9 @@ mod tests {
         let pending = evm.state.take_pending_state();
         assert!(
             pending
-                .storage
+                .accounts
                 .get(&contract)
-                .is_some_and(|overlay| overlay.slots.contains_key(&Word::from(1)))
+                .is_some_and(|account| account.storage.slots.contains_key(&Word::from(1)))
         );
     }
 
@@ -3089,11 +3089,12 @@ mod tests {
             evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").detach();
 
         assert_eq!(result.result.logs.len(), 1);
-        let overlay = result
+        let overlay = &result
             .pending_state
-            .storage
+            .accounts
             .get(&LIFECYCLE_ACCOUNT)
-            .expect("storage change should be present");
+            .expect("storage change should be present")
+            .storage;
         let slot =
             overlay.slots.get(&LIFECYCLE_STORAGE_KEY).expect("storage slot should be present");
         assert_eq!(slot.value.original, Word::from(1));
@@ -3643,7 +3644,7 @@ mod tests {
         let account = pending.accounts.get(&target).expect("empty destination should be deleted");
         assert!(account.original.is_some());
         assert_eq!(account.present, None);
-        assert!(pending.storage.get(&target).is_some_and(|overlay| overlay.wiped));
+        assert!(pending.accounts.get(&target).is_some_and(|account| account.storage.wiped));
     }
 
     #[test]
