@@ -280,11 +280,12 @@ mod tests {
         assert!(result.result.status);
         assert!(result.result.tx_gas_used() < SYSTEM_CALL_GAS_LIMIT);
         let unchanged = |address| {
-            result.pending_state.accounts.get(address).is_none_or(|entry| !entry.is_changed())
+            result.pending_state.accounts.get(address).is_none_or(|entry| !entry.info.is_changed())
         };
         assert!(unchanged(&SYSTEM_ADDRESS));
         assert!(unchanged(&beneficiary));
-        let storage = &result.pending_state.storage.get(&contract).expect("storage changed").slots;
+        let storage =
+            &result.pending_state.accounts.get(&contract).expect("storage changed").storage.slots;
         let system_address = U256::from_be_slice(SYSTEM_ADDRESS.as_slice());
         assert_eq!(storage.get(&U256::ZERO).map(|slot| slot.value.current), Some(system_address));
         assert_eq!(storage.get(&U256::ONE).map(|slot| slot.value.current), Some(system_address));
@@ -321,7 +322,8 @@ mod tests {
             .detach();
 
         assert!(result.result.status);
-        let storage = &result.pending_state.storage.get(&contract).expect("storage changed").slots;
+        let storage =
+            &result.pending_state.accounts.get(&contract).expect("storage changed").storage.slots;
         let caller = U256::from_be_slice(caller.as_slice());
         assert_eq!(storage.get(&U256::ZERO).map(|slot| slot.value.current), Some(caller));
         assert_eq!(storage.get(&U256::ONE).map(|slot| slot.value.current), Some(caller));

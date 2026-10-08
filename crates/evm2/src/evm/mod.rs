@@ -1553,7 +1553,14 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SLoad, HostError> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
-        let storage = self.state.storage(address);
+        // A skipped cold slot must not load its owning account either.
+        if skip_cold_load
+            && self.state.get_storage(address, key).is_none()
+            && !self.state.prewarm_set().is_storage_warm(address, key)
+        {
+            return Err(InstrStop::OutOfGas.into());
+        }
+        let storage = self.state.storage(address)?;
         let loaded = if eip2929 {
             storage.into_slot_with_skip_and_warm(*key, skip_cold_load)
         } else {
@@ -1583,7 +1590,14 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         // implicit storage read. When the cold access is unaffordable the read is skipped, so the
         // slot stays out of the EIP-7928 block access list (the warm-read cost has already been
         // paid by the instruction, so an affordable warm slot is still read on OOG).
-        let storage = self.state.storage(address);
+        // A skipped cold slot must not load its owning account either.
+        if skip_cold_load
+            && self.state.get_storage(address, key).is_none()
+            && !self.state.prewarm_set().is_storage_warm(address, key)
+        {
+            return Err(InstrStop::OutOfGas.into());
+        }
+        let storage = self.state.storage(address)?;
         let loaded = if eip2929 {
             storage.into_slot_with_skip_and_warm(*key, skip_cold_load)
         } else {
@@ -1943,7 +1957,7 @@ mod tests {
         req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
     ) -> HandlerResult<TxResult> {
         let value = Word::from(req.tx.nonce);
-        req.host.state.storage(&LIFECYCLE_ACCOUNT).into_slot(LIFECYCLE_STORAGE_KEY)?.write(value);
+        req.host.state.storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)?.write(value);
         req.host.state.log(Log {
             address: LIFECYCLE_ACCOUNT,
             data: LogData::new_unchecked(vec![], Bytes::new()),
@@ -1958,7 +1972,7 @@ mod tests {
         assert_eq!(account.balance(), Word::from(1));
         drop(account);
 
-        let slot = req.host.state.storage(&LIFECYCLE_ACCOUNT).into_slot(LIFECYCLE_STORAGE_KEY)?;
+        let slot = req.host.state.storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)?;
         assert_eq!(slot.current(), Word::from(1));
 
         Ok(TxResultExt { status: true, ..TxResultExt::default() })
@@ -2311,9 +2325,9 @@ mod tests {
         let pending = evm.state.take_pending_state();
         assert!(
             !pending
-                .storage
+                .accounts
                 .get(&contract)
-                .is_some_and(|overlay| overlay.slots.contains_key(&Word::from(1)))
+                .is_some_and(|account| account.storage.slots.contains_key(&Word::from(1)))
         );
     }
 
@@ -2366,9 +2380,9 @@ mod tests {
         let pending = evm.state.take_pending_state();
         assert!(
             pending
-                .storage
+                .accounts
                 .get(&contract)
-                .is_some_and(|overlay| overlay.slots.contains_key(&Word::from(1)))
+                .is_some_and(|account| account.storage.slots.contains_key(&Word::from(1)))
         );
     }
 
@@ -3099,11 +3113,12 @@ mod tests {
             evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").detach();
 
         assert_eq!(result.result.logs.len(), 1);
-        let overlay = result
+        let overlay = &result
             .pending_state
-            .storage
+            .accounts
             .get(&LIFECYCLE_ACCOUNT)
-            .expect("storage change should be present");
+            .expect("storage change should be present")
+            .storage;
         let slot =
             overlay.slots.get(&LIFECYCLE_STORAGE_KEY).expect("storage slot should be present");
         assert_eq!(slot.value.original, Word::from(1));
@@ -3380,7 +3395,7 @@ mod tests {
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
-        assert!(!evm.state.storage(&contract).is_warm(&key));
+        assert!(!evm.state.storage(&contract).unwrap().is_warm(&key));
     }
 
     #[test]
@@ -3495,7 +3510,7 @@ mod tests {
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
         let pending = evm.state.take_pending_state();
         let account =
-            pending.accounts.get(&created).and_then(|entry| entry.present.as_ref()).unwrap();
+            pending.accounts.get(&created).and_then(|entry| entry.info.present.as_ref()).unwrap();
         assert_eq!(account.code_hash, KECCAK256_EMPTY);
     }
 
@@ -3514,7 +3529,7 @@ mod tests {
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
         let pending = evm.state.take_pending_state();
 
-        assert!(pending.accounts.get(&target).unwrap().is_created());
+        assert!(pending.accounts.get(&target).unwrap().info.is_created());
     }
 
     #[test]
@@ -3547,7 +3562,7 @@ mod tests {
 
         evm.state.finalize_transaction_(Version::base(SpecId::HOMESTEAD));
         let pending = evm.state.take_pending_state();
-        assert!(pending.accounts.get(&created).is_none_or(|entry| entry.present.is_none()));
+        assert!(pending.accounts.get(&created).is_none_or(|entry| entry.info.present.is_none()));
     }
 
     #[test]
@@ -3651,9 +3666,9 @@ mod tests {
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let pending = evm.state.take_pending_state();
         let account = pending.accounts.get(&target).expect("empty destination should be deleted");
-        assert!(account.original.is_some());
-        assert_eq!(account.present, None);
-        assert!(pending.storage.get(&target).is_some_and(|overlay| overlay.wiped));
+        assert!(account.info.original.is_some());
+        assert_eq!(account.info.present, None);
+        assert!(pending.accounts.get(&target).is_some_and(|account| account.storage.wiped));
     }
 
     #[test]
@@ -3685,7 +3700,7 @@ mod tests {
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let pending = evm.state.take_pending_state();
-        assert!(pending.accounts.get(&code_address).is_none_or(|entry| !entry.is_changed()));
+        assert!(pending.accounts.get(&code_address).is_none_or(|entry| !entry.info.is_changed()));
     }
 
     #[test]
@@ -4035,8 +4050,7 @@ mod tests {
                 move |req: &mut TxRequest<'_, '_, BaseEvmTypes, TxLegacy>| {
                     req.host
                         .state
-                        .storage(&LIFECYCLE_ACCOUNT)
-                        .into_slot(LIFECYCLE_STORAGE_KEY)?
+                        .storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)?
                         .write(Word::from(99));
                     req.host.state.account(&LIFECYCLE_ACCOUNT)?.bump_nonce();
                     req.host.state.log(Log {

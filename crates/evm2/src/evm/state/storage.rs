@@ -23,6 +23,23 @@ pub struct StorageOverlay {
 }
 
 impl StorageOverlay {
+    /// Applies an isolated execution's slots, retaining parent originals and combining warmth.
+    pub(crate) fn merge_isolated(&mut self, child: Self) {
+        self.wiped |= child.wiped;
+        for (key, slot) in child.slots {
+            match self.slots.entry(key) {
+                hash_map::Entry::Vacant(entry) => {
+                    entry.insert(slot);
+                }
+                hash_map::Entry::Occupied(mut entry) => {
+                    let parent = entry.get_mut();
+                    parent.value.current = slot.value.current;
+                    parent.is_warm |= slot.is_warm;
+                }
+            }
+        }
+    }
+
     /// Returns the changed storage slots.
     ///
     /// A slot is changed when its current value differs from its transaction-boundary original,
@@ -427,14 +444,18 @@ mod tests {
         state.prewarm_storage_slot(&account, warm_key);
         state.storage_slot(&account, cold_key).unwrap().write(Word::from(5));
 
-        state.storage(&account).wipe();
+        state.storage(&account).unwrap().wipe();
         assert!(state.storage_slot(&account, warm_key).unwrap().is_warm());
         assert!(!state.storage_slot(&account, cold_key).unwrap().is_warm());
         assert_eq!(state.storage_slot(&account, warm_key).unwrap().current(), Word::ZERO);
         assert_eq!(state.storage_slot(&account, cold_key).unwrap().current(), Word::ZERO);
 
         let pending = state.take_pending_state();
-        let overlay = pending.storage.get(&account).expect("wipe must be emitted");
+        let overlay = pending
+            .accounts
+            .get(&account)
+            .map(|account| &account.storage)
+            .expect("wipe must be emitted");
         assert!(overlay.wiped);
         assert!(overlay.changed_slots().next().is_none());
     }
@@ -450,7 +471,7 @@ mod tests {
 
         let checkpoint = state.checkpoint();
         {
-            let mut slot = state.storage(&address).into_slot(key).unwrap();
+            let mut slot = state.storage_slot(&address, key).unwrap();
             assert_eq!(slot.current(), Word::from(10));
             assert_eq!(slot.original(), Word::from(10));
             assert!(slot.warm(), "first access is cold");
@@ -479,7 +500,7 @@ mod tests {
 
         let checkpoint = state.checkpoint();
         {
-            let slot = state.storage(&address).into_slot(key).unwrap();
+            let slot = state.storage_slot(&address, key).unwrap();
             assert_eq!(slot.current(), Word::from(5));
         }
         // Loading caches the value but a read-only handle records no transition.
@@ -495,13 +516,13 @@ mod tests {
         let checkpoint = state.checkpoint();
 
         assert!(matches!(
-            state.storage(&address).into_slot_with_skip_and_warm(key, true),
+            state.storage(&address).unwrap().into_slot_with_skip_and_warm(key, true),
             Err(LoadError::ColdLoadSkipped)
         ));
-        assert!(!state.storage(&address).is_loaded(&key));
+        assert!(!state.storage(&address).unwrap().is_loaded(&key));
 
         let (slot, is_cold) =
-            state.storage(&address).into_slot_with_skip_and_warm(key, false).unwrap();
+            state.storage(&address).unwrap().into_slot_with_skip_and_warm(key, false).unwrap();
         assert!(is_cold);
         assert_eq!(slot.current(), Word::ZERO);
         drop(slot);
@@ -516,12 +537,12 @@ mod tests {
         let address = Address::with_last_byte(1);
         let key = Word::from(8);
         let mut state = State::new(CacheDB::default());
-        drop(state.storage(&address).into_slot(key).unwrap());
+        drop(state.storage_slot(&address, key).unwrap());
         state.prewarm_storage_slot(&address, key);
         let checkpoint = state.checkpoint();
 
         let (slot, is_cold) =
-            state.storage(&address).into_slot_with_skip_and_warm(key, true).unwrap();
+            state.storage(&address).unwrap().into_slot_with_skip_and_warm(key, true).unwrap();
         assert!(!is_cold);
         assert!(slot.is_warm());
         drop(slot);
@@ -539,18 +560,18 @@ mod tests {
 
         // A cold, not-yet-loaded slot reports neither loaded nor warm without touching the
         // database.
-        assert!(!state.storage(&address).is_loaded(&key));
-        assert!(!state.storage(&address).is_warm(&key));
+        assert!(!state.storage(&address).unwrap().is_loaded(&key));
+        assert!(!state.storage(&address).unwrap().is_warm(&key));
 
         // Loading materializes the slot with its database value; warming marks it warm.
         {
-            let mut slot = state.storage(&address).into_slot(key).unwrap();
+            let mut slot = state.storage_slot(&address, key).unwrap();
             assert_eq!(slot.current(), Word::from(42));
             assert!(slot.warm(), "first access is cold");
             assert!(!slot.warm(), "second access is warm");
         }
-        assert!(state.storage(&address).is_loaded(&key));
-        assert!(state.storage(&address).is_warm(&key));
+        assert!(state.storage(&address).unwrap().is_loaded(&key));
+        assert!(state.storage(&address).unwrap().is_warm(&key));
     }
 
     #[test]

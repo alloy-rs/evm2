@@ -86,11 +86,12 @@ impl Bal {
             self.update_account(
                 bal_index,
                 *address,
-                entry.original.as_ref(),
-                entry.present.as_ref(),
+                entry.info.original.as_ref(),
+                entry.info.present.as_ref(),
             );
         }
-        for (address, overlay) in &pending.storage {
+        for (address, account) in &pending.accounts {
+            let overlay = &account.storage;
             self.accounts
                 .entry(*address)
                 .or_default()
@@ -319,7 +320,7 @@ mod tests {
         bytecode::Bytecode,
         evm::{
             bal::{AccountInfoBal, BalChanges, BalCodeChange, StorageBal},
-            state::{Account, AccountInfo, StorageOverlay, StorageSlot, Tracked},
+            state::{Account, AccountInfo, AccountOverlay, StorageOverlay, StorageSlot, Tracked},
         },
     };
     use alloc::{vec, vec::Vec};
@@ -473,16 +474,19 @@ mod tests {
         // A freshly created account: no original info, present nonce/balance set, and one changed
         // storage slot plus one loaded-but-unchanged (read) slot.
         let account = Account {
-            original: None,
-            present: Some(AccountInfo::default().with_nonce(1).with_balance(U256::from(100))),
+            info: crate::evm::state::AccountOverlay {
+                original: None,
+                present: Some(AccountInfo::default().with_nonce(1).with_balance(U256::from(100))),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut overlay = StorageOverlay::default();
         overlay.slots.insert(U256::from(5), slot(U256::ZERO, U256::from(42)));
         overlay.slots.insert(U256::from(6), slot(U256::from(7), U256::from(7)));
+        let account = Account { storage: overlay, ..account };
         let pending = PendingState {
             accounts: AddressMap::from_iter([(address, account)]),
-            storage: AddressMap::from_iter([(address, overlay)]),
             selfdestructs: Default::default(),
         };
 
@@ -515,15 +519,18 @@ mod tests {
         // loaded-but-unchanged slots surfacing as reads. The BAL derives from that overlay
         // without special-casing.
         let account = Account {
-            original: Some(AccountInfo::default().with_balance(U256::from(100))),
-            present: None,
+            info: crate::evm::state::AccountOverlay {
+                original: Some(AccountInfo::default().with_balance(U256::from(100))),
+                present: None,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut overlay = StorageOverlay { wiped: true, ..Default::default() };
         overlay.slots.insert(U256::from(5), slot(U256::from(42), U256::from(42)));
+        let account = Account { storage: overlay, ..account };
         let pending = PendingState {
             accounts: AddressMap::from_iter([(address, account)]),
-            storage: AddressMap::from_iter([(address, overlay)]),
             selfdestructs: AddressSet::from_iter([address]),
         };
 
