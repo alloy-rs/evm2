@@ -39,7 +39,8 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     #[derive_where(skip)]
     pub(in crate::interpreter) stack: Box<StackBacking>,
 
-    pub(in crate::interpreter) gas: Gas,
+    // Boxed so `split_gas_state` can lend `&mut Gas` without overlapping `&mut InterpreterState`.
+    pub(in crate::interpreter) gas: Box<Gas>,
     pub(in crate::interpreter) result: Result,
     error: Option<ExecutionError>,
     spec: SpecId,
@@ -80,7 +81,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             bytecode,
             bytecode_ref: None,
             stack_len: 0,
-            gas: Gas::new(0),
+            gas: Box::new(Gas::new(0)),
             memory: Memory::new(),
             result: Ok(()),
             error: None,
@@ -108,7 +109,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.bytecode_ref = None;
         self.bytecode = bytecode;
         self.stack_len = 0;
-        self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
+        *self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
         self.memory.clear();
         self.result = Ok(());
         self.error = None;
@@ -129,7 +130,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     #[cfg(test)]
     pub(crate) fn into_parts(self) -> (Box<StackBacking>, usize, Gas, Memory, Range<u32>) {
-        (self.stack, self.stack_len, self.gas, self.memory, self.output)
+        (self.stack, self.stack_len, *self.gas, self.memory, self.output)
     }
 
     /// Returns output produced by `RETURN` or `REVERT`.
@@ -210,7 +211,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Returns the current gas state.
     #[inline]
     pub const fn gas(&self) -> Gas {
-        self.gas
+        *self.gas
     }
 
     /// Returns a reference to the current gas state.
@@ -222,7 +223,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Sets the current interpreter gas state.
     #[inline]
     pub const fn set_gas(&mut self, gas: Gas) {
-        self.gas = gas;
+        *self.gas = gas;
     }
 
     /// Returns the current linear memory.
@@ -461,7 +462,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[inline]
     pub(in crate::interpreter) const unsafe fn gas_from_state_ptr(state: *mut Self) -> *mut Gas {
         // SAFETY: The caller upholds that `state` points to a valid interpreter state.
-        unsafe { &raw mut (*state).0.gas }
+        unsafe { &raw mut *(*state).0.gas }
     }
 
     #[inline]
