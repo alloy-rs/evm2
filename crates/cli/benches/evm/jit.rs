@@ -2,7 +2,7 @@ use crate::fixture::Suites;
 use alloy_primitives::{B256, hex};
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
-    BaseEvmTypes, Evm, ExecutionConfig, InterpreterRunner, Precompiles, SpecId,
+    BaseEvmTypes, Evm, InterpreterRunner, Precompiles, SpecId,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::InMemoryDB,
@@ -192,12 +192,11 @@ struct FixedJitRunner {
 impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
     fn run<'frame, 'host>(
         &self,
-        config: &ExecutionConfig<BaseEvmTypes>,
         interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
         let func = *self.functions.get(&interpreter.original_bytecode_hash())?;
-        interpreter.prepare_run(config.base_spec_id(), config.version(), host);
+        interpreter.prepare_run(host);
         Some(unsafe { func.call_with_interpreter(interpreter) })
     }
 }

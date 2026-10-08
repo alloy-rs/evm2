@@ -2,7 +2,7 @@ use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, hex, keccak256};
 use clap::ValueEnum;
 use evm2::{
-    BaseEvmTypes, Evm, ExecutionConfig, InterpreterRunner, Precompiles, SpecId, Version,
+    BaseEvmTypes, Evm, InterpreterRunner, Precompiles, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
@@ -640,12 +640,11 @@ struct FixedJitRunner {
 impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
     fn run<'frame, 'host>(
         &self,
-        config: &ExecutionConfig<BaseEvmTypes>,
         interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
         let func = *self.functions.get(&interpreter.original_bytecode_hash())?;
-        interpreter.prepare_run(config.base_spec_id(), config.version(), host);
+        interpreter.prepare_run(host);
         Some(unsafe { func.call_with_interpreter(interpreter) })
     }
 }

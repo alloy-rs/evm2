@@ -305,12 +305,20 @@ impl<'g> RuntimeAuthCharges<'g> {
         if !value.is_zero() {
             written.push(recipient);
         }
+        // State gas only exists under EIP-8037.
+        let is_eip8037 = version.feature(EvmFeatures::EIP8037);
         Self {
             gas,
-            new_account_state_gas: version.gas_params.new_account_state_gas(),
-            delegation_bytes_state_gas: u64::from(
-                version.gas_params.get(GasId::TxEip7702PerAuthState),
-            ),
+            new_account_state_gas: if is_eip8037 {
+                version.gas_params.new_account_state_gas()
+            } else {
+                0
+            },
+            delegation_bytes_state_gas: if is_eip8037 {
+                u64::from(version.gas_params.get(GasId::TxEip7702PerAuthState))
+            } else {
+                0
+            },
             account_write_cost: u64::from(EIP8038_ACCOUNT_WRITE),
             written,
             charged_delegation_bytes: Vec::new(),

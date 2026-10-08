@@ -92,23 +92,25 @@ pub fn calldatasize(cx: _) -> out {
 #[instruction(dynamic_gas)]
 pub fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
     let len = word_to_usize(*len)?;
-    cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
+    // SAFETY: Charging and copying data make no host calls.
+    let gas_params = unsafe { cx.state.gas_params_detached() };
+    cx.gas.spend(gas_params.copy_cost(len))?;
     let input = cx.state.message().input.as_ref();
-    let gas_params = cx.state.gas_params();
     copy_data(cx.gas, &mut cx.state.0.memory, gas_params, memory_offset, data_offset, len, input)
 }
 
 #[instruction]
 pub fn codesize(cx: _) -> out {
-    *out = Word::from(cx.state.bytecode().len());
+    *out = Word::from(cx.state.0.bytecode.len());
 }
 
 #[instruction(dynamic_gas)]
 pub fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
     let len = word_to_usize(*len)?;
-    cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
+    // SAFETY: Charging and copying data make no host calls.
+    let gas_params = unsafe { cx.state.gas_params_detached() };
+    cx.gas.spend(gas_params.copy_cost(len))?;
     let data = cx.state.0.bytecode.original_byte_slice();
-    let gas_params = cx.state.gas_params();
     copy_data(cx.gas, &mut cx.state.0.memory, gas_params, memory_offset, code_offset, len, data)
 }
 
@@ -162,10 +164,11 @@ pub fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Resul
         return Err(InstrStop::OutOfOffset);
     }
 
-    cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
+    // SAFETY: Charging and copying data make no host calls.
+    let gas_params = unsafe { cx.state.gas_params_detached() };
+    cx.gas.spend(gas_params.copy_cost(len))?;
     let data = &cx.state.0.return_data;
     let data_offset = Word::from(data_offset);
-    let gas_params = cx.state.gas_params();
     copy_data(cx.gas, &mut cx.state.0.memory, gas_params, memory_offset, &data_offset, len, data)
 }
 

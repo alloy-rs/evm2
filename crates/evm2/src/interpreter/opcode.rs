@@ -188,6 +188,8 @@ impl OpCode {
                 | Self::LOG2
                 | Self::LOG3
                 | Self::LOG4
+                | Self::RETURN
+                | Self::REVERT
                 | Self::CREATE
                 | Self::CREATE2
         )

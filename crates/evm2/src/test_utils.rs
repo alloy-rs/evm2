@@ -33,6 +33,7 @@ impl EvmTypesHost for TestTypes {
 #[derive(Debug)]
 pub(crate) struct TestHost {
     pub(crate) spec_id: SpecId,
+    pub(crate) execution_config: ExecutionConfig<TestTypes>,
     pub(crate) block: BlockEnv<TestTypes>,
     pub(crate) code_hash: B256,
     pub(crate) code: Bytes,
@@ -59,6 +60,9 @@ impl Default for TestHost {
     fn default() -> Self {
         Self {
             spec_id: SpecId::OSAKA,
+            execution_config: ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(
+                SpecId::OSAKA,
+            ),
             block: BlockEnvExt::default(),
             code_hash: B256::ZERO,
             code: Bytes::new(),
@@ -89,6 +93,10 @@ impl Default for TestHost {
 impl Host<TestTypes> for TestHost {
     fn spec_id(&self) -> SpecId {
         self.spec_id
+    }
+
+    fn execution_config(&self) -> &ExecutionConfig<TestTypes> {
+        &self.execution_config
     }
 
     fn block_env(&mut self) -> &BlockEnv<TestTypes> {
@@ -339,8 +347,8 @@ pub(crate) fn run(config: RunConfig<'_>) -> TestInterpreter {
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
     host.spec_id = spec_id;
-    let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(spec_id);
-    let (err, execution_error) = match inner.run(&config, host) {
+    host.execution_config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(spec_id);
+    let (err, execution_error) = match inner.run(host) {
         Ok(stop) => (stop, None),
         Err(error) => (InstrStop::FatalExternalError, Some(error)),
     };

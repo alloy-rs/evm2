@@ -6,7 +6,7 @@ use alloy_primitives::hex;
 use boa_engine::NativeFunction;
 use boa_gc::{Finalize, Trace};
 use evm2::{
-    BaseEvmConfig, BaseEvmTypes, ExecutionConfig, Precompiles, SpecId,
+    BaseEvmTypes, Precompiles, SpecId,
     bytecode::Bytecode,
     env::{BlockEnvExt, TxEnv},
     ethereum::{TxEnvelope, ethereum_tx_registry},
@@ -152,10 +152,7 @@ fn interrupt_before_step_end_skips_callback_and_preserves_error() {
             EmptyDB::default(),
             Precompiles::base(SpecId::CANCUN),
         );
-        let config = ExecutionConfig::<BaseEvmTypes>::for_config::<
-            BaseEvmConfig<{ SpecId::CANCUN as u32 }>,
-        >();
-        assert_eq!(interp.run(&config, &mut evm).unwrap_err().to_string(), error.to_string());
+        assert_eq!(interp.run(&mut evm).unwrap_err().to_string(), error.to_string());
     }
 }
 

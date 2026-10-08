@@ -8,7 +8,7 @@ use crate::{
         bal::BalContext,
         state::{
             Account, AccountChangeRef, AccountInfo, PendingState, StateChangeSink,
-            StateChangeSource, StorageChange, StorageOverlay,
+            StateChangeSource, StorageChange,
         },
     },
     interpreter::Word,
@@ -149,32 +149,29 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// storage slots, code, and account info are then applied to the cache; the wrapped backing
     /// database is not written.
     pub fn commit_pending(&mut self, pending: &PendingState) {
-        self.commit(&pending.accounts, &pending.storage);
+        self.commit(&pending.accounts);
     }
 
     /// Accepts a committed transaction's pending accounts and storage overlays into this cache.
     ///
     /// Same as [`Self::commit_pending`], operating on the transaction layers directly so the
     /// overlay need not be detached.
-    pub(crate) fn commit(
-        &mut self,
-        accounts: &AddressMap<Account>,
-        storage: &AddressMap<StorageOverlay>,
-    ) {
+    pub(crate) fn commit(&mut self, accounts: &AddressMap<Account>) {
         // When BAL construction is enabled, fold the transaction's pending post-state into the
         // builder before applying the changes to the cache.
-        self.bal_context.commit(accounts, storage);
-
-        for (&address, overlay) in storage {
-            if overlay.wiped {
-                self.cache.storage.entry(address).or_default().wipe();
-            }
-            for (&key, slot) in overlay.changed_slots() {
-                self.cache.storage.entry(address).or_default().slots.insert(key, slot.current);
-            }
-        }
+        self.bal_context.commit(accounts);
 
         for (&address, entry) in accounts {
+            let overlay = &entry.storage;
+            let mut changed_slots = overlay.changed_slots().peekable();
+            if overlay.wiped || changed_slots.peek().is_some() {
+                let storage = self.cache.storage.entry(address).or_default();
+                if overlay.wiped {
+                    storage.wipe();
+                }
+                storage.slots.extend(changed_slots.map(|(&key, slot)| (key, slot.current)));
+            }
+
             if let Some((code_hash, code)) = entry.changed_code() {
                 self.cache.contracts.insert(code_hash, code.clone());
             }
@@ -591,6 +588,7 @@ mod tests {
         assert!(cache.get_account(&address).unwrap().is_none());
 
         let mut pending = PendingState::default();
+        pending.insert_account(address, None, None);
         pending.insert_storage(address, key, Word::ZERO, value);
         cache.commit_pending(&pending);
 
@@ -607,8 +605,8 @@ mod tests {
         cache.insert_account_storage(&address, &key, &Word::from(3));
 
         let mut pending = PendingState::default();
-        pending.insert_storage(address, key, Word::from(3), Word::from(4));
         pending.insert_account(address, Some(original), None);
+        pending.insert_storage(address, key, Word::from(3), Word::from(4));
         cache.commit_pending(&pending);
 
         assert!(cache.get_account(&address).unwrap().is_none());

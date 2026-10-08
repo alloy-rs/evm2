@@ -1044,10 +1044,9 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::boxed::Box;
     use alloy_primitives::Address;
     use evm2::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
+        BaseEvmTypes, Evm, Precompiles, SpecId,
         env::{BlockEnvExt, TxEnvExt},
         ethereum::ethereum_tx_registry,
         evm::{AccountInfo, EmptyDB, InMemoryDB, inspector::Inspector},
@@ -1142,18 +1141,7 @@ mod tests {
         interpreter: &'ctx mut evm2::interpreter::Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &'ctx mut Evm<'host, BaseEvmTypes>,
     ) -> PreparedJitFrame<'ctx, 'frame, 'host> {
-        prepare_frame_for_spec(interpreter, host, SpecId::CANCUN)
-    }
-
-    fn prepare_frame_for_spec<'ctx, 'frame, 'host>(
-        interpreter: &'ctx mut evm2::interpreter::Interpreter<'frame, 'host, BaseEvmTypes>,
-        host: &'ctx mut Evm<'host, BaseEvmTypes>,
-        spec_id: SpecId,
-    ) -> PreparedJitFrame<'ctx, 'frame, 'host> {
-        let config =
-            <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(spec_id);
-        let config = Box::leak(Box::new(config));
-        interpreter.prepare_run(config.base_spec_id(), config.version(), host);
+        interpreter.prepare_run(host);
         let (ecx, stack, _stack_len) =
             unsafe { EvmContext::from_interpreter_with_stack(interpreter) };
         PreparedJitFrame { ecx, stack }
@@ -1463,8 +1451,7 @@ mod tests {
                     evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
 
                 {
-                    let mut frame =
-                        prepare_frame_for_spec(&mut interpreter, &mut host, SpecId::AMSTERDAM);
+                    let mut frame = prepare_frame(&mut interpreter, &mut host);
                     frame.ecx.set_return_data(Bytes::from_static(b"stale"));
                     match create_kind {
                         CreateKind::Create => {
