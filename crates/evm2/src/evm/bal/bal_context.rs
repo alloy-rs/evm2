@@ -4,7 +4,6 @@ use super::{AccountBal, Bal, BalError, BlockAccessIndex};
 use crate::{
     evm::state::{
         Account, AccountChangeRef, AccountInfo, PendingState, StateChangeSink, StorageChange,
-        StorageOverlay,
     },
     interpreter::Word,
 };
@@ -170,7 +169,7 @@ impl BalContext {
     /// are recorded as BAL reads; changed ones as writes.
     #[inline]
     pub fn commit_pending(&mut self, pending: &PendingState) {
-        self.commit(&pending.accounts, &pending.storage);
+        self.commit(&pending.accounts);
     }
 
     /// Folds a committed transaction's pending accounts and storage overlays into the BAL builder
@@ -179,20 +178,13 @@ impl BalContext {
     /// Same as [`Self::commit_pending`], operating on the transaction layers directly so the
     /// overlay need not be detached. No-op when BAL construction is disabled.
     #[inline]
-    pub(crate) fn commit(
-        &mut self,
-        accounts: &AddressMap<Account>,
-        storage: &AddressMap<StorageOverlay>,
-    ) {
+    pub(crate) fn commit(&mut self, accounts: &AddressMap<Account>) {
         let index = self.bal_index;
         let Some(bal) = self.bal_builder.as_mut() else {
             return;
         };
-        for (&address, entry) in accounts {
-            bal.update_account(index, address, entry.original.as_ref(), entry.present.as_ref());
-        }
-        for (&address, overlay) in storage {
-            bal.accounts.entry(address).or_default().storage.update_pending(index, &overlay.slots);
+        for (&address, account) in accounts {
+            bal.update_account(index, address, account);
         }
     }
 
