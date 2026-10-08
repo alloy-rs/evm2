@@ -1,7 +1,7 @@
 use super::{
     InitialFrame, LazyAuthorization, PreparedTx, access_list_counts, effective_gas_price,
-    floor_gas, initial_gas_and_reservoir, intrinsic_gas, prepare_initial_frame, runtime_oog_result,
-    settle_initial_frame_gas, validate_block_gas_limit, validate_chain_id,
+    floor_gas, initial_gas_and_reservoir, initial_message, intrinsic_gas, prepare_initial_frame,
+    runtime_oog_result, settle_initial_frame_gas, validate_block_gas_limit, validate_chain_id,
     validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
     validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
     validate_sender, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
@@ -180,13 +180,21 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     let settle_oog = |host: &mut Evm<'_, T>| {
         let features = host.version().features;
         host.state.rollback(runtime_checkpoint, features);
-        settle(host, runtime_oog_result(execution_gas_limit, reservoir))
+        let gas = GasTracker::new_with_execution_gas_and_reservoir(execution_gas_limit, reservoir);
+        let mut message =
+            initial_message::<T>(caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas);
+        let result = host.inspect_message_result(
+            &tx_env,
+            &mut message,
+            runtime_oog_result(execution_gas_limit, reservoir),
+        )?;
+        settle(host, result)
     };
 
     if auth_oog {
         return settle_oog(req.host);
     }
-    let Some(InitialFrame { mut message, charged_state_gas }) = prepare_initial_frame(
+    let InitialFrame { mut message, charged_state_gas, runtime_oog } = prepare_initial_frame(
         req.host,
         caller,
         tx.nonce,
@@ -194,8 +202,8 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
         &tx.input,
         tx.value,
         &mut tx_gas,
-    )?
-    else {
+    )?;
+    if runtime_oog {
         // A depth-0 recipient charge that ran out of gas is part of the runtime gas phase, so it
         // drops the delegations too.
         return settle_oog(req.host);

@@ -3,6 +3,7 @@ use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
     TxEnv, deploy_contract, op,
 };
+use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
@@ -12,7 +13,7 @@ use alloy_rpc_types_trace::geth::{
 };
 use evm2::{
     BaseEvmTypes, Evm, EvmFeatures, ExecutionConfig, Precompiles, Version,
-    ethereum::ethereum_tx_registry,
+    ethereum::{TxEnvelope, ethereum_tx_registry},
 };
 use evm2_inspectors::tracing::{
     DebugInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
@@ -1821,4 +1822,143 @@ fn test_geth_opcode_limit_ignores_named_tracers() {
         };
         assert_eq!(config.step_limit, None);
     }
+}
+
+/// Runtime gas halts must expose the same root fields as ordinary message execution.
+#[test]
+fn test_geth_runtime_oog_root() {
+    let caller = Address::repeat_byte(0xaa);
+    let recipient = Address::repeat_byte(0xbb);
+    for to in [TxKind::Call(recipient), TxKind::Create] {
+        let input = hex!("12345678");
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                nonce: 7,
+                gas_limit: 200_000,
+                to,
+                value: U256::ONE,
+                input: input.into(),
+                ..Default::default()
+            }),
+            caller,
+        );
+        for tracer in ["callTracer", "flatCallTracer", "4byteTracer", "erc7562Tracer", "muxTracer"]
+        {
+            let config = if tracer == "muxTracer" {
+                serde_json::json!({"callTracer": {}, "flatCallTracer": {}, "4byteTracer": null})
+            } else {
+                serde_json::json!({})
+            };
+            let options = serde_json::from_value(
+                serde_json::json!({"tracer": tracer, "tracerConfig": config}),
+            )
+            .unwrap();
+            let mut database = CacheDB::<EmptyDB>::default();
+            database.insert_account_info(
+                &caller,
+                AccountInfo { balance: U256::from(1_000_000), nonce: 7, ..Default::default() },
+            );
+            let mut evm = Evm::<BaseEvmTypes>::new(
+                SpecId::AMSTERDAM,
+                Default::default(),
+                ethereum_tx_registry(SpecId::AMSTERDAM),
+                database.clone(),
+                Precompiles::base(SpecId::AMSTERDAM),
+            );
+            evm.set_inspector(DebugInspector::new(options).unwrap());
+            let result = evm.transact(&tx).unwrap().detach();
+            assert_eq!(result.result.stop, evm2::interpreter::InstrStop::OutOfGas);
+            assert_eq!(result.result.tx_gas_used(), 200_000);
+            let mut inspector = evm.clear_inspector_as::<DebugInspector>().unwrap();
+            let trace = inspector
+                .get_result::<BaseEvmTypes>(None, &tx, evm.block(), &result, &mut database)
+                .unwrap();
+            let trace = serde_json::to_value(trace).unwrap();
+            match tracer {
+                "callTracer" | "erc7562Tracer" | "muxTracer" => {
+                    let frame = if tracer == "muxTracer" { &trace["callTracer"] } else { &trace };
+                    assert_eq!(frame["from"], serde_json::json!(caller));
+                    if to.is_create() {
+                        assert!(frame["to"].is_null());
+                    } else {
+                        assert_eq!(frame["to"], serde_json::json!(recipient));
+                    }
+                    assert_eq!(frame["value"], "0x1");
+                    assert_eq!(frame["input"], "0x12345678");
+                    assert_eq!(frame["error"], "out of gas");
+                    assert_eq!(frame["gas"], "0x30d40");
+                    assert_eq!(frame["gasUsed"], "0x30d40");
+                    if tracer == "erc7562Tracer" {
+                        assert_eq!(frame["outOfGas"], false);
+                        assert_eq!(frame["usedOpcodes"], serde_json::json!({}));
+                    }
+                }
+                "flatCallTracer" => {
+                    assert_eq!(trace[0]["error"], "Out of gas");
+                    let action = &trace[0]["action"];
+                    assert_eq!(action["from"], serde_json::json!(caller));
+                    assert_eq!(action["value"], "0x1");
+                    if to.is_create() {
+                        assert_eq!(action["init"], "0x12345678");
+                    } else {
+                        assert_eq!(action["to"], serde_json::json!(recipient));
+                        assert_eq!(action["input"], "0x12345678");
+                    }
+                }
+                "4byteTracer" => {
+                    assert_eq!(
+                        trace,
+                        if to.is_create() {
+                            serde_json::json!({})
+                        } else {
+                            serde_json::json!({"0x12345678-0": 1})
+                        }
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_geth_mux_root_gas_at_state_gas_boundary() {
+    let caller = Address::repeat_byte(0xaa);
+    let recipient = Address::repeat_byte(0xbb);
+    let tx = Recovered::new_unchecked(
+        TxEnvelope::Legacy(TxLegacy {
+            gas_limit: 204_600,
+            to: recipient.into(),
+            value: U256::ONE,
+            ..Default::default()
+        }),
+        caller,
+    );
+    let options = serde_json::from_value(
+        serde_json::json!({"tracer": "muxTracer", "tracerConfig": {"callTracer": {}}}),
+    )
+    .unwrap();
+    let mut database = CacheDB::<EmptyDB>::default();
+    database
+        .insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(1_000_000)));
+    let mut evm = Evm::<BaseEvmTypes>::new(
+        SpecId::AMSTERDAM,
+        Default::default(),
+        ethereum_tx_registry(SpecId::AMSTERDAM),
+        database.clone(),
+        Precompiles::base(SpecId::AMSTERDAM),
+    );
+    evm.set_inspector(DebugInspector::new(options).unwrap());
+    let result = evm.transact(&tx).unwrap().detach();
+    assert!(result.result.status);
+    assert_eq!(result.result.tx_gas_used(), 204_600);
+    let mut inspector = evm.clear_inspector_as::<DebugInspector>().unwrap();
+    let trace = inspector
+        .get_result::<BaseEvmTypes>(None, &tx, evm.block(), &result, &mut database)
+        .unwrap();
+    let trace = serde_json::to_value(trace).unwrap();
+    assert_eq!(trace["callTracer"]["gas"], "0x31f38");
+    assert_eq!(trace["callTracer"]["gasUsed"], "0x31f38");
+    assert_eq!(trace["callTracer"]["to"], serde_json::json!(recipient));
+    assert!(trace["callTracer"]["error"].is_null());
 }

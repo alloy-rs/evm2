@@ -495,7 +495,9 @@ impl<'a> GethTraceBuilder<'a> {
             let mut contract_size = HashMap::default();
             let mut ext_code_access_info = Vec::new();
             let mut keccak = Vec::new();
-            let mut out_of_gas = trace.status.is_some_and(InstrStop::is_out_of_gas);
+            // Runtime gas halts before the first instruction do not set the opcode OOG flag.
+            let mut out_of_gas =
+                !trace.steps.is_empty() && trace.status.is_some_and(InstrStop::is_out_of_gas);
 
             for step in &trace.steps {
                 let op = step.op.get();

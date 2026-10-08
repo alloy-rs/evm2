@@ -174,6 +174,13 @@ impl MuxInspector {
 
         Ok(MuxFrame(frame))
     }
+
+    /// Sets the transaction gas limit used by the shared tracing inspector's root frame.
+    pub(crate) fn set_transaction_gas_limit(&mut self, gas_limit: u64) {
+        if let Some(inspector) = &mut self.tracing {
+            inspector.set_transaction_gas_limit(gas_limit);
+        }
+    }
 }
 
 impl<T: EvmTypes> Inspector<T> for MuxInspector {

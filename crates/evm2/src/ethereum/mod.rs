@@ -538,6 +538,8 @@ pub struct InitialFrame<T: EvmTypes> {
     /// account-creation charge), zero when nothing was charged. Refunded by
     /// [`settle_initial_frame_gas`] when the frame fails and the leaf is not created.
     pub charged_state_gas: u64,
+    /// Whether the runtime gas phase halted before this message could execute.
+    pub runtime_oog: bool,
 }
 
 /// Completes the EIP-2780 runtime gas phase on the transaction-level `tx_gas` and builds the
@@ -555,9 +557,9 @@ pub struct InitialFrame<T: EvmTypes> {
 /// the CREATE opcode instead. A delegated recipient is still resolved (for free) so the frame
 /// runs the delegate's code.
 ///
-/// The frame's `gas_limit`/`reservoir` snapshot `tx_gas` after the charges. Returns `None` when
-/// a charge runs out of gas: the transaction stays valid but is included as an out-of-gas halt
-/// without entering execution ([`runtime_oog_result`]).
+/// The frame's `gas_limit`/`reservoir` snapshot `tx_gas` after the charges. If a charge runs out
+/// of gas, the frame retains its original gas budget and marks [`InitialFrame::runtime_oog`]:
+/// the transaction stays valid and its root message is reported to inspectors without executing.
 pub fn prepare_initial_frame<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
@@ -566,9 +568,13 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
     input: &Bytes,
     value: U256,
     tx_gas: &mut GasTracker,
-) -> HandlerResult<Option<InitialFrame<T>>> {
-    let mut charged_state_gas = 0;
-    let message = match to {
+) -> HandlerResult<InitialFrame<T>> {
+    let mut frame = InitialFrame {
+        message: initial_message::<T>(caller, nonce, to, input, value, *tx_gas),
+        charged_state_gas: 0,
+        runtime_oog: true,
+    };
+    match to {
         TxKind::Call(to) => {
             let (recipient_is_empty, mut code) = {
                 let mut account = host.state.account(&to)?;
@@ -581,9 +587,9 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
             if host.feature(EvmFeatures::EIP2780) && !value.is_zero() && recipient_is_empty {
                 let new_account_state_gas = host.version().gas_params.new_account_state_gas();
                 if tx_gas.spend_state(new_account_state_gas).is_err() {
-                    return Ok(None);
+                    return Ok(frame);
                 }
-                charged_state_gas = new_account_state_gas;
+                frame.charged_state_gas = new_account_state_gas;
             }
             // An empty recipient is never delegated, so the charge above and the resolution below
             // are mutually exclusive.
@@ -598,17 +604,17 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     // list.
                     let cold_additional = host.version().gas_params.cold_account_additional_cost();
                     if tx_gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
-                        return Ok(None);
+                        return Ok(frame);
                     }
                     let skip_cold_load = tx_gas.remaining() < cold_additional;
                     let load =
                         match Host::load_account(host, &delegated_address, true, skip_cold_load) {
                             Ok(load) => load,
-                            Err(HostError::Halt(_)) => return Ok(None),
+                            Err(HostError::Halt(_)) => return Ok(frame),
                             Err(HostError::Execution(error)) => return Err(error.into()),
                         };
                     if load.is_cold && tx_gas.spend(cold_additional).is_err() {
-                        return Ok(None);
+                        return Ok(frame);
                     }
                     code = load.code;
                 } else {
@@ -619,24 +625,9 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 code_address = delegated_address;
                 disable_precompiles = true;
             }
-            MessageExt {
-                kind: MessageKind::Call,
-                depth: 0,
-                gas_limit: tx_gas.remaining(),
-                reservoir: tx_gas.reservoir(),
-                destination: to,
-                call_target: to,
-                caller,
-                input: input.clone(),
-                value,
-                code,
-                code_address,
-                disable_precompiles,
-                caller_is_static: false,
-                salt: B256::ZERO,
-                ext: T::MessageExt::default(),
-                _non_exhaustive: (),
-            }
+            frame.message.code = code;
+            frame.message.code_address = code_address;
+            frame.message.disable_precompiles = disable_precompiles;
         }
         TxKind::Create => {
             let destination = caller.create(nonce);
@@ -646,33 +637,17 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 if !target_alive {
                     let create_state_gas = host.version().gas_params.create_state_gas();
                     if tx_gas.spend_state(create_state_gas).is_err() {
-                        return Ok(None);
+                        return Ok(frame);
                     }
-                    charged_state_gas = create_state_gas;
+                    frame.charged_state_gas = create_state_gas;
                 }
             }
-            MessageExt {
-                kind: MessageKind::Create,
-                depth: 0,
-                gas_limit: tx_gas.remaining(),
-                reservoir: tx_gas.reservoir(),
-                destination,
-                call_target: destination,
-                caller,
-                input: input.clone(),
-                value,
-                code: Bytecode::new_legacy(input.clone()),
-                code_address: destination,
-                disable_precompiles: false,
-                caller_is_static: false,
-                salt: B256::ZERO,
-                ext: T::MessageExt::default(),
-                _non_exhaustive: (),
-            }
         }
-    };
-    debug_assert_eq!(message.depth, 0);
-    Ok(Some(InitialFrame { message, charged_state_gas }))
+    }
+    frame.message.gas_limit = tx_gas.remaining();
+    frame.message.reservoir = tx_gas.reservoir();
+    frame.runtime_oog = false;
+    Ok(frame)
 }
 
 /// Settles the first frame's result into the transaction-level `tx_gas` and writes the settled
@@ -706,14 +681,19 @@ pub const fn settle_initial_frame_gas<E>(
 pub fn execute_initial_frame<T: EvmTypes>(
     host: &mut Evm<'_, T>,
     tx_env: &TxEnv<T>,
-    frame: Option<InitialFrame<T>>,
+    frame: InitialFrame<T>,
     tx_gas: &mut GasTracker,
     execution_gas_limit: u64,
     reservoir: u64,
 ) -> Result<MessageResult<T>, crate::ExecutionError> {
-    let Some(InitialFrame { mut message, charged_state_gas }) = frame else {
-        return Ok(runtime_oog_result(execution_gas_limit, reservoir));
-    };
+    let InitialFrame { mut message, charged_state_gas, runtime_oog } = frame;
+    if runtime_oog {
+        return host.inspect_message_result(
+            tx_env,
+            &mut message,
+            runtime_oog_result(execution_gas_limit, reservoir),
+        );
+    }
 
     // Failed execution has already been rolled back to the message's own checkpoint inside
     // `execute_message`; the settle merges the frame gas into the transaction-level gas.
@@ -723,7 +703,7 @@ pub fn execute_initial_frame<T: EvmTypes>(
 }
 
 /// Builds the result for a transaction whose EIP-2780 runtime gas phase ran out of gas
-/// ([`prepare_initial_frame`] returned `None`, or the EIP-7702 authorization charges bailed).
+/// ([`InitialFrame::runtime_oog`] is set, or the EIP-7702 authorization charges bailed).
 ///
 /// The transaction is valid but cannot afford the state-dependent runtime charges: it is
 /// included as an out-of-gas halt that consumes all execution gas and returns the reservoir,
@@ -934,6 +914,37 @@ fn eip2780_base_to_value_gas(
         }
     }
     gas
+}
+
+/// Constructs the root message without loading accounts, including before authorization gas
+/// charges.
+fn initial_message<T: EvmTypes>(
+    caller: Address,
+    nonce: u64,
+    to: TxKind,
+    input: &Bytes,
+    value: U256,
+    gas: GasTracker,
+) -> Message<T> {
+    let (kind, destination, code) = match to {
+        TxKind::Call(to) => (MessageKind::Call, to, Bytecode::default()),
+        TxKind::Create => {
+            (MessageKind::Create, caller.create(nonce), Bytecode::new_legacy(input.clone()))
+        }
+    };
+    MessageExt {
+        kind,
+        gas_limit: gas.remaining(),
+        reservoir: gas.reservoir(),
+        destination,
+        call_target: destination,
+        caller,
+        input: input.clone(),
+        value,
+        code,
+        code_address: destination,
+        ..MessageExt::default()
+    }
 }
 
 #[cfg(test)]
@@ -1326,7 +1337,7 @@ mod tests {
         );
 
         let mut tx_gas = GasTracker::new_with_execution_gas_and_reservoir(100_000, 0);
-        let InitialFrame { mut message, charged_state_gas } = prepare_initial_frame(
+        let InitialFrame { mut message, charged_state_gas, runtime_oog } = prepare_initial_frame(
             &mut evm,
             caller,
             0,
@@ -1335,8 +1346,8 @@ mod tests {
             U256::ZERO,
             &mut tx_gas,
         )
-        .unwrap()
         .unwrap();
+        assert!(!runtime_oog);
         assert_eq!(message.destination, target);
         assert_eq!(message.code_address, delegated);
         assert!(message.disable_precompiles);
