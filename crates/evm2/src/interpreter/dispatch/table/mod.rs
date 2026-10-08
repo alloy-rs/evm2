@@ -5,14 +5,16 @@ use crate::{
 };
 use core::hint::cold_path;
 
-cfg_if::cfg_if! {
-    if #[cfg(dispatch_packed)] {
+core::cfg_select! {
+    dispatch_packed => {
         mod packed;
         use packed as imp;
-    } else if #[cfg(dispatch_single_return)] {
+    }
+    dispatch_single_return => {
         mod single_return;
         use single_return as imp;
-    } else {
+    }
+    _ => {
         mod unpacked;
         use unpacked as imp;
     }

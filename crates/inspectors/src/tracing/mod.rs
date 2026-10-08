@@ -19,7 +19,7 @@ use evm2::{
     Evm, EvmFeatures, EvmTypes, Inspector, SpecId, TxResultExt,
     evm::JournalEntry,
     interpreter::{
-        Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
+        InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
     },
 };
@@ -819,10 +819,19 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     fn create_end(
         &mut self,
         _interp: &mut Interpreter<'_, '_, T>,
-        _message: &Message<T>,
+        message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
+        let trace_idx = self.last_trace_idx();
         self.fill_trace_on_call_end(result);
+        // A nested CREATE whose creator nonce cannot be incremented returns successfully but
+        // without an address, leaving its gas unspent.
+        if message.depth > 0 && result.created_address.is_none() && result.stop == InstrStop::Return
+        {
+            let trace = &mut self.traces.arena[trace_idx].trace;
+            trace.status = Some(InstrStop::NonceOverflow);
+            trace.success = false;
+        }
     }
 
     fn selfdestruct(
@@ -887,15 +896,16 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
     }
 }
 
-/// Returns the memory range the opcode writes, derived from its inputs on the stack.
+/// Returns the memory range whose contents after execution the opcode reports, derived from its
+/// inputs on the stack.
 ///
-/// Only writes are tracked: instructions that merely expand memory, like `MLOAD`, yield `None`.
+/// This is the range the opcode writes, or for `MLOAD` the word it reads, as in Parity's `vmTrace`.
 fn memory_write_range(op: u8, stack: &[U256]) -> Option<Range<usize>> {
     let back = |index: usize| {
         stack.get(stack.len().checked_sub(index + 1)?).and_then(|v| usize::try_from(*v).ok())
     };
     let (offset, size) = match op {
-        op::MSTORE => (back(0)?, 32),
+        op::MLOAD | op::MSTORE => (back(0)?, 32),
         op::MSTORE8 => (back(0)?, 1),
         op::CALLDATACOPY | op::CODECOPY | op::RETURNDATACOPY | op::MCOPY => (back(0)?, back(2)?),
         op::EXTCODECOPY => (back(1)?, back(3)?),

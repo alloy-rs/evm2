@@ -289,9 +289,12 @@ impl JitBackend {
 
     /// Enqueues an explicit JIT compilation request for the given bytecode.
     ///
-    /// Blocks if the command channel is full to guarantee delivery.
+    /// Blocks if the command channel is full to guarantee delivery. If the backend
+    /// could not be started, the request is dropped and a warning is logged.
     pub fn compile_jit(&self, req: LookupRequest) {
-        let _ = self.ensure_started();
+        if !self.ensure_started_for_enqueue() {
+            return;
+        }
         let cmd = Command::CompileJit(CompileJitRequest {
             key: req.key,
             bytecode: req.code,
@@ -331,9 +334,10 @@ impl JitBackend {
 
     /// Enqueues a single AOT preparation request.
     ///
-    /// This is enqueue-only and returns immediately. The compilation happens
-    /// asynchronously on the worker pool. The resulting artifact is persisted
-    /// via [`ArtifactStore::store`] and loaded into the resident map.
+    /// Compilation happens asynchronously on the worker pool. The resulting artifact is
+    /// persisted via [`ArtifactStore::store`] and loaded into the resident map.
+    /// May block during startup or when the command channel is full. If startup fails,
+    /// the request is dropped and a warning is logged.
     pub fn prepare_aot(&self, req: AotRequest) {
         self.prepare_aot_batch(vec![req]);
     }
@@ -349,9 +353,12 @@ impl JitBackend {
 
     /// Enqueues a batch of AOT preparation requests.
     ///
-    /// Blocks if the command channel is full to guarantee delivery.
+    /// Blocks if the command channel is full to guarantee delivery. If the backend
+    /// could not be started, the requests are dropped and a warning is logged.
     pub fn prepare_aot_batch(&self, reqs: Vec<AotRequest>) {
-        let _ = self.ensure_started();
+        if !self.ensure_started_for_enqueue() {
+            return;
+        }
         let owned: Vec<PrepareAotRequest> = reqs
             .into_iter()
             .map(|r| PrepareAotRequest {
@@ -397,18 +404,27 @@ impl JitBackend {
     ///
     /// All compiled programs are removed from the map. Active references
     /// held by callers remain valid until dropped.
+    ///
+    /// Before startup, clears the map in place instead of queueing an undrained command.
+    /// May block waiting for startup or for space in the running backend's command channel.
     pub fn clear_resident(&self) {
-        let _ = self.inner.tx.send(Command::ClearResident);
+        self.send_clear(Command::ClearResident);
     }
 
     /// Clears persisted artifacts from the artifact store.
+    ///
+    /// Before startup, clears the store in place instead of queueing an undrained command.
+    /// May block on store I/O, startup, or the running backend's command channel.
     pub fn clear_persisted(&self) {
-        let _ = self.inner.tx.send(Command::ClearPersisted);
+        self.send_clear(Command::ClearPersisted);
     }
 
     /// Clears both the resident map and persisted artifacts.
+    ///
+    /// Before startup, clears both in place instead of queueing an undrained command.
+    /// May block on store I/O, startup, or the running backend's command channel.
     pub fn clear_all(&self) {
-        let _ = self.inner.tx.send(Command::ClearAll);
+        self.send_clear(Command::ClearAll);
     }
 
     /// Returns whether the runtime is enabled.
@@ -480,10 +496,10 @@ impl JitBackend {
     /// lazily starts it using the config provided at construction time.
     pub fn set_enabled(&self, enabled: bool) -> eyre::Result<()> {
         debug!(enabled, "set_enabled");
-        self.inner.enabled.store(enabled, Ordering::Relaxed);
         if enabled {
             self.ensure_started()?;
         }
+        self.inner.enabled.store(enabled, Ordering::Relaxed);
         Ok(())
     }
 
@@ -494,6 +510,10 @@ impl JitBackend {
 
     /// Spawns the backend thread if it hasn't been started yet.
     fn ensure_started(&self) -> eyre::Result<()> {
+        self.ensure_started_with(std::thread::Builder::new())
+    }
+
+    fn ensure_started_with(&self, builder: std::thread::Builder) -> eyre::Result<()> {
         let mut guard = self.inner.lazy_spawn.lock().unwrap();
         let Some(lazy) = guard.take() else {
             return Ok(());
@@ -524,22 +544,30 @@ impl JitBackend {
             }
         }
 
-        drop(guard);
-
         let (done_tx, done_rx) = chan::bounded::<()>(1);
         let shared = Arc::clone(&self.inner.shared);
+        let backend_rx = rx.clone();
+        let backend_config = config.clone();
 
-        let thread = std::thread::Builder::new()
+        let thread = match builder
             .name(config.thread_name.clone())
             .spawn(move || {
-                let result = backend::run(shared, rx, config);
+                let result = backend::run(shared, backend_rx, backend_config);
                 let _ = done_tx.send(());
                 result
             })
-            .wrap_err("failed to spawn backend thread")?;
+            .wrap_err("failed to spawn backend thread")
+        {
+            Ok(thread) => thread,
+            Err(error) => {
+                *guard = Some(LazySpawnState { rx, config });
+                return Err(error);
+            }
+        };
 
         *self.inner.thread.lock().unwrap() = Some(BackendThread { handle: thread, done_rx });
         self.inner.started.store(true, Ordering::Relaxed);
+        drop(guard);
         Ok(())
     }
 
@@ -608,6 +636,38 @@ impl JitBackend {
 
         let library = Arc::new(LoadedLibrary::new(library));
         Ok(CompiledProgram::new_aot(key.runtime, func, library))
+    }
+
+    /// Applies a clear before startup, or queues it after the backend takes ownership.
+    /// The startup lock serializes this decision with AOT preload and thread creation.
+    fn send_clear(&self, command: Command) {
+        let guard = self.inner.lazy_spawn.lock().unwrap();
+        let Some(lazy) = guard.as_ref() else {
+            drop(guard);
+            let _ = self.inner.tx.send(command);
+            return;
+        };
+
+        if matches!(command, Command::ClearResident | Command::ClearAll) {
+            self.inner.shared.resident.clear();
+        }
+        if matches!(command, Command::ClearPersisted | Command::ClearAll)
+            && let Some(store) = lazy.config.store.as_deref()
+            && let Err(error) = store.clear()
+        {
+            warn!(%error, "failed to clear artifact store");
+        }
+    }
+
+    /// Starts the backend before enqueueing a command, logging startup failures.
+    /// Failed startup retains an undrained receiver, so callers must not send to the
+    /// bounded command channel until startup succeeds.
+    fn ensure_started_for_enqueue(&self) -> bool {
+        if let Err(err) = self.ensure_started() {
+            warn!(%err, "failed to start JIT backend, dropping command");
+            return false;
+        }
+        true
     }
 }
 

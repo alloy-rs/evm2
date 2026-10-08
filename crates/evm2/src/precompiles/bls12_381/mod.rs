@@ -5,11 +5,12 @@
 #[cfg_attr(feature = "blst", expect(dead_code))]
 pub(crate) mod arkworks;
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "blst")]{
+core::cfg_select! {
+    feature = "blst" => {
         pub(crate) mod blst;
         pub(crate) use blst as crypto_backend;
-    } else {
+    }
+    _ => {
         pub(crate) use arkworks as crypto_backend;
     }
 }

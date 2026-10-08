@@ -10,16 +10,18 @@ use alloc::vec::Vec;
 #[cfg_attr(all(feature = "bn", not(feature = "bn254-mcl")), expect(dead_code))]
 pub(crate) mod arkworks;
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "bn254-mcl")] {
+core::cfg_select! {
+    feature = "bn254-mcl" => {
         pub(crate) mod mcl;
         type ArithmeticOps = mcl::MclOps;
         type PairingOps = arkworks::ArkworksOps;
-    } else if #[cfg(feature = "bn")]{
+    }
+    feature = "bn" => {
         pub(crate) mod substrate;
         type ArithmeticOps = substrate::SubstrateOps;
         type PairingOps = substrate::SubstrateOps;
-    } else {
+    }
+    _ => {
         type ArithmeticOps = arkworks::ArkworksOps;
         type PairingOps = arkworks::ArkworksOps;
     }

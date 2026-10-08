@@ -24,7 +24,7 @@ use crate::{
     },
     interpreter::{
         GasTracker, Host, InstrStop, Message, MessageExt, MessageKind, MessageResult,
-        MessageResultExt, Word,
+        MessageResultExt,
         gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS, WARM_STORAGE_READ_COST},
     },
     registry::{HandlerError, HandlerResult, TxRegistry, handler},
@@ -331,27 +331,28 @@ pub fn validate_block_gas_limit(
     Ok(())
 }
 
-/// Validates the transaction gas limit against the active transaction cap.
+/// Validates the transaction gas limit against the active transaction gas limit cap.
+///
+/// See [`Version::tx_gas_caps`].
 pub const fn validate_tx_gas_limit_cap(version: &Version, tx_gas_limit: u64) -> HandlerResult<()> {
-    // EIP-7825 caps each transaction gas limit to 2^24 in Osaka. Amsterdam/EIP-8037
-    // replaces this with a execution-gas cap while allowing extra transaction gas to serve as
-    // the state-gas reservoir.
-    let cap = version.tx_gas_limit_cap;
-    if !version.feature(EvmFeatures::EIP8037) && tx_gas_limit > cap {
+    let (cap, _) = version.tx_gas_caps();
+    if tx_gas_limit > cap {
         return Err(HandlerError::TxGasLimitGreaterThanCap { gas_limit: tx_gas_limit, cap });
     }
     Ok(())
 }
 
-/// Validates the execution-gas portion against the active transaction cap.
+/// Validates the execution-gas portion against the active execution gas cap.
+///
+/// See [`Version::tx_gas_caps`].
 pub const fn validate_execution_gas_limit_cap(
     version: &Version,
     tx_gas_limit: u64,
     intrinsic: u64,
     floor_gas: u64,
 ) -> HandlerResult<()> {
-    let cap = version.tx_gas_limit_cap;
-    if version.feature(EvmFeatures::EIP8037) && tx_gas_limit > cap {
+    let (_, cap) = version.tx_gas_caps();
+    if tx_gas_limit > cap {
         let required_execution_gas = if intrinsic > floor_gas { intrinsic } else { floor_gas };
         if required_execution_gas > cap {
             return Err(HandlerError::TxGasLimitGreaterThanCap {
@@ -487,7 +488,9 @@ pub fn charge_upfront<'a, T: EvmTypes>(
     if !host.feature(EvmFeatures::FEE_CHARGE) {
         return Ok(());
     }
-    host.state.account(&caller)?.add_balance(Word::ZERO.wrapping_sub(max_gas_cost));
+    let mut account = host.state.account(&caller)?;
+    let balance = account.balance().saturating_sub(max_gas_cost);
+    account.set_balance(balance);
     Ok(())
 }
 
@@ -879,11 +882,11 @@ pub fn intrinsic_gas(
     value: U256,
 ) -> u64 {
     let params = &version.gas_params;
-    let non_zero_multiplier = if version.feature(EvmFeatures::EIP2028) { 16 } else { 68 };
-    let mut gas = 0;
-    for byte in input {
-        gas += if *byte == 0 { 4 } else { non_zero_multiplier };
-    }
+    let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
+    let zero_data_len = input.iter().filter(|v| **v == 0).count() as u64;
+    let non_zero_data_len = input.len() as u64 - zero_data_len;
+    let tokens = zero_data_len + non_zero_data_len * non_zero_multiplier;
+    let mut gas = tokens * u64::from(params.get(GasId::TxTokenCost));
     gas += access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressCost));
     gas += access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyCost));
 
@@ -894,7 +897,7 @@ pub fn intrinsic_gas(
         let is_self_transfer = matches!(to, TxKind::Call(to) if to == caller);
         gas += eip2780_base_to_value_gas(version, is_create, is_self_transfer, value);
     } else {
-        gas += 21_000;
+        gas += u64::from(params.get(GasId::TxBaseStipend));
         if is_create && version.feature(EvmFeatures::EIP2) {
             gas += u64::from(params.get(GasId::TxCreateCost));
         }
@@ -1082,6 +1085,21 @@ mod tests {
     }
 
     #[test]
+    fn intrinsic_gas_reads_calldata_and_base_costs_from_gas_params() {
+        let input = Bytes::from_static(&[0, 1, 2]);
+        let sender = Address::with_last_byte(0xaa);
+        let mut version = Version::new(SpecId::PRAGUE);
+        version.gas_params.set(GasId::TxTokenCost, 3);
+        version.gas_params.set(GasId::TxTokenNonZeroByteMultiplier, 5);
+        version.gas_params.set(GasId::TxBaseStipend, 10_000);
+
+        assert_eq!(
+            intrinsic_gas(&version, sender, TxKind::Call(Address::ZERO), &input, 0, 0, U256::ZERO),
+            10_000 + (1 + 2 * 5) * 3
+        );
+    }
+
+    #[test]
     fn eip2930_rejects_gas_below_intrinsic() {
         let caller = Address::with_last_byte(0xaa);
         let mut database = InMemoryDB::default();
@@ -1253,6 +1271,29 @@ mod tests {
             evm.state.account_info_untracked(&caller).unwrap().unwrap().balance,
             U256::from(100)
         );
+    }
+
+    #[test]
+    fn charge_upfront_saturates_insufficient_balance() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(10)));
+
+        let mut version = Version::new(SpecId::OSAKA);
+        version.features.remove(EvmFeatures::BALANCE_CHECK);
+        version.features.remove(EvmFeatures::BALANCE_TOP_UP);
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
+        charge_upfront(&mut evm, caller, U256::from(100)).unwrap();
+        assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().balance, U256::ZERO);
     }
 
     #[test]

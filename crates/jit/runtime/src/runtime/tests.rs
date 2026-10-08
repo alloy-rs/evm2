@@ -208,6 +208,39 @@ impl ArtifactStore for FailingStore {
     }
 }
 
+/// A store that counts `clear` calls.
+struct CountingStore {
+    cleared: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ArtifactStore for CountingStore {
+    fn load_all(&self) -> eyre::Result<Vec<(ArtifactKey, StoredArtifact)>> {
+        Ok(vec![])
+    }
+
+    fn load(&self, _key: &ArtifactKey) -> eyre::Result<Option<StoredArtifact>> {
+        Ok(None)
+    }
+
+    fn store(
+        &self,
+        _key: &ArtifactKey,
+        _manifest: &ArtifactManifest,
+        _dylib_bytes: &[u8],
+    ) -> eyre::Result<()> {
+        Ok(())
+    }
+
+    fn delete(&self, _key: &ArtifactKey) -> eyre::Result<()> {
+        Ok(())
+    }
+
+    fn clear(&self) -> eyre::Result<()> {
+        self.cleared.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 // ===========================================================================
 // Tests: startup / basic.
 // ===========================================================================
@@ -375,6 +408,40 @@ fn compile_jit_enqueue() {
 }
 
 #[test]
+fn compile_jit_never_blocks_when_startup_fails() {
+    // `ensure_started` fails (the store errors) and restores the lazy-spawn state, so the
+    // receiver stays alive while nothing drains the bounded command channel. Enqueueing would
+    // fill the channel after `channel_capacity` requests and park the caller forever, the same
+    // way `pause_resume_never_block_without_backend_thread` describes for pause/resume.
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: false,
+        store: Some(Arc::new(FailingStore)),
+        tuning: RuntimeTuning { channel_capacity: 1, ..Default::default() },
+        ..Default::default()
+    });
+
+    let backend = tb.backend.clone();
+    let (done_tx, done_rx) = chan::bounded(1);
+    let worker = std::thread::spawn(move || {
+        // More requests than the channel can hold: deadlocks without the started check.
+        for _ in 0..8 {
+            backend.compile_jit(TestBackend::req_cancun(BYTECODE_RET42));
+        }
+        let _ = done_tx.send(());
+    });
+
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("compile_jit blocked after the backend failed to start");
+    worker.join().unwrap();
+
+    // Nothing was queued: the requests were dropped instead of filling the channel.
+    assert_eq!(tb.stats().command_queue_len, 0);
+    assert!(!tb.inner.started.load(Ordering::Relaxed));
+    assert!(tb.inner.lazy_spawn.lock().unwrap().is_some());
+}
+
+#[test]
 fn prepare_aot_enqueue() {
     let tb = TestBackend::with_tuning(RuntimeTuning { jit_worker_count: 0, ..Default::default() });
     tb.prepare_aot(AotRequest {
@@ -400,6 +467,43 @@ fn prepare_aot_batch_enqueue() {
         },
     ];
     tb.prepare_aot_batch(reqs);
+}
+
+#[test]
+fn prepare_aot_batch_never_blocks_when_startup_fails() {
+    // Same hazard as `compile_jit_never_blocks_when_startup_fails`, on the AOT path.
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: false,
+        store: Some(Arc::new(FailingStore)),
+        tuning: RuntimeTuning { channel_capacity: 1, ..Default::default() },
+        ..Default::default()
+    });
+
+    let backend = tb.backend.clone();
+    let (done_tx, done_rx) = chan::bounded(1);
+    let worker = std::thread::spawn(move || {
+        let reqs = vec![AotRequest {
+            code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
+            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            spec_id: SpecId::CANCUN,
+        }];
+        // More requests than the channel can hold: deadlocks without the started check.
+        for _ in 0..8 {
+            backend.prepare_aot(reqs[0].clone());
+            backend.prepare_aot_batch(reqs.clone());
+        }
+        let _ = done_tx.send(());
+    });
+
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("prepare_aot_batch blocked after the backend failed to start");
+    worker.join().unwrap();
+
+    // Nothing was queued: the requests were dropped instead of filling the channel.
+    assert_eq!(tb.stats().command_queue_len, 0);
+    assert!(!tb.inner.started.load(Ordering::Relaxed));
+    assert!(tb.inner.lazy_spawn.lock().unwrap().is_some());
 }
 
 #[test]
@@ -459,6 +563,165 @@ fn pause_resume_never_block_without_backend_thread() {
     let stats = tb.stats();
     assert_eq!(stats.command_queue_len, 0);
     assert_eq!(stats.commands_dropped, 0);
+}
+
+#[test]
+fn clear_commands_never_block_without_backend_thread() {
+    // The clears share the hazard of `pause_resume_never_block_without_backend_thread`: they are
+    // called on a runtime whose backend thread may never have been spawned (`JitBackend::disabled`)
+    // or failed to start, and nothing drains the bounded command channel in that state. Unlike
+    // pause/resume the clears still have work to do, so they are applied in place rather than
+    // skipped.
+    let cleared = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: false,
+        store: Some(Arc::new(CountingStore { cleared: Arc::clone(&cleared) })),
+        tuning: RuntimeTuning { channel_capacity: 2, ..Default::default() },
+        ..Default::default()
+    });
+
+    let backend = tb.backend.clone();
+    let (done_tx, done_rx) = chan::bounded(1);
+    std::thread::spawn(move || {
+        // More clears than the channel can hold: deadlocks without the started check.
+        for _ in 0..16 {
+            backend.clear_resident();
+            backend.clear_persisted();
+            backend.clear_all();
+        }
+        let _ = done_tx.send(());
+    });
+
+    done_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("clear commands blocked without a backend thread");
+
+    // Nothing was queued: every clear was applied in place.
+    let stats = tb.stats();
+    assert_eq!(stats.command_queue_len, 0);
+    assert_eq!(stats.commands_dropped, 0);
+    // `clear_persisted` and `clear_all` each reached the store in every round.
+    assert_eq!(cleared.load(std::sync::atomic::Ordering::Relaxed), 32);
+}
+
+#[test]
+fn clear_commands_are_queued_after_startup_takes_config() {
+    for (clear, command) in [
+        (JitBackend::clear_resident as fn(&JitBackend), Command::ClearResident),
+        (JitBackend::clear_persisted, Command::ClearPersisted),
+        (JitBackend::clear_all, Command::ClearAll),
+    ] {
+        let tb = TestBackend::new(RuntimeConfig {
+            enabled: false,
+            tuning: RuntimeTuning { channel_capacity: 1, ..Default::default() },
+            ..Default::default()
+        });
+        let mut guard = tb.inner.lazy_spawn.lock().unwrap();
+        let lazy = guard.take().unwrap();
+        let backend = tb.backend.clone();
+        let worker = std::thread::spawn(move || clear(&backend));
+        drop(guard);
+
+        let queued = lazy.rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(std::mem::discriminant(&queued), std::mem::discriminant(&command));
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn clear_commands_racing_with_startup_reach_store() {
+    let cleared = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: false,
+        store: Some(Arc::new(CountingStore { cleared: Arc::clone(&cleared) })),
+        tuning: RuntimeTuning { channel_capacity: 1, ..Default::default() },
+        ..Default::default()
+    });
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let backend = tb.backend.clone();
+    let startup_barrier = Arc::clone(&barrier);
+    let startup = std::thread::spawn(move || {
+        startup_barrier.wait();
+        backend.set_enabled(true).unwrap();
+    });
+    let backend = tb.backend.clone();
+    let clearing_barrier = Arc::clone(&barrier);
+    let (done_tx, done_rx) = chan::bounded(1);
+    let clearing = std::thread::spawn(move || {
+        clearing_barrier.wait();
+        for _ in 0..16 {
+            backend.clear_resident();
+            backend.clear_persisted();
+            backend.clear_all();
+        }
+        done_tx.send(()).unwrap();
+    });
+    barrier.wait();
+    done_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    startup.join().unwrap();
+    clearing.join().unwrap();
+    poll_until(std::time::Duration::from_secs(5), || {
+        (cleared.load(std::sync::atomic::Ordering::Relaxed) == 32).then_some(())
+    });
+    assert!(tb.enabled());
+}
+
+#[test]
+fn clear_commands_never_block_after_startup_receiver_disconnects() {
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: false,
+        tuning: RuntimeTuning { channel_capacity: 1, ..Default::default() },
+        ..Default::default()
+    });
+    drop(tb.inner.lazy_spawn.lock().unwrap().take().unwrap());
+    let backend = tb.backend.clone();
+    let (done_tx, done_rx) = chan::bounded(1);
+    let worker = std::thread::spawn(move || {
+        for _ in 0..16 {
+            backend.clear_resident();
+            backend.clear_persisted();
+            backend.clear_all();
+        }
+        done_tx.send(()).unwrap();
+    });
+    done_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    worker.join().unwrap();
+    assert_eq!(tb.stats().command_queue_len, 0);
+}
+
+#[test]
+fn clear_commands_after_failed_spawn_reach_store_and_allow_retry() {
+    let cleared = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: false,
+        store: Some(Arc::new(CountingStore { cleared: Arc::clone(&cleared) })),
+        tuning: RuntimeTuning { channel_capacity: 1, ..Default::default() },
+        ..Default::default()
+    });
+    assert!(
+        tb.ensure_started_with(std::thread::Builder::new().stack_size(usize::MAX / 2)).is_err()
+    );
+    assert!(!tb.inner.started.load(Ordering::Relaxed));
+    assert!(tb.inner.lazy_spawn.lock().unwrap().is_some());
+
+    let backend = tb.backend.clone();
+    let (done_tx, done_rx) = chan::bounded(1);
+    let worker = std::thread::spawn(move || {
+        for _ in 0..16 {
+            backend.clear_resident();
+            backend.clear_persisted();
+            backend.clear_all();
+        }
+        done_tx.send(()).unwrap();
+    });
+    done_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    worker.join().unwrap();
+    assert_eq!(cleared.load(std::sync::atomic::Ordering::Relaxed), 32);
+    assert_eq!(tb.stats().command_queue_len, 0);
+
+    tb.set_enabled(true).unwrap();
+    assert!(tb.inner.started.load(Ordering::Relaxed));
+    assert!(tb.enabled());
 }
 
 #[test]

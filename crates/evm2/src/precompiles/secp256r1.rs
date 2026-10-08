@@ -9,6 +9,7 @@
 use crate::{
     interpreter::GasTracker,
     precompiles::{PrecompileOutput, PrecompileResult},
+    utils::bool_to_bytes32,
 };
 use alloy_primitives::{B256, B512, Bytes};
 
@@ -41,7 +42,7 @@ pub fn run_osaka(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 fn p256_verify_inner(input: &[u8], gas: &mut GasTracker, gas_cost: u64) -> PrecompileResult {
     gas.spend(gas_cost)?;
     let result = if verify_impl_with_crypto(input, crate::precompiles::crypto()) {
-        B256::with_last_byte(1).into()
+        bool_to_bytes32(true)
     } else {
         Bytes::new()
     };
@@ -76,9 +77,12 @@ pub(crate) fn verify_impl_with_crypto(
 }
 
 pub(crate) fn verify_signature(msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) -> Option<()> {
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "p256-aws-lc-rs")] {
-            use aws_lc_rs::{digest, signature::{self, UnparsedPublicKey}};
+    core::cfg_select! {
+        feature = "p256-aws-lc-rs" => {
+            use aws_lc_rs::{
+                digest,
+                signature::{self, UnparsedPublicKey},
+            };
 
             // Construct a Digest from the raw prehashed message bytes.
             let digest = digest::Digest::import_less_safe(msg, &digest::SHA256).ok()?;
@@ -88,13 +92,16 @@ pub(crate) fn verify_signature(msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) ->
             pubkey_bytes[0] = 0x04;
             pubkey_bytes[1..].copy_from_slice(pk);
 
-            let public_key = UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, &pubkey_bytes);
+            let public_key =
+                UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, &pubkey_bytes);
 
             public_key.verify_digest(&digest, sig).ok()
-        } else {
+        }
+        _ => {
             use p256::{
-                ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey},
-                Sec1Point};
+                Sec1Point,
+                ecdsa::{Signature, VerifyingKey, signature::hazmat::PrehashVerifier},
+            };
 
             // Can fail only if the input is not exact length.
             let signature = Signature::from_slice(sig).ok()?;

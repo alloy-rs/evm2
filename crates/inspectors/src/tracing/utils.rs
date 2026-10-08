@@ -48,10 +48,43 @@ pub(crate) fn fmt_error_msg(res: InstrStop, kind: TraceStyle) -> Option<String> 
         InstrStop::InvalidFEOpcode => {
             if kind.is_parity() { "Bad instruction" } else { "invalid opcode: INVALID" }.to_string()
         }
-        InstrStop::OpcodeNotFound => {
+        InstrStop::OpcodeNotFound | InstrStop::NotActivated => {
             if kind.is_parity() { "Bad instruction" } else { "invalid opcode" }.to_string()
         }
+        InstrStop::StackUnderflow => {
+            if kind.is_parity() { "Stack underflow" } else { "stack underflow" }.to_string()
+        }
         InstrStop::StackOverflow => "Out of stack".to_string(),
+        InstrStop::StateChangeDuringStaticCall | InstrStop::CallNotAllowedInsideStatic => {
+            if kind.is_parity() { "Mutable Call In Static Context" } else { "write protection" }
+                .to_string()
+        }
+        InstrStop::OutOfOffset => {
+            if kind.is_parity() { "Out of bounds" } else { "return data out of bounds" }.to_string()
+        }
+        InstrStop::CreateContractSizeLimit => {
+            if kind.is_parity() { "Out of gas" } else { "max code size exceeded" }.to_string()
+        }
+        InstrStop::CreateInitCodeSizeLimit => {
+            if kind.is_parity() { "Out of gas" } else { "max initcode size exceeded" }.to_string()
+        }
+        InstrStop::CreateContractStartingWithEF => {
+            if kind.is_parity() { "Invalid code" } else { "invalid code: must not begin with 0xef" }
+                .to_string()
+        }
+        InstrStop::CreateCollision => if kind.is_parity() {
+            "Contract address collision"
+        } else {
+            "contract address collision"
+        }
+        .to_string(),
+        InstrStop::NonceOverflow => {
+            if kind.is_parity() { "Nonce overflow" } else { "nonce uint64 overflow" }.to_string()
+        }
+        InstrStop::CallTooDeep => {
+            if kind.is_parity() { "Max call depth exceeded" } else { "max call depth exceeded" }
+                .to_string()
+        }
         InstrStop::InvalidJump => {
             if kind.is_parity() { "Bad jump destination" } else { "invalid jump destination" }
                 .to_string()
@@ -103,11 +136,11 @@ pub(crate) fn load_account_code(
     db: &mut dyn DynDatabase,
     account: &AccountInfo,
 ) -> DbResult<Option<Bytes>> {
-    if let Some(code) = &account.code {
-        return Ok(Some(code.original_bytes()));
-    }
     if account.code_hash == KECCAK256_EMPTY {
         return Ok(None);
+    }
+    if let Some(code) = &account.code {
+        return Ok(Some(code.original_bytes()));
     }
     db.get_code_by_hash(&account.code_hash).map(|code| Some(code.original_bytes()))
 }
@@ -148,7 +181,7 @@ mod tests {
         for (stop, geth, parity) in [
             (InstrStop::InvalidFEOpcode, "invalid opcode: INVALID", "Bad instruction"),
             (InstrStop::OpcodeNotFound, "invalid opcode", "Bad instruction"),
-            (InstrStop::NotActivated, "NotActivated", "NotActivated"),
+            (InstrStop::NotActivated, "invalid opcode", "Bad instruction"),
         ] {
             assert_eq!(fmt_error_msg(stop, TraceStyle::Geth).as_deref(), Some(geth));
             assert_eq!(fmt_error_msg(stop, TraceStyle::Parity).as_deref(), Some(parity));

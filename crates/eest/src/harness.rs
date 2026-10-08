@@ -57,10 +57,13 @@ pub(crate) fn run_json_harnesses(suites: Vec<TestSuite>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let trials = collect_trials(&args, &suites).unwrap_or_else(|err| {
-        eprintln!("{err}");
-        Vec::new()
-    });
+    let trials = match collect_trials(&args, &suites) {
+        Ok(trials) => trials,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     if trials.len() <= 1 {
         args.test_threads = Some(1);

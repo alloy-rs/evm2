@@ -21,12 +21,6 @@ pub const MAX_CODE_SIZE_AMSTERDAM: usize = 0x10000;
 /// Maximum contract creation initcode size since Amsterdam.
 pub const MAX_INITCODE_SIZE_AMSTERDAM: usize = 2 * MAX_CODE_SIZE_AMSTERDAM;
 
-/// Cancun blob base fee update fraction.
-pub const BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN: u64 = 3_338_477;
-
-/// Prague blob base fee update fraction.
-pub const BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE: u64 = 5_007_716;
-
 /// Amsterdam blob base fee update fraction (BPO2 blob schedule).
 pub const BLOB_BASE_FEE_UPDATE_FRACTION_AMSTERDAM: u64 = 11_684_671;
 

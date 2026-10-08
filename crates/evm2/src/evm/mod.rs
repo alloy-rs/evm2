@@ -177,8 +177,8 @@ pub use state::AccountExtension;
 pub use state::{
     AccountChangeRef, AccountHandle, AccountInfo, BlockStateAccumulator, JournalEntry,
     NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource, StateCheckpoint,
-    StateInner, StorageChange, StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle, Tee,
-    Tracked,
+    StateInner, StateSnapshot, StorageChange, StorageHandle, StorageOverlay, StorageSlot,
+    StorageSlotHandle, Tee, Tracked,
 };
 
 mod prewarm_set;
