@@ -101,7 +101,7 @@ pub fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result 
 
 #[instruction]
 pub fn codesize(cx: _) -> out {
-    *out = Word::from(cx.state.bytecode().len());
+    *out = Word::from(cx.state.0.bytecode.len());
 }
 
 #[instruction(dynamic_gas)]

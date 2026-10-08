@@ -102,7 +102,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         let bytecode = message.code.clone();
         let gas_limit = message.gas_limit;
         let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
-        self.pc = bytecode.original_byte_slice().as_ptr();
+        self.pc = bytecode.bytes_slice().as_ptr();
         self.bytecode_ref = None;
         self.bytecode = bytecode;
         self.stack_len = 0;
@@ -184,6 +184,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub fn original_bytecode(&self) -> Bytes {
         self.bytecode.original_bytes()
+    }
+
+    /// Returns the original active bytecode as a byte slice.
+    #[inline]
+    pub fn original_bytecode_slice(&self) -> &[u8] {
+        self.bytecode.original_byte_slice()
     }
 
     /// Calculates or returns the cached hash of the original active bytecode.
@@ -730,5 +736,34 @@ mod owned_error_tests {
         assert_eq!(result, Err(ExecutionError::Database(error)));
         assert!(interpreter.error.is_none());
         assert_eq!(interpreter.finish_run(InstrStop::Stop), Ok(InstrStop::Stop));
+    }
+}
+
+#[cfg(test)]
+mod bytecode_padding_tests {
+    use super::*;
+    use crate::{
+        interpreter::op,
+        test_utils::{RunConfig, run},
+    };
+
+    #[test]
+    fn empty_code_reads_padding_stop() {
+        let interp = run(RunConfig::default());
+        assert_eq!(interp.err, InstrStop::Stop);
+    }
+
+    #[test]
+    fn push_past_end_reads_zero_padding() {
+        let interp = run(RunConfig::new([op::PUSH2, 0x01]));
+        assert_eq!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(0x0100)]);
+    }
+
+    #[test]
+    fn jump_to_final_jumpdest_reads_padding_stop() {
+        let interp = run(RunConfig::new([op::PUSH1, 3, op::JUMP, op::JUMPDEST]));
+        assert_eq!(interp.err, InstrStop::Stop);
+        assert!(interp.stack().is_empty());
     }
 }
