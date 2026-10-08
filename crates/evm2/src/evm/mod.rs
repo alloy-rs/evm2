@@ -195,7 +195,6 @@ pub trait InterpreterRunner<T: EvmTypesHost>: core::fmt::Debug + Send + Sync + '
     /// method returns.
     fn run<'frame, 'host>(
         &self,
-        config: &ExecutionConfig<T>,
         interpreter: &mut Interpreter<'frame, 'host, T>,
         host: &mut T::Host<'host>,
     ) -> Option<InstrStop>;
@@ -1115,11 +1114,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 // SAFETY: The message outlives the frame, which is returned to the pool below.
                 let frame_message = unsafe { trustme::decouple_lt(&*message) };
                 let frame = top_frame.insert(guard.evm.interpreter_pool.pop(tx_env, frame_message));
-                // SAFETY: `execution_config` points to a private field that host execution does
-                // not replace or mutate, so the pointee remains valid for the lifetime of the
-                // frame.
-                let version = unsafe { trustme::decouple_lt(guard.evm.execution_config.version()) };
-                frame.prepare_run(guard.evm.spec_id(), version, guard.evm);
+                frame.prepare_run(guard.evm);
                 frame
             }
         };
@@ -1447,9 +1442,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let mut interp: Box<Interpreter<'frame, 'a, T>> =
             guard.evm.interpreter_pool.pop(tx_env, message);
         let interp_ref = interp.as_mut();
-        // SAFETY: `execution_config` points to a private field that host execution does not
-        // replace or mutate, so the pointee remains valid here.
-        let execution_config = unsafe { trustme::decouple_lt(&guard.evm.execution_config) };
         guard.evm.inspect_initialize_interp(interp_ref);
         let inspector = guard.evm.inspector.as_deref_mut().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
@@ -1462,13 +1454,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
         let interpreter_runner = guard.evm.interpreter_runner.clone();
         let stop = if let Some(inspector) = inspector {
-            interp_ref.run_inspect(execution_config, guard.evm, inspector)
+            interp_ref.run_inspect(guard.evm, inspector)
         } else if let Some(runner) = interpreter_runner
-            && let Some(stop) = runner.run(execution_config, interp_ref, guard.evm)
+            && let Some(stop) = runner.run(interp_ref, guard.evm)
         {
             interp_ref.finish_run(stop)
         } else {
-            interp_ref.run(execution_config, guard.evm)
+            interp_ref.run(guard.evm)
         };
         guard.evm.current_frame = prev_frame;
         guard.evm.interpreter_pool.push(interp);
@@ -1482,10 +1474,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
             // The host and spec are normally wired up by the interpreter run; set them up early so
             // that the hook can access them.
-            // SAFETY: `execution_config` points to a private field that host execution does not
-            // replace or mutate, so the pointee remains valid here.
-            let version = unsafe { trustme::decouple_lt(self.execution_config.version()) };
-            interp.prepare_run(self.spec_id(), version, self);
+            interp.prepare_run(self);
             inspector.initialize_interp(interp);
         }
     }
@@ -1494,6 +1483,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     fn spec_id(&self) -> SpecId {
         self.spec_id()
+    }
+
+    fn execution_config(&self) -> &ExecutionConfig<T> {
+        &self.execution_config
     }
 
     fn block_env(&mut self) -> &BlockEnv<T> {
@@ -1894,7 +1887,6 @@ mod tests {
     impl InterpreterRunner<BaseEvmTypes> for TestInterpreterRunner {
         fn run<'frame, 'host>(
             &self,
-            _config: &ExecutionConfig<BaseEvmTypes>,
             _interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
             _host: &mut Evm<'host, BaseEvmTypes>,
         ) -> Option<InstrStop> {
@@ -2505,7 +2497,7 @@ mod tests {
 
         let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::PRAGUE);
         evm.set_execution_config(
-            config,
+            config.clone(),
             SpecId::PRAGUE,
             crate::ethereum::ethereum_tx_registry(SpecId::PRAGUE),
             Precompiles::base(SpecId::PRAGUE),

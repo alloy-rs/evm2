@@ -1,13 +1,13 @@
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking, StackMut,
-    StackRef, Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking,
+    StackMut, StackRef, Word,
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
     bytecode::Bytecode,
     env::TxEnv,
     evm::inspector::Inspector,
-    interpreter::dispatch::{self, InstrTable},
+    interpreter::dispatch,
     trustme,
     version::{EvmFeatures, GasParams},
 };
@@ -34,7 +34,6 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     message: Option<&'frame Message<T>>,
     host: Option<NonNull<T::Host<'host>>>,
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
-    version: Option<&'frame Version>,
     pub(in crate::interpreter) stack_len: usize,
     #[derive_where(skip)]
     pub(in crate::interpreter) stack: Box<StackBacking>,
@@ -91,7 +90,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             return_data: Bytes::new(),
             host: None,
             inspector: None,
-            version: None,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
@@ -122,7 +120,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     pub(crate) const fn clear_frame_refs(&mut self) {
         self.tx_env = None;
         self.message = None;
-        self.version = None;
         self.host = None;
         self.inspector = None;
     }
@@ -311,9 +308,30 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Returns the active runtime version data.
     #[inline]
-    pub const fn version(&self) -> &Version {
-        // SAFETY: `version` is initialized before execution starts.
-        unsafe { self.version.unwrap_unchecked() }
+    pub fn version(&self) -> &Version {
+        // SAFETY: The result is tied to `&self`, which excludes host calls through `self`.
+        unsafe { self.version_detached() }
+    }
+
+    /// Returns the active runtime version data without borrowing the interpreter.
+    ///
+    /// # Safety
+    ///
+    /// The host must be initialized, and the result must not be used after the host is borrowed
+    /// mutably.
+    #[inline]
+    unsafe fn version_detached(&self) -> &'host Version {
+        unsafe { self.execution_config_detached() }.version()
+    }
+
+    /// Returns the active execution config without borrowing the interpreter.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`Self::version_detached`].
+    #[inline]
+    unsafe fn execution_config_detached(&self) -> &'host ExecutionConfig<T> {
+        unsafe { self.host.unwrap_unchecked().as_ref() }.execution_config()
     }
 
     /// Returns whether the active frame forbids state-changing operations.
@@ -358,35 +376,24 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Runs the interpreter until it stops.
     #[inline]
-    pub fn run(
-        &mut self,
-        config: &ExecutionConfig<T>,
-        host: &mut T::Host<'host>,
-    ) -> Result<InstrStop, ExecutionError> {
-        self.run_inner(config.base_spec_id(), config.version(), host, None, config.instructions)
+    pub fn run(&mut self, host: &mut T::Host<'host>) -> Result<InstrStop, ExecutionError> {
+        self.run_inner(host, None)
     }
 
     /// Runs the interpreter until it stops with an execution inspector.
     #[inline]
     pub fn run_inspect(
         &mut self,
-        config: &ExecutionConfig<T>,
         host: &mut T::Host<'host>,
         inspector: &mut (dyn Inspector<T> + 'host),
     ) -> Result<InstrStop, ExecutionError> {
-        self.run_inner(
-            config.base_spec_id(),
-            config.version(),
-            host,
-            Some(NonNull::from(inspector)),
-            config.inspect_instructions,
-        )
+        self.run_inner(host, Some(NonNull::from(inspector)))
     }
 
     /// Prepares this interpreter for external execution.
     #[inline]
     #[doc(hidden)]
-    pub fn prepare_run(&mut self, spec: SpecId, version: &Version, host: &mut T::Host<'host>) {
+    pub fn prepare_run(&mut self, host: &mut T::Host<'host>) {
         if self.bytecode_ref.is_none() {
             // SAFETY: The view borrows immutable allocations retained by our owned `Bytecode`,
             // so moving the interpreter does not invalidate it. `init` clears the view before
@@ -394,31 +401,33 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             let bytecode = unsafe { trustme::decouple_lt(&self.bytecode) };
             self.bytecode_ref = Some(BytecodeRef::new(bytecode));
         }
+        let config = host.execution_config();
+        let version = config.version();
         self.memory.set_memory_limit(version.memory_limit);
-        // SAFETY: `version` remains alive for the duration of this interpreter run.
-        let version = unsafe { trustme::decouple_lt(version) };
+        self.spec = config.base_spec_id();
+        self.features = version.features;
         self.host = Some(NonNull::from(host));
         self.inspector = None;
-        self.version = Some(version);
-        self.spec = spec;
-        self.features = version.features;
     }
 
     #[inline(never)]
     fn run_inner(
         &mut self,
-        spec: SpecId,
-        version: &Version,
         host: &mut T::Host<'host>,
         inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
-        instructions: &InstrTable<T>,
     ) -> Result<InstrStop, ExecutionError> {
-        self.prepare_run(spec, version, host);
+        self.prepare_run(host);
         self.inspector = inspector;
 
         let stop = if self.error.is_some() {
             InstrStop::FatalExternalError
         } else {
+            // Load the table only after setup: passing it in keeps it in a callee-saved register
+            // across setup, which makes the dispatch loop spill the stack pointer.
+            // SAFETY: `prepare_run` initialized the host, and the config is only read here.
+            let config = unsafe { self.execution_config_detached() };
+            let instructions =
+                if inspector.is_some() { config.inspect_instructions } else { config.instructions };
             dispatch::run(self, instructions)
         };
         self.finish_run(stop)
@@ -524,10 +533,8 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     /// Returns the active runtime version data.
     #[inline]
-    pub const fn version(&self) -> &'frame Version {
-        // SAFETY: `version` is initialized at the beginning of `run` and remains set for
-        // instruction execution.
-        unsafe { self.0.version.unwrap_unchecked() }
+    pub fn version(&self) -> &Version {
+        self.0.version()
     }
 
     /// Returns the active frame-local call/create message.
@@ -552,8 +559,18 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     /// Returns the active dynamic gas parameters.
     #[inline]
-    pub const fn gas_params(&self) -> &'frame GasParams {
+    pub fn gas_params(&self) -> &GasParams {
         &self.version().gas_params
+    }
+
+    /// Returns the active dynamic gas parameters without borrowing the interpreter state.
+    ///
+    /// # Safety
+    ///
+    /// The result must not be used after the host is borrowed mutably.
+    #[inline]
+    pub(in crate::interpreter) unsafe fn gas_params_detached(&self) -> &'host GasParams {
+        unsafe { &self.0.version_detached().gas_params }
     }
 
     /// Returns linear memory.
@@ -565,7 +582,9 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     /// Resizes linear memory using the active runtime gas parameters.
     #[inline]
     pub fn resize_memory(&mut self, gas: &mut Gas, offset: usize, len: usize) -> Result {
-        self.0.memory.resize_evm(gas, self.gas_params(), offset, len)
+        // SAFETY: Resizing memory makes no host calls.
+        let gas_params = unsafe { self.gas_params_detached() };
+        self.0.memory.resize_evm(gas, gas_params, offset, len)
     }
 
     /// Returns return data from the last call-like operation.

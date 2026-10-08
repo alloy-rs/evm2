@@ -1,6 +1,6 @@
 use super::*;
 use evm2::{
-    BaseEvmConfigSelector, BaseEvmTypes, Evm, Precompiles,
+    BaseEvmTypes, Evm, Precompiles,
     bytecode::Bytecode,
     env::{BlockEnv, BlockEnvExt, TxEnv},
     ethereum::ethereum_tx_registry,
@@ -381,13 +381,10 @@ fn with_evm_context_and_host_mut<
     R,
 >(
     bytecode: &[u8],
-    spec_id: SpecId,
     host: &mut Evm<'_, BaseEvmTypes>,
     modify_message: Option<fn(&mut Message<BaseEvmTypes>)>,
     f: F,
 ) -> R {
-    let config =
-        <BaseEvmConfigSelector as evm2::EvmConfigSelector<BaseEvmTypes>>::execution_config(spec_id);
     let tx_env = def_tx_env();
     let mut message = def_message(DEF_GAS_LIMIT);
     if let Some(modify_message) = modify_message {
@@ -398,7 +395,7 @@ fn with_evm_context_and_host_mut<
         ..message
     };
     let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
-    interpreter.prepare_run(config.base_spec_id(), config.version(), host);
+    interpreter.prepare_run(host);
 
     let (mut ecx, stack, stack_len) =
         unsafe { EvmContext::from_interpreter_with_stack(&mut interpreter) };
@@ -426,7 +423,7 @@ fn with_evm_context_and_host_modified<
     f: F,
 ) -> (R, HostState) {
     let mut host = prepare_host(spec_id);
-    let result = with_evm_context_and_host_mut(bytecode, spec_id, &mut host, modify_message, f);
+    let result = with_evm_context_and_host_mut(bytecode, &mut host, modify_message, f);
     let host = HostState::from_evm(&mut host);
     (result, host)
 }
@@ -504,8 +501,6 @@ fn run_compiled_test_case_with_context(
     }
 
     // Interpreter - run evm2 as the oracle
-    let config =
-        <BaseEvmConfigSelector as evm2::EvmConfigSelector<BaseEvmTypes>>::execution_config(spec_id);
     let tx_env = def_tx_env();
     let mut message = def_message(gas_limit);
     if let Some(modify_message) = modify_message {
@@ -518,7 +513,7 @@ fn run_compiled_test_case_with_context(
     };
     let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
     let mut int_host = prepare_host(spec_id);
-    let int_stop = interpreter.run(&config, &mut int_host).unwrap();
+    let int_stop = interpreter.run(&mut int_host).unwrap();
     let int_result = int_stop;
     let interpreter_output = interpreter.output();
 
