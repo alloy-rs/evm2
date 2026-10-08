@@ -2,7 +2,7 @@
 
 use super::{
     Account, AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange,
-    StorageSlot, Tracked,
+    StorageOverlay, StorageSlot, Tracked,
 };
 use crate::interpreter::Word;
 use alloy_primitives::{
@@ -37,6 +37,45 @@ pub struct PendingState {
 }
 
 impl PendingState {
+    /// Borrows changed accounts together with their storage overlays.
+    ///
+    /// Includes accounts whose metadata is unchanged but whose storage changed or was wiped.
+    /// Loaded-but-unchanged accounts and slots are omitted.
+    pub fn changed_accounts(
+        &self,
+    ) -> impl Iterator<Item = (AccountChangeRef<'_>, Option<&StorageOverlay>)> {
+        self.accounts.iter().filter_map(|(&address, entry)| {
+            let storage = &entry.storage;
+            let selfdestructed = self.selfdestructs.contains(&address);
+            let has_storage_changes = storage.wiped || storage.changed_slots().next().is_some();
+            (entry.is_loaded
+                && (entry.is_changed()
+                    || entry.is_created()
+                    || selfdestructed
+                    || (entry.is_touched
+                        && entry.original.is_some()
+                        && entry.present.as_ref().is_some_and(AccountInfo::is_empty))
+                    || has_storage_changes))
+                .then_some((
+                    AccountChangeRef {
+                        address,
+                        original: entry.original.as_ref(),
+                        current: entry.present.as_ref(),
+                        created: entry.is_created(),
+                        selfdestructed,
+                    },
+                    has_storage_changes.then_some(storage),
+                ))
+        })
+    }
+
+    /// Borrows bytecode changed by the transaction, keyed by code hash.
+    pub fn changed_bytecodes(
+        &self,
+    ) -> impl Iterator<Item = (alloy_primitives::B256, &crate::bytecode::Bytecode)> {
+        self.accounts.values().filter_map(Account::changed_code)
+    }
+
     /// Returns whether the transaction loaded no accounts and no storage.
     #[inline]
     pub fn is_empty(&self) -> bool {
@@ -152,6 +191,27 @@ impl StateChangeSource for PendingState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changed_accounts_groups_storage_wipes_and_omits_reads() {
+        let address = Address::with_last_byte(1);
+        let info = AccountInfo { nonce: 1, ..Default::default() };
+        let mut pending = PendingState::default();
+        pending.insert_account(address, Some(info.clone()), Some(info));
+        pending.insert_storage(address, Word::from(1), Word::from(7), Word::from(7));
+        pending.insert_storage(address, Word::from(2), Word::from(8), Word::ZERO);
+        pending.accounts.get_mut(&address).unwrap().storage.wiped = true;
+
+        let changes = pending.changed_accounts().collect::<Vec<_>>();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].0.address, address);
+        let storage = changes[0].1.unwrap();
+        assert!(storage.wiped);
+        let slots = storage.changed_slots().collect::<Vec<_>>();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(*slots[0].0, Word::from(1));
+        assert_eq!(slots[0].1.current, Word::from(7));
+    }
 
     #[test]
     fn inserts_account_and_storage() {
