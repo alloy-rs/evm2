@@ -988,7 +988,7 @@ mod tests {
         db.insert_account_info(&address, info.clone());
         let mut state = State::new(db);
 
-        drop(state.storage(&address).unwrap());
+        state.storage(&address).unwrap();
 
         let account = &state.accounts[&address];
         assert_eq!(account.original, Some(info.clone()));
@@ -1003,14 +1003,13 @@ mod tests {
         let address = Address::with_last_byte(1);
         let mut state = State::new(EmptyDB::default());
         let key = Word::from(1);
-        drop(state.storage_slot(&address, key).unwrap());
+        state.storage_slot(&address, key).unwrap();
         let expected_capacity = state.accounts[&address].storage.slots.capacity();
         assert!(expected_capacity > 0);
         state.commit_transaction();
 
         let mut account = state.account(&address).unwrap();
-        let storage = account.storage();
-        drop(storage);
+        account.storage();
         drop(account);
 
         assert_eq!(state.accounts[&address].storage.slots.capacity(), expected_capacity);
