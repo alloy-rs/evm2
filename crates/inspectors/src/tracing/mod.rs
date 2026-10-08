@@ -756,7 +756,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         let input = if self.config.record_inputs
             && (message.depth == 0 || self.budget.reserve(message.input.len()))
         {
-            message.input.clone()
+            message.input.to_bytes(interp.host().call_memory())
         } else {
             Bytes::new()
         };
@@ -798,7 +798,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         let input = if self.config.record_inputs
             && (message.depth == 0 || self.budget.reserve(message.input.len()))
         {
-            message.input.clone()
+            message.input.to_bytes(interp.host().call_memory())
         } else {
             Bytes::new()
         };

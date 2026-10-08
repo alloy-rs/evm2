@@ -26,7 +26,7 @@ use alloy_primitives::{Selector, hex, map::HashMap};
 use alloy_rpc_types_trace::geth::FourByteFrame;
 use evm2::{
     EvmTypesHost, Inspector,
-    interpreter::{Interpreter, Message, MessageResult},
+    interpreter::{Host, Interpreter, Message, MessageResult},
 };
 
 /// Fourbyte tracing inspector that records all function selectors and their calldata sizes.
@@ -46,13 +46,14 @@ impl FourByteInspector {
 impl<T: EvmTypesHost> Inspector<T> for FourByteInspector {
     fn call(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         if message.input.len() >= 4 {
             let selector =
-                Selector::try_from(&message.input[..4]).expect("input is at least 4 bytes");
-            let calldata_size = message.input[4..].len();
+                Selector::try_from(&message.input.as_slice(interp.host().call_memory())[..4])
+                    .expect("input is at least 4 bytes");
+            let calldata_size = message.input.len() - 4;
             *self.inner.entry((selector, calldata_size)).or_default() += 1;
         }
         None

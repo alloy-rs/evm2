@@ -29,10 +29,10 @@ pub(crate) use stack::{RawStack, StackBacking};
 pub use stack::{Stack, StackMut, StackRef, Word};
 
 mod memory;
-pub use memory::Memory;
+pub use memory::{CallMemory, Memory};
 
 mod message;
-pub use message::{Message, MessageExt, MessageKind, derive_create_destination};
+pub use message::{CallInput, Message, MessageExt, MessageKind, derive_create_destination};
 
 mod host;
 pub use host::{Host, MessageResult, MessageResultExt};
