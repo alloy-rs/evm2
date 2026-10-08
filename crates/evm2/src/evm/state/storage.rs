@@ -526,7 +526,6 @@ mod tests {
             state.storage(&address).unwrap().into_slot_with_skip_and_warm(key, false).unwrap();
         assert!(is_cold);
         assert_eq!(slot.current(), Word::ZERO);
-        drop(slot);
         assert!(state.storage_slot(&address, key).unwrap().is_warm());
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
@@ -538,7 +537,7 @@ mod tests {
         let address = Address::with_last_byte(1);
         let key = Word::from(8);
         let mut state = State::new(CacheDB::default());
-        drop(state.storage_slot(&address, key).unwrap());
+        state.storage_slot(&address, key).unwrap();
         state.prewarm_storage_slot(&address, key);
         let checkpoint = state.checkpoint();
 
@@ -546,7 +545,6 @@ mod tests {
             state.storage(&address).unwrap().into_slot_with_skip_and_warm(key, true).unwrap();
         assert!(!is_cold);
         assert!(slot.is_warm());
-        drop(slot);
         assert_eq!(state.checkpoint(), checkpoint);
     }
 
