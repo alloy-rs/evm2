@@ -719,3 +719,32 @@ mod owned_error_tests {
         assert_eq!(interpreter.finish_run(InstrStop::Stop), Ok(InstrStop::Stop));
     }
 }
+
+#[cfg(test)]
+mod bytecode_padding_tests {
+    use super::*;
+    use crate::{
+        interpreter::op,
+        test_utils::{RunConfig, run},
+    };
+
+    #[test]
+    fn empty_code_reads_padding_stop() {
+        let interp = run(RunConfig::default());
+        assert_eq!(interp.err, InstrStop::Stop);
+    }
+
+    #[test]
+    fn push_past_end_reads_zero_padding() {
+        let interp = run(RunConfig::new([op::PUSH2, 0x01]));
+        assert_eq!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(0x0100)]);
+    }
+
+    #[test]
+    fn jump_to_final_jumpdest_reads_padding_stop() {
+        let interp = run(RunConfig::new([op::PUSH1, 3, op::JUMP, op::JUMPDEST]));
+        assert_eq!(interp.err, InstrStop::Stop);
+        assert!(interp.stack().is_empty());
+    }
+}
