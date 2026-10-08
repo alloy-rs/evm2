@@ -104,7 +104,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         let bytecode = message.code.clone();
         let gas_limit = message.gas_limit;
         let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
-        self.pc = bytecode.original_byte_slice().as_ptr();
+        self.pc = bytecode.bytes_slice().as_ptr();
         self.bytecode_ref = None;
         self.bytecode = bytecode;
         self.stack_len = 0;
@@ -187,6 +187,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub fn original_bytecode(&self) -> Bytes {
         self.bytecode.original_bytes()
+    }
+
+    /// Returns the original active bytecode as a byte slice.
+    #[inline]
+    pub fn original_bytecode_slice(&self) -> &[u8] {
+        self.bytecode.original_byte_slice()
     }
 
     /// Calculates or returns the cached hash of the original active bytecode.

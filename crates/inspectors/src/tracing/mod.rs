@@ -506,7 +506,7 @@ impl TracingInspector {
             let size = usize::from(immediate_size(op.get()));
             if size != 0 {
                 let pc = interp.pc() + 1;
-                let bytes = interp.bytecode().as_slice().get(pc..pc + size).unwrap_or_default();
+                let bytes = interp.original_bytecode_slice().get(pc..pc + size).unwrap_or_default();
                 if self.budget.reserve(bytes.len()) {
                     immediate_bytes = Some(Bytes::copy_from_slice(bytes));
                 }
