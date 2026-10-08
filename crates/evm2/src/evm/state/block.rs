@@ -298,7 +298,8 @@ mod tests {
         let mut pending = PendingState::default();
         pending.accounts.insert(address, Account::new(original, current));
         if wiped || !slots.is_empty() {
-            pending.storage.insert(address, StorageOverlay { wiped, slots, _non_exhaustive: () });
+            pending.accounts.entry(address).or_default().storage =
+                StorageOverlay { wiped, slots, _non_exhaustive: () };
         }
         pending
     }

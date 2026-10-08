@@ -1553,15 +1553,20 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SLoad, HostError> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
-        let mut slot = match self.state.storage(address).into_slot_with_skip(*key, skip_cold_load) {
-            Ok(slot) => slot,
+        let storage = self.state.storage(address);
+        let loaded = if eip2929 {
+            storage.into_slot_with_skip_and_warm(*key, skip_cold_load)
+        } else {
+            storage.into_slot_with_skip(*key, skip_cold_load).map(|slot| (slot, false))
+        };
+        let (slot, is_cold) = match loaded {
+            Ok(loaded) => loaded,
             // SLOAD's out-of-gas is the cold-access charge itself, so the slot was never accessed
             // and is not recorded in the block access list (unlike SSTORE, which first pays the
             // warm-read cost, accessing the slot, before the cold/dynamic charge can run out).
             Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
             Err(code) => return Err(code.into()),
         };
-        let is_cold = eip2929 && slot.warm();
         let value = slot.current();
         Ok(SLoad { value, is_cold, _non_exhaustive: () })
     }
@@ -1578,13 +1583,18 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         // implicit storage read. When the cold access is unaffordable the read is skipped, so the
         // slot stays out of the EIP-7928 block access list (the warm-read cost has already been
         // paid by the instruction, so an affordable warm slot is still read on OOG).
-        let mut slot = match self.state.storage(address).into_slot_with_skip(*key, skip_cold_load) {
-            Ok(slot) => slot,
+        let storage = self.state.storage(address);
+        let loaded = if eip2929 {
+            storage.into_slot_with_skip_and_warm(*key, skip_cold_load)
+        } else {
+            storage.into_slot_with_skip(*key, skip_cold_load).map(|slot| (slot, false))
+        };
+        let (mut slot, is_cold) = match loaded {
+            Ok(loaded) => loaded,
             Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
             Err(code) => return Err(code.into()),
         };
 
-        let is_cold = eip2929 && slot.warm();
         let (original_value, present_value) = slot.write(*value);
         Ok(SStore {
             original_value,
@@ -2301,9 +2311,9 @@ mod tests {
         let pending = evm.state.take_pending_state();
         assert!(
             !pending
-                .storage
+                .accounts
                 .get(&contract)
-                .is_some_and(|overlay| overlay.slots.contains_key(&Word::from(1)))
+                .is_some_and(|account| account.storage.slots.contains_key(&Word::from(1)))
         );
     }
 
@@ -2356,9 +2366,9 @@ mod tests {
         let pending = evm.state.take_pending_state();
         assert!(
             pending
-                .storage
+                .accounts
                 .get(&contract)
-                .is_some_and(|overlay| overlay.slots.contains_key(&Word::from(1)))
+                .is_some_and(|account| account.storage.slots.contains_key(&Word::from(1)))
         );
     }
 
@@ -3089,11 +3099,12 @@ mod tests {
             evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").detach();
 
         assert_eq!(result.result.logs.len(), 1);
-        let overlay = result
+        let overlay = &result
             .pending_state
-            .storage
+            .accounts
             .get(&LIFECYCLE_ACCOUNT)
-            .expect("storage change should be present");
+            .expect("storage change should be present")
+            .storage;
         let slot =
             overlay.slots.get(&LIFECYCLE_STORAGE_KEY).expect("storage slot should be present");
         assert_eq!(slot.value.original, Word::from(1));
@@ -3643,7 +3654,7 @@ mod tests {
         let account = pending.accounts.get(&target).expect("empty destination should be deleted");
         assert!(account.original.is_some());
         assert_eq!(account.present, None);
-        assert!(pending.storage.get(&target).is_some_and(|overlay| overlay.wiped));
+        assert!(pending.accounts.get(&target).is_some_and(|account| account.storage.wiped));
     }
 
     #[test]
