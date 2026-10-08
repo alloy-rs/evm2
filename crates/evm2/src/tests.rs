@@ -1,13 +1,17 @@
 use crate::{
-    BaseEvmTypes, Evm, Precompiles, SpecId,
+    BaseEvmTypes, Evm, EvmFeatures, ExecutionConfig, Precompiles, SpecId, Version,
+    bytecode::Bytecode,
     env::{BlockEnvExt, TxEnvExt},
+    ethereum::{LazyTxEip7702, TxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo, InMemoryDB},
     interpreter::{Host, InstrStop, MessageExt, Word, op},
     registry::TxRegistry,
     test_utils::{legacy_bytecode, push},
 };
-use alloc::vec::Vec;
-use alloy_primitives::Address;
+use alloc::{vec, vec::Vec};
+use alloy_consensus::{TxEip7702, transaction::Recovered};
+use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
+use alloy_primitives::{Address, U256};
 
 type TestEvm = Evm<'static, BaseEvmTypes>;
 
@@ -236,4 +240,48 @@ fn eip8037_sibling_refill_restores_parent_gas_left() {
     assert_eq!(result.state_gas_spent, 0);
     assert_eq!(result.output.len(), 32);
     assert_eq!(result.output, baseline.output);
+}
+
+#[test]
+fn eip2780_authorization_charges_no_state_gas_without_eip8037() {
+    let caller = Address::from([0xbb; 20]);
+    let recipient = Address::from([0xaa; 20]);
+    let authority = Address::from([0xcc; 20]);
+    let delegate = Address::from([0xdd; 20]);
+
+    let mut database = InMemoryDB::default();
+    database.insert_account_info(
+        &caller,
+        AccountInfo { balance: U256::from(u64::MAX), ..Default::default() },
+    );
+    let mut version = Version::new(SpecId::AMSTERDAM);
+    version.features.remove(EvmFeatures::EIP8037);
+    let chain_id = version.chain_id;
+    let mut evm = TestEvm::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(SpecId::AMSTERDAM, version),
+        SpecId::AMSTERDAM,
+        BlockEnvExt::default(),
+        ethereum_tx_registry(SpecId::AMSTERDAM),
+        database,
+        Precompiles::base(SpecId::AMSTERDAM),
+    );
+    // TX_BASE + cold recipient + per-authorization base + the authority's ACCOUNT_WRITE.
+    let gas_limit = 12_000 + 3_000 + 7_816 + 9_000;
+    let tx = Recovered::new_unchecked(
+        TxEnvelope::Eip7702(LazyTxEip7702::from_cached_recovered_authorizations(
+            TxEip7702 { chain_id, to: recipient, gas_limit, ..Default::default() },
+            vec![RecoveredAuthorization::new_unchecked(
+                Authorization { chain_id: U256::ZERO, address: delegate, nonce: 0 },
+                RecoveredAuthority::Valid(authority),
+            )],
+        )),
+        caller,
+    );
+
+    let result = evm.transact(&tx).unwrap().detach();
+    assert!(result.result.status);
+    assert_eq!(result.result.state_gas_spent, 0);
+    let authority = result.pending_state.account_info(&authority).unwrap();
+    assert_eq!(authority.nonce, 1);
+    assert_eq!(authority.code_hash, Bytecode::new_eip7702(delegate).hash_slow());
 }
