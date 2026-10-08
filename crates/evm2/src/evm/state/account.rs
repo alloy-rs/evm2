@@ -268,12 +268,13 @@ impl Account {
         }
 
         let storage = &self.storage;
-        if storage.wiped {
+        let reset = self.storage_is_reset(selfdestructed);
+        if reset {
             sink.storage_wipe(address)?;
         }
         for (&key, slot) in &storage.slots {
             let value = &slot.value;
-            if slot.is_changed(storage.wiped) {
+            if slot.is_changed(reset) {
                 sink.storage(StorageChange {
                     address,
                     key,
@@ -296,6 +297,14 @@ impl Account {
         } else {
             sink.account_read(address, self.present.as_ref())
         }
+    }
+
+    /// Whether committing this account must replace all backing storage before applying slots.
+    /// `selfdestructed` is taken from the retained transaction set, since EIP-8246 may clear the
+    /// live destroyed flag while preserving a balance-only account.
+    #[inline]
+    pub(crate) const fn storage_is_reset(&self, selfdestructed: bool) -> bool {
+        self.is_created() || selfdestructed || (self.original.is_some() && self.present.is_none())
     }
 }
 
@@ -368,7 +377,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if self.tracked.storage.slots.capacity() == 0 {
             self.tracked.storage.slots = self.storage_pool.take();
         }
-        StorageHandle::new(self.address, &mut self.tracked.storage, self.inner)
+        StorageHandle::new(self.address, self.tracked, self.inner)
     }
 
     /// Records the pre-mutation revert entry the first time a change is made through this handle.
@@ -670,26 +679,28 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Deletes the account at transaction finalization.
     ///
     /// Used for self-destructed accounts (pre-EIP-8246, and zero-balance accounts under EIP-8246)
-    /// and EIP-161 dead-account cleanup. The caller is responsible for wiping the account's
-    /// storage. Finalization runs after the last revertible scope, so the mutation is not
-    /// journaled: the entry would never be replayed before [`State`](super::State) clears it.
+    /// and EIP-161 dead-account cleanup. Finalization runs after the last revertible scope, so the
+    /// mutation is not journaled: the entry would never be replayed before [`State`](super::State)
+    /// clears it.
     #[inline]
     pub(crate) fn delete_for_finalization(&mut self) {
         self.tracked.present = None;
+        self.clear_storage_for_finalization();
     }
 
     /// Resets a self-destructed account to a balance-only account for EIP-8246 finalization.
     ///
-    /// The balance is preserved while the nonce is reset to 0 and the code is cleared. The caller
-    /// is responsible for wiping the account's storage. This is only called for accounts that
-    /// still hold a balance; zero-balance self-destructed accounts are removed via
-    /// [`Self::delete_for_finalization`] instead. Like [`Self::delete_for_finalization`], the
-    /// mutation is not journaled because finalization runs after the last revertible scope.
+    /// The balance is preserved while the nonce, code, and loaded storage values are cleared.
+    /// This is only called for accounts that still hold a balance; zero-balance self-destructed
+    /// accounts are removed via [`Self::delete_for_finalization`] instead. Like
+    /// [`Self::delete_for_finalization`], the mutation is not journaled because finalization
+    /// runs after the last revertible scope.
     #[inline]
     pub(crate) fn reset_selfdestructed_for_finalization(&mut self) {
         let balance = self.balance();
         self.tracked.is_destroyed = false;
         self.tracked.present = Some(AccountInfo::default().with_balance(balance));
+        self.clear_storage_for_finalization();
     }
 
     /// Overrides the live balance and the balance restored by this handle's revert snapshot,
@@ -713,6 +724,14 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.present_mut().nonce = nonce;
         if let Some(JournalEntry::AccountChange { previous, .. }) = &mut self.snapshot {
             previous.get_or_insert_with(empty_account).nonce = nonce;
+        }
+    }
+
+    /// Clears loaded values after the last revertible scope, retaining slots and their warmth
+    /// for access-list reporting. Account lifecycle state records the full backing-storage reset.
+    fn clear_storage_for_finalization(&mut self) {
+        for slot in self.tracked.storage.slots.values_mut() {
+            slot.value.set_current(Word::ZERO);
         }
     }
 }

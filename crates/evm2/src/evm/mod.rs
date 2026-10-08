@@ -3652,7 +3652,6 @@ mod tests {
         let account = pending.accounts.get(&target).expect("empty destination should be deleted");
         assert!(account.original.is_some());
         assert_eq!(account.present, None);
-        assert!(pending.accounts.get(&target).is_some_and(|account| account.storage.wiped));
     }
 
     #[test]

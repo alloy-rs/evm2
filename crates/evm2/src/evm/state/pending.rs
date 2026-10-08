@@ -91,10 +91,10 @@ impl PendingState {
     /// Loaded-but-unchanged accounts and storage slots are ignored.
     #[cfg(test)]
     pub(crate) fn is_changed(&self) -> bool {
-        self.accounts.values().any(|account| {
+        self.accounts.iter().any(|(address, account)| {
             account.is_changed()
-                || account.storage.wiped
-                || account.storage.changed_slots().next().is_some()
+                || account.storage_is_reset(self.selfdestructs.contains(address))
+                || account.storage.changed_slots(false).next().is_some()
         })
     }
 }

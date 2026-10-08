@@ -247,27 +247,15 @@ fn visit_block_changes<S: StateChangeSink>(
 #[cfg(test)]
 mod tests {
     use super::{
-        super::{
-            Account, AccountInfo, PendingState, StateChangeSource, StorageOverlay, StorageSlot,
-            Tracked,
-        },
-        BlockStateAccumulator,
+        super::{Account, PendingState, StorageOverlay, StorageSlot},
+        *,
     };
-    use crate::interpreter::Word;
-    use alloy_primitives::{Address, map::U256Map};
-
-    use super::super::StateChangeSink;
-    #[cfg(feature = "serde")]
-    use crate::bytecode::Bytecode;
+    use crate::{bytecode::Bytecode, interpreter::Word};
     use alloc::{vec, vec::Vec};
-    #[cfg(feature = "serde")]
-    use alloy_primitives::B256;
+    use alloy_primitives::{Address, B256, Bytes, map::U256Map};
 
     #[test]
     fn code_sorted_orders_by_hash() {
-        use crate::bytecode::Bytecode;
-        use alloy_primitives::{B256, Bytes};
-
         let mut block = BlockStateAccumulator::new();
         // Inserted descending, so map order cannot be mistaken for sorted order.
         for byte in [0xcc_u8, 0x11, 0x77] {
@@ -292,15 +280,20 @@ mod tests {
         address: Address,
         original: Option<AccountInfo>,
         current: Option<AccountInfo>,
-        wiped: bool,
+        reset: bool,
         slots: U256Map<StorageSlot>,
     ) -> PendingState {
         let mut pending = PendingState::default();
-        pending.accounts.insert(address, Account::new(original, current));
-        if wiped || !slots.is_empty() {
-            pending.accounts.entry(address).or_default().storage =
-                StorageOverlay { wiped, slots, _non_exhaustive: () };
+        let mut account = Account::new(original, current);
+        if reset {
+            if account.present.is_some() {
+                account.mark_created();
+            } else {
+                pending.selfdestructs.insert(address);
+            }
         }
+        account.storage = StorageOverlay { slots, _non_exhaustive: () };
+        pending.accounts.insert(address, account);
         pending
     }
 
@@ -524,11 +517,13 @@ mod tests {
         let key = Word::from(1);
         let mut accumulator = BlockStateAccumulator::new();
 
-        let first = changes(address, None, None, true, slot(key, Word::from(5), Word::from(7)));
-        first.visit(&mut accumulator).expect("block accumulator is infallible");
-        changes(address, None, None, true, U256Map::default())
-            .visit(&mut accumulator)
-            .expect("block accumulator is infallible");
+        accumulator.storage_wipe(address).unwrap();
+        StateChangeSink::storage(
+            &mut accumulator,
+            StorageChange { address, key, original: Word::from(5), current: Word::from(7) },
+        )
+        .unwrap();
+        accumulator.storage_wipe(address).unwrap();
 
         assert!(accumulator.accounts_sorted().is_empty());
         assert_eq!(accumulator.storage_wipes_sorted(), [address]);
