@@ -1101,6 +1101,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // constructed), so the create hook observes it directly.
         let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
 
+        // Copy the config so the top frame does not hold a reference into `self` while `self` is
+        // passed on as the host. The copy outlives `top_frame`, whose reference is cleared on push.
+        let execution_config = guard.evm.execution_config;
         let mut top_frame: Option<Box<Interpreter<'frame, 'a, T>>> = None;
         let frame = match guard.evm.current_frame {
             // SAFETY: The parent frame is suspended on this call stack for the duration of the
@@ -1115,11 +1118,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 // SAFETY: The message outlives the frame, which is returned to the pool below.
                 let frame_message = unsafe { trustme::decouple_lt(&*message) };
                 let frame = top_frame.insert(guard.evm.interpreter_pool.pop(tx_env, frame_message));
-                // SAFETY: `execution_config` points to a private field that host execution does
-                // not replace or mutate, so the pointee remains valid for the lifetime of the
-                // frame.
-                let version = unsafe { trustme::decouple_lt(guard.evm.execution_config.version()) };
-                frame.prepare_run(guard.evm.spec_id(), version, guard.evm);
+                frame.prepare_run(guard.evm.spec_id(), execution_config.version(), guard.evm);
                 frame
             }
         };
@@ -1447,10 +1446,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let mut interp: Box<Interpreter<'frame, 'a, T>> =
             guard.evm.interpreter_pool.pop(tx_env, message);
         let interp_ref = interp.as_mut();
-        // SAFETY: `execution_config` points to a private field that host execution does not
-        // replace or mutate, so the pointee remains valid here.
-        let execution_config = unsafe { trustme::decouple_lt(&guard.evm.execution_config) };
-        guard.evm.inspect_initialize_interp(interp_ref);
+        // Copy the config so the interpreter does not hold a reference into `self` while `self` is
+        // passed on as the host. The copy outlives `interp`, whose reference is cleared on push.
+        let execution_config = guard.evm.execution_config;
+        guard.evm.inspect_initialize_interp(interp_ref, execution_config.version());
         let inspector = guard.evm.inspector.as_deref_mut().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // interpreter run.
@@ -1462,29 +1461,30 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
         let interpreter_runner = guard.evm.interpreter_runner.clone();
         let stop = if let Some(inspector) = inspector {
-            interp_ref.run_inspect(execution_config, guard.evm, inspector)
+            interp_ref.run_inspect(&execution_config, guard.evm, inspector)
         } else if let Some(runner) = interpreter_runner
-            && let Some(stop) = runner.run(execution_config, interp_ref, guard.evm)
+            && let Some(stop) = runner.run(&execution_config, interp_ref, guard.evm)
         {
             interp_ref.finish_run(stop)
         } else {
-            interp_ref.run(execution_config, guard.evm)
+            interp_ref.run(&execution_config, guard.evm)
         };
         guard.evm.current_frame = prev_frame;
         guard.evm.interpreter_pool.push(interp);
         stop
     }
 
-    fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, 'a, T>) {
+    fn inspect_initialize_interp(
+        &mut self,
+        interp: &mut Interpreter<'_, 'a, T>,
+        version: &crate::Version,
+    ) {
         if let Some(inspector) = self.inspector.as_deref_mut() {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // hook.
             let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
             // The host and spec are normally wired up by the interpreter run; set them up early so
             // that the hook can access them.
-            // SAFETY: `execution_config` points to a private field that host execution does not
-            // replace or mutate, so the pointee remains valid here.
-            let version = unsafe { trustme::decouple_lt(self.execution_config.version()) };
             interp.prepare_run(self.spec_id(), version, self);
             inspector.initialize_interp(interp);
         }
