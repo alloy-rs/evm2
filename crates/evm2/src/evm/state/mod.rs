@@ -543,8 +543,9 @@ impl<'a> State<'a> {
     ///
     /// Cold accounts are always loaded. Use [`Self::account_with_skip`] to skip them.
     pub fn account(&mut self, address: &Address) -> DbResult<AccountHandle<'_, 'a>> {
-        Self::account_raw(&mut self.inner, &mut self.accounts, address)
-            .map(|tracked| AccountHandle::new(*address, tracked, &mut self.inner))
+        let State { accounts, storage_pool, inner, .. } = self;
+        Self::account_raw(inner, accounts, address)
+            .map(|tracked| AccountHandle::new(*address, tracked, inner, storage_pool))
     }
 
     /// Loads an account, optionally skipping a cold access before reading the database.
@@ -557,8 +558,9 @@ impl<'a> State<'a> {
         address: &Address,
         skip_cold_load: bool,
     ) -> Result<AccountHandle<'_, 'a>, LoadError> {
-        Self::account_raw_with_skip(&mut self.inner, &mut self.accounts, address, skip_cold_load)
-            .map(|tracked| AccountHandle::new(*address, tracked, &mut self.inner))
+        let State { accounts, storage_pool, inner, .. } = self;
+        Self::account_raw_with_skip(inner, accounts, address, skip_cold_load)
+            .map(|tracked| AccountHandle::new(*address, tracked, inner, storage_pool))
     }
 
     /// Returns a journaled mutation handle to `address`'s persistent storage overlay.
@@ -1137,6 +1139,24 @@ impl<'a> State<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_storage_handle_reuses_pooled_slot_map() {
+        let address = Address::with_last_byte(1);
+        let mut state = State::new(EmptyDB::default());
+        let key = Word::from(1);
+        drop(state.storage(&address).into_slot(key).unwrap());
+        let expected_capacity = state.accounts[&address].storage.slots.capacity();
+        assert!(expected_capacity > 0);
+        state.commit_transaction();
+
+        let mut account = state.account(&address).unwrap();
+        let storage = account.storage();
+        drop(storage);
+        drop(account);
+
+        assert_eq!(state.accounts[&address].storage.slots.capacity(), expected_capacity);
+    }
 
     #[test]
     fn detached_buffers_return_empty_and_clones_remain_independent() {
