@@ -1,6 +1,7 @@
 use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
-    BaseEvmTypes, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionError, HostError, SpecId,
+    BaseEvmTypes, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig, ExecutionError,
+    HostError, SpecId,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
 };
@@ -112,6 +113,12 @@ impl<E> MessageResultExt<E> {
 pub trait Host<T: EvmTypesHost> {
     /// Returns the active base specification ID.
     fn spec_id(&self) -> SpecId;
+
+    /// Returns the active execution configuration.
+    ///
+    /// The interpreter keeps a reference to the returned version for the whole run, so the host
+    /// must not replace or mutate it while the interpreter runs.
+    fn execution_config(&self) -> &ExecutionConfig<T>;
 
     /// Returns the block environment.
     fn block_env(&mut self) -> &BlockEnv<T>;

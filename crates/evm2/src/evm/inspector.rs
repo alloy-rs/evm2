@@ -143,8 +143,7 @@ impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn Inspector<T> + 'a {
 mod tests {
     use super::Inspector;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, DatabaseError, Evm, EvmTypesHost, ExecutionConfig,
-        Precompiles, SpecId,
+        BaseEvmTypes, DatabaseError, Evm, EvmTypesHost, Precompiles, SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnvExt, TxEnvExt},
@@ -1191,8 +1190,7 @@ mod tests {
             ..Default::default()
         };
         let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
-        let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
-        let stop = interp.run_inspect(&config, &mut host, &mut inspector);
+        let stop = interp.run_inspect(&mut host, &mut inspector);
 
         assert_matches!(stop, Err(crate::ExecutionError::Database(error)) if error.is_fatal());
         assert_eq!(inspector.selfdestruct, None);
@@ -1638,8 +1636,7 @@ mod tests {
                 ..Default::default()
             };
             let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
-            let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
-            let stop = interp.run_inspect(&config, &mut TestHost::default(), &mut GasEdit);
+            let stop = interp.run_inspect(&mut TestHost::default(), &mut GasEdit);
 
             assert_eq!(stop, Ok(expected));
             assert_eq!(interp.gas().remaining(), 1000);

@@ -812,7 +812,7 @@ impl EvmWord {
 mod tests {
     use super::*;
     use evm2::{
-        DatabaseError, Evm, ExecutionConfig, ExecutionError, InterpreterRunner,
+        DatabaseError, Evm, ExecutionError, InterpreterRunner,
         bytecode::Bytecode,
         env::{BlockEnvExt, TxEnvExt},
         evm::{EmptyDB, precompile::NoPrecompiles},
@@ -826,11 +826,10 @@ mod tests {
     impl InterpreterRunner<BaseEvmTypes> for TestRunner {
         fn run<'frame, 'host>(
             &self,
-            config: &ExecutionConfig<BaseEvmTypes>,
             interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
             host: &mut Evm<'host, BaseEvmTypes>,
         ) -> Option<InstrStop> {
-            interpreter.prepare_run(config.base_spec_id(), config.version(), host);
+            interpreter.prepare_run(host);
             // SAFETY: The test functions only access this initialized interpreter's context.
             Some(unsafe { self.0.call_with_interpreter(interpreter) })
         }

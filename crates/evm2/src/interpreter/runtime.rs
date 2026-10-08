@@ -1,9 +1,9 @@
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking, StackMut,
-    StackRef, Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking,
+    StackMut, StackRef, Word,
 };
 use crate::{
-    EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
+    EvmTypesHost, ExecutionError, HostError, SpecId, Version,
     bytecode::Bytecode,
     env::TxEnv,
     evm::inspector::Inspector,
@@ -358,35 +358,26 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Runs the interpreter until it stops.
     #[inline]
-    pub fn run(
-        &mut self,
-        config: &ExecutionConfig<T>,
-        host: &mut T::Host<'host>,
-    ) -> Result<InstrStop, ExecutionError> {
-        self.run_inner(config.base_spec_id(), config.version(), host, None, config.instructions)
+    pub fn run(&mut self, host: &mut T::Host<'host>) -> Result<InstrStop, ExecutionError> {
+        let instructions = host.execution_config().instructions;
+        self.run_inner(host, None, instructions)
     }
 
     /// Runs the interpreter until it stops with an execution inspector.
     #[inline]
     pub fn run_inspect(
         &mut self,
-        config: &ExecutionConfig<T>,
         host: &mut T::Host<'host>,
         inspector: &mut (dyn Inspector<T> + 'host),
     ) -> Result<InstrStop, ExecutionError> {
-        self.run_inner(
-            config.base_spec_id(),
-            config.version(),
-            host,
-            Some(NonNull::from(inspector)),
-            config.inspect_instructions,
-        )
+        let instructions = host.execution_config().inspect_instructions;
+        self.run_inner(host, Some(NonNull::from(inspector)), instructions)
     }
 
     /// Prepares this interpreter for external execution.
     #[inline]
     #[doc(hidden)]
-    pub fn prepare_run(&mut self, spec: SpecId, version: &Version, host: &mut T::Host<'host>) {
+    pub fn prepare_run(&mut self, host: &mut T::Host<'host>) {
         if self.bytecode_ref.is_none() {
             // SAFETY: The view borrows immutable allocations retained by our owned `Bytecode`,
             // so moving the interpreter does not invalidate it. `init` clears the view before
@@ -394,9 +385,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             let bytecode = unsafe { trustme::decouple_lt(&self.bytecode) };
             self.bytecode_ref = Some(BytecodeRef::new(bytecode));
         }
+        let config = host.execution_config();
+        let spec = config.base_spec_id();
+        // SAFETY: The host does not replace or mutate its execution config while this interpreter
+        // runs, so the version remains valid for the duration of the run.
+        let version = unsafe { trustme::decouple_lt(config.version()) };
         self.memory.set_memory_limit(version.memory_limit);
-        // SAFETY: `version` remains alive for the duration of this interpreter run.
-        let version = unsafe { trustme::decouple_lt(version) };
         self.host = Some(NonNull::from(host));
         self.inspector = None;
         self.version = Some(version);
@@ -407,13 +401,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline(never)]
     fn run_inner(
         &mut self,
-        spec: SpecId,
-        version: &Version,
         host: &mut T::Host<'host>,
         inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
         instructions: &InstrTable<T>,
     ) -> Result<InstrStop, ExecutionError> {
-        self.prepare_run(spec, version, host);
+        self.prepare_run(host);
         self.inspector = inspector;
 
         let stop = if self.error.is_some() {

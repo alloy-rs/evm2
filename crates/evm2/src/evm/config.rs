@@ -126,8 +126,8 @@ where
 /// Selected execution configuration.
 ///
 /// Bundles the active runtime `Version` with the finalized instruction dispatch table selected for
-/// an EVM instance. This is the data passed to the interpreter when it runs.
-#[derive_where(Debug)]
+/// an EVM instance. The interpreter reads it from the host when it runs.
+#[derive_where(Clone, Debug)]
 pub struct ExecutionConfig<T: EvmTypesHost> {
     base_spec_id: SpecId,
     pub(crate) version: Version,
@@ -136,15 +136,6 @@ pub struct ExecutionConfig<T: EvmTypesHost> {
     #[derive_where(skip)]
     pub(crate) inspect_instructions: &'static InstrTable<T>,
 }
-
-impl<T: EvmTypesHost> Clone for ExecutionConfig<T> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<T: EvmTypesHost> Copy for ExecutionConfig<T> {}
 
 impl<T: EvmTypesHost> ExecutionConfig<T> {
     /// Creates an execution config for a base `SpecId` through selector `F`.

@@ -405,7 +405,7 @@ impl<T: EvmTypesHost, Output> TxRegistry<T, Output> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfigSelector, EvmFeatures, EvmTypesHost, SpecId,
+        BaseEvmConfigSelector, EvmFeatures, EvmTypesHost, ExecutionConfig, SpecId,
         env::{BlockEnv, BlockEnvExt, TxEnv},
         evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
         interpreter::{Host, Message, MessageResult, Word},
@@ -462,6 +462,10 @@ mod tests {
     impl Host<TestTypes> for TestHost {
         fn spec_id(&self) -> SpecId {
             SpecId::default()
+        }
+
+        fn execution_config(&self) -> &ExecutionConfig<TestTypes> {
+            unimplemented!()
         }
 
         fn block_env(&mut self) -> &BlockEnv<TestTypes> {
