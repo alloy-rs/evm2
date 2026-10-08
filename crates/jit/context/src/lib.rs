@@ -176,13 +176,13 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
 
     /// Returns active runtime version data.
     #[inline]
-    pub const fn version(&self) -> &evm2::Version {
+    pub fn version(&self) -> &evm2::Version {
         self.interpreter().version()
     }
 
     /// Returns active runtime gas parameters.
     #[inline]
-    pub const fn gas_params(&self) -> &GasParams {
+    pub fn gas_params(&self) -> &GasParams {
         &self.version().gas_params
     }
 
@@ -194,7 +194,7 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
 
     /// Returns whether the active runtime version enables `feature`.
     #[inline]
-    pub const fn enables(&self, feature: EvmFeatures) -> bool {
+    pub fn enables(&self, feature: EvmFeatures) -> bool {
         self.version().feature(feature)
     }
 
