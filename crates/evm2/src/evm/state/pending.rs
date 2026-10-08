@@ -61,20 +61,28 @@ impl PendingState {
         let account = self.accounts.entry(address).or_default();
         account.original = original;
         account.present = current;
-        account.is_loaded = true;
         account.code_changed = code_changed;
     }
 
     /// Inserts a storage slot's transaction-boundary original and current values.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the owning account has not been inserted with [`Self::insert_account`].
     pub fn insert_storage(&mut self, address: Address, key: Word, original: Word, current: Word) {
-        self.accounts.entry(address).or_default().storage.slots.insert(
-            key,
-            StorageSlot {
-                value: Tracked::from_parts(original, current),
-                is_warm: false,
-                _non_exhaustive: (),
-            },
-        );
+        self.accounts
+            .get_mut(&address)
+            .expect("insert the account before its storage")
+            .storage
+            .slots
+            .insert(
+                key,
+                StorageSlot {
+                    value: Tracked::from_parts(original, current),
+                    is_warm: false,
+                    _non_exhaustive: (),
+                },
+            );
     }
 
     /// Returns whether the transaction contains any account or storage change.
@@ -126,14 +134,7 @@ impl StateChangeSource for PendingState {
 
         for (&address, entry) in &self.accounts {
             let selfdestructed = self.selfdestructs.contains(&address);
-            if entry.is_loaded
-                && (entry.is_changed()
-                    || entry.is_created()
-                    || selfdestructed
-                    || (entry.is_touched
-                        && entry.original.is_some()
-                        && entry.present.as_ref().is_some_and(AccountInfo::is_empty)))
-            {
+            if entry.is_changed() || entry.is_created() || selfdestructed {
                 sink.account(AccountChangeRef {
                     address,
                     original: entry.original.as_ref(),
@@ -141,7 +142,7 @@ impl StateChangeSource for PendingState {
                     created: entry.is_created(),
                     selfdestructed,
                 })?;
-            } else if entry.is_loaded {
+            } else {
                 sink.account_read(address, entry.present.as_ref())?;
             }
         }

@@ -476,7 +476,6 @@ mod tests {
         let account = Account {
             original: None,
             present: Some(AccountInfo::default().with_nonce(1).with_balance(U256::from(100))),
-            is_loaded: true,
             ..Default::default()
         };
         let mut overlay = StorageOverlay::default();
@@ -519,7 +518,6 @@ mod tests {
         let account = Account {
             original: Some(AccountInfo::default().with_balance(U256::from(100))),
             present: None,
-            is_loaded: true,
             ..Default::default()
         };
         let mut overlay = StorageOverlay { wiped: true, ..Default::default() };

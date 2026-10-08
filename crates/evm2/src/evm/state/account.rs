@@ -176,8 +176,6 @@ impl AccountInfo {
 /// [`Self::is_created`] flagging in-transaction creation.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Account {
-    /// Whether account metadata has been loaded. Storage-only entries share this map slot.
-    pub(crate) is_loaded: bool,
     /// Account info at the start of the transaction. `None` means the account did not exist.
     pub(crate) original: Option<AccountInfo>,
     /// Present account overlay after mutations. `None` means the account is absent/deleted.
@@ -201,7 +199,7 @@ impl Account {
     /// present info.
     #[cfg(test)]
     pub(crate) fn new(original: Option<AccountInfo>, present: Option<AccountInfo>) -> Self {
-        Self { original, present, is_loaded: true, ..Self::default() }
+        Self { original, present, ..Self::default() }
     }
 
     /// Marks the account as created during the transaction, which also flags its code as changed.

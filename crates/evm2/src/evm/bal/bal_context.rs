@@ -184,9 +184,7 @@ impl BalContext {
             return;
         };
         for (&address, entry) in accounts {
-            if entry.is_loaded {
-                bal.update_account(index, address, entry.original.as_ref(), entry.present.as_ref());
-            }
+            bal.update_account(index, address, entry.original.as_ref(), entry.present.as_ref());
         }
         for (&address, account) in accounts {
             let overlay = &account.storage;

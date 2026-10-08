@@ -1333,7 +1333,7 @@ mod tests {
             fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 let address = interp.message().destination;
                 let state = interp.host().state_mut();
-                state.storage_slot(&address, Word::ZERO).unwrap().set(Word::from(7));
+                state.storage(&address).unwrap().into_slot(Word::ZERO).unwrap().set(Word::from(7));
                 if self.prewarmed {
                     state.prewarm_storage_slot(&address, Word::ZERO);
                 }
@@ -1584,8 +1584,8 @@ mod tests {
             ];
             parent.account(&target).unwrap().set_code_slow(legacy_bytecode(code));
             parent.account(&caller).unwrap().set_balance(Word::from(1_000_000_000));
-            parent.storage_slot(&target, Word::ZERO).unwrap().set(Word::from(7));
-            parent.storage_slot(&target, Word::ZERO).unwrap().warm();
+            parent.storage(&target).unwrap().into_slot(Word::ZERO).unwrap().set(Word::from(7));
+            parent.storage(&target).unwrap().into_slot(Word::ZERO).unwrap().warm();
             parent.tstore(&target, &Word::ZERO, &Word::from(9));
             let checkpoint = parent.checkpoint();
             let mut child = Evm::<BaseEvmTypes>::new(
@@ -1610,7 +1610,7 @@ mod tests {
             assert_eq!(Word::from_be_slice(&output.result.output[32..]), Word::ZERO);
             parent.merge_isolated_state(output.pending_state);
             assert_eq!(parent.checkpoint(), checkpoint);
-            let slot = parent.storage_slot(&target, Word::ZERO).unwrap();
+            let slot = parent.storage(&target).unwrap().into_slot(Word::ZERO).unwrap();
             assert_eq!(slot.original(), Word::ZERO);
             assert_eq!(slot.current(), Word::from(if reverts { 7 } else { 8 }));
             assert!(slot.is_warm());

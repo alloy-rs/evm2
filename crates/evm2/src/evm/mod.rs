@@ -1553,7 +1553,14 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SLoad, HostError> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
-        let storage = self.state.storage(address);
+        // A skipped cold slot must not load its owning account either.
+        if skip_cold_load
+            && self.state.get_storage(address, key).is_none()
+            && !self.state.prewarm_set().is_storage_warm(address, key)
+        {
+            return Err(InstrStop::OutOfGas.into());
+        }
+        let storage = self.state.storage(address)?;
         let loaded = if eip2929 {
             storage.into_slot_with_skip_and_warm(*key, skip_cold_load)
         } else {
@@ -1583,7 +1590,14 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         // implicit storage read. When the cold access is unaffordable the read is skipped, so the
         // slot stays out of the EIP-7928 block access list (the warm-read cost has already been
         // paid by the instruction, so an affordable warm slot is still read on OOG).
-        let storage = self.state.storage(address);
+        // A skipped cold slot must not load its owning account either.
+        if skip_cold_load
+            && self.state.get_storage(address, key).is_none()
+            && !self.state.prewarm_set().is_storage_warm(address, key)
+        {
+            return Err(InstrStop::OutOfGas.into());
+        }
+        let storage = self.state.storage(address)?;
         let loaded = if eip2929 {
             storage.into_slot_with_skip_and_warm(*key, skip_cold_load)
         } else {
@@ -1943,7 +1957,12 @@ mod tests {
         req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>,
     ) -> HandlerResult<TxResult> {
         let value = Word::from(req.tx.nonce);
-        req.host.state.storage(&LIFECYCLE_ACCOUNT).into_slot(LIFECYCLE_STORAGE_KEY)?.write(value);
+        req.host
+            .state
+            .storage(&LIFECYCLE_ACCOUNT)
+            .unwrap()
+            .into_slot(LIFECYCLE_STORAGE_KEY)?
+            .write(value);
         req.host.state.log(Log {
             address: LIFECYCLE_ACCOUNT,
             data: LogData::new_unchecked(vec![], Bytes::new()),
@@ -1958,7 +1977,8 @@ mod tests {
         assert_eq!(account.balance(), Word::from(1));
         drop(account);
 
-        let slot = req.host.state.storage(&LIFECYCLE_ACCOUNT).into_slot(LIFECYCLE_STORAGE_KEY)?;
+        let slot =
+            req.host.state.storage(&LIFECYCLE_ACCOUNT).unwrap().into_slot(LIFECYCLE_STORAGE_KEY)?;
         assert_eq!(slot.current(), Word::from(1));
 
         Ok(TxResultExt { status: true, ..TxResultExt::default() })
@@ -3381,7 +3401,7 @@ mod tests {
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
-        assert!(!evm.state.storage(&contract).is_warm(&key));
+        assert!(!evm.state.storage(&contract).unwrap().is_warm(&key));
     }
 
     #[test]
@@ -4037,6 +4057,7 @@ mod tests {
                     req.host
                         .state
                         .storage(&LIFECYCLE_ACCOUNT)
+                        .unwrap()
                         .into_slot(LIFECYCLE_STORAGE_KEY)?
                         .write(Word::from(99));
                     req.host.state.account(&LIFECYCLE_ACCOUNT)?.bump_nonce();
