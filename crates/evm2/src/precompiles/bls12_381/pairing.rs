@@ -12,9 +12,9 @@ use crate::{
             PADDED_G1_LENGTH, PAIRING_INPUT_LENGTH, PAIRING_MULTIPLIER_BASE, PAIRING_OFFSET_BASE,
         },
     },
+    utils::bool_to_bytes32,
 };
 use alloc::vec::Vec;
-use alloy_primitives::B256;
 
 /// Pairing call expects 384*k (k being a positive integer) bytes as an inputs
 /// that is interpreted as byte concatenation of k slices. Each slice has the
@@ -50,7 +50,5 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     }
 
     let result = crate::precompiles::crypto().bls12_381_pairing_check(&pairs)?;
-    let result = if result { 1 } else { 0 };
-
-    Ok(PrecompileOutput::new(B256::with_last_byte(result).into()))
+    Ok(PrecompileOutput::new(bool_to_bytes32(result)))
 }

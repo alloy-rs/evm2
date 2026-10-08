@@ -339,6 +339,11 @@ impl<'a> GethTraceBuilder<'a> {
         for (addr, loaded_acc) in state.accounts.iter() {
             let addr = *addr;
             let db_acc = db.get_account(&addr)?.unwrap_or_default();
+            // Geth omits accounts that were empty before execution, even if fees fund them.
+            // Check the original code hash before applying the disableCode output option.
+            if db_acc.is_empty() {
+                continue;
+            }
             let code = if code_enabled { load_account_code(db, &db_acc)? } else { None };
             let mut acc_state = AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
 
@@ -876,5 +881,59 @@ mod tests {
             builder.geth_prestate_pre_traces(&state, &mut db, false, false),
             Err(err) if err == error
         ));
+    }
+
+    #[test]
+    fn prestate_omits_initially_empty_accounts() {
+        let absent_beneficiary = Address::with_last_byte(1);
+        let empty_beneficiary = Address::with_last_byte(2);
+        let funded_beneficiary = Address::with_last_byte(3);
+        let nonce_account = Address::with_last_byte(4);
+        let contract = Address::with_last_byte(5);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[0x00]));
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(&empty_beneficiary, AccountInfo::default());
+        db.insert_account_info(
+            &funded_beneficiary,
+            AccountInfo::default().with_balance(U256::from(10)),
+        );
+        db.insert_account_info(&nonce_account, AccountInfo::default().with_nonce(1));
+        db.insert_account_info(&contract, AccountInfo::default().with_code(code.clone()));
+
+        let mut state = TxState::default();
+        for address in [absent_beneficiary, empty_beneficiary] {
+            state.accounts.insert(
+                address,
+                TxAccount {
+                    current: Some(AccountInfo::default().with_balance(U256::from(1))),
+                    ..Default::default()
+                },
+            );
+        }
+        // An account emptied by execution must retain its original prestate.
+        for address in [funded_beneficiary, nonce_account, contract] {
+            state.accounts.insert(address, TxAccount::default());
+        }
+
+        let builder = GethTraceBuilder::new(Vec::new());
+        for code_enabled in [false, true] {
+            let frame =
+                builder.geth_prestate_pre_traces(&state, &mut db, code_enabled, false).unwrap();
+            assert_eq!(
+                frame,
+                PreStateFrame::Default(PreStateMode(BTreeMap::from([
+                    (funded_beneficiary, AccountState::from_account_info(0, U256::from(10), None)),
+                    (nonce_account, AccountState::from_account_info(1, U256::ZERO, None)),
+                    (
+                        contract,
+                        AccountState::from_account_info(
+                            0,
+                            U256::ZERO,
+                            code_enabled.then(|| code.original_bytes()),
+                        )
+                    ),
+                ]))),
+            );
+        }
     }
 }

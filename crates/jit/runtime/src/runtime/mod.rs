@@ -289,9 +289,12 @@ impl JitBackend {
 
     /// Enqueues an explicit JIT compilation request for the given bytecode.
     ///
-    /// Blocks if the command channel is full to guarantee delivery.
+    /// Blocks if the command channel is full to guarantee delivery. If the backend
+    /// could not be started, the request is dropped and a warning is logged.
     pub fn compile_jit(&self, req: LookupRequest) {
-        let _ = self.ensure_started();
+        if !self.ensure_started_for_enqueue() {
+            return;
+        }
         let cmd = Command::CompileJit(CompileJitRequest {
             key: req.key,
             bytecode: req.code,
@@ -331,9 +334,10 @@ impl JitBackend {
 
     /// Enqueues a single AOT preparation request.
     ///
-    /// This is enqueue-only and returns immediately. The compilation happens
-    /// asynchronously on the worker pool. The resulting artifact is persisted
-    /// via [`ArtifactStore::store`] and loaded into the resident map.
+    /// Compilation happens asynchronously on the worker pool. The resulting artifact is
+    /// persisted via [`ArtifactStore::store`] and loaded into the resident map.
+    /// May block during startup or when the command channel is full. If startup fails,
+    /// the request is dropped and a warning is logged.
     pub fn prepare_aot(&self, req: AotRequest) {
         self.prepare_aot_batch(vec![req]);
     }
@@ -349,9 +353,12 @@ impl JitBackend {
 
     /// Enqueues a batch of AOT preparation requests.
     ///
-    /// Blocks if the command channel is full to guarantee delivery.
+    /// Blocks if the command channel is full to guarantee delivery. If the backend
+    /// could not be started, the requests are dropped and a warning is logged.
     pub fn prepare_aot_batch(&self, reqs: Vec<AotRequest>) {
-        let _ = self.ensure_started();
+        if !self.ensure_started_for_enqueue() {
+            return;
+        }
         let owned: Vec<PrepareAotRequest> = reqs
             .into_iter()
             .map(|r| PrepareAotRequest {
@@ -650,6 +657,17 @@ impl JitBackend {
         {
             warn!(%error, "failed to clear artifact store");
         }
+    }
+
+    /// Starts the backend before enqueueing a command, logging startup failures.
+    /// Failed startup retains an undrained receiver, so callers must not send to the
+    /// bounded command channel until startup succeeds.
+    fn ensure_started_for_enqueue(&self) -> bool {
+        if let Err(err) = self.ensure_started() {
+            warn!(%err, "failed to start JIT backend, dropping command");
+            return false;
+        }
+        true
     }
 }
 

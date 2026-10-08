@@ -5,7 +5,7 @@
 //! transaction decoding, execution and block commits.
 
 use alloy_eips::{eip7702::SignedAuthorization, eip7840::BlobParams};
-use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256, keccak256};
+use alloy_primitives::{Address, B256, Bytes, Keccak256, Log, TxKind, U256};
 use alloy_rpc_types_eth::{AccessList as RpcAccessList, AccessListItem as RpcAccessListItem};
 use evm2::{
     SpecId,
@@ -508,17 +508,17 @@ fn assert_canonical(name: &str, case: &BlockchainTestCase) {
 /// Digests a transaction's logs (address, topics and data, in emission order) so the
 /// parity check covers log contents rather than only their count.
 fn logs_digest(logs: &[Log]) -> B256 {
-    let mut bytes = Vec::new();
+    let mut hasher = Keccak256::new();
     for log in logs {
-        bytes.extend_from_slice(log.address.as_slice());
-        bytes.extend_from_slice(&(log.data.topics().len() as u64).to_be_bytes());
+        hasher.update(log.address);
+        hasher.update((log.data.topics().len() as u64).to_be_bytes());
         for topic in log.data.topics() {
-            bytes.extend_from_slice(topic.as_slice());
+            hasher.update(topic);
         }
-        bytes.extend_from_slice(&(log.data.data.len() as u64).to_be_bytes());
-        bytes.extend_from_slice(&log.data.data);
+        hasher.update((log.data.data.len() as u64).to_be_bytes());
+        hasher.update(&log.data.data);
     }
-    keccak256(bytes)
+    hasher.finalize()
 }
 
 /// Returns the gas a block header must record, mirroring the EEST executor: cumulative

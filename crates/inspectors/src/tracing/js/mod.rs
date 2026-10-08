@@ -18,14 +18,15 @@ use crate::tracing::{
 use alloc::{
     format,
     string::{String, ToString},
+    sync::Arc,
     vec::Vec,
 };
 use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
-pub use boa_engine::vm::RuntimeLimits;
 use boa_engine::{Context, JsError, JsObject, JsResult, JsValue, Script, Source, js_string};
+use core::sync::atomic::{AtomicBool, Ordering};
 use evm2::{
-    Evm, EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
+    Evm, EvmTypes, EvmTypesHost, ExecutionError, Inspector, TxResultWithState,
     env::BlockEnv,
     evm::DynDatabase,
     interpreter::{
@@ -34,11 +35,16 @@ use evm2::{
     },
 };
 
+pub use boa_engine::vm::RuntimeLimits;
+
 pub(crate) mod bindings;
 pub(crate) mod builtins;
 
 #[cfg(test)]
 mod snapshot_tests;
+
+#[cfg(test)]
+mod interrupt_tests;
 
 /// The maximum number of iterations in a loop.
 ///
@@ -49,7 +55,8 @@ pub const LOOP_ITERATION_LIMIT: u64 = 200_000;
 /// The recursion limit for function calls.
 ///
 /// Once exceeded, the function will throw an error.
-pub const RECURSION_LIMIT: usize = 10_000;
+/// Kept below Boa's default because recursive accessors also consume native stack space.
+pub const RECURSION_LIMIT: usize = 128;
 
 /// Reused pre-execution data for one call depth. Parents remain pending during child execution.
 #[derive(Debug, Default)]
@@ -112,6 +119,8 @@ pub struct JsInspector {
     precompiles_registered: bool,
     /// Pre-execution states captured in `step()` to be processed in `step_end()`.
     pending_steps: Vec<PendingStep>,
+    /// Optional cancellation signal shared with the caller.
+    interrupt: Option<JsInspectorInterrupt>,
 }
 
 impl core::fmt::Debug for JsInspector {
@@ -203,6 +212,7 @@ impl JsInspector {
             next_call_id: 1,
             precompiles_registered: false,
             pending_steps: Vec::new(),
+            interrupt: None,
         })
     }
 
@@ -211,9 +221,12 @@ impl JsInspector {
         &self.config
     }
 
-    /// Creates a fresh inspector from the same code and config, resetting all execution state.
+    /// Creates a fresh inspector from the same code and config, sharing the interrupt flag.
     pub fn try_clone(&self) -> Result<Self, JsInspectorError> {
-        Self::new(self.code.clone(), self.config.clone())
+        self.ensure_not_interrupted()?;
+        let mut inspector = Self::new(self.code.clone(), self.config.clone())?;
+        inspector.interrupt = self.interrupt.clone();
+        Ok(inspector)
     }
 
     /// Resets the inspector to its initial state so it can be used for the next transaction.
@@ -223,6 +236,7 @@ impl JsInspector {
     /// state the previous tracer object may have modified, e.g. prototypes, is kept. Callback
     /// wrappers are recreated so their own properties do not carry over between transactions.
     pub fn fuse(&mut self) -> Result<(), JsInspectorError> {
+        self.ensure_not_interrupted()?;
         let JsTracerObject { obj, result_fn, fault_fn, enter_fn, exit_fn, step_fn } =
             JsTracerObject::evaluate(&self.script, &self.config, &mut self.ctx)?;
         // Callback objects are mutable JS objects: replacing their Rust state does not remove
@@ -266,7 +280,8 @@ impl JsInspector {
 
     /// Applies the runtime limits to the JS context.
     ///
-    /// By default
+    /// Increasing the recursion limit can overflow the native stack when tracing code uses
+    /// recursive property accessors.
     pub fn set_runtime_limits(&mut self, limits: RuntimeLimits) {
         self.ctx.set_runtime_limits(limits);
     }
@@ -282,7 +297,9 @@ impl JsInspector {
         db: &mut dyn DynDatabase,
     ) -> Result<serde_json::Value, JsInspectorError> {
         let result = self.result(res, tx, block, db)?;
-        Ok(to_serde_value(result, &mut self.ctx)?)
+        let result = to_serde_value(result, &mut self.ctx)?;
+        self.ensure_not_interrupted()?;
+        Ok(result)
     }
 
     /// Calls the result function and returns the result.
@@ -293,6 +310,7 @@ impl JsInspector {
         block: &BlockEnv<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<JsValue, JsInspectorError> {
+        self.ensure_not_interrupted()?;
         let TxResultWithState { result, pending_state, .. } = res;
         let state = TxState::from_pending(pending_state);
 
@@ -339,9 +357,11 @@ impl JsInspector {
             error,
         };
         let ctx = ctx.into_js_object(&mut self.ctx)?;
-        Ok(self.reusable_db.with_changes_scope(&state, db, || {
+        let result = self.reusable_db.with_changes_scope(&state, db, || {
             self.result_fn.call(&self.this, &[ctx.into(), self.reusable_db.value()], &mut self.ctx)
-        })?)
+        });
+        self.ensure_not_interrupted()?;
+        Ok(result?)
     }
 
     fn try_enter(&mut self, frame: CallFrame) -> JsResult<()> {
@@ -423,11 +443,82 @@ impl JsInspector {
 
         self.precompiles_registered = true
     }
+
+    /// Sets a shared handle that cooperatively interrupts JavaScript tracing.
+    ///
+    /// Call [`JsInspectorInterrupt::interrupt`] from a timeout or cancellation handler to abort
+    /// execution with a fatal evm2 error at the next inspection boundary. [`Self::try_clone`]
+    /// shares the handle and [`Self::fuse`] does not reset it. Result collection also fails after
+    /// interruption.
+    ///
+    /// The handle is checked even if the tracer has no `step` callback. Checking it performs a
+    /// relaxed atomic load without cloning the handle. Without a handle, no atomic loads are
+    /// performed.
+    ///
+    /// This cannot preempt a running JavaScript callback, native operation or precompile. It does
+    /// not bound memory usage or interrupt script evaluation and `setup` in the constructor.
+    /// Boa's runtime limits still apply while JavaScript is running.
+    ///
+    /// ```
+    /// use evm2_inspectors::tracing::js::{JsInspector, JsInspectorInterrupt};
+    ///
+    /// let interrupt = JsInspectorInterrupt::new();
+    /// let inspector = JsInspector::new(
+    ///     "{ fault: function() {}, result: function() {} }".into(),
+    ///     serde_json::Value::Null,
+    /// )?
+    /// .with_interrupt(interrupt.clone());
+    /// // The request's timeout or cancellation handler can signal the blocking execution.
+    /// interrupt.interrupt();
+    /// # Ok::<(), evm2_inspectors::tracing::js::JsInspectorError>(())
+    /// ```
+    #[must_use]
+    pub fn with_interrupt(mut self, interrupt: JsInspectorInterrupt) -> Self {
+        self.interrupt = Some(interrupt);
+        self
+    }
+
+    #[inline]
+    fn is_interrupted(&self) -> bool {
+        self.interrupt.as_ref().is_some_and(JsInspectorInterrupt::is_interrupted)
+    }
+
+    fn ensure_not_interrupted(&self) -> Result<(), JsInspectorError> {
+        if self.is_interrupted() {
+            return Err(JsInspectorError::Interrupted);
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn check_interrupt<T: EvmTypes>(&self, interp: &mut Interpreter<'_, '_, T>) -> bool {
+        if !self.is_interrupted() {
+            return false;
+        }
+        // Preserve an existing fatal stop and its execution error.
+        if !interp.result().is_err_and(|stop| stop.is_fatal()) {
+            interp.fail(ExecutionError::Fatal(JsInspectorError::Interrupted.to_string().into()));
+        }
+        true
+    }
+
+    #[inline]
+    fn check_and_halt<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) -> bool {
+        if !self.check_interrupt(interp) {
+            return false;
+        }
+        if let Some(pending) = self.pending_steps.get_mut(usize::from(interp.message().depth)) {
+            pending.active = false;
+        }
+        // Step hooks must set the stop as well as record the fatal execution error.
+        interp.set_stop(InstrStop::FatalExternalError);
+        true
+    }
 }
 
 impl<T: EvmTypes> Inspector<T> for JsInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        if self.step_fn.is_none() {
+        if self.check_and_halt(interp) || self.step_fn.is_none() {
             return;
         }
         let depth = usize::from(interp.message().depth);
@@ -448,6 +539,9 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        if self.check_and_halt(interp) {
+            return;
+        }
         let Some(step_fn) = &self.step_fn else {
             return;
         };
@@ -489,6 +583,9 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 },
             )
         });
+        if self.check_and_halt(interp) {
+            return;
+        }
         if !is_revert && res.is_err() && result.is_ok() {
             interp.set_stop(InstrStop::Revert);
         }
@@ -499,6 +596,9 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
+        if self.check_interrupt(interp) {
+            return None;
+        }
         self.register_precompiles(interp.host());
 
         // determine contract and caller based on the call scheme
@@ -520,24 +620,27 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             message.gas_limit,
         );
 
+        let mut result = None;
         if self.can_call_enter() {
             let call = self.active_call();
             let frame =
                 CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
-            if let Err(err) = self.try_enter(frame) {
-                return Some(js_error_to_revert(err));
-            }
+            result = self.try_enter(frame).err().map(js_error_to_revert);
         }
 
-        None
+        self.check_interrupt(interp);
+        result
     }
 
     fn call_end(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
+        if self.check_interrupt(interp) {
+            return;
+        }
         if self.can_call_exit() {
             let frame_result = FrameResult {
                 gas_used: result.gas.spent(),
@@ -550,6 +653,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         }
 
         self.pop_call();
+        self.check_interrupt(interp);
     }
 
     fn create(
@@ -557,6 +661,9 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
+        if self.check_interrupt(interp) {
+            return None;
+        }
         self.register_precompiles(interp.host());
         self.push_call(
             message.destination,
@@ -567,24 +674,27 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             message.gas_limit,
         );
 
+        let mut result = None;
         if self.can_call_enter() {
             let call = self.active_call();
             let frame =
                 CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
-            if let Err(err) = self.try_enter(frame) {
-                return Some(js_error_to_revert(err));
-            }
+            result = self.try_enter(frame).err().map(js_error_to_revert);
         }
 
-        None
+        self.check_interrupt(interp);
+        result
     }
 
     fn create_end(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
+        if self.check_interrupt(interp) {
+            return;
+        }
         if self.can_call_exit() {
             let frame_result = FrameResult {
                 gas_used: result.gas.spent(),
@@ -597,6 +707,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         }
 
         self.pop_call();
+        self.check_interrupt(interp);
     }
 
     fn selfdestruct(
@@ -606,6 +717,9 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         _value: &U256,
         _host: &mut T::Host<'_>,
     ) {
+        if self.is_interrupted() {
+            return;
+        }
         // This is exempt from the root call constraint, because selfdestruct is treated as a
         // new scope that is entered and immediately exited.
         if self.enter_fn.is_some() {
@@ -616,10 +730,70 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         }
 
         // exit with empty frame result ref <https://github.com/ethereum/go-ethereum/blob/0004c6b229b787281760b14fb9460ffd9c2496f1/core/vm/instructions.go#L829-L829>
-        if self.exit_fn.is_some() {
+        if !self.is_interrupted() && self.exit_fn.is_some() {
             let frame_result = FrameResult { gas_used: 0, output: Bytes::new(), error: None };
             let _ = self.try_exit(frame_result);
         }
+    }
+}
+
+/// A shared handle for cooperatively interrupting a [`JsInspector`].
+///
+/// Clones share the same signal. Interruption is permanent and dropping a handle does not
+/// interrupt execution. The signal uses relaxed atomics and does not synchronize other data.
+/// Use [`Self::drop_guard`] to interrupt execution when the caller is dropped.
+#[derive(Clone, Debug, Default)]
+pub struct JsInspectorInterrupt(Arc<AtomicBool>);
+
+impl JsInspectorInterrupt {
+    /// Creates a handle that has not been interrupted.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Signals interruption to all inspectors sharing this handle.
+    #[inline]
+    pub fn interrupt(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    /// Returns whether interruption has been requested.
+    #[inline]
+    pub fn is_interrupted(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// Creates an owned guard that interrupts execution when dropped.
+    ///
+    /// The guard shares this handle's signal. Keep it in the request future while the inspector
+    /// runs on a blocking worker, so dropping the request also interrupts tracing. Create the
+    /// guard before moving it into the future to cover cancellation before the first poll.
+    ///
+    /// ```
+    /// use evm2_inspectors::tracing::js::JsInspectorInterrupt;
+    ///
+    /// let interrupt = JsInspectorInterrupt::new();
+    /// let guard = interrupt.drop_guard();
+    /// assert!(!interrupt.is_interrupted());
+    /// drop(guard);
+    /// assert!(interrupt.is_interrupted());
+    /// ```
+    pub fn drop_guard(&self) -> JsInspectorInterruptGuard {
+        JsInspectorInterruptGuard(self.clone())
+    }
+}
+
+/// A guard that signals its shared interrupt when dropped.
+///
+/// Created by [`JsInspectorInterrupt::drop_guard`]. Dropping any guard interrupts all inspectors
+/// sharing the signal, even if other handles or guards remain alive.
+#[derive(Debug)]
+#[must_use = "the guard interrupts tracing immediately if it is not retained"]
+pub struct JsInspectorInterruptGuard(JsInspectorInterrupt);
+
+impl Drop for JsInspectorInterruptGuard {
+    fn drop(&mut self) {
+        self.0.interrupt();
     }
 }
 
@@ -727,6 +901,10 @@ pub enum JsInspectorError {
     /// Invalid JSON configuration encountered.
     #[error("invalid JSON config: {0}")]
     InvalidJsonConfig(JsError),
+
+    /// Tracing was cancelled through the shared interrupt flag.
+    #[error("JavaScript tracing interrupted")]
+    Interrupted,
 }
 
 /// Converts a JavaScript error into a [InstrStop::Revert] [MessageResult].
@@ -747,6 +925,7 @@ mod tests {
     use alloc::{string::ToString, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
+    use boa_engine::error::{EngineError, RuntimeLimitError};
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId,
         bytecode::Bytecode,
@@ -1445,5 +1624,44 @@ mod tests {
         assert_eq!(obj["stackPeek"], json!("1"));
         assert_eq!(obj["value"], json!("0"));
         assert_eq!(obj["balance"], json!("0"));
+    }
+
+    #[test]
+    fn test_runtime_limits() {
+        let inspector = JsInspector::new(
+            "{fault: function() {}, result: function() {}}".into(),
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        assert_eq!(inspector.ctx.runtime_limits().recursion_limit(), RECURSION_LIMIT);
+        assert_eq!(inspector.ctx.runtime_limits().loop_iteration_limit(), LOOP_ITERATION_LIMIT);
+    }
+
+    #[test]
+    fn test_accessor_recursion_limit() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                for setup in [
+                    "const obj = {get x() {return this.x;}}; obj.x;",
+                    "const obj = {set x(value) {this.x = value;}}; obj.x = 1;",
+                    "async function* f() {} f().return({get then() {this.then;}});",
+                ] {
+                    let code = format!(
+                        "{{setup: function() {{{setup}}}, fault: function() {{}}, result: function() {{}}}}"
+                    );
+                    let error = JsInspector::new(code, serde_json::Value::Null).unwrap_err();
+                    let JsInspectorError::SetupCallFailed(error) = error else {
+                        panic!("unexpected error: {error}");
+                    };
+                    assert!(matches!(
+                        error.as_engine(),
+                        Some(EngineError::RuntimeLimit(RuntimeLimitError::Recursion))
+                    ));
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

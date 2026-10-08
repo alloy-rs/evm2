@@ -408,6 +408,40 @@ fn compile_jit_enqueue() {
 }
 
 #[test]
+fn compile_jit_never_blocks_when_startup_fails() {
+    // `ensure_started` fails (the store errors) and restores the lazy-spawn state, so the
+    // receiver stays alive while nothing drains the bounded command channel. Enqueueing would
+    // fill the channel after `channel_capacity` requests and park the caller forever, the same
+    // way `pause_resume_never_block_without_backend_thread` describes for pause/resume.
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: false,
+        store: Some(Arc::new(FailingStore)),
+        tuning: RuntimeTuning { channel_capacity: 1, ..Default::default() },
+        ..Default::default()
+    });
+
+    let backend = tb.backend.clone();
+    let (done_tx, done_rx) = chan::bounded(1);
+    let worker = std::thread::spawn(move || {
+        // More requests than the channel can hold: deadlocks without the started check.
+        for _ in 0..8 {
+            backend.compile_jit(TestBackend::req_cancun(BYTECODE_RET42));
+        }
+        let _ = done_tx.send(());
+    });
+
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("compile_jit blocked after the backend failed to start");
+    worker.join().unwrap();
+
+    // Nothing was queued: the requests were dropped instead of filling the channel.
+    assert_eq!(tb.stats().command_queue_len, 0);
+    assert!(!tb.inner.started.load(Ordering::Relaxed));
+    assert!(tb.inner.lazy_spawn.lock().unwrap().is_some());
+}
+
+#[test]
 fn prepare_aot_enqueue() {
     let tb = TestBackend::with_tuning(RuntimeTuning { jit_worker_count: 0, ..Default::default() });
     tb.prepare_aot(AotRequest {
@@ -433,6 +467,43 @@ fn prepare_aot_batch_enqueue() {
         },
     ];
     tb.prepare_aot_batch(reqs);
+}
+
+#[test]
+fn prepare_aot_batch_never_blocks_when_startup_fails() {
+    // Same hazard as `compile_jit_never_blocks_when_startup_fails`, on the AOT path.
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: false,
+        store: Some(Arc::new(FailingStore)),
+        tuning: RuntimeTuning { channel_capacity: 1, ..Default::default() },
+        ..Default::default()
+    });
+
+    let backend = tb.backend.clone();
+    let (done_tx, done_rx) = chan::bounded(1);
+    let worker = std::thread::spawn(move || {
+        let reqs = vec![AotRequest {
+            code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
+            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            spec_id: SpecId::CANCUN,
+        }];
+        // More requests than the channel can hold: deadlocks without the started check.
+        for _ in 0..8 {
+            backend.prepare_aot(reqs[0].clone());
+            backend.prepare_aot_batch(reqs.clone());
+        }
+        let _ = done_tx.send(());
+    });
+
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("prepare_aot_batch blocked after the backend failed to start");
+    worker.join().unwrap();
+
+    // Nothing was queued: the requests were dropped instead of filling the channel.
+    assert_eq!(tb.stats().command_queue_len, 0);
+    assert!(!tb.inner.started.load(Ordering::Relaxed));
+    assert!(tb.inner.lazy_spawn.lock().unwrap().is_some());
 }
 
 #[test]
