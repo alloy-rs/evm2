@@ -86,8 +86,8 @@ impl Bal {
             self.update_account(
                 bal_index,
                 *address,
-                entry.info.original.as_ref(),
-                entry.info.present.as_ref(),
+                entry.original.as_ref(),
+                entry.present.as_ref(),
             );
         }
         for (address, account) in &pending.accounts {
@@ -320,7 +320,7 @@ mod tests {
         bytecode::Bytecode,
         evm::{
             bal::{AccountInfoBal, BalChanges, BalCodeChange, StorageBal},
-            state::{Account, AccountInfo, AccountOverlay, StorageOverlay, StorageSlot, Tracked},
+            state::{Account, AccountInfo, StorageOverlay, StorageSlot, Tracked},
         },
     };
     use alloc::{vec, vec::Vec};
@@ -474,11 +474,8 @@ mod tests {
         // A freshly created account: no original info, present nonce/balance set, and one changed
         // storage slot plus one loaded-but-unchanged (read) slot.
         let account = Account {
-            info: crate::evm::state::AccountOverlay {
-                original: None,
-                present: Some(AccountInfo::default().with_nonce(1).with_balance(U256::from(100))),
-                ..Default::default()
-            },
+            original: None,
+            present: Some(AccountInfo::default().with_nonce(1).with_balance(U256::from(100))),
             ..Default::default()
         };
         let mut overlay = StorageOverlay::default();
@@ -519,11 +516,8 @@ mod tests {
         // loaded-but-unchanged slots surfacing as reads. The BAL derives from that overlay
         // without special-casing.
         let account = Account {
-            info: crate::evm::state::AccountOverlay {
-                original: Some(AccountInfo::default().with_balance(U256::from(100))),
-                present: None,
-                ..Default::default()
-            },
+            original: Some(AccountInfo::default().with_balance(U256::from(100))),
+            present: None,
             ..Default::default()
         };
         let mut overlay = StorageOverlay { wiped: true, ..Default::default() };

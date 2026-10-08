@@ -175,7 +175,7 @@ impl AccountInfo {
 /// the account's transaction transition: `original` against `present`, with
 /// [`Self::is_created`] flagging in-transaction creation.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct AccountOverlay {
+pub(crate) struct Account {
     /// Account info at the start of the transaction. `None` means the account did not exist.
     pub(crate) original: Option<AccountInfo>,
     /// Present account overlay after mutations. `None` means the account is absent/deleted.
@@ -190,10 +190,18 @@ pub(crate) struct AccountOverlay {
     pub(crate) just_created: bool,
     /// Whether the present overlay account's code has been modified.
     pub(crate) code_changed: bool,
+    /// Persistent transaction storage owned by this account.
+    pub(crate) storage: StorageOverlay,
 }
 
-impl AccountOverlay {
-    /// Applies an isolated execution's metadata, retaining parent originals and warmth.
+impl Account {
+    /// Creates an account overlay entry from transaction-boundary and present info.
+    #[cfg(test)]
+    pub(crate) fn new(original: Option<AccountInfo>, present: Option<AccountInfo>) -> Self {
+        Self { original, present, ..Self::default() }
+    }
+
+    /// Applies isolated execution changes, retaining parent originals and account warmth.
     #[cfg(test)]
     pub(crate) fn merge_isolated(&mut self, child: Self) {
         self.present = child.present;
@@ -201,6 +209,7 @@ impl AccountOverlay {
         self.is_destroyed |= child.is_destroyed;
         self.just_created |= child.just_created;
         self.code_changed |= child.code_changed;
+        self.storage.merge_isolated(child.storage);
     }
 
     /// Marks the account as created during the transaction, which also flags its code as changed.
@@ -243,25 +252,6 @@ impl AccountOverlay {
     }
 }
 
-/// Loaded account metadata and its persistent transaction storage.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct Account {
-    pub(crate) info: AccountOverlay,
-    pub(crate) storage: StorageOverlay,
-}
-
-impl Account {
-    /// Creates an account overlay entry from its transaction-boundary original info and its
-    /// present info.
-    #[cfg(test)]
-    pub(crate) fn new(original: Option<AccountInfo>, present: Option<AccountInfo>) -> Self {
-        Self {
-            info: AccountOverlay { original, present, ..AccountOverlay::default() },
-            storage: StorageOverlay::default(),
-        }
-    }
-}
-
 /// A mutable, journaled handle to an account loaded into the transaction overlay.
 ///
 /// Returned by [`State::account`](super::State::account). The account has
@@ -284,9 +274,7 @@ pub struct AccountHandle<'a, 'db> {
     /// Address of the account.
     address: Address,
     /// Transaction overlay entry: account overlay plus warm/touched access metadata.
-    tracked: &'a mut AccountOverlay,
-    /// Persistent slots owned by this loaded account.
-    storage: &'a mut StorageOverlay,
+    tracked: &'a mut Account,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
     inner: &'a mut StateInner<'db>,
@@ -324,23 +312,16 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         inner: &'a mut StateInner<'db>,
         storage_pool: &'a mut StoragePool,
     ) -> Self {
-        Self {
-            address,
-            tracked: &mut tracked.info,
-            storage: &mut tracked.storage,
-            inner,
-            storage_pool,
-            snapshot: None,
-        }
+        Self { address, tracked, inner, storage_pool, snapshot: None }
     }
 
     /// Returns this account's storage overlay without another address-map lookup.
     #[inline]
     pub fn storage(&mut self) -> StorageHandle<'_, 'db> {
-        if self.storage.slots.capacity() == 0 {
-            self.storage.slots = self.storage_pool.take();
+        if self.tracked.storage.slots.capacity() == 0 {
+            self.tracked.storage.slots = self.storage_pool.take();
         }
-        StorageHandle::new(self.address, self.storage, self.inner)
+        StorageHandle::new(self.address, &mut self.tracked.storage, self.inner)
     }
 
     /// Records the pre-mutation revert entry the first time a change is made through this handle.

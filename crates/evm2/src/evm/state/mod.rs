@@ -11,7 +11,7 @@ mod storage_pool;
 mod stream;
 mod tracked;
 
-pub(crate) use account::{Account, AccountOverlay};
+pub(crate) use account::Account;
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
 #[cfg(feature = "account-ext")]
@@ -433,7 +433,7 @@ impl<'a> State<'a> {
                 // the prewarm set on load) decides coldness: an account warmed earlier this
                 // execution is a cheap warm access and must not be forced out of gas.
                 let account = entry.into_mut();
-                if skip_cold && !account.info.is_warm && !inner.prewarm_set.is_warm(address) {
+                if skip_cold && !account.is_warm && !inner.prewarm_set.is_warm(address) {
                     return Err(LoadError::ColdLoadSkipped);
                 }
                 Ok(account)
@@ -445,15 +445,7 @@ impl<'a> State<'a> {
                 }
                 let original = inner.database.get_account(address)?;
                 let present = original.clone();
-                Ok(entry.insert(Account {
-                    info: AccountOverlay {
-                        original,
-                        present,
-                        is_warm,
-                        ..AccountOverlay::default()
-                    },
-                    ..Account::default()
-                }))
+                Ok(entry.insert(Account { original, present, is_warm, ..Account::default() }))
             }
         }
     }
@@ -520,7 +512,7 @@ impl<'a> State<'a> {
     #[inline(never)]
     pub fn account_info_untracked(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         if let Some(entry) = self.accounts.get(address) {
-            return Ok(entry.info.present.clone());
+            return Ok(entry.present.clone());
         }
         self.database.get_account(address)
     }
@@ -711,24 +703,24 @@ impl<'a> State<'a> {
                 } => {
                     // Reconcile the self-destruct set with the restored destroyed flag.
                     let was_destroyed =
-                        self.accounts.get(&address).is_some_and(|entry| entry.info.is_destroyed);
+                        self.accounts.get(&address).is_some_and(|entry| entry.is_destroyed);
                     if was_destroyed && !previous_is_destroyed {
                         self.selfdestructs.remove(&address);
                     } else if !was_destroyed && previous_is_destroyed {
                         self.selfdestructs.insert(address);
                     }
                     if let Some(entry) = self.accounts.get_mut(&address) {
-                        entry.info.present = previous;
-                        entry.info.is_warm = previous_is_warm;
+                        entry.present = previous;
+                        entry.is_warm = previous_is_warm;
                         // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
                         if !(features.contains(EvmFeatures::EIP161)
                             && address == Address::with_last_byte(3))
                         {
-                            entry.info.is_touched = previous_is_touched;
+                            entry.is_touched = previous_is_touched;
                         }
-                        entry.info.is_destroyed = previous_is_destroyed;
-                        entry.info.just_created = previous_just_created;
-                        entry.info.code_changed = previous_code_changed;
+                        entry.is_destroyed = previous_is_destroyed;
+                        entry.just_created = previous_just_created;
+                        entry.code_changed = previous_code_changed;
                     }
                 }
                 JournalEntry::StorageChange { address, key, previous } => {
@@ -765,11 +757,11 @@ impl<'a> State<'a> {
         // `account_raw` loads the backing-database account into `original`,
         // so its existence is read from the same source rather than via a separate database read.
         let entry = Self::account_raw(&mut self.inner, &mut self.accounts, address)?;
-        if entry.info.original.is_none() && entry.info.present.is_none() {
+        if entry.original.is_none() && entry.present.is_none() {
             // Finalization runs after the last revertible scope, so this is not journaled: the
             // entry would never be replayed before `clear_transaction_state` clears it.
-            entry.info.present = Some(AccountInfo::default());
-            entry.info.mark_created();
+            entry.present = Some(AccountInfo::default());
+            entry.mark_created();
         }
         Ok(())
     }
@@ -791,7 +783,7 @@ impl<'a> State<'a> {
         let touched: Vec<_> = self
             .accounts
             .iter()
-            .filter_map(|(&address, entry)| entry.info.is_touched.then_some(address))
+            .filter_map(|(&address, entry)| entry.is_touched.then_some(address))
             .collect();
 
         let eip8246 = version.feature(EvmFeatures::EIP8246);
@@ -836,7 +828,7 @@ impl<'a> State<'a> {
 
         for address in touched {
             if let Some(entry) = self.accounts.get_mut(&address) {
-                entry.info.is_touched = false;
+                entry.is_touched = false;
             }
         }
         Ok(())
@@ -851,7 +843,7 @@ impl<'a> State<'a> {
         sink: &mut S,
     ) -> Result<(), S::Error> {
         for entry in self.accounts.values() {
-            if let Some((code_hash, code)) = entry.info.changed_code() {
+            if let Some((code_hash, code)) = entry.changed_code() {
                 sink.bytecode(code_hash, code)?;
             }
         }
@@ -878,16 +870,16 @@ impl<'a> State<'a> {
 
         for (&address, entry) in self.accounts.iter() {
             let selfdestructed = self.selfdestructs.contains(&address);
-            if entry.info.is_changed() || entry.info.is_created() || selfdestructed {
+            if entry.is_changed() || entry.is_created() || selfdestructed {
                 sink.account(AccountChangeRef {
                     address,
-                    original: entry.info.original.as_ref(),
-                    current: entry.info.present.as_ref(),
-                    created: entry.info.is_created(),
+                    original: entry.original.as_ref(),
+                    current: entry.present.as_ref(),
+                    created: entry.is_created(),
                     selfdestructed,
                 })?;
             } else {
-                sink.account_read(address, entry.info.present.as_ref())?;
+                sink.account_read(address, entry.present.as_ref())?;
             }
         }
 
@@ -914,8 +906,8 @@ impl<'a> State<'a> {
     pub(crate) fn prepare_isolated_state(&self) -> PendingState {
         let mut accounts = self.accounts.clone();
         for (address, account) in &mut accounts {
-            account.info.original = account.info.present.clone();
-            account.info.is_warm = self.inner.prewarm_set.is_warm(address);
+            account.original = account.present.clone();
+            account.is_warm = self.inner.prewarm_set.is_warm(address);
             for slot in account.storage.slots.values_mut() {
                 slot.value = Tracked::new(slot.value.current);
                 slot.is_warm = false;
@@ -939,14 +931,13 @@ impl<'a> State<'a> {
                 }
                 hash_map::Entry::Occupied(mut entry) => {
                     let parent = entry.get_mut();
-                    parent.info.merge_isolated(account.info);
-                    parent.storage.merge_isolated(account.storage);
+                    parent.merge_isolated(account);
                 }
             }
         }
         for address in child.selfdestructs {
             let still_pending =
-                self.accounts.get(&address).is_some_and(|account| account.info.is_destroyed);
+                self.accounts.get(&address).is_some_and(|account| account.is_destroyed);
             if still_pending {
                 self.inner.selfdestructs.insert(address);
             }
@@ -1000,10 +991,10 @@ mod tests {
         drop(state.storage(&address).unwrap());
 
         let account = &state.accounts[&address];
-        assert_eq!(account.info.original, Some(info.clone()));
-        assert_eq!(account.info.present, Some(info));
-        assert!(!account.info.is_warm);
-        assert!(!account.info.is_touched);
+        assert_eq!(account.original, Some(info.clone()));
+        assert_eq!(account.present, Some(info));
+        assert!(!account.is_warm);
+        assert!(!account.is_touched);
         assert!(state.journal().is_empty());
     }
 
@@ -1179,10 +1170,10 @@ mod tests {
         assert!(slot.is_warm());
         assert_eq!(parent.get_storage(&address, &Word::ONE), Some(Word::from(10)));
         assert_eq!(parent.tload(&address, &Word::ZERO), Word::from(9));
-        assert!(parent.accounts[&created].info.is_created());
+        assert!(parent.accounts[&created].is_created());
         assert!(parent.inner.selfdestructs.contains(&destroyed));
         assert!(parent.accounts[&wiped].storage.wiped);
-        assert_eq!(parent.accounts[&child_only].info.present.as_ref().unwrap().balance, Word::ONE);
+        assert_eq!(parent.accounts[&child_only].present.as_ref().unwrap().balance, Word::ONE);
         assert_eq!(parent.get_storage(&child_only, &Word::ZERO), Some(Word::ONE));
     }
 
@@ -1199,14 +1190,14 @@ mod tests {
 
         let mut child = State::new(EmptyDB::default());
         child.set_pending_state(parent.prepare_isolated_state());
-        assert_eq!(child.accounts[&address].info.original, child.accounts[&address].info.present);
+        assert_eq!(child.accounts[&address].original, child.accounts[&address].present);
         assert!(child.account(&address).unwrap().is_warm());
         assert!(!child.account(&cold_address).unwrap().is_warm());
         child.account(&cold_address).unwrap().warm();
         child.account(&address).unwrap().set_balance(Word::from(8));
         parent.merge_isolated_state(child.take_pending_state());
 
-        assert!(parent.accounts[&address].info.original.is_none());
+        assert!(parent.accounts[&address].original.is_none());
         assert_eq!(parent.account(&address).unwrap().balance(), Word::from(8));
         assert!(parent.account(&address).unwrap().is_warm());
         assert!(!parent.account(&cold_address).unwrap().is_warm());
@@ -1245,7 +1236,7 @@ mod tests {
             account.mark_destructed();
         }
         child.finalize_transaction_(Version::base(crate::SpecId::AMSTERDAM));
-        assert!(!child.accounts[&address].info.is_destroyed);
+        assert!(!child.accounts[&address].is_destroyed);
         assert!(child.inner.selfdestructs.contains(&address));
 
         let mut parent = State::new(EmptyDB::default());

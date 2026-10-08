@@ -280,7 +280,7 @@ mod tests {
         assert!(result.result.status);
         assert!(result.result.tx_gas_used() < SYSTEM_CALL_GAS_LIMIT);
         let unchanged = |address| {
-            result.pending_state.accounts.get(address).is_none_or(|entry| !entry.info.is_changed())
+            result.pending_state.accounts.get(address).is_none_or(|entry| !entry.is_changed())
         };
         assert!(unchanged(&SYSTEM_ADDRESS));
         assert!(unchanged(&beneficiary));

@@ -1,8 +1,8 @@
 //! Owned pending transaction state detached from the EVM.
 
 use super::{
-    Account, AccountChangeRef, AccountInfo, AccountOverlay, StateChangeSink, StateChangeSource,
-    StorageChange, StorageSlot, Tracked,
+    Account, AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange,
+    StorageSlot, Tracked,
 };
 use crate::interpreter::Word;
 use alloy_primitives::{
@@ -46,7 +46,7 @@ impl PendingState {
     /// Returns the current account information when the account is present in pending state.
     #[inline]
     pub fn account_info(&self, address: &Address) -> Option<&AccountInfo> {
-        self.accounts.get(address).and_then(|account| account.info.present.as_ref())
+        self.accounts.get(address).and_then(|account| account.present.as_ref())
     }
 
     /// Inserts an account's transaction-boundary original and current values.
@@ -58,11 +58,13 @@ impl PendingState {
     ) {
         let code_changed = original.as_ref().map(|account| account.code_hash)
             != current.as_ref().map(|account| account.code_hash);
-        self.accounts.entry(address).or_default().info = AccountOverlay {
+        let account = self.accounts.entry(address).or_default();
+        *account = Account {
             original,
             present: current,
             code_changed,
-            ..AccountOverlay::default()
+            storage: core::mem::take(&mut account.storage),
+            ..Account::default()
         };
     }
 
@@ -92,7 +94,7 @@ impl PendingState {
     /// Loaded-but-unchanged accounts and storage slots are ignored.
     #[cfg(test)]
     pub(crate) fn is_changed(&self) -> bool {
-        self.accounts.values().any(|account| account.info.is_changed())
+        self.accounts.values().any(Account::is_changed)
             || self.accounts.values().any(|account| {
                 account.storage.wiped || account.storage.changed_slots().next().is_some()
             })
@@ -110,9 +112,7 @@ impl StateChangeSource for PendingState {
     /// unchanged — go through [`StateChangeSink::account`]; loaded-but-unchanged entries go
     /// through the read callbacks.
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        for (code_hash, code) in
-            self.accounts.values().filter_map(|account| account.info.changed_code())
-        {
+        for (code_hash, code) in self.accounts.values().filter_map(Account::changed_code) {
             sink.bytecode(code_hash, code)?;
         }
 
@@ -138,16 +138,16 @@ impl StateChangeSource for PendingState {
 
         for (&address, entry) in &self.accounts {
             let selfdestructed = self.selfdestructs.contains(&address);
-            if entry.info.is_changed() || entry.info.is_created() || selfdestructed {
+            if entry.is_changed() || entry.is_created() || selfdestructed {
                 sink.account(AccountChangeRef {
                     address,
-                    original: entry.info.original.as_ref(),
-                    current: entry.info.present.as_ref(),
-                    created: entry.info.is_created(),
+                    original: entry.original.as_ref(),
+                    current: entry.present.as_ref(),
+                    created: entry.is_created(),
                     selfdestructed,
                 })?;
             } else {
-                sink.account_read(address, entry.info.present.as_ref())?;
+                sink.account_read(address, entry.present.as_ref())?;
             }
         }
         Ok(())
@@ -170,8 +170,8 @@ mod tests {
         state.insert_storage(address, key, Word::from(2), Word::from(3));
 
         assert_eq!(state.account_info(&address), Some(&current));
-        assert_eq!(state.accounts[&address].info.original, Some(original));
-        assert_eq!(state.accounts[&address].info.present, Some(current));
+        assert_eq!(state.accounts[&address].original, Some(original));
+        assert_eq!(state.accounts[&address].present, Some(current));
         assert_eq!(
             state.accounts[&address].storage.slots[&key].value,
             Tracked::from_parts(Word::from(2), Word::from(3))

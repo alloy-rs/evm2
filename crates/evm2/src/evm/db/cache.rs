@@ -172,13 +172,13 @@ impl<ExtDB> CacheDB<ExtDB> {
         }
 
         for (&address, entry) in accounts {
-            if let Some((code_hash, code)) = entry.info.changed_code() {
+            if let Some((code_hash, code)) = entry.changed_code() {
                 self.cache.contracts.insert(code_hash, code.clone());
             }
-            if !entry.info.is_changed() {
+            if !entry.is_changed() {
                 continue;
             }
-            match entry.info.present.as_ref() {
+            match entry.present.as_ref() {
                 Some(account) => self.insert_account_info(&address, account.clone_no_code()),
                 None => {
                     self.cache.accounts.insert(address, None);

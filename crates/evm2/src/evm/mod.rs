@@ -3510,7 +3510,7 @@ mod tests {
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
         let pending = evm.state.take_pending_state();
         let account =
-            pending.accounts.get(&created).and_then(|entry| entry.info.present.as_ref()).unwrap();
+            pending.accounts.get(&created).and_then(|entry| entry.present.as_ref()).unwrap();
         assert_eq!(account.code_hash, KECCAK256_EMPTY);
     }
 
@@ -3529,7 +3529,7 @@ mod tests {
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
         let pending = evm.state.take_pending_state();
 
-        assert!(pending.accounts.get(&target).unwrap().info.is_created());
+        assert!(pending.accounts.get(&target).unwrap().is_created());
     }
 
     #[test]
@@ -3562,7 +3562,7 @@ mod tests {
 
         evm.state.finalize_transaction_(Version::base(SpecId::HOMESTEAD));
         let pending = evm.state.take_pending_state();
-        assert!(pending.accounts.get(&created).is_none_or(|entry| entry.info.present.is_none()));
+        assert!(pending.accounts.get(&created).is_none_or(|entry| entry.present.is_none()));
     }
 
     #[test]
@@ -3666,8 +3666,8 @@ mod tests {
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let pending = evm.state.take_pending_state();
         let account = pending.accounts.get(&target).expect("empty destination should be deleted");
-        assert!(account.info.original.is_some());
-        assert_eq!(account.info.present, None);
+        assert!(account.original.is_some());
+        assert_eq!(account.present, None);
         assert!(pending.accounts.get(&target).is_some_and(|account| account.storage.wiped));
     }
 
@@ -3700,7 +3700,7 @@ mod tests {
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let pending = evm.state.take_pending_state();
-        assert!(pending.accounts.get(&code_address).is_none_or(|entry| !entry.info.is_changed()));
+        assert!(pending.accounts.get(&code_address).is_none_or(|entry| !entry.is_changed()));
     }
 
     #[test]
