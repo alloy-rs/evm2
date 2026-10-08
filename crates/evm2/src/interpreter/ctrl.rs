@@ -3,7 +3,9 @@ use crate::bytecode::{Bytecode, JumpTableRef};
 /// EVM bytecode view.
 #[derive(Clone, Copy, Debug)]
 pub struct BytecodeRef<'a> {
+    // Includes the trailing STOP padding, so pointers derived from it can read the padding.
     bytecode: &'a [u8],
+    len: usize,
     jump_table: JumpTableRef<'a>,
 }
 
@@ -16,27 +18,28 @@ pub struct Pc {
 impl<'a> BytecodeRef<'a> {
     pub(crate) fn new(bytecode: &'a Bytecode) -> Self {
         Self {
-            bytecode: bytecode.original_byte_slice(),
+            bytecode: bytecode.bytes_slice(),
+            len: bytecode.len(),
             jump_table: bytecode.jump_table().as_ref(),
         }
     }
 
-    /// Returns the bytecode length.
+    /// Returns the original bytecode length, without padding.
     #[inline]
     pub const fn len(&self) -> usize {
-        self.bytecode.len()
+        self.len
     }
 
     /// Returns whether the bytecode is empty.
     #[inline]
     pub const fn is_empty(&self) -> bool {
-        self.bytecode.is_empty()
+        self.len == 0
     }
 
-    /// Returns the bytecode slice.
+    /// Returns the original bytecode slice, without padding.
     #[inline]
     pub const fn as_slice(&self) -> &'a [u8] {
-        self.bytecode
+        self.bytecode.split_at(self.len).0
     }
 
     /// Returns whether `pc` points to a valid jump destination.
@@ -93,7 +96,7 @@ impl Pc {
     /// Caller must ensure `pc` is a valid offset for the current bytecode.
     #[inline(always)]
     pub const unsafe fn set_unchecked(&mut self, bytecode: BytecodeRef<'_>, pc: usize) {
-        self.pc = unsafe { bytecode.as_slice().as_ptr().add(pc) };
+        self.pc = unsafe { bytecode.bytecode.as_ptr().add(pc) };
     }
 
     /// # Safety

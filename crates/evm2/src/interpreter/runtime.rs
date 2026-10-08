@@ -76,7 +76,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     unsafe fn uninit() -> Self {
         let bytecode = Bytecode::new();
         Self {
-            pc: bytecode.original_byte_slice().as_ptr(),
+            pc: bytecode.bytes_slice().as_ptr(),
             bytecode,
             bytecode_ref: None,
             stack_len: 0,
@@ -104,7 +104,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         let bytecode = message.code.clone();
         let gas_limit = message.gas_limit;
         let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
-        self.pc = bytecode.original_byte_slice().as_ptr();
+        // Derive `pc` from the padded bytes so reading the trailing STOP padding stays in bounds.
+        self.pc = bytecode.bytes_slice().as_ptr();
         self.bytecode_ref = None;
         self.bytecode = bytecode;
         self.stack_len = 0;
