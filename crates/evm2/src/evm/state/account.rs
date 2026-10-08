@@ -194,6 +194,7 @@ pub(crate) struct AccountOverlay {
 
 impl AccountOverlay {
     /// Applies an isolated execution's metadata, retaining parent originals and warmth.
+    #[cfg(test)]
     pub(crate) fn merge_isolated(&mut self, child: Self) {
         self.present = child.present;
         self.is_touched |= child.is_touched;
