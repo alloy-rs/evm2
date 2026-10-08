@@ -90,7 +90,8 @@ impl Bal {
                 entry.present.as_ref(),
             );
         }
-        for (address, overlay) in &pending.storage {
+        for (address, account) in &pending.accounts {
+            let overlay = &account.storage;
             self.accounts
                 .entry(*address)
                 .or_default()
@@ -480,9 +481,9 @@ mod tests {
         let mut overlay = StorageOverlay::default();
         overlay.slots.insert(U256::from(5), slot(U256::ZERO, U256::from(42)));
         overlay.slots.insert(U256::from(6), slot(U256::from(7), U256::from(7)));
+        let account = Account { storage: overlay, ..account };
         let pending = PendingState {
             accounts: AddressMap::from_iter([(address, account)]),
-            storage: AddressMap::from_iter([(address, overlay)]),
             selfdestructs: Default::default(),
         };
 
@@ -521,9 +522,9 @@ mod tests {
         };
         let mut overlay = StorageOverlay { wiped: true, ..Default::default() };
         overlay.slots.insert(U256::from(5), slot(U256::from(42), U256::from(42)));
+        let account = Account { storage: overlay, ..account };
         let pending = PendingState {
             accounts: AddressMap::from_iter([(address, account)]),
-            storage: AddressMap::from_iter([(address, overlay)]),
             selfdestructs: AddressSet::from_iter([address]),
         };
 

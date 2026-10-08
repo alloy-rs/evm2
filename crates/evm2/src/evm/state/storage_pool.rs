@@ -2,7 +2,7 @@
 
 use super::{StorageOverlay, StorageSlot};
 use alloc::vec::Vec;
-use alloy_primitives::map::{AddressMap, U256Map};
+use alloy_primitives::map::U256Map;
 
 const MAX_MAPS: usize = 32;
 const MAX_MAP_CAPACITY: usize = 4_096;
@@ -26,29 +26,24 @@ impl StoragePool {
         }
     }
 
-    /// Called only after the transaction is accepted or discarded, never on a scope rollback.
-    /// Draining preserves the outer table allocation while removing all owner identities/wipes.
-    pub(super) fn clear(&mut self, storage: &mut AddressMap<StorageOverlay>) {
-        for (_, overlay) in storage.drain() {
-            let mut slots = overlay.slots;
-            let capacity = slots.capacity();
-            if capacity == 0
-                || capacity > MAX_MAP_CAPACITY
-                || self.maps.len() == MAX_MAPS
-                || capacity > MAX_TOTAL_CAPACITY - self.capacity
-            {
-                // Do not spend time clearing a large allocation that will be dropped anyway.
-                continue;
-            }
-            slots.clear();
-            // Clearing deletion markers can increase a hash map's reported capacity. Charge the
-            // empty allocation we actually retain, not its possibly lower pre-clear capacity.
-            let capacity = slots.capacity();
-            if capacity > MAX_MAP_CAPACITY || capacity > MAX_TOTAL_CAPACITY - self.capacity {
-                continue;
-            }
-            self.capacity += capacity;
-            self.maps.push(slots);
+    /// Retains one empty account-local slot map.
+    pub(super) fn clear_overlay(&mut self, overlay: &mut StorageOverlay) {
+        let mut slots = core::mem::take(&mut overlay.slots);
+        overlay.wiped = false;
+        let capacity = slots.capacity();
+        if capacity == 0
+            || capacity > MAX_MAP_CAPACITY
+            || self.maps.len() == MAX_MAPS
+            || capacity > MAX_TOTAL_CAPACITY - self.capacity
+        {
+            return;
         }
+        slots.clear();
+        let capacity = slots.capacity();
+        if capacity > MAX_MAP_CAPACITY || capacity > MAX_TOTAL_CAPACITY - self.capacity {
+            return;
+        }
+        self.capacity += capacity;
+        self.maps.push(slots);
     }
 }

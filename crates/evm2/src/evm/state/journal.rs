@@ -238,7 +238,7 @@ mod tests {
 
         state.prewarm_storage_slot(&account, key);
         let checkpoint = state.checkpoint();
-        state.storage(&account).into_slot(key).unwrap().write(Word::from(7));
+        state.storage_slot(&account, key).unwrap().write(Word::from(7));
         assert_eq!(state.storage_slot(&account, key).unwrap().current(), Word::from(7));
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
@@ -258,7 +258,7 @@ mod tests {
 
         let checkpoint = state.checkpoint();
         assert!(state.storage_slot(&account, key).unwrap().warm());
-        assert_eq!(state.storage(&account).into_slot(key).unwrap().current(), value);
+        assert_eq!(state.storage_slot(&account, key).unwrap().current(), value);
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(!state.storage_slot(&account, key).unwrap().is_warm());

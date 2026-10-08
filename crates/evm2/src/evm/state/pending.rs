@@ -2,7 +2,7 @@
 
 use super::{
     Account, AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange,
-    StorageOverlay, StorageSlot, Tracked,
+    StorageSlot, Tracked,
 };
 use crate::interpreter::Word;
 use alloy_primitives::{
@@ -32,11 +32,6 @@ pub struct PendingState {
     /// Accounts loaded by the transaction: transaction-boundary original info, present info, and
     /// account-lifetime flags.
     pub(crate) accounts: AddressMap<Account>,
-    /// Per-account storage overlays loaded by the transaction.
-    ///
-    /// Accounts whose storage was loaded are normally present in [`Self::accounts`] as well, since
-    /// executing an account loads it.
-    pub(crate) storage: AddressMap<StorageOverlay>,
     /// Accounts selfdestructed by the transaction.
     pub(crate) selfdestructs: AddressSet,
 }
@@ -45,7 +40,7 @@ impl PendingState {
     /// Returns whether the transaction loaded no accounts and no storage.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.accounts.is_empty() && self.storage.is_empty()
+        self.accounts.is_empty()
     }
 
     /// Returns the current account information when the account is present in pending state.
@@ -63,22 +58,35 @@ impl PendingState {
     ) {
         let code_changed = original.as_ref().map(|account| account.code_hash)
             != current.as_ref().map(|account| account.code_hash);
-        self.accounts.insert(
-            address,
-            Account { original, present: current, code_changed, ..Account::default() },
-        );
+        let account = self.accounts.entry(address).or_default();
+        *account = Account {
+            original,
+            present: current,
+            code_changed,
+            storage: core::mem::take(&mut account.storage),
+            ..Account::default()
+        };
     }
 
     /// Inserts a storage slot's transaction-boundary original and current values.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the owning account has not been inserted with [`Self::insert_account`].
     pub fn insert_storage(&mut self, address: Address, key: Word, original: Word, current: Word) {
-        self.storage.entry(address).or_default().slots.insert(
-            key,
-            StorageSlot {
-                value: Tracked::from_parts(original, current),
-                is_warm: false,
-                _non_exhaustive: (),
-            },
-        );
+        self.accounts
+            .get_mut(&address)
+            .expect("insert the account before its storage")
+            .storage
+            .slots
+            .insert(
+                key,
+                StorageSlot {
+                    value: Tracked::from_parts(original, current),
+                    is_warm: false,
+                    _non_exhaustive: (),
+                },
+            );
     }
 
     /// Returns whether the transaction contains any account or storage change.
@@ -87,10 +95,9 @@ impl PendingState {
     #[cfg(test)]
     pub(crate) fn is_changed(&self) -> bool {
         self.accounts.values().any(Account::is_changed)
-            || self
-                .storage
-                .values()
-                .any(|overlay| overlay.wiped || overlay.changed_slots().next().is_some())
+            || self.accounts.values().any(|account| {
+                account.storage.wiped || account.storage.changed_slots().next().is_some()
+            })
     }
 }
 
@@ -109,7 +116,8 @@ impl StateChangeSource for PendingState {
             sink.bytecode(code_hash, code)?;
         }
 
-        for (&address, overlay) in &self.storage {
+        for (&address, entry) in &self.accounts {
+            let overlay = &entry.storage;
             if overlay.wiped {
                 sink.storage_wipe(address)?;
             }
@@ -165,7 +173,7 @@ mod tests {
         assert_eq!(state.accounts[&address].original, Some(original));
         assert_eq!(state.accounts[&address].present, Some(current));
         assert_eq!(
-            state.storage[&address].slots[&key].value,
+            state.accounts[&address].storage.slots[&key].value,
             Tracked::from_parts(Word::from(2), Word::from(3))
         );
     }
