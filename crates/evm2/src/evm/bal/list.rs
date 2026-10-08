@@ -507,7 +507,7 @@ mod tests {
             present: None,
             ..Default::default()
         };
-        let mut overlay = StorageOverlay { wiped: true, ..Default::default() };
+        let mut overlay = StorageOverlay::default();
         overlay.slots.insert(U256::from(5), slot(U256::from(42), U256::from(42)));
         let account = Account { storage: overlay, ..account };
         let pending = PendingState {

@@ -1,6 +1,6 @@
 //! Transaction-scoped persistent storage overlay.
 
-use super::{DbResult, DynDatabase, JournalEntry, StateInner, Tracked};
+use super::{Account, DbResult, DynDatabase, JournalEntry, StateInner, Tracked};
 use crate::{LoadError, interpreter::Word};
 use alloy_primitives::{
     Address,
@@ -11,9 +11,6 @@ use derive_where::derive_where;
 /// Persistent storage overlay for one account.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StorageOverlay {
-    /// Whether consumers must delete all pre-existing storage for the account
-    /// before applying individual slot changes.
-    pub wiped: bool,
     /// Loaded storage slots. A slot is present here only once it has been loaded or written, so
     /// its value is always meaningful; EIP-2929 warmth is tracked per slot in
     /// [`StorageSlot::is_warm`].
@@ -26,7 +23,6 @@ impl StorageOverlay {
     /// Applies an isolated execution's slots, retaining parent originals and combining warmth.
     #[cfg(test)]
     pub(crate) fn merge_isolated(&mut self, child: Self) {
-        self.wiped |= child.wiped;
         for (key, slot) in child.slots {
             match self.slots.entry(key) {
                 hash_map::Entry::Vacant(entry) => {
@@ -44,12 +40,14 @@ impl StorageOverlay {
     /// Returns the changed storage slots.
     ///
     /// A slot is changed when its current value differs from its transaction-boundary original,
-    /// except that a wiped overlay must reinsert every nonzero current value after the wipe.
+    /// except that resetting the owning account's storage must reinsert every nonzero current
+    /// value. Set `reset` when the account lifecycle requires a full storage reset before these
+    /// writes.
     #[inline]
-    pub fn changed_slots(&self) -> impl Iterator<Item = (&Word, &Tracked<Word>)> {
+    pub fn changed_slots(&self, reset: bool) -> impl Iterator<Item = (&Word, &Tracked<Word>)> {
         self.slots
             .iter()
-            .filter_map(|(key, slot)| slot.is_changed(self.wiped).then_some((key, &slot.value)))
+            .filter_map(move |(key, slot)| slot.is_changed(reset).then_some((key, &slot.value)))
     }
 }
 
@@ -71,8 +69,8 @@ pub struct StorageSlot {
 impl StorageSlot {
     /// Whether this slot must be emitted as a write, reinserting nonzero values after a wipe.
     #[inline]
-    pub(super) fn is_changed(&self, wiped: bool) -> bool {
-        if wiped { !self.value.current.is_zero() } else { self.value.is_changed() }
+    pub(super) fn is_changed(&self, reset: bool) -> bool {
+        if reset { !self.value.current.is_zero() } else { self.value.is_changed() }
     }
 
     /// Creates a freshly loaded slot whose original and current values are `value`, with the given
@@ -98,8 +96,8 @@ impl StorageSlot {
 pub struct StorageHandle<'a, 'db> {
     /// Address of the account whose storage this handle exposes.
     address: Address,
-    /// Transaction overlay entry: the per-account storage slots plus the wipe flag.
-    storage: &'a mut StorageOverlay,
+    /// Owning account, including its lifecycle state and loaded storage slots.
+    account: &'a mut Account,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
     inner: &'a mut StateInner<'db>,
@@ -111,10 +109,10 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     #[inline]
     pub(crate) const fn new(
         address: Address,
-        storage: &'a mut StorageOverlay,
+        account: &'a mut Account,
         inner: &'a mut StateInner<'db>,
     ) -> Self {
-        Self { address, storage, inner }
+        Self { address, account, inner }
     }
 
     /// Returns the account address.
@@ -123,20 +121,13 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         self.address
     }
 
-    /// Returns whether the account's storage is marked for a full wipe before individual slot
-    /// changes are applied.
-    #[inline]
-    pub const fn is_wiped(&self) -> bool {
-        self.storage.wiped
-    }
-
     /// Returns whether the slot at `key` has already been loaded into the overlay this transaction.
     ///
     /// This is a pure overlay membership check: it does not consult the backing database or load
     /// anything, so callers can use it to detect a cold slot before paying for a load.
     #[inline]
     pub fn is_loaded(&self, key: &Word) -> bool {
-        self.storage.slots.contains_key(key)
+        self.account.storage.slots.contains_key(key)
     }
 
     /// Returns whether the slot at `key` is warm for EIP-2929 gas accounting, consulting both the
@@ -147,7 +138,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     /// can gate a cold access before the cold read is paid for.
     #[inline]
     pub fn is_warm(&self, key: &Word) -> bool {
-        self.storage.slots.get(key).is_some_and(|slot| slot.is_warm)
+        self.account.storage.slots.get(key).is_some_and(|slot| slot.is_warm)
             || self.inner.prewarm_set.is_storage_warm(&self.address, key)
     }
 
@@ -206,8 +197,10 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         key: Word,
         skip_cold_load: bool,
     ) -> Result<(StorageSlotHandle<'a, 'db>, bool), LoadError> {
-        let Self { address, storage, inner } = self;
-        let (slot, is_cold) = match storage.slots.entry(key) {
+        let Self { address, account, inner } = self;
+        let reset = account.storage_is_reset(false);
+        let is_destroyed = account.is_destroyed;
+        let (slot, is_cold) = match account.storage.slots.entry(key) {
             hash_map::Entry::Occupied(entry) => {
                 // An already-loaded slot has no cold database read to skip, so the skip only
                 // signals an unaffordable *cold* access. Runtime warmth (`is_warm`, seeded from
@@ -229,7 +222,9 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 if skip_cold_load && !is_warm {
                     return Err(LoadError::ColdLoadSkipped);
                 }
-                let value = if storage.wiped {
+                // SELFDESTRUCT keeps storage readable until finalization. EIP-8246 clears
+                // the live destroyed flag while retaining the transaction set membership.
+                let value = if reset || (!is_destroyed && inner.selfdestructs.contains(&address)) {
                     Word::ZERO
                 } else {
                     inner.database.get_storage(&address, &key)?
@@ -242,22 +237,6 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
             inner.journal.push(JournalEntry::StorageWarmed { address, key });
         }
         Ok((StorageSlotHandle { address, key, slot, inner }, is_cold))
-    }
-
-    /// Marks all of the account's prior persistent storage as deleted.
-    ///
-    /// Only called during transaction finalization (selfdestruct and EIP-161 dead-account
-    /// deletion), after the last revertible scope, so the wipe is not journaled. Loaded slot
-    /// entries are kept with their values reset to zero: wiped slots resolve to zero on re-load,
-    /// and resetting `original` alongside `current` turns the transaction's prior writes into
-    /// unchanged reads, which keeps a destroyed account's storage accesses visible to the EIP-7928
-    /// block access list (execution-specs `destroy_storage` converts writes to reads).
-    #[inline]
-    pub fn wipe(&mut self) {
-        self.storage.wiped = true;
-        self.storage.slots.iter_mut().for_each(|(_, slot)| {
-            slot.value.set_current(Word::ZERO);
-        });
     }
 }
 
@@ -445,20 +424,17 @@ mod tests {
         state.prewarm_storage_slot(&account, warm_key);
         state.storage_slot(&account, cold_key).unwrap().write(Word::from(5));
 
-        state.storage(&account).unwrap().wipe();
+        state.account(&account).unwrap().mark_destructed();
+        state.finalize_transaction_(Version::base(SpecId::LONDON));
         assert!(state.storage_slot(&account, warm_key).unwrap().is_warm());
         assert!(!state.storage_slot(&account, cold_key).unwrap().is_warm());
         assert_eq!(state.storage_slot(&account, warm_key).unwrap().current(), Word::ZERO);
         assert_eq!(state.storage_slot(&account, cold_key).unwrap().current(), Word::ZERO);
 
         let pending = state.take_pending_state();
-        let overlay = pending
-            .accounts
-            .get(&account)
-            .map(|account| &account.storage)
-            .expect("wipe must be emitted");
-        assert!(overlay.wiped);
-        assert!(overlay.changed_slots().next().is_none());
+        let account = pending.accounts.get(&account).expect("deletion must be emitted");
+        assert!(account.present.is_none());
+        assert!(account.storage.changed_slots(true).next().is_none());
     }
 
     #[test]
@@ -590,5 +566,153 @@ mod tests {
         let mut slot = state.storage_slot(&address, key).unwrap();
         assert!(slot.is_warm());
         assert!(!slot.warm(), "base-prewarmed slot must not report a cold transition");
+    }
+
+    #[test]
+    fn created_storage_uses_zero_base_and_commits_reset() {
+        let address = Address::with_last_byte(0x40);
+        let loaded = Word::ONE;
+        let unseen = Word::from(2);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
+        database.insert_account_storage(&address, &loaded, &Word::from(10));
+        database.insert_account_storage(&address, &unseen, &Word::from(20));
+        let mut state = State::new(database.clone());
+        let version = Version::base(SpecId::LONDON);
+        state
+            .create_account(&Address::ZERO, &address, &Word::ZERO, version.features)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(state.storage_slot_untracked(&address, &unseen).unwrap(), Word::ZERO);
+        {
+            let mut account = state.account(&address).unwrap();
+            let mut slot = account.storage().into_slot(loaded).unwrap();
+            assert_eq!(slot.original(), Word::ZERO);
+            assert_eq!(slot.current(), Word::ZERO);
+            slot.set(Word::from(30));
+        }
+        state.finalize_transaction_(version);
+        let pending = state.take_pending_state();
+
+        // All three commit paths must replace the backing storage and keep constructor writes.
+        let mut detached = CacheDB::new(database.clone());
+        detached.commit_pending(&pending);
+        let mut streamed = CacheDB::new(database);
+        streamed.commit_source(&pending);
+        state.set_pending_state(pending);
+        state.commit_transaction();
+        for cache in [&mut detached, &mut streamed] {
+            assert_eq!(cache.get_storage(&address, &loaded).unwrap(), Word::from(30));
+            assert_eq!(cache.get_storage(&address, &unseen).unwrap(), Word::ZERO);
+        }
+        assert_eq!(state.storage_slot_untracked(&address, &loaded).unwrap(), Word::from(30));
+        assert_eq!(state.storage_slot_untracked(&address, &unseen).unwrap(), Word::ZERO);
+    }
+
+    #[test]
+    fn selfdestruct_preserves_storage_until_finalization() {
+        let address = Address::with_last_byte(0x41);
+        let loaded = Word::ONE;
+        let unseen = Word::from(2);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
+        database.insert_account_storage(&address, &loaded, &Word::from(10));
+        database.insert_account_storage(&address, &unseen, &Word::from(20));
+        let mut state = State::new(database);
+        let version = Version::base(SpecId::LONDON);
+        let checkpoint = state.checkpoint();
+        state.account(&address).unwrap().mark_destructed();
+        assert_eq!(state.storage_slot(&address, loaded).unwrap().current(), Word::from(10));
+        assert_eq!(state.storage_slot_untracked(&address, &unseen).unwrap(), Word::from(20));
+        state.rollback(checkpoint, version.features);
+        assert!(!state.account(&address).unwrap().is_destructed());
+        assert!(!state.take_pending_state().is_changed());
+
+        state.account(&address).unwrap().mark_destructed();
+        state.storage_slot(&address, loaded).unwrap().set(Word::from(30));
+        state.finalize_transaction_(version);
+        assert_eq!(state.storage_slot(&address, loaded).unwrap().current(), Word::ZERO);
+        assert_eq!(state.storage_slot_untracked(&address, &unseen).unwrap(), Word::ZERO);
+        assert_eq!(state.storage_slot(&address, unseen).unwrap().current(), Word::ZERO);
+        state.commit_transaction();
+        assert_eq!(state.storage_slot_untracked(&address, &loaded).unwrap(), Word::ZERO);
+        assert_eq!(state.storage_slot_untracked(&address, &unseen).unwrap(), Word::ZERO);
+    }
+
+    #[test]
+    fn finalized_account_lifecycle_resets_detached_storage() {
+        // Also cover EIP-8246 with an existing account to exercise the retained selfdestruct
+        // set independently of creation, as custom feature combinations can do.
+        for spec in [SpecId::LONDON, SpecId::SPURIOUS_DRAGON, SpecId::AMSTERDAM] {
+            let address = Address::with_last_byte(0x42);
+            let loaded = Word::ONE;
+            let unseen = Word::from(2);
+            let info = if spec == SpecId::SPURIOUS_DRAGON {
+                AccountInfo::default()
+            } else {
+                AccountInfo::default().with_balance(Word::ONE)
+            };
+            let mut database = CacheDB::default();
+            database.insert_account_info(&address, info);
+            database.insert_account_storage(&address, &loaded, &Word::from(10));
+            database.insert_account_storage(&address, &unseen, &Word::from(20));
+            let mut state = State::new(database.clone());
+            state.storage_slot(&address, loaded).unwrap().set(Word::from(30));
+            if spec == SpecId::SPURIOUS_DRAGON {
+                state.account(&address).unwrap().touch();
+            } else {
+                state.account(&address).unwrap().mark_destructed();
+            }
+            state.finalize_transaction_(Version::base(spec));
+            let pending = state.take_pending_state();
+            let account = &pending.accounts[&address];
+            assert!(!account.is_created());
+            if spec == SpecId::AMSTERDAM {
+                assert!(!account.is_destroyed);
+                assert_eq!(account.present, Some(AccountInfo::default().with_balance(Word::ONE)));
+            } else {
+                assert!(account.present.is_none());
+            }
+
+            let mut detached = CacheDB::new(database.clone());
+            detached.commit_pending(&pending);
+            let mut streamed = CacheDB::new(database);
+            streamed.commit_source(&pending);
+            state.set_pending_state(pending);
+            assert_eq!(state.storage_slot_untracked(&address, &unseen).unwrap(), Word::ZERO);
+            assert_eq!(state.storage_slot(&address, unseen).unwrap().current(), Word::ZERO);
+            state.commit_transaction();
+            for cache in [&mut detached, &mut streamed] {
+                assert_eq!(cache.get_storage(&address, &loaded).unwrap(), Word::ZERO);
+                assert_eq!(cache.get_storage(&address, &unseen).unwrap(), Word::ZERO);
+            }
+            assert_eq!(state.storage_slot_untracked(&address, &loaded).unwrap(), Word::ZERO);
+            assert_eq!(state.storage_slot_untracked(&address, &unseen).unwrap(), Word::ZERO);
+        }
+    }
+
+    #[test]
+    fn reverted_creation_does_not_reset_backing_storage() {
+        let address = Address::with_last_byte(0x43);
+        let key = Word::ONE;
+        let mut database = CacheDB::default();
+        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
+        database.insert_account_storage(&address, &key, &Word::from(10));
+        let mut state = State::new(database);
+        let version = Version::base(SpecId::LONDON);
+        let checkpoint = state.checkpoint();
+        state
+            .create_account(&Address::ZERO, &address, &Word::ZERO, version.features)
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.storage_slot_untracked(&address, &key).unwrap(), Word::ZERO);
+        state.rollback(checkpoint, version.features);
+        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::from(10));
+        let pending = state.take_pending_state();
+        assert!(!pending.is_changed());
+        state.set_pending_state(pending);
+        state.commit_transaction();
+        assert_eq!(state.storage_slot_untracked(&address, &key).unwrap(), Word::from(10));
     }
 }

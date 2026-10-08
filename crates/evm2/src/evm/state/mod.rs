@@ -526,7 +526,7 @@ impl<'a> State<'a> {
         if account.storage.slots.capacity() == 0 {
             account.storage.slots = storage_pool.take();
         }
-        Ok(StorageHandle::new(*address, &mut account.storage, inner))
+        Ok(StorageHandle::new(*address, account, inner))
     }
 
     /// Loads a single persistent storage slot and returns a journaled mutation handle.
@@ -558,15 +558,17 @@ impl<'a> State<'a> {
     /// This is the storage-side mirror of [`Self::account_info_untracked`]: a non-loading peek that
     /// returns the overlay slot value when one has been loaded or written this transaction,
     /// otherwise it reads the backing database directly without caching the result in the overlay.
-    /// A slot of a wiped account that has not been rewritten reads as zero. Use
+    /// An unloaded slot of a created account or a finalized deletion/reset reads as zero. Use
     /// [`Self::storage`] when the slot should be loaded and preserved.
     #[inline(never)]
     pub fn storage_slot_untracked(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        if let Some(overlay) = self.accounts.get(address).map(|account| &account.storage) {
-            if let Some(slot) = overlay.slots.get(key) {
+        if let Some(account) = self.accounts.get(address) {
+            if let Some(slot) = account.storage.slots.get(key) {
                 return Ok(slot.value.current);
             }
-            if overlay.wiped {
+            if account.storage_is_reset(false)
+                || (!account.is_destroyed && self.inner.selfdestructs.contains(address))
+            {
                 return Ok(Word::ZERO);
             }
         }
@@ -826,16 +828,13 @@ impl<'a> State<'a> {
         for address in &selfdestructs {
             // EIP-8246: a self-destructed account that still holds balance is preserved as a
             // balance-only account instead of being burned. One with no balance is removed. The
-            // handle is scoped so its `AccountChange` flushes on drop before the storage wipe.
-            {
-                let mut account = self.account(address)?;
-                if eip8246 && !account.balance().is_zero() {
-                    account.reset_selfdestructed_for_finalization();
-                } else {
-                    account.delete_for_finalization();
-                }
+            // account handle also clears loaded storage values at finalization.
+            let mut account = self.account(address)?;
+            if eip8246 && !account.balance().is_zero() {
+                account.reset_selfdestructed_for_finalization();
+            } else {
+                account.delete_for_finalization();
             }
-            self.storage(address)?.wipe();
         }
 
         if version.feature(EvmFeatures::EIP161) {
@@ -844,8 +843,6 @@ impl<'a> State<'a> {
                 let mut account = self.account(address)?;
                 if account.is_existing_dead() {
                     account.delete_for_finalization();
-                    drop(account);
-                    self.storage(address)?.wipe();
                 }
             }
         } else {
@@ -966,7 +963,7 @@ impl<'a> State<'a> {
     pub fn commit_transaction(&mut self) {
         // The transaction overlay is folded into the accepted-overlay database directly, without
         // detaching it.
-        self.inner.database.commit(&self.accounts);
+        self.inner.database.commit(&self.accounts, &self.inner.selfdestructs);
         for account in self.accounts.values_mut() {
             self.storage_pool.clear_overlay(&mut account.storage);
         }
@@ -1143,7 +1140,6 @@ mod tests {
         let prewarmed = Address::with_last_byte(43);
         let created = Address::with_last_byte(44);
         let destroyed = Address::with_last_byte(45);
-        let wiped = Address::with_last_byte(46);
         let child_only = Address::with_last_byte(47);
         let mut parent = State::new(EmptyDB::default());
         parent.account(&address).unwrap().warm();
@@ -1155,7 +1151,6 @@ mod tests {
             created_account.mark_created();
         }
         parent.account(&destroyed).unwrap().mark_destructed();
-        parent.storage(&wiped).unwrap().wipe();
         let mut slot = parent.storage_slot(&address, Word::ZERO).unwrap();
         slot.set(Word::from(7));
         slot.warm();
@@ -1167,7 +1162,6 @@ mod tests {
         assert!(child.account(&prewarmed).unwrap().is_warm());
         assert!(child.account(&created).unwrap().is_created());
         assert!(child.account(&destroyed).unwrap().is_destructed());
-        assert!(child.storage(&wiped).unwrap().is_wiped());
         assert_eq!(child.tload(&address, &Word::ZERO), Word::ZERO);
         let mut slot = child.storage_slot(&address, Word::ZERO).unwrap();
         assert_eq!((slot.original(), slot.current()), (Word::from(7), Word::from(7)));
@@ -1185,7 +1179,6 @@ mod tests {
         assert_eq!(parent.tload(&address, &Word::ZERO), Word::from(9));
         assert!(parent.accounts[&created].is_created());
         assert!(parent.inner.selfdestructs.contains(&destroyed));
-        assert!(parent.accounts[&wiped].storage.wiped);
         assert_eq!(parent.accounts[&child_only].present.as_ref().unwrap().balance, Word::ONE);
         assert_eq!(parent.get_storage(&child_only, &Word::ZERO), Some(Word::ONE));
     }
@@ -1226,7 +1219,9 @@ mod tests {
         let mut parent = State::new(db);
         parent.account(&address).unwrap();
         parent.storage_slot(&address, key).unwrap();
-        parent.storage(&address).unwrap().wipe();
+        parent.account(&address).unwrap().mark_created();
+        parent.account(&address).unwrap().mark_destructed();
+        parent.finalize_transaction_(Version::base(crate::SpecId::AMSTERDAM));
 
         let mut child = State::new(EmptyDB::default());
         child.set_pending_state(parent.prepare_isolated_state());
@@ -1246,6 +1241,7 @@ mod tests {
         {
             let mut account = child.account(&address).unwrap();
             account.set_balance(Word::from(5));
+            account.mark_created();
             account.mark_destructed();
         }
         child.finalize_transaction_(Version::base(crate::SpecId::AMSTERDAM));
