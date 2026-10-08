@@ -8,7 +8,7 @@ use crate::{
 use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
 use analysis::{analyze_legacy, pad_legacy};
-use core::{cmp::Ordering, hash};
+use core::{cmp::Ordering, fmt, hash};
 use thiserror::Error;
 
 mod analysis;
@@ -44,8 +44,8 @@ pub enum BytecodeDecodeError {
 }
 
 /// Ethereum EVM bytecode.
-#[derive(Clone, Debug)]
-pub struct Bytecode(Arc<BytecodeInner>);
+#[derive(Clone)]
+pub struct Bytecode(Option<Arc<BytecodeInner>>);
 
 /// Inner bytecode representation.
 ///
@@ -115,29 +115,41 @@ impl Ord for Bytecode {
     }
 }
 
+impl fmt::Debug for Bytecode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Bytecode").field(self.inner()).finish()
+    }
+}
+
 impl Bytecode {
     /// Creates an empty legacy [`Bytecode`] backed by exactly one STOP opcode.
     #[inline]
-    pub fn new() -> Self {
-        Self::default_ref().clone()
+    pub const fn new() -> Self {
+        Self(None)
     }
 
     #[inline]
-    fn default_ref() -> &'static Self {
-        static DEFAULT: OnceLock<Bytecode> = OnceLock::new();
-        DEFAULT.get_or_init(|| {
-            Self(Arc::new(BytecodeInner {
-                kind: BytecodeKind::Legacy,
-                bytecode: Bytes::from_static(&[op::STOP]),
-                original_len: 0,
-                jump_table: OnceLock::new(),
-                hash: {
-                    let hash = OnceLock::new();
-                    let _ = hash.set(KECCAK256_EMPTY);
-                    hash
-                },
-            }))
+    fn empty_inner() -> &'static BytecodeInner {
+        static EMPTY: OnceLock<BytecodeInner> = OnceLock::new();
+        EMPTY.get_or_init(|| BytecodeInner {
+            kind: BytecodeKind::Legacy,
+            bytecode: Bytes::from_static(&[op::STOP]),
+            original_len: 0,
+            jump_table: OnceLock::new(),
+            hash: {
+                let hash = OnceLock::new();
+                let _ = hash.set(KECCAK256_EMPTY);
+                hash
+            },
         })
+    }
+
+    #[inline]
+    fn inner(&self) -> &BytecodeInner {
+        match &self.0 {
+            Some(inner) => inner,
+            None => Self::empty_inner(),
+        }
     }
 
     /// Creates a new legacy [`Bytecode`] with padding and deferred jump analysis.
@@ -152,13 +164,13 @@ impl Bytecode {
 
         let original_len = raw.len();
         let bytecode = pad_legacy(raw);
-        Self(Arc::new(BytecodeInner {
+        Self(Some(Arc::new(BytecodeInner {
             kind: BytecodeKind::Legacy,
             original_len,
             bytecode,
             jump_table: OnceLock::new(),
             hash: OnceLock::new(),
-        }))
+        })))
     }
 
     /// Creates a new raw [`Bytecode`].
@@ -176,13 +188,13 @@ impl Bytecode {
     #[inline]
     pub fn new_eip7702(address: Address) -> Self {
         let raw: Bytes = [EIP7702_MAGIC_BYTES, &[EIP7702_VERSION], &address[..]].concat().into();
-        Self(Arc::new(BytecodeInner {
+        Self(Some(Arc::new(BytecodeInner {
             kind: BytecodeKind::Eip7702,
             original_len: raw.len(),
             bytecode: raw,
             jump_table: OnceLock::new(),
             hash: OnceLock::new(),
-        }))
+        })))
     }
 
     /// Creates a new raw [`Bytecode`].
@@ -211,13 +223,13 @@ impl Bytecode {
         if bytes[2] != EIP7702_VERSION {
             return Err(Eip7702DecodeError::UnsupportedVersion);
         }
-        Ok(Self(Arc::new(BytecodeInner {
+        Ok(Self(Some(Arc::new(BytecodeInner {
             kind: BytecodeKind::Eip7702,
             original_len: bytes.len(),
             bytecode: bytes,
             jump_table: OnceLock::new(),
             hash: OnceLock::new(),
-        })))
+        }))))
     }
 
     /// Create new checked bytecode from pre-analyzed components.
@@ -251,7 +263,7 @@ impl Bytecode {
         assert!(original_len <= bytecode.len(), "original_len is greater than bytecode length");
         assert!(original_len <= jump_table.len(), "jump table length is less than original length");
         assert!(!bytecode.is_empty(), "bytecode cannot be empty");
-        Self(Arc::new(BytecodeInner {
+        Self(Some(Arc::new(BytecodeInner {
             kind: BytecodeKind::Legacy,
             bytecode,
             original_len,
@@ -261,13 +273,13 @@ impl Bytecode {
                 cached
             },
             hash: OnceLock::new(),
-        }))
+        })))
     }
 
     /// Returns the kind of bytecode.
     #[inline]
     pub fn kind(&self) -> BytecodeKind {
-        self.0.kind
+        self.inner().kind
     }
 
     /// Returns `true` if bytecode is legacy.
@@ -285,7 +297,11 @@ impl Bytecode {
     /// Returns the EIP-7702 delegated address if this is EIP-7702 bytecode.
     #[inline]
     pub fn eip7702_address(&self) -> Option<Address> {
-        if self.is_eip7702() { Some(Address::from_slice(&self.0.bytecode[3..23])) } else { None }
+        if self.is_eip7702() {
+            Some(Address::from_slice(&self.inner().bytecode[3..23]))
+        } else {
+            None
+        }
     }
 
     /// Returns the legacy jump table, initializing it on first access.
@@ -296,7 +312,7 @@ impl Bytecode {
 
     #[inline]
     pub(crate) fn jump_table(&self) -> &JumpTable {
-        self.0.jump_table.get_or_init(|| {
+        self.inner().jump_table.get_or_init(|| {
             if self.is_legacy() {
                 analyze_legacy(self.original_byte_slice())
             } else {
@@ -308,63 +324,92 @@ impl Bytecode {
     /// Calculates or returns cached hash of the bytecode.
     #[inline]
     pub fn hash_slow(&self) -> B256 {
-        *self.0.hash.get_or_init(|| keccak256(self.original_byte_slice()))
+        *self.inner().hash.get_or_init(|| keccak256(self.original_byte_slice()))
     }
 
     /// Returns a reference to the potentially padded bytecode bytes.
     #[inline]
     pub fn bytes(&self) -> &Bytes {
-        &self.0.bytecode
+        &self.inner().bytecode
     }
 
     /// Returns the bytecode as a slice.
     #[inline]
     pub fn bytes_slice(&self) -> &[u8] {
-        &self.0.bytecode
+        &self.inner().bytecode
     }
 
     /// Returns the original bytecode without padding.
     #[inline]
     pub fn original_bytes(&self) -> Bytes {
-        self.0.bytecode.slice(..self.0.original_len)
+        let inner = self.inner();
+        inner.bytecode.slice(..inner.original_len)
     }
 
     /// Returns the original bytecode as a byte slice without padding.
     #[inline]
     pub fn original_byte_slice(&self) -> &[u8] {
-        unsafe { self.0.bytecode.get_unchecked(..self.0.original_len) }
+        let inner = self.inner();
+        unsafe { inner.bytecode.get_unchecked(..inner.original_len) }
     }
 
     /// Returns the length of the original bytes (without padding).
     #[inline]
     pub fn len(&self) -> usize {
-        self.0.original_len
+        self.0.as_ref().map_or(0, |inner| inner.original_len)
     }
 
     /// Returns whether the bytecode is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.0.original_len == 0
+        self.len() == 0
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "std"))]
+    extern crate std;
+
     use super::*;
     use crate::interpreter::op;
+    use alloc::format;
     use alloy_primitives::{Address, Bytes};
+    use std::hash::{BuildHasher, RandomState};
 
     #[test]
     fn test_new_empty() {
+        // SAFETY: a single STOP is padded.
+        let analyzed = unsafe {
+            Bytecode::new_analyzed(Bytes::from_static(&[op::STOP]), 0, JumpTable::default())
+        };
+        let hasher = RandomState::new();
+        let empty = Bytecode::new();
         for bytecode in [
             Bytecode::default(),
-            Bytecode::new(),
-            Bytecode::new(),
+            empty.clone(),
+            empty,
             Bytecode::new_legacy(Bytes::new()),
+            Bytecode::new_raw(Bytes::new()),
+            Bytecode::new_raw_checked(Bytes::new()).unwrap(),
         ] {
             assert_eq!(bytecode.kind(), BytecodeKind::Legacy);
+            assert!(bytecode.is_legacy());
+            assert!(!bytecode.is_eip7702());
+            assert_eq!(bytecode.eip7702_address(), None);
             assert_eq!(bytecode.len(), 0);
+            assert!(bytecode.is_empty());
             assert_eq!(bytecode.bytes_slice(), [op::STOP]);
+            assert_eq!(bytecode.bytes(), &Bytes::from_static(&[op::STOP]));
+            assert!(bytecode.original_byte_slice().is_empty());
+            assert_eq!(bytecode.original_bytes(), Bytes::new());
+            assert_eq!(bytecode.hash_slow(), KECCAK256_EMPTY);
+            assert!(bytecode.legacy_jump_table().unwrap().is_empty());
+            assert!(core::ptr::eq(bytecode.jump_table(), bytecode.legacy_jump_table().unwrap()));
+            assert_eq!(bytecode, analyzed);
+            assert_eq!(bytecode.cmp(&analyzed), Ordering::Equal);
+            assert_eq!(hasher.hash_one(&bytecode), hasher.hash_one(&analyzed));
+            assert!(bytecode < Bytecode::new_legacy(Bytes::from_static(&[op::STOP])));
         }
     }
 
@@ -459,7 +504,7 @@ mod tests {
             assert_eq!(bytecode.hash_slow(), keccak256(&raw));
             assert_eq!(bytecode.bytes_slice().len(), raw.len() + 33);
             assert_eq!(&bytecode.bytes_slice()[raw.len()..], &[0; 33]);
-            assert!(bytecode.0.jump_table.get().is_none());
+            assert!(bytecode.inner().jump_table.get().is_none());
 
             let table = bytecode.legacy_jump_table().unwrap();
             assert_eq!(table.len(), raw.len());
@@ -474,10 +519,10 @@ mod tests {
     #[test]
     fn interpreter_accessor_initializes_analysis() {
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::JUMPDEST]));
-        assert!(bytecode.0.jump_table.get().is_none());
+        assert!(bytecode.inner().jump_table.get().is_none());
         let table = bytecode.jump_table();
         assert!(table.is_valid(0));
-        assert!(core::ptr::eq(table, bytecode.0.jump_table.get().unwrap()));
+        assert!(core::ptr::eq(table, bytecode.inner().jump_table.get().unwrap()));
         assert!(core::ptr::eq(table, bytecode.legacy_jump_table().unwrap()));
     }
 
@@ -489,7 +534,7 @@ mod tests {
         let table_ptr = table.as_slice().as_ptr();
         // SAFETY: PUSH1 has a complete immediate and a terminating STOP.
         let bytecode = unsafe { Bytecode::new_analyzed(padded, 2, table) };
-        assert!(bytecode.0.jump_table.get().is_some());
+        assert!(bytecode.inner().jump_table.get().is_some());
         assert_eq!(bytecode.bytes().as_ptr(), ptr);
         assert_eq!(bytecode.bytes().len(), 4);
         assert_eq!(bytecode.original_byte_slice(), &[op::JUMPDEST, op::PUSH1]);
@@ -504,7 +549,7 @@ mod tests {
         let from_raw = Bytecode::new_eip7702_raw(delegated.original_bytes()).unwrap();
         for bytecode in [delegated, from_raw] {
             assert!(bytecode.legacy_jump_table().is_none());
-            assert!(bytecode.0.jump_table.get().is_none());
+            assert!(bytecode.inner().jump_table.get().is_none());
             assert_eq!(bytecode.bytes_slice(), bytecode.original_byte_slice());
             assert!(bytecode.jump_table().is_empty());
         }
@@ -520,7 +565,16 @@ mod tests {
         assert_eq!(bytecode.len(), raw.len());
         assert_eq!(bytecode.original_bytes(), raw);
         assert_eq!(bytecode.hash_slow(), keccak256(&raw));
-        assert!(bytecode.0.jump_table.get().is_none());
+        assert!(bytecode.inner().jump_table.get().is_none());
         assert_eq!(bytecode.jump_table().len(), raw.len());
+    }
+
+    #[test]
+    fn empty_debug_matches_shared_form() {
+        let empty = Bytecode::new();
+        let shared = Arc::new(empty.inner());
+        let _ = empty.hash_slow();
+        let _ = empty.jump_table();
+        assert_eq!(format!("{empty:?}"), format!("Bytecode({shared:?})"));
     }
 }
