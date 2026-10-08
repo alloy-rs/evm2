@@ -75,6 +75,7 @@ pub struct StateSnapshot {
     bal_context: BalContext,
     prewarm_set: PrewarmSet,
     journal: Vec<JournalEntry>,
+    last_checkpoint: usize,
     logs: Vec<Log>,
     selfdestructs: AddressSet,
 }
@@ -96,6 +97,7 @@ impl StateSnapshot {
                 },
                 prewarm_set: self.prewarm_set,
                 journal: self.journal,
+                last_checkpoint: self.last_checkpoint,
                 logs: self.logs,
                 selfdestructs: self.selfdestructs,
             },
@@ -122,6 +124,7 @@ impl State<'_> {
             bal_context: self.database.bal_context.clone(),
             prewarm_set: self.prewarm_set.clone(),
             journal: self.journal.clone(),
+            last_checkpoint: self.last_checkpoint,
             logs: self.logs.clone(),
             selfdestructs: self.selfdestructs.clone(),
         }
@@ -164,6 +167,8 @@ pub struct StateInner<'a> {
     prewarm_set: PrewarmSet,
     /// Revert journal.
     journal: Vec<JournalEntry>,
+    /// Journal cursor protecting entries before the latest checkpoint from deduplication.
+    last_checkpoint: usize,
     /// Logs emitted by the current transaction.
     logs: Vec<Log>,
     /// Accounts self-destructed in the current transaction.
@@ -186,15 +191,17 @@ impl<'a> State<'a> {
                 database: CacheDB::new(initial),
                 prewarm_set: PrewarmSet::new(),
                 journal: Vec::new(),
+                last_checkpoint: 0,
                 logs: Vec::new(),
                 selfdestructs: AddressSet::default(),
             },
         }
     }
 
-    /// Returns a checkpoint for later rollback.
+    /// Returns a checkpoint for later rollback and starts a new journal deduplication scope.
     #[inline]
-    pub const fn checkpoint(&self) -> StateCheckpoint {
+    pub const fn checkpoint(&mut self) -> StateCheckpoint {
+        self.inner.last_checkpoint = self.inner.journal.len();
         StateCheckpoint::new(self.inner.journal.len(), self.inner.logs.len())
     }
 
@@ -481,13 +488,15 @@ impl<'a> State<'a> {
             storage,
             storage_pool,
             transient_storage,
-            inner: StateInner { prewarm_set, journal, selfdestructs, logs, database: _ },
+            inner:
+                StateInner { prewarm_set, journal, last_checkpoint, selfdestructs, logs, database: _ },
         } = self;
         accounts.clear();
         storage_pool.clear(storage);
         transient_storage.clear();
         prewarm_set.clear();
         journal.clear();
+        *last_checkpoint = 0;
         selfdestructs.clear();
         logs.clear();
     }
@@ -802,6 +811,8 @@ impl<'a> State<'a> {
         // Restoring an older snapshot can leave active cursors past the current lengths. Preserve
         // shorter prefixes and revert only entries beyond each cursor.
         self.logs.truncate(checkpoint.logs_len);
+        // Keep the surviving prefix protected when execution resumes after rollback.
+        self.inner.last_checkpoint = checkpoint.journal_len.min(self.journal.len());
         while self.journal.len() > checkpoint.journal_len {
             let Some(entry) = self.journal.pop() else {
                 unreachable!("journal length is checked above")
