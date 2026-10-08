@@ -37,6 +37,97 @@ pub struct PendingState {
 }
 
 impl PendingState {
+    /// Rebuilds owned transaction state from a callback-based change source.
+    ///
+    /// This is used for state updates that originate outside EVM execution, such as
+    /// precompile and system-call updates. Executed transactions already produce a
+    /// `PendingState` directly and should transfer it instead.
+    pub fn from_source(source: &impl StateChangeSource) -> Self {
+        #[derive(Default)]
+        struct Builder {
+            pending: PendingState,
+            code: alloy_primitives::map::B256Map<crate::bytecode::Bytecode>,
+        }
+
+        impl StateChangeSink for Builder {
+            type Error = core::convert::Infallible;
+
+            fn bytecode(
+                &mut self,
+                hash: alloy_primitives::B256,
+                code: &crate::bytecode::Bytecode,
+            ) -> Result<(), Self::Error> {
+                self.code.entry(hash).or_insert_with(|| code.clone());
+                Ok(())
+            }
+
+            fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
+                let storage = &mut self.pending.accounts.entry(address).or_default().storage;
+                storage.wiped = true;
+                storage.slots.clear();
+                Ok(())
+            }
+
+            fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+                self.pending.insert_storage(
+                    change.address,
+                    change.key,
+                    change.original,
+                    change.current,
+                );
+                Ok(())
+            }
+
+            fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+                let mut current = change.current.cloned();
+                if let Some(info) = &mut current
+                    && info.code.is_none()
+                {
+                    info.code = self.code.get(&info.code_hash).cloned();
+                }
+                let code_changed =
+                    current.as_ref().is_some_and(|info| self.code.contains_key(&info.code_hash));
+                self.pending.insert_account(change.address, change.original.cloned(), current);
+                let account = self.pending.accounts.get_mut(&change.address).unwrap();
+                account.just_created = change.created;
+                account.code_changed = code_changed;
+                account.is_touched = true;
+                if change.selfdestructed {
+                    self.pending.selfdestructs.insert(change.address);
+                }
+                Ok(())
+            }
+
+            fn account_read(
+                &mut self,
+                address: Address,
+                info: Option<&AccountInfo>,
+            ) -> Result<(), Self::Error> {
+                self.pending.accounts.entry(address).or_insert_with(|| Account {
+                    is_loaded: true,
+                    original: info.cloned(),
+                    present: info.cloned(),
+                    ..Default::default()
+                });
+                Ok(())
+            }
+
+            fn storage_read(
+                &mut self,
+                address: Address,
+                key: Word,
+                value: Word,
+            ) -> Result<(), Self::Error> {
+                self.pending.insert_storage(address, key, value, value);
+                Ok(())
+            }
+        }
+
+        let mut builder = Builder::default();
+        let Ok(()) = source.visit(&mut builder);
+        builder.pending
+    }
+
     /// Borrows changed accounts together with their storage overlays.
     ///
     /// Includes accounts whose metadata is unchanged but whose storage changed or was wiped.
