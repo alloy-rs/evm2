@@ -3,7 +3,7 @@
 use super::{AccountBal, BalError, BlockAccessIndex};
 use crate::{
     bytecode::BytecodeDecodeError,
-    evm::state::{AccountInfo, PendingState},
+    evm::state::{Account, AccountInfo, PendingState},
 };
 use alloc::vec::Vec;
 use alloy_eip7928::{
@@ -82,27 +82,14 @@ impl Bal {
     /// ones as writes at `bal_index`. Apply pending states in transaction order, since writes
     /// must be appended with ascending indices.
     pub fn commit(&mut self, bal_index: BlockAccessIndex, pending: PendingState) {
-        for (address, entry) in &pending.accounts {
-            self.update_account(
-                bal_index,
-                *address,
-                entry.original.as_ref(),
-                entry.present.as_ref(),
-            );
-        }
-        for (address, account) in &pending.accounts {
-            let overlay = &account.storage;
-            self.accounts
-                .entry(*address)
-                .or_default()
-                .storage
-                .update_pending(bal_index, &overlay.slots);
+        for (&address, account) in &pending.accounts {
+            self.update_account(bal_index, address, account);
         }
     }
 
     /// Extend BAL with one pending account overlay entry: its transaction-boundary original info
-    /// against its present info. An absent side is the non-existent (default) account, so an
-    /// account removed by the transaction records zeroed writes.
+    /// against its present info, and its loaded storage slots. An absent side is the non-existent
+    /// (default) account, so an account removed by the transaction records zeroed writes.
     ///
     /// A selfdestructed account needs no special-casing: transaction finalization already resolved
     /// its present info to the EIP-8246 balance-only remnant or to a removed account, and its
@@ -112,16 +99,16 @@ impl Bal {
         &mut self,
         bal_index: BlockAccessIndex,
         address: Address,
-        original: Option<&AccountInfo>,
-        present: Option<&AccountInfo>,
+        account: &Account,
     ) {
         let bal_account = self.accounts.entry(address).or_default();
         let absent = AccountInfo::default();
         bal_account.account_info.update(
             bal_index,
-            original.unwrap_or(&absent),
-            present.unwrap_or(&absent),
+            account.original.as_ref().unwrap_or(&absent),
+            account.present.as_ref().unwrap_or(&absent),
         );
+        bal_account.storage.update_pending(bal_index, &account.storage.slots);
     }
 
     /// Populate storage slot from BAL by account address.

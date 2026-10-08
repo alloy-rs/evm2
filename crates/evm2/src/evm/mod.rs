@@ -1553,13 +1553,6 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         skip_cold_load: bool,
     ) -> Result<SLoad, HostError> {
         let eip2929 = self.feature(EvmFeatures::EIP2929);
-        // A skipped cold slot must not load its owning account either.
-        if skip_cold_load
-            && self.state.get_storage(address, key).is_none()
-            && !self.state.prewarm_set().is_storage_warm(address, key)
-        {
-            return Err(InstrStop::OutOfGas.into());
-        }
         let storage = self.state.storage(address)?;
         let loaded = if eip2929 {
             storage.into_slot_with_skip_and_warm(*key, skip_cold_load)
@@ -1590,13 +1583,6 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         // implicit storage read. When the cold access is unaffordable the read is skipped, so the
         // slot stays out of the EIP-7928 block access list (the warm-read cost has already been
         // paid by the instruction, so an affordable warm slot is still read on OOG).
-        // A skipped cold slot must not load its owning account either.
-        if skip_cold_load
-            && self.state.get_storage(address, key).is_none()
-            && !self.state.prewarm_set().is_storage_warm(address, key)
-        {
-            return Err(InstrStop::OutOfGas.into());
-        }
         let storage = self.state.storage(address)?;
         let loaded = if eip2929 {
             storage.into_slot_with_skip_and_warm(*key, skip_cold_load)
@@ -2252,12 +2238,18 @@ mod tests {
             Host::load_account(&mut evm, &address, true, true),
             Err(HostError::Halt(InstrStop::OutOfGas))
         ));
+        let stats = evm.database().downcast_ref::<DbStats<InMemoryDB>>().unwrap().counts();
+        assert_eq!(stats.get_account, 0);
+        assert_eq!(stats.get_code_by_hash, 0);
+
+        // SLOAD runs against the executing account, which frame setup has already loaded.
+        evm.state.account(&address).unwrap();
         assert!(matches!(
             Host::sload(&mut evm, &address, &Word::ZERO, true),
             Err(HostError::Halt(InstrStop::OutOfGas))
         ));
         let stats = evm.database().downcast_ref::<DbStats<InMemoryDB>>().unwrap().counts();
-        assert_eq!(stats.get_account, 0);
+        assert_eq!(stats.get_account, 1);
         assert_eq!(stats.get_storage, 0);
         assert_eq!(stats.get_code_by_hash, 0);
     }

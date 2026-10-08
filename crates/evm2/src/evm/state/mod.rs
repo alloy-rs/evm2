@@ -870,7 +870,8 @@ impl<'a> State<'a> {
         Ok(())
     }
 
-    /// Visits transaction state changes in database application order.
+    /// Visits transaction state changes in database application order: each account's bytecode
+    /// and storage precede its metadata.
     ///
     /// This borrows changes directly from the transaction layer without detaching it and does not
     /// mutate the accepted overlay.
@@ -878,47 +879,9 @@ impl<'a> State<'a> {
         &self,
         sink: &mut S,
     ) -> Result<(), S::Error> {
-        for entry in self.accounts.values() {
-            if let Some((code_hash, code)) = entry.changed_code() {
-                sink.bytecode(code_hash, code)?;
-            }
-        }
-
         for (&address, entry) in &self.accounts {
-            let storage = &entry.storage;
-            if storage.wiped {
-                sink.storage_wipe(address)?;
-            }
-            for (&key, slot) in &storage.slots {
-                let value = &slot.value;
-                if slot.is_changed(storage.wiped) {
-                    sink.storage(StorageChange {
-                        address,
-                        key,
-                        original: value.original,
-                        current: value.current,
-                    })?;
-                } else {
-                    sink.storage_read(address, key, value.current)?;
-                }
-            }
+            entry.visit(address, self.selfdestructs.contains(&address), sink)?;
         }
-
-        for (&address, entry) in self.accounts.iter() {
-            let selfdestructed = self.selfdestructs.contains(&address);
-            if entry.is_changed() || entry.is_created() || selfdestructed {
-                sink.account(AccountChangeRef {
-                    address,
-                    original: entry.original.as_ref(),
-                    current: entry.present.as_ref(),
-                    created: entry.is_created(),
-                    selfdestructed,
-                })?;
-            } else {
-                sink.account_read(address, entry.present.as_ref())?;
-            }
-        }
-
         Ok(())
     }
 

@@ -1,9 +1,6 @@
 //! Owned pending transaction state detached from the EVM.
 
-use super::{
-    Account, AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange,
-    StorageSlot, Tracked,
-};
+use super::{Account, AccountInfo, StateChangeSink, StateChangeSource, StorageSlot, Tracked};
 use crate::interpreter::Word;
 use alloy_primitives::{
     Address,
@@ -94,16 +91,17 @@ impl PendingState {
     /// Loaded-but-unchanged accounts and storage slots are ignored.
     #[cfg(test)]
     pub(crate) fn is_changed(&self) -> bool {
-        self.accounts.values().any(Account::is_changed)
-            || self.accounts.values().any(|account| {
-                account.storage.wiped || account.storage.changed_slots().next().is_some()
-            })
+        self.accounts.values().any(|account| {
+            account.is_changed()
+                || account.storage.wiped
+                || account.storage.changed_slots().next().is_some()
+        })
     }
 }
 
 impl StateChangeSource for PendingState {
-    /// Visits the transaction's loaded entries in an unspecified order: bytecode, then per-account
-    /// storage wipes, changed slots, and slot reads, then accounts.
+    /// Visits the transaction's loaded entries account by account, in an unspecified account
+    /// order. Each account's bytecode and storage precede its metadata.
     ///
     /// The same code hash may be visited more than once when several accounts share bytecode; sinks
     /// key bytecode by hash, so repeated visits are idempotent.
@@ -112,43 +110,8 @@ impl StateChangeSource for PendingState {
     /// unchanged — go through [`StateChangeSink::account`]; loaded-but-unchanged entries go
     /// through the read callbacks.
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        for (code_hash, code) in self.accounts.values().filter_map(Account::changed_code) {
-            sink.bytecode(code_hash, code)?;
-        }
-
         for (&address, entry) in &self.accounts {
-            let overlay = &entry.storage;
-            if overlay.wiped {
-                sink.storage_wipe(address)?;
-            }
-            for (&key, slot) in &overlay.slots {
-                let value = &slot.value;
-                if slot.is_changed(overlay.wiped) {
-                    sink.storage(StorageChange {
-                        address,
-                        key,
-                        original: value.original,
-                        current: value.current,
-                    })?;
-                } else {
-                    sink.storage_read(address, key, value.current)?;
-                }
-            }
-        }
-
-        for (&address, entry) in &self.accounts {
-            let selfdestructed = self.selfdestructs.contains(&address);
-            if entry.is_changed() || entry.is_created() || selfdestructed {
-                sink.account(AccountChangeRef {
-                    address,
-                    original: entry.original.as_ref(),
-                    current: entry.present.as_ref(),
-                    created: entry.is_created(),
-                    selfdestructed,
-                })?;
-            } else {
-                sink.account_read(address, entry.present.as_ref())?;
-            }
+            entry.visit(address, self.selfdestructs.contains(&address), sink)?;
         }
         Ok(())
     }

@@ -163,15 +163,15 @@ impl<ExtDB> CacheDB<ExtDB> {
 
         for (&address, entry) in accounts {
             let overlay = &entry.storage;
-            if overlay.wiped {
-                self.cache.storage.entry(address).or_default().wipe();
+            let mut changed_slots = overlay.changed_slots().peekable();
+            if overlay.wiped || changed_slots.peek().is_some() {
+                let storage = self.cache.storage.entry(address).or_default();
+                if overlay.wiped {
+                    storage.wipe();
+                }
+                storage.slots.extend(changed_slots.map(|(&key, slot)| (key, slot.current)));
             }
-            for (&key, slot) in overlay.changed_slots() {
-                self.cache.storage.entry(address).or_default().slots.insert(key, slot.current);
-            }
-        }
 
-        for (&address, entry) in accounts {
             if let Some((code_hash, code)) = entry.changed_code() {
                 self.cache.contracts.insert(code_hash, code.clone());
             }

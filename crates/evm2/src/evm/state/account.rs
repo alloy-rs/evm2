@@ -1,8 +1,8 @@
 //! Account models held by the state overlay and emitted in transitions.
 
 use super::{
-    DbResult, DynDatabase, JournalEntry, StateInner, StorageHandle, StorageOverlay,
-    storage_pool::StoragePool,
+    AccountChangeRef, DbResult, DynDatabase, JournalEntry, StateChangeSink, StateInner,
+    StorageChange, StorageHandle, StorageOverlay, storage_pool::StoragePool,
 };
 use crate::{EvmFeatures, bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256};
@@ -249,6 +249,53 @@ impl Account {
             && !code_hash.is_zero()
             && code_hash != KECCAK256_EMPTY)
             .then_some((code_hash, code))
+    }
+
+    /// Emits this account's changes to `sink`: new bytecode, then its storage wipe, changed slots
+    /// and slot reads, then its metadata as a change or a read.
+    ///
+    /// Changed accounts, including created or selfdestructed accounts whose info ended up
+    /// unchanged, go through [`StateChangeSink::account`]; loaded-but-unchanged entries go through
+    /// the read callbacks.
+    pub(super) fn visit<S: StateChangeSink>(
+        &self,
+        address: Address,
+        selfdestructed: bool,
+        sink: &mut S,
+    ) -> Result<(), S::Error> {
+        if let Some((code_hash, code)) = self.changed_code() {
+            sink.bytecode(code_hash, code)?;
+        }
+
+        let storage = &self.storage;
+        if storage.wiped {
+            sink.storage_wipe(address)?;
+        }
+        for (&key, slot) in &storage.slots {
+            let value = &slot.value;
+            if slot.is_changed(storage.wiped) {
+                sink.storage(StorageChange {
+                    address,
+                    key,
+                    original: value.original,
+                    current: value.current,
+                })?;
+            } else {
+                sink.storage_read(address, key, value.current)?;
+            }
+        }
+
+        if self.is_changed() || self.is_created() || selfdestructed {
+            sink.account(AccountChangeRef {
+                address,
+                original: self.original.as_ref(),
+                current: self.present.as_ref(),
+                created: self.is_created(),
+                selfdestructed,
+            })
+        } else {
+            sink.account_read(address, self.present.as_ref())
+        }
     }
 }
 
