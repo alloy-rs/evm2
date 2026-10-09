@@ -4,7 +4,11 @@ use super::{
     AccountChangeRef, DbResult, DynDatabase, JournalEntry, StateChangeSink, StateInner,
     StorageChange, StorageHandle, StorageOverlay, storage_pool::StoragePool,
 };
-use crate::{EvmFeatures, bytecode::Bytecode, interpreter::Word};
+use crate::{
+    EvmFeatures,
+    bytecode::{Bytecode, chunks::CodeChunk},
+    interpreter::Word,
+};
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256, map::HashMap};
 use derive_where::derive_where;
 
@@ -209,9 +213,18 @@ pub(crate) struct Account {
     /// Whether the present overlay account's code has been modified.
     pub(crate) code_changed: bool,
     /// Independently loaded bytecode chunks keyed by their zero-based index.
-    pub(crate) code_chunks: HashMap<u32, Bytecode>,
+    pub(crate) code_chunks: HashMap<u32, AccountCodeChunk>,
     /// Persistent transaction storage owned by this account.
     pub(crate) storage: StorageOverlay,
+}
+
+/// One independently loaded bytecode chunk and its transaction-local access status.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccountCodeChunk {
+    /// Independently executable bytecode, including its synthetic trailing STOP.
+    pub code: CodeChunk,
+    /// Whether this chunk has already been charged as warm in the current transaction scope.
+    pub is_warm: bool,
 }
 
 impl Account {
@@ -634,16 +647,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         account.code_size = code.len() as u32;
         account.code = Some(code);
         self.tracked.code_chunks.clear();
-        if let Some(code) = self.tracked.present.as_ref().and_then(|account| account.code.as_ref())
-            && let Ok(chunks) = code.validated_code_chunks()
-        {
-            self.tracked.code_chunks.extend(
-                chunks
-                    .iter()
-                    .enumerate()
-                    .map(|(index, chunk)| (index as u32, chunk.bytecode().clone())),
-            );
-        }
         self.tracked.code_changed = true;
     }
 

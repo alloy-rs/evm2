@@ -82,29 +82,61 @@ pub enum CodeChunkError {
     },
 }
 
+/// Validates deployed code without constructing or caching its chunks.
+pub fn validate_code(code: &[u8]) -> Result<(), CodeChunkError> {
+    for (index, payload) in code.chunks(CODE_CHUNK_SIZE).enumerate() {
+        validate_payload(payload, index, code.len())?;
+    }
+    Ok(())
+}
+
+/// Constructs one independently executable chunk from resident validated code.
+///
+/// Only the requested payload is copied. No vector containing the complete deployed code is
+/// retained by [`Bytecode`](super::Bytecode).
+pub fn code_chunk(code: &[u8], index: u32) -> Result<Option<CodeChunk>, CodeChunkError> {
+    let index = index as usize;
+    let Some(start) = index.checked_mul(CODE_CHUNK_SIZE) else {
+        return Ok(None);
+    };
+    if start >= code.len() {
+        return Ok(None);
+    }
+    let end = (start + CODE_CHUNK_SIZE).min(code.len());
+    let payload = &code[start..end];
+    validate_payload(payload, index, code.len())?;
+    Ok(Some(CodeChunk::from_validated_payload(Bytes::copy_from_slice(payload))))
+}
+
 /// Validates and splits deployed code. Empty code has no chunks.
 pub fn chunkify_code(code: &[u8]) -> Result<Vec<CodeChunk>, CodeChunkError> {
-    let mut chunks = Vec::with_capacity(code.len().div_ceil(CODE_CHUNK_SIZE));
-    for (index, payload) in code.chunks(CODE_CHUNK_SIZE).enumerate() {
-        let mut pc = 0;
-        while pc < payload.len() {
-            let instruction_len = 1 + push_size(payload[pc]);
-            if pc + instruction_len > payload.len() {
-                return Err(CodeChunkError::PushCrossesBoundary {
-                    pc: index * CODE_CHUNK_SIZE + pc,
-                });
-            }
-            pc += instruction_len;
+    validate_code(code)?;
+    Ok(code
+        .chunks(CODE_CHUNK_SIZE)
+        .map(|payload| CodeChunk::from_validated_payload(Bytes::copy_from_slice(payload)))
+        .collect())
+}
+
+fn validate_payload(
+    payload: &[u8],
+    index: usize,
+    complete_code_len: usize,
+) -> Result<(), CodeChunkError> {
+    let mut pc = 0;
+    while pc < payload.len() {
+        let instruction_len = 1 + push_size(payload[pc]);
+        if pc + instruction_len > payload.len() {
+            return Err(CodeChunkError::PushCrossesBoundary { pc: index * CODE_CHUNK_SIZE + pc });
         }
-        if payload.len() == CODE_CHUNK_SIZE
-            && (index + 1) * CODE_CHUNK_SIZE < code.len()
-            && payload.last() != Some(&op::STOP)
-        {
-            return Err(CodeChunkError::NonFinalChunkWithoutStop { index });
-        }
-        chunks.push(CodeChunk::from_validated_payload(Bytes::copy_from_slice(payload)));
+        pc += instruction_len;
     }
-    Ok(chunks)
+    if payload.len() == CODE_CHUNK_SIZE
+        && (index + 1) * CODE_CHUNK_SIZE < complete_code_len
+        && payload.last() != Some(&op::STOP)
+    {
+        return Err(CodeChunkError::NonFinalChunkWithoutStop { index });
+    }
+    Ok(())
 }
 
 const fn push_size(opcode: u8) -> usize {

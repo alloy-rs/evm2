@@ -5,7 +5,7 @@ use crate::{
     interpreter::op,
     once_lock::OnceLock,
 };
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
 use analysis::{analyze_legacy, pad_legacy};
 use core::{cmp::Ordering, fmt, hash};
@@ -67,8 +67,6 @@ struct BytecodeInner {
     jump_table: OnceLock<JumpTable>,
     /// Cached hash of the original bytecode.
     hash: OnceLock<B256>,
-    /// Lazily split resident code for database adapters.
-    chunks: OnceLock<Result<Vec<chunks::CodeChunk>, chunks::CodeChunkError>>,
 }
 
 /// The kind of bytecode.
@@ -128,25 +126,12 @@ impl fmt::Debug for Bytecode {
 impl Bytecode {
     /// Returns a chunk of already resident code; never performs database I/O.
     pub fn code_chunk(&self, index: u32) -> Option<chunks::CodeChunk> {
-        if index as usize >= self.original_byte_slice().len().div_ceil(chunks::CODE_CHUNK_SIZE) {
-            return None;
-        }
-        self.inner()
-            .chunks
-            .get_or_init(|| chunks::chunkify_code(self.original_byte_slice()))
-            .as_ref()
-            .ok()?
-            .get(index as usize)
-            .cloned()
+        chunks::code_chunk(self.original_byte_slice(), index).ok().flatten()
     }
 
-    /// Validates deployed code and returns its independently executable chunks.
-    pub fn validated_code_chunks(&self) -> Result<&[chunks::CodeChunk], chunks::CodeChunkError> {
-        self.inner()
-            .chunks
-            .get_or_init(|| chunks::chunkify_code(self.original_byte_slice()))
-            .as_deref()
-            .map_err(|error| *error)
+    /// Validates deployed code without constructing or caching its chunks.
+    pub fn validate_code_chunks(&self) -> Result<(), chunks::CodeChunkError> {
+        chunks::validate_code(self.original_byte_slice())
     }
 
     /// Creates an empty legacy [`Bytecode`] backed by exactly one STOP opcode.
@@ -162,7 +147,6 @@ impl Bytecode {
             kind: BytecodeKind::Legacy,
             bytecode: Bytes::from_static(&[op::STOP]),
             original_len: 0,
-            chunks: OnceLock::new(),
             jump_table: OnceLock::new(),
             hash: {
                 let hash = OnceLock::new();
@@ -196,7 +180,6 @@ impl Bytecode {
             kind: BytecodeKind::Legacy,
             original_len,
             bytecode,
-            chunks: OnceLock::new(),
             jump_table: OnceLock::new(),
             hash: OnceLock::new(),
         })))
@@ -221,7 +204,6 @@ impl Bytecode {
             kind: BytecodeKind::Eip7702,
             original_len: raw.len(),
             bytecode: raw,
-            chunks: OnceLock::new(),
             jump_table: OnceLock::new(),
             hash: OnceLock::new(),
         })))
@@ -257,7 +239,6 @@ impl Bytecode {
             kind: BytecodeKind::Eip7702,
             original_len: bytes.len(),
             bytecode: bytes,
-            chunks: OnceLock::new(),
             jump_table: OnceLock::new(),
             hash: OnceLock::new(),
         }))))
@@ -298,7 +279,6 @@ impl Bytecode {
             kind: BytecodeKind::Legacy,
             bytecode,
             original_len,
-            chunks: OnceLock::new(),
             jump_table: {
                 let cached = OnceLock::new();
                 let _ = cached.set(jump_table);

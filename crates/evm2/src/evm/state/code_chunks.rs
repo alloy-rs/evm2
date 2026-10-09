@@ -1,12 +1,12 @@
 //! Transaction-scoped chunk warmth over a persistent, immutable byte cache.
 
-use super::{JournalEntry, State};
+use super::{AccountCodeChunk, JournalEntry, State};
 use crate::{
     LoadError,
     bytecode::{Bytecode, chunks::CodeChunk},
     evm::db::DynDatabase,
 };
-use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY};
+use alloy_primitives::{Address, KECCAK256_EMPTY};
 
 /// A loaded code chunk and its warmth before this access.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,8 +54,11 @@ impl State<'_> {
             return Ok(None);
         }
         let expected_len = (code_size - chunk_start).min(crate::bytecode::chunks::CODE_CHUNK_SIZE);
-        let key = (*address, code_hash, index);
-        let is_cold = !self.warm_code_chunks.contains(&key);
+        let is_cold = self
+            .accounts
+            .get(address)
+            .and_then(|account| account.code_chunks.get(&index))
+            .is_none_or(|chunk| !chunk.is_warm);
         if is_cold && skip_cold_load {
             return Err(LoadError::ColdLoadSkipped);
         }
@@ -63,11 +66,7 @@ impl State<'_> {
             .accounts
             .get(address)
             .and_then(|account| account.code_chunks.get(&index))
-            .and_then(|code| {
-                CodeChunk::new_validated(Bytes::copy_from_slice(
-                    &code.original_byte_slice()[..expected_len],
-                ))
-            });
+            .map(|chunk| chunk.code.clone());
         let chunk = if let Some(chunk) = account_chunk {
             Some(chunk)
         } else if let Some(code) = resident {
@@ -84,11 +83,13 @@ impl State<'_> {
         if chunk.bytes().len() != expected_len {
             return Ok(None);
         }
-        if let Some(account) = self.accounts.get_mut(address) {
-            account.code_chunks.insert(index, chunk.bytecode().clone());
-        }
         if is_cold {
-            self.warm_code_chunks.insert(key);
+            let account = self.accounts.get_mut(address).expect("account was loaded above");
+            account
+                .code_chunks
+                .entry(index)
+                .and_modify(|loaded| loaded.is_warm = true)
+                .or_insert_with(|| AccountCodeChunk { code: chunk.clone(), is_warm: true });
             self.journal.push(JournalEntry::CodeChunkWarmed {
                 address: *address,
                 code_hash,
@@ -162,19 +163,41 @@ mod tests {
     }
 
     #[test]
+    fn account_and_other_chunks_do_not_eagerly_load_chunk_zero() {
+        let mut state = state();
+        let address = Address::ZERO;
+
+        assert!(state.account(&address).unwrap().exists());
+        assert!(state.accounts[&address].code_chunks.is_empty());
+        assert_eq!(state.initial().downcast_ref::<ChunkDb>().unwrap().reads, 0);
+
+        let load = state.load_code_chunk(&address, 1, false).unwrap().unwrap();
+        assert!(load.is_cold);
+        assert!(state.accounts[&address].code_chunks[&1].is_warm);
+        assert!(!state.accounts[&address].code_chunks.contains_key(&0));
+        assert_eq!(state.initial().downcast_ref::<ChunkDb>().unwrap().reads, 1);
+
+        let load = state.load_code_chunk(&address, 1, false).unwrap().unwrap();
+        assert!(!load.is_cold);
+        assert_eq!(state.initial().downcast_ref::<ChunkDb>().unwrap().reads, 1);
+    }
+
+    #[test]
     fn rollback_keeps_bytes_but_restores_warmth() {
         let mut state = state();
         let address = Address::ZERO;
         let outer = state.checkpoint();
         assert!(state.load_code_chunk(&address, 0, false).unwrap().unwrap().is_cold);
-        assert!(state.accounts[&address].code_chunks.contains_key(&0));
+        assert!(state.accounts[&address].code_chunks[&0].is_warm);
         let inner = state.checkpoint();
         assert!(!state.load_code_chunk(&address, 0, true).unwrap().unwrap().is_cold);
         assert!(state.load_code_chunk(&address, 1, false).unwrap().unwrap().is_cold);
         state.rollback(inner, EvmFeatures::empty());
         assert!(!state.load_code_chunk(&address, 0, true).unwrap().unwrap().is_cold);
+        assert!(!state.accounts[&address].code_chunks[&1].is_warm);
         assert!(state.load_code_chunk(&address, 1, false).unwrap().unwrap().is_cold);
         state.rollback(outer, EvmFeatures::empty());
+        assert!(!state.accounts[&address].code_chunks[&0].is_warm);
         assert!(state.load_code_chunk(&address, 0, false).unwrap().unwrap().is_cold);
         assert_eq!(state.initial().downcast_ref::<ChunkDb>().unwrap().reads, 2);
         state.clear_transaction_state();
@@ -193,10 +216,10 @@ mod tests {
         assert_eq!(state.initial().downcast_ref::<ChunkDb>().unwrap().reads, 0);
         state.initial_mut().downcast_mut::<ChunkDb>().unwrap().fail = true;
         assert!(matches!(state.load_code_chunk(&address, 0, false), Err(LoadError::Database(_))));
-        assert!(state.warm_code_chunks.is_empty());
+        assert!(state.accounts[&address].code_chunks.is_empty());
         state.initial_mut().downcast_mut::<ChunkDb>().unwrap().fail = false;
         assert!(state.load_code_chunk(&address, 2, false).unwrap().is_none());
-        assert!(state.warm_code_chunks.is_empty());
+        assert!(state.accounts[&address].code_chunks.is_empty());
         assert!(state.load_code_chunk(&address, 0, false).unwrap().unwrap().is_cold);
     }
 
@@ -229,7 +252,7 @@ mod tests {
         assert_eq!(load.chunk.bytes(), &[0x00, 0x5b]);
         state.rollback(checkpoint, EvmFeatures::empty());
         assert_eq!(
-            state.accounts[&address].code_chunks[&0].original_byte_slice().len(),
+            state.accounts[&address].code_chunks[&0].code.bytecode().original_byte_slice().len(),
             CODE_CHUNK_SIZE + 1
         );
         let load = state.load_code_chunk(&address, 0, true).unwrap().unwrap();

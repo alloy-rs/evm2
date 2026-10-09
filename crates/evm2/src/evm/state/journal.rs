@@ -1,7 +1,7 @@
 //! Revert journal and checkpoint types.
 
-use super::AccountInfo;
-use crate::{bytecode::Bytecode, interpreter::Word};
+use super::{AccountCodeChunk, AccountInfo};
+use crate::interpreter::Word;
 use alloy_primitives::{Address, B256, map::HashMap};
 
 /// State checkpoint for reverting state changes.
@@ -57,7 +57,7 @@ pub enum JournalEntry {
         /// Previous code-changed flag.
         previous_code_changed: bool,
         /// Previous independently loaded chunks.
-        previous_code_chunks: HashMap<u32, Bytecode>,
+        previous_code_chunks: HashMap<u32, AccountCodeChunk>,
     },
     /// Persistent storage changed.
     StorageChange {

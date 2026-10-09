@@ -13,7 +13,7 @@ mod stream;
 mod tracked;
 
 pub(crate) use account::Account;
-pub use account::{AccountHandle, AccountInfo};
+pub use account::{AccountCodeChunk, AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
 pub use code_chunks::CodeChunkLoad;
 #[cfg(feature = "account-ext")]
@@ -39,7 +39,7 @@ use crate::{
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
-    map::{AddressMap, AddressSet, HashSet, hash_map},
+    map::{AddressMap, AddressSet, hash_map},
 };
 use core::{
     mem,
@@ -57,7 +57,6 @@ pub struct State<'a> {
     storage_pool: storage_pool::StoragePool,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
     transient_storage: StorageKeyMap<Word>,
-    warm_code_chunks: HashSet<(Address, B256, u32)>,
     /// Inner state.
     inner: StateInner<'a>,
 }
@@ -70,7 +69,6 @@ pub struct State<'a> {
 pub struct StateSnapshot {
     accounts: AddressMap<Account>,
     transient_storage: StorageKeyMap<Word>,
-    warm_code_chunks: HashSet<(Address, B256, u32)>,
     cache: Cache,
     bal_context: BalContext,
     prewarm_set: PrewarmSet,
@@ -86,7 +84,6 @@ impl StateSnapshot {
             accounts: self.accounts,
             storage_pool: storage_pool::StoragePool::default(),
             transient_storage: self.transient_storage,
-            warm_code_chunks: self.warm_code_chunks,
             inner: StateInner {
                 database: CacheDB {
                     cache: self.cache,
@@ -117,7 +114,6 @@ impl State<'_> {
         StateSnapshot {
             accounts: self.accounts.clone(),
             transient_storage: self.transient_storage.clone(),
-            warm_code_chunks: self.warm_code_chunks.clone(),
             cache: self.database.cache.clone(),
             bal_context: self.database.bal_context.clone(),
             prewarm_set: self.prewarm_set.clone(),
@@ -181,7 +177,6 @@ impl<'a> State<'a> {
             accounts: AddressMap::default(),
             storage_pool: storage_pool::StoragePool::default(),
             transient_storage: StorageKeyMap::default(),
-            warm_code_chunks: HashSet::default(),
             inner: StateInner {
                 database: CacheDB::new(initial),
                 prewarm_set: PrewarmSet::new(),
@@ -422,7 +417,6 @@ impl<'a> State<'a> {
             accounts,
             storage_pool,
             transient_storage,
-            warm_code_chunks,
             inner: StateInner { prewarm_set, journal, selfdestructs, logs, database: _ },
             ..
         } = self;
@@ -431,7 +425,6 @@ impl<'a> State<'a> {
         }
         accounts.clear();
         transient_storage.clear();
-        warm_code_chunks.clear();
         prewarm_set.clear();
         journal.clear();
         selfdestructs.clear();
@@ -788,7 +781,12 @@ impl<'a> State<'a> {
                     }
                 },
                 JournalEntry::CodeChunkWarmed { address, code_hash, index } => {
-                    self.warm_code_chunks.remove(&(address, code_hash, index));
+                    if let Some(account) = self.accounts.get_mut(&address)
+                        && account.present.as_ref().is_some_and(|info| info.code_hash == code_hash)
+                        && let Some(chunk) = account.code_chunks.get_mut(&index)
+                    {
+                        chunk.is_warm = false;
+                    }
                 }
                 JournalEntry::StorageWarmed { address, key } => {
                     if let Some(slot) = self

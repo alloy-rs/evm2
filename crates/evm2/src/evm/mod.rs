@@ -175,10 +175,10 @@ mod state;
 #[cfg(feature = "account-ext")]
 pub use state::AccountExtension;
 pub use state::{
-    AccountChangeRef, AccountHandle, AccountInfo, BlockStateAccumulator, CodeChunkLoad,
-    JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource,
-    StateCheckpoint, StateInner, StateSnapshot, StorageChange, StorageHandle, StorageOverlay,
-    StorageSlot, StorageSlotHandle, Tee, Tracked,
+    AccountChangeRef, AccountCodeChunk, AccountHandle, AccountInfo, BlockStateAccumulator,
+    CodeChunkLoad, JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink,
+    StateChangeSource, StateCheckpoint, StateInner, StateSnapshot, StorageChange, StorageHandle,
+    StorageOverlay, StorageSlot, StorageSlotHandle, Tee, Tracked,
 };
 
 mod prewarm_set;
@@ -1290,7 +1290,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return Err(InstrStop::CreateContractStartingWithEF);
         }
         if self.feature(EvmFeatures::BYTECODE_CHUNKING)
-            && Bytecode::new_legacy(output.clone()).validated_code_chunks().is_err()
+            && Bytecode::new_legacy(output.clone()).validate_code_chunks().is_err()
         {
             return Err(InstrStop::InvalidCodeChunk);
         }
