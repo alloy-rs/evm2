@@ -141,6 +141,11 @@ pub trait Host<T: EvmTypesHost> {
         Ok(None)
     }
 
+    /// Returns whether a chunk is already warm for this account without performing database I/O.
+    fn code_chunk_is_warm(&self, _address: &Address, _index: u32) -> bool {
+        false
+    }
+
     /// Returns whether an account is empty/non-existent for new-account gas checks.
     fn target_is_empty_for_new_account_gas(
         &mut self,

@@ -722,6 +722,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     ecx.gas.spend(gas_limit)?;
 
     let tx_env = ecx.tx_env();
+    let code_size = code.len() as u32;
     let mut message = MessageExt {
         kind,
         depth,
@@ -734,6 +735,10 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         input: code,
         value,
         code_address: caller,
+        code_hash: B256::ZERO,
+        code_size,
+        code_chunk_index: 0,
+        chunked_code: false,
         disable_precompiles: false,
         caller_is_static: false,
         salt,
@@ -818,6 +823,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
 
     let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address, disable_precompiles) =
         load_acc_and_calc_gas(ecx, to, transfers_value, call_kind == CallKind::Call, local_gas_limit)?;
+    let code_size = loaded_code.len() as u32;
 
     let current = ecx.message();
     let (destination, caller, call_value, code_address) = match call_kind {
@@ -841,6 +847,10 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         input,
         value: call_value,
         code: loaded_code,
+        code_hash: B256::ZERO,
+        code_size,
+        code_chunk_index: 0,
+        chunked_code: false,
         code_address,
         disable_precompiles,
         caller_is_static: ecx.is_static(),

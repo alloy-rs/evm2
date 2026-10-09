@@ -784,6 +784,7 @@ impl<'a> State<'a> {
                     if let Some(account) = self.accounts.get_mut(&address)
                         && account.present.as_ref().is_some_and(|info| info.code_hash == code_hash)
                         && let Some(chunk) = account.code_chunks.get_mut(&index)
+                        && chunk.code_hash == code_hash
                     {
                         chunk.is_warm = false;
                     }

@@ -21,11 +21,13 @@ journaled, reverts to the checkpoint, and resets per transaction. Snapshots keep
 all three structures. Uncommitted deployed/replaced code takes precedence over
 the accepted-state database. Failed, skipped, and absent reads do not warm.
 
-The proposed incremental gas function is `2868 * cold_chunk_count`, checked for
-overflow: a 2,100 fixed read charge plus 2 gas per 32-byte word of chunk capacity.
-Warm reads add zero. Account/opcode/memory/copy charges remain separate. Charging
-full capacity even for a short final chunk allows reservation before fetching.
-These rates are a proposal, not an activated gas schedule or I/O calibration.
+The proposed incremental gas function is
+`28680 * cold_chunk_count + 1000 * warm_chunk_count`, checked for overflow and
+reserved before chunk I/O. At the requested 1 Ggas/s calibration, a cold access
+prices 28.68 microseconds for lookup, reading, construction, and analysis; a warm
+access prices one microsecond for the account-map lookup and active-chunk switch.
+Account/opcode/memory/copy charges remain separate. These are draft consensus
+constants pending measurement against Tempo's persistent provider.
 
 ### Ten-block replay at 12 KiB
 
@@ -50,10 +52,11 @@ that distinction explicit through covered bytes and touched chunks.
 
 These remain coverage/tracing measurements. The native interpreter draft now
 loads chunk zero for calls and transaction entry, swaps chunks on cross-boundary
-JUMP/JUMPI, maintains global PC/CODESIZE, and charges a logically cold chunk.
+JUMP/JUMPI, maintains global PC/CODESIZE, and charges cold and warm chunk access.
 The stored replay was recorded before that execution path was enabled and does
 not measure physical I/O or gas deltas. Persistent storage migration, provider
-integration, copy-opcode chunk loading, and JIT/AOT parity remain incomplete.
+integration, and Tempo replay measurement remain incomplete. Chunked frames
+currently bypass JIT/AOT execution and use the interpreter.
 
 Reproduce the current measurements (the filenames without `12k` retain earlier
 small-chunk results):
@@ -63,7 +66,7 @@ EVM2_DISPATCH_BACKEND=packed cargo run -q --release -p evm2-cli --example byteco
 EVM2_DISPATCH_BACKEND=packed cargo run -q --release -p evm2-cli --example bytecode_chunks > measurements/bytecode-chunks/12k-coverage.csv 2> measurements/bytecode-chunks/12k-timings.txt
 ```
 
-The companion Tempo draft is TIP-1013, on branch `tip/1013`.
+The companion Tempo draft is TIP-1143, on branch `tip/1143`.
 
 ## Historical small-chunk replay
 
@@ -136,9 +139,10 @@ do not introduce extra chunks. Operand/source ranges are recorded after successf
 execution, with invalid jump targets explicitly included.
 
 This remains a draft rather than an activation-ready implementation. It includes
-the proposed cold gas in the feature-gated interpreter path, but lacks proof
-generation, state migration, persistent provider writes, and chunk-backed copy
-opcodes. EIP-7702 and compiled execution need additional conformance coverage.
+the proposed cold and warm gas in the feature-gated interpreter path, on-demand
+CODECOPY and EXTCODECOPY, and EIP-7702 chunk-zero handling, but lacks proof
+generation, state migration, persistent provider writes, and Tempo replay.
+Compiled execution remains disabled for chunked frames.
 
 The smaller contract fixtures are microbenchmarks, not full application workloads:
 fiat_token queries decimals, uniswap_v2_pair reads reserves, and usdc_proxy uses

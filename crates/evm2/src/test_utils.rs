@@ -152,6 +152,10 @@ impl Host<TestTypes> for TestHost {
             .map(|chunk| CodeChunkLoad { chunk, is_cold }))
     }
 
+    fn code_chunk_is_warm(&self, _address: &Address, index: u32) -> bool {
+        !self.cold_code_chunks.contains(&index)
+    }
+
     fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,

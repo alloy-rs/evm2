@@ -1,6 +1,6 @@
 use crate::{
     EvmTypesHost,
-    bytecode::chunks::{CODE_CHUNK_SIZE, code_chunk_gas},
+    bytecode::chunks::{CODE_CHUNK_SIZE, COLD_CODE_CHUNK_GAS, code_chunk_access_gas},
     interpreter::{Host, InstrStop, Result, Word, op, opcode::OpCode, private::GasInstructionCx},
     utils::{word_to_usize, word_to_usize_saturated},
 };
@@ -38,8 +38,7 @@ fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut GasInstructionCx<'_, '_, '
         let chunk_index = (target / CODE_CHUNK_SIZE) as u32;
         let local_target = target % CODE_CHUNK_SIZE;
         if chunk_index != cx.state.code_chunk_index() {
-            let cold_cost = code_chunk_gas(1).unwrap();
-            let skip_cold_load = cx.gas.remaining() < cold_cost;
+            let skip_cold_load = cx.gas.remaining() < COLD_CODE_CHUNK_GAS;
             let address = cx.state.message().code_address;
             let load = cx
                 .state
@@ -47,9 +46,7 @@ fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut GasInstructionCx<'_, '_, '
                 .load_code_chunk(&address, chunk_index, skip_cold_load)
                 .map_err(|error| cx.state.fail(error))?
                 .ok_or(InstrStop::InvalidJump)?;
-            if load.is_cold {
-                cx.gas.spend(cold_cost)?;
-            }
+            cx.gas.spend(code_chunk_access_gas(load.is_cold))?;
             if !load.chunk.is_jumpdest(local_target) {
                 cold_path();
                 return Err(InstrStop::InvalidJump);
@@ -255,7 +252,7 @@ mod tests {
                 ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
             host.execution_config.version.features.insert(EvmFeatures::BYTECODE_CHUNKING);
             let message = MessageExt {
-                gas_limit: 10_000,
+                gas_limit: 50_000,
                 code: chunks[0].bytecode().clone(),
                 code_hash: B256::with_last_byte(1),
                 code_size: code.len() as u32,
@@ -275,7 +272,10 @@ mod tests {
         assert_eq!(warm.1, [Word::from(CODE_CHUNK_SIZE + 1)]);
         assert_eq!(cold.0, InstrStop::Stop);
         assert_eq!(cold.1, warm.1);
-        assert_eq!(warm.2 - cold.2, code_chunk_gas(1).unwrap());
+        assert_eq!(
+            warm.2 - cold.2,
+            COLD_CODE_CHUNK_GAS - crate::bytecode::chunks::WARM_CODE_CHUNK_GAS
+        );
     }
 
     #[test]

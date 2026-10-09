@@ -221,6 +221,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         if self.chunked_code { self.code_hash } else { self.bytecode.hash_slow() }
     }
 
+    /// Returns whether this frame executes independently loaded deployed-code chunks.
+    #[inline]
+    pub const fn is_chunked_code(&self) -> bool {
+        self.chunked_code
+    }
+
     /// Returns the current operand stack.
     #[inline]
     pub const fn stack(&self) -> StackRef<'_> {

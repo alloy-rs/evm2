@@ -1555,6 +1555,10 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         self.state.load_code_chunk(address, index, skip_cold_load).map_err(HostError::from)
     }
 
+    fn code_chunk_is_warm(&self, address: &Address, index: u32) -> bool {
+        self.state.code_chunk_is_warm(address, index)
+    }
+
     fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,

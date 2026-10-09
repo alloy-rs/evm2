@@ -2,7 +2,10 @@
 
 use crate::{
     EvmFeatures, EvmTypesHost,
-    bytecode::Bytecode,
+    bytecode::{
+        Bytecode,
+        chunks::{COLD_CODE_CHUNK_GAS, code_chunk_access_gas},
+    },
     constants::CALL_DEPTH_LIMIT,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Result, StackMut,
@@ -112,16 +115,13 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     let mut code_size = account.code_size;
     let mut code_address = to;
     if chunked && code_size != 0 {
-        let cold_cost = crate::bytecode::chunks::code_chunk_gas(1).unwrap();
-        let skip_cold_load = remaining_gas < cost.saturating_add(cold_cost);
+        let skip_cold_load = remaining_gas < cost.saturating_add(COLD_CODE_CHUNK_GAS);
         let load = state
             .host()
             .load_code_chunk(&to, 0, skip_cold_load)
             .map_err(|error| state.fail(error))?
             .ok_or(InstrStop::InvalidCodeChunk)?;
-        if load.is_cold {
-            cost += cold_cost;
-        }
+        cost = cost.saturating_add(code_chunk_access_gas(load.is_cold));
         code = load.chunk.into_bytecode();
     }
     if state.feature(EvmFeatures::EIP7702)
@@ -144,16 +144,13 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         code_size = delegated_account.code_size;
         code_address = delegated_address;
         if chunked && code_size != 0 {
-            let cold_cost = crate::bytecode::chunks::code_chunk_gas(1).unwrap();
-            let skip_cold_load = remaining_gas < cost.saturating_add(cold_cost);
+            let skip_cold_load = remaining_gas < cost.saturating_add(COLD_CODE_CHUNK_GAS);
             let load = state
                 .host()
                 .load_code_chunk(&delegated_address, 0, skip_cold_load)
                 .map_err(|error| state.fail(error))?
                 .ok_or(InstrStop::InvalidCodeChunk)?;
-            if load.is_cold {
-                cost += cold_cost;
-            }
+            cost = cost.saturating_add(code_chunk_access_gas(load.is_cold));
             code = load.chunk.into_bytecode();
         }
     }

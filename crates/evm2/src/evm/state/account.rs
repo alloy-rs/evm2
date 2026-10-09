@@ -221,6 +221,8 @@ pub(crate) struct Account {
 /// One independently loaded bytecode chunk and its transaction-local access status.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccountCodeChunk {
+    /// Complete code identity this chunk belongs to.
+    pub code_hash: B256,
     /// Independently executable bytecode, including its synthetic trailing STOP.
     pub code: CodeChunk,
     /// Whether this chunk has already been charged as warm in the current transaction scope.

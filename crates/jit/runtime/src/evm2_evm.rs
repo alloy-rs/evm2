@@ -51,6 +51,11 @@ pub fn run_interpreter<'frame, 'host>(
     if !backend.enabled() {
         return None;
     }
+    // TODO(bytecode-chunking): include the chunk index and chunking mode in compiled cache keys,
+    // and route compiled cross-chunk operations through the same host loading and gas rules.
+    if interpreter.is_chunked_code() {
+        return None;
+    }
     let code_hash = interpreter.original_bytecode_hash();
     let code = interpreter.original_bytecode();
     let decision = backend.lookup(LookupRequest {

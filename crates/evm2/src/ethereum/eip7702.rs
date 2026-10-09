@@ -15,7 +15,7 @@ use crate::{
     version::GasId,
 };
 use alloc::vec::Vec;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, KECCAK256_EMPTY, U256};
 
 /// Executes an EIP-7702 transaction using Ethereum rules.
 pub fn handle<T: EvmTypes>(
@@ -247,21 +247,29 @@ pub fn validate_one_auth<'a, T: EvmTypes>(
     let Some(authority) = authorization.authority() else {
         return Ok(None);
     };
-    let mut account = host.state.account(&authority)?;
-    account.warm();
-    let existed = account.exists();
-    let authority_nonce = account.nonce();
-    let code = account.load_code()?;
-    // Reject an authority that already carries non-delegation code; otherwise non-empty code is
-    // necessarily a valid delegation.
-    let delegated_now = !code.is_empty();
-    if delegated_now && !code.is_eip7702() {
+    let (existed, authority_nonce, code_hash) = {
+        let mut account = host.state.account(&authority)?;
+        account.warm();
+        (account.exists(), account.nonce(), account.code_hash())
+    };
+    let delegated_now = code_hash != KECCAK256_EMPTY;
+    if delegated_now
+        && if host.feature(EvmFeatures::BYTECODE_CHUNKING) {
+            !host.state.current_code_is_eip7702(&authority)?
+        } else {
+            !host.state.account(&authority)?.load_code()?.is_eip7702()
+        }
+    {
         return Ok(None);
     }
     if authorization.nonce() != authority_nonce {
         return Ok(None);
     }
-    let delegated_before_tx = account.original_code()?.is_eip7702();
+    let delegated_before_tx = if host.feature(EvmFeatures::BYTECODE_CHUNKING) {
+        host.state.original_code_is_eip7702(&authority)?
+    } else {
+        host.state.account(&authority)?.original_code()?.is_eip7702()
+    };
     let clearing = authorization.address().is_zero();
     Ok(Some((authority, AppliedAuth { existed, delegated_before_tx, delegated_now, clearing })))
 }

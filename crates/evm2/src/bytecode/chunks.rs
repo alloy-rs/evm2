@@ -32,10 +32,13 @@ impl CodeChunk {
     fn from_validated_payload(payload: Bytes) -> Self {
         let payload_len = payload.len();
         let hash = keccak256(&payload);
-        let mut execution = Vec::with_capacity(payload_len + 1);
-        execution.extend_from_slice(&payload);
-        execution.push(op::STOP);
-        Self { code: Bytecode::new_legacy(execution.into()), payload_len, hash }
+        let code = Bytecode::new_eip7702_raw(payload.clone()).unwrap_or_else(|_| {
+            let mut execution = Vec::with_capacity(payload_len + 1);
+            execution.extend_from_slice(&payload);
+            execution.push(op::STOP);
+            Bytecode::new_legacy(execution.into())
+        });
+        Self { code, payload_len, hash }
     }
 
     /// Original payload bytes, excluding the synthetic STOP and legacy analysis padding.
@@ -123,7 +126,9 @@ fn validate_payload(
     complete_code_len: usize,
 ) -> Result<(), CodeChunkError> {
     let mut pc = 0;
+    let mut final_opcode = None;
     while pc < payload.len() {
+        final_opcode = Some(payload[pc]);
         let instruction_len = 1 + push_size(payload[pc]);
         if pc + instruction_len > payload.len() {
             return Err(CodeChunkError::PushCrossesBoundary { pc: index * CODE_CHUNK_SIZE + pc });
@@ -132,7 +137,7 @@ fn validate_payload(
     }
     if payload.len() == CODE_CHUNK_SIZE
         && (index + 1) * CODE_CHUNK_SIZE < complete_code_len
-        && payload.last() != Some(&op::STOP)
+        && final_opcode != Some(op::STOP)
     {
         return Err(CodeChunkError::NonFinalChunkWithoutStop { index });
     }
@@ -143,12 +148,29 @@ const fn push_size(opcode: u8) -> usize {
     if opcode >= op::PUSH1 && opcode <= op::PUSH32 { (opcode - op::PUSH1 + 1) as usize } else { 0 }
 }
 
-/// Proposed incremental gas for cold chunks: `cold_count * (2100 + 2 * 384)`.
-/// Warm reads add zero. Existing account access, opcode, copy, and memory gas remain separate.
-/// Every cold chunk costs the same, including a short final chunk, allowing pre-I/O charging.
-/// Rates are experimental and require storage-I/O calibration before activation.
-pub const fn code_chunk_gas(cold_count: u64) -> Option<u64> {
-    cold_count.checked_mul(2100 + 2 * (CODE_CHUNK_SIZE as u64 / 32))
+/// Draft cold-access price calibrated at one billion gas per second.
+///
+/// This preserves the original 28.68 microsecond operation budget at the requested 1 Ggas/s
+/// calibration target. Production activation still requires measurements from the persistent
+/// Tempo provider.
+pub const COLD_CODE_CHUNK_GAS: u64 = 28_680;
+
+/// Draft warm-access price calibrated to a one microsecond account-map lookup and chunk switch.
+pub const WARM_CODE_CHUNK_GAS: u64 = 1_000;
+
+/// Incremental gas for cold and warm chunk accesses.
+pub const fn code_chunk_gas(cold_count: u64, warm_count: u64) -> Option<u64> {
+    let cold = cold_count.checked_mul(COLD_CODE_CHUNK_GAS);
+    let warm = warm_count.checked_mul(WARM_CODE_CHUNK_GAS);
+    match (cold, warm) {
+        (Some(cold), Some(warm)) => cold.checked_add(warm),
+        _ => None,
+    }
+}
+
+/// Gas for one chunk access after its warmth has been determined.
+pub const fn code_chunk_access_gas(is_cold: bool) -> u64 {
+    if is_cold { COLD_CODE_CHUNK_GAS } else { WARM_CODE_CHUNK_GAS }
 }
 
 #[cfg(test)]
@@ -195,10 +217,30 @@ mod tests {
     }
 
     #[test]
+    fn rejects_stop_byte_that_is_push_data() {
+        let mut code = vec![op::JUMPDEST; CODE_CHUNK_SIZE - 2];
+        code.extend([op::PUSH1, op::STOP, op::STOP]);
+        assert_eq!(
+            validate_code(&code),
+            Err(CodeChunkError::NonFinalChunkWithoutStop { index: 0 })
+        );
+    }
+
+    #[test]
+    fn preserves_eip7702_chunk_kind() {
+        let delegated = alloy_primitives::Address::repeat_byte(0x42);
+        let code = Bytecode::new_eip7702(delegated);
+        let chunk = code_chunk(code.original_byte_slice(), 0).unwrap().unwrap();
+        assert_eq!(chunk.bytecode().eip7702_address(), Some(delegated));
+    }
+
+    #[test]
     fn tariff_is_fixed_checked_and_incremental() {
-        assert_eq!(code_chunk_gas(0), Some(0));
-        assert_eq!(code_chunk_gas(1), Some(2868));
-        assert_eq!(code_chunk_gas(2), Some(5736));
-        assert_eq!(code_chunk_gas(u64::MAX), None);
+        assert_eq!(code_chunk_gas(0, 0), Some(0));
+        assert_eq!(code_chunk_gas(1, 0), Some(COLD_CODE_CHUNK_GAS));
+        assert_eq!(code_chunk_gas(0, 1), Some(WARM_CODE_CHUNK_GAS));
+        assert_eq!(code_chunk_gas(2, 3), Some(60_360));
+        assert_eq!(code_chunk_gas(u64::MAX, 0), None);
+        assert_eq!(code_chunk_gas(0, u64::MAX), None);
     }
 }
