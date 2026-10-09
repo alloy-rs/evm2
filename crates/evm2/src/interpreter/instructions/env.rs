@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn chunked_codecopy_loads_global_range_across_chunks() {
-        let mut code = vec![op::STOP; CODE_CHUNK_SIZE + 2];
+        let mut code = vec![op::STOP; CODE_CHUNK_SIZE + 3];
         let mut program = Vec::new();
         push(&mut program, 4);
         push(&mut program, CODE_CHUNK_SIZE - 2);
@@ -555,11 +555,12 @@ mod tests {
 
     #[test]
     fn chunked_extcodecopy_loads_and_charges_every_intersecting_chunk() {
-        let mut external = vec![op::JUMPDEST; CODE_CHUNK_SIZE + 2];
+        let mut external = vec![op::JUMPDEST; CODE_CHUNK_SIZE + 3];
         external[CODE_CHUNK_SIZE - 2] = op::ADD;
         external[CODE_CHUNK_SIZE - 1] = op::STOP;
         external[CODE_CHUNK_SIZE] = op::MUL;
         external[CODE_CHUNK_SIZE + 1] = op::SUB;
+        external[CODE_CHUNK_SIZE + 2] = op::STOP;
         let chunks = chunkify_code(&external).unwrap();
         let mut program = Vec::new();
         push(&mut program, 4);

@@ -73,7 +73,7 @@ pub struct MessageExt<E = ()> {
     pub code: Bytecode,
     /// Hash of the complete deployed bytecode. Zero for initcode and unchunked test messages.
     pub code_hash: B256,
-    /// Size of the complete deployed bytecode, excluding synthetic chunk terminators.
+    /// Size of the complete deployed bytecode.
     pub code_size: u32,
     /// Index of the chunk currently stored in `code`.
     pub code_chunk_index: u32,

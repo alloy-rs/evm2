@@ -3,21 +3,16 @@
 use super::Bytecode;
 use crate::interpreter::op;
 use alloc::vec::Vec;
-use alloy_primitives::{B256, Bytes, keccak256};
+use alloy_primitives::{B256, Bytes};
 use thiserror::Error;
 
 /// Number of original code bytes in a full chunk.
 pub const CODE_CHUNK_SIZE: usize = 12 * 1024;
 
-/// A validated chunk of deployed bytecode.
-///
-/// `code` includes a synthetic trailing STOP so the interpreter can execute the chunk without
-/// reading the following chunk. The payload hash and length exclude that synthetic byte.
+/// A chunk of deployed bytecode that passed whole-bytecode deployment validation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeChunk {
     code: Bytecode,
-    payload_len: usize,
-    hash: B256,
 }
 
 impl CodeChunk {
@@ -30,20 +25,14 @@ impl CodeChunk {
     }
 
     fn from_validated_payload(payload: Bytes) -> Self {
-        let payload_len = payload.len();
-        let hash = keccak256(&payload);
-        let code = Bytecode::new_eip7702_raw(payload.clone()).unwrap_or_else(|_| {
-            let mut execution = Vec::with_capacity(payload_len + 1);
-            execution.extend_from_slice(&payload);
-            execution.push(op::STOP);
-            Bytecode::new_legacy(execution.into())
-        });
-        Self { code, payload_len, hash }
+        let code = Bytecode::new_eip7702_raw(payload.clone())
+            .unwrap_or_else(|_| Bytecode::new_legacy(payload));
+        Self { code }
     }
 
-    /// Original payload bytes, excluding the synthetic STOP and legacy analysis padding.
+    /// Original validated payload bytes, excluding legacy analysis padding.
     pub fn bytes(&self) -> &[u8] {
-        &self.code.original_byte_slice()[..self.payload_len]
+        self.code.original_byte_slice()
     }
 
     /// Bytecode suitable for independent execution by the interpreter.
@@ -57,13 +46,13 @@ impl CodeChunk {
     }
 
     /// Hash of the original payload bytes.
-    pub const fn hash(&self) -> B256 {
-        self.hash
+    pub fn hash(&self) -> B256 {
+        self.code.hash_slow()
     }
 
     /// Checks a local jump destination.
     pub fn is_jumpdest(&self, offset: usize) -> bool {
-        offset < self.payload_len
+        offset < self.code.len()
             && self.code.legacy_jump_table().is_some_and(|t| t.is_valid(offset))
     }
 }
@@ -77,9 +66,9 @@ pub enum CodeChunkError {
         /// Global byte offset of the PUSH opcode.
         pc: usize,
     },
-    /// A non-final 12 KiB chunk does not end with STOP.
-    #[error("non-final code chunk {index} does not end with STOP")]
-    NonFinalChunkWithoutStop {
+    /// A 12 KiB chunk does not end with a decoded STOP opcode.
+    #[error("code chunk {index} does not end with STOP")]
+    ChunkWithoutStop {
         /// Zero-based chunk index.
         index: usize,
     },
@@ -88,27 +77,24 @@ pub enum CodeChunkError {
 /// Validates deployed code without constructing or caching its chunks.
 pub fn validate_code(code: &[u8]) -> Result<(), CodeChunkError> {
     for (index, payload) in code.chunks(CODE_CHUNK_SIZE).enumerate() {
-        validate_payload(payload, index, code.len())?;
+        validate_payload(payload, index)?;
     }
     Ok(())
 }
 
-/// Constructs one independently executable chunk from resident validated code.
+/// Constructs one independently executable chunk from resident, previously validated code.
 ///
-/// Only the requested payload is copied. No vector containing the complete deployed code is
-/// retained by [`Bytecode`](super::Bytecode).
-pub fn code_chunk(code: &[u8], index: u32) -> Result<Option<CodeChunk>, CodeChunkError> {
+/// Validation belongs to bytecode creation or state transition, not database access. Only the
+/// requested payload is copied, and [`Bytecode`](super::Bytecode) retains no complete chunk vector.
+pub fn code_chunk(code: &[u8], index: u32) -> Option<CodeChunk> {
     let index = index as usize;
-    let Some(start) = index.checked_mul(CODE_CHUNK_SIZE) else {
-        return Ok(None);
-    };
+    let start = index.checked_mul(CODE_CHUNK_SIZE)?;
     if start >= code.len() {
-        return Ok(None);
+        return None;
     }
     let end = (start + CODE_CHUNK_SIZE).min(code.len());
     let payload = &code[start..end];
-    validate_payload(payload, index, code.len())?;
-    Ok(Some(CodeChunk::from_validated_payload(Bytes::copy_from_slice(payload))))
+    Some(CodeChunk::from_validated_payload(Bytes::copy_from_slice(payload)))
 }
 
 /// Validates and splits deployed code. Empty code has no chunks.
@@ -120,11 +106,7 @@ pub fn chunkify_code(code: &[u8]) -> Result<Vec<CodeChunk>, CodeChunkError> {
         .collect())
 }
 
-fn validate_payload(
-    payload: &[u8],
-    index: usize,
-    complete_code_len: usize,
-) -> Result<(), CodeChunkError> {
+fn validate_payload(payload: &[u8], index: usize) -> Result<(), CodeChunkError> {
     let mut pc = 0;
     let mut final_opcode = None;
     while pc < payload.len() {
@@ -135,11 +117,8 @@ fn validate_payload(
         }
         pc += instruction_len;
     }
-    if payload.len() == CODE_CHUNK_SIZE
-        && (index + 1) * CODE_CHUNK_SIZE < complete_code_len
-        && final_opcode != Some(op::STOP)
-    {
-        return Err(CodeChunkError::NonFinalChunkWithoutStop { index });
+    if final_opcode != Some(op::STOP) {
+        return Err(CodeChunkError::ChunkWithoutStop { index });
     }
     Ok(())
 }
@@ -177,12 +156,13 @@ pub const fn code_chunk_access_gas(is_cold: bool) -> u64 {
 mod tests {
     use super::*;
     use alloc::vec;
+    use alloy_primitives::keccak256;
 
     #[test]
     fn chunks_are_independently_executable_and_hashed() {
         let mut code = vec![op::JUMPDEST; CODE_CHUNK_SIZE];
         *code.last_mut().unwrap() = op::STOP;
-        code.extend([op::PUSH1, 0x01, op::JUMPDEST]);
+        code.extend([op::PUSH1, 0x01, op::JUMPDEST, op::STOP]);
         let chunks = chunkify_code(&code).unwrap();
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].bytes(), &code[..CODE_CHUNK_SIZE]);
@@ -208,11 +188,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_final_fallthrough() {
+    fn rejects_chunks_without_terminal_stop() {
         let code = vec![op::JUMPDEST; CODE_CHUNK_SIZE + 1];
+        assert_eq!(chunkify_code(&code), Err(CodeChunkError::ChunkWithoutStop { index: 0 }));
+
         assert_eq!(
-            chunkify_code(&code),
-            Err(CodeChunkError::NonFinalChunkWithoutStop { index: 0 })
+            chunkify_code(&[op::JUMPDEST]),
+            Err(CodeChunkError::ChunkWithoutStop { index: 0 })
         );
     }
 
@@ -220,17 +202,14 @@ mod tests {
     fn rejects_stop_byte_that_is_push_data() {
         let mut code = vec![op::JUMPDEST; CODE_CHUNK_SIZE - 2];
         code.extend([op::PUSH1, op::STOP, op::STOP]);
-        assert_eq!(
-            validate_code(&code),
-            Err(CodeChunkError::NonFinalChunkWithoutStop { index: 0 })
-        );
+        assert_eq!(validate_code(&code), Err(CodeChunkError::ChunkWithoutStop { index: 0 }));
     }
 
     #[test]
     fn preserves_eip7702_chunk_kind() {
         let delegated = alloy_primitives::Address::repeat_byte(0x42);
         let code = Bytecode::new_eip7702(delegated);
-        let chunk = code_chunk(code.original_byte_slice(), 0).unwrap().unwrap();
+        let chunk = code_chunk(code.original_byte_slice(), 0).unwrap();
         assert_eq!(chunk.bytecode().eip7702_address(), Some(delegated));
     }
 

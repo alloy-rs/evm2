@@ -126,7 +126,7 @@ impl fmt::Debug for Bytecode {
 impl Bytecode {
     /// Returns a chunk of already resident code; never performs database I/O.
     pub fn code_chunk(&self, index: u32) -> Option<chunks::CodeChunk> {
-        chunks::code_chunk(self.original_byte_slice(), index).ok().flatten()
+        chunks::code_chunk(self.original_byte_slice(), index)
     }
 
     /// Validates deployed code without constructing or caching its chunks.

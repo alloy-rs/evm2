@@ -8,8 +8,8 @@ packed interpreter dispatch. These measurements use the existing gas schedule.
 
 `CODE_CHUNK_SIZE = 12_288`. Original payloads are short and unpadded. Deployment
 validation rejects a PUSH immediate that crosses a boundary and requires every
-non-final payload to end in STOP. Each independently executable chunk gets a
-synthetic trailing STOP that is excluded from hashes, code size, and RPC bytes.
+payload to end in a decoded STOP. Chunks are validated once when bytecode is
+created or transitioned; trusted database reads do not repeat that validation.
 The required `get_code_chunk_by_hash(hash, index)` method is implemented across
 typed, erased, async, cache, and counted DB adapters. There is no full-code fetch
 fallback. In-memory backends may split already resident code once and cache it.
@@ -121,7 +121,7 @@ avoids repeated marking within an already accessed chunk, plus actual proof cost
 ## What is implemented
 
 - `crates/evm2/src/bytecode/chunks.rs`: creation validation and independently
-  executable 12 KiB chunks with payload hashes and a synthetic STOP.
+  executable 12 KiB chunks ending in a decoded STOP.
 - The journaled account records complete code size and a map of loaded bytecode
   chunks. Cross-chunk jumps fetch, validate, activate, and meter their target.
 - `crates/inspectors/src/code_chunks.rs`: configurable coverage inspector for
@@ -166,7 +166,7 @@ EVM2_DISPATCH_BACKEND=packed cargo clippy -p evm2-cli --example bytecode_chunks 
 cargo +nightly fmt --all --check
 ```
 
-Current focused tests validate boundary rejection, synthetic STOP construction,
+Current focused tests validate boundary rejection, terminal STOP requirements,
 cross-chunk jumps, exact cold/warm gas delta, metadata queries, and rollback of
 warmth, loaded maps, and code replacement. The observational inspector suites
 continue to cover invalid targets, untaken branches, copy bounds, delegation,

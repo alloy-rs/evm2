@@ -223,7 +223,7 @@ pub(crate) struct Account {
 pub struct AccountCodeChunk {
     /// Complete code identity this chunk belongs to.
     pub code_hash: B256,
-    /// Independently executable bytecode, including its synthetic trailing STOP.
+    /// Independently executable, deployment-validated bytecode.
     pub code: CodeChunk,
     /// Whether this chunk has already been charged as warm in the current transaction scope.
     pub is_warm: bool,

@@ -233,6 +233,7 @@ mod tests {
             chunks: {
                 let mut code = vec![0x5b; CODE_CHUNK_SIZE + 5];
                 code[CODE_CHUNK_SIZE - 1] = 0x00;
+                *code.last_mut().unwrap() = 0x00;
                 chunkify_code(&code).unwrap()
             },
             ..Default::default()
@@ -265,9 +266,7 @@ mod tests {
             }
             let len = (self.code_size - start).min(CODE_CHUNK_SIZE);
             let mut payload = vec![crate::interpreter::op::JUMPDEST; len];
-            if start + len < self.code_size {
-                *payload.last_mut().unwrap() = crate::interpreter::op::STOP;
-            }
+            *payload.last_mut().unwrap() = crate::interpreter::op::STOP;
             Ok(CodeChunk::new_validated(payload.into()))
         }
 
@@ -386,14 +385,14 @@ mod tests {
         state
             .account(&address)
             .unwrap()
-            .set_code_slow(Bytecode::new_legacy(vec![0x00, 0x5b].into()));
+            .set_code_slow(Bytecode::new_legacy(vec![0x5b, 0x00].into()));
         let load = state.load_code_chunk(&address, 0, false).unwrap().unwrap();
         assert!(load.is_cold);
-        assert_eq!(load.chunk.bytes(), &[0x00, 0x5b]);
+        assert_eq!(load.chunk.bytes(), &[0x5b, 0x00]);
         state.rollback(checkpoint, EvmFeatures::empty());
         assert_eq!(
             state.accounts[&address].code_chunks[&0].code.bytecode().original_byte_slice().len(),
-            CODE_CHUNK_SIZE + 1
+            CODE_CHUNK_SIZE
         );
         let load = state.load_code_chunk(&address, 0, true).unwrap().unwrap();
         assert!(!load.is_cold);
@@ -411,6 +410,7 @@ mod tests {
         let mut replacement = vec![crate::interpreter::op::JUMPDEST; CODE_CHUNK_SIZE + 5];
         replacement[0] = crate::interpreter::op::STOP;
         replacement[CODE_CHUNK_SIZE - 1] = crate::interpreter::op::STOP;
+        *replacement.last_mut().unwrap() = crate::interpreter::op::STOP;
         state
             .account(&address)
             .unwrap()
