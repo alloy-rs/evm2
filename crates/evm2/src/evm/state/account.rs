@@ -251,7 +251,7 @@ impl Account {
             .then_some((code_hash, code))
     }
 
-    /// Emits this account's changes to `sink`: new bytecode, then its storage and metadata through
+    /// Emits this account's new bytecode, storage, and metadata to `sink` through
     /// [`StateChangeSink::account_changes`].
     ///
     /// Changed accounts, including created or selfdestructed accounts whose info ended up
@@ -262,9 +262,6 @@ impl Account {
         selfdestructed: bool,
         sink: &mut S,
     ) -> Result<(), S::Error> {
-        if let Some((code_hash, code)) = self.changed_code() {
-            sink.bytecode(code_hash, code)?;
-        }
         sink.account_changes(AccountChanges {
             address,
             original: self.original.as_ref(),
@@ -272,6 +269,7 @@ impl Account {
             changed: self.is_changed() || self.is_created() || selfdestructed,
             created: self.is_created(),
             selfdestructed,
+            code: self.changed_code(),
             storage: &self.storage,
         })
     }

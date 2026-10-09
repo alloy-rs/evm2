@@ -44,6 +44,8 @@ pub struct AccountChanges<'a> {
     pub created: bool,
     /// Whether the account was selfdestructed during the transaction.
     pub selfdestructed: bool,
+    /// The account's new bytecode keyed by code hash, when its code changed to non-empty code.
+    pub code: Option<(B256, &'a Bytecode)>,
     /// The account's loaded storage slots and wipe marker.
     pub storage: &'a StorageOverlay,
 }
@@ -102,14 +104,17 @@ pub trait StateChangeSink {
         Ok(())
     }
 
-    /// Observes one account's storage and metadata together.
+    /// Observes one account's new bytecode, storage, and metadata together.
     ///
-    /// Transaction-level sources call this once per loaded account, after the account's bytecode.
-    /// The default replays the per-entry callbacks: the storage wipe, then changed slots through
-    /// [`Self::storage`] and unchanged slots through [`Self::storage_read`], then the metadata
-    /// through [`Self::account`] or [`Self::account_read`].
+    /// Transaction-level sources call this once per loaded account. The default replays the
+    /// per-entry callbacks: changed bytecode through [`Self::bytecode`], the storage wipe, then
+    /// changed slots through [`Self::storage`] and unchanged slots through [`Self::storage_read`],
+    /// then the metadata through [`Self::account`] or [`Self::account_read`].
     #[inline]
     fn account_changes(&mut self, changes: AccountChanges<'_>) -> Result<(), Self::Error> {
+        if let Some((code_hash, code)) = changes.code {
+            self.bytecode(code_hash, code)?;
+        }
         let address = changes.address;
         let storage = changes.storage;
         if storage.wiped {
