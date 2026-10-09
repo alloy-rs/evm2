@@ -51,6 +51,13 @@ impl StorageOverlay {
             .iter()
             .filter_map(|(key, slot)| slot.is_changed(self.wiped).then_some((key, &slot.value)))
     }
+
+    /// Returns whether the overlay changes the account's storage: it is wiped or has a changed
+    /// slot.
+    #[inline]
+    pub fn is_changed(&self) -> bool {
+        self.wiped || self.changed_slots().next().is_some()
+    }
 }
 
 /// Persistent storage slot cached by [`super::State`].
