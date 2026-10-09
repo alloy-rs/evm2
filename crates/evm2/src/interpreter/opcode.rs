@@ -603,7 +603,7 @@ opcodes! {
     // 0xDE
     // 0xDF
     0xE0 => RJUMP => rjump => stack_io(0, 0), immediate_size(2), terminating;
-    // 0xE1
+    0xE1 => RJUMPI => rjumpi => stack_io(1, 0), immediate_size(2);
     // 0xE2
     // 0xE3
     // 0xE4

@@ -810,3 +810,14 @@ fn rjump_executes_in_resident_initcode_without_chunk_tariffs() {
     assert_eq!(spent, 2);
     assert!(account.is_some());
 }
+
+#[test]
+fn rjumpi_executes_in_resident_initcode() {
+    for condition in [0, 1] {
+        let (stop, spent, account) =
+            create(Bytes::from(vec![0x60, condition, 0xe1, 0x80, 0x81, 0, 0]), 100_000);
+        assert_eq!(stop, InstrStop::Stop);
+        assert_eq!(spent, 7);
+        assert!(account.is_some());
+    }
+}

@@ -625,7 +625,7 @@ impl PreparedCodeChunk {
 fn instruction_len(opcode: u8) -> usize {
     if (0x60..=0x7f).contains(&opcode) {
         usize::from(opcode - 0x5f) + 1
-    } else if opcode == op::RJUMP {
+    } else if matches!(opcode, op::RJUMP | op::RJUMPI) {
         3
     } else if (0xe6..=0xe8).contains(&opcode) {
         2

@@ -19,7 +19,7 @@ A `CodeChunk` contains original bytes separately from its execution view. `CodeC
 - `next_chunk()` selects an internal transfer, or final STOP.
 - `tail_offset(payload_len)` identifies the authenticated generated tail.
 
-Execution preparation recognizes PUSH1 through PUSH32, the two-byte operand of RJUMP, and the one-byte operands of DUPN, SWAPN and EXCHANGE; the original jump map follows the existing PUSH-only analysis. The execution view replaces leading continuation bytes with `JUMPDEST` and marks every replacement position as a valid target. This is an explicit semantic change: JUMP and taken JUMPI may enter these former immediate bytes. Ordinary immediate data remains invalid. Normal fallthrough skips the replacement prefix.
+Execution preparation recognizes PUSH1 through PUSH32, the two-byte operands of RJUMP and RJUMPI, and the one-byte operands of DUPN, SWAPN and EXCHANGE; the original jump map follows the existing PUSH-only analysis. The execution view replaces leading continuation bytes with `JUMPDEST` and marks every replacement position as a valid target. This is an explicit semantic change: JUMP and taken JUMPI may enter these former immediate bytes. Ordinary immediate data remains invalid. Normal fallthrough skips the replacement prefix.
 
 A backward scan computes the required continuation length for every entry position once. Up to 33 shared execution variants are cached by that length. Each taken jump validates the full original jump map, then selects the variant for its target. This preserves valid targets even where the existing PUSH-only map and execution operand parsing disagree.
 
@@ -65,3 +65,5 @@ Draft frames, including resident initcode, run through the interpreter; JIT/AOT 
 
 Reth/Tempo must authenticate ingestion, atomically persist original payloads plus context preparation and account type, preserve historical state views, reconstruct original RPC bytes, and use one coherent immutable dependency graph. Production inventory, replay, proof growth, provider latency, prepared-buffer costs and final tariff decisions remain activation prerequisites.
 
+
+`RJUMPI` (`0xe1`) uses the same two-byte offset encoding and costs 4 gas. It pops one condition: nonzero jumps through the shared RJUMP target loader, while zero advances past the immediate. An untaken branch does not validate, load, charge or warm its target chunk; ordinary fallthrough can still cross a chunk boundary and execute a generated RJUMP. Invalid immediate encodings fail even for an untaken branch. Both relative opcodes are unknown when TIP-1143 is disabled.

@@ -425,3 +425,113 @@ fn standalone_prepared_bytecode_restores_padding_for_static_jump_entries() {
     assert_eq!(interp.stack().len(), 1);
     assert_eq!(interp.stack().first(), Some(&Word::ZERO));
 }
+
+#[test]
+fn rjumpi_branches_on_nonzero_and_consumes_one_condition() {
+    for condition in [0, 1, 255] {
+        let actual = execute(vec![0x60, condition, 0xe1, 0x80, 0x81, 0xfe, 0], true, 100_000);
+        assert_eq!(
+            actual.0,
+            if condition == 0 { InstrStop::InvalidFEOpcode } else { InstrStop::Stop }
+        );
+        if condition != 0 {
+            assert_eq!(actual.2, COLD_CODE_CHUNK_GAS + 7);
+        }
+        // +0 reaches POP on either path: the condition must already be consumed.
+        assert_eq!(
+            execute(vec![0x60, condition, 0xe1, 0x80, 0x80, 0x50], true, 100_000).0,
+            InstrStop::StackUnderflow
+        );
+    }
+    assert_eq!(execute(vec![0xe1, 0x80, 0x80], true, 100_000).0, InstrStop::StackUnderflow);
+    assert_eq!(execute(vec![0xe1], false, 100_000).0, InstrStop::OpcodeNotFound);
+}
+
+#[test]
+fn rjumpi_checks_encoding_on_both_paths_but_bounds_only_when_taken() {
+    for condition in [0, 1] {
+        for (high, low) in [(0x5b, 0x80), (0x80, 0x7f)] {
+            assert_eq!(
+                execute(vec![0x60, condition, 0xe1, high, low, 0], true, 100_000).0,
+                InstrStop::InvalidImmediateEncoding
+            );
+        }
+        // +1 would land beyond code. Zero must still fall through to STOP.
+        let actual = execute(vec![0x60, condition, 0xe1, 0x80, 0x81, 0], true, 100_000);
+        assert_eq!(actual.0, if condition == 0 { InstrStop::Stop } else { InstrStop::InvalidJump });
+        // Missing immediate bytes use the existing zero padding safely.
+        let truncated = execute(vec![0x60, condition, 0xe1], true, 100_000);
+        assert_eq!(
+            truncated.0,
+            if condition == 0 { InstrStop::Stop } else { InstrStop::InvalidJump }
+        );
+    }
+}
+
+#[test]
+fn rjumpi_forward_and_backward_loads_only_taken_targets() {
+    for condition in [0, 1] {
+        let mut code = vec![0x60, condition];
+        push3(&mut code, CODE_CHUNK_SIZE - 5);
+        code.push(0x56);
+        code.resize(CODE_CHUNK_SIZE - 5, 0);
+        // +1 skips the local STOP and reaches the next chunk without JUMPDEST.
+        code.extend([0x5b, 0xe1, 0x80, 0x81, 0]);
+        // -11 returns to STOP at boundary -6, paying the warm chunk tariff.
+        code.extend([0x60, 1, 0xe1, 0x5a, 0x50]);
+        let actual = execute(code.clone(), true, 100_000);
+        assert_eq!(actual.0, InstrStop::Stop);
+        assert_eq!(actual.3, if condition == 0 { vec![0] } else { vec![0, 1] });
+        assert_eq!(
+            actual.2,
+            if condition == 0 {
+                COLD_CODE_CHUNK_GAS + 19
+            } else {
+                2 * COLD_CODE_CHUNK_GAS + 1000 + 26
+            }
+        );
+        let tight = execute(code, true, COLD_CODE_CHUNK_GAS + 19);
+        assert_eq!(tight.0, if condition == 0 { InstrStop::Stop } else { InstrStop::OutOfGas });
+        assert_eq!(tight.3, [0]);
+    }
+}
+
+#[test]
+fn untaken_rjumpi_does_not_warm_a_later_dynamic_jump_target() {
+    let mut code = vec![0x5f];
+    push3(&mut code, CODE_CHUNK_SIZE - 10);
+    code.push(0x56);
+    code.resize(CODE_CHUNK_SIZE - 10, 0);
+    code.extend([0x5b, 0xe1, 0x80, 0x86]); // +6 would reach the next chunk.
+    push3(&mut code, CODE_CHUNK_SIZE);
+    code.extend([0x56, 0, 0x5b, 0]);
+    let actual = execute(code, true, 100_000);
+    assert_eq!(actual.0, InstrStop::Stop);
+    assert_eq!(actual.2, 2 * COLD_CODE_CHUNK_GAS + 30);
+    assert_eq!(actual.3, [0, 1]);
+}
+
+#[test]
+fn rjumpi_split_immediates_support_taken_and_fallthrough_paths() {
+    for distance in [1, 2] {
+        for condition in [0, 1] {
+            let mut code = vec![0x60, condition];
+            push3(&mut code, CODE_CHUNK_SIZE - distance - 1);
+            code.push(0x56);
+            code.resize(CODE_CHUNK_SIZE - distance - 1, 0);
+            code.extend([0x5b, 0xe1, 0x80, 0x80, 0]);
+            let actual = execute(code, true, 100_000);
+            assert_eq!(actual.0, InstrStop::Stop);
+            // Untaken fallthrough reaches the generated RJUMP; a taken branch skips it.
+            assert_eq!(actual.2, 2 * COLD_CODE_CHUNK_GAS + 19 + if condition == 0 { 2 } else { 0 });
+            assert_eq!(actual.3, [0, 1]);
+        }
+    }
+}
+
+#[test]
+fn rjumpi_backward_loop_is_bounded_by_opcode_gas() {
+    let actual = execute(vec![0x60, 1, 0xe1, 0x5a, 0x56], true, COLD_CODE_CHUNK_GAS + 14);
+    assert_eq!(actual.0, InstrStop::OutOfGas);
+    assert_eq!(actual.2, COLD_CODE_CHUNK_GAS + 14);
+}

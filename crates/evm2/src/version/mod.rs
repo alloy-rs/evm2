@@ -253,6 +253,7 @@ macro_rules! evm_versions {
             let mut v = OpcodeConfig::empty();
             // Runtime-gated by TIP1143. Inactive execution retains OpcodeNotFound.
             v.set_instruction::<instr::rjump<T>>(op::RJUMP, 0);
+            v.set_instruction::<instr::rjumpi<T>>(op::RJUMPI, 0);
 
             $(
                 if spec_id.enables(SpecId::$spec) {

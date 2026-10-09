@@ -175,8 +175,8 @@ const fn make_map<const BASE_SPEC_ID: u32>() -> [OpcodeInfo; 256] {
 
         // Skip opcodes not defined in the opcode table.
         // TIP-1143 execution is routed through the interpreter. Preserve unknown-opcode
-        // behavior for RJUMP in ordinary JIT/AOT frames.
-        if op == op::RJUMP || OpCode::new(op).is_none() {
+        // behavior for RJUMP/RJUMPI in ordinary JIT/AOT frames.
+        if matches!(op, op::RJUMP | op::RJUMPI) || OpCode::new(op).is_none() {
             i += 1;
             continue;
         }
@@ -308,6 +308,7 @@ mod tests {
         // Unknown opcode.
         assert!(cancun[0x0C].is_unknown());
         assert!(cancun[op::RJUMP as usize].is_unknown());
+        assert!(cancun[op::RJUMPI as usize].is_unknown());
 
         // AMSTERDAM-gated opcodes should be disabled on CANCUN.
         assert!(cancun[op::DUPN as usize].is_disabled());

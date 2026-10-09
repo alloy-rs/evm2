@@ -137,6 +137,32 @@ pub fn rjump(cx: _) -> Result {
     let immediate = unsafe { cx.pc.read_bytes_offset_unchecked(1, 2) };
     let offset = decode_rjump_offset([immediate[0], immediate[1]])
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
+    rjump_inner(offset, &mut cx)
+}
+
+/// Conditional relative jump using the same immediate encoding as RJUMP.
+#[instruction(dynamic_gas, no_stack_preamble)]
+pub fn rjumpi(cx: _) -> Result {
+    // Check activation before touching the stack, preserving unknown-opcode behavior.
+    if !cx.state.feature(EvmFeatures::TIP1143) {
+        return Err(InstrStop::OpcodeNotFound);
+    }
+    cx.gas.spend(4)?;
+    let condition = stack.pop()?;
+    let immediate = unsafe { cx.pc.read_bytes_offset_unchecked(1, 2) };
+    let offset = decode_rjump_offset([immediate[0], immediate[1]])
+        .ok_or(InstrStop::InvalidImmediateEncoding)?;
+    if condition.is_zero() {
+        // Preparation completes the immediate and supplies a transfer or final STOP.
+        unsafe { cx.pc.advance_unchecked(3) };
+        Ok(())
+    } else {
+        rjump_inner(offset, &mut cx)
+    }
+}
+
+#[inline(always)]
+fn rjump_inner<T: EvmTypesHost>(offset: isize, cx: &mut GasInstructionCx<'_, '_, '_, T>) -> Result {
     let target = cx
         .state
         .global_pc(*cx.pc)
@@ -227,6 +253,7 @@ mod tests {
                 (op::INVALID, InstrStop::InvalidFEOpcode),
                 (0x0c, InstrStop::OpcodeNotFound),
                 (op::RJUMP, InstrStop::OpcodeNotFound),
+                (op::RJUMPI, InstrStop::OpcodeNotFound),
                 (op::PUSH0, InstrStop::NotActivated),
                 (op::TSTORE, InstrStop::NotActivated),
                 (op::DUPN, InstrStop::NotActivated),
