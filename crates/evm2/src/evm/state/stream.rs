@@ -37,9 +37,6 @@ pub struct AccountChanges<'a> {
     pub original: Option<&'a AccountInfo>,
     /// Account after the changes. `None` is an explicit deletion.
     pub current: Option<&'a AccountInfo>,
-    /// Whether the account metadata changed, including creation or selfdestruct. `false` means
-    /// the account was only loaded.
-    pub changed: bool,
     /// Whether the account was created during the transaction.
     pub created: bool,
     /// Whether the account was selfdestructed during the transaction.
@@ -53,8 +50,8 @@ pub struct AccountChanges<'a> {
 impl<'a> AccountChanges<'a> {
     /// Returns the account metadata change, or `None` when the account was only loaded.
     #[inline]
-    pub const fn change(&self) -> Option<AccountChangeRef<'a>> {
-        if !self.changed {
+    pub fn change(&self) -> Option<AccountChangeRef<'a>> {
+        if !self.is_info_changed() {
             return None;
         }
         Some(AccountChangeRef {
@@ -76,6 +73,19 @@ impl<'a> AccountChanges<'a> {
             original: value.original,
             current: value.current,
         })
+    }
+
+    /// Returns whether the account info or lifecycle changed: different info, creation, or
+    /// selfdestruct. `false` means the account was only loaded.
+    #[inline]
+    pub fn is_info_changed(&self) -> bool {
+        self.original != self.current || self.created || self.selfdestructed
+    }
+
+    /// Returns whether the account changes state at all, through its info or its storage.
+    #[inline]
+    pub fn is_changed(&self) -> bool {
+        self.is_info_changed() || self.storage.is_changed()
     }
 }
 

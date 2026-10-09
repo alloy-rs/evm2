@@ -266,7 +266,6 @@ impl Account {
             address,
             original: self.original.as_ref(),
             current: self.present.as_ref(),
-            changed: self.is_changed() || self.is_created() || selfdestructed,
             created: self.is_created(),
             selfdestructed,
             code: self.changed_code(),
