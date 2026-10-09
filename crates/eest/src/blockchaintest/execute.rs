@@ -524,8 +524,10 @@ fn execute_block(
             if build_bal {
                 evm.state_mut().bump_bal_index();
             }
+            hook.evm_transaction_start(&mut evm);
             match execute_tx(&mut evm, &mut block_state, &tx) {
                 Ok(result) => {
+                    hook.evm_transaction_end(&mut evm, &result);
                     cumulative_tx_gas_used =
                         cumulative_tx_gas_used.saturating_add(result.tx_gas_used());
                     block_execution_gas_used =

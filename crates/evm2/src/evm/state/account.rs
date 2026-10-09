@@ -4,8 +4,13 @@ use super::{
     AccountChangeRef, DbResult, DynDatabase, JournalEntry, StateChangeSink, StateInner,
     StorageChange, StorageHandle, StorageOverlay, storage_pool::StoragePool,
 };
-use crate::{EvmFeatures, bytecode::Bytecode, interpreter::Word};
-use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256};
+use crate::{
+    EvmFeatures,
+    bytecode::{Bytecode, chunks::CodeChunk},
+    interpreter::Word,
+};
+use alloc::vec::Vec;
+use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256, map::HashMap};
 use derive_where::derive_where;
 
 /// Account information loaded from the backing database or emitted in a state
@@ -22,6 +27,10 @@ pub struct AccountInfo {
     pub nonce: u64,
     /// Hash of the raw bytes in `code`, or the empty code hash.
     pub code_hash: B256,
+    /// Size of the complete deployed bytecode, even when no bytecode is resident.
+    pub code_size: u32,
+    /// Ordered hashes of the account's bytecode chunks.
+    pub code_chunk_hashes: Vec<B256>,
     /// Bytecode associated with this account.
     pub code: Option<Bytecode>,
     /// Raw chain-specific data committed to the account leaf by the state provider.
@@ -47,7 +56,9 @@ impl PartialEq for AccountInfo {
     fn eq(&self, other: &Self) -> bool {
         let equal = self.balance == other.balance
             && self.nonce == other.nonce
-            && self.code_hash == other.code_hash;
+            && self.code_hash == other.code_hash
+            && self.code_size == other.code_size
+            && self.code_chunk_hashes == other.code_chunk_hashes;
         #[cfg(feature = "account-ext")]
         let equal = equal && self.extension == other.extension;
         equal
@@ -64,6 +75,8 @@ impl core::hash::Hash for AccountInfo {
         self.balance.hash(state);
         self.nonce.hash(state);
         self.code_hash.hash(state);
+        self.code_size.hash(state);
+        self.code_chunk_hashes.hash(state);
     }
 }
 
@@ -74,7 +87,9 @@ impl Default for AccountInfo {
             balance: U256::ZERO,
             nonce: 0,
             code_hash: KECCAK256_EMPTY,
-            code: Some(Bytecode::default()),
+            code_size: 0,
+            code_chunk_hashes: Vec::new(),
+            code: None,
             #[cfg(feature = "account-ext")]
             extension: super::AccountExtension::new(),
             _non_exhaustive: (),
@@ -87,7 +102,17 @@ impl AccountInfo {
     /// and no cached bytecode.
     #[inline]
     pub const fn empty() -> Self {
-        Self::new(U256::ZERO, 0, KECCAK256_EMPTY, None)
+        Self {
+            balance: U256::ZERO,
+            nonce: 0,
+            code_hash: KECCAK256_EMPTY,
+            code_size: 0,
+            code_chunk_hashes: Vec::new(),
+            code: None,
+            #[cfg(feature = "account-ext")]
+            extension: super::AccountExtension::new(),
+            _non_exhaustive: (),
+        }
     }
 
     /// Creates a new [`AccountInfo`] with the given fields and optional cached bytecode.
@@ -95,11 +120,15 @@ impl AccountInfo {
     /// `None` means the bytecode is not cached; `code_hash` still identifies the account's code.
     /// The caller is responsible for `code_hash` matching the bytecode when it is provided.
     #[inline]
-    pub const fn new(balance: Word, nonce: u64, code_hash: B256, code: Option<Bytecode>) -> Self {
+    pub fn new(balance: Word, nonce: u64, code_hash: B256, code: Option<Bytecode>) -> Self {
+        let code_size = code.as_ref().map_or(0, |code| code.len() as u32);
+        let code_chunk_hashes = code.as_ref().map_or_else(Vec::new, Bytecode::code_chunk_hashes);
         Self {
             balance,
             nonce,
             code_hash,
+            code_size,
+            code_chunk_hashes,
             code,
             #[cfg(feature = "account-ext")]
             extension: super::AccountExtension::new(),
@@ -115,6 +144,8 @@ impl AccountInfo {
             balance: self.balance,
             nonce: self.nonce,
             code_hash: self.code_hash,
+            code_size: self.code_size,
+            code_chunk_hashes: self.code_chunk_hashes.clone(),
             code: None,
             #[cfg(feature = "account-ext")]
             extension: self.extension.clone(),
@@ -125,7 +156,13 @@ impl AccountInfo {
     /// Creates a new [`AccountInfo`] with the given code.
     #[inline]
     pub fn with_code(self, code: Bytecode) -> Self {
-        Self { code_hash: code.hash_slow(), code: Some(code), ..self }
+        Self {
+            code_hash: code.hash_slow(),
+            code_size: code.len() as u32,
+            code_chunk_hashes: code.code_chunk_hashes(),
+            code: Some(code),
+            ..self
+        }
     }
 
     /// Creates a new [`AccountInfo`] with the given balance.
@@ -146,6 +183,8 @@ impl AccountInfo {
     #[inline]
     pub fn set_code(&mut self, code: Bytecode) {
         self.code_hash = code.hash_slow();
+        self.code_size = code.len() as u32;
+        self.code_chunk_hashes = code.code_chunk_hashes();
         self.code = Some(code);
     }
 
@@ -190,8 +229,21 @@ pub(crate) struct Account {
     pub(crate) just_created: bool,
     /// Whether the present overlay account's code has been modified.
     pub(crate) code_changed: bool,
+    /// Independently loaded bytecode chunks keyed by their zero-based index.
+    pub(crate) code_chunks: HashMap<u32, AccountCodeChunk>,
     /// Persistent transaction storage owned by this account.
     pub(crate) storage: StorageOverlay,
+}
+
+/// One independently loaded bytecode chunk and its transaction-local access status.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccountCodeChunk {
+    /// Content hash that identifies this chunk in the bytecode database.
+    pub chunk_hash: B256,
+    /// Independently executable, deployment-validated bytecode.
+    pub code: CodeChunk,
+    /// Whether this chunk has already been charged as warm in the current transaction scope.
+    pub is_warm: bool,
 }
 
 impl Account {
@@ -209,6 +261,7 @@ impl Account {
         self.is_destroyed |= child.is_destroyed;
         self.just_created |= child.just_created;
         self.code_changed |= child.code_changed;
+        self.code_chunks = child.code_chunks;
         self.storage.merge_isolated(child.storage);
     }
 
@@ -385,6 +438,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
                 previous_is_destroyed: self.tracked.is_destroyed,
                 previous_just_created: self.tracked.just_created,
                 previous_code_changed: self.tracked.code_changed,
+                previous_code_chunks: self.tracked.code_chunks.clone(),
             });
         }
     }
@@ -609,7 +663,9 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.touch();
         let account = self.present_mut();
         account.code_hash = code_hash;
+        account.code_size = code.len() as u32;
         account.code = Some(code);
+        self.tracked.code_chunks.clear();
         self.tracked.code_changed = true;
     }
 

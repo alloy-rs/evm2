@@ -175,10 +175,10 @@ mod state;
 #[cfg(feature = "account-ext")]
 pub use state::AccountExtension;
 pub use state::{
-    AccountChangeRef, AccountHandle, AccountInfo, BlockStateAccumulator, JournalEntry,
-    NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource, StateCheckpoint,
-    StateInner, StateSnapshot, StorageChange, StorageHandle, StorageOverlay, StorageSlot,
-    StorageSlotHandle, Tee, Tracked,
+    AccountChangeRef, AccountCodeChunk, AccountHandle, AccountInfo, BlockStateAccumulator,
+    CodeChunkLoad, JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink,
+    StateChangeSource, StateCheckpoint, StateInner, StateSnapshot, StorageChange, StorageHandle,
+    StorageOverlay, StorageSlot, StorageSlotHandle, Tee, Tracked,
 };
 
 mod prewarm_set;
@@ -1289,6 +1289,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         if self.feature(EvmFeatures::EIP3541) && output.first().is_some_and(|byte| *byte == 0xef) {
             return Err(InstrStop::CreateContractStartingWithEF);
         }
+        if self.feature(EvmFeatures::BYTECODE_CHUNKING)
+            && Bytecode::new_legacy(output.clone()).validate_code_chunks().is_err()
+        {
+            return Err(InstrStop::InvalidCodeChunk);
+        }
 
         let code_deposit_gas = output
             .len()
@@ -1509,9 +1514,21 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         let exists = account.exists();
         let info = account.get().cloned().unwrap_or_default();
 
-        // load code
-        let code = if load_code {
-            account.load_code().map_err(HostError::from)?
+        let code_size = if info.code_size == 0 {
+            info.code.as_ref().map_or(0, |code| code.len() as u32)
+        } else {
+            info.code_size
+        };
+        drop(account);
+        let mut code_is_cold = false;
+        let code = if load_code && self.feature(EvmFeatures::BYTECODE_CHUNKING) && code_size != 0 {
+            let Some(load) = self.state.load_code_chunk(address, 0, skip_cold_load)? else {
+                return Err(InstrStop::FatalExternalError.into());
+            };
+            code_is_cold = load.is_cold;
+            load.chunk.into_bytecode()
+        } else if load_code {
+            self.state.account(address)?.load_code().map_err(HostError::from)?
         } else {
             Bytecode::default()
         };
@@ -1519,12 +1536,27 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             balance: info.balance,
             nonce: info.nonce,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
+            code_size,
             code,
             exists,
             is_empty: info.is_empty(),
             is_cold,
+            code_is_cold,
             _non_exhaustive: (),
         })
+    }
+
+    fn load_code_chunk(
+        &mut self,
+        address: &Address,
+        index: u32,
+        skip_cold_load: bool,
+    ) -> Result<Option<CodeChunkLoad>, HostError> {
+        self.state.load_code_chunk(address, index, skip_cold_load).map_err(HostError::from)
+    }
+
+    fn code_chunk_is_warm(&self, address: &Address, index: u32) -> bool {
+        self.state.code_chunk_is_warm(address, index)
     }
 
     fn target_is_empty_for_new_account_gas(
@@ -1699,6 +1731,8 @@ pub struct AccountLoad {
     pub nonce: u64,
     /// Account code hash.
     pub code_hash: B256,
+    /// Size of the complete deployed bytecode.
+    pub code_size: u32,
     /// Account bytecode.
     pub code: Bytecode,
     /// Whether the account exists in state.
@@ -1707,6 +1741,8 @@ pub struct AccountLoad {
     pub is_empty: bool,
     /// Whether the account access was cold.
     pub is_cold: bool,
+    /// Whether the loaded bytecode chunk was cold.
+    pub code_is_cold: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -1819,7 +1855,7 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
-        bytecode::Bytecode,
+        bytecode::{Bytecode, chunks::CODE_CHUNK_SIZE},
         env::{BlockEnvExt, TxEnvExt},
         ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
@@ -1989,6 +2025,10 @@ mod tests {
             input: Bytes::new(),
             value: U256::ZERO,
             code: Bytecode::default(),
+            code_hash: B256::ZERO,
+            code_size: 0,
+            code_chunk_index: 0,
+            chunked_code: false,
             code_address: address,
             disable_precompiles: false,
             caller_is_static: false,
@@ -2850,6 +2890,10 @@ mod tests {
             input: Bytes::from_static(b"message input"),
             value: U256::from(99),
             code: Bytecode::default(),
+            code_hash: B256::ZERO,
+            code_size: 0,
+            code_chunk_index: 0,
+            chunked_code: false,
             code_address: address,
             disable_precompiles: false,
             caller_is_static: false,
@@ -3586,6 +3630,33 @@ mod tests {
 
         assert_eq!(result.stop, InstrStop::CreateContractStartingWithEF);
         assert!(result.output.is_empty());
+    }
+
+    #[test]
+    fn chunked_create_rejects_boundary_fallthrough_and_split_push() {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.features.insert(EvmFeatures::BYTECODE_CHUNKING);
+        let mut gas = Gas::new(10_000_000);
+
+        let mut fallthrough = Bytes::from(vec![op::JUMPDEST; CODE_CHUNK_SIZE + 1]);
+        assert_eq!(
+            evm.validate_create_output(&mut gas, &mut fallthrough),
+            Err(InstrStop::InvalidCodeChunk)
+        );
+
+        let mut split_push = vec![op::STOP; CODE_CHUNK_SIZE + 1];
+        split_push[CODE_CHUNK_SIZE - 1] = op::PUSH1;
+        let mut split_push = Bytes::from(split_push);
+        assert_eq!(
+            evm.validate_create_output(&mut gas, &mut split_push),
+            Err(InstrStop::InvalidCodeChunk)
+        );
     }
 
     #[test]

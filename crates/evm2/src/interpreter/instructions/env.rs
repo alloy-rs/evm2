@@ -1,5 +1,9 @@
 use crate::{
     EvmTypesHost,
+    bytecode::{
+        Bytecode,
+        chunks::{CODE_CHUNK_SIZE, code_chunk_gas},
+    },
     evm::AccountLoad,
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{
@@ -7,7 +11,8 @@ use crate::{
     },
     version::GasParams,
 };
-use alloy_primitives::B256;
+use alloc::vec::Vec;
+use alloy_primitives::{Address, B256};
 use evm2_macros::instruction;
 
 fn load_account<T: EvmTypesHost>(
@@ -45,6 +50,47 @@ fn copy_data(
         memory.set_data(memory_offset, word_to_usize_saturated(*data_offset), len, data);
     }
     Ok(())
+}
+
+fn load_chunked_code_range<T: EvmTypesHost>(
+    cx: &mut GasInstructionCx<'_, '_, '_, T>,
+    code_address: Address,
+    code_size: usize,
+    offset: usize,
+    len: usize,
+) -> Result<Vec<u8>> {
+    if len == 0 || offset >= code_size {
+        return Ok(Vec::new());
+    }
+    let end = offset.saturating_add(len).min(code_size);
+    let first = offset / CODE_CHUNK_SIZE;
+    let last = (end - 1) / CODE_CHUNK_SIZE;
+    let mut cold_count = 0_u64;
+    let mut warm_count = 0_u64;
+    for index in first..=last {
+        if cx.state.host().code_chunk_is_warm(&code_address, index as u32) {
+            warm_count += 1;
+        } else {
+            cold_count += 1;
+        }
+    }
+    let access_gas = code_chunk_gas(cold_count, warm_count).ok_or(InstrStop::OutOfGas)?;
+    cx.gas.spend(access_gas)?;
+
+    let mut output = Vec::with_capacity(end - offset);
+    for index in first..=last {
+        let load = cx
+            .state
+            .host()
+            .load_code_chunk(&code_address, index as u32, false)
+            .map_err(|error| cx.state.fail(error))?
+            .ok_or(InstrStop::InvalidCodeChunk)?;
+        let chunk_start = index * CODE_CHUNK_SIZE;
+        let local_start = offset.saturating_sub(chunk_start);
+        let local_end = (end - chunk_start).min(load.chunk.bytes().len());
+        output.extend_from_slice(&load.chunk.bytes()[local_start..local_end]);
+    }
+    Ok(output)
 }
 
 #[instruction]
@@ -101,17 +147,29 @@ pub fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result 
 
 #[instruction]
 pub fn codesize(cx: _) -> out {
-    *out = Word::from(cx.state.0.bytecode.len());
+    *out = Word::from(cx.state.code_size());
 }
 
 #[instruction(dynamic_gas)]
 pub fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
     let len = word_to_usize(*len)?;
-    // SAFETY: Charging and copying data make no host calls.
-    let gas_params = unsafe { cx.state.gas_params_detached() };
-    cx.gas.spend(gas_params.copy_cost(len))?;
-    let data = cx.state.0.bytecode.original_byte_slice();
-    copy_data(cx.gas, &mut cx.state.0.memory, gas_params, memory_offset, code_offset, len, data)
+    cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
+    if len == 0 {
+        return Ok(());
+    }
+    let memory_offset = word_to_usize(*memory_offset)?;
+    cx.state.resize_memory(cx.gas, memory_offset, len)?;
+    if cx.state.is_chunked_code() {
+        let offset = word_to_usize_saturated(*code_offset);
+        let code_address = cx.state.message().code_address;
+        let code_size = cx.state.code_size();
+        let data = load_chunked_code_range(&mut cx, code_address, code_size, offset, len)?;
+        cx.state.0.memory.set_data(memory_offset, 0, len, &data);
+    } else {
+        let data = cx.state.0.bytecode.original_byte_slice();
+        cx.state.0.memory.set_data(memory_offset, word_to_usize_saturated(*code_offset), len, data);
+    }
+    Ok(())
 }
 
 #[instruction]
@@ -121,7 +179,7 @@ pub fn gasprice(cx: _) -> out {
 
 #[instruction(dynamic_gas)]
 pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
-    *out = Word::from(load_account(&mut cx, *addr, true)?.code.len());
+    *out = Word::from(load_account(&mut cx, *addr, false)?.code_size);
 }
 
 #[instruction(dynamic_gas)]
@@ -141,13 +199,26 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
     } else {
         0
     };
-    let code = load_account(&mut cx, *addr, true)?.code;
-    cx.state.0.memory.set_data(
-        memory_offset,
-        word_to_usize_saturated(*code_offset),
-        len,
-        code.original_byte_slice(),
-    );
+    let code_address = word_to_address(*addr);
+    let chunked = cx.state.feature(crate::EvmFeatures::BYTECODE_CHUNKING);
+    let account = load_account(&mut cx, *addr, !chunked)?;
+    let offset = word_to_usize_saturated(*code_offset);
+    if chunked {
+        let data = load_chunked_code_range(
+            &mut cx,
+            code_address,
+            account.code_size as usize,
+            offset,
+            len,
+        )?;
+        cx.state.0.memory.set_data(memory_offset, 0, len, &data);
+        let inspected = Bytecode::new_legacy(data.into());
+        cx.state.inspect_extcodecopy(code_address, &inspected, 0, len);
+    } else {
+        let code = account.code;
+        cx.state.0.memory.set_data(memory_offset, offset, len, code.original_byte_slice());
+        cx.state.inspect_extcodecopy(code_address, &code, offset, len);
+    }
     Ok(())
 }
 
@@ -175,9 +246,13 @@ pub fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Resul
 #[cfg(test)]
 mod tests {
     use crate::{
-        SpecId,
+        BaseEvmConfigSelector, EvmFeatures, ExecutionConfig, SpecId,
+        bytecode::{
+            Bytecode,
+            chunks::{CODE_CHUNK_SIZE, chunkify_code},
+        },
         env::TxEnvExt,
-        interpreter::{InstrStop, Message, MessageExt, Word, op},
+        interpreter::{InstrStop, Interpreter, Message, MessageExt, Word, op},
         test_utils::{
             RunConfig, TestHost, TestTypes, assert_stack, neg, push, run, run_stack, stack_code,
         },
@@ -368,6 +443,49 @@ mod tests {
     }
 
     #[test]
+    fn chunked_codecopy_loads_global_range_across_chunks() {
+        let mut code = vec![op::STOP; CODE_CHUNK_SIZE + 3];
+        let mut program = Vec::new();
+        push(&mut program, 4);
+        push(&mut program, CODE_CHUNK_SIZE - 2);
+        push(&mut program, 0);
+        program.push(op::CODECOPY);
+        push(&mut program, 0);
+        program.push(op::MLOAD);
+        program.push(op::STOP);
+        code[..program.len()].copy_from_slice(&program);
+        code[CODE_CHUNK_SIZE - 2] = op::ADD;
+        code[CODE_CHUNK_SIZE - 1] = op::STOP;
+        code[CODE_CHUNK_SIZE] = op::MUL;
+        code[CODE_CHUNK_SIZE + 1] = op::SUB;
+        let chunks = chunkify_code(&code).unwrap();
+        let mut host = TestHost {
+            code: code.clone().into(),
+            code_chunks: chunks.clone(),
+            ..TestHost::default()
+        };
+        host.cold_code_chunks.insert(1);
+        host.execution_config =
+            ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+        host.execution_config.version.features.insert(EvmFeatures::BYTECODE_CHUNKING);
+        let message = MessageExt {
+            gas_limit: 100_000,
+            code: chunks[0].bytecode().clone(),
+            code_hash: B256::with_last_byte(1),
+            code_size: code.len() as u32,
+            chunked_code: true,
+            ..MessageExt::default()
+        };
+        let tx = TxEnvExt::default();
+        let mut interpreter = Interpreter::<TestTypes>::new(&tx, &message);
+        assert_eq!(interpreter.run(&mut host).unwrap(), InstrStop::Stop);
+        let mut expected = [0_u8; 32];
+        expected[..4].copy_from_slice(&[op::ADD, op::STOP, op::MUL, op::SUB]);
+        assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
+        assert!(!host.cold_code_chunks.contains(&1));
+    }
+
+    #[test]
     fn gasprice_opcode() {
         let mut host = TestHost::default();
         let tx_env = TxEnvExt { gas_price: Word::from(0x1234), ..TxEnvExt::default() };
@@ -433,6 +551,44 @@ mod tests {
         ))
         .host(&mut host));
         assert_matches!(interp.err, InstrStop::InvalidOperandOOG);
+    }
+
+    #[test]
+    fn chunked_extcodecopy_loads_and_charges_every_intersecting_chunk() {
+        let mut external = vec![op::JUMPDEST; CODE_CHUNK_SIZE + 3];
+        external[CODE_CHUNK_SIZE - 2] = op::ADD;
+        external[CODE_CHUNK_SIZE - 1] = op::STOP;
+        external[CODE_CHUNK_SIZE] = op::MUL;
+        external[CODE_CHUNK_SIZE + 1] = op::SUB;
+        external[CODE_CHUNK_SIZE + 2] = op::STOP;
+        let chunks = chunkify_code(&external).unwrap();
+        let mut program = Vec::new();
+        push(&mut program, 4);
+        push(&mut program, CODE_CHUNK_SIZE - 2);
+        push(&mut program, 0);
+        push(&mut program, 0xbeef);
+        program.push(op::EXTCODECOPY);
+        push(&mut program, 0);
+        program.push(op::MLOAD);
+        program.push(op::STOP);
+        let mut host =
+            TestHost { code: external.into(), code_chunks: chunks, ..TestHost::default() };
+        host.cold_code_chunks.extend([0, 1]);
+        host.execution_config =
+            ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+        host.execution_config.version.features.insert(EvmFeatures::BYTECODE_CHUNKING);
+        let message = MessageExt {
+            gas_limit: 100_000,
+            code: Bytecode::new_legacy(program.into()),
+            ..MessageExt::default()
+        };
+        let tx = TxEnvExt::default();
+        let mut interpreter = Interpreter::<TestTypes>::new(&tx, &message);
+        assert_eq!(interpreter.run(&mut host).unwrap(), InstrStop::Stop);
+        let mut expected = [0_u8; 32];
+        expected[..4].copy_from_slice(&[op::ADD, op::STOP, op::MUL, op::SUB]);
+        assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
+        assert!(host.cold_code_chunks.is_empty());
     }
 
     #[test]

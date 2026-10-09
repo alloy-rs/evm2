@@ -3,7 +3,7 @@ use crate::{
     BaseEvmTypes, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig, ExecutionError,
     HostError, SpecId,
     env::{BlockEnv, TxEnv},
-    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+    evm::{AccountLoad, CodeChunkLoad, SLoad, SStore, SelfDestructResult},
 };
 use alloy_primitives::{Address, B256, Bytes, Log};
 
@@ -130,6 +130,21 @@ pub trait Host<T: EvmTypesHost> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, HostError>;
+
+    /// Loads an independently executable chunk of deployed bytecode.
+    fn load_code_chunk(
+        &mut self,
+        _address: &Address,
+        _index: u32,
+        _skip_cold_load: bool,
+    ) -> Result<Option<CodeChunkLoad>, HostError> {
+        Ok(None)
+    }
+
+    /// Returns whether a chunk is already warm for this account without performing database I/O.
+    fn code_chunk_is_warm(&self, _address: &Address, _index: u32) -> bool {
+        false
+    }
 
     /// Returns whether an account is empty/non-existent for new-account gas checks.
     fn target_is_empty_for_new_account_gas(

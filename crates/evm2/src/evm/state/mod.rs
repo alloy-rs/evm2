@@ -2,6 +2,7 @@
 
 mod account;
 mod block;
+mod code_chunks;
 #[cfg(feature = "account-ext")]
 mod extension;
 mod journal;
@@ -12,8 +13,9 @@ mod stream;
 mod tracked;
 
 pub(crate) use account::Account;
-pub use account::{AccountHandle, AccountInfo};
+pub use account::{AccountCodeChunk, AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
+pub use code_chunks::CodeChunkLoad;
 #[cfg(feature = "account-ext")]
 pub use extension::AccountExtension;
 pub use journal::{JournalEntry, StateCheckpoint};
@@ -31,7 +33,6 @@ use super::{
 };
 use crate::{
     EvmFeatures, LoadError, Version,
-    bytecode::Bytecode,
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap},
 };
@@ -646,7 +647,9 @@ impl<'a> State<'a> {
             nonce: u64::from(features.contains(EvmFeatures::EIP161)),
             balance,
             code_hash: KECCAK256_EMPTY,
-            code: Some(Bytecode::default()),
+            code_size: 0,
+            code_chunk_hashes: Vec::new(),
+            code: None,
             _non_exhaustive: (),
             #[cfg(feature = "account-ext")]
             extension,
@@ -736,6 +739,7 @@ impl<'a> State<'a> {
                     previous_is_destroyed,
                     previous_just_created,
                     previous_code_changed,
+                    previous_code_chunks,
                 } => {
                     // Reconcile the self-destruct set with the restored destroyed flag.
                     let was_destroyed =
@@ -757,6 +761,7 @@ impl<'a> State<'a> {
                         entry.is_destroyed = previous_is_destroyed;
                         entry.just_created = previous_just_created;
                         entry.code_changed = previous_code_changed;
+                        entry.code_chunks = previous_code_chunks;
                     }
                 }
                 JournalEntry::StorageChange { address, key, previous } => {
@@ -776,6 +781,17 @@ impl<'a> State<'a> {
                         self.transient_storage.remove(&StorageKey::new(address, key));
                     }
                 },
+                JournalEntry::CodeChunkWarmed { address, chunk_hash, index } => {
+                    if let Some(account) = self.accounts.get_mut(&address)
+                        && account.present.as_ref().is_some_and(|info| {
+                            info.code_chunk_hashes.get(index as usize) == Some(&chunk_hash)
+                        })
+                        && let Some(chunk) = account.code_chunks.get_mut(&index)
+                        && chunk.chunk_hash == chunk_hash
+                    {
+                        chunk.is_warm = false;
+                    }
+                }
                 JournalEntry::StorageWarmed { address, key } => {
                     if let Some(slot) = self
                         .accounts

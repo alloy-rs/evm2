@@ -16,7 +16,10 @@ pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
     Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
-    bytecode::Bytecode,
+    bytecode::{
+        Bytecode,
+        chunks::{COLD_CODE_CHUNK_GAS, code_chunk_access_gas},
+    },
     env::TxEnv,
     evm::{
         AccountInfo,
@@ -438,13 +441,19 @@ pub fn validate_sender<'a, T: EvmTypes>(
     let has_balance_top_up = host.feature(EvmFeatures::BALANCE_TOP_UP);
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
 
-    let mut sender = host.state.account(&caller)?;
-    if has_eip3607 && sender.code_hash() != KECCAK256_EMPTY {
-        let code = sender.load_code()?;
-        if !code.is_empty() && !code.is_eip7702() {
+    if has_eip3607 {
+        let code_hash = host.state.account(&caller)?.code_hash();
+        if code_hash != KECCAK256_EMPTY
+            && if host.feature(EvmFeatures::BYTECODE_CHUNKING) {
+                !host.state.current_code_is_eip7702(&caller)?
+            } else {
+                !host.state.account(&caller)?.load_code()?.is_eip7702()
+            }
+        {
             return Err(HandlerError::RejectCallerWithCode);
         }
     }
+    let mut sender = host.state.account(&caller)?;
     if has_nonce_check && sender.nonce() != nonce {
         return Err(HandlerError::InvalidNonce { expected: sender.nonce(), got: nonce });
     }
@@ -570,11 +579,36 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
     let mut charged_state_gas = 0;
     let message = match to {
         TxKind::Call(to) => {
-            let (recipient_is_empty, mut code) = {
+            let chunked_code = host.feature(EvmFeatures::BYTECODE_CHUNKING);
+            let (recipient_is_empty, mut code, mut code_hash, mut code_size) = if chunked_code {
+                let load = match Host::load_account(host, &to, false, false) {
+                    Ok(load) => load,
+                    Err(HostError::Halt(_)) => return Ok(None),
+                    Err(HostError::Execution(error)) => return Err(error.into()),
+                };
+                let code = if load.code_size == 0 {
+                    Bytecode::default()
+                } else {
+                    let skip_cold_load = tx_gas.remaining() < COLD_CODE_CHUNK_GAS;
+                    let chunk = match Host::load_code_chunk(host, &to, 0, skip_cold_load) {
+                        Ok(Some(chunk)) => chunk,
+                        Ok(None) | Err(HostError::Halt(_)) => return Ok(None),
+                        Err(HostError::Execution(error)) => return Err(error.into()),
+                    };
+                    if tx_gas.spend(code_chunk_access_gas(chunk.is_cold)).is_err() {
+                        return Ok(None);
+                    }
+                    chunk.chunk.into_bytecode()
+                };
+                (load.is_empty, code, load.code_hash, load.code_size)
+            } else {
                 let mut account = host.state.account(&to)?;
                 // A nonexistent recipient reads as an empty account (EIP-161).
                 let recipient_is_empty = account.get().is_none_or(AccountInfo::is_empty);
-                (recipient_is_empty, account.load_code()?)
+                let code = account.load_code()?;
+                let code_hash = code.hash_slow();
+                let code_size = code.len() as u32;
+                (recipient_is_empty, code, code_hash, code_size)
             };
             let mut code_address = to;
             let mut disable_precompiles = false;
@@ -601,20 +635,70 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                         return Ok(None);
                     }
                     let skip_cold_load = tx_gas.remaining() < cold_additional;
-                    let load =
-                        match Host::load_account(host, &delegated_address, true, skip_cold_load) {
-                            Ok(load) => load,
-                            Err(HostError::Halt(_)) => return Ok(None),
-                            Err(HostError::Execution(error)) => return Err(error.into()),
-                        };
+                    let load = match Host::load_account(
+                        host,
+                        &delegated_address,
+                        !chunked_code,
+                        skip_cold_load,
+                    ) {
+                        Ok(load) => load,
+                        Err(HostError::Halt(_)) => return Ok(None),
+                        Err(HostError::Execution(error)) => return Err(error.into()),
+                    };
                     if load.is_cold && tx_gas.spend(cold_additional).is_err() {
                         return Ok(None);
                     }
-                    code = load.code;
+                    if chunked_code && load.code_size != 0 {
+                        let skip_cold_load = tx_gas.remaining() < COLD_CODE_CHUNK_GAS;
+                        let chunk = match Host::load_code_chunk(
+                            host,
+                            &delegated_address,
+                            0,
+                            skip_cold_load,
+                        ) {
+                            Ok(Some(chunk)) => chunk,
+                            Ok(None) | Err(HostError::Halt(_)) => return Ok(None),
+                            Err(HostError::Execution(error)) => return Err(error.into()),
+                        };
+                        if tx_gas.spend(code_chunk_access_gas(chunk.is_cold)).is_err() {
+                            return Ok(None);
+                        }
+                        code = chunk.chunk.into_bytecode();
+                    } else {
+                        code = load.code;
+                    }
+                    code_hash = load.code_hash;
+                    code_size = load.code_size;
                 } else {
                     let mut account = host.state.account(&delegated_address)?;
                     account.warm();
-                    code = account.load_code()?;
+                    if chunked_code {
+                        let info = account.get().cloned().unwrap_or_default();
+                        code_hash = info.code_hash;
+                        code_size = info.code_size;
+                        drop(account);
+                        if code_size != 0 {
+                            let skip_cold_load = tx_gas.remaining() < COLD_CODE_CHUNK_GAS;
+                            let chunk = match Host::load_code_chunk(
+                                host,
+                                &delegated_address,
+                                0,
+                                skip_cold_load,
+                            ) {
+                                Ok(Some(chunk)) => chunk,
+                                Ok(None) | Err(HostError::Halt(_)) => return Ok(None),
+                                Err(HostError::Execution(error)) => return Err(error.into()),
+                            };
+                            if tx_gas.spend(code_chunk_access_gas(chunk.is_cold)).is_err() {
+                                return Ok(None);
+                            }
+                            code = chunk.chunk.into_bytecode();
+                        }
+                    } else {
+                        code = account.load_code()?;
+                        code_hash = code.hash_slow();
+                        code_size = code.len() as u32;
+                    }
                 }
                 code_address = delegated_address;
                 disable_precompiles = true;
@@ -629,6 +713,10 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 caller,
                 input: input.clone(),
                 value,
+                code_hash,
+                code_size,
+                code_chunk_index: 0,
+                chunked_code: chunked_code && code_size != 0,
                 code,
                 code_address,
                 disable_precompiles,
@@ -662,6 +750,10 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 input: input.clone(),
                 value,
                 code: Bytecode::new_legacy(input.clone()),
+                code_hash: B256::ZERO,
+                code_size: 0,
+                code_chunk_index: 0,
+                chunked_code: false,
                 code_address: destination,
                 disable_precompiles: false,
                 caller_is_static: false,
@@ -942,7 +1034,7 @@ mod tests {
     use crate::{
         BaseEvmTypes, ExecutionConfig, Precompiles,
         env::{BlockEnvExt, TxEnvExt},
-        evm::InMemoryDB,
+        evm::{DbStats, InMemoryDB},
         interpreter::{Host, InstrStop, op},
         registry::TxRegistry,
     };
@@ -1274,6 +1366,33 @@ mod tests {
     }
 
     #[test]
+    fn chunked_eip3607_uses_size_then_only_chunk_zero() {
+        let caller = Address::with_last_byte(0xaa);
+        for (code, accepted, expected_chunk_reads) in [
+            (Bytecode::new_legacy(vec![op::STOP; 24].into()), false, 0),
+            (Bytecode::new_legacy(vec![op::STOP; 23].into()), false, 1),
+            (Bytecode::new_eip7702(Address::with_last_byte(0x44)), true, 1),
+        ] {
+            let mut database = InMemoryDB::default();
+            database.insert_account_info(&caller, AccountInfo::default().with_code(code));
+            let mut version = Version::new(SpecId::PRAGUE);
+            version.features.insert(EvmFeatures::BYTECODE_CHUNKING);
+            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                ExecutionConfig::for_spec_and_version(SpecId::PRAGUE, version),
+                SpecId::PRAGUE,
+                BlockEnvExt::default(),
+                TxRegistry::new(),
+                DbStats::new(database),
+                Precompiles::base(SpecId::PRAGUE),
+            );
+
+            assert_eq!(validate_sender(&mut evm, caller, 0, U256::ZERO).is_ok(), accepted);
+            let stats = evm.database().downcast_ref::<DbStats<InMemoryDB>>().unwrap().counts();
+            assert_eq!(stats.get_code_by_hash, expected_chunk_reads);
+        }
+    }
+
+    #[test]
     fn charge_upfront_saturates_insufficient_balance() {
         let caller = Address::with_last_byte(0xaa);
         let mut database = InMemoryDB::default();
@@ -1311,42 +1430,51 @@ mod tests {
             op::PUSH0,
             op::RETURN,
         ]));
-        let mut database = InMemoryDB::default();
-        database.insert_account_info(
-            &target,
-            AccountInfo::default().with_code(Bytecode::new_eip7702(delegated)),
-        );
-        database.insert_account_info(&delegated, AccountInfo::default().with_code(delegated_code));
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::PRAGUE,
-            BlockEnvExt::default(),
-            TxRegistry::new(),
-            database,
-            Precompiles::base(SpecId::PRAGUE),
-        );
+        for chunked in [false, true] {
+            let mut database = InMemoryDB::default();
+            database.insert_account_info(
+                &target,
+                AccountInfo::default().with_code(Bytecode::new_eip7702(delegated)),
+            );
+            database.insert_account_info(
+                &delegated,
+                AccountInfo::default().with_code(delegated_code.clone()),
+            );
+            let mut version = Version::new(SpecId::PRAGUE);
+            version.features.set(EvmFeatures::BYTECODE_CHUNKING, chunked);
+            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                ExecutionConfig::for_spec_and_version(SpecId::PRAGUE, version),
+                SpecId::PRAGUE,
+                BlockEnvExt::default(),
+                TxRegistry::new(),
+                database,
+                Precompiles::base(SpecId::PRAGUE),
+            );
 
-        let mut tx_gas = GasTracker::new_with_execution_gas_and_reservoir(100_000, 0);
-        let InitialFrame { mut message, charged_state_gas } = prepare_initial_frame(
-            &mut evm,
-            caller,
-            0,
-            TxKind::Call(target),
-            &Bytes::new(),
-            U256::ZERO,
-            &mut tx_gas,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(message.destination, target);
-        assert_eq!(message.code_address, delegated);
-        assert!(message.disable_precompiles);
-        assert_eq!(charged_state_gas, 0);
+            let mut tx_gas = GasTracker::new_with_execution_gas_and_reservoir(100_000, 0);
+            let InitialFrame { mut message, charged_state_gas } = prepare_initial_frame(
+                &mut evm,
+                caller,
+                0,
+                TxKind::Call(target),
+                &Bytes::new(),
+                U256::ZERO,
+                &mut tx_gas,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(message.destination, target);
+            assert_eq!(message.code_address, delegated);
+            assert!(message.disable_precompiles);
+            assert_eq!(charged_state_gas, 0);
 
-        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+            let result =
+                Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
 
-        assert_eq!(result.stop, InstrStop::Return);
-        assert_eq!(result.output.len(), 32);
-        assert_eq!(result.output[31], 0x2a);
+            assert_eq!(result.stop, InstrStop::Return);
+            assert_eq!(result.output.len(), 32);
+            assert_eq!(result.output[31], 0x2a);
+        }
     }
 
     #[test]

@@ -1,9 +1,9 @@
 use crate::{
     BaseEvmConfigSelector, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig, SpecId,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, chunks::CodeChunk},
     constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, BlockEnvExt, TxEnv, TxEnvExt},
-    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+    evm::{AccountLoad, CodeChunkLoad, SLoad, SStore, SelfDestructResult},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, Memory, Message, MessageExt, MessageKind,
         MessageResult, MessageResultExt, StackBacking, Word, op,
@@ -11,7 +11,7 @@ use crate::{
     storage_key::{StorageKey, StorageKeyMap},
 };
 use alloc::{boxed::Box, vec::Vec};
-use alloy_primitives::{Address, B256, Bytes, Log};
+use alloy_primitives::{Address, B256, Bytes, Log, map::HashSet};
 use core::{assert_matches, ops::Range};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -37,6 +37,8 @@ pub(crate) struct TestHost {
     pub(crate) block: BlockEnv<TestTypes>,
     pub(crate) code_hash: B256,
     pub(crate) code: Bytes,
+    pub(crate) code_chunks: Vec<CodeChunk>,
+    pub(crate) cold_code_chunks: HashSet<u32>,
     pub(crate) exists: bool,
     pub(crate) is_empty: bool,
     pub(crate) is_cold: bool,
@@ -66,6 +68,8 @@ impl Default for TestHost {
             block: BlockEnvExt::default(),
             code_hash: B256::ZERO,
             code: Bytes::new(),
+            code_chunks: Vec::new(),
+            cold_code_chunks: HashSet::default(),
             exists: true,
             is_empty: false,
             is_cold: false,
@@ -116,6 +120,7 @@ impl Host<TestTypes> for TestHost {
             balance: address.into_word().into(),
             nonce: 0,
             code_hash: self.code_hash,
+            code_size: self.code.len() as u32,
             code: if load_code {
                 Bytecode::new_legacy(self.code.clone())
             } else {
@@ -124,8 +129,31 @@ impl Host<TestTypes> for TestHost {
             exists: self.exists,
             is_empty: self.is_empty,
             is_cold: self.is_cold,
+            code_is_cold: false,
             _non_exhaustive: (),
         })
+    }
+
+    fn load_code_chunk(
+        &mut self,
+        _address: &Address,
+        index: u32,
+        skip_cold_load: bool,
+    ) -> Result<Option<CodeChunkLoad>, crate::HostError> {
+        let is_cold = self.cold_code_chunks.contains(&index);
+        if is_cold && skip_cold_load {
+            return Err(InstrStop::OutOfGas.into());
+        }
+        self.cold_code_chunks.remove(&index);
+        Ok(self
+            .code_chunks
+            .get(index as usize)
+            .cloned()
+            .map(|chunk| CodeChunkLoad { chunk, is_cold }))
+    }
+
+    fn code_chunk_is_warm(&self, _address: &Address, index: u32) -> bool {
+        !self.cold_code_chunks.contains(&index)
     }
 
     fn target_is_empty_for_new_account_gas(

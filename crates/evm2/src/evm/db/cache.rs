@@ -202,7 +202,15 @@ impl<ExtDB> CacheDB<ExtDB> {
             if info.code_hash == KECCAK256_EMPTY {
                 info.code_hash = code.hash_slow();
             }
+            if info.code_chunk_hashes.is_empty() {
+                info.code_chunk_hashes = code.code_chunk_hashes();
+            }
             contracts.entry(info.code_hash).or_insert_with(|| code.clone());
+            for (index, chunk_hash) in info.code_chunk_hashes.iter().copied().enumerate() {
+                if let Some(chunk) = code.code_chunk(index as u32) {
+                    contracts.entry(chunk_hash).or_insert_with(|| chunk.into_bytecode());
+                }
+            }
         }
         if info.code_hash.is_zero() {
             info.code_hash = KECCAK256_EMPTY;

@@ -232,6 +232,10 @@ evm_features! {
     ///
     /// Default: on since Amsterdam
     EIP2780,
+    /// Enables independently loaded 12 KiB deployed-code chunks.
+    ///
+    /// This draft feature is intentionally not enabled by any base Ethereum version.
+    BYTECODE_CHUNKING,
 }
 
 #[cfg(test)]

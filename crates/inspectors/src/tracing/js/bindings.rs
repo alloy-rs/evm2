@@ -1321,12 +1321,19 @@ mod tests {
         }
 
         fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            let Some(code) = &self.account.code else {
+                return Ok(Bytecode::default());
+            };
+            if *code_hash == self.account.code_hash {
+                return Ok(code.clone());
+            }
             Ok(self
                 .account
-                .code
-                .clone()
-                .filter(|_| *code_hash == self.account.code_hash)
-                .unwrap_or_default())
+                .code_chunk_hashes
+                .iter()
+                .position(|hash| hash == code_hash)
+                .and_then(|index| code.code_chunk(index as u32))
+                .map_or_else(Bytecode::default, |chunk| chunk.into_bytecode()))
         }
 
         fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error> {

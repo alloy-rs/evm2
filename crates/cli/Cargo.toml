@@ -68,6 +68,7 @@ jit = [
 ]
 
 [dev-dependencies]
+evm2-inspectors.workspace = true
 criterion.workspace = true
 revm = { workspace = true, features = ["test-types"] }
 

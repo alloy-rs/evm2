@@ -71,6 +71,14 @@ pub struct MessageExt<E = ()> {
     /// Resolved by the message's producer when it is constructed, so frames never load accounts
     /// for code.
     pub code: Bytecode,
+    /// Hash of the complete deployed bytecode. Zero for initcode and unchunked test messages.
+    pub code_hash: B256,
+    /// Size of the complete deployed bytecode.
+    pub code_size: u32,
+    /// Index of the chunk currently stored in `code`.
+    pub code_chunk_index: u32,
+    /// Whether `code` is an independently loaded deployed-code chunk.
+    pub chunked_code: bool,
     /// Address whose code is being executed. This can differ from `destination` for `CALLCODE`,
     /// `DELEGATECALL`, and EIP-7702 delegated-code execution.
     pub code_address: Address,
@@ -109,6 +117,10 @@ impl<E> MessageExt<E> {
             input,
             value,
             code,
+            code_hash,
+            code_size,
+            code_chunk_index,
+            chunked_code,
             code_address,
             disable_precompiles,
             caller_is_static,
@@ -127,6 +139,10 @@ impl<E> MessageExt<E> {
             input,
             value,
             code,
+            code_hash,
+            code_size,
+            code_chunk_index,
+            chunked_code,
             code_address,
             disable_precompiles,
             caller_is_static,

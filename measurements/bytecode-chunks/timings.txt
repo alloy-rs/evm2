@@ -1,0 +1,16 @@
+outcome,fibonacci-calldata,Return,gas=84203
+timing,fibonacci-calldata,922,baseline_ns=19801,noop_ns=37066,trace_ns=98434,trace_over_baseline=4.971,trace_over_noop=2.656,baseline_range_ns=19695..20095,trace_range_ns=96936..99066
+outcome,weth,Return,gas=51318
+timing,weth,2000,baseline_ns=1512,noop_ns=1881,trace_ns=2979,trace_over_baseline=1.971,trace_over_noop=1.584,baseline_range_ns=1449..1521,trace_range_ns=2887..3036
+outcome,erc20_transfer,Stop,gas=13529850
+timing,erc20_transfer,12,baseline_ns=1539920,noop_ns=2218986,trace_ns=4595951,trace_over_baseline=2.985,trace_over_noop=2.071,baseline_range_ns=1526969..1554208,trace_range_ns=4555674..4668160
+outcome,usdc_proxy,Return,gas=25644
+timing,usdc_proxy,2000,baseline_ns=1179,noop_ns=1327,trace_ns=1845,trace_over_baseline=1.564,trace_over_noop=1.390,baseline_range_ns=1167..1204,trace_range_ns=1825..1867
+outcome,fiat_token,Return,gas=23445
+timing,fiat_token,2000,baseline_ns=999,noop_ns=1127,trace_ns=1492,trace_over_baseline=1.493,trace_over_noop=1.324,baseline_range_ns=989..1005,trace_range_ns=1476..1528
+outcome,uniswap_v2_pair,Return,gas=23568
+timing,uniswap_v2_pair,2000,baseline_ns=1064,noop_ns=1251,trace_ns=1741,trace_over_baseline=1.637,trace_over_noop=1.392,baseline_range_ns=1047..1073,trace_range_ns=1718..1768
+outcome,univ2_router,Return,gas=22601
+timing,univ2_router,2000,baseline_ns=1161,noop_ns=1525,trace_ns=2665,trace_over_baseline=2.296,trace_over_noop=1.747,baseline_range_ns=1156..1213,trace_range_ns=2644..2689
+outcome,seaport,Return,gas=24051
+timing,seaport,2000,baseline_ns=1033,noop_ns=1213,trace_ns=1646,trace_over_baseline=1.593,trace_over_noop=1.357,baseline_range_ns=1025..1101,trace_range_ns=1633..1674

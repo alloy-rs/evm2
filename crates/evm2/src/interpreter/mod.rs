@@ -113,6 +113,8 @@ pub enum InstrStop {
     FatalExternalError,
     /// Invalid encoding of an instruction's immediate operand.
     InvalidImmediateEncoding,
+    /// Deployed bytecode violates the active chunk-boundary rules.
+    InvalidCodeChunk,
 }
 
 impl InstrStop {

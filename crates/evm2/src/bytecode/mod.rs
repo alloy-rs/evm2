@@ -5,7 +5,7 @@ use crate::{
     interpreter::op,
     once_lock::OnceLock,
 };
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
 use analysis::{analyze_legacy, pad_legacy};
 use core::{cmp::Ordering, fmt, hash};
@@ -13,6 +13,8 @@ use thiserror::Error;
 
 mod analysis;
 mod jump_table;
+
+pub mod chunks;
 
 #[cfg(feature = "serde")]
 mod serde_impl;
@@ -122,6 +124,21 @@ impl fmt::Debug for Bytecode {
 }
 
 impl Bytecode {
+    /// Returns the ordered hashes of this code's validated chunk payloads.
+    pub fn code_chunk_hashes(&self) -> Vec<B256> {
+        self.original_byte_slice().chunks(chunks::CODE_CHUNK_SIZE).map(keccak256).collect()
+    }
+
+    /// Returns a chunk of already resident code; never performs database I/O.
+    pub fn code_chunk(&self, index: u32) -> Option<chunks::CodeChunk> {
+        chunks::code_chunk(self.original_byte_slice(), index)
+    }
+
+    /// Validates deployed code without constructing or caching its chunks.
+    pub fn validate_code_chunks(&self) -> Result<(), chunks::CodeChunkError> {
+        chunks::validate_code(self.original_byte_slice())
+    }
+
     /// Creates an empty legacy [`Bytecode`] backed by exactly one STOP opcode.
     #[inline]
     pub const fn new() -> Self {
