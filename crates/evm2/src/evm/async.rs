@@ -6,7 +6,7 @@
 
 use crate::{
     DatabaseError,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, CodeChunk},
     evm::{AccountInfo, DbResult, DynDatabase, NonStaticAny},
     interpreter::Word,
 };
@@ -423,6 +423,24 @@ pub trait AsyncDatabase: NonStaticAny {
         code_hash: B256,
     ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_;
 
+    /// Reads persisted code kind without fetching or analyzing runtime payload bytes.
+    fn get_code_kind_by_hash(
+        &mut self,
+        code_hash: B256,
+    ) -> impl Future<Output = Result<crate::bytecode::BytecodeKind, Self::Error>> + Send + '_;
+
+    /// Loads a payload directly, preserving its known bytecode kind when available.
+    fn get_code_chunk_by_hash(
+        &mut self,
+        code_hash: B256,
+        index: u32,
+    ) -> impl Future<Output = Result<Option<CodeChunk>, Self::Error>> + Send + '_;
+
+    /// Invalidates a rejected raw response in any provider-local cache.
+    fn discard_code_chunk(&mut self, code_hash: B256, index: u32) {
+        let _ = (code_hash, index);
+    }
+
     /// Loads a persistent storage slot.
     fn get_storage(
         &mut self,
@@ -480,6 +498,27 @@ impl<D: AsyncDatabase> AsyncDb<D> {
 }
 
 impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
+    fn get_code_kind_by_hash(
+        &mut self,
+        code_hash: &B256,
+    ) -> DbResult<crate::bytecode::BytecodeKind> {
+        let result = block_on_current_result(self.db.get_code_kind_by_hash(*code_hash));
+        self.database_result(result)
+    }
+
+    fn discard_code_chunk(&mut self, code_hash: &B256, index: u32) {
+        self.db.discard_code_chunk(*code_hash, index);
+    }
+
+    fn get_code_chunk_by_hash(
+        &mut self,
+        code_hash: &B256,
+        index: u32,
+    ) -> DbResult<Option<CodeChunk>> {
+        let result = block_on_current_result(self.db.get_code_chunk_by_hash(*code_hash, index));
+        self.database_result(result)
+    }
+
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         let result = {
@@ -526,7 +565,7 @@ impl<D: AsyncDatabase + fmt::Debug> fmt::Debug for AsyncDb<D> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
+    use super::*;
     use crate::{
         BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult, TxResultExt,
         bytecode::Bytecode,
@@ -1042,6 +1081,25 @@ mod tests {
             Ok(None)
         }
 
+        fn get_code_chunk_by_hash(
+            &mut self,
+            code_hash: &B256,
+            index: u32,
+        ) -> Result<Option<crate::bytecode::CodeChunk>, Self::Error> {
+            if index != 0 {
+                return Ok(None);
+            }
+            let code = self.get_code_by_hash(code_hash)?;
+            Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
+        }
+
+        fn get_code_kind_by_hash(
+            &mut self,
+            _code_hash: &B256,
+        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
+            Ok(crate::bytecode::BytecodeKind::Legacy)
+        }
+
         fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
         }
@@ -1072,6 +1130,25 @@ mod tests {
                 return Err(TestError);
             }
             Ok(None)
+        }
+
+        fn get_code_chunk_by_hash(
+            &mut self,
+            code_hash: &B256,
+            index: u32,
+        ) -> Result<Option<crate::bytecode::CodeChunk>, Self::Error> {
+            if index != 0 {
+                return Ok(None);
+            }
+            let code = self.get_code_by_hash(code_hash)?;
+            Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
+        }
+
+        fn get_code_kind_by_hash(
+            &mut self,
+            _code_hash: &B256,
+        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
+            Ok(crate::bytecode::BytecodeKind::Legacy)
         }
 
         fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
@@ -1174,6 +1251,25 @@ mod tests {
             Ok(None)
         }
 
+        async fn get_code_chunk_by_hash(
+            &mut self,
+            code_hash: B256,
+            index: u32,
+        ) -> Result<Option<crate::bytecode::CodeChunk>, Self::Error> {
+            if index != 0 {
+                return Ok(None);
+            }
+            let code = self.get_code_by_hash(code_hash).await?;
+            Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
+        }
+
+        async fn get_code_kind_by_hash(
+            &mut self,
+            _code_hash: B256,
+        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
+            Ok(crate::bytecode::BytecodeKind::Legacy)
+        }
+
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
         }
@@ -1203,6 +1299,25 @@ mod tests {
             _address: Address,
         ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
             Ok(None)
+        }
+
+        async fn get_code_chunk_by_hash(
+            &mut self,
+            code_hash: B256,
+            index: u32,
+        ) -> Result<Option<crate::bytecode::CodeChunk>, Self::Error> {
+            if index != 0 {
+                return Ok(None);
+            }
+            let code = self.get_code_by_hash(code_hash).await?;
+            Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
+        }
+
+        async fn get_code_kind_by_hash(
+            &mut self,
+            _code_hash: B256,
+        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
+            Ok(crate::bytecode::BytecodeKind::Legacy)
         }
 
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
@@ -1239,6 +1354,25 @@ mod tests {
                 return Ok(Some(crate::evm::AccountInfo::default().with_code(self.code.clone())));
             }
             Ok(Some(crate::evm::AccountInfo::default()))
+        }
+
+        async fn get_code_chunk_by_hash(
+            &mut self,
+            code_hash: B256,
+            index: u32,
+        ) -> Result<Option<crate::bytecode::CodeChunk>, Self::Error> {
+            if index != 0 {
+                return Ok(None);
+            }
+            let code = self.get_code_by_hash(code_hash).await?;
+            Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
+        }
+
+        async fn get_code_kind_by_hash(
+            &mut self,
+            _code_hash: B256,
+        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
+            Ok(crate::bytecode::BytecodeKind::Legacy)
         }
 
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
@@ -1288,6 +1422,25 @@ mod tests {
             Ok(None)
         }
 
+        async fn get_code_chunk_by_hash(
+            &mut self,
+            code_hash: B256,
+            index: u32,
+        ) -> Result<Option<crate::bytecode::CodeChunk>, Self::Error> {
+            if index != 0 {
+                return Ok(None);
+            }
+            let code = self.get_code_by_hash(code_hash).await?;
+            Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
+        }
+
+        async fn get_code_kind_by_hash(
+            &mut self,
+            _code_hash: B256,
+        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
+            Ok(crate::bytecode::BytecodeKind::Legacy)
+        }
+
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
         }
@@ -1315,4 +1468,78 @@ mod tests {
     }
 
     impl Error for TestError {}
+
+    struct ChunkDb {
+        code: Bytecode,
+        calls: usize,
+    }
+
+    impl AsyncDatabase for ChunkDb {
+        type Error = TestError;
+
+        async fn get_account(&mut self, _: Address) -> Result<Option<AccountInfo>, Self::Error> {
+            Ok(None)
+        }
+
+        async fn get_code_kind_by_hash(
+            &mut self,
+            _: B256,
+        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
+            Ok(crate::bytecode::BytecodeKind::Legacy)
+        }
+
+        async fn get_code_by_hash(&mut self, _: B256) -> Result<Bytecode, Self::Error> {
+            panic!("chunk access must not reconstruct code")
+        }
+
+        async fn get_storage(&mut self, _: Address, _: Word) -> Result<Word, Self::Error> {
+            Ok(Word::ZERO)
+        }
+
+        async fn get_block_hash(&mut self, _: Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
+        }
+
+        async fn get_code_chunk_by_hash(
+            &mut self,
+            hash: B256,
+            index: u32,
+        ) -> Result<Option<crate::bytecode::CodeChunk>, Self::Error> {
+            assert_eq!(hash, B256::repeat_byte(9));
+            self.calls += 1;
+            PendingOnce { pending: true }.await;
+            match index {
+                0 => Ok(Some(crate::bytecode::CodeChunk::from_bytecode(&self.code))),
+                1 => Ok(None),
+                _ => Err(TestError),
+            }
+        }
+    }
+
+    #[test]
+    fn async_chunk_suspension_preserves_kind_absence_and_error() {
+        let marker = Bytecode::new_eip7702(Address::repeat_byte(8));
+        for code in [marker.clone(), Bytecode::new_legacy(marker.original_bytes())] {
+            let mut db = AsyncDb::new(ChunkDb { code: code.clone(), calls: 0 });
+            for index in 0..3 {
+                let result = {
+                    let mut future = core::pin::pin!(on_fiber(|| {
+                        DynDatabase::get_code_chunk_by_hash(&mut db, &B256::repeat_byte(9), index)
+                    }));
+                    let mut cx = Context::from_waker(Waker::noop());
+                    assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
+                    let Poll::Ready(Ok(result)) = future.as_mut().poll(&mut cx) else {
+                        panic!("second poll must complete");
+                    };
+                    result
+                };
+                match index {
+                    0 => assert_eq!(result.unwrap().unwrap().bytecode(false), code),
+                    1 => assert!(result.unwrap().is_none()),
+                    _ => assert!(result.unwrap_err().downcast_ref::<TestError>().is_some()),
+                }
+            }
+            assert_eq!(db.db.calls, 3);
+        }
+    }
 }

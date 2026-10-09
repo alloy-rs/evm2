@@ -3,7 +3,7 @@
 use super::{DbResult, DynDatabase, EmptyDB};
 use crate::{
     DatabaseError,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, BytecodeKind, CODE_CHUNK_SIZE, CodeChunk},
     evm::{
         bal::BalContext,
         state::{
@@ -15,7 +15,7 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
-    map::{AddressMap, B256Map, U256Map, hash_map::Entry},
+    map::{AddressMap, B256Map, HashMap, U256Map, hash_map::Entry},
 };
 use core::convert::Infallible;
 
@@ -54,6 +54,12 @@ pub struct Cache {
     pub accounts: AddressMap<Option<AccountInfo>>,
     /// Contracts keyed by code hash.
     pub contracts: B256Map<Bytecode>,
+    /// Persisted code kinds, including cached evidence that a record is ordinary runtime.
+    pub code_kinds: B256Map<BytecodeKind>,
+    /// Raw successful provider responses; execution must validate contextual lengths.
+    pub code_chunks: HashMap<(B256, u32), CodeChunk>,
+    /// Contextually validated immutable payload analyses, retained across transaction resets.
+    pub analyzed_code_chunks: HashMap<(B256, u32, bool), Bytecode>,
     /// Persistent storage keyed by account, then slot.
     pub storage: AddressMap<AccountStorageCache>,
     /// Cached block hashes keyed by block number.
@@ -72,6 +78,9 @@ impl Cache {
     pub fn merge(&mut self, other: Self) {
         self.accounts.extend(other.accounts);
         self.contracts.extend(other.contracts);
+        self.code_kinds.extend(other.code_kinds);
+        self.code_chunks.extend(other.code_chunks);
+        self.analyzed_code_chunks.extend(other.analyzed_code_chunks);
         self.block_hashes.extend(other.block_hashes);
         for (address, storage) in other.storage {
             let target = self.storage.entry(address).or_default();
@@ -79,6 +88,28 @@ impl Cache {
                 target.wipe();
             }
             target.slots.extend(storage.slots);
+        }
+    }
+
+    /// Publishes resident deployment or ingestion output with its chunk lookup entries.
+    /// The caller supplies validated bytes and their complete-code identity.
+    pub fn insert_code(&mut self, code_hash: B256, code: &Bytecode) {
+        self.contracts.insert(code_hash, code.clone());
+    }
+
+    fn insert_chunks(
+        chunks: &mut HashMap<(B256, u32), CodeChunk>,
+        code_hash: B256,
+        code: &Bytecode,
+    ) {
+        if code.len() > CODE_CHUNK_SIZE {
+            let bytes = code.original_bytes();
+            for (index, _) in bytes.chunks(CODE_CHUNK_SIZE).enumerate() {
+                let index = u32::try_from(index).expect("bytecode index fits u32");
+                if let Some(chunk) = crate::bytecode::code_chunk(&bytes, index) {
+                    chunks.insert((code_hash, index), chunk);
+                }
+            }
         }
     }
 }
@@ -92,6 +123,9 @@ impl Default for Cache {
         Self {
             accounts: AddressMap::default(),
             contracts,
+            code_kinds: B256Map::default(),
+            code_chunks: HashMap::default(),
+            analyzed_code_chunks: HashMap::default(),
             storage: AddressMap::default(),
             block_hashes: U256Map::default(),
             _non_exhaustive: (),
@@ -173,7 +207,7 @@ impl<ExtDB> CacheDB<ExtDB> {
             }
 
             if let Some((code_hash, code)) = entry.changed_code() {
-                self.cache.contracts.insert(code_hash, code.clone());
+                self.cache.insert_code(code_hash, code);
             }
             if !entry.is_changed() {
                 continue;
@@ -191,11 +225,15 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// Inserts account code into the contract cache.
     #[inline]
     pub fn insert_contract(&mut self, info: &mut AccountInfo) {
-        Self::insert_contract_inner(&mut self.cache.contracts, info);
+        Self::insert_contract_inner(&mut self.cache.contracts, &mut self.cache.code_chunks, info);
     }
 
     #[inline]
-    fn insert_contract_inner(contracts: &mut B256Map<Bytecode>, info: &mut AccountInfo) {
+    fn insert_contract_inner(
+        contracts: &mut B256Map<Bytecode>,
+        chunks: &mut HashMap<(B256, u32), CodeChunk>,
+        info: &mut AccountInfo,
+    ) {
         if let Some(code) = &info.code
             && !code.is_empty()
         {
@@ -203,6 +241,9 @@ impl<ExtDB> CacheDB<ExtDB> {
                 info.code_hash = code.hash_slow();
             }
             contracts.entry(info.code_hash).or_insert_with(|| code.clone());
+            if info.code_metadata.is_some() {
+                Cache::insert_chunks(chunks, info.code_hash, code);
+            }
         }
         if info.code_hash.is_zero() {
             info.code_hash = KECCAK256_EMPTY;
@@ -212,8 +253,13 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// Inserts account info.
     #[inline]
     pub fn insert_account_info(&mut self, address: &Address, mut info: AccountInfo) {
+        if info.code_metadata.is_some() && info.code.is_none() {
+            info.code = self.cache.contracts.get(&info.code_hash).cloned();
+        }
         self.insert_contract(&mut info);
-        info.code = None;
+        if !info.code.as_ref().is_some_and(Bytecode::is_eip7702) {
+            info.code = None;
+        }
         self.cache.accounts.insert(*address, Some(info));
     }
 
@@ -245,7 +291,7 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     #[inline]
     fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
         self.bal_context.bytecode(code_hash, code)?;
-        self.cache.contracts.insert(code_hash, code.clone());
+        self.cache.insert_code(code_hash, code);
         Ok(())
     }
 
@@ -302,6 +348,47 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
 }
 
 impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
+    fn get_code_kind_by_hash(&mut self, code_hash: &B256) -> DbResult<BytecodeKind> {
+        if let Some(code) = self.cache.contracts.get(code_hash) {
+            return Ok(code.kind());
+        }
+        match self.cache.code_kinds.entry(*code_hash) {
+            Entry::Occupied(entry) => Ok(*entry.get()),
+            Entry::Vacant(entry) => Ok(*entry.insert(self.db.get_code_kind_by_hash(code_hash)?)),
+        }
+    }
+
+    fn discard_code_chunk(&mut self, code_hash: &B256, index: u32) {
+        self.cache.code_chunks.remove(&(*code_hash, index));
+        self.cache.analyzed_code_chunks.remove(&(*code_hash, index, false));
+        self.cache.analyzed_code_chunks.remove(&(*code_hash, index, true));
+        self.db.discard_code_chunk(code_hash, index);
+    }
+
+    fn get_code_chunk_by_hash(
+        &mut self,
+        code_hash: &B256,
+        index: u32,
+    ) -> DbResult<Option<CodeChunk>> {
+        if *code_hash == KECCAK256_EMPTY || code_hash.is_zero() {
+            return Ok(None);
+        }
+        if let Some(chunk) = self.cache.code_chunks.get(&(*code_hash, index)) {
+            return Ok(Some(chunk.clone()));
+        }
+        // Resident deployment output is authoritative, unlike a provider's optional full-code API.
+        if let Some(code) = self.cache.contracts.get(code_hash)
+            && code.len() <= CODE_CHUNK_SIZE
+        {
+            return Ok((index == 0 && !code.is_empty()).then(|| CodeChunk::from_bytecode(code)));
+        }
+        let chunk = self.db.get_code_chunk_by_hash(code_hash, index)?;
+        if let Some(chunk) = &chunk {
+            self.cache.code_chunks.insert((*code_hash, index), chunk.clone());
+        }
+        Ok(chunk)
+    }
+
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         // Resolve the account in the attached read BAL first: with fallback disabled, an
@@ -314,19 +401,32 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
         // Resolve the raw account from the cache or backing database. The cache always stores the
         // raw value; any attached BAL is layered onto the returned value only.
         let mut account = {
-            let Cache { accounts, contracts, .. } = &mut self.cache;
+            let Cache { accounts, contracts, code_chunks, .. } = &mut self.cache;
             match accounts.entry(*address) {
                 Entry::Occupied(entry) => entry.get().clone(),
                 Entry::Vacant(entry) => match self.db.get_account(address)? {
                     Some(mut info) => {
-                        Self::insert_contract_inner(contracts, &mut info);
-                        info.code = None;
+                        Self::insert_contract_inner(contracts, code_chunks, &mut info);
+                        if !info.code.as_ref().is_some_and(Bytecode::is_eip7702) {
+                            info.code = None;
+                        }
                         entry.insert(Some(info)).clone()
                     }
                     None => entry.insert(None).clone(),
                 },
             }
         };
+
+        // A known legacy marker is bounded account-loading compatibility metadata. Keep its
+        // kind so delegation resolution does not need a charged runtime payload request.
+        if let Some(info) = &mut account
+            && info.inline_delegation.is_none()
+            && info.code_metadata.is_none()
+            && let Some(code) = self.cache.contracts.get(&info.code_hash)
+            && code.is_eip7702()
+        {
+            info.code = Some(code.clone());
+        }
 
         // Apply the resolved BAL account's info at the current block access index.
         if let Some(bal_account) = bal_account {
@@ -399,6 +499,22 @@ mod typed {
     use crate::evm::Database;
 
     impl<ExtDB: DynDatabase> Database for CacheDB<ExtDB> {
+        fn get_code_kind_by_hash(&mut self, code_hash: &B256) -> Result<BytecodeKind, Self::Error> {
+            DynDatabase::get_code_kind_by_hash(self, code_hash)
+        }
+
+        fn discard_code_chunk(&mut self, code_hash: &B256, index: u32) {
+            DynDatabase::discard_code_chunk(self, code_hash, index);
+        }
+
+        fn get_code_chunk_by_hash(
+            &mut self,
+            code_hash: &B256,
+            index: u32,
+        ) -> Result<Option<CodeChunk>, Self::Error> {
+            DynDatabase::get_code_chunk_by_hash(self, code_hash, index)
+        }
+
         type Error = DatabaseError;
 
         fn is_fatal(error: &Self::Error) -> bool {
@@ -519,9 +635,30 @@ mod tests {
     impl crate::evm::Database for CountingDB {
         type Error = core::convert::Infallible;
 
+        fn get_code_kind_by_hash(&mut self, hash: &B256) -> Result<BytecodeKind, Self::Error> {
+            Ok(self
+                .account
+                .as_ref()
+                .filter(|info| info.code_hash == *hash)
+                .and_then(|info| info.code.as_ref())
+                .map_or(BytecodeKind::Legacy, Bytecode::kind))
+        }
+
         fn get_account(&mut self, _address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
             self.account_loads += 1;
             Ok(self.account.clone())
+        }
+
+        fn get_code_chunk_by_hash(
+            &mut self,
+            code_hash: &B256,
+            index: u32,
+        ) -> Result<Option<crate::bytecode::CodeChunk>, Self::Error> {
+            if index != 0 {
+                return Ok(None);
+            }
+            let code = self.get_code_by_hash(code_hash)?;
+            Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
         }
 
         fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
@@ -784,5 +921,54 @@ mod tests {
         let account = cache.get_account(&address).unwrap().unwrap();
         assert_eq!(account.balance, Word::from(100));
         assert_eq!(cache.get_storage(&address, &Word::from(7)).unwrap(), Word::from(9));
+    }
+
+    #[test]
+    fn chunk_adapters_preserve_stored_code_kind() {
+        let marker = Bytecode::new_eip7702(Address::repeat_byte(7));
+        let legacy = Bytecode::new_legacy(marker.original_bytes());
+        for code in [marker, legacy] {
+            let hash = code.hash_slow();
+            let provider = CountingDB {
+                account: Some(AccountInfo::default().with_code(code.clone())),
+                ..Default::default()
+            };
+            let mut cache = CacheDB::new(crate::evm::DbStats::new(crate::evm::Db::new(provider)));
+            for _ in 0..2 {
+                let chunk = cache.get_code_chunk_by_hash(&hash, 0).unwrap().unwrap();
+                assert_eq!(chunk.kind(), Some(code.kind()));
+                assert_eq!(chunk.bytecode(false), code);
+                assert_eq!(chunk.original_bytes(), &code.original_bytes());
+                assert!(chunk.bytecode(true).is_legacy());
+            }
+            assert_eq!(cache.db.counts().get_code_chunk_by_hash, 1);
+            assert_eq!(cache.db.inner().inner().code_loads, 1);
+            cache.discard_code_chunk(&hash, 0);
+            assert_eq!(
+                cache.get_code_chunk_by_hash(&hash, 0).unwrap().unwrap().bytecode(false),
+                code
+            );
+            assert_eq!(cache.db.inner().inner().code_loads, 2);
+        }
+    }
+
+    #[test]
+    fn multi_chunk_cache_requires_explicit_publication() {
+        let mut bytes = alloc::vec![0; CODE_CHUNK_SIZE + 2];
+        bytes[CODE_CHUNK_SIZE] = 0xef;
+        bytes[CODE_CHUNK_SIZE + 1] = 1;
+        let code = Bytecode::new_legacy(bytes.into());
+        let hash = code.hash_slow();
+        let mut cache = InMemoryDB::default();
+        // Full-code API residency must not substitute a missing payload index.
+        cache.cache.contracts.insert(hash, code.clone());
+        assert!(cache.get_code_chunk_by_hash(&hash, 0).unwrap().is_none());
+        cache.cache.insert_code(hash, &code);
+        Cache::insert_chunks(&mut cache.cache.code_chunks, hash, &code);
+        let chunk = cache.get_code_chunk_by_hash(&hash, 1).unwrap().unwrap();
+        assert_eq!(chunk.original_bytes().as_ref(), &[0xef, 1]);
+        assert!(chunk.bytecode(true).is_legacy());
+        assert_eq!(chunk.bytecode(true).original_byte_slice(), &[0xef, 1]);
+        assert!(cache.get_code_chunk_by_hash(&hash, 2).unwrap().is_none());
     }
 }

@@ -45,6 +45,9 @@ pub struct Version {
     /// Maximum blobs allowed in a single blob transaction.
     pub max_blobs_per_tx: usize,
 
+    /// Limits restored when the draft is disabled again.
+    tip1143_previous_limits: Option<(usize, usize)>,
+
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -92,6 +95,23 @@ impl Version {
             (self.tx_gas_limit_cap, u64::MAX)
         }
     }
+
+    /// Enables or disables the unscheduled TIP-1143 draft, including its size ceilings.
+    /// Disabling restores the limits in effect before enabling; other fork settings survive.
+    pub const fn with_tip1143(mut self, enabled: bool) -> Self {
+        if enabled {
+            if self.tip1143_previous_limits.is_none() {
+                self.tip1143_previous_limits = Some((self.max_code_size, self.max_initcode_size));
+            }
+            self.max_code_size = crate::bytecode::MAX_CODE_SIZE;
+            self.max_initcode_size = crate::bytecode::MAX_INITCODE_SIZE;
+        } else if let Some((code, initcode)) = self.tip1143_previous_limits.take() {
+            self.max_code_size = code;
+            self.max_initcode_size = initcode;
+        }
+        self.features.set(EvmFeatures::TIP1143, enabled);
+        self
+    }
 }
 
 const fn base_tx_gas_limit_cap(spec_id: SpecId) -> u64 {
@@ -130,6 +150,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_code_size: MAX_CODE_SIZE,
             max_initcode_size: MAX_INITCODE_SIZE,
             max_blobs_per_tx: MAX_BLOBS_PER_BLOCK_DENCUN,
+            tip1143_previous_limits: None,
             _non_exhaustive: (),
         }
     }; SpecId::COUNT];
@@ -145,6 +166,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_code_size: base_max_code_size(spec_id),
             max_initcode_size: base_max_initcode_size(spec_id),
             max_blobs_per_tx: base_max_blobs_per_tx(spec_id),
+            tip1143_previous_limits: None,
             _non_exhaustive: (),
         };
         i += 1;
@@ -356,6 +378,24 @@ mod tests {
         // The surcharge is Amsterdam-only: pre-Amsterdam EXTCODESIZE == EXTCODEHASH.
         let prague = opcode_config(SpecId::PRAGUE);
         assert_eq!(prague.static_gas(op::EXTCODESIZE), prague.static_gas(op::EXTCODEHASH));
+    }
+
+    #[test]
+    fn tip1143_opt_in_restores_custom_limits() {
+        for spec in [SpecId::FRONTIER, SpecId::PRAGUE, SpecId::AMSTERDAM] {
+            let mut base = Version::new(spec);
+            assert!(!base.feature(EvmFeatures::TIP1143));
+            base.max_code_size += 7;
+            base.max_initcode_size += 9;
+            let enabled = base.with_tip1143(true).with_tip1143(true);
+            assert!(enabled.feature(EvmFeatures::TIP1143));
+            assert_eq!(enabled.max_code_size, 981_640);
+            assert_eq!(enabled.max_initcode_size, 1_966_080);
+            let disabled = enabled.with_tip1143(false);
+            assert_eq!(disabled.features, base.features);
+            assert_eq!(disabled.max_code_size, base.max_code_size);
+            assert_eq!(disabled.max_initcode_size, base.max_initcode_size);
+        }
     }
 
     #[test]

@@ -1,10 +1,7 @@
 use crate::{
     EvmTypesHost,
-    interpreter::{
-        InstrStop, Result, Word, op,
-        opcode::OpCode,
-        private::{GasInstructionCx, InstructionCx},
-    },
+    bytecode::CODE_CHUNK_SIZE,
+    interpreter::{InstrStop, Result, Word, op, opcode::OpCode, private::GasInstructionCx},
     utils::{word_to_usize, word_to_usize_saturated},
 };
 use core::hint::cold_path;
@@ -16,12 +13,12 @@ pub fn stop() -> Result {
     Err(InstrStop::Stop)
 }
 
-#[instruction]
+#[instruction(dynamic_gas)]
 pub fn jump(cx: _, [target]: [Word]) -> Result {
     jump_inner(*target, &mut cx)
 }
 
-#[instruction]
+#[instruction(dynamic_gas)]
 pub fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
         jump_inner(*target, &mut cx)?;
@@ -31,8 +28,34 @@ pub fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
 }
 
 #[inline(always)]
-fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut InstructionCx<'_, '_, '_, T>) -> Result {
+fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut GasInstructionCx<'_, '_, '_, T>) -> Result {
     let target = word_to_usize_saturated(target);
+    let target = if cx.state.is_chunked_code() {
+        if target >= cx.state.code_size() {
+            return Err(InstrStop::InvalidJump);
+        }
+        let index = (target / CODE_CHUNK_SIZE) as u32;
+        // Legacy records may be up to 24 KiB and have no prepared slicing.
+        let multi = cx.state.message().code_chunk.as_ref().is_some_and(|c| c.prepared().is_some());
+        if multi {
+            let local = target % CODE_CHUNK_SIZE;
+            let chunk = if index != cx.state.code_chunk_index() {
+                let address = cx.state.message().code_address;
+                let tariff = cx.state.chunk_tariff(&address, index);
+                cx.gas.spend(tariff)?;
+                cx.state.required_code_chunk(&address, index)?
+            } else {
+                cx.state.active_chunk().clone()
+            };
+            if !chunk.is_valid_jumpdest(local) {
+                return Err(InstrStop::InvalidJump);
+            }
+            cx.state.activate_code_chunk(index, chunk, local);
+        }
+        if multi { target % CODE_CHUNK_SIZE } else { target }
+    } else {
+        target
+    };
     if !cx.state.bytecode().is_valid_jumpdest(target) {
         cold_path();
         return Err(InstrStop::InvalidJump);
@@ -43,7 +66,7 @@ fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut InstructionCx<'_, '_, '_, 
 
 #[instruction]
 pub fn pc(cx: _) -> out {
-    *out = Word::from(cx.state.bytecode().pc_offset(*cx.pc));
+    *out = Word::from(cx.state.global_pc(*cx.pc));
 }
 
 #[instruction(dynamic_gas)]

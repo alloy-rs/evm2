@@ -151,3 +151,24 @@ impl From<crate::interpreter::InstrStop> for HostError {
         Self::Halt(stop)
     }
 }
+
+/// A required runtime payload could not be obtained from the trusted provider.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "code chunk {code_hash} index {index}: {reason}; expected {expected_length:?}, got {actual_length:?}"
+)]
+pub struct CodeChunkError {
+    /// Global original code hash.
+    pub code_hash: alloy_primitives::B256,
+    /// Requested payload index.
+    pub index: u32,
+    /// Exact committed length, or unknown for a legacy record (bounded to 1..=24576).
+    pub expected_length: Option<usize>,
+    /// Returned payload length when bytes were supplied.
+    pub actual_length: Option<usize>,
+    /// Failure classification independent of provider error text.
+    pub reason: &'static str,
+    /// Original provider error when the request failed.
+    #[source]
+    pub source: Option<DatabaseError>,
+}

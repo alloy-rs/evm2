@@ -17,7 +17,7 @@ mod error;
 pub mod ethereum;
 pub mod interpreter;
 pub mod utils;
-pub use error::{AnyError, DatabaseError, ExecutionError, HostError, LoadError};
+pub use error::{AnyError, CodeChunkError, DatabaseError, ExecutionError, HostError, LoadError};
 
 pub mod evm;
 #[doc(hidden)]

@@ -1,8 +1,8 @@
 //! Revert journal and checkpoint types.
 
-use super::AccountInfo;
+use super::{AccountCodeChunk, AccountInfo};
 use crate::interpreter::Word;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, map::HashMap};
 
 /// State checkpoint for reverting state changes.
 #[allow(missing_copy_implementations)]
@@ -56,6 +56,17 @@ pub enum JournalEntry {
         previous_just_created: bool,
         /// Previous code-changed flag.
         previous_code_changed: bool,
+        /// Previously resolved legacy size.
+        previous_code_size: Option<u32>,
+        /// Previously requested analyses and warmth.
+        previous_code_chunks: HashMap<u32, AccountCodeChunk>,
+    },
+    /// A successful cold code access warmed an account's payload.
+    CodeChunkWarmed {
+        /// Resolved code owner.
+        address: Address,
+        /// Original payload index.
+        index: u32,
     },
     /// Persistent storage changed.
     StorageChange {

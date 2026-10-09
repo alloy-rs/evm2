@@ -2,6 +2,8 @@
 
 mod account;
 mod block;
+mod code_chunks;
+pub use code_chunks::{AccountCodeChunk, CodeChunkLoad, CodeChunkStats};
 #[cfg(feature = "account-ext")]
 mod extension;
 mod journal;
@@ -74,6 +76,8 @@ pub struct StateSnapshot {
     journal: Vec<JournalEntry>,
     logs: Vec<Log>,
     selfdestructs: AddressSet,
+    chunk_stats: CodeChunkStats,
+    chunk_diagnostics: bool,
 }
 
 impl StateSnapshot {
@@ -94,6 +98,8 @@ impl StateSnapshot {
                 journal: self.journal,
                 logs: self.logs,
                 selfdestructs: self.selfdestructs,
+                chunk_stats: self.chunk_stats,
+                chunk_diagnostics: self.chunk_diagnostics,
             },
         }
     }
@@ -119,6 +125,8 @@ impl State<'_> {
             journal: self.journal.clone(),
             logs: self.logs.clone(),
             selfdestructs: self.selfdestructs.clone(),
+            chunk_stats: self.chunk_stats,
+            chunk_diagnostics: self.chunk_diagnostics,
         }
     }
 
@@ -163,6 +171,8 @@ pub struct StateInner<'a> {
     logs: Vec<Log>,
     /// Accounts self-destructed in the current transaction.
     selfdestructs: AddressSet,
+    chunk_stats: CodeChunkStats,
+    chunk_diagnostics: bool,
 }
 
 impl<'a> State<'a> {
@@ -182,6 +192,8 @@ impl<'a> State<'a> {
                 journal: Vec::new(),
                 logs: Vec::new(),
                 selfdestructs: AddressSet::default(),
+                chunk_stats: CodeChunkStats::default(),
+                chunk_diagnostics: true,
             },
         }
     }
@@ -416,7 +428,7 @@ impl<'a> State<'a> {
             accounts,
             storage_pool,
             transient_storage,
-            inner: StateInner { prewarm_set, journal, selfdestructs, logs, database: _ },
+            inner: StateInner { prewarm_set, journal, selfdestructs, logs, .. },
             ..
         } = self;
         for account in accounts.values_mut() {
@@ -647,6 +659,8 @@ impl<'a> State<'a> {
             balance,
             code_hash: KECCAK256_EMPTY,
             code: Some(Bytecode::default()),
+            code_metadata: None,
+            inline_delegation: None,
             _non_exhaustive: (),
             #[cfg(feature = "account-ext")]
             extension,
@@ -736,6 +750,8 @@ impl<'a> State<'a> {
                     previous_is_destroyed,
                     previous_just_created,
                     previous_code_changed,
+                    previous_code_size,
+                    previous_code_chunks,
                 } => {
                     // Reconcile the self-destruct set with the restored destroyed flag.
                     let was_destroyed =
@@ -757,6 +773,17 @@ impl<'a> State<'a> {
                         entry.is_destroyed = previous_is_destroyed;
                         entry.just_created = previous_just_created;
                         entry.code_changed = previous_code_changed;
+                        entry.code_size = previous_code_size;
+                        entry.code_chunks = previous_code_chunks;
+                    }
+                }
+                JournalEntry::CodeChunkWarmed { address, index } => {
+                    if let Some(chunk) = self
+                        .accounts
+                        .get_mut(&address)
+                        .and_then(|account| account.code_chunks.get_mut(&index))
+                    {
+                        chunk.is_warm = false;
                     }
                 }
                 JournalEntry::StorageChange { address, key, previous } => {

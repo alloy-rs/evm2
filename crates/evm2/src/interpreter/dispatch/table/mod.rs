@@ -1,7 +1,7 @@
 use super::{DynInspector, InspectMode, NoInspector, inc_pc, run_state};
 use crate::{
     EvmConfig, EvmTypesHost,
-    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut},
+    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut, op},
 };
 use core::hint::cold_path;
 
@@ -85,18 +85,24 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
     let instr = instruction.instr;
     let dynamic_gas = instruction.dynamic_gas;
     let r;
-    match gas.pre_step::<T, C>(state, op) {
-        Ok(()) => {
-            gas.sync_before_exec(state, dynamic_gas);
-            r = instr(&mut pc, stack.reborrow(), state);
-            if r.is_ok() {
-                inc_pc(&mut pc, op);
+    if op == op::PUSH1 && state.is_generated_tail(pc) {
+        gas.sync_before_exec(state, true);
+        r = state.transfer_code_chunk(&mut pc);
+        gas.sync_after_exec(state, true);
+    } else {
+        match gas.pre_step::<T, C>(state, op) {
+            Ok(()) => {
+                gas.sync_before_exec(state, dynamic_gas);
+                r = instr(&mut pc, stack.reborrow(), state);
+                if r.is_ok() {
+                    inc_pc(&mut pc, op);
+                }
+                gas.sync_after_exec(state, dynamic_gas);
             }
-            gas.sync_after_exec(state, dynamic_gas);
-        }
-        Err(e) => {
-            gas.sync_before_exec(state, false);
-            r = Err(e);
+            Err(e) => {
+                gas.sync_before_exec(state, false);
+                r = Err(e);
+            }
         }
     }
     if M::INSPECT {

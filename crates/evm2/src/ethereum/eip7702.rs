@@ -128,26 +128,10 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     // the checkpoint back.
     let runtime_checkpoint = req.host.state.checkpoint();
 
-    // The authorization gas phase. Under EIP-2780 (ethereum/EIPs#11844) the runtime charges are
-    // metered on the transaction-level gas tracker as the delegations are applied, stopping at the
-    // first unaffordable charge — later authorities are never loaded, keeping them out of the
-    // block access list. Pre-Amsterdam the pessimistic per-auth intrinsic charge is refilled
-    // instead and never runs out of gas: an execution refund for each already-existing authority,
-    // and under EIP-8037 a state refund credited directly back to the reservoir so it stays state
-    // gas — per execution-specs `set_delegation` (`state_gas_reservoir += refund`), deliberately
-    // not routed through execution gas first.
-    let (auth_oog, state_refund, execution_refund) = if req.host.feature(EvmFeatures::EIP2780) {
-        let mut auth_charges =
-            RuntimeAuthCharges::new(req.host.version(), &mut tx_gas, caller, tx.to, tx.value);
-        let oog = apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut auth_charges)?;
-        (oog, 0, 0)
-    } else {
-        let mut auth_refunds = AuthRefunds::new(req.host.version());
-        apply_auth_list(req.host, chain_id, &tx.authorization_list, &mut auth_refunds)?;
-        let AuthRefunds { state_refund, execution_refund, .. } = auth_refunds;
-        tx_gas.set_reservoir(tx_gas.reservoir() + state_refund);
-        (false, state_refund, execution_refund)
-    };
+    let AuthorizationResult { out_of_gas: auth_oog, state_refund, execution_refund } =
+        H::apply_authorizations(req.host, envelope, tx, caller, &mut tx_gas)?;
+    // The shared handler settles returned refunds exactly once, preserving state gas.
+    tx_gas.set_reservoir(tx_gas.reservoir() + state_refund);
 
     // Applies the pre-Amsterdam authorization execution refund (zero under EIP-2780) and settles
     // the transaction with the hook-provided intrinsic state gas (charged upfront, before
@@ -247,21 +231,32 @@ pub fn validate_one_auth<'a, T: EvmTypes>(
     let Some(authority) = authorization.authority() else {
         return Ok(None);
     };
+    let chunked = host.feature(EvmFeatures::TIP1143);
     let mut account = host.state.account(&authority)?;
     account.warm();
     let existed = account.exists();
     let authority_nonce = account.nonce();
-    let code = account.load_code()?;
-    // Reject an authority that already carries non-delegation code; otherwise non-empty code is
-    // necessarily a valid delegation.
-    let delegated_now = !code.is_empty();
-    if delegated_now && !code.is_eip7702() {
-        return Ok(None);
-    }
+    let delegated_now = if chunked {
+        let delegated = account.code_is_eip7702()?;
+        if account.code_size() != Some(0) && !delegated {
+            return Ok(None);
+        }
+        delegated
+    } else {
+        let code = account.load_code()?;
+        if !code.is_empty() && !code.is_eip7702() {
+            return Ok(None);
+        }
+        !code.is_empty()
+    };
     if authorization.nonce() != authority_nonce {
         return Ok(None);
     }
-    let delegated_before_tx = account.original_code()?.is_eip7702();
+    let delegated_before_tx = if chunked {
+        account.original_code_is_eip7702()?
+    } else {
+        account.original_code()?.is_eip7702()
+    };
     let clearing = authorization.address().is_zero();
     Ok(Some((authority, AppliedAuth { existed, delegated_before_tx, delegated_now, clearing })))
 }
@@ -469,7 +464,160 @@ pub fn apply_auth_list<'a, T: EvmTypes>(
         if accounting.accepted(authority, &auth).is_err() {
             return Ok(true);
         }
-        host.state.account(&authority)?.set_delegation(*authorization.address());
+        if host.feature(EvmFeatures::TIP1143) {
+            host.state.account(&authority)?.set_delegation_inline(*authorization.address());
+        } else {
+            host.state.account(&authority)?.set_delegation(*authorization.address());
+        }
     }
     Ok(false)
+}
+
+/// Gas accounting produced while applying an authorization list.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AuthorizationResult {
+    /// Whether a runtime charge failed. The handler rolls back the authorization checkpoint.
+    pub out_of_gas: bool,
+    /// Intrinsic state gas to return directly to the transaction's reservoir.
+    pub state_refund: u64,
+    /// Execution gas refund to include during transaction settlement.
+    pub execution_refund: u64,
+}
+
+/// Applies authorizations with Ethereum's fork-dependent gas accounting.
+///
+/// EIP-2780 meters runtime charges as delegations are applied, stopping before loading later
+/// authorities if a charge fails. Earlier forks refund pessimistic intrinsic costs instead.
+/// The caller must credit the returned refunds and roll back delegations on out-of-gas.
+pub fn apply_authorizations<T: EvmTypes>(
+    host: &mut Evm<'_, T>,
+    tx: &super::LazyTxEip7702,
+    caller: Address,
+    gas: &mut GasTracker,
+) -> HandlerResult<AuthorizationResult> {
+    let chain_id = host.version().chain_id;
+    if host.feature(EvmFeatures::EIP2780) {
+        let mut charges = RuntimeAuthCharges::new(host.version(), gas, caller, tx.to, tx.value);
+        let out_of_gas = apply_auth_list(host, chain_id, &tx.authorization_list, &mut charges)?;
+        Ok(AuthorizationResult { out_of_gas, ..Default::default() })
+    } else {
+        let mut refunds = AuthRefunds::new(host.version());
+        apply_auth_list(host, chain_id, &tx.authorization_list, &mut refunds)?;
+        Ok(AuthorizationResult {
+            state_refund: refunds.state_refund,
+            execution_refund: refunds.execution_refund,
+            ..Default::default()
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        BaseEvmTypes, ExecutionConfig, Precompiles, SpecId,
+        env::BlockEnvExt,
+        ethereum::{LazyTxEip7702, TxEnvelope},
+        evm::{AccountInfo, InMemoryDB},
+        registry::{TxRegistry, handler},
+    };
+    use alloc::vec;
+    use alloy_consensus::{TxEip7702, transaction::Recovered};
+    use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
+    use core::cell::Cell;
+
+    std::thread_local! {
+        static HOOK_CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    struct DelegateHook;
+    struct RejectHook;
+
+    impl TxHandlerHooks<BaseEvmTypes> for DelegateHook {
+        fn apply_authorizations(
+            host: &mut Evm<'_, BaseEvmTypes>,
+            envelope: &TxEnvelope,
+            tx: &LazyTxEip7702,
+            caller: Address,
+            gas: &mut GasTracker,
+        ) -> HandlerResult<AuthorizationResult> {
+            HOOK_CALLS.with(|calls| calls.set(calls.get() + 1));
+            assert!(core::ptr::eq(envelope.as_eip7702().unwrap(), tx));
+            apply_authorizations(host, tx, caller, gas)
+        }
+    }
+
+    impl TxHandlerHooks<BaseEvmTypes> for RejectHook {
+        fn apply_authorizations(
+            host: &mut Evm<'_, BaseEvmTypes>,
+            envelope: &TxEnvelope,
+            tx: &LazyTxEip7702,
+            caller: Address,
+            gas: &mut GasTracker,
+        ) -> HandlerResult<AuthorizationResult> {
+            let result = DelegateHook::apply_authorizations(host, envelope, tx, caller, gas)?;
+            assert!(!result.out_of_gas);
+            assert_eq!(host.state.account(&Address::repeat_byte(0xcc))?.nonce(), 1);
+            Ok(AuthorizationResult { out_of_gas: true, ..Default::default() })
+        }
+    }
+
+    fn execute_hook<H: TxHandlerHooks<BaseEvmTypes> + 'static>(reject: bool) {
+        HOOK_CALLS.with(|calls| calls.set(0));
+        let caller = Address::repeat_byte(0xbb);
+        let authority = Address::repeat_byte(0xcc);
+        let delegated = Address::repeat_byte(0xdd);
+        let spec = SpecId::PRAGUE;
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(u64::MAX)));
+        let mut registry = TxRegistry::new();
+        registry.register(
+            4,
+            TxEnvelope::as_eip7702,
+            handler(prepare_with_hooks::<BaseEvmTypes, H>, execute_prepared::<BaseEvmTypes, H>),
+        );
+        let mut evm = Evm::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, Version::new(spec)),
+            spec,
+            BlockEnvExt::default(),
+            registry,
+            db,
+            Precompiles::base(spec),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Eip7702(LazyTxEip7702::from_cached_recovered_authorizations(
+                TxEip7702 {
+                    chain_id: 1,
+                    to: Address::repeat_byte(0xaa),
+                    gas_limit: 100_000,
+                    ..Default::default()
+                },
+                vec![RecoveredAuthorization::new_unchecked(
+                    Authorization { chain_id: U256::ZERO, address: delegated, nonce: 0 },
+                    RecoveredAuthority::Valid(authority),
+                )],
+            )),
+            caller,
+        );
+        let result = evm.transact(&tx).unwrap().detach();
+        HOOK_CALLS.with(|calls| assert_eq!(calls.get(), 1));
+        assert_eq!(result.result.status, !reject);
+        assert_eq!(result.result.total_gas_spent, if reject { 100_000 } else { 46_000 });
+        assert_eq!(result.result.state_gas_spent, 0);
+        if reject {
+            assert!(result.pending_state.account_info(&authority).is_none());
+        } else {
+            assert_eq!(result.pending_state.account_info(&authority).unwrap().nonce, 1);
+        }
+    }
+
+    #[test]
+    fn authorization_hook_dispatch_and_default_accounting() {
+        execute_hook::<DelegateHook>(false);
+    }
+
+    #[test]
+    fn authorization_hook_oog_reverts_applied_delegation() {
+        execute_hook::<RejectHook>(true);
+    }
 }

@@ -128,7 +128,7 @@ use crate::{
     trustme,
     version::{EvmFeatures, GasId},
 };
-use alloc::{boxed::Box, sync::Arc, vec};
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
@@ -175,10 +175,10 @@ mod state;
 #[cfg(feature = "account-ext")]
 pub use state::AccountExtension;
 pub use state::{
-    AccountChangeRef, AccountHandle, AccountInfo, BlockStateAccumulator, JournalEntry,
-    NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource, StateCheckpoint,
-    StateInner, StateSnapshot, StorageChange, StorageHandle, StorageOverlay, StorageSlot,
-    StorageSlotHandle, Tee, Tracked,
+    AccountChangeRef, AccountCodeChunk, AccountHandle, AccountInfo, BlockStateAccumulator,
+    CodeChunkLoad, CodeChunkStats, JournalEntry, NoopChangeSink, PendingState, State,
+    StateChangeSink, StateChangeSource, StateCheckpoint, StateInner, StateSnapshot, StorageChange,
+    StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle, Tee, Tracked,
 };
 
 mod prewarm_set;
@@ -1194,6 +1194,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline(never)]
     fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), HostError> {
+        if self.feature(EvmFeatures::TIP1143)
+            && message.code.len() > self.version().max_initcode_size
+        {
+            return Err(InstrStop::CreateInitCodeSizeLimit.into());
+        }
         let info = if message.value > 0 || message.depth > 0 {
             self.state.account_info_untracked(&message.caller).map_err(HostError::from)?
         } else {
@@ -1256,15 +1261,36 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 });
             }
 
-            if let Err(code) = self
-                .state
-                .account(address)
-                .map(|mut a| a.set_code_slow(Bytecode::new_legacy(output.clone())))
-            {
+            let metadata = if self.feature(EvmFeatures::TIP1143) {
+                // Validation above precedes deposit charging and publication.
+                crate::bytecode::code_metadata(&output).expect("validated creation output")
+            } else {
+                None
+            };
+            let prepared = metadata.as_ref().map(|metadata| {
+                (0..metadata.chunk_hashes().len())
+                    .map(|index| {
+                        (
+                            index as u32,
+                            crate::bytecode::code_chunk(&output, index as u32)
+                                .expect("validated original output has every prepared chunk"),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let code_hash = alloy_primitives::keccak256(&output);
+            if let Err(code) = self.state.account(address).map(|mut a| {
+                a.set_code_with_metadata(Bytecode::new_legacy(output.clone()), metadata);
+            }) {
                 self.state.rollback(checkpoint, self.features);
                 return Err(code.into());
             }
 
+            if let Some(prepared) = prepared {
+                for (index, chunk) in prepared {
+                    self.state.overlay_db_mut().cache.code_chunks.insert((code_hash, index), chunk);
+                }
+            }
             output
         } else {
             self.state.rollback(checkpoint, self.features);
@@ -1282,12 +1308,18 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     fn validate_create_output(&self, gas: &mut Gas, output: &mut Bytes) -> Result<(), InstrStop> {
-        if self.feature(EvmFeatures::CODE_SIZE_CHECK) && output.len() > self.version().max_code_size
+        if (self.feature(EvmFeatures::CODE_SIZE_CHECK) || self.feature(EvmFeatures::TIP1143))
+            && output.len() > self.version().max_code_size
         {
             return Err(InstrStop::CreateContractSizeLimit);
         }
         if self.feature(EvmFeatures::EIP3541) && output.first().is_some_and(|byte| *byte == 0xef) {
             return Err(InstrStop::CreateContractStartingWithEF);
+        }
+
+        if self.feature(EvmFeatures::TIP1143) {
+            crate::bytecode::validate_code(output)
+                .map_err(|_| InstrStop::InvalidImmediateEncoding)?;
         }
 
         let code_deposit_gas = output
@@ -1455,7 +1487,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let interpreter_runner = guard.evm.interpreter_runner.clone();
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(guard.evm, inspector)
-        } else if let Some(runner) = interpreter_runner
+        } else if !guard.evm.feature(EvmFeatures::TIP1143)
+            && let Some(runner) = interpreter_runner
             && let Some(stop) = runner.run(interp_ref, guard.evm)
         {
             interp_ref.finish_run(stop)
@@ -1508,6 +1541,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
 
         let exists = account.exists();
         let info = account.get().cloned().unwrap_or_default();
+        info.inline_delegation_code().map_err(HostError::from)?;
 
         // load code
         let code = if load_code {
@@ -1515,7 +1549,13 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         } else {
             Bytecode::default()
         };
+        let code_size = account.code_size();
         Ok(AccountLoad {
+            code_size,
+            is_chunked: info.code_metadata.is_some(),
+            inline_delegation: info
+                .inline_delegation
+                .or_else(|| info.code.as_ref().and_then(Bytecode::eip7702_address)),
             balance: info.balance,
             nonce: info.nonce,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
@@ -1525,6 +1565,30 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             is_cold,
             _non_exhaustive: (),
         })
+    }
+
+    fn load_code_chunk(
+        &mut self,
+        address: &Address,
+        index: u32,
+        skip_cold_load: bool,
+    ) -> Result<Option<state::CodeChunkLoad>, HostError> {
+        self.state.load_code_chunk(address, index, skip_cold_load).map_err(Into::into)
+    }
+
+    fn resolve_legacy_delegation(
+        &mut self,
+        address: &Address,
+    ) -> Result<Option<Address>, HostError> {
+        self.state.account(address)?.legacy_delegation_target().map_err(Into::into)
+    }
+
+    fn is_precompile(&self, address: &Address) -> bool {
+        self.precompiles.contains(address)
+    }
+
+    fn code_chunk_is_warm(&self, address: &Address, index: u32) -> bool {
+        self.state.code_chunk_is_warm(address, index)
     }
 
     fn target_is_empty_for_new_account_gas(
@@ -1701,6 +1765,12 @@ pub struct AccountLoad {
     pub code_hash: B256,
     /// Account bytecode.
     pub code: Bytecode,
+    /// Original size, known without payload reads for typed accounts.
+    pub code_size: Option<u32>,
+    /// Whether original runtime is stored in prepared chunks.
+    pub is_chunked: bool,
+    /// Inline account-owned delegation target.
+    pub inline_delegation: Option<Address>,
     /// Whether the account exists in state.
     pub exists: bool,
     /// Whether the account is empty.
@@ -1989,6 +2059,9 @@ mod tests {
             input: Bytes::new(),
             value: U256::ZERO,
             code: Bytecode::default(),
+            code_chunk: None,
+            code_size: 0,
+            code_hash: B256::ZERO,
             code_address: address,
             disable_precompiles: false,
             caller_is_static: false,
@@ -2850,6 +2923,9 @@ mod tests {
             input: Bytes::from_static(b"message input"),
             value: U256::from(99),
             code: Bytecode::default(),
+            code_chunk: None,
+            code_size: 0,
+            code_hash: B256::ZERO,
             code_address: address,
             disable_precompiles: false,
             caller_is_static: false,
@@ -3304,6 +3380,25 @@ mod tests {
                 Ok(Some(AccountInfo::default()))
             }
 
+            fn get_code_chunk_by_hash(
+                &mut self,
+                code_hash: &B256,
+                index: u32,
+            ) -> Result<Option<crate::bytecode::CodeChunk>, Self::Error> {
+                if index != 0 {
+                    return Ok(None);
+                }
+                let code = self.get_code_by_hash(code_hash)?;
+                Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
+            }
+
+            fn get_code_kind_by_hash(
+                &mut self,
+                _code_hash: &B256,
+            ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
+                Ok(crate::bytecode::BytecodeKind::Legacy)
+            }
+
             fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
                 Ok(Bytecode::default())
             }
@@ -3413,6 +3508,25 @@ mod tests {
                     return Err(SelfdestructTargetLoadError);
                 }
                 Ok(Some(AccountInfo::default().with_balance(Word::from(1))))
+            }
+
+            fn get_code_chunk_by_hash(
+                &mut self,
+                code_hash: &B256,
+                index: u32,
+            ) -> Result<Option<crate::bytecode::CodeChunk>, Self::Error> {
+                if index != 0 {
+                    return Ok(None);
+                }
+                let code = self.get_code_by_hash(code_hash)?;
+                Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
+            }
+
+            fn get_code_kind_by_hash(
+                &mut self,
+                _code_hash: &B256,
+            ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
+                Ok(crate::bytecode::BytecodeKind::Legacy)
             }
 
             fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
@@ -4063,6 +4177,117 @@ mod tests {
                     .unwrap(),
                 Word::from(1)
             );
+        }
+    }
+
+    #[test]
+    fn tip1143_creation_validation_and_runner_guard() {
+        let version = Version::new(SpecId::PRAGUE).with_tip1143(true);
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::PRAGUE, version),
+            SpecId::PRAGUE,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::PRAGUE),
+        );
+        for len in [0, 24_540, 24_541, 24_542, 24_575, 24_576, 24_577, 981_640, 981_641] {
+            let mut output = Bytes::from(vec![0; len]);
+            let mut gas = Gas::new(1_000_000_000);
+            let result = evm.validate_create_output(&mut gas, &mut output);
+            if len > 981_640 {
+                assert_eq!(result, Err(InstrStop::CreateContractSizeLimit));
+            } else {
+                assert_eq!(result, Ok(()));
+                assert_eq!(gas.remaining(), 1_000_000_000 - len as u64 * 200);
+            }
+        }
+        for len in [24_576, 24_577] {
+            let mut bytes = vec![0; len];
+            bytes[len - 1] = op::PUSH32;
+            let result = evm.validate_create_output(&mut Gas::new(10_000_000), &mut bytes.into());
+            assert_eq!(result, Ok(()));
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        evm.set_interpreter_runner(TestInterpreterRunner {
+            stop: Some(InstrStop::InvalidFEOpcode),
+            calls: Arc::clone(&calls),
+        });
+        let caller = Address::repeat_byte(0x71);
+        let destination = caller.create(0);
+        // Resident initcode returns 24,577 zero bytes without any runtime payload access.
+        let mut message = MessageExt {
+            kind: MessageKind::Create,
+            caller,
+            destination,
+            gas_limit: 10_000_000,
+            code: Bytecode::new_legacy(Bytes::from_static(&[
+                op::PUSH2,
+                0x60,
+                1,
+                op::PUSH0,
+                op::RETURN,
+            ])),
+            ..MessageExt::default()
+        };
+        let checkpoint = evm.state.checkpoint();
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let account = evm.state.account(&destination).unwrap().get().unwrap().clone();
+        assert_eq!(account.code_metadata.as_ref().unwrap().code_size(), 24_577);
+        assert_eq!(account.code.as_ref().unwrap().original_byte_slice(), vec![0; 24_577]);
+        evm.state.rollback(checkpoint, version.features);
+        assert!(evm.state.account(&destination).unwrap().get().is_none());
+    }
+
+    #[test]
+    fn tip1143_resident_initcode_limit_at_message_entry() {
+        for spec in [SpecId::FRONTIER, SpecId::PRAGUE] {
+            let version = Version::new(spec).with_tip1143(true);
+            for kind in [MessageKind::Create, MessageKind::Create2] {
+                for len in [1_966_080, 1_966_081] {
+                    let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                        ExecutionConfig::for_spec_and_version(spec, version),
+                        spec,
+                        BlockEnvExt::default(),
+                        TxRegistry::new(),
+                        InMemoryDB::default(),
+                        Precompiles::base(spec),
+                    );
+                    let input = Bytes::from(vec![0; len]);
+                    let valid =
+                        crate::ethereum::validate_create_initcode(&version, TxKind::Create, &input);
+                    assert_eq!(valid.is_ok(), len == 1_966_080);
+                    let mut message = MessageExt {
+                        kind,
+                        caller: Address::repeat_byte(0x61),
+                        destination: Address::repeat_byte(0x62),
+                        gas_limit: 100_000,
+                        code: Bytecode::new_legacy(input),
+                        ..MessageExt::default()
+                    };
+                    let result =
+                        Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message)
+                            .unwrap();
+                    assert_eq!(
+                        result.stop,
+                        if len == 1_966_080 {
+                            InstrStop::Stop
+                        } else {
+                            InstrStop::CreateInitCodeSizeLimit
+                        }
+                    );
+                    let account = evm.state.account(&message.destination).unwrap().get().cloned();
+                    if len == 1_966_080 {
+                        let account = account.unwrap();
+                        assert_eq!(account.code_hash, KECCAK256_EMPTY);
+                        assert!(account.code_metadata.is_none());
+                    } else {
+                        assert!(account.is_none());
+                    }
+                }
+            }
         }
     }
 }

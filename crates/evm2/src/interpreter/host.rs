@@ -3,7 +3,7 @@ use crate::{
     BaseEvmTypes, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig, ExecutionError,
     HostError, SpecId,
     env::{BlockEnv, TxEnv},
-    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+    evm::{AccountLoad, CodeChunkLoad, SLoad, SStore, SelfDestructResult},
 };
 use alloy_primitives::{Address, B256, Bytes, Log};
 
@@ -130,6 +130,26 @@ pub trait Host<T: EvmTypesHost> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, HostError>;
+
+    /// Resolves a historical delegation marker using bounded code-kind metadata.
+    fn resolve_legacy_delegation(
+        &mut self,
+        address: &Address,
+    ) -> Result<Option<Address>, HostError>;
+
+    /// Whether the address dispatches to a native precompile.
+    fn is_precompile(&self, address: &Address) -> bool;
+
+    /// Loads a requested runtime payload after the caller reserves its chunk tariff.
+    fn load_code_chunk(
+        &mut self,
+        address: &Address,
+        index: u32,
+        skip_cold_load: bool,
+    ) -> Result<Option<CodeChunkLoad>, HostError>;
+
+    /// Reads logical transaction warmth without fetching code.
+    fn code_chunk_is_warm(&self, address: &Address, index: u32) -> bool;
 
     /// Returns whether an account is empty/non-existent for new-account gas checks.
     fn target_is_empty_for_new_account_gas(

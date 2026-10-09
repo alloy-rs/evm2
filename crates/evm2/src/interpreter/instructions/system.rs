@@ -2,7 +2,7 @@
 
 use crate::{
     EvmFeatures, EvmTypesHost,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, CodeChunk},
     constants::CALL_DEPTH_LIMIT,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Result, StackMut,
@@ -11,7 +11,7 @@ use crate::{
     utils::{word_to_address, word_to_usize},
     version::GasId,
 };
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY};
 use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
@@ -79,7 +79,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
-) -> Result<(u64, u64, Bytecode, Address, bool)> {
+) -> Result<(u64, u64, LoadedCode)> {
     if transfers_value {
         gas.spend(state.gas_params().get(GasId::TransferValueCost).into())?;
     }
@@ -87,17 +87,33 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     let additional_cold_cost = state.gas_params().cold_account_additional_cost();
     let remaining_gas = gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account =
-        state.host().load_account(&to, true, skip_cold_load).map_err(|error| state.fail(error))?;
+    let draft = state.feature(EvmFeatures::TIP1143);
+    let mut account = state
+        .host()
+        .load_account(&to, !draft, skip_cold_load)
+        .map_err(|error| state.fail(error))?;
 
     let mut cost = 0;
     if account.is_cold {
         cost += additional_cold_cost;
     }
-    let mut code = account.code;
+    let mut code = account.code.clone();
     let mut code_address = to;
+    let native = state.host().is_precompile(&to);
+    if draft && !native && !account.is_chunked && account.inline_delegation.is_none() {
+        account.inline_delegation =
+            state.host().resolve_legacy_delegation(&to).map_err(|error| state.fail(error))?;
+    }
+    let delegation = if draft && native {
+        None
+    } else if draft {
+        account.inline_delegation
+    } else {
+        code.eip7702_address()
+    };
+    let mut disable_precompiles = false;
     if state.feature(EvmFeatures::EIP7702)
-        && let Some(delegated_address) = code.eip7702_address()
+        && let Some(delegated_address) = delegation
     {
         cost += u64::from(state.gas_params().get(GasId::WarmStorageReadCost));
         if cost > remaining_gas {
@@ -106,13 +122,21 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
         let delegated_account = state
             .host()
-            .load_account(&delegated_address, true, skip_cold_load)
+            .load_account(&delegated_address, !draft, skip_cold_load)
             .map_err(|error| state.fail(error))?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
         }
-        code = delegated_account.code;
+        code = delegated_account.code.clone();
+        account = delegated_account;
+        if draft && !account.is_chunked && account.inline_delegation.is_none() {
+            account.inline_delegation = state
+                .host()
+                .resolve_legacy_delegation(&delegated_address)
+                .map_err(|error| state.fail(error))?;
+        }
         code_address = delegated_address;
+        disable_precompiles = true;
     }
     let features = state.version().features;
     let mut new_account_state_gas = 0;
@@ -135,6 +159,27 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     }
     gas.spend(cost)?;
     gas.spend_state(new_account_state_gas)?;
+    let mut code_chunk = None;
+    let mut code_size = code.len();
+    if draft
+        && (!native || disable_precompiles)
+        && account.code_hash != B256::ZERO
+        && account.code_hash != KECCAK256_EMPTY
+    {
+        if let Some(target) = account.inline_delegation {
+            // A delegation target is not followed recursively; synthesize its own marker.
+            code = Bytecode::new_eip7702(target);
+            code_size = code.len();
+        } else {
+            let tariff = state.chunk_tariff(&code_address, 0);
+            gas.spend(tariff)?;
+            let chunk = state.required_code_chunk(&code_address, 0)?;
+            code_size =
+                account.code_size.map_or(chunk.original_bytes().len(), |size| size as usize);
+            code = chunk.bytecode(account.is_chunked);
+            code_chunk = Some(chunk);
+        }
+    }
 
     let mut gas_limit = if state.feature(EvmFeatures::EIP150) {
         min(state.gas_params().call_stipend_reduction(gas.remaining()), stack_gas_limit)
@@ -147,8 +192,18 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend).into());
     }
 
-    let disable_precompiles = code_address != to;
-    Ok((gas_limit, new_account_state_gas, code, code_address, disable_precompiles))
+    Ok((
+        gas_limit,
+        new_account_state_gas,
+        LoadedCode {
+            code,
+            code_chunk,
+            code_size,
+            code_hash: account.code_hash,
+            code_address,
+            disable_precompiles,
+        },
+    ))
 }
 
 #[inline(never)]
@@ -183,27 +238,26 @@ fn prepare_call<T: EvmTypesHost>(
         return_offset,
         return_len,
     )?;
-    let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address, disable_precompiles) =
-        load_acc_and_calc_gas(
-            gas,
-            state,
-            to,
-            has_transfer,
-            kind == MessageKind::Call,
-            local_gas_limit,
-        )?;
+    let (gas_limit, new_account_state_gas, loaded) = load_acc_and_calc_gas(
+        gas,
+        state,
+        to,
+        has_transfer,
+        kind == MessageKind::Call,
+        local_gas_limit,
+    )?;
     let input = memory_range_bytes(state, input_range)?;
 
     let current = state.message();
     let (destination, caller, call_value, code_address) = match kind {
-        MessageKind::Call => (to, current.destination, value, resolved_code_address),
+        MessageKind::Call => (to, current.destination, value, loaded.code_address),
         MessageKind::CallCode => {
-            (current.destination, current.destination, value, resolved_code_address)
+            (current.destination, current.destination, value, loaded.code_address)
         }
         MessageKind::DelegateCall => {
-            (current.destination, current.caller, current.value, resolved_code_address)
+            (current.destination, current.caller, current.value, loaded.code_address)
         }
-        MessageKind::StaticCall => (to, current.destination, Word::ZERO, resolved_code_address),
+        MessageKind::StaticCall => (to, current.destination, Word::ZERO, loaded.code_address),
         _ => unreachable!("invalid call message kind"),
     };
     *message = MessageExt {
@@ -216,9 +270,12 @@ fn prepare_call<T: EvmTypesHost>(
         caller,
         input,
         value: call_value,
-        code: loaded_code,
+        code: loaded.code,
+        code_chunk: loaded.code_chunk,
+        code_size: loaded.code_size,
+        code_hash: loaded.code_hash,
         code_address,
-        disable_precompiles,
+        disable_precompiles: loaded.disable_precompiles,
         caller_is_static: state.is_static(),
         salt: B256::ZERO,
         ext: T::MessageExt::default(),
@@ -302,10 +359,12 @@ fn create_inner<T: EvmTypesHost>(
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
 
     let len = word_to_usize(len)?;
+    if (state.feature(EvmFeatures::EIP3860) || state.feature(EvmFeatures::TIP1143))
+        && len > state.version().max_initcode_size
+    {
+        return Err(InstrStop::CreateInitCodeSizeLimit);
+    }
     if state.feature(EvmFeatures::EIP3860) {
-        if len > state.version().max_initcode_size {
-            return Err(InstrStop::CreateInitCodeSizeLimit);
-        }
         gas.spend(state.gas_params().initcode_cost(len))?;
     }
     let code_range = resize_memory_range(gas, state, offset, Word::from(len))?;
@@ -388,6 +447,9 @@ fn create_inner<T: EvmTypesHost>(
         call_target: destination,
         caller,
         code: Bytecode::new_legacy(input.clone()),
+        code_chunk: None,
+        code_size: input.len(),
+        code_hash: B256::ZERO,
         input,
         value,
         code_address: caller,
@@ -451,6 +513,16 @@ pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     }
     cx.state.inspect_selfdestruct(destination, &target, &res.value);
     Err(InstrStop::SelfDestruct)
+}
+
+/// Resolved entry code, retaining logical identity separately from the execution buffer.
+struct LoadedCode {
+    code: Bytecode,
+    code_chunk: Option<CodeChunk>,
+    code_size: usize,
+    code_hash: B256,
+    code_address: Address,
+    disable_precompiles: bool,
 }
 
 #[cfg(test)]

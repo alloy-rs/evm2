@@ -2,7 +2,7 @@ use super::{InspectMode, run_state};
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{
-        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, gas::RemainingGas,
+        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, gas::RemainingGas, op,
         private::InstructionImplFn,
     },
 };
@@ -52,6 +52,19 @@ extern_table! {
         state: &mut InterpreterState<'_, '_, T>,
         instructions: *const (),
     ) {
+        if OP == op::PUSH1 && state.is_generated_tail(pc) {
+            state.gas_mut().set_remaining(remaining_gas.get());
+            let result = state.transfer_code_chunk(&mut pc);
+            remaining_gas.set(state.gas_mut().remaining());
+            if let Err(error) = result {
+                state.set_result(Err(error));
+                tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
+            }
+            // SAFETY: The dispatch table pointer is retained for this interpreter run.
+            let table = unsafe { &*instructions.cast::<TailInstrTable<T>>() };
+            let next = table[pc.op() as usize];
+            tail_return!(next(pc, stack, remaining_gas, state, instructions));
+        }
         let instruction = C::OPCODE_CONFIG.instruction(OP);
         let instr: InstructionImplFn<T> = instruction.instr;
         let dynamic_gas = instruction.dynamic_gas;
