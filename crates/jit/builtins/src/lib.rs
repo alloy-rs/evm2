@@ -442,7 +442,12 @@ pub unsafe extern "C" fn __revmc_builtin_self_balance(
     ecx: &mut EvmContext,
     slot: &mut EvmWord,
 ) -> BuiltinResult {
-    let balance = load_account(ecx, &ecx.message().destination, false)?.balance;
+    let destination = ecx.message().destination;
+    let balance = ecx
+        .host()
+        .load_account(&destination, false, false)
+        .map_err(|stop| ecx.interpreter_mut().fail(stop))?
+        .balance;
     *slot = balance.into();
     Ok(())
 }
