@@ -3,7 +3,7 @@
 use super::{DbResult, DynDatabase, EmptyDB};
 use crate::{
     DatabaseError,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, chunks::CodeChunk},
     evm::{
         bal::BalContext,
         state::{
@@ -15,7 +15,7 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
-    map::{AddressMap, B256Map, U256Map, hash_map::Entry},
+    map::{AddressMap, B256Map, HashMap, U256Map, hash_map::Entry},
 };
 use core::convert::Infallible;
 
@@ -54,6 +54,8 @@ pub struct Cache {
     pub accounts: AddressMap<Option<AccountInfo>>,
     /// Contracts keyed by code hash.
     pub contracts: B256Map<Bytecode>,
+    /// Immutable chunk reads, retained across transaction resets and call reverts.
+    pub code_chunks: HashMap<(B256, u32), Option<CodeChunk>>,
     /// Persistent storage keyed by account, then slot.
     pub storage: AddressMap<AccountStorageCache>,
     /// Cached block hashes keyed by block number.
@@ -72,6 +74,7 @@ impl Cache {
     pub fn merge(&mut self, other: Self) {
         self.accounts.extend(other.accounts);
         self.contracts.extend(other.contracts);
+        self.code_chunks.extend(other.code_chunks);
         self.block_hashes.extend(other.block_hashes);
         for (address, storage) in other.storage {
             let target = self.storage.entry(address).or_default();
@@ -92,6 +95,7 @@ impl Default for Cache {
         Self {
             accounts: AddressMap::default(),
             contracts,
+            code_chunks: HashMap::default(),
             storage: AddressMap::default(),
             block_hashes: U256Map::default(),
             _non_exhaustive: (),
@@ -343,6 +347,24 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
         }
     }
 
+    fn get_code_chunk_by_hash(
+        &mut self,
+        code_hash: &B256,
+        index: u32,
+    ) -> DbResult<Option<CodeChunk>> {
+        match self.cache.code_chunks.entry((*code_hash, index)) {
+            Entry::Occupied(entry) => Ok(entry.get().clone()),
+            Entry::Vacant(entry) => {
+                let chunk = if let Some(code) = self.cache.contracts.get(code_hash) {
+                    code.code_chunk(index)
+                } else {
+                    self.db.get_code_chunk_by_hash(code_hash, index)?
+                };
+                Ok(entry.insert(chunk).clone())
+            }
+        }
+    }
+
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         // Serve the slot from the attached read BAL when it covers a write at or before the current
@@ -413,6 +435,14 @@ mod typed {
         #[inline]
         fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
             DynDatabase::get_code_by_hash(self, code_hash)
+        }
+
+        fn get_code_chunk_by_hash(
+            &mut self,
+            code_hash: &B256,
+            index: u32,
+        ) -> Result<Option<CodeChunk>, Self::Error> {
+            DynDatabase::get_code_chunk_by_hash(self, code_hash, index)
         }
 
         #[inline]
@@ -532,6 +562,19 @@ mod tests {
                 .filter(|info| info.code_hash == *code_hash)
                 .and_then(|info| info.code.clone())
                 .unwrap_or_default())
+        }
+
+        fn get_code_chunk_by_hash(
+            &mut self,
+            code_hash: &B256,
+            index: u32,
+        ) -> Result<Option<CodeChunk>, Self::Error> {
+            Ok(self
+                .account
+                .as_ref()
+                .filter(|info| info.code_hash == *code_hash)
+                .and_then(|info| info.code.as_ref())
+                .and_then(|code| code.code_chunk(index)))
         }
 
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {

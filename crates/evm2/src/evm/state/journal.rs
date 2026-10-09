@@ -1,8 +1,8 @@
 //! Revert journal and checkpoint types.
 
 use super::AccountInfo;
-use crate::interpreter::Word;
-use alloy_primitives::Address;
+use crate::{bytecode::Bytecode, interpreter::Word};
+use alloy_primitives::{Address, B256, map::HashMap};
 
 /// State checkpoint for reverting state changes.
 #[allow(missing_copy_implementations)]
@@ -56,6 +56,8 @@ pub enum JournalEntry {
         previous_just_created: bool,
         /// Previous code-changed flag.
         previous_code_changed: bool,
+        /// Previous independently loaded chunks.
+        previous_code_chunks: HashMap<u32, Bytecode>,
     },
     /// Persistent storage changed.
     StorageChange {
@@ -74,6 +76,15 @@ pub enum JournalEntry {
         key: Word,
         /// Previous transient storage value.
         previous: Option<Word>,
+    },
+    /// A code chunk became warm. Revert removes warmth but preserves cached bytes.
+    CodeChunkWarmed {
+        /// Address whose code was read, including delegated code targets.
+        address: Address,
+        /// Current code identity, isolating deployments and replacements.
+        code_hash: B256,
+        /// Zero-based chunk index.
+        index: u32,
     },
     /// Storage slot was warmed by EIP-2929 access tracking.
     StorageWarmed {

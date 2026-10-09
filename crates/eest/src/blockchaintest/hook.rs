@@ -1,5 +1,6 @@
 use super::types::ForkSpec;
 use alloy_primitives::{Log, U256};
+use evm2::{BaseEvmTypes, Evm, TxResult};
 use std::fmt;
 
 /// Execution hooks for blockchain test replay.
@@ -24,6 +25,14 @@ pub trait Hook {
 
     /// Called when transaction execution returns an unexpected error.
     fn transaction_failed(&mut self, _event: TransactionFailed<'_>) {}
+
+    /// Called by the evm2 replay driver immediately before transaction execution.
+    /// Can install an inspector; system calls are outside these transaction hooks.
+    fn evm_transaction_start(&mut self, _evm: &mut Evm<'static, BaseEvmTypes>) {}
+
+    /// Called by the evm2 replay driver after committing a transaction, including EVM failures.
+    /// Not called for rejected transactions. Can collect and remove an installed inspector.
+    fn evm_transaction_end(&mut self, _evm: &mut Evm<'static, BaseEvmTypes>, _result: &TxResult) {}
 }
 
 /// Hook implementation that ignores every event.

@@ -1,0 +1,9 @@
+fixture,chunk_size,contracts,full_code_bytes,covered_bytes,chunk_payload_bytes,touched_chunks,total_chunks
+fibonacci-calldata,12288,1,36,36,37,1,1
+weth,12288,1,3124,3124,3125,1,1
+erc20_transfer,12288,1,3446,3446,3447,1,1
+usdc_proxy,12288,1,2186,2186,2187,1,1
+fiat_token,12288,1,23464,12288,12289,1,2
+uniswap_v2_pair,12288,1,11293,11293,11294,1,1
+univ2_router,12288,1,21943,21943,21945,2,2
+seaport,12288,1,24367,12288,12289,1,2

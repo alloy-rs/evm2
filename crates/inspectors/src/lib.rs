@@ -44,4 +44,6 @@ pub mod transfer;
 /// An inspector for tracking storage access.
 pub mod storage;
 
+pub mod code_chunks;
+
 pub use colorchoice::ColorChoice;

@@ -1329,6 +1329,19 @@ mod tests {
                 .unwrap_or_default())
         }
 
+        fn get_code_chunk_by_hash(
+            &mut self,
+            code_hash: &B256,
+            index: u32,
+        ) -> Result<Option<evm2::bytecode::chunks::CodeChunk>, Self::Error> {
+            Ok(self
+                .account
+                .code
+                .as_ref()
+                .filter(|_| *code_hash == self.account.code_hash)
+                .and_then(|code| code.code_chunk(index)))
+        }
+
         fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error> {
             Ok(if *address == self.address && *key == self.slot { self.value } else { Word::ZERO })
         }

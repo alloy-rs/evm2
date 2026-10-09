@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, chunks::CODE_CHUNK_SIZE},
     env::TxEnv,
     evm::inspector::Inspector,
     interpreter::dispatch,
@@ -23,6 +23,10 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     // Borrows the immutable allocations owned by `bytecode`. Cleared before replacing it;
     // accessors must shorten the erased lifetime to the borrow of this interpreter.
     bytecode_ref: Option<BytecodeRef<'static>>,
+    code_hash: B256,
+    code_size: usize,
+    code_chunk_index: u32,
+    chunked_code: bool,
     pub(in crate::interpreter) memory: Memory,
     pub(in crate::interpreter) return_data: Bytes,
 
@@ -78,6 +82,10 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             pc: bytecode.original_byte_slice().as_ptr(),
             bytecode,
             bytecode_ref: None,
+            code_hash: B256::ZERO,
+            code_size: 0,
+            code_chunk_index: 0,
+            chunked_code: false,
             stack_len: 0,
             gas: Gas::new(0),
             memory: Memory::new(),
@@ -105,6 +113,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.pc = bytecode.bytes_slice().as_ptr();
         self.bytecode_ref = None;
         self.bytecode = bytecode;
+        self.code_hash = message.code_hash;
+        self.code_size =
+            if message.chunked_code { message.code_size as usize } else { self.bytecode.len() };
+        self.code_chunk_index = message.code_chunk_index;
+        self.chunked_code = message.chunked_code;
         self.stack_len = 0;
         self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
         self.memory.clear();
@@ -148,11 +161,14 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.output = output;
     }
 
-    /// Returns the current bytecode-relative program counter.
+    /// Returns the current program counter in the complete deployed bytecode.
     #[inline]
     pub fn pc(&self) -> usize {
+        let chunk_offset =
+            if self.chunked_code { self.code_chunk_index as usize * CODE_CHUNK_SIZE } else { 0 };
         // SAFETY: `pc` is always in bounds of `bytecode`.
-        unsafe { self.pc.offset_from(self.bytecode.original_byte_slice().as_ptr()) as usize }
+        chunk_offset
+            + unsafe { self.pc.offset_from(self.bytecode.original_byte_slice().as_ptr()) as usize }
     }
 
     /// Sets the current bytecode-relative program counter.
@@ -162,6 +178,13 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Panics if `pc` is out of bounds of the active bytecode.
     #[inline]
     pub fn set_pc(&mut self, pc: usize) {
+        let pc = if self.chunked_code {
+            let chunk = pc / CODE_CHUNK_SIZE;
+            assert_eq!(chunk, self.code_chunk_index as usize);
+            pc % CODE_CHUNK_SIZE
+        } else {
+            pc
+        };
         let bytecode = self.bytecode.bytes_slice();
         assert!(pc < bytecode.len());
         self.pc = unsafe { bytecode.as_ptr().add(pc) };
@@ -195,7 +218,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Calculates or returns the cached hash of the original active bytecode.
     #[inline]
     pub fn original_bytecode_hash(&self) -> B256 {
-        self.bytecode.hash_slow()
+        if self.chunked_code { self.code_hash } else { self.bytecode.hash_slow() }
     }
 
     /// Returns the current operand stack.
@@ -551,6 +574,45 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         unsafe { self.0.message.unwrap_unchecked() }
     }
 
+    /// Returns the complete deployed code size for a chunked frame.
+    #[inline]
+    pub const fn code_size(&self) -> usize {
+        self.0.code_size
+    }
+
+    /// Returns the current deployed-code chunk index.
+    #[inline]
+    pub const fn code_chunk_index(&self) -> u32 {
+        self.0.code_chunk_index
+    }
+
+    /// Returns whether this frame executes independently loaded code chunks.
+    #[inline]
+    pub const fn is_chunked_code(&self) -> bool {
+        self.0.chunked_code
+    }
+
+    /// Returns the global program counter represented by a local dispatch pointer.
+    #[inline]
+    pub const fn global_pc(&self, pc: Pc) -> usize {
+        let local = self.bytecode().pc_offset(pc);
+        if self.0.chunked_code {
+            self.0.code_chunk_index as usize * CODE_CHUNK_SIZE + local
+        } else {
+            local
+        }
+    }
+
+    /// Replaces the active independently executable chunk.
+    #[inline]
+    pub(crate) fn activate_code_chunk(&mut self, index: u32, bytecode: Bytecode) {
+        self.0.bytecode_ref = None;
+        self.0.bytecode = bytecode;
+        self.0.code_chunk_index = index;
+        let bytecode = unsafe { trustme::decouple_lt(&self.0.bytecode) };
+        self.0.bytecode_ref = Some(BytecodeRef::new(bytecode));
+    }
+
     /// Returns whether the active frame forbids state-changing operations.
     #[inline]
     pub const fn is_static(&self) -> bool {
@@ -666,6 +728,20 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
                 let mut host = self.0.host.unwrap_unchecked();
                 inspector.as_mut().selfdestruct(contract, target, value, host.as_mut());
             }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn inspect_extcodecopy(
+        &mut self,
+        address: Address,
+        code: &Bytecode,
+        offset: usize,
+        len: usize,
+    ) {
+        if let Some(mut inspector) = self.0.inspector {
+            // SAFETY: As with the other hooks, the inspector outlives this execution.
+            unsafe { inspector.as_mut().extcodecopy(address, code, offset, len) };
         }
     }
 }

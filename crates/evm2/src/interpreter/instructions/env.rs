@@ -101,7 +101,7 @@ pub fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result 
 
 #[instruction]
 pub fn codesize(cx: _) -> out {
-    *out = Word::from(cx.state.0.bytecode.len());
+    *out = Word::from(cx.state.code_size());
 }
 
 #[instruction(dynamic_gas)]
@@ -121,7 +121,7 @@ pub fn gasprice(cx: _) -> out {
 
 #[instruction(dynamic_gas)]
 pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
-    *out = Word::from(load_account(&mut cx, *addr, true)?.code.len());
+    *out = Word::from(load_account(&mut cx, *addr, false)?.code_size);
 }
 
 #[instruction(dynamic_gas)]
@@ -147,6 +147,12 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
         word_to_usize_saturated(*code_offset),
         len,
         code.original_byte_slice(),
+    );
+    cx.state.inspect_extcodecopy(
+        word_to_address(*addr),
+        &code,
+        word_to_usize_saturated(*code_offset),
+        len,
     );
     Ok(())
 }

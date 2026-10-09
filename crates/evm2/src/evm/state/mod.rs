@@ -2,6 +2,7 @@
 
 mod account;
 mod block;
+mod code_chunks;
 #[cfg(feature = "account-ext")]
 mod extension;
 mod journal;
@@ -14,6 +15,7 @@ mod tracked;
 pub(crate) use account::Account;
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
+pub use code_chunks::CodeChunkLoad;
 #[cfg(feature = "account-ext")]
 pub use extension::AccountExtension;
 pub use journal::{JournalEntry, StateCheckpoint};
@@ -31,14 +33,13 @@ use super::{
 };
 use crate::{
     EvmFeatures, LoadError, Version,
-    bytecode::Bytecode,
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
-    map::{AddressMap, AddressSet, hash_map},
+    map::{AddressMap, AddressSet, HashSet, hash_map},
 };
 use core::{
     mem,
@@ -56,6 +57,7 @@ pub struct State<'a> {
     storage_pool: storage_pool::StoragePool,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
     transient_storage: StorageKeyMap<Word>,
+    warm_code_chunks: HashSet<(Address, B256, u32)>,
     /// Inner state.
     inner: StateInner<'a>,
 }
@@ -68,6 +70,7 @@ pub struct State<'a> {
 pub struct StateSnapshot {
     accounts: AddressMap<Account>,
     transient_storage: StorageKeyMap<Word>,
+    warm_code_chunks: HashSet<(Address, B256, u32)>,
     cache: Cache,
     bal_context: BalContext,
     prewarm_set: PrewarmSet,
@@ -83,6 +86,7 @@ impl StateSnapshot {
             accounts: self.accounts,
             storage_pool: storage_pool::StoragePool::default(),
             transient_storage: self.transient_storage,
+            warm_code_chunks: self.warm_code_chunks,
             inner: StateInner {
                 database: CacheDB {
                     cache: self.cache,
@@ -113,6 +117,7 @@ impl State<'_> {
         StateSnapshot {
             accounts: self.accounts.clone(),
             transient_storage: self.transient_storage.clone(),
+            warm_code_chunks: self.warm_code_chunks.clone(),
             cache: self.database.cache.clone(),
             bal_context: self.database.bal_context.clone(),
             prewarm_set: self.prewarm_set.clone(),
@@ -176,6 +181,7 @@ impl<'a> State<'a> {
             accounts: AddressMap::default(),
             storage_pool: storage_pool::StoragePool::default(),
             transient_storage: StorageKeyMap::default(),
+            warm_code_chunks: HashSet::default(),
             inner: StateInner {
                 database: CacheDB::new(initial),
                 prewarm_set: PrewarmSet::new(),
@@ -416,6 +422,7 @@ impl<'a> State<'a> {
             accounts,
             storage_pool,
             transient_storage,
+            warm_code_chunks,
             inner: StateInner { prewarm_set, journal, selfdestructs, logs, database: _ },
             ..
         } = self;
@@ -424,6 +431,7 @@ impl<'a> State<'a> {
         }
         accounts.clear();
         transient_storage.clear();
+        warm_code_chunks.clear();
         prewarm_set.clear();
         journal.clear();
         selfdestructs.clear();
@@ -646,7 +654,8 @@ impl<'a> State<'a> {
             nonce: u64::from(features.contains(EvmFeatures::EIP161)),
             balance,
             code_hash: KECCAK256_EMPTY,
-            code: Some(Bytecode::default()),
+            code_size: 0,
+            code: None,
             _non_exhaustive: (),
             #[cfg(feature = "account-ext")]
             extension,
@@ -736,6 +745,7 @@ impl<'a> State<'a> {
                     previous_is_destroyed,
                     previous_just_created,
                     previous_code_changed,
+                    previous_code_chunks,
                 } => {
                     // Reconcile the self-destruct set with the restored destroyed flag.
                     let was_destroyed =
@@ -757,6 +767,7 @@ impl<'a> State<'a> {
                         entry.is_destroyed = previous_is_destroyed;
                         entry.just_created = previous_just_created;
                         entry.code_changed = previous_code_changed;
+                        entry.code_chunks = previous_code_chunks;
                     }
                 }
                 JournalEntry::StorageChange { address, key, previous } => {
@@ -776,6 +787,9 @@ impl<'a> State<'a> {
                         self.transient_storage.remove(&StorageKey::new(address, key));
                     }
                 },
+                JournalEntry::CodeChunkWarmed { address, code_hash, index } => {
+                    self.warm_code_chunks.remove(&(address, code_hash, index));
+                }
                 JournalEntry::StorageWarmed { address, key } => {
                     if let Some(slot) = self
                         .accounts

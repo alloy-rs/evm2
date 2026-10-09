@@ -2,6 +2,7 @@
 
 use crate::{
     EvmTypesHost,
+    bytecode::Bytecode,
     evm::NonStaticAny,
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -106,6 +107,13 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
         let _ = target;
         let _ = value;
         let _ = host;
+    }
+
+    /// Called after a successful EXTCODECOPY, including zero-length copies.
+    /// The code is already loaded; observing it must not perform additional host accesses.
+    #[inline]
+    fn extcodecopy(&mut self, address: Address, code: &Bytecode, offset: usize, len: usize) {
+        let _ = (address, code, offset, len);
     }
 }
 

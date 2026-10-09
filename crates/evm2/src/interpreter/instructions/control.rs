@@ -1,10 +1,7 @@
 use crate::{
     EvmTypesHost,
-    interpreter::{
-        InstrStop, Result, Word, op,
-        opcode::OpCode,
-        private::{GasInstructionCx, InstructionCx},
-    },
+    bytecode::chunks::{CODE_CHUNK_SIZE, code_chunk_gas},
+    interpreter::{Host, InstrStop, Result, Word, op, opcode::OpCode, private::GasInstructionCx},
     utils::{word_to_usize, word_to_usize_saturated},
 };
 use core::hint::cold_path;
@@ -16,12 +13,12 @@ pub fn stop() -> Result {
     Err(InstrStop::Stop)
 }
 
-#[instruction]
+#[instruction(dynamic_gas)]
 pub fn jump(cx: _, [target]: [Word]) -> Result {
     jump_inner(*target, &mut cx)
 }
 
-#[instruction]
+#[instruction(dynamic_gas)]
 pub fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
         jump_inner(*target, &mut cx)?;
@@ -31,19 +28,49 @@ pub fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
 }
 
 #[inline(always)]
-fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut InstructionCx<'_, '_, '_, T>) -> Result {
+fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut GasInstructionCx<'_, '_, '_, T>) -> Result {
     let target = word_to_usize_saturated(target);
-    if !cx.state.bytecode().is_valid_jumpdest(target) {
+    let local_target = if cx.state.is_chunked_code() {
+        if target >= cx.state.code_size() {
+            cold_path();
+            return Err(InstrStop::InvalidJump);
+        }
+        let chunk_index = (target / CODE_CHUNK_SIZE) as u32;
+        let local_target = target % CODE_CHUNK_SIZE;
+        if chunk_index != cx.state.code_chunk_index() {
+            let cold_cost = code_chunk_gas(1).unwrap();
+            let skip_cold_load = cx.gas.remaining() < cold_cost;
+            let address = cx.state.message().code_address;
+            let load = cx
+                .state
+                .host()
+                .load_code_chunk(&address, chunk_index, skip_cold_load)
+                .map_err(|error| cx.state.fail(error))?
+                .ok_or(InstrStop::InvalidJump)?;
+            if load.is_cold {
+                cx.gas.spend(cold_cost)?;
+            }
+            if !load.chunk.is_jumpdest(local_target) {
+                cold_path();
+                return Err(InstrStop::InvalidJump);
+            }
+            cx.state.activate_code_chunk(chunk_index, load.chunk.into_bytecode());
+        }
+        local_target
+    } else {
+        target
+    };
+    if !cx.state.bytecode().is_valid_jumpdest(local_target) {
         cold_path();
         return Err(InstrStop::InvalidJump);
     }
-    unsafe { cx.pc.set_unchecked(cx.state.bytecode(), target) };
+    unsafe { cx.pc.set_unchecked(cx.state.bytecode(), local_target) };
     Ok(())
 }
 
 #[instruction]
 pub fn pc(cx: _) -> out {
-    *out = Word::from(cx.state.bytecode().pc_offset(*cx.pc));
+    *out = Word::from(cx.state.global_pc(*cx.pc));
 }
 
 #[instruction(dynamic_gas)]
@@ -106,10 +133,14 @@ pub fn invalid(cx: _) -> Result {
 mod tests {
     use super::*;
     use crate::{
-        SpecId,
-        test_utils::{RunConfig, push, run, run_stack},
+        BaseEvmConfigSelector, EvmFeatures, ExecutionConfig, SpecId,
+        bytecode::chunks::{CODE_CHUNK_SIZE, chunkify_code},
+        env::TxEnvExt,
+        interpreter::{Interpreter, MessageExt},
+        test_utils::{RunConfig, TestHost, TestTypes, push, run, run_stack},
     };
     use alloc::vec::Vec;
+    use alloy_primitives::B256;
     use core::assert_matches;
 
     #[test]
@@ -201,6 +232,50 @@ mod tests {
         code.push(op::JUMPI);
         let interp = run(RunConfig::new(code));
         assert_matches!(interp.err, InstrStop::InvalidJump);
+    }
+
+    #[test]
+    fn cross_chunk_jump_loads_and_charges_cold_chunk() {
+        let mut code = vec![op::STOP; CODE_CHUNK_SIZE + 3];
+        code[..4].copy_from_slice(&[op::PUSH2, 0x30, 0x00, op::JUMP]);
+        code[CODE_CHUNK_SIZE] = op::JUMPDEST;
+        code[CODE_CHUNK_SIZE + 1] = op::PC;
+        let chunks = chunkify_code(&code).unwrap();
+
+        let run_chunked = |cold: bool| {
+            let mut host = TestHost {
+                code: code.clone().into(),
+                code_chunks: chunks.clone(),
+                ..TestHost::default()
+            };
+            if cold {
+                host.cold_code_chunks.insert(1);
+            }
+            host.execution_config =
+                ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+            host.execution_config.version.features.insert(EvmFeatures::BYTECODE_CHUNKING);
+            let message = MessageExt {
+                gas_limit: 10_000,
+                code: chunks[0].bytecode().clone(),
+                code_hash: B256::with_last_byte(1),
+                code_size: code.len() as u32,
+                code_chunk_index: 0,
+                chunked_code: true,
+                ..MessageExt::default()
+            };
+            let tx = TxEnvExt::default();
+            let mut interpreter = Interpreter::<TestTypes>::new(&tx, &message);
+            let outcome = interpreter.run(&mut host).unwrap();
+            (outcome, interpreter.stack().to_vec(), interpreter.gas().remaining())
+        };
+
+        let warm = run_chunked(false);
+        let cold = run_chunked(true);
+        assert_eq!(warm.0, InstrStop::Stop);
+        assert_eq!(warm.1, [Word::from(CODE_CHUNK_SIZE + 1)]);
+        assert_eq!(cold.0, InstrStop::Stop);
+        assert_eq!(cold.1, warm.1);
+        assert_eq!(warm.2 - cold.2, code_chunk_gas(1).unwrap());
     }
 
     #[test]
