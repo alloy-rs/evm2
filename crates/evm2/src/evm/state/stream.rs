@@ -1,6 +1,6 @@
 //! Borrowed state-change streaming traits and adapters.
 
-use super::AccountInfo;
+use super::{AccountInfo, StorageOverlay};
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256};
 use auto_impl::auto_impl;
@@ -27,6 +27,56 @@ pub struct AccountChangeRef<'a> {
     pub selfdestructed: bool,
 }
 
+/// One account's changes passed to [`StateChangeSink::account_changes`]: its storage overlay and
+/// its metadata, delivered together.
+#[derive(Clone, Copy, Debug)]
+pub struct AccountChanges<'a> {
+    /// Account address.
+    pub address: Address,
+    /// Account at the start of the source's aggregation boundary.
+    pub original: Option<&'a AccountInfo>,
+    /// Account after the changes. `None` is an explicit deletion.
+    pub current: Option<&'a AccountInfo>,
+    /// Whether the account metadata changed, including creation or selfdestruct. `false` means
+    /// the account was only loaded.
+    pub changed: bool,
+    /// Whether the account was created during the transaction.
+    pub created: bool,
+    /// Whether the account was selfdestructed during the transaction.
+    pub selfdestructed: bool,
+    /// The account's loaded storage slots and wipe marker.
+    pub storage: &'a StorageOverlay,
+}
+
+impl<'a> AccountChanges<'a> {
+    /// Returns the account metadata change, or `None` when the account was only loaded.
+    #[inline]
+    pub const fn change(&self) -> Option<AccountChangeRef<'a>> {
+        if !self.changed {
+            return None;
+        }
+        Some(AccountChangeRef {
+            address: self.address,
+            original: self.original,
+            current: self.current,
+            created: self.created,
+            selfdestructed: self.selfdestructed,
+        })
+    }
+
+    /// Returns the changed storage slots. A wiped overlay reports every nonzero current value.
+    #[inline]
+    pub fn storage_changes(&self) -> impl Iterator<Item = StorageChange> + '_ {
+        let address = self.address;
+        self.storage.changed_slots().map(move |(&key, value)| StorageChange {
+            address,
+            key,
+            original: value.original,
+            current: value.current,
+        })
+    }
+}
+
 /// Storage slot change passed to [`StateChangeSink`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageChange {
@@ -50,6 +100,38 @@ pub trait StateChangeSink {
     #[inline]
     fn bytecode(&mut self, _code_hash: B256, _code: &Bytecode) -> Result<(), Self::Error> {
         Ok(())
+    }
+
+    /// Observes one account's storage and metadata together.
+    ///
+    /// Transaction-level sources call this once per loaded account, after the account's bytecode.
+    /// The default replays the per-entry callbacks: the storage wipe, then changed slots through
+    /// [`Self::storage`] and unchanged slots through [`Self::storage_read`], then the metadata
+    /// through [`Self::account`] or [`Self::account_read`].
+    #[inline]
+    fn account_changes(&mut self, changes: AccountChanges<'_>) -> Result<(), Self::Error> {
+        let address = changes.address;
+        let storage = changes.storage;
+        if storage.wiped {
+            self.storage_wipe(address)?;
+        }
+        for (&key, slot) in &storage.slots {
+            let value = &slot.value;
+            if slot.is_changed(storage.wiped) {
+                self.storage(StorageChange {
+                    address,
+                    key,
+                    original: value.original,
+                    current: value.current,
+                })?;
+            } else {
+                self.storage_read(address, key, value.current)?;
+            }
+        }
+        match changes.change() {
+            Some(change) => self.account(change),
+            None => self.account_read(address, changes.current),
+        }
     }
 
     /// Observes an account change.
@@ -144,6 +226,12 @@ where
     fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
         self.a.bytecode(code_hash, code)?;
         self.b.bytecode(code_hash, code)
+    }
+
+    #[inline]
+    fn account_changes(&mut self, changes: AccountChanges<'_>) -> Result<(), Self::Error> {
+        self.a.account_changes(changes)?;
+        self.b.account_changes(changes)
     }
 
     #[inline]

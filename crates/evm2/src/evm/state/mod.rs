@@ -20,7 +20,8 @@ pub use journal::{JournalEntry, StateCheckpoint};
 pub use pending::PendingState;
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
 pub use stream::{
-    AccountChangeRef, NoopChangeSink, StateChangeSink, StateChangeSource, StorageChange, Tee,
+    AccountChangeRef, AccountChanges, NoopChangeSink, StateChangeSink, StateChangeSource,
+    StorageChange, Tee,
 };
 pub use tracked::Tracked;
 
