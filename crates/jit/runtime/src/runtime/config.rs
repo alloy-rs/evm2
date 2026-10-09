@@ -91,6 +91,8 @@ pub struct RuntimeConfig {
 
     /// AOT mode: observed misses are promoted to AOT compilation instead of JIT.
     ///
+    /// Requires [`store`](Self::store) to be set.
+    ///
     /// Defaults to `false`.
     pub aot: bool,
 
