@@ -1548,8 +1548,9 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     /// Ensures the memory is large enough for `offset + len` bytes, calling the `mresize`
     /// builtin on the cold path if needed. Returns the pointer to `mem_base + offset`.
     fn build_ensure_memory(&mut self, offset: B::Value, len: u64) -> B::Value {
+        let offset = self.u256_to_u64_or_fail(offset, InstrStop::InvalidOperandOOG);
         // 63 bits lets us avoid overflow in the addition below.
-        let offset = self.u256_to_u64_saturating(offset, 63);
+        let offset = self.clamp_u64(offset, 63);
         // Analysis proved this access is already covered on every path.
         if self.current_inst.is_some_and(|inst| self.can_skip_ensure_memory(inst)) {
             return self.build_memory_addr(offset);
@@ -1884,6 +1885,24 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let fits = self.bcx.icmp(IntCC::UnsignedLessThanOrEqual, value, sentinel_u256);
         let sentinel = self.bcx.iconst(i64_type, sentinel_lit as i64);
         self.bcx.select(fits, reduced, sentinel)
+    }
+
+    /// Converts a 256-bit unsigned integer to a 64-bit unsigned integer, failing with `ret` if
+    /// any of the upper 192 bits are set.
+    fn u256_to_u64_or_fail(&mut self, value: B::Value, ret: InstrStop) -> B::Value {
+        let max = self.bcx.iconst_256(U256::from(u64::MAX));
+        let overflows = self.bcx.icmp(IntCC::UnsignedGreaterThan, value, max);
+        self.build_check(overflows, ret);
+        let i64_type = self.bcx.type_int(64);
+        self.bcx.ireduce(i64_type, value)
+    }
+
+    /// Clamps a 64-bit unsigned integer to `2^bits - 1`.
+    fn clamp_u64(&mut self, value: B::Value, bits: usize) -> B::Value {
+        let i64_type = self.bcx.type_int(64);
+        let max_lit = 1u128.checked_shl(bits as u32).unwrap_or(0).wrapping_sub(1) as u64;
+        let max = self.bcx.iconst(i64_type, max_lit as i64);
+        self.bcx.umin(value, max)
     }
 }
 
