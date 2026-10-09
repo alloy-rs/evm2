@@ -1,7 +1,10 @@
 //! Original TIP-1143 payloads, commitments, and deployment validation.
 
 use super::{Bytecode, BytecodeKind, JumpTable};
-use crate::once_lock::OnceLock;
+use crate::{
+    interpreter::{instructions::encode_rjump_offset, op},
+    once_lock::OnceLock,
+};
 use alloc::{sync::Arc, vec, vec::Vec};
 use alloy_primitives::{B256, Bytes, keccak256};
 use thiserror::Error;
@@ -164,7 +167,6 @@ impl CodeChunk {
             return PreparedExecutionView {
                 bytecode: self.bytecode(false),
                 tail_offset: self.bytes.len(),
-                next_offset: None,
             };
         };
         assert!(entry < self.bytes.len(), "execution entry is outside original chunk");
@@ -184,7 +186,10 @@ impl CodeChunk {
                 bytes.extend_from_slice(&prepared.lookahead[..spill.min(prepared.lookahead.len())]);
                 bytes.resize(tail_offset, 0);
                 if next_offset.is_some() {
-                    bytes.extend_from_slice(&[0x60, (prepared.index + 1) as u8, 0x56]);
+                    // The next original instruction has the tail's global PC. RJUMP is
+                    // three bytes long, so -3 reaches it in the successor payload.
+                    bytes.push(op::RJUMP);
+                    bytes.extend_from_slice(&encode_rjump_offset(-3).unwrap());
                 } else {
                     bytes.push(0);
                 }
@@ -196,12 +201,12 @@ impl CodeChunk {
                 }
                 // SAFETY: offset zero either has this tail or is guarded by STOP. Every entry
                 // admitted by this view's map has the same verified tail.
-                // Every immediate is complete and execution ends at STOP or unconditional JUMP.
+                // Every immediate is complete and execution ends at STOP or RJUMP.
                 // TIP runtime validates against the full separate map before switching variants.
                 unsafe { Bytecode::new_analyzed(bytes.into(), self.bytes.len(), map) }
             })
             .clone();
-        PreparedExecutionView { bytecode, tail_offset, next_offset }
+        PreparedExecutionView { bytecode, tail_offset }
     }
 
     fn execution_layouts<'a>(&self, prepared: &'a PreparedCodeChunk) -> &'a ExecutionLayouts {
@@ -509,7 +514,7 @@ mod tests {
         assert_eq!(canonical.tail_offset, CODE_CHUNK_SIZE + 30);
         assert_eq!(alternate.tail_offset, CODE_CHUNK_SIZE + 32);
         assert_eq!(alternate.bytecode.bytes()[0], 0);
-        assert_eq!(alternate.next_offset, Some(32));
+        assert_eq!(&alternate.bytecode.bytes()[alternate.tail_offset..], &[op::RJUMP, 0x5a, 0x58]);
         assert!(chunk.is_valid_jumpdest(CODE_CHUNK_SIZE - 2));
         assert!(!canonical.bytecode.legacy_jump_table().unwrap().is_valid(CODE_CHUNK_SIZE - 2));
         assert!(alternate.bytecode.legacy_jump_table().unwrap().is_valid(CODE_CHUNK_SIZE - 2));
@@ -536,7 +541,10 @@ mod tests {
                 let entry = CODE_CHUNK_SIZE - 33 + spill;
                 let view = chunk.execution_view(entry);
                 assert_eq!(view.tail_offset, CODE_CHUNK_SIZE + spill);
-                assert_eq!(view.next_offset, (spill < remaining).then_some(spill));
+                assert_eq!(
+                    view.bytecode.bytes()[view.tail_offset],
+                    if spill < remaining { op::RJUMP } else { op::STOP }
+                );
                 assert!(view.bytecode.bytes().len() <= LEGACY_CODE_CHUNK_SIZE);
                 for immediate in 1..=32 {
                     assert_eq!(
@@ -608,7 +616,7 @@ impl PreparedCodeChunk {
     pub const fn next_chunk(&self) -> Option<u32> {
         self.next_chunk
     }
-    /// Local offset of the fused transfer or final STOP.
+    /// Local offset of RJUMP or final STOP.
     pub fn tail_offset(&self, payload_len: usize) -> usize {
         payload_len + self.continuation.len()
     }
@@ -617,6 +625,8 @@ impl PreparedCodeChunk {
 fn instruction_len(opcode: u8) -> usize {
     if (0x60..=0x7f).contains(&opcode) {
         usize::from(opcode - 0x5f) + 1
+    } else if opcode == op::RJUMP {
+        3
     } else if (0xe6..=0xe8).contains(&opcode) {
         2
     } else {
@@ -643,8 +653,6 @@ pub(crate) struct PreparedExecutionView {
     pub bytecode: Bytecode,
     /// Local generated transfer/STOP offset.
     pub tail_offset: usize,
-    /// Entry offset in the successor chunk, or termination at original code end.
-    pub next_offset: Option<usize>,
 }
 
 #[derive(Debug)]

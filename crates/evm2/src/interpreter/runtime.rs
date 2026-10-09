@@ -49,7 +49,6 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     code_size: usize,
     inspecting_internal_tail: bool,
     chunk_tail_offset: Option<usize>,
-    chunk_next_offset: Option<usize>,
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` and `bytecode_ref` point into
@@ -98,7 +97,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             code_size: 0,
             inspecting_internal_tail: false,
             chunk_tail_offset: None,
-            chunk_next_offset: None,
             return_data: Bytes::new(),
             host: None,
             inspector: None,
@@ -116,9 +114,19 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             .as_ref()
             .filter(|c| c.prepared().is_some())
             .map(|chunk| chunk.execution_view(0));
-        let bytecode = view.as_ref().map_or_else(|| message.code.clone(), |v| v.bytecode.clone());
+        let mut bytecode =
+            view.as_ref().map_or_else(|| message.code.clone(), |v| v.bytecode.clone());
+        // Prepared views are safe for their selected entry path. An embedding may pass one
+        // without its chunk context; restore ordinary padding before RJUMP can enter any byte.
+        if view.is_none()
+            && bytecode.is_legacy()
+            && !bytecode.is_empty()
+            && bytecode.bytes_slice().len() - bytecode.len() < 33
+            && !bytecode.bytes_slice().ends_with(&[0; 33])
+        {
+            bytecode = Bytecode::new_legacy(bytecode.original_bytes());
+        }
         self.chunk_tail_offset = view.as_ref().map(|v| v.tail_offset);
-        self.chunk_next_offset = view.as_ref().and_then(|v| v.next_offset);
         let gas_limit = message.gas_limit;
         let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
         self.pc = bytecode.bytes_slice().as_ptr();
@@ -879,20 +887,6 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
     pub(crate) fn activate_code_chunk(&mut self, index: u32, chunk: CodeChunk, entry: usize) {
         self.0.activate_chunk(index, chunk, entry);
     }
-
-    /// Executes the fused generated PUSH1/chunk-index/JUMP without touching the user stack.
-    pub(crate) fn transfer_code_chunk(&mut self, pc: &mut Pc) -> Result {
-        let entry = self.0.chunk_next_offset.expect("nonfinal generated transfer");
-        let next = self.0.code_chunk_index + 1;
-        let address = self.message().code_address;
-        let tariff = self.chunk_tariff(&address, next);
-        self.gas_mut().spend(tariff)?;
-        let chunk = self.required_code_chunk(&address, next)?;
-        self.activate_code_chunk(next, chunk, entry);
-        // SAFETY: The active view records the actual instruction overrun into this payload.
-        unsafe { pc.set_unchecked(self.bytecode(), entry) };
-        Ok(())
-    }
 }
 
 /// A required payload unexpectedly absent from a custom host implementation.
@@ -908,7 +902,6 @@ impl<T: EvmTypesHost> Interpreter<'_, '_, T> {
     fn activate_chunk(&mut self, index: u32, chunk: CodeChunk, entry: usize) {
         let view = chunk.execution_view(entry);
         self.chunk_tail_offset = chunk.prepared().map(|_| view.tail_offset);
-        self.chunk_next_offset = view.next_offset;
         self.bytecode_ref = None;
         self.bytecode = view.bytecode;
         self.code_chunk = Some(chunk);

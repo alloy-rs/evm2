@@ -802,3 +802,11 @@ fn tip1143_t03_nested_initcode_metering_and_create2_hashing_are_preserved() {
         }
     }
 }
+
+#[test]
+fn rjump_executes_in_resident_initcode_without_chunk_tariffs() {
+    let (stop, spent, account) = create(Bytes::from_static(&[0xe0, 0x80, 0x81, 0xfe, 0]), 100_000);
+    assert_eq!(stop, InstrStop::Stop);
+    assert_eq!(spent, 2);
+    assert!(account.is_some());
+}

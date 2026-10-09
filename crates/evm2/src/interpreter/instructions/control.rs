@@ -1,5 +1,5 @@
 use crate::{
-    EvmTypesHost,
+    EvmFeatures, EvmTypesHost,
     bytecode::CODE_CHUNK_SIZE,
     interpreter::{InstrStop, Result, Word, op, opcode::OpCode, private::GasInstructionCx},
     utils::{word_to_usize, word_to_usize_saturated},
@@ -125,6 +125,65 @@ pub fn invalid(cx: _) -> Result {
     })
 }
 
+/// Static relative jump with two EIP-8024-encoded immediate digits.
+/// The logical destination is relative to the PC after the three-byte instruction.
+#[instruction(dynamic_gas)]
+pub fn rjump(cx: _) -> Result {
+    if !cx.state.feature(EvmFeatures::TIP1143) {
+        return Err(InstrStop::OpcodeNotFound);
+    }
+    // Like EOF RJUMP, every executed relative jump costs two gas, including loops.
+    cx.gas.spend(2)?;
+    let immediate = unsafe { cx.pc.read_bytes_offset_unchecked(1, 2) };
+    let offset = decode_rjump_offset([immediate[0], immediate[1]])
+        .ok_or(InstrStop::InvalidImmediateEncoding)?;
+    let target = cx
+        .state
+        .global_pc(*cx.pc)
+        .checked_add(3)
+        .and_then(|post_pc| post_pc.checked_add_signed(offset))
+        .filter(|&target| target < cx.state.code_size())
+        .ok_or(InstrStop::InvalidJump)?;
+    let prepared = cx.state.is_chunked_code() && cx.state.active_chunk().prepared().is_some();
+    let local = if prepared {
+        let index = (target / CODE_CHUNK_SIZE) as u32;
+        let local = target % CODE_CHUNK_SIZE;
+        let chunk = if index == cx.state.code_chunk_index() {
+            cx.state.active_chunk().clone()
+        } else {
+            let address = cx.state.message().code_address;
+            let tariff = cx.state.chunk_tariff(&address, index);
+            cx.gas.spend(tariff)?;
+            cx.state.required_code_chunk(&address, index)?
+        };
+        cx.state.activate_code_chunk(index, chunk, local);
+        local
+    } else {
+        target
+    };
+    // A static jump does not require JUMPDEST. Prepared views pad the actual entry path;
+    // ordinary bytecode retains its existing 33-byte safety padding.
+    unsafe { cx.pc.set_unchecked(cx.state.bytecode(), local) };
+    Ok(())
+}
+
+/// Two base-219 digits use the exact DUPN/SWAPN alphabet (decoded values 17..=235).
+/// Balanced signed displacements span -23980..=23980; no digit is PUSHn or JUMPDEST.
+pub(crate) const fn encode_rjump_offset(offset: isize) -> Option<[u8; 2]> {
+    if offset < -23980 || offset > 23980 {
+        return None;
+    }
+    let value = if offset < 0 { offset + 47961 } else { offset } as usize;
+    Some([((value / 219) as u8).wrapping_add(128), ((value % 219) as u8).wrapping_add(128)])
+}
+
+pub(crate) fn decode_rjump_offset(bytes: [u8; 2]) -> Option<isize> {
+    let high = super::decode_single(bytes[0])? - 17;
+    let low = super::decode_single(bytes[1])? - 17;
+    let value = (high * 219 + low) as isize;
+    Some(if value > 23980 { value - 47961 } else { value })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +193,23 @@ mod tests {
     };
     use alloc::vec::Vec;
     use core::assert_matches;
+
+    #[test]
+    fn rjump_codec_roundtrips_every_signed_displacement() {
+        for offset in -23980..=23980 {
+            let encoded = encode_rjump_offset(offset).unwrap();
+            assert!(encoded.iter().all(|&byte| byte <= 0x5a || byte >= 0x80));
+            assert_eq!(decode_rjump_offset(encoded), Some(offset));
+        }
+        assert_eq!(encode_rjump_offset(-23981), None);
+        assert_eq!(encode_rjump_offset(23981), None);
+        assert_eq!(encode_rjump_offset(-3), Some([0x5a, 0x58]));
+        assert_eq!(encode_rjump_offset(0), Some([0x80, 0x80]));
+        for bad_byte in 0x5b..=0x7f {
+            assert_eq!(decode_rjump_offset([bad_byte, 0x80]), None);
+            assert_eq!(decode_rjump_offset([0x80, bad_byte]), None);
+        }
+    }
 
     #[test]
     fn stop_opcode() {
@@ -150,6 +226,7 @@ mod tests {
             for (opcode, expected) in [
                 (op::INVALID, InstrStop::InvalidFEOpcode),
                 (0x0c, InstrStop::OpcodeNotFound),
+                (op::RJUMP, InstrStop::OpcodeNotFound),
                 (op::PUSH0, InstrStop::NotActivated),
                 (op::TSTORE, InstrStop::NotActivated),
                 (op::DUPN, InstrStop::NotActivated),

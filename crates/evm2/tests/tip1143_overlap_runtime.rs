@@ -99,7 +99,7 @@ fn push3(code: &mut Vec<u8>, target: usize) {
 }
 
 #[test]
-fn all_push_widths_cross_without_changing_values_or_instruction_gas() {
+fn all_push_widths_preserve_values_and_charge_one_rjump() {
     for width in 1..=32 {
         for distance in [1, width] {
             let mut code = vec![0x5b; CODE_CHUNK_SIZE - distance];
@@ -110,7 +110,7 @@ fn all_push_widths_cross_without_changing_values_or_instruction_gas() {
             let actual = execute(code, true, 200_000);
             assert_eq!(actual.0, InstrStop::Return, "width={width}, distance={distance}");
             assert_eq!(actual.1, reference.1);
-            assert_eq!(actual.2, reference.2 + 2 * COLD_CODE_CHUNK_GAS);
+            assert_eq!(actual.2, reference.2 + 2 * COLD_CODE_CHUNK_GAS + 2);
             assert_eq!(actual.3, [0, 1]);
         }
     }
@@ -124,7 +124,7 @@ fn fallthrough_with_full_stack_into_non_jumpdest() {
     let reference = execute(code.clone(), false, 200_000);
     let actual = execute(code, true, 200_000);
     assert_eq!(actual.0, InstrStop::Stop);
-    assert_eq!(actual.2, reference.2 + 2 * COLD_CODE_CHUNK_GAS);
+    assert_eq!(actual.2, reference.2 + 2 * COLD_CODE_CHUNK_GAS + 2);
     assert_eq!(actual.3, [0, 1]);
 }
 
@@ -262,7 +262,7 @@ fn alternative_jump_entry_uses_its_own_push_overlap() {
                 assert_eq!(actual.1.as_ref(), expected);
                 assert_eq!(actual.1, reference.1);
                 let chunks = if boundary == CODE_CHUNK_SIZE { 2 } else { 3 };
-                assert_eq!(actual.2, reference.2 + chunks * COLD_CODE_CHUNK_GAS);
+                assert_eq!(actual.2, reference.2 + chunks * COLD_CODE_CHUNK_GAS + 2);
             }
         }
     }
@@ -310,4 +310,118 @@ fn public_pc_setter_selects_padding_and_rejects_internal_bytes() {
     );
     assert_eq!(interp.run(&mut evm).unwrap(), InstrStop::Return);
     assert_eq!(interp.output(), &[0xab; 32]);
+}
+
+#[test]
+fn rjump_forward_without_jumpdest_is_stack_neutral_and_gated() {
+    // RJUMP +1 skips INVALID and lands on STOP; no stack input or JUMPDEST.
+    let code = vec![0xe0, 0x80, 0x81, 0xfe, 0];
+    let actual = execute(code.clone(), true, 100_000);
+    assert_eq!(actual.0, InstrStop::Stop);
+    assert_eq!(actual.2, COLD_CODE_CHUNK_GAS + 2);
+    assert_eq!(execute(code, false, 100_000).0, InstrStop::OpcodeNotFound);
+}
+
+#[test]
+fn rjump_negative_offset_loops_until_gas_runs_out() {
+    // -3 returns to this RJUMP. Its ordinary opcode cost bounds execution.
+    let actual = execute(vec![0xe0, 0x5a, 0x58], true, COLD_CODE_CHUNK_GAS + 6);
+    assert_eq!(actual.0, InstrStop::OutOfGas);
+    assert_eq!(actual.2, COLD_CODE_CHUNK_GAS + 6);
+    assert!(actual.3.is_empty());
+}
+
+#[test]
+fn rjump_rejects_bad_immediates_and_out_of_bounds_targets() {
+    for code in [vec![0xe0, 0x5b, 0], vec![0xe0, 0x80, 0x60]] {
+        assert_eq!(execute(code, true, 100_000).0, InstrStop::InvalidImmediateEncoding);
+    }
+    for code in [
+        vec![0xe0, 0x80, 0x80], // +0 targets the end of code.
+        vec![0xe0, 0x5a, 0x57], // -4 targets before code.
+        vec![0xe0],             // Truncated immediate is safely padded, then range checked.
+    ] {
+        let actual = execute(code, true, 100_000);
+        assert_eq!(actual.0, InstrStop::InvalidJump);
+        assert!(actual.3.is_empty());
+    }
+}
+
+#[test]
+fn rjump_forward_and_backward_cross_chunks_without_jumpdest() {
+    let mut code = Vec::new();
+    push3(&mut code, CODE_CHUNK_SIZE - 4);
+    code.push(0x56);
+    code.resize(CODE_CHUNK_SIZE - 4, 0);
+    code.extend([0x5b, 0xe0, 0x80, 0x81]); // +1 lands at chunk 1 offset 1.
+    code.extend([0xfe, 0xe0, 0x5a, 0x52]); // -9 lands on STOP at boundary -5.
+    let actual = execute(code, true, 100_000);
+    assert_eq!(actual.0, InstrStop::Stop);
+    assert_eq!(actual.2, 2 * COLD_CODE_CHUNK_GAS + 1000 + 3 + 8 + 1 + 4);
+    assert_eq!(actual.3, [0, 1]);
+}
+
+#[test]
+fn rjump_reserves_remote_chunk_gas_before_fetching() {
+    let mut code = Vec::new();
+    push3(&mut code, CODE_CHUNK_SIZE - 4);
+    code.push(0x56);
+    code.resize(CODE_CHUNK_SIZE - 4, 0);
+    code.extend([0x5b, 0xe0, 0x80, 0x80, 0]);
+    let actual = execute(code, true, 2 * COLD_CODE_CHUNK_GAS + 13);
+    assert_eq!(actual.0, InstrStop::OutOfGas);
+    assert_eq!(actual.3, [0]);
+}
+
+#[test]
+fn rjump_immediates_can_cross_the_slice_boundary() {
+    for distance in [1, 2] {
+        let mut code = Vec::new();
+        push3(&mut code, CODE_CHUNK_SIZE - distance - 1);
+        code.push(0x56);
+        code.resize(CODE_CHUNK_SIZE - distance - 1, 0);
+        code.extend([0x5b, 0xe0, 0x80, 0x80, 0]);
+        let actual = execute(code, true, 100_000);
+        assert_eq!(actual.0, InstrStop::Stop);
+        assert_eq!(actual.2, 2 * COLD_CODE_CHUNK_GAS + 3 + 8 + 1 + 2);
+        assert_eq!(actual.3, [0, 1]);
+    }
+}
+
+#[test]
+fn standalone_prepared_bytecode_restores_padding_for_static_jump_entries() {
+    let mut raw = Vec::new();
+    push3(&mut raw, 1000);
+    raw.push(0x56);
+    raw.resize(CODE_CHUNK_SIZE + 2, 0);
+    // At 1001, jump into PUSH1's immediate at the last payload byte. The ordinary
+    // path has no spill; this alternative PUSH32 entry needs full zero padding.
+    let offset = CODE_CHUNK_SIZE - 1 - 1004;
+    raw[1000..1004].copy_from_slice(&[
+        0x5b,
+        0xe0,
+        ((offset / 219 + 128) % 256) as u8,
+        ((offset % 219 + 128) % 256) as u8,
+    ]);
+    raw[CODE_CHUNK_SIZE - 2..CODE_CHUNK_SIZE].copy_from_slice(&[0x60, 0x7f]);
+    let raw = Bytes::from(raw);
+    let chunk = code_chunk(&raw, 0).unwrap();
+    let message =
+        MessageExt { gas_limit: 100_000, code: chunk.bytecode(true), ..MessageExt::default() };
+    let tx = TxEnvExt::default();
+    let mut interp = Interpreter::<'_, '_, BaseEvmTypes>::new(&tx, &message);
+    let mut evm = Evm::<'_, BaseEvmTypes>::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(
+            SpecId::PRAGUE,
+            Version::new(SpecId::PRAGUE).with_tip1143(true),
+        ),
+        SpecId::PRAGUE,
+        BlockEnvExt::default(),
+        TxRegistry::new(),
+        Db::new(Provider { raw, reads: Rc::new(RefCell::new(Vec::new())) }),
+        Precompiles::base(SpecId::PRAGUE),
+    );
+    assert_eq!(interp.run(&mut evm).unwrap(), InstrStop::Stop);
+    assert_eq!(interp.stack().len(), 1);
+    assert_eq!(interp.stack().first(), Some(&Word::ZERO));
 }
