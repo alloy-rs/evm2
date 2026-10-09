@@ -10,13 +10,13 @@ packed interpreter dispatch. These measurements use the existing gas schedule.
 validation rejects a PUSH immediate that crosses a boundary and requires every
 payload to end in a decoded STOP. Chunks are validated once when bytecode is
 created or transitioned; trusted database reads do not repeat that validation.
-The required `get_code_chunk_by_hash(hash, index)` method is implemented across
-typed, erased, async, cache, and counted DB adapters. There is no full-code fetch
-fallback. In-memory backends may split already resident code once and cache it.
+The account stores an ordered vector of chunk hashes. Execution resolves
+`(account, index)` to one hash, then uses the existing hash-keyed bytecode lookup;
+there is no separate `(complete_code_hash, index)` database index.
 
 `State::load_code_chunk(address, index, skip_cold_load)` returns bytes and prior
-warmth. The immutable cache is keyed by `(hash, index)`; gas warmth is keyed by
-`(address, hash, index)`. Bytes survive reverts and transaction resets. Warmth is
+warmth. Immutable bytecode is cached only by chunk hash; gas warmth is keyed by
+account, chunk index, and the current chunk hash. Bytes survive reverts and transaction resets. Warmth is
 journaled, reverts to the checkpoint, and resets per transaction. Snapshots keep
 all three structures. Uncommitted deployed/replaced code takes precedence over
 the accepted-state database. Failed, skipped, and absent reads do not warm.

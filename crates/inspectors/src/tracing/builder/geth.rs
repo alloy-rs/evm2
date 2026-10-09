@@ -687,14 +687,6 @@ mod tests {
             Err(self.error.clone())
         }
 
-        fn get_code_chunk_by_hash(
-            &mut self,
-            _code_hash: &B256,
-            _index: u32,
-        ) -> DbResult<Option<evm2::bytecode::chunks::CodeChunk>> {
-            Err(self.error.clone())
-        }
-
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> DbResult<Word> {
             Err(self.error.clone())
         }

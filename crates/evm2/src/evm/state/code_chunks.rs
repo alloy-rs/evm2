@@ -24,13 +24,18 @@ impl State<'_> {
         let Some(account) = self.accounts.get(address) else {
             return false;
         };
-        let Some(code_hash) = account.present.as_ref().map(|info| info.code_hash) else {
+        let Some(chunk_hash) = account
+            .present
+            .as_ref()
+            .and_then(|info| info.code_chunk_hashes.get(index as usize))
+            .copied()
+        else {
             return false;
         };
         account
             .code_chunks
             .get(&index)
-            .is_some_and(|chunk| chunk.code_hash == code_hash && chunk.is_warm)
+            .is_some_and(|chunk| chunk.chunk_hash == chunk_hash && chunk.is_warm)
     }
 
     /// Checks whether the account's current code is an EIP-7702 designator, loading only chunk
@@ -79,11 +84,11 @@ impl State<'_> {
         if let Some(code) = info.code.as_ref() {
             return Ok(code.is_eip7702());
         }
-        let code_hash = info.code_hash;
-        Ok(self
-            .database
-            .get_code_chunk_by_hash(&code_hash, 0)?
-            .is_some_and(|chunk| chunk.bytecode().is_eip7702()))
+        let Some(chunk_hash) = info.code_chunk_hashes.first().copied() else {
+            return Ok(false);
+        };
+        let code = self.database.get_code_by_hash(&chunk_hash)?;
+        Ok(code.is_eip7702())
     }
 
     /// Loads a chunk of the account's current code without warming the account itself.
@@ -101,11 +106,10 @@ impl State<'_> {
         skip_cold_load: bool,
     ) -> Result<Option<CodeChunkLoad>, LoadError> {
         let account = self.account(address)?;
-        let code_hash = account.code_hash();
-        if code_hash == KECCAK256_EMPTY {
+        if account.code_hash() == KECCAK256_EMPTY {
             return Ok(None);
         }
-        let (code_size, resident) = account
+        let (code_size, chunk_hash, resident) = account
             .get()
             .map(|info| {
                 let code_size = if info.code_size == 0 {
@@ -113,10 +117,13 @@ impl State<'_> {
                 } else {
                     info.code_size as usize
                 };
-                (code_size, info.code.clone())
+                (code_size, info.code_chunk_hashes.get(index as usize).copied(), info.code.clone())
             })
             .unwrap_or_default();
         drop(account);
+        let Some(chunk_hash) = chunk_hash else {
+            return Ok(None);
+        };
         let chunk_start = index as usize * crate::bytecode::chunks::CODE_CHUNK_SIZE;
         if chunk_start >= code_size {
             return Ok(None);
@@ -126,7 +133,7 @@ impl State<'_> {
             .accounts
             .get(address)
             .and_then(|account| account.code_chunks.get(&index))
-            .is_none_or(|chunk| chunk.code_hash != code_hash || !chunk.is_warm);
+            .is_none_or(|chunk| chunk.chunk_hash != chunk_hash || !chunk.is_warm);
         if is_cold && skip_cold_load {
             return Err(LoadError::ColdLoadSkipped);
         }
@@ -134,17 +141,20 @@ impl State<'_> {
             .accounts
             .get(address)
             .and_then(|account| account.code_chunks.get(&index))
-            .filter(|chunk| chunk.code_hash == code_hash)
+            .filter(|chunk| chunk.chunk_hash == chunk_hash)
             .map(|chunk| chunk.code.clone());
         let chunk = if let Some(chunk) = account_chunk {
             Some(chunk)
         } else if let Some(code) = resident {
             // Uncommitted deployment: never resolve its bytes through the accepted-state DB.
             let chunk = code.code_chunk(index);
-            self.database.cache.code_chunks.insert((code_hash, index), chunk.clone());
+            if let Some(chunk) = &chunk {
+                self.database.cache.contracts.insert(chunk_hash, chunk.bytecode().clone());
+            }
             chunk
         } else {
-            self.database.get_code_chunk_by_hash(&code_hash, index)?
+            let code = self.database.get_code_by_hash(&chunk_hash)?;
+            CodeChunk::new_validated(code.original_bytes())
         };
         let Some(chunk) = chunk else {
             return Ok(None);
@@ -158,18 +168,18 @@ impl State<'_> {
                 .code_chunks
                 .entry(index)
                 .and_modify(|loaded| {
-                    loaded.code_hash = code_hash;
+                    loaded.chunk_hash = chunk_hash;
                     loaded.code = chunk.clone();
                     loaded.is_warm = true;
                 })
                 .or_insert_with(|| AccountCodeChunk {
-                    code_hash,
+                    chunk_hash,
                     code: chunk.clone(),
                     is_warm: true,
                 });
             self.journal.push(JournalEntry::CodeChunkWarmed {
                 address: *address,
-                code_hash,
+                chunk_hash,
                 index,
             });
         }
@@ -207,18 +217,20 @@ mod tests {
             Ok(Some(AccountInfo {
                 code_hash: B256::with_last_byte(1),
                 code_size: (CODE_CHUNK_SIZE + 5) as u32,
+                code_chunk_hashes: self.chunks.iter().map(CodeChunk::hash).collect(),
                 ..Default::default()
             }))
         }
-        fn get_code_by_hash(&mut self, _: &B256) -> DbResult<Bytecode> {
-            panic!("full-code fetch")
-        }
-        fn get_code_chunk_by_hash(&mut self, _: &B256, index: u32) -> DbResult<Option<CodeChunk>> {
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
             self.reads += 1;
             if self.fail {
                 return Err(DatabaseError::new(core::fmt::Error, true));
             }
-            Ok(self.chunks.get(index as usize).cloned())
+            Ok(self
+                .chunks
+                .iter()
+                .find(|chunk| chunk.hash() == *code_hash)
+                .map_or_else(Bytecode::default, |chunk| chunk.bytecode().clone()))
         }
         fn get_storage(&mut self, _: &Address, _: &Word) -> DbResult<Word> {
             unreachable!()
@@ -245,29 +257,36 @@ mod tests {
         reads: Vec<u32>,
     }
 
+    fn sparse_chunk_hash(index: u32) -> B256 {
+        let mut hash = B256::with_last_byte(0xcc);
+        hash[..4].copy_from_slice(&index.to_be_bytes());
+        hash
+    }
+
     impl DynDatabase for SparseChunkDb {
         fn get_account(&mut self, _: &Address) -> DbResult<Option<AccountInfo>> {
             Ok(Some(AccountInfo {
                 code_hash: B256::with_last_byte(2),
                 code_size: self.code_size as u32,
+                code_chunk_hashes: (0..self.code_size.div_ceil(CODE_CHUNK_SIZE))
+                    .map(|index| sparse_chunk_hash(index as u32))
+                    .collect(),
                 ..Default::default()
             }))
         }
 
-        fn get_code_by_hash(&mut self, _: &B256) -> DbResult<Bytecode> {
-            panic!("sparse execution must never fetch complete bytecode")
-        }
-
-        fn get_code_chunk_by_hash(&mut self, _: &B256, index: u32) -> DbResult<Option<CodeChunk>> {
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+            assert_eq!(code_hash[31], 0xcc, "sparse execution fetched complete bytecode");
+            let index = u32::from_be_bytes(code_hash[..4].try_into().unwrap());
             self.reads.push(index);
             let start = index as usize * CODE_CHUNK_SIZE;
             if start >= self.code_size {
-                return Ok(None);
+                return Ok(Bytecode::default());
             }
             let len = (self.code_size - start).min(CODE_CHUNK_SIZE);
             let mut payload = vec![crate::interpreter::op::JUMPDEST; len];
             *payload.last_mut().unwrap() = crate::interpreter::op::STOP;
-            Ok(CodeChunk::new_validated(payload.into()))
+            Ok(Bytecode::new_legacy(payload.into()))
         }
 
         fn get_storage(&mut self, _: &Address, _: &Word) -> DbResult<Word> {

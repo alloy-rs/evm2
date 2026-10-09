@@ -1855,10 +1855,7 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
-        bytecode::{
-            Bytecode,
-            chunks::{CODE_CHUNK_SIZE, CodeChunk},
-        },
+        bytecode::{Bytecode, chunks::CODE_CHUNK_SIZE},
         env::{BlockEnvExt, TxEnvExt},
         ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
@@ -3355,14 +3352,6 @@ mod tests {
                 Ok(Bytecode::default())
             }
 
-            fn get_code_chunk_by_hash(
-                &mut self,
-                _code_hash: &B256,
-                _index: u32,
-            ) -> Result<Option<CodeChunk>, Self::Error> {
-                Ok(None)
-            }
-
             fn get_storage(
                 &mut self,
                 _address: &Address,
@@ -3472,14 +3461,6 @@ mod tests {
 
             fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
                 Ok(Bytecode::default())
-            }
-
-            fn get_code_chunk_by_hash(
-                &mut self,
-                _code_hash: &B256,
-                _index: u32,
-            ) -> Result<Option<CodeChunk>, Self::Error> {
-                Ok(None)
             }
 
             fn get_storage(

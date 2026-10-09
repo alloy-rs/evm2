@@ -6,7 +6,7 @@
 
 use crate::{
     DatabaseError,
-    bytecode::{Bytecode, chunks::CodeChunk},
+    bytecode::Bytecode,
     evm::{AccountInfo, DbResult, DynDatabase, NonStaticAny},
     interpreter::Word,
 };
@@ -423,14 +423,6 @@ pub trait AsyncDatabase: NonStaticAny {
         code_hash: B256,
     ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_;
 
-    /// Loads one 12 KiB chunk by code hash and zero-based index.
-    /// `None` means out of range; unavailable data for existing code is an error.
-    fn get_code_chunk_by_hash(
-        &mut self,
-        code_hash: B256,
-        index: u32,
-    ) -> impl Future<Output = Result<Option<CodeChunk>, Self::Error>> + Send + '_;
-
     /// Loads a persistent storage slot.
     fn get_storage(
         &mut self,
@@ -506,18 +498,6 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
         self.database_result(result)
     }
 
-    fn get_code_chunk_by_hash(
-        &mut self,
-        code_hash: &B256,
-        index: u32,
-    ) -> DbResult<Option<CodeChunk>> {
-        let result = {
-            let Self { db, .. } = self;
-            block_on_current_result(db.get_code_chunk_by_hash(*code_hash, index))
-        };
-        self.database_result(result)
-    }
-
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         let result = {
@@ -549,7 +529,7 @@ mod tests {
     use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
         BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult, TxResultExt,
-        bytecode::{Bytecode, chunks::CodeChunk},
+        bytecode::Bytecode,
         env::BlockEnvExt,
         evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider, SystemTx},
         interpreter::{GasTracker, Message, Word, op},
@@ -658,18 +638,6 @@ mod tests {
     }
 
     #[test]
-    fn async_chunk_read_suspends_until_ready() {
-        let mut db = AsyncDb::new(PendingDb { pending: true });
-        let mut future = core::pin::pin!(on_fiber(|| {
-            DynDatabase::get_code_chunk_by_hash(&mut db, &B256::ZERO, 0).unwrap()
-        }));
-        let waker = Waker::noop();
-        let mut cx = Context::from_waker(waker);
-        assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
-        assert_matches!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(None)));
-    }
-
-    #[test]
     fn async_database_returns_owned_database_error() {
         let mut db = AsyncDb::new(FailingDb);
         let address = Address::ZERO;
@@ -688,7 +656,6 @@ mod tests {
 
         drop(assert_send(db.get_account(Address::ZERO)));
         drop(assert_send(db.get_code_by_hash(B256::ZERO)));
-        drop(assert_send(db.get_code_chunk_by_hash(B256::ZERO, 0)));
         drop(assert_send(db.get_storage(Address::ZERO, Word::ZERO)));
         drop(assert_send(db.get_block_hash(Word::ZERO)));
     }
@@ -1079,14 +1046,6 @@ mod tests {
             Ok(Bytecode::default())
         }
 
-        fn get_code_chunk_by_hash(
-            &mut self,
-            _code_hash: &B256,
-            _index: u32,
-        ) -> Result<Option<CodeChunk>, Self::Error> {
-            Ok(None)
-        }
-
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
             let _ = Rc::strong_count(&self.marker);
             Ok(Word::from(9))
@@ -1117,14 +1076,6 @@ mod tests {
 
         fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
-        }
-
-        fn get_code_chunk_by_hash(
-            &mut self,
-            _code_hash: &B256,
-            _index: u32,
-        ) -> Result<Option<CodeChunk>, Self::Error> {
-            Ok(None)
         }
 
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
@@ -1227,14 +1178,6 @@ mod tests {
             Ok(Bytecode::default())
         }
 
-        async fn get_code_chunk_by_hash(
-            &mut self,
-            _code_hash: B256,
-            _index: u32,
-        ) -> Result<Option<CodeChunk>, Self::Error> {
-            Ok(None)
-        }
-
         async fn get_storage(
             &mut self,
             _address: Address,
@@ -1264,15 +1207,6 @@ mod tests {
 
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
-        }
-
-        async fn get_code_chunk_by_hash(
-            &mut self,
-            _code_hash: B256,
-            _index: u32,
-        ) -> Result<Option<CodeChunk>, Self::Error> {
-            PendingOnce { pending: core::mem::take(&mut self.pending) }.await;
-            Ok(None)
         }
 
         async fn get_storage(
@@ -1309,14 +1243,6 @@ mod tests {
 
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
             Ok(self.code.clone())
-        }
-
-        async fn get_code_chunk_by_hash(
-            &mut self,
-            _code_hash: B256,
-            index: u32,
-        ) -> Result<Option<CodeChunk>, Self::Error> {
-            Ok(self.code.code_chunk(index))
         }
 
         async fn get_storage(
@@ -1364,14 +1290,6 @@ mod tests {
 
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
-        }
-
-        async fn get_code_chunk_by_hash(
-            &mut self,
-            _code_hash: B256,
-            _index: u32,
-        ) -> Result<Option<CodeChunk>, Self::Error> {
-            Ok(None)
         }
 
         async fn get_storage(

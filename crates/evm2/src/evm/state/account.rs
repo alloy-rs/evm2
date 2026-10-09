@@ -9,6 +9,7 @@ use crate::{
     bytecode::{Bytecode, chunks::CodeChunk},
     interpreter::Word,
 };
+use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256, map::HashMap};
 use derive_where::derive_where;
 
@@ -28,6 +29,8 @@ pub struct AccountInfo {
     pub code_hash: B256,
     /// Size of the complete deployed bytecode, even when no bytecode is resident.
     pub code_size: u32,
+    /// Ordered hashes of the account's bytecode chunks.
+    pub code_chunk_hashes: Vec<B256>,
     /// Bytecode associated with this account.
     pub code: Option<Bytecode>,
     /// Raw chain-specific data committed to the account leaf by the state provider.
@@ -54,7 +57,8 @@ impl PartialEq for AccountInfo {
         let equal = self.balance == other.balance
             && self.nonce == other.nonce
             && self.code_hash == other.code_hash
-            && self.code_size == other.code_size;
+            && self.code_size == other.code_size
+            && self.code_chunk_hashes == other.code_chunk_hashes;
         #[cfg(feature = "account-ext")]
         let equal = equal && self.extension == other.extension;
         equal
@@ -72,6 +76,7 @@ impl core::hash::Hash for AccountInfo {
         self.nonce.hash(state);
         self.code_hash.hash(state);
         self.code_size.hash(state);
+        self.code_chunk_hashes.hash(state);
     }
 }
 
@@ -83,6 +88,7 @@ impl Default for AccountInfo {
             nonce: 0,
             code_hash: KECCAK256_EMPTY,
             code_size: 0,
+            code_chunk_hashes: Vec::new(),
             code: None,
             #[cfg(feature = "account-ext")]
             extension: super::AccountExtension::new(),
@@ -101,6 +107,7 @@ impl AccountInfo {
             nonce: 0,
             code_hash: KECCAK256_EMPTY,
             code_size: 0,
+            code_chunk_hashes: Vec::new(),
             code: None,
             #[cfg(feature = "account-ext")]
             extension: super::AccountExtension::new(),
@@ -115,11 +122,13 @@ impl AccountInfo {
     #[inline]
     pub fn new(balance: Word, nonce: u64, code_hash: B256, code: Option<Bytecode>) -> Self {
         let code_size = code.as_ref().map_or(0, |code| code.len() as u32);
+        let code_chunk_hashes = code.as_ref().map_or_else(Vec::new, Bytecode::code_chunk_hashes);
         Self {
             balance,
             nonce,
             code_hash,
             code_size,
+            code_chunk_hashes,
             code,
             #[cfg(feature = "account-ext")]
             extension: super::AccountExtension::new(),
@@ -136,6 +145,7 @@ impl AccountInfo {
             nonce: self.nonce,
             code_hash: self.code_hash,
             code_size: self.code_size,
+            code_chunk_hashes: self.code_chunk_hashes.clone(),
             code: None,
             #[cfg(feature = "account-ext")]
             extension: self.extension.clone(),
@@ -146,7 +156,13 @@ impl AccountInfo {
     /// Creates a new [`AccountInfo`] with the given code.
     #[inline]
     pub fn with_code(self, code: Bytecode) -> Self {
-        Self { code_hash: code.hash_slow(), code_size: code.len() as u32, code: Some(code), ..self }
+        Self {
+            code_hash: code.hash_slow(),
+            code_size: code.len() as u32,
+            code_chunk_hashes: code.code_chunk_hashes(),
+            code: Some(code),
+            ..self
+        }
     }
 
     /// Creates a new [`AccountInfo`] with the given balance.
@@ -168,6 +184,7 @@ impl AccountInfo {
     pub fn set_code(&mut self, code: Bytecode) {
         self.code_hash = code.hash_slow();
         self.code_size = code.len() as u32;
+        self.code_chunk_hashes = code.code_chunk_hashes();
         self.code = Some(code);
     }
 
@@ -221,8 +238,8 @@ pub(crate) struct Account {
 /// One independently loaded bytecode chunk and its transaction-local access status.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccountCodeChunk {
-    /// Complete code identity this chunk belongs to.
-    pub code_hash: B256,
+    /// Content hash that identifies this chunk in the bytecode database.
+    pub chunk_hash: B256,
     /// Independently executable, deployment-validated bytecode.
     pub code: CodeChunk,
     /// Whether this chunk has already been charged as warm in the current transaction scope.

@@ -648,6 +648,7 @@ impl<'a> State<'a> {
             balance,
             code_hash: KECCAK256_EMPTY,
             code_size: 0,
+            code_chunk_hashes: Vec::new(),
             code: None,
             _non_exhaustive: (),
             #[cfg(feature = "account-ext")]
@@ -780,11 +781,13 @@ impl<'a> State<'a> {
                         self.transient_storage.remove(&StorageKey::new(address, key));
                     }
                 },
-                JournalEntry::CodeChunkWarmed { address, code_hash, index } => {
+                JournalEntry::CodeChunkWarmed { address, chunk_hash, index } => {
                     if let Some(account) = self.accounts.get_mut(&address)
-                        && account.present.as_ref().is_some_and(|info| info.code_hash == code_hash)
+                        && account.present.as_ref().is_some_and(|info| {
+                            info.code_chunk_hashes.get(index as usize) == Some(&chunk_hash)
+                        })
                         && let Some(chunk) = account.code_chunks.get_mut(&index)
-                        && chunk.code_hash == code_hash
+                        && chunk.chunk_hash == chunk_hash
                     {
                         chunk.is_warm = false;
                     }

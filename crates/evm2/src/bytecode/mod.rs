@@ -5,7 +5,7 @@ use crate::{
     interpreter::op,
     once_lock::OnceLock,
 };
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
 use analysis::{analyze_legacy, pad_legacy};
 use core::{cmp::Ordering, fmt, hash};
@@ -124,6 +124,11 @@ impl fmt::Debug for Bytecode {
 }
 
 impl Bytecode {
+    /// Returns the ordered hashes of this code's validated chunk payloads.
+    pub fn code_chunk_hashes(&self) -> Vec<B256> {
+        self.original_byte_slice().chunks(chunks::CODE_CHUNK_SIZE).map(keccak256).collect()
+    }
+
     /// Returns a chunk of already resident code; never performs database I/O.
     pub fn code_chunk(&self, index: u32) -> Option<chunks::CodeChunk> {
         chunks::code_chunk(self.original_byte_slice(), index)

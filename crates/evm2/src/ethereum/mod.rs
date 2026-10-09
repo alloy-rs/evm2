@@ -1388,8 +1388,7 @@ mod tests {
 
             assert_eq!(validate_sender(&mut evm, caller, 0, U256::ZERO).is_ok(), accepted);
             let stats = evm.database().downcast_ref::<DbStats<InMemoryDB>>().unwrap().counts();
-            assert_eq!(stats.get_code_by_hash, 0);
-            assert_eq!(stats.get_code_chunk_by_hash, expected_chunk_reads);
+            assert_eq!(stats.get_code_by_hash, expected_chunk_reads);
         }
     }
 

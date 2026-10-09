@@ -81,8 +81,8 @@ pub enum JournalEntry {
     CodeChunkWarmed {
         /// Address whose code was read, including delegated code targets.
         address: Address,
-        /// Current code identity, isolating deployments and replacements.
-        code_hash: B256,
+        /// Content hash of the chunk that became warm.
+        chunk_hash: B256,
         /// Zero-based chunk index.
         index: u32,
     },
