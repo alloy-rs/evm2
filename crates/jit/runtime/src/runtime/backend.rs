@@ -313,8 +313,11 @@ impl BackendState {
         }
 
         if matches!(mode, AdmitMode::Observed) {
-            let max_entries = self.tuning.jit_max_pending_jobs * 10;
-            if !self.entries.contains_key(&key) && self.entries.len() >= max_entries {
+            let max_entries = self.tuning.jit_max_pending_jobs.saturating_mul(10);
+            if !self.entries.contains_key(&key)
+                && self.entries.len() >= max_entries
+                && !self.evict_oldest_cold_entry()
+            {
                 return;
             }
         }
@@ -389,6 +392,22 @@ impl BackendState {
                 job.sync_notifier.notify();
             }
         }
+    }
+
+    /// Evicts the least-recently-observed cold entry to make room for a new one.
+    /// Returns `false` if there is no evictable entry.
+    fn evict_oldest_cold_entry(&mut self) -> bool {
+        let Some(key) = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.phase == EntryPhase::Cold && e.pending_notifiers.is_empty())
+            .min_by_key(|(_, e)| e.last_observed_at)
+            .map(|(k, _)| *k)
+        else {
+            return false;
+        };
+        self.entries.remove(&key);
+        true
     }
 
     /// Tries to load an already-persisted AOT artifact from the store into the resident map.
@@ -882,15 +901,13 @@ pub(crate) fn run(
 mod notifier_tests {
     use super::*;
     use crate::runtime::{BackendShared, stats::RuntimeStats};
-    use evm2::SpecId;
+    use evm2::{SpecId, interpreter::op};
     use std::{sync::atomic::AtomicUsize, time::Duration};
 
-    #[test]
-    fn working_entry_retains_only_real_waiters_and_notifies_on_completion() {
-        // Seed an in-flight entry without starting a compiler: its completion must
-        // not race the repeated observations or require an LLVM backend.
+    /// Creates backend state without starting compiler workers.
+    fn new_state(tuning: RuntimeTuning) -> BackendState {
         let config = RuntimeConfig {
-            tuning: RuntimeTuning { jit_worker_count: 0, ..RuntimeTuning::default() },
+            tuning: RuntimeTuning { jit_worker_count: 0, ..tuning },
             ..RuntimeConfig::default()
         };
         let inner = Arc::new(BackendShared {
@@ -901,33 +918,48 @@ mod notifier_tests {
         });
         let (result_tx, result_rx) = chan::unbounded();
         let workers = WorkerPool::new(result_tx, config.clone(), Arc::clone(&inner.stats));
-        let bytecode = Bytes::from_static(&[0x00]);
-        let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
-        let now = Instant::now();
-        let mut state = BackendState {
+        BackendState {
             inner,
             resident_meta: HashMap::default(),
-            entries: HashMap::from_iter([(
-                key,
-                EntryState {
-                    hotness: 1,
-                    phase: EntryPhase::Working,
-                    bytecode: bytecode.clone(),
-                    last_observed_at: now,
-                    pending_notifiers: Vec::new(),
-                },
-            )]),
+            entries: HashMap::default(),
             workers,
             jit_object_linker: JitObjectLinker::new(),
             result_rx,
             store: config.store,
             tuning: config.tuning,
             aot: false,
-            pending_jobs: 1,
+            pending_jobs: 0,
             generation: 0,
-            last_sweep: now,
+            last_sweep: Instant::now(),
             on_compilation: None,
-        };
+        }
+    }
+
+    fn observe(state: &mut BackendState, i: u8) -> RuntimeCacheKey {
+        let bytecode = Bytes::from(vec![op::PUSH1, i, op::STOP]);
+        let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
+        state.handle_lookup_observed(LookupRequest { key, code: bytecode });
+        key
+    }
+
+    #[test]
+    fn working_entry_retains_only_real_waiters_and_notifies_on_completion() {
+        // Seed an in-flight entry without starting a compiler: its completion must
+        // not race the repeated observations or require an LLVM backend.
+        let mut state = new_state(RuntimeTuning::default());
+        let bytecode = Bytes::from_static(&[0x00]);
+        let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
+        state.entries.insert(
+            key,
+            EntryState {
+                hotness: 1,
+                phase: EntryPhase::Working,
+                bytecode: bytecode.clone(),
+                last_observed_at: Instant::now(),
+                pending_notifiers: Vec::new(),
+            },
+        );
+        state.pending_jobs = 1;
         for _ in 0..10_000 {
             state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
         }
@@ -969,6 +1001,38 @@ mod notifier_tests {
             assert_eq!(receiver.try_recv(), Ok(()));
             assert_eq!(receiver.try_recv(), Err(chan::TryRecvError::Disconnected));
         }
+    }
+
+    #[test]
+    fn full_cold_table_evicts_oldest_cold_entry() {
+        let mut state = new_state(RuntimeTuning {
+            jit_hot_threshold: usize::MAX,
+            jit_max_pending_jobs: 1,
+            ..RuntimeTuning::default()
+        });
+        let base = Instant::now();
+        let keys = (0..10).map(|i| observe(&mut state, i)).collect::<Vec<_>>();
+        for (i, key) in keys.iter().enumerate() {
+            state.entries.get_mut(key).unwrap().last_observed_at =
+                base + Duration::from_millis(i as u64);
+        }
+
+        let new_key = observe(&mut state, 10);
+        assert_eq!(state.entries.len(), 10);
+        assert!(state.entries.contains_key(&new_key));
+        assert!(!state.entries.contains_key(&keys[0]));
+        assert!(keys[1..].iter().all(|key| state.entries.contains_key(key)));
+    }
+
+    #[test]
+    fn cold_table_cap_saturates() {
+        let mut state = new_state(RuntimeTuning {
+            jit_hot_threshold: usize::MAX,
+            jit_max_pending_jobs: usize::MAX,
+            ..RuntimeTuning::default()
+        });
+        let key = observe(&mut state, 0);
+        assert!(state.entries.contains_key(&key));
     }
 }
 
