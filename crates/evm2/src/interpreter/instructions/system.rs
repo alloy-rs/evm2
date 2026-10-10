@@ -166,8 +166,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
             let tariff = state.chunk_tariff(&code_address, 0);
             gas.spend(tariff)?;
             let chunk = state.required_code_chunk(&code_address, 0)?;
-            code_size =
-                account.code_size.map_or(chunk.original_bytes().len(), |size| size as usize);
+            code_size = account.code_size.map_or(chunk.payload_len(), |size| size as usize);
             code_chunk = Some(chunk);
         }
     }

@@ -109,22 +109,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.
     fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
-        let view = (message.is_lazy_code && message.code_chunk.prepared().is_some())
-            .then(|| message.code_chunk.execution_view(0));
-        let mut bytecode = view
-            .as_ref()
-            .map_or_else(|| message.code_chunk.bytecode(false), |v| v.bytecode.clone());
-        // Prepared views are safe for their selected entry path. An embedding may pass one
-        // without its chunk context; restore ordinary padding before RJUMP can enter any byte.
-        if view.is_none()
-            && bytecode.is_legacy()
-            && !bytecode.is_empty()
-            && bytecode.bytes_slice().len() - bytecode.len() < 33
-            && !bytecode.bytes_slice().ends_with(&[0; 33])
-        {
-            bytecode = Bytecode::new_legacy(bytecode.original_bytes());
-        }
-        self.chunk_tail_offset = view.as_ref().map(|v| v.tail_offset);
+        let bytecode = message.code_chunk.bytecode();
+        self.chunk_tail_offset = message
+            .is_lazy_code
+            .then(|| message.code_chunk.prepared().map(|p| p.tail_offset()))
+            .flatten();
         let gas_limit = message.gas_limit;
         let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
         self.pc = bytecode.bytes_slice().as_ptr();
@@ -197,8 +186,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             .checked_sub(self.code_chunk_index as usize * CODE_CHUNK_SIZE)
             .expect("PC is outside the active chunk");
         if let Some(chunk) = self.code_chunk.clone().filter(|c| c.prepared().is_some()) {
-            assert!(pc < chunk.original_bytes().len(), "PC is outside the logical payload");
-            self.activate_chunk(self.code_chunk_index, chunk, pc);
+            assert!(pc < chunk.payload_len(), "PC is outside the logical payload");
+            self.activate_chunk(self.code_chunk_index, chunk);
         }
         let bytecode = self.bytecode.bytes_slice();
         assert!(pc < bytecode.len());
@@ -218,21 +207,16 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.bytecode_ref.unwrap_or_else(|| BytecodeRef::new(&self.bytecode))
     }
 
-    /// Returns the original active bytecode bytes.
+    /// Returns the stored active chunk bytes, excluding ordinary safety padding.
     #[inline]
     pub fn original_bytecode(&self) -> Bytes {
-        self.code_chunk
-            .as_ref()
-            .map_or_else(|| self.bytecode.original_bytes(), |chunk| chunk.original_bytes().clone())
+        self.bytecode.original_bytes()
     }
 
-    /// Returns the original active bytecode as a byte slice.
+    /// Returns the stored active chunk bytes as a slice, excluding safety padding.
     #[inline]
     pub fn original_bytecode_slice(&self) -> &[u8] {
-        self.code_chunk.as_ref().map_or_else(
-            || self.bytecode.original_byte_slice(),
-            |chunk| chunk.original_bytes().as_ref(),
-        )
+        self.bytecode.original_byte_slice()
     }
 
     /// Calculates or returns the cached hash of the original active bytecode.
@@ -680,7 +664,8 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        self.0.inspecting_internal_tail = self.is_generated_tail(pc);
+        self.0.inspecting_internal_tail = self.0.chunk_tail_offset.is_some()
+            && self.bytecode().pc_offset(pc) >= self.active_chunk().payload_len();
         if self.0.inspecting_internal_tail {
             return;
         }
@@ -882,8 +867,8 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
     }
 
     /// Replaces the owner before rebuilding its borrowed view. Callers reset their PC next.
-    pub(crate) fn activate_code_chunk(&mut self, index: u32, chunk: CodeChunk, entry: usize) {
-        self.0.activate_chunk(index, chunk, entry);
+    pub(crate) fn activate_code_chunk(&mut self, index: u32, chunk: CodeChunk) {
+        self.0.activate_chunk(index, chunk);
     }
 }
 
@@ -896,12 +881,11 @@ struct MissingRuntimeChunk {
 }
 
 impl<T: EvmTypesHost> Interpreter<'_, '_, T> {
-    /// Selects the safe buffer for this logical entry before rebuilding its borrowed view.
-    fn activate_chunk(&mut self, index: u32, chunk: CodeChunk, entry: usize) {
-        let view = chunk.execution_view(entry);
-        self.chunk_tail_offset = chunk.prepared().map(|_| view.tail_offset);
+    /// Activates the single prepared bytecode and rebuilds its borrowed view.
+    fn activate_chunk(&mut self, index: u32, chunk: CodeChunk) {
+        self.chunk_tail_offset = chunk.prepared().map(|p| p.tail_offset());
         self.bytecode_ref = None;
-        self.bytecode = view.bytecode;
+        self.bytecode = chunk.bytecode();
         self.code_chunk = Some(chunk);
         self.code_chunk_index = index;
         // SAFETY: The immutable allocation remains owned by this interpreter until the next

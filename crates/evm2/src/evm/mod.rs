@@ -1194,7 +1194,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline(never)]
     fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), HostError> {
         if self.feature(EvmFeatures::TIP1143)
-            && message.code_chunk.original_bytes().len() > self.version().max_initcode_size
+            && message.code_chunk.payload_len() > self.version().max_initcode_size
         {
             return Err(InstrStop::CreateInitCodeSizeLimit.into());
         }

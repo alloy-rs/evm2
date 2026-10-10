@@ -1035,8 +1035,7 @@ fn prepare_initial_chunked_frame<T: EvmTypes>(
                 Err(HostError::Halt(_)) => return Ok(None),
                 Err(HostError::Execution(error)) => return Err(error.into()),
             };
-            code_size =
-                account.code_size.map_or(loaded.chunk.original_bytes().len(), |size| size as usize);
+            code_size = account.code_size.map_or(loaded.chunk.payload_len(), |size| size as usize);
             code_chunk = Some(loaded.chunk);
         }
     }

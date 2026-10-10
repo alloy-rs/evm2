@@ -151,7 +151,7 @@ pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
         let code_owner = word_to_address(*addr);
         let tariff = cx.state.chunk_tariff(&code_owner, 0);
         cx.gas.spend(tariff)?;
-        cx.state.required_code_chunk(&code_owner, 0)?.original_bytes().len()
+        cx.state.required_code_chunk(&code_owner, 0)?.payload_len()
     };
     *out = Word::from(size);
 }
@@ -261,10 +261,10 @@ fn load_code_range<T: EvmTypesHost>(
     for index in first..=last {
         let chunk = cx.state.required_code_chunk(&code_owner, index)?;
         let base = if multi { index as usize * CODE_CHUNK_SIZE } else { 0 };
-        let from = source.saturating_sub(base).min(chunk.original_bytes().len());
-        let to = end.saturating_sub(base).min(chunk.original_bytes().len());
+        let from = source.saturating_sub(base).min(chunk.payload_len());
+        let to = end.saturating_sub(base).min(chunk.payload_len());
         if from < to {
-            bytes.extend_from_slice(&chunk.original_bytes()[from..to]);
+            bytes.extend_from_slice(&chunk.bytes()[from..to]);
         }
     }
     Ok(bytes)

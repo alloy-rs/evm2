@@ -12,7 +12,7 @@ use derive_where::derive_where;
 /// One requested chunk, scoped to the account's current code identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountCodeChunk {
-    /// Original payload, execution layout, and cached analysis.
+    /// Prepared bytecode and its shared analysis.
     pub chunk: CodeChunk,
     /// Transaction-local logical warmth, independent of byte residency.
     pub is_warm: bool,
@@ -21,7 +21,7 @@ pub struct AccountCodeChunk {
 /// Successful payload load and logical warmth before the request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeChunkLoad {
-    /// Original payload, retaining a known legacy/delegation kind.
+    /// Stored bytecode with its logical chunk context.
     pub chunk: CodeChunk,
     /// Whether this request changed the account chunk from cold to warm.
     pub is_cold: bool,
@@ -71,7 +71,7 @@ impl<'a, 'db> CodeChunkHandle<'a, 'db> {
                 }
                 let chunk = load_chunk(inner, info, index, expected)?;
                 if expected.is_none() {
-                    account.code_size = Some(chunk.original_bytes().len() as u32);
+                    account.code_size = Some(chunk.payload_len() as u32);
                 }
                 entry.insert(AccountCodeChunk { chunk, is_warm: false })
             }
@@ -164,9 +164,9 @@ fn load_chunk(
     let chunk = match result {
         Ok(Some(chunk))
             if expected.map_or_else(
-                || (1..=LEGACY_CODE_CHUNK_SIZE).contains(&chunk.original_bytes().len()),
+                || (1..=LEGACY_CODE_CHUNK_SIZE).contains(&chunk.payload_len()),
                 |length| {
-                    chunk.original_bytes().len() == length
+                    chunk.payload_len() == length
                         && info.code_metadata().is_some_and(|metadata| {
                             chunk.validate_context(metadata.code_size(), index).is_ok()
                         })
@@ -177,9 +177,7 @@ fn load_chunk(
         }
         result => {
             let (actual_length, reason, source) = match result {
-                Ok(Some(chunk)) => {
-                    (Some(chunk.original_bytes().len()), "invalid payload length", None)
-                }
+                Ok(Some(chunk)) => (Some(chunk.payload_len()), "invalid payload length", None),
                 Ok(None) => (None, "missing required payload", None),
                 Err(error) => (None, "provider failure", Some(error)),
             };
@@ -197,6 +195,6 @@ fn load_chunk(
             ));
         }
     };
-    let _ = chunk.bytecode(multi).legacy_jump_table();
+    let _ = chunk.bytecode().legacy_jump_table();
     Ok(chunk)
 }

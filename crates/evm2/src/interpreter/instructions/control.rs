@@ -50,9 +50,11 @@ fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut GasInstructionCx<'_, '_, '
             if !chunk.is_valid_jumpdest(local) {
                 return Err(InstrStop::InvalidJump);
             }
-            cx.state.activate_code_chunk(index, chunk, local);
+            cx.state.activate_code_chunk(index, chunk);
+            unsafe { cx.pc.set_unchecked(cx.state.bytecode(), local) };
+            return Ok(());
         }
-        if multi { target % CODE_CHUNK_SIZE } else { target }
+        target
     } else {
         target
     };
@@ -137,7 +139,8 @@ pub fn rjump(cx: _) -> Result {
     let immediate = unsafe { cx.pc.read_bytes_offset_unchecked(1, 2) };
     let offset = decode_rjump_offset([immediate[0], immediate[1]])
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
-    rjump_inner(offset, &mut cx)
+    let transfer = cx.state.is_generated_tail(*cx.pc);
+    rjump_inner(offset, transfer, &mut cx)
 }
 
 /// Conditional relative jump using the same immediate encoding as RJUMP.
@@ -157,12 +160,35 @@ pub fn rjumpi(cx: _) -> Result {
         unsafe { cx.pc.advance_unchecked(3) };
         Ok(())
     } else {
-        rjump_inner(offset, &mut cx)
+        rjump_inner(offset, false, &mut cx)
     }
 }
 
 #[inline(always)]
-fn rjump_inner<T: EvmTypesHost>(offset: isize, cx: &mut GasInstructionCx<'_, '_, '_, T>) -> Result {
+fn rjump_inner<T: EvmTypesHost>(
+    offset: isize,
+    transfer: bool,
+    cx: &mut GasInstructionCx<'_, '_, '_, T>,
+) -> Result {
+    // Generated padding lives outside logical code positions. Its local RJUMP still
+    // requires an analyzed JUMPDEST, and never resolves or loads another chunk.
+    let local_pc = cx.state.bytecode().pc_offset(*cx.pc);
+    if cx.state.is_chunked_code()
+        && let Some(prepared) = cx.state.active_chunk().prepared()
+        && local_pc >= cx.state.active_chunk().payload_len()
+        && local_pc < prepared.tail_offset()
+    {
+        let target = local_pc
+            .checked_add(3)
+            .and_then(|post_pc| post_pc.checked_add_signed(offset))
+            .filter(|&target| target < prepared.tail_offset())
+            .ok_or(InstrStop::InvalidJump)?;
+        if !cx.state.bytecode().is_valid_jumpdest(target) {
+            return Err(InstrStop::InvalidJump);
+        }
+        unsafe { cx.pc.set_unchecked(cx.state.bytecode(), target) };
+        return Ok(());
+    }
     let target = cx
         .state
         .global_pc(*cx.pc)
@@ -182,13 +208,24 @@ fn rjump_inner<T: EvmTypesHost>(offset: isize, cx: &mut GasInstructionCx<'_, '_,
             cx.gas.spend(tariff)?;
             cx.state.required_code_chunk(&address, index)?
         };
-        cx.state.activate_code_chunk(index, chunk, local);
+        let local = if transfer {
+            // Only the authenticated generated tail may enter a non-JUMPDEST.
+            // The successor's trailer identifies its first actual opcode.
+            chunk.start_offset()
+        } else {
+            if !chunk.is_valid_jumpdest(local) {
+                return Err(InstrStop::InvalidJump);
+            }
+            local
+        };
+        cx.state.activate_code_chunk(index, chunk);
         local
     } else {
+        if !cx.state.bytecode().is_valid_jumpdest(target) {
+            return Err(InstrStop::InvalidJump);
+        }
         target
     };
-    // A static jump does not require JUMPDEST. Prepared views pad the actual entry path;
-    // ordinary bytecode retains its existing 33-byte safety padding.
     unsafe { cx.pc.set_unchecked(cx.state.bytecode(), local) };
     Ok(())
 }

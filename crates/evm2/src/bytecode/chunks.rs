@@ -1,16 +1,13 @@
-//! Original TIP-1143 payloads, commitments, and deployment validation.
+//! Prepared TIP-1143 bytecode chunks and deployment commitments.
 
-use super::{Bytecode, BytecodeKind, JumpTable};
-use crate::{
-    interpreter::{instructions::encode_rjump_offset, op},
-    once_lock::OnceLock,
-};
-use alloc::{sync::Arc, vec, vec::Vec};
-use alloy_primitives::{B256, Bytes, keccak256};
+use super::{Bytecode, JumpTable};
+use crate::interpreter::{instructions::encode_rjump_offset, op};
+use alloc::vec::Vec;
+use alloy_primitives::{B256, Bytes};
 use thiserror::Error;
 
 /// Original bytes in a full runtime chunk.
-pub const CODE_CHUNK_SIZE: usize = 24 * 1024 - 35;
+pub const CODE_CHUNK_SIZE: usize = 24 * 1024 - 36;
 /// Maximum unchanged legacy record and prepared execution buffer size.
 pub const LEGACY_CODE_CHUNK_SIZE: usize = 24 * 1024;
 /// Maximum number of runtime chunks.
@@ -24,17 +21,22 @@ pub const COLD_CODE_CHUNK_GAS: u64 = 28_680;
 /// Draft warm chunk tariff.
 pub const WARM_CODE_CHUNK_GAS: u64 = 1_000;
 
-/// An original provider payload with optional execution preparation and cached analysis.
-///
-/// Construction deliberately does not authenticate bytes. Ingestion authenticates hashes;
-/// execution checks the payload length against the requesting account's metadata.
+/// One bytecode allocation containing the stored, executable chunk and its analysis.
 #[derive(Clone, Debug)]
 pub struct CodeChunk {
-    bytes: Bytes,
-    kind: Option<BytecodeKind>,
+    bytecode: Bytecode,
     prepared: Option<PreparedCodeChunk>,
-    analysis: Arc<[OnceLock<Bytecode>; 2]>,
 }
+
+impl PartialEq for CodeChunk {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytecode == other.bytecode
+            && self.bytecode.kind() == other.bytecode.kind()
+            && self.prepared == other.prepared
+    }
+}
+
+impl Eq for CodeChunk {}
 
 impl Default for CodeChunk {
     fn default() -> Self {
@@ -44,116 +46,112 @@ impl Default for CodeChunk {
 
 impl From<Bytecode> for CodeChunk {
     fn from(code: Bytecode) -> Self {
-        Self::from_bytecode(&code)
+        Self { bytecode: code, prepared: None }
     }
 }
 
 impl CodeChunk {
-    /// Wraps an original payload returned by a provider.
+    /// Wraps ordinary code without interpreting a delegation-shaped prefix.
     pub fn new(bytes: Bytes) -> Self {
-        Self {
-            bytes,
-            kind: None,
-            prepared: None,
-            analysis: Arc::new(core::array::from_fn(|_| OnceLock::new())),
-        }
+        Bytecode::new_legacy(bytes).into()
     }
 
-    /// Returns original bytes, excluding any execution-only padding.
-    pub const fn original_bytes(&self) -> &Bytes {
-        &self.bytes
-    }
-
-    /// Preserves the kind of an existing single-chunk database record.
+    /// Retains an existing bytecode allocation and its shared analysis.
     pub fn from_bytecode(code: &Bytecode) -> Self {
-        let chunk = Self {
-            bytes: code.original_bytes(),
-            kind: Some(code.kind()),
-            prepared: None,
-            analysis: Arc::new(core::array::from_fn(|_| OnceLock::new())),
-        };
-        let _ = chunk.analysis[0].set(code.clone());
-        chunk
+        code.clone().into()
     }
 
-    /// Returns the provider's known kind, or `None` for an unclassified payload.
-    pub const fn kind(&self) -> Option<BytecodeKind> {
-        self.kind
+    /// Returns the single stored execution buffer and its lazy jump analysis.
+    pub fn bytecode(&self) -> Bytecode {
+        self.bytecode.clone()
     }
 
-    /// Builds an execution view. Multi-chunk payloads always use legacy analysis.
-    /// Delegation is selected only by an explicit persisted kind, never by payload prefix.
-    pub fn bytecode(&self, multi_chunk: bool) -> Bytecode {
-        if self.prepared.is_some() {
-            return self.execution_view(0).bytecode;
-        }
-        self.analysis[usize::from(multi_chunk)]
-            .get_or_init(|| {
-                if !multi_chunk
-                    && self.kind == Some(BytecodeKind::Eip7702)
-                    && let Ok(code) = Bytecode::new_eip7702_raw(self.bytes.clone())
-                {
-                    return code;
-                }
-                Bytecode::new_legacy(self.bytes.clone())
-            })
-            .clone()
+    /// Stored bytes, including continued immediates, the generated tail and start-offset byte.
+    /// Ordinary interpreter safety padding is excluded.
+    pub fn bytes(&self) -> &[u8] {
+        self.bytecode.original_byte_slice()
     }
 
-    /// Restores bounded preparation previously authenticated against complete original code.
-    pub fn with_preparation(
-        bytes: Bytes,
-        code_size: u32,
-        index: u32,
-        leading_data_len: u8,
-        jump_data_len: u8,
-        lookahead: Bytes,
-    ) -> Result<Self, CodeChunkError> {
+    /// Number of logical code positions represented by this chunk, excluding its tail.
+    pub fn payload_len(&self) -> usize {
+        self.prepared.as_ref().map_or(self.bytecode.len(), |p| p.payload_len)
+    }
+
+    /// Number of leading immediate bytes belonging to the previous chunk's instruction.
+    /// The count is the last stored byte; ordinary legacy records have no trailer.
+    pub fn start_offset(&self) -> usize {
+        if self.prepared.is_some() { usize::from(*self.bytes().last().unwrap()) } else { 0 }
+    }
+
+    /// Restores an already modified chunk authenticated by the provider at ingestion.
+    /// The payload keeps its original bytes; the final byte identifies leading immediate data.
+    pub fn from_prepared(bytes: Bytes, code_size: u32, index: u32) -> Result<Self, CodeChunkError> {
         let start = (index as usize)
             .checked_mul(CODE_CHUNK_SIZE)
             .ok_or(CodeChunkError::InvalidPreparation)?;
         let size = code_size as usize;
-        if !(CODE_CHUNK_SIZE + 1..=MAX_CODE_SIZE).contains(&size)
-            || start >= size
-            || bytes.len() != (size - start).min(CODE_CHUNK_SIZE)
-            || usize::from(leading_data_len) > bytes.len().min(32)
-            || usize::from(jump_data_len) > bytes.len().min(32)
-            || (index == 0 && (leading_data_len != 0 || jump_data_len != 0))
-            || lookahead.len() != (size - start - bytes.len()).min(32)
+        if !(CODE_CHUNK_SIZE + 1..=MAX_CODE_SIZE).contains(&size) || start >= size {
+            return Err(CodeChunkError::InvalidPreparation);
+        }
+        let payload_len = (size - start).min(CODE_CHUNK_SIZE);
+        if bytes.len() <= payload_len || bytes.len() > LEGACY_CODE_CHUNK_SIZE {
+            return Err(CodeChunkError::InvalidPreparation);
+        }
+        let start_offset = usize::from(*bytes.last().unwrap());
+        if start_offset > payload_len.min(32) || (index == 0 && start_offset != 0) {
+            return Err(CodeChunkError::InvalidPreparation);
+        }
+        let mut instruction_end = start_offset;
+        while instruction_end < payload_len {
+            instruction_end += instruction_len(bytes[instruction_end]);
+        }
+        let tail_offset = payload_len + 32;
+        let continuation_len = instruction_end - payload_len;
+        if bytes.get(instruction_end..tail_offset)
+            != Some(padding_suffix(continuation_len).as_slice())
         {
             return Err(CodeChunkError::InvalidPreparation);
         }
-        let mut pc = usize::from(leading_data_len);
-        while pc < bytes.len() {
-            pc += instruction_len(bytes[pc]);
+        let next_chunk = (start + instruction_end < size).then_some(index + 1);
+        let tail: &[u8] = if next_chunk.is_some() { &[op::RJUMP, 0x5a, 0x38] } else { &[op::STOP] };
+        if bytes.get(tail_offset..bytes.len() - 1) != Some(tail) {
+            return Err(CodeChunkError::InvalidPreparation);
         }
-        let spill = pc - bytes.len();
-        let mut continuation = lookahead[..spill.min(lookahead.len())].to_vec();
-        continuation.resize(spill, 0);
-        let next_chunk = (start + pc < size).then_some(index + 1);
-        Ok(Self {
-            bytes,
-            kind: Some(BytecodeKind::Legacy),
-            analysis: Arc::new(core::array::from_fn(|_| OnceLock::new())),
-            prepared: Some(PreparedCodeChunk {
-                code_size,
-                index,
-                leading_data_len,
-                jump_data_len,
-                lookahead,
-                continuation: continuation.into(),
-                next_chunk,
-                cache: Arc::new(OnceLock::new()),
-            }),
-        })
+        // The prefix belongs to the preceding instruction, even if it contains JUMPDEST.
+        // Preserve the existing PUSH-only jump analysis after the first real opcode.
+        let mut jumps = JumpTable::new(bytes.len());
+        let mut pc = start_offset;
+        while pc < payload_len {
+            let opcode = bytes[pc];
+            if opcode == op::JUMPDEST {
+                jumps.as_mut_slice()[pc / 8] |= 1 << (pc % 8);
+            }
+            pc += if (op::PUSH1..=op::PUSH32).contains(&opcode) {
+                usize::from(opcode - op::PUSH1) + 2
+            } else {
+                1
+            };
+        }
+        // Only generated padding JUMPDESTs are valid physical destinations beyond the payload.
+        for pc in instruction_end..tail_offset {
+            if bytes[pc] == op::JUMPDEST {
+                jumps.as_mut_slice()[pc / 8] |= 1 << (pc % 8);
+            }
+        }
+        let padded = Bytecode::new_legacy(bytes);
+        // SAFETY: new_legacy supplies ordinary safety padding for all immediate reads.
+        // The map has one bit per stored byte and excludes prefix data and generated tails.
+        let bytecode =
+            unsafe { Bytecode::new_analyzed(padded.bytes().clone(), padded.len(), jumps) };
+        Ok(Self { bytecode, prepared: Some(PreparedCodeChunk { code_size, index, payload_len }) })
     }
 
-    /// Authenticated execution layout, absent on unchanged legacy records.
+    /// Logical context of a prepared chunk; ordinary legacy records have none.
     pub const fn prepared(&self) -> Option<&PreparedCodeChunk> {
         self.prepared.as_ref()
     }
 
-    /// Checks preparation against the requesting account's logical size and index.
+    /// Checks the loaded buffer's logical size and index against the account.
     pub fn validate_context(&self, code_size: u32, index: u32) -> Result<(), CodeChunkError> {
         if self.prepared.as_ref().is_some_and(|p| p.code_size == code_size && p.index == index) {
             Ok(())
@@ -162,93 +160,10 @@ impl CodeChunk {
         }
     }
 
-    /// Complete original jump map, including explicitly valid replacement prefix positions.
-    /// Unlike a single execution view's safe map, this includes every entry variant.
+    /// Dynamic jumps may enter only JUMPDESTs in the logical payload.
     pub fn is_valid_jumpdest(&self, local_pc: usize) -> bool {
-        if let Some(prepared) = &self.prepared {
-            self.execution_layouts(prepared).jumps.is_valid(local_pc)
-        } else {
-            self.bytecode(false).legacy_jump_table().is_some_and(|map| map.is_valid(local_pc))
-        }
-    }
-
-    /// Selects a bounded execution view for a validated entry offset.
-    /// Only interpreter activation may consume a nonzero-entry view: it must start at that
-    /// exact offset and replace the view on every taken jump with a different tail alignment.
-    /// Each of at most 33 possible tails is materialized only once per immutable chunk.
-    pub(crate) fn execution_view(&self, entry: usize) -> PreparedExecutionView {
-        let Some(prepared) = &self.prepared else {
-            return PreparedExecutionView {
-                bytecode: self.bytecode(false),
-                tail_offset: self.bytes.len(),
-            };
-        };
-        assert!(entry < self.bytes.len(), "execution entry is outside original chunk");
-        let layouts = self.execution_layouts(prepared);
-        let spill = usize::from(layouts.tails[entry]);
-        let tail_offset = self.bytes.len() + spill;
-        let next_offset = (prepared.index as usize * CODE_CHUNK_SIZE + tail_offset
-            < prepared.code_size as usize)
-            .then_some(spill);
-        let bytecode = layouts.variants[spill]
-            .get_or_init(|| {
-                let mut bytes = self.bytes.to_vec();
-                bytes[..usize::from(prepared.leading_data_len)].fill(0x5b);
-                if usize::from(layouts.tails[0]) != spill {
-                    bytes[0] = 0;
-                }
-                bytes.extend_from_slice(&prepared.lookahead[..spill.min(prepared.lookahead.len())]);
-                bytes.resize(tail_offset, 0);
-                if next_offset.is_some() {
-                    // The next original instruction has the tail's global PC. RJUMP is
-                    // three bytes long, so -3 reaches it in the successor payload.
-                    bytes.push(op::RJUMP);
-                    bytes.extend_from_slice(&encode_rjump_offset(-3).unwrap());
-                } else {
-                    bytes.push(0);
-                }
-                let mut map = JumpTable::new(self.bytes.len());
-                for (pc, &overrun) in layouts.tails.iter().enumerate() {
-                    if usize::from(overrun) == spill && layouts.jumps.is_valid(pc) {
-                        map.as_mut_slice()[pc / 8] |= 1 << (pc % 8);
-                    }
-                }
-                // SAFETY: offset zero either has this tail or is guarded by STOP. Every entry
-                // admitted by this view's map has the same verified tail.
-                // Every immediate is complete and execution ends at STOP or RJUMP.
-                // TIP runtime validates against the full separate map before switching variants.
-                unsafe { Bytecode::new_analyzed(bytes.into(), self.bytes.len(), map) }
-            })
-            .clone();
-        PreparedExecutionView { bytecode, tail_offset }
-    }
-
-    fn execution_layouts<'a>(&self, prepared: &'a PreparedCodeChunk) -> &'a ExecutionLayouts {
-        prepared.cache.get_or_init(|| {
-            let mut jumps = JumpTable::new(self.bytes.len());
-            let mut pc = usize::from(prepared.jump_data_len);
-            while pc < self.bytes.len() {
-                if self.bytes[pc] == 0x5b {
-                    jumps.as_mut_slice()[pc / 8] |= 1 << (pc % 8);
-                }
-                pc += jump_instruction_len(self.bytes[pc]);
-            }
-            for pc in 0..usize::from(prepared.leading_data_len) {
-                jumps.as_mut_slice()[pc / 8] |= 1 << (pc % 8);
-            }
-            let mut tails = vec![0u8; self.bytes.len()];
-            for pc in (0..self.bytes.len()).rev() {
-                let opcode =
-                    if pc < usize::from(prepared.leading_data_len) { 0x5b } else { self.bytes[pc] };
-                let next = pc + instruction_len(opcode);
-                tails[pc] = if next < self.bytes.len() {
-                    tails[next]
-                } else {
-                    (next - self.bytes.len()) as u8
-                };
-            }
-            ExecutionLayouts { jumps, tails, variants: core::array::from_fn(|_| OnceLock::new()) }
-        })
+        local_pc < self.payload_len()
+            && self.bytecode.legacy_jump_table().is_some_and(|map| map.is_valid(local_pc))
     }
 }
 
@@ -278,7 +193,7 @@ impl CodeMetadata {
         self.code_size
     }
 
-    /// Ordered original-payload commitments.
+    /// Ordered commitments to complete stored chunk buffers, including the start-offset byte.
     pub fn chunk_hashes(&self) -> &[B256] {
         &self.chunk_hashes
     }
@@ -326,45 +241,54 @@ pub const fn validate_code(code: &[u8]) -> Result<(), CodeChunkError> {
     Ok(())
 }
 
-/// Validates original creation output and computes optional commitments without analysis.
+/// Validates creation output and commits to the stored, modified chunk buffers.
 pub fn code_metadata(code: &[u8]) -> Result<Option<CodeMetadata>, CodeChunkError> {
     validate_code(code)?;
     if code.len() <= CODE_CHUNK_SIZE {
         return Ok(None);
     }
     let size = u32::try_from(code.len()).map_err(|_| CodeChunkError::CodeTooLarge)?;
-    CodeMetadata::new(size, code.chunks(CODE_CHUNK_SIZE).map(keccak256).collect()).map(Some)
+    let code = Bytes::copy_from_slice(code);
+    let hashes = (0..code.len().div_ceil(CODE_CHUNK_SIZE))
+        .map(|index| {
+            code_chunk(&code, index as u32).expect("validated chunk index").bytecode.hash_slow()
+        })
+        .collect();
+    CodeMetadata::new(size, hashes).map(Some)
 }
 
-/// Derives one original payload and its bounded preparation from authenticated full code.
+/// Prepares one chunk at creation or ingestion, without retaining its original slice.
 pub fn code_chunk(code: &Bytes, index: u32) -> Option<CodeChunk> {
     let start = usize::try_from(index).ok()?.checked_mul(CODE_CHUNK_SIZE)?;
     if start >= code.len() {
         return None;
     }
-    let end = start.checked_add(CODE_CHUNK_SIZE)?.min(code.len());
     if code.len() <= CODE_CHUNK_SIZE {
-        return Some(CodeChunk::from_bytecode(&Bytecode::new_legacy(code.clone())));
+        return Some(CodeChunk::new(code.clone()));
     }
-    let mut jump_pc = 0;
-    while jump_pc < start {
-        jump_pc += jump_instruction_len(code[jump_pc]);
-    }
-    let jump_data_len = jump_pc.min(end).saturating_sub(start) as u8;
+    let end = start.checked_add(CODE_CHUNK_SIZE)?.min(code.len());
     let mut pc = 0;
     while pc < start {
         pc += instruction_len(code[pc]);
     }
     let leading = pc.min(end).saturating_sub(start);
-    CodeChunk::with_preparation(
-        code.slice(start..end),
-        code.len() as u32,
-        index,
-        leading as u8,
-        jump_data_len,
-        code.slice(end..(end + 32).min(code.len())),
-    )
-    .ok()
+    pc = pc.min(end);
+    while pc < end {
+        pc += instruction_len(code[pc]);
+    }
+    let mut bytes = code[start..pc.min(code.len())].to_vec();
+    bytes.resize(pc - start, 0);
+    bytes.extend_from_slice(&padding_suffix(pc - end));
+    if pc < code.len() {
+        // The fixed padding and RJUMP width place the successor's logical start 35 bytes back.
+        // The transfer handler then advances over that chunk's leading immediate data.
+        bytes.push(op::RJUMP);
+        bytes.extend_from_slice(&encode_rjump_offset(-35).unwrap());
+    } else {
+        bytes.push(op::STOP);
+    }
+    bytes.push(leading as u8);
+    CodeChunk::from_prepared(bytes.into(), code.len().try_into().ok()?, index).ok()
 }
 
 /// Checked aggregate incremental tariff for one operation.
@@ -391,51 +315,28 @@ impl TryFrom<MetadataFields> for CodeMetadata {
     }
 }
 
-/// Bounded execution-only layout authenticated at creation or ingestion.
-#[derive(Clone, Debug)]
+/// Logical context for an immutable prepared bytecode buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PreparedCodeChunk {
     code_size: u32,
     index: u32,
-    lookahead: Bytes,
-    cache: Arc<OnceLock<ExecutionLayouts>>,
-    leading_data_len: u8,
-    jump_data_len: u8,
-    continuation: Bytes,
-    next_chunk: Option<u32>,
+    payload_len: usize,
 }
 
 impl PreparedCodeChunk {
-    /// Prefix replaced with valid JUMPDEST instructions in the execution view.
-    pub const fn leading_data_len(&self) -> u8 {
-        self.leading_data_len
-    }
-    /// Prefix skipped by the original global PUSH-only jump destination analysis.
-    pub const fn jump_data_len(&self) -> u8 {
-        self.jump_data_len
-    }
-    /// Full bounded original lookahead shared by all possible entry variants.
-    pub const fn lookahead(&self) -> &Bytes {
-        &self.lookahead
-    }
-    /// Complete original size used to authenticate this preparation context.
+    /// Complete logical code size.
     pub const fn code_size(&self) -> u32 {
         self.code_size
     }
-    /// Logical chunk index used to authenticate this preparation context.
+
+    /// Position in the account's ordered chunk list.
     pub const fn index(&self) -> u32 {
         self.index
     }
-    /// Original immediate bytes continued after the nominal slice, including final zero padding.
-    pub const fn continuation(&self) -> &Bytes {
-        &self.continuation
-    }
-    /// Next logical chunk for an internal transfer, or final STOP.
-    pub const fn next_chunk(&self) -> Option<u32> {
-        self.next_chunk
-    }
-    /// Local offset of RJUMP or final STOP.
-    pub fn tail_offset(&self, payload_len: usize) -> usize {
-        payload_len + self.continuation.len()
+
+    /// Local position of the generated RJUMP or STOP.
+    pub const fn tail_offset(&self) -> usize {
+        self.payload_len + 32
     }
 }
 
@@ -451,42 +352,15 @@ fn instruction_len(opcode: u8) -> usize {
     }
 }
 
-impl PartialEq for CodeChunk {
-    fn eq(&self, other: &Self) -> bool {
-        self.bytes == other.bytes && self.kind == other.kind && self.prepared == other.prepared
+/// Fill unused padding with a checked local jump, or up to three JUMPDESTs.
+fn padding_suffix(continuation_len: usize) -> Vec<u8> {
+    let remaining = 32 - continuation_len;
+    let mut padding = alloc::vec![op::JUMPDEST; remaining];
+    if remaining >= 4 {
+        padding.fill(op::STOP);
+        padding[0] = op::RJUMP;
+        padding[1..3].copy_from_slice(&encode_rjump_offset((remaining - 4) as isize).unwrap());
+        padding[remaining - 1] = op::JUMPDEST;
     }
+    padding
 }
-
-impl Eq for CodeChunk {}
-
-fn jump_instruction_len(opcode: u8) -> usize {
-    if (0x60..=0x7f).contains(&opcode) { usize::from(opcode - 0x5f) + 1 } else { 1 }
-}
-
-/// Owned execution view for a particular entry alignment.
-#[derive(Clone, Debug)]
-pub(crate) struct PreparedExecutionView {
-    /// Shared bytecode; its jump map admits only entries with this same safe tail.
-    pub bytecode: Bytecode,
-    /// Local generated transfer/STOP offset.
-    pub tail_offset: usize,
-}
-
-#[derive(Debug)]
-struct ExecutionLayouts {
-    jumps: JumpTable,
-    tails: Vec<u8>,
-    variants: [OnceLock<Bytecode>; 33],
-}
-
-impl PartialEq for PreparedCodeChunk {
-    fn eq(&self, other: &Self) -> bool {
-        self.code_size == other.code_size
-            && self.index == other.index
-            && self.leading_data_len == other.leading_data_len
-            && self.jump_data_len == other.jump_data_len
-            && self.lookahead == other.lookahead
-    }
-}
-
-impl Eq for PreparedCodeChunk {}
