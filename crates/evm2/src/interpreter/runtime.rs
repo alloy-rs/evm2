@@ -41,6 +41,8 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     pub(in crate::interpreter) gas: Gas,
     pub(in crate::interpreter) result: Result,
     error: Option<ExecutionError>,
+    step_gas_before: u64,
+    failed_charge: Option<u64>,
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
@@ -83,6 +85,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             memory: Memory::new(),
             result: Ok(()),
             error: None,
+            step_gas_before: 0,
+            failed_charge: None,
             output: 0..0,
             tx_env: None,
             message: None,
@@ -110,6 +114,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.memory.clear();
         self.result = Ok(());
         self.error = None;
+        self.step_gas_before = 0;
+        self.failed_charge = None;
         self.output = 0..0;
         self.tx_env = Some(tx_env);
         self.message = Some(message);
@@ -250,6 +256,15 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub const fn set_result(&mut self, result: Result) {
         self.result = result;
+    }
+
+    /// Returns the execution gas the current step attempted to charge when it ran out of gas.
+    ///
+    /// Only set during an inspector's `step_end`, where the remaining gas has already been
+    /// zeroed after the failed charge.
+    #[inline]
+    pub const fn failed_charge(&self) -> Option<u64> {
+        self.failed_charge
     }
 
     /// Sets the current instruction result to `stop`.
@@ -637,6 +652,8 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
         }
+        self.0.step_gas_before = self.0.gas.remaining();
+        self.0.failed_charge = None;
     }
 
     #[inline]
@@ -645,6 +662,8 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.stack_len = stack_len;
         if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
             cold_path();
+            self.0.failed_charge =
+                Some(self.0.step_gas_before.wrapping_sub(self.0.gas.remaining()));
             // Failed charges may leave a wrapped counter until frame settlement.
             self.0.gas.set_remaining(0);
         }
