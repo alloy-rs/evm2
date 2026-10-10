@@ -1,6 +1,14 @@
 //! Transaction handler extension points.
 
-use crate::{Evm, EvmTypes, TxResult, interpreter::MessageResult, registry::HandlerResult};
+use crate::{
+    Evm, EvmTypes, TxResult,
+    ethereum::{
+        LazyTxEip7702,
+        eip7702::{self, AuthorizationResult},
+    },
+    interpreter::{GasTracker, MessageResult},
+    registry::HandlerResult,
+};
 use alloy_primitives::{Address, U256};
 use derive_where::derive_where;
 
@@ -48,6 +56,22 @@ pub trait TxHandlerHooks<T: EvmTypes>: Sized {
     ) -> HandlerResult<()> {
         crate::ethereum::charge_upfront(host, caller, upfront_fee)?;
         Ok(())
+    }
+
+    /// Validates and applies authorizations before the initial execution frame is created.
+    ///
+    /// The default preserves Ethereum's fork-dependent runtime charges and refunds. Custom
+    /// implementations can reuse [`eip7702::apply_auth_list`] with their own accounting.
+    /// The handler credits the returned refunds and rolls back delegations on authorization
+    /// out-of-gas; hooks must not credit the returned refunds themselves.
+    fn apply_authorizations(
+        host: &mut Evm<'_, T>,
+        _envelope: &T::Tx,
+        tx: &LazyTxEip7702,
+        caller: Address,
+        gas: &mut GasTracker,
+    ) -> HandlerResult<AuthorizationResult> {
+        eip7702::apply_authorizations(host, tx, caller, gas)
     }
 
     /// Settles a transaction after execution and rollback handling.

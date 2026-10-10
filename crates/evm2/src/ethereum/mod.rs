@@ -16,7 +16,7 @@ pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
     Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, COLD_CODE_CHUNK_GAS, WARM_CODE_CHUNK_GAS},
     env::TxEnv,
     evm::{
         AccountInfo,
@@ -384,7 +384,7 @@ pub const fn validate_chain_id(
 
 /// Validates top-level create initcode against the active size limit.
 pub fn validate_create_initcode(version: &Version, to: TxKind, input: &Bytes) -> HandlerResult<()> {
-    if version.feature(EvmFeatures::EIP3860)
+    if (version.feature(EvmFeatures::EIP3860) || version.feature(EvmFeatures::TIP1143))
         && to.is_create()
         && input.len() > version.max_initcode_size
     {
@@ -437,11 +437,17 @@ pub fn validate_sender<'a, T: EvmTypes>(
     let has_balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
     let has_balance_top_up = host.feature(EvmFeatures::BALANCE_TOP_UP);
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
+    let chunked = host.feature(EvmFeatures::TIP1143);
 
     let mut sender = host.state.account(&caller)?;
     if has_eip3607 && sender.code_hash() != KECCAK256_EMPTY {
-        let code = sender.load_code()?;
-        if !code.is_empty() && !code.is_eip7702() {
+        let rejected = if chunked {
+            !sender.code_hash().is_zero() && !sender.code_is_eip7702()?
+        } else {
+            let code = sender.load_code()?;
+            !code.is_empty() && !code.is_eip7702()
+        };
+        if rejected {
             return Err(HandlerError::RejectCallerWithCode);
         }
     }
@@ -570,6 +576,9 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
     let mut charged_state_gas = 0;
     let message = match to {
         TxKind::Call(to) => {
+            if host.feature(EvmFeatures::TIP1143) {
+                return prepare_initial_chunked_frame(host, caller, to, input, value, tx_gas);
+            }
             let (recipient_is_empty, mut code) = {
                 let mut account = host.state.account(&to)?;
                 // A nonexistent recipient reads as an empty account (EIP-161).
@@ -629,7 +638,10 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 caller,
                 input: input.clone(),
                 value,
-                code,
+                code_chunk: (code).into(),
+                is_lazy_code: false,
+                code_size: 0,
+                code_hash: B256::ZERO,
                 code_address,
                 disable_precompiles,
                 caller_is_static: false,
@@ -661,7 +673,10 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 caller,
                 input: input.clone(),
                 value,
-                code: Bytecode::new_legacy(input.clone()),
+                code_chunk: (Bytecode::new_legacy(input.clone())).into(),
+                is_lazy_code: false,
+                code_size: input.len(),
+                code_hash: B256::ZERO,
                 code_address: destination,
                 disable_precompiles: false,
                 caller_is_static: false,
@@ -934,6 +949,121 @@ fn eip2780_base_to_value_gas(
         }
     }
     gas
+}
+
+/// Prepares a draft transaction entry without fetching unrelated runtime payloads.
+fn prepare_initial_chunked_frame<T: EvmTypes>(
+    host: &mut Evm<'_, T>,
+    caller: Address,
+    to: Address,
+    input: &Bytes,
+    value: U256,
+    tx_gas: &mut GasTracker,
+) -> HandlerResult<Option<InitialFrame<T>>> {
+    let mut account = Host::load_account(host, &to, false, false).map_err(|error| match error {
+        HostError::Execution(error) => HandlerError::from(error),
+        HostError::Halt(_) => unreachable!("unconditional metadata load"),
+    })?;
+    let mut charged_state_gas = 0;
+    if host.feature(EvmFeatures::EIP2780) && !value.is_zero() && account.is_empty {
+        charged_state_gas = host.version().gas_params.new_account_state_gas();
+        if tx_gas.spend_state(charged_state_gas).is_err() {
+            return Ok(None);
+        }
+    }
+    let mut owner = to;
+    let mut disable_precompiles = false;
+    let native = Host::is_precompile(host, &to);
+
+    if !native
+        && host.feature(EvmFeatures::EIP7702)
+        && let Some(target) = account.inline_delegation
+    {
+        let metered = host.feature(EvmFeatures::EIP2780);
+        let cold = host.version().gas_params.cold_account_additional_cost();
+        if metered && tx_gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
+            return Ok(None);
+        }
+        account =
+            match Host::load_account(host, &target, false, metered && tx_gas.remaining() < cold) {
+                Ok(account) => account,
+                Err(HostError::Halt(_)) => return Ok(None),
+                Err(HostError::Execution(error)) => return Err(error.into()),
+            };
+        if metered && account.is_cold && tx_gas.spend(cold).is_err() {
+            return Ok(None);
+        }
+
+        owner = target;
+        disable_precompiles = true;
+    }
+    let mut code = Bytecode::default();
+    let mut code_chunk = None;
+    let mut code_size = 0;
+    if (!native || disable_precompiles)
+        && !account.code_hash.is_zero()
+        && account.code_hash != alloy_primitives::KECCAK256_EMPTY
+    {
+        if let Some(target) = account.inline_delegation {
+            code = Bytecode::new_eip7702(target);
+            code_size = code.len();
+        } else {
+            let tariff = if host.state.code_chunk_is_warm(&owner, 0) {
+                WARM_CODE_CHUNK_GAS
+            } else {
+                COLD_CODE_CHUNK_GAS
+            };
+            if tx_gas.spend(tariff).is_err() {
+                return Ok(None);
+            }
+            let loaded = match Host::load_code_chunk(host, &owner, 0, false) {
+                Ok(Some(loaded)) => loaded,
+                Ok(None) => {
+                    return Err(crate::DatabaseError::new(
+                        crate::CodeChunkError {
+                            code_hash: account.code_hash,
+                            index: 0,
+                            expected_length: None,
+                            actual_length: None,
+                            reason: "missing required entry chunk",
+                            source: None,
+                        },
+                        true,
+                    )
+                    .into());
+                }
+                Err(HostError::Halt(_)) => return Ok(None),
+                Err(HostError::Execution(error)) => return Err(error.into()),
+            };
+            code_size =
+                account.code_size.map_or(loaded.chunk.original_bytes().len(), |size| size as usize);
+            code_chunk = Some(loaded.chunk);
+        }
+    }
+    Ok(Some(InitialFrame {
+        charged_state_gas,
+        message: MessageExt {
+            kind: MessageKind::Call,
+            depth: 0,
+            gas_limit: tx_gas.remaining(),
+            reservoir: tx_gas.reservoir(),
+            destination: to,
+            call_target: to,
+            caller,
+            input: input.clone(),
+            value,
+            is_lazy_code: code_chunk.is_some(),
+            code_chunk: code_chunk.unwrap_or_else(|| (code).into()),
+            code_size,
+            code_hash: account.code_hash,
+            code_address: owner,
+            disable_precompiles,
+            caller_is_static: false,
+            salt: B256::ZERO,
+            ext: T::MessageExt::default(),
+            _non_exhaustive: (),
+        },
+    }))
 }
 
 #[cfg(test)]

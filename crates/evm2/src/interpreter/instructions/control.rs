@@ -1,10 +1,7 @@
 use crate::{
-    EvmTypesHost,
-    interpreter::{
-        InstrStop, Result, Word, op,
-        opcode::OpCode,
-        private::{GasInstructionCx, InstructionCx},
-    },
+    EvmFeatures, EvmTypesHost,
+    bytecode::CODE_CHUNK_SIZE,
+    interpreter::{InstrStop, Result, Word, op, opcode::OpCode, private::GasInstructionCx},
     utils::{word_to_usize, word_to_usize_saturated},
 };
 use core::hint::cold_path;
@@ -16,12 +13,12 @@ pub fn stop() -> Result {
     Err(InstrStop::Stop)
 }
 
-#[instruction]
+#[instruction(dynamic_gas)]
 pub fn jump(cx: _, [target]: [Word]) -> Result {
     jump_inner(*target, &mut cx)
 }
 
-#[instruction]
+#[instruction(dynamic_gas)]
 pub fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
         jump_inner(*target, &mut cx)?;
@@ -31,8 +28,34 @@ pub fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
 }
 
 #[inline(always)]
-fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut InstructionCx<'_, '_, '_, T>) -> Result {
+fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut GasInstructionCx<'_, '_, '_, T>) -> Result {
     let target = word_to_usize_saturated(target);
+    let target = if cx.state.is_chunked_code() {
+        if target >= cx.state.code_size() {
+            return Err(InstrStop::InvalidJump);
+        }
+        let index = (target / CODE_CHUNK_SIZE) as u32;
+        // Legacy records may be up to 24 KiB and have no prepared slicing.
+        let multi = cx.state.message().code_chunk.prepared().is_some();
+        if multi {
+            let local = target % CODE_CHUNK_SIZE;
+            let chunk = if index != cx.state.code_chunk_index() {
+                let address = cx.state.message().code_address;
+                let tariff = cx.state.chunk_tariff(&address, index);
+                cx.gas.spend(tariff)?;
+                cx.state.required_code_chunk(&address, index)?
+            } else {
+                cx.state.active_chunk().clone()
+            };
+            if !chunk.is_valid_jumpdest(local) {
+                return Err(InstrStop::InvalidJump);
+            }
+            cx.state.activate_code_chunk(index, chunk, local);
+        }
+        if multi { target % CODE_CHUNK_SIZE } else { target }
+    } else {
+        target
+    };
     if !cx.state.bytecode().is_valid_jumpdest(target) {
         cold_path();
         return Err(InstrStop::InvalidJump);
@@ -43,7 +66,7 @@ fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut InstructionCx<'_, '_, '_, 
 
 #[instruction]
 pub fn pc(cx: _) -> out {
-    *out = Word::from(cx.state.bytecode().pc_offset(*cx.pc));
+    *out = Word::from(cx.state.global_pc(*cx.pc));
 }
 
 #[instruction(dynamic_gas)]
@@ -100,6 +123,91 @@ pub fn invalid(cx: _) -> Result {
     } else {
         InstrStop::OpcodeNotFound
     })
+}
+
+/// Static relative jump with two EIP-8024-encoded immediate digits.
+/// The logical destination is relative to the PC after the three-byte instruction.
+#[instruction(dynamic_gas)]
+pub fn rjump(cx: _) -> Result {
+    if !cx.state.feature(EvmFeatures::TIP1143) {
+        return Err(InstrStop::OpcodeNotFound);
+    }
+    // Like EOF RJUMP, every executed relative jump costs two gas, including loops.
+    cx.gas.spend(2)?;
+    let immediate = unsafe { cx.pc.read_bytes_offset_unchecked(1, 2) };
+    let offset = decode_rjump_offset([immediate[0], immediate[1]])
+        .ok_or(InstrStop::InvalidImmediateEncoding)?;
+    rjump_inner(offset, &mut cx)
+}
+
+/// Conditional relative jump using the same immediate encoding as RJUMP.
+#[instruction(dynamic_gas, no_stack_preamble)]
+pub fn rjumpi(cx: _) -> Result {
+    // Check activation before touching the stack, preserving unknown-opcode behavior.
+    if !cx.state.feature(EvmFeatures::TIP1143) {
+        return Err(InstrStop::OpcodeNotFound);
+    }
+    cx.gas.spend(4)?;
+    let condition = stack.pop()?;
+    let immediate = unsafe { cx.pc.read_bytes_offset_unchecked(1, 2) };
+    let offset = decode_rjump_offset([immediate[0], immediate[1]])
+        .ok_or(InstrStop::InvalidImmediateEncoding)?;
+    if condition.is_zero() {
+        // Preparation completes the immediate and supplies a transfer or final STOP.
+        unsafe { cx.pc.advance_unchecked(3) };
+        Ok(())
+    } else {
+        rjump_inner(offset, &mut cx)
+    }
+}
+
+#[inline(always)]
+fn rjump_inner<T: EvmTypesHost>(offset: isize, cx: &mut GasInstructionCx<'_, '_, '_, T>) -> Result {
+    let target = cx
+        .state
+        .global_pc(*cx.pc)
+        .checked_add(3)
+        .and_then(|post_pc| post_pc.checked_add_signed(offset))
+        .filter(|&target| target < cx.state.code_size())
+        .ok_or(InstrStop::InvalidJump)?;
+    let prepared = cx.state.is_chunked_code() && cx.state.active_chunk().prepared().is_some();
+    let local = if prepared {
+        let index = (target / CODE_CHUNK_SIZE) as u32;
+        let local = target % CODE_CHUNK_SIZE;
+        let chunk = if index == cx.state.code_chunk_index() {
+            cx.state.active_chunk().clone()
+        } else {
+            let address = cx.state.message().code_address;
+            let tariff = cx.state.chunk_tariff(&address, index);
+            cx.gas.spend(tariff)?;
+            cx.state.required_code_chunk(&address, index)?
+        };
+        cx.state.activate_code_chunk(index, chunk, local);
+        local
+    } else {
+        target
+    };
+    // A static jump does not require JUMPDEST. Prepared views pad the actual entry path;
+    // ordinary bytecode retains its existing 33-byte safety padding.
+    unsafe { cx.pc.set_unchecked(cx.state.bytecode(), local) };
+    Ok(())
+}
+
+/// Two base-219 digits use the exact DUPN/SWAPN alphabet (decoded values 17..=235).
+/// Balanced signed displacements span -23980..=23980; no digit is PUSHn or JUMPDEST.
+pub(crate) const fn encode_rjump_offset(offset: isize) -> Option<[u8; 2]> {
+    if offset < -23980 || offset > 23980 {
+        return None;
+    }
+    let value = if offset < 0 { offset + 47961 } else { offset } as usize;
+    Some([((value / 219) as u8).wrapping_add(128), ((value % 219) as u8).wrapping_add(128)])
+}
+
+pub(crate) fn decode_rjump_offset(bytes: [u8; 2]) -> Option<isize> {
+    let high = super::decode_single(bytes[0])? - 17;
+    let low = super::decode_single(bytes[1])? - 17;
+    let value = (high * 219 + low) as isize;
+    Some(if value > 23980 { value - 47961 } else { value })
 }
 
 #[cfg(test)]

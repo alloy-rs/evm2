@@ -1,7 +1,11 @@
 //! Database helpers for the EVM state overlay.
 
 use super::{NonStaticAny, state::AccountInfo};
-use crate::{DatabaseError, bytecode::Bytecode, interpreter::Word};
+use crate::{
+    DatabaseError,
+    bytecode::{Bytecode, CodeChunk},
+    interpreter::Word,
+};
 use alloc::{boxed::Box, string::ToString};
 use alloy_primitives::{Address, B256, keccak256};
 use auto_impl::auto_impl;
@@ -30,6 +34,20 @@ pub trait Database: NonStaticAny {
 
     /// Loads bytecode by code hash.
     fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error>;
+
+    /// Loads one original payload. Providers classify legacy rows versus multi-chunk indices.
+    /// Never reconstruct full multi-chunk code to satisfy this operation.
+    fn get_code_chunk_by_hash(
+        &mut self,
+        code_hash: &B256,
+        index: u32,
+    ) -> Result<Option<CodeChunk>, Self::Error>;
+
+    /// Discards a raw response rejected by contextual execution validation.
+    /// Cache adapters must evict and forward this notification to their backing adapter.
+    fn discard_code_chunk(&mut self, code_hash: &B256, index: u32) {
+        let _ = (code_hash, index);
+    }
 
     /// Loads a persistent storage slot.
     fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error>;
@@ -81,6 +99,21 @@ impl<T: Database> Db<T> {
 }
 
 impl<T: Database> DynDatabase for Db<T> {
+    fn discard_code_chunk(&mut self, code_hash: &B256, index: u32) {
+        self.db.discard_code_chunk(code_hash, index);
+    }
+
+    fn get_code_chunk_by_hash(
+        &mut self,
+        code_hash: &B256,
+        index: u32,
+    ) -> DbResult<Option<CodeChunk>> {
+        self.db.get_code_chunk_by_hash(code_hash, index).map_err(|err| {
+            let fatal = T::is_fatal(&err);
+            DatabaseError::new(err, fatal)
+        })
+    }
+
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         self.db.get_account(address).map_err(|err| {
@@ -89,7 +122,6 @@ impl<T: Database> DynDatabase for Db<T> {
         })
     }
 
-    #[inline]
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         self.db.get_code_by_hash(code_hash).map_err(|err| {
             let fatal = T::is_fatal(&err);
@@ -123,6 +155,19 @@ pub trait DynDatabase: NonStaticAny {
     /// Loads bytecode by code hash.
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode>;
 
+    /// Loads one original payload without full-code reconstruction.
+    fn get_code_chunk_by_hash(
+        &mut self,
+        code_hash: &B256,
+        index: u32,
+    ) -> DbResult<Option<CodeChunk>>;
+
+    /// Discards a raw response rejected by contextual execution validation.
+    /// Cache adapters must evict and forward this notification to their backing adapter.
+    fn discard_code_chunk(&mut self, code_hash: &B256, index: u32) {
+        let _ = (code_hash, index);
+    }
+
     /// Loads a persistent storage slot.
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word>;
 
@@ -140,6 +185,9 @@ pub struct DbStatsCounts {
     pub get_account: u64,
     /// Number of bytecode loads by hash.
     pub get_code_by_hash: u64,
+    /// Persisted-kind metadata requests, including negative delegation evidence.
+    /// Number of chunk adapter calls, including misses and failures.
+    pub get_code_chunk_by_hash: u64,
     /// Number of storage slot loads.
     pub get_storage: u64,
     /// Number of storage loads whose address matched the previous storage load.
@@ -155,6 +203,7 @@ impl core::ops::AddAssign for DbStatsCounts {
     fn add_assign(&mut self, rhs: Self) {
         self.get_account += rhs.get_account;
         self.get_code_by_hash += rhs.get_code_by_hash;
+        self.get_code_chunk_by_hash += rhs.get_code_chunk_by_hash;
         self.get_storage += rhs.get_storage;
         self.get_storage_same_address_repeats += rhs.get_storage_same_address_repeats;
         self.get_storage_same_address_longest_streak = self
@@ -182,6 +231,7 @@ impl<D> DbStats<D> {
             counts: DbStatsCounts {
                 get_account: 0,
                 get_code_by_hash: 0,
+                get_code_chunk_by_hash: 0,
                 get_storage: 0,
                 get_storage_same_address_repeats: 0,
                 get_storage_same_address_longest_streak: 0,
@@ -232,13 +282,25 @@ impl<D> DbStats<D> {
 }
 
 impl<D: DynDatabase> DynDatabase for DbStats<D> {
+    fn discard_code_chunk(&mut self, code_hash: &B256, index: u32) {
+        self.db.discard_code_chunk(code_hash, index);
+    }
+
+    fn get_code_chunk_by_hash(
+        &mut self,
+        code_hash: &B256,
+        index: u32,
+    ) -> DbResult<Option<CodeChunk>> {
+        self.counts.get_code_chunk_by_hash += 1;
+        self.db.get_code_chunk_by_hash(code_hash, index)
+    }
+
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         self.counts.get_account += 1;
         self.db.get_account(address)
     }
 
-    #[inline]
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         self.counts.get_code_by_hash += 1;
         self.db.get_code_by_hash(code_hash)
@@ -283,6 +345,15 @@ pub(crate) fn boxed_dyn_database<'a>(database: impl DynDatabase + 'a) -> Box<dyn
 pub struct EmptyDB(());
 
 impl Database for EmptyDB {
+    fn get_code_chunk_by_hash(
+        &mut self,
+        code_hash: &B256,
+        index: u32,
+    ) -> Result<Option<CodeChunk>, Self::Error> {
+        let _ = (code_hash, index);
+        Ok(None)
+    }
+
     type Error = core::convert::Infallible;
 
     #[inline]
@@ -290,7 +361,6 @@ impl Database for EmptyDB {
         Ok(None)
     }
 
-    #[inline]
     fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
         Ok(Bytecode::default())
     }
@@ -307,12 +377,20 @@ impl Database for EmptyDB {
 }
 
 impl DynDatabase for EmptyDB {
+    fn get_code_chunk_by_hash(
+        &mut self,
+        code_hash: &B256,
+        index: u32,
+    ) -> DbResult<Option<CodeChunk>> {
+        let _ = (code_hash, index);
+        Ok(None)
+    }
+
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         Db::new(*self).get_account(address)
     }
 
-    #[inline]
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         Db::new(*self).get_code_by_hash(code_hash)
     }
@@ -337,6 +415,15 @@ mod tests {
     }
 
     impl DynDatabase for BorrowingDb<'_> {
+        fn get_code_chunk_by_hash(
+            &mut self,
+            code_hash: &B256,
+            index: u32,
+        ) -> DbResult<Option<CodeChunk>> {
+            let _ = (code_hash, index);
+            Ok(None)
+        }
+
         fn get_account(&mut self, _address: &Address) -> DbResult<Option<AccountInfo>> {
             Ok(None)
         }

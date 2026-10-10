@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, CODE_CHUNK_SIZE, COLD_CODE_CHUNK_GAS, CodeChunk, WARM_CODE_CHUNK_GAS},
     env::TxEnv,
     evm::inspector::Inspector,
     interpreter::dispatch,
@@ -44,6 +44,11 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
+    code_chunk: Option<CodeChunk>,
+    code_chunk_index: u32,
+    code_size: usize,
+    inspecting_internal_tail: bool,
+    chunk_tail_offset: Option<usize>,
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` and `bytecode_ref` point into
@@ -87,6 +92,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             tx_env: None,
             message: None,
             is_static: false,
+            code_chunk: None,
+            code_chunk_index: 0,
+            code_size: 0,
+            inspecting_internal_tail: false,
+            chunk_tail_offset: None,
             return_data: Bytes::new(),
             host: None,
             inspector: None,
@@ -99,12 +109,32 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.
     fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
-        let bytecode = message.code.clone();
+        let view = (message.is_lazy_code && message.code_chunk.prepared().is_some())
+            .then(|| message.code_chunk.execution_view(0));
+        let mut bytecode = view
+            .as_ref()
+            .map_or_else(|| message.code_chunk.bytecode(false), |v| v.bytecode.clone());
+        // Prepared views are safe for their selected entry path. An embedding may pass one
+        // without its chunk context; restore ordinary padding before RJUMP can enter any byte.
+        if view.is_none()
+            && bytecode.is_legacy()
+            && !bytecode.is_empty()
+            && bytecode.bytes_slice().len() - bytecode.len() < 33
+            && !bytecode.bytes_slice().ends_with(&[0; 33])
+        {
+            bytecode = Bytecode::new_legacy(bytecode.original_bytes());
+        }
+        self.chunk_tail_offset = view.as_ref().map(|v| v.tail_offset);
         let gas_limit = message.gas_limit;
         let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
         self.pc = bytecode.bytes_slice().as_ptr();
         self.bytecode_ref = None;
         self.bytecode = bytecode;
+        self.code_chunk = message.is_lazy_code.then(|| message.code_chunk.clone());
+        self.code_chunk_index = 0;
+        self.code_size =
+            if self.code_chunk.is_some() { message.code_size } else { self.bytecode.len() };
+        self.inspecting_internal_tail = false;
         self.stack_len = 0;
         self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
         self.memory.clear();
@@ -148,20 +178,28 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.output = output;
     }
 
-    /// Returns the current bytecode-relative program counter.
+    /// Returns the current logical global program counter.
     #[inline]
     pub fn pc(&self) -> usize {
         // SAFETY: `pc` is always in bounds of `bytecode`.
-        unsafe { self.pc.offset_from(self.bytecode.original_byte_slice().as_ptr()) as usize }
+        (unsafe { self.pc.offset_from(self.bytecode.bytes_slice().as_ptr()) as usize })
+            + self.code_chunk_index as usize * CODE_CHUNK_SIZE
     }
 
-    /// Sets the current bytecode-relative program counter.
+    /// Sets a logical global program counter within the active chunk.
     ///
     /// # Panics
     ///
     /// Panics if `pc` is out of bounds of the active bytecode.
     #[inline]
     pub fn set_pc(&mut self, pc: usize) {
+        let pc = pc
+            .checked_sub(self.code_chunk_index as usize * CODE_CHUNK_SIZE)
+            .expect("PC is outside the active chunk");
+        if let Some(chunk) = self.code_chunk.clone().filter(|c| c.prepared().is_some()) {
+            assert!(pc < chunk.original_bytes().len(), "PC is outside the logical payload");
+            self.activate_chunk(self.code_chunk_index, chunk, pc);
+        }
         let bytecode = self.bytecode.bytes_slice();
         assert!(pc < bytecode.len());
         self.pc = unsafe { bytecode.as_ptr().add(pc) };
@@ -183,19 +221,28 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Returns the original active bytecode bytes.
     #[inline]
     pub fn original_bytecode(&self) -> Bytes {
-        self.bytecode.original_bytes()
+        self.code_chunk
+            .as_ref()
+            .map_or_else(|| self.bytecode.original_bytes(), |chunk| chunk.original_bytes().clone())
     }
 
     /// Returns the original active bytecode as a byte slice.
     #[inline]
     pub fn original_bytecode_slice(&self) -> &[u8] {
-        self.bytecode.original_byte_slice()
+        self.code_chunk.as_ref().map_or_else(
+            || self.bytecode.original_byte_slice(),
+            |chunk| chunk.original_bytes().as_ref(),
+        )
     }
 
     /// Calculates or returns the cached hash of the original active bytecode.
     #[inline]
     pub fn original_bytecode_hash(&self) -> B256 {
-        self.bytecode.hash_slow()
+        if self.code_chunk.is_some() {
+            self.message.expect("initialized frame").code_hash
+        } else {
+            self.bytecode.hash_slow()
+        }
     }
 
     /// Returns the current operand stack.
@@ -633,6 +680,10 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
+        self.0.inspecting_internal_tail = self.is_generated_tail(pc);
+        if self.0.inspecting_internal_tail {
+            return;
+        }
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
@@ -641,6 +692,10 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline]
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
+        if self.0.inspecting_internal_tail {
+            self.0.inspecting_internal_tail = false;
+            return;
+        }
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
         if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
@@ -765,5 +820,94 @@ mod bytecode_padding_tests {
         let interp = run(RunConfig::new([op::PUSH1, 3, op::JUMP, op::JUMPDEST]));
         assert_eq!(interp.err, InstrStop::Stop);
         assert!(interp.stack().is_empty());
+    }
+}
+
+impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
+    /// Whether this runtime frame loads its code through the chunk host interface.
+    pub const fn is_chunked_code(&self) -> bool {
+        self.0.code_chunk.is_some()
+    }
+
+    /// Complete logical code size, excluding execution padding.
+    pub const fn code_size(&self) -> usize {
+        self.0.code_size
+    }
+
+    /// Active payload index in the logical contract.
+    pub const fn code_chunk_index(&self) -> u32 {
+        self.0.code_chunk_index
+    }
+
+    /// Original global offset of the active instruction.
+    pub const fn global_pc(&self, pc: Pc) -> usize {
+        self.bytecode().pc_offset(pc) + self.0.code_chunk_index as usize * CODE_CHUNK_SIZE
+    }
+
+    /// Authenticates the generated tail by its recorded offset, never by opcode alone.
+    pub(crate) fn is_generated_tail(&self, pc: Pc) -> bool {
+        self.0.chunk_tail_offset.is_some_and(|tail| self.bytecode().pc_offset(pc) == tail)
+    }
+
+    /// Validates against the complete logical jump map before choosing an execution view.
+    pub(crate) const fn active_chunk(&self) -> &CodeChunk {
+        self.0.code_chunk.as_ref().expect("runtime chunk")
+    }
+
+    /// Tariff based only on logical warmth, before any payload fetch.
+    pub(crate) fn chunk_tariff(&mut self, address: &Address, index: u32) -> u64 {
+        if self.host().code_chunk_is_warm(address, index) {
+            WARM_CODE_CHUNK_GAS
+        } else {
+            COLD_CODE_CHUNK_GAS
+        }
+    }
+
+    /// Loads a required payload after the caller has reserved gas.
+    pub(crate) fn required_code_chunk(
+        &mut self,
+        address: &Address,
+        index: u32,
+    ) -> Result<CodeChunk> {
+        self.host()
+            .load_code_chunk(address, index, false)
+            .map_err(|error| self.fail(error))?
+            .map(|loaded| loaded.chunk)
+            .ok_or_else(|| {
+                self.fail(crate::DatabaseError::new(
+                    MissingRuntimeChunk { address: *address, index },
+                    true,
+                ))
+            })
+    }
+
+    /// Replaces the owner before rebuilding its borrowed view. Callers reset their PC next.
+    pub(crate) fn activate_code_chunk(&mut self, index: u32, chunk: CodeChunk, entry: usize) {
+        self.0.activate_chunk(index, chunk, entry);
+    }
+}
+
+/// A required payload unexpectedly absent from a custom host implementation.
+#[derive(Debug, thiserror::Error)]
+#[error("missing required runtime chunk {index} for {address}")]
+struct MissingRuntimeChunk {
+    address: Address,
+    index: u32,
+}
+
+impl<T: EvmTypesHost> Interpreter<'_, '_, T> {
+    /// Selects the safe buffer for this logical entry before rebuilding its borrowed view.
+    fn activate_chunk(&mut self, index: u32, chunk: CodeChunk, entry: usize) {
+        let view = chunk.execution_view(entry);
+        self.chunk_tail_offset = chunk.prepared().map(|_| view.tail_offset);
+        self.bytecode_ref = None;
+        self.bytecode = view.bytecode;
+        self.code_chunk = Some(chunk);
+        self.code_chunk_index = index;
+        // SAFETY: The immutable allocation remains owned by this interpreter until the next
+        // activation. All view accessors shorten this erased lifetime to their borrow.
+        let bytecode = unsafe { trustme::decouple_lt(&self.bytecode) };
+        self.bytecode_ref = Some(BytecodeRef::new(bytecode));
+        self.pc = self.bytecode.bytes_slice().as_ptr();
     }
 }

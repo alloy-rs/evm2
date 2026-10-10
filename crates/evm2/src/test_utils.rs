@@ -1,9 +1,9 @@
 use crate::{
     BaseEvmConfigSelector, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig, SpecId,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, code_chunk},
     constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, BlockEnvExt, TxEnv, TxEnvExt},
-    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+    evm::{AccountLoad, CodeChunkLoad, SLoad, SStore, SelfDestructResult},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, Memory, Message, MessageExt, MessageKind,
         MessageResult, MessageResultExt, StackBacking, Word, op,
@@ -115,6 +115,9 @@ impl Host<TestTypes> for TestHost {
         Ok(AccountLoad {
             balance: address.into_word().into(),
             nonce: 0,
+            code_size: Some(self.code.len() as u32),
+            is_chunked: self.code.len() > crate::bytecode::CODE_CHUNK_SIZE,
+            inline_delegation: None,
             code_hash: self.code_hash,
             code: if load_code {
                 Bytecode::new_legacy(self.code.clone())
@@ -126,6 +129,27 @@ impl Host<TestTypes> for TestHost {
             is_cold: self.is_cold,
             _non_exhaustive: (),
         })
+    }
+
+    fn is_precompile(&self, _: &Address) -> bool {
+        false
+    }
+
+    fn load_code_chunk(
+        &mut self,
+        _: &Address,
+        index: u32,
+        skip: bool,
+    ) -> Result<Option<CodeChunkLoad>, crate::HostError> {
+        if skip && self.is_cold {
+            return Err(InstrStop::OutOfGas.into());
+        }
+        Ok(code_chunk(&self.code, index)
+            .map(|chunk| CodeChunkLoad { chunk, is_cold: self.is_cold }))
+    }
+
+    fn code_chunk_is_warm(&self, _: &Address, _: u32) -> bool {
+        !self.is_cold
     }
 
     fn target_is_empty_for_new_account_gas(
@@ -341,7 +365,8 @@ impl Default for RunConfig<'_> {
 
 pub(crate) fn run(config: RunConfig<'_>) -> TestInterpreter {
     let RunConfig { code, host, spec_id, tx_env, message, gas_limit, return_data } = config;
-    let message = Message::<TestTypes> { code: legacy_bytecode(code), gas_limit, ..message };
+    let message =
+        Message::<TestTypes> { code_chunk: legacy_bytecode(code).into(), gas_limit, ..message };
     let mut inner = Interpreter::<TestTypes>::new(&tx_env, &message);
     *inner.return_data_mut() = return_data;
     let mut default_host = TestHost::default();

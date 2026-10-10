@@ -102,8 +102,11 @@ mod tests {
         code.push(op::STOP);
 
         let tx_env = TxEnvExt::default();
-        let message =
-            MessageExt { gas_limit: 10_000, code: legacy_bytecode(code), ..MessageExt::default() };
+        let message = MessageExt {
+            gas_limit: 10_000,
+            code_chunk: (legacy_bytecode(code)).into(),
+            ..MessageExt::default()
+        };
         let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
         let mut host = TestHost { execution_config: config, ..TestHost::default() };
         let err = interp.run(&mut host).unwrap();
@@ -124,8 +127,11 @@ mod tests {
         code.push(op::STOP);
 
         let tx_env = TxEnvExt::default();
-        let message =
-            MessageExt { gas_limit: 17, code: legacy_bytecode(code), ..MessageExt::default() };
+        let message = MessageExt {
+            gas_limit: 17,
+            code_chunk: (legacy_bytecode(code)).into(),
+            ..MessageExt::default()
+        };
         let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
         let mut host = TestHost { execution_config: config, ..TestHost::default() };
         let err = interp.run(&mut host).unwrap();

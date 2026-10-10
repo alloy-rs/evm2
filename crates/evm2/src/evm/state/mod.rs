@@ -2,7 +2,8 @@
 
 mod account;
 mod block;
-#[cfg(feature = "account-ext")]
+mod code_chunks;
+pub use code_chunks::{AccountCodeChunk, CodeChunkHandle, CodeChunkLoad};
 mod extension;
 mod journal;
 mod pending;
@@ -14,7 +15,6 @@ mod tracked;
 pub(crate) use account::Account;
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
-#[cfg(feature = "account-ext")]
 pub use extension::AccountExtension;
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use pending::PendingState;
@@ -416,7 +416,7 @@ impl<'a> State<'a> {
             accounts,
             storage_pool,
             transient_storage,
-            inner: StateInner { prewarm_set, journal, selfdestructs, logs, database: _ },
+            inner: StateInner { prewarm_set, journal, selfdestructs, logs, .. },
             ..
         } = self;
         for account in accounts.values_mut() {
@@ -640,17 +640,14 @@ impl<'a> State<'a> {
         // Preserve any balance the address already held (e.g. funds sent before creation) and add
         // the endowment.
         let balance = target.balance().wrapping_add(*value);
-        #[cfg(feature = "account-ext")]
-        let extension = target.get().map(|info| info.extension.clone()).unwrap_or_default();
-        *target.get_or_insert() = AccountInfo {
+        target.set_info(AccountInfo {
             nonce: u64::from(features.contains(EvmFeatures::EIP161)),
             balance,
             code_hash: KECCAK256_EMPTY,
             code: Some(Bytecode::default()),
             _non_exhaustive: (),
-            #[cfg(feature = "account-ext")]
-            extension,
-        };
+            extension: AccountExtension::new(),
+        });
         target.mark_created();
         target.touch();
         Ok(Ok(()))
@@ -736,6 +733,8 @@ impl<'a> State<'a> {
                     previous_is_destroyed,
                     previous_just_created,
                     previous_code_changed,
+                    previous_code_size,
+                    previous_code_chunks,
                 } => {
                     // Reconcile the self-destruct set with the restored destroyed flag.
                     let was_destroyed =
@@ -757,6 +756,17 @@ impl<'a> State<'a> {
                         entry.is_destroyed = previous_is_destroyed;
                         entry.just_created = previous_just_created;
                         entry.code_changed = previous_code_changed;
+                        entry.code_size = previous_code_size;
+                        entry.code_chunks = previous_code_chunks;
+                    }
+                }
+                JournalEntry::CodeChunkWarmed { address, index } => {
+                    if let Some(chunk) = self
+                        .accounts
+                        .get_mut(&address)
+                        .and_then(|account| account.code_chunks.get_mut(&index))
+                    {
+                        chunk.is_warm = false;
                     }
                 }
                 JournalEntry::StorageChange { address, key, previous } => {

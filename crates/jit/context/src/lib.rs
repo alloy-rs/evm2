@@ -850,7 +850,7 @@ mod tests {
         let tx = TxEnvExt::default();
         let mut message = MessageExt {
             gas_limit: 30_000,
-            code: Bytecode::new_legacy(Bytes::from_static(&[0x00])),
+            code_chunk: (Bytecode::new_legacy(Bytes::from_static(&[0x00]))).into(),
             ..MessageExt::default()
         };
         let mut host = Evm::<BaseEvmTypes>::new(

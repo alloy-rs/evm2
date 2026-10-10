@@ -232,6 +232,10 @@ evm_features! {
     ///
     /// Default: on since Amsterdam
     EIP2780,
+    /// Enables the unscheduled TIP-1143 chunked-code draft.
+    ///
+    /// Default: off for every fork. Configure with `Version::with_tip1143`.
+    TIP1143,
 }
 
 #[cfg(test)]

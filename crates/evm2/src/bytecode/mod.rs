@@ -19,6 +19,9 @@ mod serde_impl;
 
 pub use jump_table::{JumpTable, JumpTableRef};
 
+mod chunks;
+pub use chunks::*;
+
 /// EIP-7702 decode errors.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]

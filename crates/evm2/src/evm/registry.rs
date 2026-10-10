@@ -481,6 +481,22 @@ mod tests {
             unimplemented!()
         }
 
+        fn is_precompile(&self, _: &Address) -> bool {
+            false
+        }
+
+        fn load_code_chunk(
+            &mut self,
+            _: &Address,
+            _: u32,
+            _: bool,
+        ) -> Result<Option<crate::evm::CodeChunkLoad>, crate::HostError> {
+            Ok(None)
+        }
+        fn code_chunk_is_warm(&self, _: &Address, _: u32) -> bool {
+            false
+        }
+
         fn target_is_empty_for_new_account_gas(
             &mut self,
             _address: &Address,
