@@ -14,6 +14,7 @@ use evm2_eest::{
     execute_state_tests_str_with_filter,
 };
 use std::{
+    error::Error as _,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -119,6 +120,12 @@ fn run_dir(dir: &Path, options: &ReplayOptions) -> Result<()> {
                 failed += 1;
                 let error = style::ERROR;
                 eprintln!("{error}failed{error:#}: {}: {err}", file.display());
+                let muted = style::MUTED;
+                let mut source = err.source();
+                while let Some(cause) = source {
+                    eprintln!("  {muted}caused by{muted:#}: {cause}");
+                    source = cause.source();
+                }
             }
         }
     }
