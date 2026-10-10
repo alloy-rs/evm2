@@ -27,15 +27,17 @@ pub struct AccountChangeRef<'a> {
     pub selfdestructed: bool,
 }
 
-/// One account's changes passed to [`StateChangeSink::account_changes`]: its storage overlay and
-/// its metadata, delivered together.
+/// One loaded account's transaction changes: its metadata, new bytecode, and storage overlay.
+///
+/// Returned by [`PendingState::account_changes`](super::PendingState::account_changes) and
+/// [`ExecutedTx::account_changes`](crate::evm::ExecutedTx::account_changes).
 #[derive(Clone, Copy, Debug)]
 pub struct AccountChanges<'a> {
     /// Account address.
     pub address: Address,
-    /// Account at the start of the source's aggregation boundary.
+    /// Account at the start of the transaction.
     pub original: Option<&'a AccountInfo>,
-    /// Account after the changes. `None` means the account does not exist.
+    /// Account after the transaction. `None` means the account does not exist.
     pub current: Option<&'a AccountInfo>,
     /// Whether the account was created during the transaction.
     pub created: bool,
@@ -59,6 +61,43 @@ impl<'a> AccountChanges<'a> {
     #[inline]
     pub fn is_changed(&self) -> bool {
         self.is_info_changed() || self.storage.is_changed()
+    }
+
+    /// Emits these changes to `sink`: new bytecode, then the storage wipe, changed slots and slot
+    /// reads, then the metadata as a change or a read.
+    pub fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
+        if let Some((code_hash, code)) = self.code {
+            sink.bytecode(code_hash, code)?;
+        }
+        let address = self.address;
+        let storage = self.storage;
+        if storage.wiped {
+            sink.storage_wipe(address)?;
+        }
+        for (&key, slot) in &storage.slots {
+            let value = &slot.value;
+            if slot.is_changed(storage.wiped) {
+                sink.storage(StorageChange {
+                    address,
+                    key,
+                    original: value.original,
+                    current: value.current,
+                })?;
+            } else {
+                sink.storage_read(address, key, value.current)?;
+            }
+        }
+        if self.is_info_changed() {
+            sink.account(AccountChangeRef {
+                address,
+                original: self.original,
+                current: self.current,
+                created: self.created,
+                selfdestructed: self.selfdestructed,
+            })
+        } else {
+            sink.account_read(address, self.current)
+        }
     }
 }
 
@@ -85,48 +124,6 @@ pub trait StateChangeSink {
     #[inline]
     fn bytecode(&mut self, _code_hash: B256, _code: &Bytecode) -> Result<(), Self::Error> {
         Ok(())
-    }
-
-    /// Observes one account's new bytecode, storage, and metadata together.
-    ///
-    /// Transaction-level sources call this once per loaded account. The default replays the
-    /// per-entry callbacks: changed bytecode through [`Self::bytecode`], the storage wipe, then
-    /// changed slots through [`Self::storage`] and unchanged slots through [`Self::storage_read`],
-    /// then the metadata through [`Self::account`] or [`Self::account_read`].
-    #[inline]
-    fn account_changes(&mut self, changes: AccountChanges<'_>) -> Result<(), Self::Error> {
-        if let Some((code_hash, code)) = changes.code {
-            self.bytecode(code_hash, code)?;
-        }
-        let address = changes.address;
-        let storage = changes.storage;
-        if storage.wiped {
-            self.storage_wipe(address)?;
-        }
-        for (&key, slot) in &storage.slots {
-            let value = &slot.value;
-            if slot.is_changed(storage.wiped) {
-                self.storage(StorageChange {
-                    address,
-                    key,
-                    original: value.original,
-                    current: value.current,
-                })?;
-            } else {
-                self.storage_read(address, key, value.current)?;
-            }
-        }
-        if changes.is_info_changed() {
-            self.account(AccountChangeRef {
-                address,
-                original: changes.original,
-                current: changes.current,
-                created: changes.created,
-                selfdestructed: changes.selfdestructed,
-            })
-        } else {
-            self.account_read(address, changes.current)
-        }
     }
 
     /// Observes an account change.
@@ -181,9 +178,8 @@ pub trait StateChangeSink {
 pub trait StateChangeSource {
     /// Visits all changes. Ordering is source-defined and not guaranteed to be deterministic.
     ///
-    /// Sources that track reads also report loaded-but-unchanged entries, either through
-    /// [`StateChangeSink::account_changes`] or through [`StateChangeSink::account_read`] and
-    /// [`StateChangeSink::storage_read`].
+    /// Sources that track reads also report loaded-but-unchanged entries through
+    /// [`StateChangeSink::account_read`] and [`StateChangeSink::storage_read`].
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error>;
 }
 
@@ -197,9 +193,6 @@ impl StateChangeSink for NoopChangeSink {
 }
 
 /// Sink that forwards each change to two sinks.
-///
-/// Each callback reaches `a` before `b`. If `b` fails, `a` has already observed that callback;
-/// for [`StateChangeSink::account_changes`] this is the account's whole change.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Tee<A, B> {
     a: A,
@@ -225,12 +218,6 @@ where
     fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
         self.a.bytecode(code_hash, code)?;
         self.b.bytecode(code_hash, code)
-    }
-
-    #[inline]
-    fn account_changes(&mut self, changes: AccountChanges<'_>) -> Result<(), Self::Error> {
-        self.a.account_changes(changes)?;
-        self.b.account_changes(changes)
     }
 
     #[inline]

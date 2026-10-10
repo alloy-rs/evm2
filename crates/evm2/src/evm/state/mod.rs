@@ -880,10 +880,20 @@ impl<'a> State<'a> {
         &self,
         sink: &mut S,
     ) -> Result<(), S::Error> {
-        for (&address, entry) in &self.accounts {
-            entry.visit(address, self.selfdestructs.contains(&address), sink)?;
+        for changes in self.transaction_account_changes() {
+            changes.visit(sink)?;
         }
         Ok(())
+    }
+
+    /// Returns each account loaded by the transaction with its changes, in an unspecified order.
+    ///
+    /// This borrows the transaction layer without detaching it.
+    #[inline]
+    pub(crate) fn transaction_account_changes(&self) -> impl Iterator<Item = AccountChanges<'_>> {
+        self.accounts.iter().map(|(&address, account)| {
+            account.changes(address, self.selfdestructs.contains(&address))
+        })
     }
 
     /// Detaches the transaction overlay into an owned [`PendingState`].
