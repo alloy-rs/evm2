@@ -22,6 +22,8 @@
 //! - [`ExecutedTx::detach`] moves the pending transaction overlay out as an owned
 //!   [`TxResultWithState`] without accepting the writes.
 //!
+//! [`ExecutedTx::account_changes`] borrows the writes account by account before resolving.
+//!
 //! Dropping an unresolved [`ExecutedTx`] is equivalent to [`ExecutedTx::discard`], so transaction
 //! scratch cannot leak into later execution.
 //!
@@ -3241,6 +3243,29 @@ mod tests {
 
         assert_eq!(left.storage_sorted()[0].1.current, Word::from(7));
         assert_eq!(right.storage_sorted()[0].1.current, Word::from(7));
+    }
+
+    #[test]
+    fn executed_transaction_account_changes_borrow_without_committing() {
+        let mut evm = lifecycle_evm();
+        let executed = evm.transact(&test_tx(7)).expect("lifecycle transaction should execute");
+
+        let changes = executed
+            .account_changes()
+            .find(|changes| changes.address == LIFECYCLE_ACCOUNT)
+            .expect("lifecycle account was loaded");
+        assert!(changes.is_changed());
+        let slots = changes.storage.changed_slots().collect::<Vec<_>>();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(*slots[0].0, LIFECYCLE_STORAGE_KEY);
+        assert_eq!(slots[0].1.original, Word::from(1));
+        assert_eq!(slots[0].1.current, Word::from(7));
+
+        let _ = executed.commit();
+        assert_eq!(
+            evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
+            Word::from(7)
+        );
     }
 
     #[test]

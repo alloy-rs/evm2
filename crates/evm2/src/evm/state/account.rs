@@ -1,8 +1,8 @@
 //! Account models held by the state overlay and emitted in transitions.
 
 use super::{
-    AccountChanges, DbResult, DynDatabase, JournalEntry, StateChangeSink, StateInner,
-    StorageHandle, StorageOverlay, storage_pool::StoragePool,
+    AccountChanges, DbResult, DynDatabase, JournalEntry, StateInner, StorageHandle, StorageOverlay,
+    storage_pool::StoragePool,
 };
 use crate::{EvmFeatures, bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256};
@@ -251,18 +251,9 @@ impl Account {
             .then_some((code_hash, code))
     }
 
-    /// Emits this account's new bytecode, storage, and metadata to `sink` through
-    /// [`StateChangeSink::account_changes`].
-    ///
-    /// Changed accounts, including created or selfdestructed accounts whose info ended up
-    /// unchanged, are reported as changed; loaded-but-unchanged entries are reported as reads.
-    pub(super) fn visit<S: StateChangeSink>(
-        &self,
-        address: Address,
-        selfdestructed: bool,
-        sink: &mut S,
-    ) -> Result<(), S::Error> {
-        sink.account_changes(AccountChanges {
+    /// Returns this account's transaction changes.
+    pub(super) fn changes(&self, address: Address, selfdestructed: bool) -> AccountChanges<'_> {
+        AccountChanges {
             address,
             original: self.original.as_ref(),
             current: self.present.as_ref(),
@@ -270,7 +261,7 @@ impl Account {
             selfdestructed,
             code: self.changed_code(),
             storage: &self.storage,
-        })
+        }
     }
 }
 

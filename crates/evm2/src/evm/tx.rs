@@ -1,6 +1,6 @@
 //! Transaction execution lifecycle and result types.
 
-use super::{BlockStateAccumulator, Evm, PendingState, StateChangeSink};
+use super::{AccountChanges, BlockStateAccumulator, Evm, PendingState, StateChangeSink};
 use crate::{EvmTypesHost, interpreter::InstrStop};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, Log};
@@ -216,6 +216,18 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
             Some(result) => result,
             None => unreachable!("executed transaction result was already taken"),
         }
+    }
+
+    /// Returns each account loaded by the transaction with its changes, in an unspecified order.
+    ///
+    /// This borrows the transaction state without detaching it, so a caller can apply the changes
+    /// and then [`commit`](Self::commit) or [`discard`](Self::discard) the transaction.
+    #[inline]
+    pub fn account_changes(&self) -> impl Iterator<Item = AccountChanges<'_>> {
+        self.has_pending_state()
+            .then(|| self.evm.state.transaction_account_changes())
+            .into_iter()
+            .flatten()
     }
 
     /// Accepts the transaction state into the internal accepted overlay.

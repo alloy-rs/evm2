@@ -1,6 +1,8 @@
 //! Owned pending transaction state detached from the EVM.
 
-use super::{Account, AccountInfo, StateChangeSink, StateChangeSource, StorageSlot, Tracked};
+use super::{
+    Account, AccountChanges, AccountInfo, StateChangeSink, StateChangeSource, StorageSlot, Tracked,
+};
 use crate::interpreter::Word;
 use alloy_primitives::{
     Address,
@@ -93,17 +95,29 @@ impl PendingState {
     pub(crate) fn is_changed(&self) -> bool {
         self.accounts.values().any(|account| account.is_changed() || account.storage.is_changed())
     }
+
+    /// Returns each loaded account's changes, in an unspecified account order.
+    #[inline]
+    pub fn account_changes(&self) -> impl Iterator<Item = AccountChanges<'_>> {
+        self.accounts.iter().map(|(&address, account)| {
+            account.changes(address, self.selfdestructs.contains(&address))
+        })
+    }
 }
 
 impl StateChangeSource for PendingState {
-    /// Visits the transaction's loaded accounts in an unspecified order, calling
-    /// [`StateChangeSink::account_changes`] once per account.
+    /// Visits the transaction's loaded entries account by account, in an unspecified account
+    /// order. Each account's bytecode and storage precede its metadata.
     ///
     /// The same code hash may be visited more than once when several accounts share bytecode; sinks
     /// key bytecode by hash, so repeated visits are idempotent.
+    ///
+    /// Changed accounts — including created or selfdestructed accounts whose info ended up
+    /// unchanged — go through [`StateChangeSink::account`]; loaded-but-unchanged entries go
+    /// through the read callbacks.
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        for (&address, entry) in &self.accounts {
-            entry.visit(address, self.selfdestructs.contains(&address), sink)?;
+        for changes in self.account_changes() {
+            changes.visit(sink)?;
         }
         Ok(())
     }
