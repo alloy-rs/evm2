@@ -65,7 +65,7 @@ impl<'a> AccountChanges<'a> {
 
     /// Emits these changes to `sink`: new bytecode, then the storage wipe, changed slots and slot
     /// reads, then the metadata as a change or a read.
-    pub(super) fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
+    pub fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
         if let Some((code_hash, code)) = self.code {
             sink.bytecode(code_hash, code)?;
         }
