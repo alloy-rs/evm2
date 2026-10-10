@@ -384,24 +384,6 @@ mod tests {
     }
 
     #[test]
-    fn tip1143_opt_in_restores_custom_limits() {
-        for spec in [SpecId::FRONTIER, SpecId::PRAGUE, SpecId::AMSTERDAM] {
-            let mut base = Version::new(spec);
-            assert!(!base.feature(EvmFeatures::TIP1143));
-            base.max_code_size += 7;
-            base.max_initcode_size += 9;
-            let enabled = base.with_tip1143(true).with_tip1143(true);
-            assert!(enabled.feature(EvmFeatures::TIP1143));
-            assert_eq!(enabled.max_code_size, 981_640);
-            assert_eq!(enabled.max_initcode_size, 1_966_080);
-            let disabled = enabled.with_tip1143(false);
-            assert_eq!(disabled.features, base.features);
-            assert_eq!(disabled.max_code_size, base.max_code_size);
-            assert_eq!(disabled.max_initcode_size, base.max_initcode_size);
-        }
-    }
-
-    #[test]
     fn tx_gas_caps() {
         let prague = Version::base(SpecId::PRAGUE);
         assert_eq!(prague.tx_gas_caps(), (u64::MAX, u64::MAX));

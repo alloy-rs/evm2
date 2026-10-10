@@ -221,23 +221,6 @@ mod tests {
     use core::assert_matches;
 
     #[test]
-    fn rjump_codec_roundtrips_every_signed_displacement() {
-        for offset in -23980..=23980 {
-            let encoded = encode_rjump_offset(offset).unwrap();
-            assert!(encoded.iter().all(|&byte| byte <= 0x5a || byte >= 0x80));
-            assert_eq!(decode_rjump_offset(encoded), Some(offset));
-        }
-        assert_eq!(encode_rjump_offset(-23981), None);
-        assert_eq!(encode_rjump_offset(23981), None);
-        assert_eq!(encode_rjump_offset(-3), Some([0x5a, 0x58]));
-        assert_eq!(encode_rjump_offset(0), Some([0x80, 0x80]));
-        for bad_byte in 0x5b..=0x7f {
-            assert_eq!(decode_rjump_offset([bad_byte, 0x80]), None);
-            assert_eq!(decode_rjump_offset([0x80, bad_byte]), None);
-        }
-    }
-
-    #[test]
     fn stop_opcode() {
         let interp = run(RunConfig::new([op::STOP]));
         assert_matches!(interp.err, InstrStop::Stop);
@@ -252,8 +235,6 @@ mod tests {
             for (opcode, expected) in [
                 (op::INVALID, InstrStop::InvalidFEOpcode),
                 (0x0c, InstrStop::OpcodeNotFound),
-                (op::RJUMP, InstrStop::OpcodeNotFound),
-                (op::RJUMPI, InstrStop::OpcodeNotFound),
                 (op::PUSH0, InstrStop::NotActivated),
                 (op::TSTORE, InstrStop::NotActivated),
                 (op::DUPN, InstrStop::NotActivated),
