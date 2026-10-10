@@ -274,6 +274,20 @@ fn aot_without_store_is_rejected() {
     assert_eq!(error.to_string(), "AOT mode requires an artifact store");
 }
 
+#[test]
+#[cfg(unix)]
+fn aot_out_of_process_is_rejected() {
+    let config = RuntimeConfig {
+        enabled: true,
+        aot: true,
+        store: Some(Arc::new(EmptyStore)),
+        jit_mode: JitMode::OutOfProcess,
+        ..Default::default()
+    };
+    let error = JitBackend::new(config).unwrap_err();
+    assert_eq!(error.to_string(), "AOT mode does not support out-of-process compilation");
+}
+
 // ===========================================================================
 // Tests: lookup behavior.
 // ===========================================================================
