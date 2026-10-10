@@ -179,6 +179,9 @@ impl JitBackend {
         if config.aot && config.store.is_none() {
             eyre::bail!("AOT mode requires an artifact store");
         }
+        if config.aot && config.jit_mode == JitMode::OutOfProcess {
+            eyre::bail!("AOT mode does not support out-of-process compilation");
+        }
 
         let enabled = config.enabled;
         let (tx, rx) = chan::bounded::<Command>(config.tuning.channel_capacity);
