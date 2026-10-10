@@ -35,7 +35,7 @@ pub struct AccountChanges<'a> {
     pub address: Address,
     /// Account at the start of the source's aggregation boundary.
     pub original: Option<&'a AccountInfo>,
-    /// Account after the changes. `None` is an explicit deletion.
+    /// Account after the changes. `None` means the account does not exist.
     pub current: Option<&'a AccountInfo>,
     /// Whether the account was created during the transaction.
     pub created: bool,
@@ -48,35 +48,8 @@ pub struct AccountChanges<'a> {
 }
 
 impl<'a> AccountChanges<'a> {
-    /// Returns the account metadata change, or `None` when the account was only loaded.
-    #[inline]
-    pub fn change(&self) -> Option<AccountChangeRef<'a>> {
-        if !self.is_info_changed() {
-            return None;
-        }
-        Some(AccountChangeRef {
-            address: self.address,
-            original: self.original,
-            current: self.current,
-            created: self.created,
-            selfdestructed: self.selfdestructed,
-        })
-    }
-
-    /// Returns the changed storage slots. A wiped overlay reports every nonzero current value.
-    #[inline]
-    pub fn storage_changes(&self) -> impl Iterator<Item = StorageChange> + '_ {
-        let address = self.address;
-        self.storage.changed_slots().map(move |(&key, value)| StorageChange {
-            address,
-            key,
-            original: value.original,
-            current: value.current,
-        })
-    }
-
     /// Returns whether the account info or lifecycle changed: different info, creation, or
-    /// selfdestruct. `false` means the account was only loaded.
+    /// selfdestruct. Storage is not considered; see [`Self::is_changed`].
     #[inline]
     pub fn is_info_changed(&self) -> bool {
         self.original != self.current || self.created || self.selfdestructed
@@ -143,9 +116,16 @@ pub trait StateChangeSink {
                 self.storage_read(address, key, value.current)?;
             }
         }
-        match changes.change() {
-            Some(change) => self.account(change),
-            None => self.account_read(address, changes.current),
+        if changes.is_info_changed() {
+            self.account(AccountChangeRef {
+                address,
+                original: changes.original,
+                current: changes.current,
+                created: changes.created,
+                selfdestructed: changes.selfdestructed,
+            })
+        } else {
+            self.account_read(address, changes.current)
         }
     }
 
@@ -201,8 +181,9 @@ pub trait StateChangeSink {
 pub trait StateChangeSource {
     /// Visits all changes. Ordering is source-defined and not guaranteed to be deterministic.
     ///
-    /// Sources that track reads also report loaded-but-unchanged entries through
-    /// [`StateChangeSink::account_read`] and [`StateChangeSink::storage_read`].
+    /// Sources that track reads also report loaded-but-unchanged entries, either through
+    /// [`StateChangeSink::account_changes`] or through [`StateChangeSink::account_read`] and
+    /// [`StateChangeSink::storage_read`].
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error>;
 }
 
@@ -216,6 +197,9 @@ impl StateChangeSink for NoopChangeSink {
 }
 
 /// Sink that forwards each change to two sinks.
+///
+/// Each callback reaches `a` before `b`. If `b` fails, `a` has already observed that callback;
+/// for [`StateChangeSink::account_changes`] this is the account's whole change.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Tee<A, B> {
     a: A,

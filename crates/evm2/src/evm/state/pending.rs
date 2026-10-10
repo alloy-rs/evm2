@@ -96,15 +96,11 @@ impl PendingState {
 }
 
 impl StateChangeSource for PendingState {
-    /// Visits the transaction's loaded entries account by account, in an unspecified account
-    /// order. Each account's bytecode and storage precede its metadata.
+    /// Visits the transaction's loaded accounts in an unspecified order, calling
+    /// [`StateChangeSink::account_changes`] once per account.
     ///
     /// The same code hash may be visited more than once when several accounts share bytecode; sinks
     /// key bytecode by hash, so repeated visits are idempotent.
-    ///
-    /// Changed accounts — including created or selfdestructed accounts whose info ended up
-    /// unchanged — go through [`StateChangeSink::account`]; loaded-but-unchanged entries go
-    /// through the read callbacks.
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
         for (&address, entry) in &self.accounts {
             entry.visit(address, self.selfdestructs.contains(&address), sink)?;
