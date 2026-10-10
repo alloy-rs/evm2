@@ -314,24 +314,23 @@ impl JsInspector {
         let TxResultWithState { result, pending_state, .. } = res;
         let state = TxState::from_pending(pending_state);
 
-        let mut to = None;
         let mut output_bytes = None;
         let mut error = None;
 
         if result.status {
-            to = result.created_address;
             output_bytes = Some(result.output.clone());
         } else if result.stop.is_revert() {
             error = Some("execution reverted".to_string());
             output_bytes = Some(result.output.clone());
         } else {
-            error = Some(format!("execution halted: {:?}", result.stop));
+            error = utils::fmt_error_msg(result.stop, TraceStyle::Geth);
         }
 
         let kind = tx.kind();
-        if let TxKind::Call(target) = kind {
-            to = Some(target);
-        }
+        let to = Some(match kind {
+            TxKind::Call(target) => target,
+            TxKind::Create => tx.signer().create(tx.nonce()),
+        });
 
         let base_fee = block.basefee.try_into().unwrap_or(u64::MAX);
 
