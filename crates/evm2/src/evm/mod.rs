@@ -596,8 +596,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Replaces the backing database.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called during EVM execution.
     #[inline]
     pub fn set_database(&mut self, database: impl DynDatabase + 'a) {
+        assert!(!self.running, "database cannot be replaced during EVM execution");
         self.state.set_initial(database);
         self.evm_send = false;
     }
@@ -2572,6 +2577,25 @@ mod tests {
     #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
     fn set_precompiles_panics_during_execution() {
         run_precompile_access(PrecompileAccess::Set);
+    }
+
+    #[test]
+    #[should_panic(expected = "database cannot be replaced during EVM execution")]
+    fn set_database_panics_during_execution() {
+        let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
+            evm.set_database(InMemoryDB::default());
+            Ok(PrecompileOutput::new(Bytes::new()))
+        })]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+        let message = precompile_message(TEST_PRECOMPILE);
+
+        evm.execute_precompile(&message, &mut GasTracker::new(30_000)).unwrap();
     }
 
     #[derive(Clone, Copy)]
