@@ -56,6 +56,11 @@ impl<W: Write> Eip3155Tracer<W> {
     /// Emits the pending step, if any, with a gas cost derived from `interp`'s
     /// remaining gas.
     ///
+    /// On out-of-gas the interpreter zeroes the remaining gas before calling
+    /// `step_end`, so subtracting it would report every gas unit left at the
+    /// start of the step instead of the opcode's cost. `failed_charge` carries
+    /// the charge the opcode actually attempted; geth reports that value too.
+    ///
     /// Frame-spawning opcodes (CALL/CREATE families) never reach `step_end`:
     /// dispatch unwinds into the frame machinery instead, so the pending step
     /// is flushed from the `call`/`create` hooks, which fire on the spawning
@@ -65,7 +70,9 @@ impl<W: Write> Eip3155Tracer<W> {
         let Some(step) = self.pending.take() else {
             return;
         };
-        let gas_cost = step.gas.saturating_sub(interp.gas().remaining());
+        let gas_cost = interp
+            .failed_charge()
+            .unwrap_or_else(|| step.gas.saturating_sub(interp.gas().remaining()));
         self.emit(&step, gas_cost);
     }
 
@@ -148,6 +155,16 @@ fn hex_u64(value: u64) -> String {
 mod tests {
     use super::*;
 
+    use alloy_primitives::{Address, Bytes};
+    use evm2::{
+        BaseEvmTypes, Evm, Precompiles, SpecId,
+        bytecode::Bytecode,
+        env::{BlockEnvExt, TxEnvExt},
+        evm::InMemoryDB,
+        interpreter::{Host, MessageExt, op},
+        registry::TxRegistry,
+    };
+
     #[test]
     fn summary_line_is_valid_json_with_hex_gas() {
         let mut buf = Vec::new();
@@ -166,5 +183,49 @@ mod tests {
     fn hex_u64_is_minimal_quantity() {
         assert_eq!(hex_u64(0), "0x0");
         assert_eq!(hex_u64(255), "0xff");
+    }
+
+    #[test]
+    fn struct_log_reports_attempted_charge_on_out_of_gas() {
+        // A cold zero-to-nonzero SSTORE costs 22100; the message leaves exactly 5000 for it
+        // after the two pushes, so the step runs out of gas.
+        let contract = Address::with_last_byte(0xc0);
+        let mut out = Vec::new();
+        // The tracer borrows `out`, so the EVM has to be dropped before it is read again.
+        let result = {
+            let mut evm = Evm::<BaseEvmTypes>::new(
+                SpecId::LONDON,
+                BlockEnvExt::default(),
+                TxRegistry::new(),
+                InMemoryDB::default(),
+                Precompiles::base(SpecId::LONDON),
+            );
+            evm.set_inspector(Eip3155Tracer::new(&mut out));
+
+            let mut message = MessageExt {
+                destination: contract,
+                code_address: contract,
+                gas_limit: 5_000 + 6,
+                code: Bytecode::new_legacy(Bytes::from_static(&[
+                    op::PUSH1,
+                    0x01,
+                    op::PUSH1,
+                    0x00,
+                    op::SSTORE,
+                ])),
+                ..Default::default()
+            };
+            Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap()
+        };
+        assert!(!result.stop.is_success(), "{result:#?}");
+
+        let logs = String::from_utf8(out).unwrap();
+        let last = logs.lines().last().expect("no struct logs were emitted");
+        let value: serde_json::Value = serde_json::from_str(last).unwrap();
+        assert_eq!(value["opName"], "SSTORE");
+        // Gas left before the opcode, not the charge it failed to pay.
+        assert_eq!(value["gas"], "0x1388");
+        // geth reports the attempted charge: 2100 cold slot load + 20000 SSTORE set.
+        assert_eq!(value["gasCost"], "0x5654");
     }
 }
