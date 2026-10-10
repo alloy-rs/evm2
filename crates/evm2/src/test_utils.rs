@@ -131,13 +131,6 @@ impl Host<TestTypes> for TestHost {
         })
     }
 
-    fn resolve_legacy_delegation(
-        &mut self,
-        _: &Address,
-    ) -> Result<Option<Address>, crate::HostError> {
-        Ok(None)
-    }
-
     fn is_precompile(&self, _: &Address) -> bool {
         false
     }
@@ -372,7 +365,8 @@ impl Default for RunConfig<'_> {
 
 pub(crate) fn run(config: RunConfig<'_>) -> TestInterpreter {
     let RunConfig { code, host, spec_id, tx_env, message, gas_limit, return_data } = config;
-    let message = Message::<TestTypes> { code: legacy_bytecode(code), gas_limit, ..message };
+    let message =
+        Message::<TestTypes> { code_chunk: legacy_bytecode(code).into(), gas_limit, ..message };
     let mut inner = Interpreter::<TestTypes>::new(&tx_env, &message);
     *inner.return_data_mut() = return_data;
     let mut default_host = TestHost::default();

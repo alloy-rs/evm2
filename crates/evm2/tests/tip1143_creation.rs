@@ -87,9 +87,9 @@ fn tip1143_t02_aa_seam_runtime_boundaries() {
         assert_eq!(account.code_hash, keccak256(&runtime));
         assert_eq!(account.code.as_ref().unwrap().original_byte_slice(), runtime);
         if size <= CHUNK {
-            assert!(account.code_metadata.is_none());
+            assert!(account.code_metadata().is_none());
         } else {
-            let metadata = account.code_metadata.as_ref().unwrap();
+            let metadata = account.code_metadata().unwrap();
             assert_eq!(metadata.code_size() as usize, size);
             assert_eq!(
                 metadata.chunk_hashes(),
@@ -107,7 +107,7 @@ fn tip1143_t03_aa_seam_initcode_boundaries() {
     let (stop, gas, account) = create(input.clone().into(), 1_000_000_000);
     assert!(stop.is_success());
     assert_eq!(gas, 6);
-    assert!(account.unwrap().code_metadata.is_none());
+    assert!(account.unwrap().code_metadata().is_none());
     input.push(0);
     assert!(validate_create_initcode(&version, TxKind::Create, &input.into()).is_err());
 }
@@ -140,7 +140,7 @@ fn tip1143_t05_single_chunk_truncated_push_deployment() {
                 let (stop, _, account) = create(initcode(&runtime), 10_000_000);
                 assert!(stop.is_success(), "width={width}, present={present}, size={size}");
                 let account = account.unwrap();
-                assert!(account.code_metadata.is_none());
+                assert!(account.code_metadata().is_none());
                 assert_eq!(account.code.unwrap().original_byte_slice(), runtime);
             }
         }
@@ -208,7 +208,7 @@ fn tip1143_t14_resident_initcode_crosses_boundary_and_observes_original_input() 
     // Own PC, CODESIZE, CODECOPY and the jump add no chunk tariffs.
     assert_eq!(spent, 70 + 128 * 200);
     let account = account.unwrap();
-    assert!(account.code_metadata.is_none());
+    assert!(account.code_metadata().is_none());
     let output = account.code.unwrap();
     let output = output.original_byte_slice();
     assert_eq!(output.len(), 128);
@@ -268,7 +268,7 @@ fn nested_create_metered(
         code_address: factory,
         gas_limit: 1_000_000_000,
         input,
-        code: Bytecode::new_legacy(code.into()),
+        code_chunk: (Bytecode::new_legacy(code.into())).into(),
         ..Default::default()
     };
     let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
@@ -293,9 +293,9 @@ fn tip1143_t02_create_and_create2_runtime_boundaries() {
                 assert_eq!(account.code_hash, keccak256(&runtime));
                 assert_eq!(account.code.as_ref().unwrap().original_byte_slice(), runtime);
                 if size <= CHUNK {
-                    assert!(account.code_metadata.is_none());
+                    assert!(account.code_metadata().is_none());
                 } else {
-                    let metadata = account.code_metadata.unwrap();
+                    let metadata = account.code_metadata().unwrap();
                     assert_eq!(metadata.code_size() as usize, size);
                     assert_eq!(
                         metadata.chunk_hashes(),
@@ -319,7 +319,7 @@ fn tip1143_t03_create_and_create2_initcode_boundaries() {
                 assert_eq!(&returned[12..], expected.as_slice());
                 let account = account.unwrap();
                 assert_eq!(account.code_hash, keccak256([]));
-                assert!(account.code_metadata.is_none());
+                assert!(account.code_metadata().is_none());
             } else {
                 assert_eq!(stop, InstrStop::CreateInitCodeSizeLimit);
                 assert!(account.is_none());
@@ -385,8 +385,8 @@ fn tip1143_t02_creation_transaction_runtime_boundaries() {
             let info = result.pending_state.account_info(&caller.create(0)).unwrap();
             assert_eq!(info.code_hash, keccak256(&runtime));
             assert_eq!(info.code.as_ref().unwrap().original_byte_slice(), runtime);
-            assert_eq!(info.code_metadata.is_some(), size > CHUNK);
-            if let Some(metadata) = &info.code_metadata {
+            assert_eq!(info.code_metadata().is_some(), size > CHUNK);
+            if let Some(metadata) = &info.code_metadata() {
                 assert_eq!(metadata.code_size() as usize, size);
                 assert_eq!(
                     metadata.chunk_hashes(),
@@ -440,7 +440,7 @@ fn tip1143_t03_creation_transaction_initcode_boundaries() {
             );
             let info = result.pending_state.account_info(&caller.create(0)).unwrap();
             assert_eq!(info.code_hash, keccak256([]));
-            assert!(info.code_metadata.is_none());
+            assert!(info.code_metadata().is_none());
         } else {
             assert!(evm.transact(&tx).is_err());
             assert!(evm.state_mut().account(&caller.create(0)).unwrap().get().is_none());
@@ -498,7 +498,7 @@ fn tip1143_t05_reached_truncated_pushes_preserve_zero_padding_for_old_and_new_co
                     ..Default::default()
                 };
                 for info in [legacy, created.2.unwrap()] {
-                    assert!(info.code_metadata.is_none());
+                    assert!(info.code_metadata().is_none());
                     assert_eq!(info.code_hash, keccak256(&runtime));
                     assert_eq!(info.code.as_ref().unwrap().original_byte_slice(), runtime);
                     let owner = Address::repeat_byte(0x44);
@@ -597,7 +597,7 @@ fn tip1143_t04_creation_collision_preserves_existing_code_and_metadata() {
             ..Default::default()
         };
         if existing_size > CHUNK {
-            info.code_metadata = Some(
+            info.extension = evm2::evm::AccountExtension::chunked(
                 evm2::bytecode::CodeMetadata::new(
                     existing_size as u32,
                     original.chunks(CHUNK).map(keccak256).collect(),
@@ -796,7 +796,7 @@ fn tip1143_t03_nested_initcode_metering_and_create2_hashing_are_preserved() {
             assert_eq!(&returned[12..], expected.as_slice());
             let account = account.unwrap();
             assert_eq!(account.code_hash, keccak256([]));
-            assert!(account.code_metadata.is_none());
+            assert!(account.code_metadata().is_none());
             let expected_gas = 32033 + 5 * words + memory + if create2 { 3 + 6 * words } else { 0 };
             assert_eq!(spent, expected_gas, "size={size}, create2={create2}");
         }

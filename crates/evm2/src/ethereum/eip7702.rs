@@ -464,11 +464,7 @@ pub fn apply_auth_list<'a, T: EvmTypes>(
         if accounting.accepted(authority, &auth).is_err() {
             return Ok(true);
         }
-        if host.feature(EvmFeatures::TIP1143) {
-            host.state.account(&authority)?.set_delegation_inline(*authorization.address());
-        } else {
-            host.state.account(&authority)?.set_delegation(*authorization.address());
-        }
+        host.state.account(&authority)?.set_delegation(*authorization.address());
     }
     Ok(false)
 }

@@ -3,7 +3,7 @@
 use super::{DbResult, DynDatabase, EmptyDB};
 use crate::{
     DatabaseError,
-    bytecode::{Bytecode, BytecodeKind, CODE_CHUNK_SIZE, CodeChunk},
+    bytecode::{Bytecode, CODE_CHUNK_SIZE, CodeChunk},
     evm::{
         bal::BalContext,
         state::{
@@ -54,12 +54,8 @@ pub struct Cache {
     pub accounts: AddressMap<Option<AccountInfo>>,
     /// Contracts keyed by code hash.
     pub contracts: B256Map<Bytecode>,
-    /// Persisted code kinds, including cached evidence that a record is ordinary runtime.
-    pub code_kinds: B256Map<BytecodeKind>,
     /// Raw successful provider responses; execution must validate contextual lengths.
     pub code_chunks: HashMap<(B256, u32), CodeChunk>,
-    /// Contextually validated immutable payload analyses, retained across transaction resets.
-    pub analyzed_code_chunks: HashMap<(B256, u32, bool), Bytecode>,
     /// Persistent storage keyed by account, then slot.
     pub storage: AddressMap<AccountStorageCache>,
     /// Cached block hashes keyed by block number.
@@ -78,9 +74,7 @@ impl Cache {
     pub fn merge(&mut self, other: Self) {
         self.accounts.extend(other.accounts);
         self.contracts.extend(other.contracts);
-        self.code_kinds.extend(other.code_kinds);
         self.code_chunks.extend(other.code_chunks);
-        self.analyzed_code_chunks.extend(other.analyzed_code_chunks);
         self.block_hashes.extend(other.block_hashes);
         for (address, storage) in other.storage {
             let target = self.storage.entry(address).or_default();
@@ -123,9 +117,7 @@ impl Default for Cache {
         Self {
             accounts: AddressMap::default(),
             contracts,
-            code_kinds: B256Map::default(),
             code_chunks: HashMap::default(),
-            analyzed_code_chunks: HashMap::default(),
             storage: AddressMap::default(),
             block_hashes: U256Map::default(),
             _non_exhaustive: (),
@@ -241,7 +233,7 @@ impl<ExtDB> CacheDB<ExtDB> {
                 info.code_hash = code.hash_slow();
             }
             contracts.entry(info.code_hash).or_insert_with(|| code.clone());
-            if info.code_metadata.is_some() {
+            if info.code_metadata().is_some() {
                 Cache::insert_chunks(chunks, info.code_hash, code);
             }
         }
@@ -253,13 +245,11 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// Inserts account info.
     #[inline]
     pub fn insert_account_info(&mut self, address: &Address, mut info: AccountInfo) {
-        if info.code_metadata.is_some() && info.code.is_none() {
+        if info.code_metadata().is_some() && info.code.is_none() {
             info.code = self.cache.contracts.get(&info.code_hash).cloned();
         }
         self.insert_contract(&mut info);
-        if !info.code.as_ref().is_some_and(Bytecode::is_eip7702) {
-            info.code = None;
-        }
+        info.code = None;
         self.cache.accounts.insert(*address, Some(info));
     }
 
@@ -348,20 +338,8 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
 }
 
 impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
-    fn get_code_kind_by_hash(&mut self, code_hash: &B256) -> DbResult<BytecodeKind> {
-        if let Some(code) = self.cache.contracts.get(code_hash) {
-            return Ok(code.kind());
-        }
-        match self.cache.code_kinds.entry(*code_hash) {
-            Entry::Occupied(entry) => Ok(*entry.get()),
-            Entry::Vacant(entry) => Ok(*entry.insert(self.db.get_code_kind_by_hash(code_hash)?)),
-        }
-    }
-
     fn discard_code_chunk(&mut self, code_hash: &B256, index: u32) {
         self.cache.code_chunks.remove(&(*code_hash, index));
-        self.cache.analyzed_code_chunks.remove(&(*code_hash, index, false));
-        self.cache.analyzed_code_chunks.remove(&(*code_hash, index, true));
         self.db.discard_code_chunk(code_hash, index);
     }
 
@@ -407,26 +385,13 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
                 Entry::Vacant(entry) => match self.db.get_account(address)? {
                     Some(mut info) => {
                         Self::insert_contract_inner(contracts, code_chunks, &mut info);
-                        if !info.code.as_ref().is_some_and(Bytecode::is_eip7702) {
-                            info.code = None;
-                        }
+                        info.code = None;
                         entry.insert(Some(info)).clone()
                     }
                     None => entry.insert(None).clone(),
                 },
             }
         };
-
-        // A known legacy marker is bounded account-loading compatibility metadata. Keep its
-        // kind so delegation resolution does not need a charged runtime payload request.
-        if let Some(info) = &mut account
-            && info.inline_delegation.is_none()
-            && info.code_metadata.is_none()
-            && let Some(code) = self.cache.contracts.get(&info.code_hash)
-            && code.is_eip7702()
-        {
-            info.code = Some(code.clone());
-        }
 
         // Apply the resolved BAL account's info at the current block access index.
         if let Some(bal_account) = bal_account {
@@ -499,10 +464,6 @@ mod typed {
     use crate::evm::Database;
 
     impl<ExtDB: DynDatabase> Database for CacheDB<ExtDB> {
-        fn get_code_kind_by_hash(&mut self, code_hash: &B256) -> Result<BytecodeKind, Self::Error> {
-            DynDatabase::get_code_kind_by_hash(self, code_hash)
-        }
-
         fn discard_code_chunk(&mut self, code_hash: &B256, index: u32) {
             DynDatabase::discard_code_chunk(self, code_hash, index);
         }
@@ -634,15 +595,6 @@ mod tests {
 
     impl crate::evm::Database for CountingDB {
         type Error = core::convert::Infallible;
-
-        fn get_code_kind_by_hash(&mut self, hash: &B256) -> Result<BytecodeKind, Self::Error> {
-            Ok(self
-                .account
-                .as_ref()
-                .filter(|info| info.code_hash == *hash)
-                .and_then(|info| info.code.as_ref())
-                .map_or(BytecodeKind::Legacy, Bytecode::kind))
-        }
 
         fn get_account(&mut self, _address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
             self.account_loads += 1;

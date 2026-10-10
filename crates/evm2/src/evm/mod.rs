@@ -172,13 +172,12 @@ mod tx;
 pub use tx::{ExecutedTx, TxResult, TxResultExt, TxResultWithState};
 
 mod state;
-#[cfg(feature = "account-ext")]
-pub use state::AccountExtension;
 pub use state::{
-    AccountChangeRef, AccountCodeChunk, AccountHandle, AccountInfo, BlockStateAccumulator,
-    CodeChunkLoad, CodeChunkStats, JournalEntry, NoopChangeSink, PendingState, State,
-    StateChangeSink, StateChangeSource, StateCheckpoint, StateInner, StateSnapshot, StorageChange,
-    StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle, Tee, Tracked,
+    AccountChangeRef, AccountCodeChunk, AccountExtension, AccountHandle, AccountInfo,
+    BlockStateAccumulator, CodeChunkHandle, CodeChunkLoad, JournalEntry, NoopChangeSink,
+    PendingState, State, StateChangeSink, StateChangeSource, StateCheckpoint, StateInner,
+    StateSnapshot, StorageChange, StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle,
+    Tee, Tracked,
 };
 
 mod prewarm_set;
@@ -1195,7 +1194,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline(never)]
     fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), HostError> {
         if self.feature(EvmFeatures::TIP1143)
-            && message.code.len() > self.version().max_initcode_size
+            && message.code_chunk.original_bytes().len() > self.version().max_initcode_size
         {
             return Err(InstrStop::CreateInitCodeSizeLimit.into());
         }
@@ -1552,10 +1551,8 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         let code_size = account.code_size();
         Ok(AccountLoad {
             code_size,
-            is_chunked: info.code_metadata.is_some(),
-            inline_delegation: info
-                .inline_delegation
-                .or_else(|| info.code.as_ref().and_then(Bytecode::eip7702_address)),
+            is_chunked: info.code_metadata().is_some(),
+            inline_delegation: info.delegation_target(),
             balance: info.balance,
             nonce: info.nonce,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
@@ -1573,14 +1570,10 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         index: u32,
         skip_cold_load: bool,
     ) -> Result<Option<state::CodeChunkLoad>, HostError> {
-        self.state.load_code_chunk(address, index, skip_cold_load).map_err(Into::into)
-    }
-
-    fn resolve_legacy_delegation(
-        &mut self,
-        address: &Address,
-    ) -> Result<Option<Address>, HostError> {
-        self.state.account(address)?.legacy_delegation_target().map_err(Into::into)
+        Ok(self.state.load_code_chunk(address, index, skip_cold_load)?.map(|mut chunk| {
+            let is_cold = chunk.warm();
+            state::CodeChunkLoad { chunk: chunk.get().clone(), is_cold }
+        }))
     }
 
     fn is_precompile(&self, address: &Address) -> bool {
@@ -1988,7 +1981,7 @@ mod tests {
         let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 30_000,
-            code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
+            code_chunk: (Bytecode::new_legacy(Bytes::copy_from_slice(bytecode))).into(),
             ..Default::default()
         };
 
@@ -2058,8 +2051,8 @@ mod tests {
             caller: Address::ZERO,
             input: Bytes::new(),
             value: U256::ZERO,
-            code: Bytecode::default(),
-            code_chunk: None,
+            code_chunk: (Bytecode::default()).into(),
+            is_lazy_code: false,
             code_size: 0,
             code_hash: B256::ZERO,
             code_address: address,
@@ -2368,7 +2361,7 @@ mod tests {
             destination: contract,
             code_address: contract,
             gas_limit: 200_000,
-            code: bytecode,
+            code_chunk: (bytecode).into(),
             ..MessageExt::default()
         };
 
@@ -2426,7 +2419,7 @@ mod tests {
             destination: contract,
             code_address: contract,
             gas_limit: 200_000,
-            code: bytecode,
+            code_chunk: (bytecode).into(),
             ..MessageExt::default()
         };
 
@@ -2687,7 +2680,7 @@ mod tests {
         );
         evm.set_inspector(AccessingInspector { access });
         let message = MessageExt {
-            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            code_chunk: (Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))).into(),
             ..MessageExt::default()
         };
         let tx_env = TxEnvExt::default();
@@ -2713,7 +2706,7 @@ mod tests {
         );
         evm.set_inspector(ReadingInspector {});
         let message = MessageExt {
-            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            code_chunk: (Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))).into(),
             ..MessageExt::default()
         };
         let tx_env = TxEnvExt::default();
@@ -2771,7 +2764,7 @@ mod tests {
         );
         evm.set_inspector(BlockReplacingInspector);
         let message = MessageExt {
-            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            code_chunk: (Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))).into(),
             ..MessageExt::default()
         };
         let tx_env = TxEnvExt::default();
@@ -2806,7 +2799,7 @@ mod tests {
         );
         evm.set_inspector(ConfigReplacingInspector);
         let message = MessageExt {
-            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            code_chunk: (Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))).into(),
             ..MessageExt::default()
         };
         let tx_env = TxEnvExt::default();
@@ -2922,8 +2915,8 @@ mod tests {
             caller: Address::with_last_byte(0x7a),
             input: Bytes::from_static(b"message input"),
             value: U256::from(99),
-            code: Bytecode::default(),
-            code_chunk: None,
+            code_chunk: (Bytecode::default()).into(),
+            is_lazy_code: false,
             code_size: 0,
             code_hash: B256::ZERO,
             code_address: address,
@@ -3346,7 +3339,7 @@ mod tests {
             destination: contract,
             code_address: contract,
             gas_limit: 50_000,
-            code: bytecode,
+            code_chunk: (bytecode).into(),
             ..MessageExt::default()
         };
 
@@ -3392,13 +3385,6 @@ mod tests {
                 Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
             }
 
-            fn get_code_kind_by_hash(
-                &mut self,
-                _code_hash: &B256,
-            ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
-                Ok(crate::bytecode::BytecodeKind::Legacy)
-            }
-
             fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
                 Ok(Bytecode::default())
             }
@@ -3430,7 +3416,7 @@ mod tests {
             destination: contract,
             code_address: contract,
             gas_limit: 50_000,
-            code: bytecode,
+            code_chunk: (bytecode).into(),
             ..MessageExt::default()
         };
 
@@ -3442,7 +3428,7 @@ mod tests {
         assert!(error.is_fatal());
         assert!(error.downcast_ref::<FailingDbError>().is_some());
         assert_eq!(error.to_string(), "storage read failed");
-        message.code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        message.code_chunk = Bytecode::new_legacy(Bytes::from_static(&[op::STOP])).into();
         assert_eq!(
             Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap().stop,
             InstrStop::Stop
@@ -3467,7 +3453,7 @@ mod tests {
             destination: contract,
             code_address: contract,
             gas_limit: 500,
-            code: bytecode,
+            code_chunk: (bytecode).into(),
             ..MessageExt::default()
         };
 
@@ -3522,13 +3508,6 @@ mod tests {
                 Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
             }
 
-            fn get_code_kind_by_hash(
-                &mut self,
-                _code_hash: &B256,
-            ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
-                Ok(crate::bytecode::BytecodeKind::Legacy)
-            }
-
             fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
                 Ok(Bytecode::default())
             }
@@ -3569,7 +3548,7 @@ mod tests {
             destination: contract,
             code_address: contract,
             gas_limit: 6_000,
-            code: selfdestruct_to_code(&target),
+            code_chunk: (selfdestruct_to_code(&target)).into(),
             ..MessageExt::default()
         };
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
@@ -3598,7 +3577,7 @@ mod tests {
             destination: created,
             caller,
             gas_limit: 50,
-            code,
+            code_chunk: (code).into(),
             ..MessageExt::default()
         };
 
@@ -3650,7 +3629,7 @@ mod tests {
             destination: created,
             caller,
             gas_limit: 50,
-            code,
+            code_chunk: (code).into(),
             ..MessageExt::default()
         };
 
@@ -3693,7 +3672,7 @@ mod tests {
             destination: created,
             caller,
             gas_limit: 50_000,
-            code,
+            code_chunk: (code).into(),
             ..MessageExt::default()
         };
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
@@ -3728,7 +3707,7 @@ mod tests {
             destination: created,
             caller,
             gas_limit: 100_000,
-            code,
+            code_chunk: (code).into(),
             ..MessageExt::default()
         };
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
@@ -4221,13 +4200,14 @@ mod tests {
             caller,
             destination,
             gas_limit: 10_000_000,
-            code: Bytecode::new_legacy(Bytes::from_static(&[
+            code_chunk: (Bytecode::new_legacy(Bytes::from_static(&[
                 op::PUSH2,
                 0x60,
                 1,
                 op::PUSH0,
                 op::RETURN,
-            ])),
+            ])))
+            .into(),
             ..MessageExt::default()
         };
         let checkpoint = evm.state.checkpoint();
@@ -4235,7 +4215,7 @@ mod tests {
         assert_eq!(result.stop, InstrStop::Return);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         let account = evm.state.account(&destination).unwrap().get().unwrap().clone();
-        assert_eq!(account.code_metadata.as_ref().unwrap().code_size(), 24_577);
+        assert_eq!(account.code_metadata().unwrap().code_size(), 24_577);
         assert_eq!(account.code.as_ref().unwrap().original_byte_slice(), vec![0; 24_577]);
         evm.state.rollback(checkpoint, version.features);
         assert!(evm.state.account(&destination).unwrap().get().is_none());
@@ -4264,7 +4244,7 @@ mod tests {
                         caller: Address::repeat_byte(0x61),
                         destination: Address::repeat_byte(0x62),
                         gas_limit: 100_000,
-                        code: Bytecode::new_legacy(input),
+                        code_chunk: (Bytecode::new_legacy(input)).into(),
                         ..MessageExt::default()
                     };
                     let result =
@@ -4282,7 +4262,7 @@ mod tests {
                     if len == 1_966_080 {
                         let account = account.unwrap();
                         assert_eq!(account.code_hash, KECCAK256_EMPTY);
-                        assert!(account.code_metadata.is_none());
+                        assert!(account.code_metadata().is_none());
                     } else {
                         assert!(account.is_none());
                     }

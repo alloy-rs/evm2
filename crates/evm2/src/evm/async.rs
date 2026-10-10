@@ -423,12 +423,6 @@ pub trait AsyncDatabase: NonStaticAny {
         code_hash: B256,
     ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_;
 
-    /// Reads persisted code kind without fetching or analyzing runtime payload bytes.
-    fn get_code_kind_by_hash(
-        &mut self,
-        code_hash: B256,
-    ) -> impl Future<Output = Result<crate::bytecode::BytecodeKind, Self::Error>> + Send + '_;
-
     /// Loads a payload directly, preserving its known bytecode kind when available.
     fn get_code_chunk_by_hash(
         &mut self,
@@ -498,14 +492,6 @@ impl<D: AsyncDatabase> AsyncDb<D> {
 }
 
 impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
-    fn get_code_kind_by_hash(
-        &mut self,
-        code_hash: &B256,
-    ) -> DbResult<crate::bytecode::BytecodeKind> {
-        let result = block_on_current_result(self.db.get_code_kind_by_hash(*code_hash));
-        self.database_result(result)
-    }
-
     fn discard_code_chunk(&mut self, code_hash: &B256, index: u32) {
         self.db.discard_code_chunk(*code_hash, index);
     }
@@ -1093,13 +1079,6 @@ mod tests {
             Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
         }
 
-        fn get_code_kind_by_hash(
-            &mut self,
-            _code_hash: &B256,
-        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
-            Ok(crate::bytecode::BytecodeKind::Legacy)
-        }
-
         fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
         }
@@ -1142,13 +1121,6 @@ mod tests {
             }
             let code = self.get_code_by_hash(code_hash)?;
             Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
-        }
-
-        fn get_code_kind_by_hash(
-            &mut self,
-            _code_hash: &B256,
-        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
-            Ok(crate::bytecode::BytecodeKind::Legacy)
         }
 
         fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
@@ -1263,13 +1235,6 @@ mod tests {
             Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
         }
 
-        async fn get_code_kind_by_hash(
-            &mut self,
-            _code_hash: B256,
-        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
-            Ok(crate::bytecode::BytecodeKind::Legacy)
-        }
-
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
         }
@@ -1311,13 +1276,6 @@ mod tests {
             }
             let code = self.get_code_by_hash(code_hash).await?;
             Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
-        }
-
-        async fn get_code_kind_by_hash(
-            &mut self,
-            _code_hash: B256,
-        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
-            Ok(crate::bytecode::BytecodeKind::Legacy)
         }
 
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
@@ -1366,13 +1324,6 @@ mod tests {
             }
             let code = self.get_code_by_hash(code_hash).await?;
             Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
-        }
-
-        async fn get_code_kind_by_hash(
-            &mut self,
-            _code_hash: B256,
-        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
-            Ok(crate::bytecode::BytecodeKind::Legacy)
         }
 
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
@@ -1434,13 +1385,6 @@ mod tests {
             Ok((!code.is_empty()).then(|| crate::bytecode::CodeChunk::from_bytecode(&code)))
         }
 
-        async fn get_code_kind_by_hash(
-            &mut self,
-            _code_hash: B256,
-        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
-            Ok(crate::bytecode::BytecodeKind::Legacy)
-        }
-
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
         }
@@ -1479,13 +1423,6 @@ mod tests {
 
         async fn get_account(&mut self, _: Address) -> Result<Option<AccountInfo>, Self::Error> {
             Ok(None)
-        }
-
-        async fn get_code_kind_by_hash(
-            &mut self,
-            _: B256,
-        ) -> Result<crate::bytecode::BytecodeKind, Self::Error> {
-            Ok(crate::bytecode::BytecodeKind::Legacy)
         }
 
         async fn get_code_by_hash(&mut self, _: B256) -> Result<Bytecode, Self::Error> {

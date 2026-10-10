@@ -173,7 +173,7 @@ mod tests {
 
         let tx_env = TxEnv::<BaseEvmTypes>::default();
         let message = Message::<BaseEvmTypes> {
-            code: Bytecode::new_legacy(Bytes::from(opcodes)),
+            code_chunk: Bytecode::new_legacy(Bytes::from(opcodes)).into(),
             ..Message::<BaseEvmTypes>::default()
         };
         let mut interp = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
@@ -191,7 +191,7 @@ mod tests {
 
         let tx_env = TxEnv::<BaseEvmTypes>::default();
         let message = Message::<BaseEvmTypes> {
-            code: Bytecode::new_legacy(Bytes::from(opcodes)),
+            code_chunk: Bytecode::new_legacy(Bytes::from(opcodes)).into(),
             ..Message::<BaseEvmTypes>::default()
         };
         let mut interp = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);

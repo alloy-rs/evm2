@@ -481,13 +481,6 @@ mod tests {
             unimplemented!()
         }
 
-        fn resolve_legacy_delegation(
-            &mut self,
-            _: &Address,
-        ) -> Result<Option<Address>, crate::HostError> {
-            Ok(None)
-        }
-
         fn is_precompile(&self, _: &Address) -> bool {
             false
         }

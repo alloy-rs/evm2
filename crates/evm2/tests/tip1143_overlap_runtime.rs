@@ -26,16 +26,12 @@ impl Database for Provider {
     fn get_account(&mut self, _: &Address) -> Result<Option<AccountInfo>, Self::Error> {
         Ok(Some(AccountInfo {
             code_hash: keccak256(&self.raw),
-            code_metadata: code_metadata(&self.raw).unwrap(),
+            extension: (code_metadata(&self.raw).unwrap())
+                .map(evm2::evm::AccountExtension::chunked)
+                .unwrap_or_default(),
             code: None,
             ..Default::default()
         }))
-    }
-    fn get_code_kind_by_hash(
-        &mut self,
-        _: &B256,
-    ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-        Ok(evm2::bytecode::BytecodeKind::Legacy)
     }
     fn get_code_by_hash(&mut self, _: &B256) -> Result<Bytecode, Self::Error> {
         Ok(Bytecode::new_legacy(self.raw.clone()))
@@ -278,8 +274,8 @@ fn public_pc_setter_selects_padding_and_rejects_internal_bytes() {
     let chunk = code_chunk(&raw, 0).unwrap();
     let message = MessageExt {
         gas_limit: 200_000,
-        code: chunk.bytecode(true),
-        code_chunk: Some(chunk),
+        is_lazy_code: true,
+        code_chunk: chunk,
         code_size: raw.len(),
         code_hash: keccak256(&raw),
         code_address: Address::repeat_byte(0x44),
@@ -406,8 +402,11 @@ fn standalone_prepared_bytecode_restores_padding_for_static_jump_entries() {
     raw[CODE_CHUNK_SIZE - 2..CODE_CHUNK_SIZE].copy_from_slice(&[0x60, 0x7f]);
     let raw = Bytes::from(raw);
     let chunk = code_chunk(&raw, 0).unwrap();
-    let message =
-        MessageExt { gas_limit: 100_000, code: chunk.bytecode(true), ..MessageExt::default() };
+    let message = MessageExt {
+        gas_limit: 100_000,
+        code_chunk: (chunk.bytecode(true)).into(),
+        ..MessageExt::default()
+    };
     let tx = TxEnvExt::default();
     let mut interp = Interpreter::<'_, '_, BaseEvmTypes>::new(&tx, &message);
     let mut evm = Evm::<'_, BaseEvmTypes>::new_with_execution_config(

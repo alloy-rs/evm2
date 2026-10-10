@@ -1,7 +1,4 @@
-use crate::{
-    BaseEvmTypes, EvmTypesHost,
-    bytecode::{Bytecode, CodeChunk},
-};
+use crate::{BaseEvmTypes, EvmTypesHost, bytecode::CodeChunk};
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 
 /// EVM message kind.
@@ -68,15 +65,13 @@ pub struct MessageExt<E = ()> {
     pub input: Bytes,
     /// Value transferred with the message.
     pub value: U256,
-    /// Bytecode this frame executes: the code at [`MessageExt::code_address`] (the resolved
-    /// delegate's code for an EIP-7702 delegated call), or the initcode for create messages.
-    ///
-    /// Resolved by the message's producer when it is constructed, so frames never load accounts
-    /// for code.
-    pub code: Bytecode,
-    /// Original entry payload and preparation for lazily loaded runtime code.
-    pub code_chunk: Option<CodeChunk>,
-    /// Global logical size when `code_chunk` is present.
+    /// Entry code, including its cached analysis. Resident initcode and ordinary code
+    /// also use this container; its presence does not select gas rules.
+    pub code_chunk: CodeChunk,
+    /// Whether runtime accesses use the lazy chunk host interface and chunk tariffs.
+    /// False for resident initcode, delegation markers, and pre-TIP execution.
+    pub is_lazy_code: bool,
+    /// Global logical size for lazy runtime code.
     pub code_size: usize,
     /// Global code identity, used for contextual provider errors.
     pub code_hash: B256,
@@ -117,8 +112,8 @@ impl<E> MessageExt<E> {
             caller,
             input,
             value,
-            code,
             code_chunk,
+            is_lazy_code,
             code_size,
             code_hash,
             code_address,
@@ -138,8 +133,8 @@ impl<E> MessageExt<E> {
             caller,
             input,
             value,
-            code,
             code_chunk,
+            is_lazy_code,
             code_size,
             code_hash,
             code_address,

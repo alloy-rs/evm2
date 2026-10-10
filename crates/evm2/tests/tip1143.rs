@@ -47,7 +47,7 @@ impl Database for Provider {
         Ok(Some(AccountInfo {
             nonce: 1,
             code_hash: self.hash,
-            code_metadata: if self.code.len() > CHUNK {
+            extension: (if self.code.len() > CHUNK {
                 Some(
                     CodeMetadata::new(
                         self.code.len() as u32,
@@ -57,16 +57,11 @@ impl Database for Provider {
                 )
             } else {
                 None
-            },
+            })
+            .map(evm2::evm::AccountExtension::chunked)
+            .unwrap_or_default(),
             ..Default::default()
         }))
-    }
-
-    fn get_code_kind_by_hash(
-        &mut self,
-        _hash: &B256,
-    ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-        Ok(evm2::bytecode::BytecodeKind::Legacy)
     }
 
     fn get_code_by_hash(&mut self, hash: &B256) -> Result<Bytecode, Self::Error> {
@@ -398,19 +393,14 @@ impl Database for World {
         Ok(self.accounts.get(address).map(|code| AccountInfo {
             nonce: 1,
             code_hash: keccak256(code),
-            code_metadata: (code.len() > CHUNK).then(|| {
+            extension: ((code.len() > CHUNK).then(|| {
                 CodeMetadata::new(code.len() as u32, code.chunks(CHUNK).map(keccak256).collect())
                     .unwrap()
-            }),
+            }))
+            .map(evm2::evm::AccountExtension::chunked)
+            .unwrap_or_default(),
             ..Default::default()
         }))
-    }
-
-    fn get_code_kind_by_hash(
-        &mut self,
-        _hash: &B256,
-    ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-        Ok(evm2::bytecode::BytecodeKind::Legacy)
     }
 
     fn get_code_by_hash(&mut self, hash: &B256) -> Result<Bytecode, Self::Error> {
@@ -886,9 +876,6 @@ fn tip1143_t19_external_copy_wide_memory_operands_precede_chunk_io() {
             );
             assert_eq!(*reads.borrow(), [(hash, 0)]);
             assert!(execution.state_mut().account(&target).unwrap().code_chunks().is_empty());
-            let stats = execution.state_mut().code_chunk_stats();
-            assert_eq!(stats.logical_cold_accesses, 1);
-            assert_eq!(stats.logical_warm_accesses, 0);
             if success {
                 assert_eq!(result.stop, InstrStop::Stop);
                 assert_eq!(
@@ -936,29 +923,17 @@ fn tip1143_t22_external_copy_reserves_all_cold_and_mixed_tariffs_atomically() {
                 assert_eq!(warmup.stop, InstrStop::Stop);
                 assert_eq!(warmup.total_gas_spent, COLD);
             }
-            let before = execution.state_mut().code_chunk_stats();
             let result = execution
                 .execute_system_call(SystemTx::new(caller, Bytes::new()).with_gas_limit(budget))
                 .unwrap();
-            let after = execution.state_mut().code_chunk_stats();
             let mut expected = if prewarm_zero { vec![(target_hash, 0)] } else { vec![] };
             expected.push((caller_hash, 0));
             if budget < total {
                 assert_eq!(result.stop, InstrStop::OutOfGas);
-                assert_eq!(after.logical_cold_accesses - before.logical_cold_accesses, 1);
-                assert_eq!(after.logical_warm_accesses - before.logical_warm_accesses, 0);
             } else {
                 assert_eq!(result.stop, InstrStop::Stop);
                 assert_eq!(result.total_gas_spent, total);
                 expected.extend((u32::from(prewarm_zero)..3).map(|index| (target_hash, index)));
-                assert_eq!(
-                    after.logical_cold_accesses - before.logical_cold_accesses,
-                    if prewarm_zero { 3 } else { 4 }
-                );
-                assert_eq!(
-                    after.logical_warm_accesses - before.logical_warm_accesses,
-                    u64::from(prewarm_zero)
-                );
             }
             assert_eq!(*reads.borrow(), expected);
         }
@@ -1173,39 +1148,21 @@ fn tip1143_t22_copy_warm_last_and_all_warm_budget_rows() {
                 assert_eq!(*reads.borrow(), [(target_hash, 0), (target_hash, 3)]);
             }
             let before_reads = reads.borrow().clone();
-            let before = execution.state_mut().code_chunk_stats();
             let result = execution
                 .execute_system_call(SystemTx::new(caller, Bytes::new()).with_gas_limit(budget))
                 .unwrap();
-            let after = execution.state_mut().code_chunk_stats();
             let mut expected = before_reads;
             if !all_warm {
                 expected.push((caller_hash, 0));
             }
             if budget < total {
                 assert_eq!(result.stop, InstrStop::OutOfGas);
-                assert_eq!(
-                    after.logical_cold_accesses - before.logical_cold_accesses,
-                    u64::from(!all_warm)
-                );
-                assert_eq!(
-                    after.logical_warm_accesses - before.logical_warm_accesses,
-                    u64::from(all_warm)
-                );
             } else {
                 assert_eq!(result.stop, InstrStop::Stop);
                 assert_eq!(result.total_gas_spent, total);
                 if !all_warm {
                     expected.extend([(target_hash, 1), (target_hash, 2)]);
                 }
-                assert_eq!(
-                    after.logical_cold_accesses - before.logical_cold_accesses,
-                    if all_warm { 0 } else { 3 }
-                );
-                assert_eq!(
-                    after.logical_warm_accesses - before.logical_warm_accesses,
-                    if all_warm { 4 } else { 1 }
-                );
             }
             assert_eq!(*reads.borrow(), expected);
         }
@@ -1237,11 +1194,9 @@ fn tip1143_t22_legacy_size_budget_brackets_preserve_preexisting_warmth() {
                     execution.execute_system_call(SystemTx::new(target, Bytes::new())).unwrap();
                 assert_eq!(result.total_gas_spent, COLD);
             }
-            let before = execution.state_mut().code_chunk_stats();
             let result = execution
                 .execute_system_call(SystemTx::new(caller, Bytes::new()).with_gas_limit(budget))
                 .unwrap();
-            let after = execution.state_mut().code_chunk_stats();
             let mut expected = if warm { vec![(target_hash, 0)] } else { vec![] };
             expected.push((caller_hash, 0));
             if budget >= total {
@@ -1250,18 +1205,8 @@ fn tip1143_t22_legacy_size_budget_brackets_preserve_preexisting_warmth() {
                 if !warm {
                     expected.push((target_hash, 0));
                 }
-                assert_eq!(
-                    after.logical_cold_accesses - before.logical_cold_accesses,
-                    if warm { 1 } else { 2 }
-                );
-                assert_eq!(
-                    after.logical_warm_accesses - before.logical_warm_accesses,
-                    u64::from(warm)
-                );
             } else {
                 assert_eq!(result.stop, InstrStop::OutOfGas);
-                assert_eq!(after.logical_cold_accesses - before.logical_cold_accesses, 1);
-                assert_eq!(after.logical_warm_accesses - before.logical_warm_accesses, 0);
             }
             assert_eq!(*reads.borrow(), expected);
         }
@@ -1469,21 +1414,10 @@ fn tip1143_t20_t22_copy_budget_matrix_with_retained_physical_cache() {
                         execution.state_mut().rollback(checkpoint, features);
                     }
                 }
-                let before = execution.state_mut().code_chunk_stats();
                 let before_reads = reads.borrow().clone();
                 let result = execution
                     .execute_system_call(SystemTx::new(caller, Bytes::new()).with_gas_limit(budget))
                     .unwrap();
-                let after = execution.state_mut().code_chunk_stats();
-                let accesses = if budget < total { 1 } else { count + 1 };
-                assert_eq!(
-                    after.logical_cold_accesses - before.logical_cold_accesses,
-                    if warm { 0 } else { accesses }
-                );
-                assert_eq!(
-                    after.logical_warm_accesses - before.logical_warm_accesses,
-                    if warm { accesses } else { 0 }
-                );
                 if budget < total {
                     assert_eq!(result.stop, InstrStop::OutOfGas);
                 } else {
@@ -1574,7 +1508,7 @@ fn tip1143_t32_resident_initcode_external_operations_bypass_runner_only_when_ena
             assert_eq!(*reads.borrow(), vec![(hash, 0)]);
             let account = execution.state_mut().account(&caller.create(0)).unwrap();
             assert_eq!(account.get().unwrap().code_hash, keccak256(&output));
-            assert!(account.get().unwrap().code_metadata.is_none());
+            assert!(account.get().unwrap().code_metadata().is_none());
         }
     }
 }
@@ -1640,7 +1574,6 @@ fn tip1143_t22_warm_remote_jump_exact_operation_budget() {
         let mut execution = world_evm(world, true);
         let first = execution.execute_system_call(SystemTx::new(owner, Bytes::new())).unwrap();
         assert_eq!(first.total_gas_spent, 2 * COLD + 12);
-        let before = execution.state_mut().code_chunk_stats();
         let result = execution
             .execute_system_call(SystemTx::new(owner, Bytes::new()).with_gas_limit(budget))
             .unwrap();
@@ -1649,13 +1582,6 @@ fn tip1143_t22_warm_remote_jump_exact_operation_budget() {
             if budget > operation_budget { InstrStop::Stop } else { InstrStop::OutOfGas }
         );
         assert_eq!(result.total_gas_spent, budget);
-        let after = execution.state_mut().code_chunk_stats();
-        assert_eq!(
-            after.logical_warm_accesses - before.logical_warm_accesses,
-            if budget < operation_budget { 1 } else { 2 }
-        );
-        assert_eq!(after.logical_cold_accesses, before.logical_cold_accesses);
-        assert_eq!(after.analyzed_chunks, before.analyzed_chunks);
         assert_eq!(*reads.borrow(), [(hash, 0), (hash, 1)]);
         assert!(
             execution
@@ -1695,7 +1621,4 @@ fn tip1143_t38_identical_remote_payloads_pay_distinct_logical_tariffs() {
             assert!(account.code_chunks().get(&index).unwrap().is_warm);
         }
     }
-    let stats = execution.state_mut().code_chunk_stats();
-    assert_eq!(stats.logical_cold_accesses, 3);
-    assert_eq!(stats.logical_warm_accesses, 3);
 }

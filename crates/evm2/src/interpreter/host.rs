@@ -131,12 +131,6 @@ pub trait Host<T: EvmTypesHost> {
         skip_cold_load: bool,
     ) -> Result<AccountLoad, HostError>;
 
-    /// Resolves a historical delegation marker using bounded code-kind metadata.
-    fn resolve_legacy_delegation(
-        &mut self,
-        address: &Address,
-    ) -> Result<Option<Address>, HostError>;
-
     /// Whether the address dispatches to a native precompile.
     fn is_precompile(&self, address: &Address) -> bool;
 

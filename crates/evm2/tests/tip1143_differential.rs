@@ -44,7 +44,7 @@ impl Database for Provider {
         Ok(Some(AccountInfo {
             nonce: 1,
             code_hash: self.hash,
-            code_metadata: if self.code.len() > CHUNK {
+            extension: (if self.code.len() > CHUNK {
                 Some(
                     CodeMetadata::new(
                         self.code.len() as u32,
@@ -54,16 +54,11 @@ impl Database for Provider {
                 )
             } else {
                 None
-            },
+            })
+            .map(evm2::evm::AccountExtension::chunked)
+            .unwrap_or_default(),
             ..Default::default()
         }))
-    }
-
-    fn get_code_kind_by_hash(
-        &mut self,
-        _hash: &B256,
-    ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-        Ok(evm2::bytecode::BytecodeKind::Legacy)
     }
 
     fn get_code_by_hash(&mut self, hash: &B256) -> Result<Bytecode, Self::Error> {
@@ -479,13 +474,6 @@ impl Database for CallProvider {
         } else {
             self.child.get_account(address)
         }
-    }
-
-    fn get_code_kind_by_hash(
-        &mut self,
-        _: &B256,
-    ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-        Ok(evm2::bytecode::BytecodeKind::Legacy)
     }
 
     fn get_code_by_hash(&mut self, _: &B256) -> Result<Bytecode, Self::Error> {

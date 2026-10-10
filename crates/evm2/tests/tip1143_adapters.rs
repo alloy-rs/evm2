@@ -3,8 +3,6 @@
 //! Proposed exports: `CodeChunk::new(Bytes)` / `original_bytes()` and
 //! `CodeMetadata::new(u32, Vec<B256>)` / `code_size()` / `chunk_hashes()`.
 //! Metadata construction validates size/count, not provider authentication.
-//! Diagnostic snapshots expose `aggregate_metrics() -> [(&'static str, u64); 8]`:
-//! seven event/byte counters plus `read_latency_ns`, with no per-owner labels.
 
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use evm2::{
@@ -25,13 +23,6 @@ impl Database for Provider {
 
     fn get_account(&mut self, _: &Address) -> Result<Option<AccountInfo>, Self::Error> {
         Ok(None)
-    }
-
-    fn get_code_kind_by_hash(
-        &mut self,
-        _: &B256,
-    ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-        Ok(evm2::bytecode::BytecodeKind::Legacy)
     }
 
     fn get_code_by_hash(&mut self, _: &B256) -> Result<Bytecode, Self::Error> {
@@ -214,13 +205,15 @@ mod asynchronous {
             (address == Address::repeat_byte(0x44)).then(|| AccountInfo {
                 nonce: 1,
                 code_hash: keccak256(&self.code),
-                code_metadata: (self.code.len() > CHUNK).then(|| {
+                extension: ((self.code.len() > CHUNK).then(|| {
                     CodeMetadata::new(
                         self.code.len() as u32,
                         self.code.chunks(CHUNK).map(keccak256).collect(),
                     )
                     .unwrap()
-                }),
+                }))
+                .map(evm2::evm::AccountExtension::chunked)
+                .unwrap_or_default(),
                 ..Default::default()
             })
         }
@@ -276,13 +269,6 @@ mod asynchronous {
             Ok(self.account(address))
         }
 
-        async fn get_code_kind_by_hash(
-            &mut self,
-            _: B256,
-        ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-            Ok(evm2::bytecode::BytecodeKind::Legacy)
-        }
-
         async fn get_code_by_hash(&mut self, _: B256) -> Result<Bytecode, Self::Error> {
             assert!(self.code.len() <= 24576);
             let chunk = self
@@ -325,13 +311,6 @@ mod asynchronous {
 
         fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
             Ok(self.account(*address))
-        }
-
-        fn get_code_kind_by_hash(
-            &mut self,
-            _: &B256,
-        ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-            Ok(evm2::bytecode::BytecodeKind::Legacy)
         }
 
         fn get_code_by_hash(&mut self, _: &B256) -> Result<Bytecode, Self::Error> {
@@ -572,13 +551,6 @@ mod asynchronous {
             address: Address,
         ) -> Result<Option<AccountInfo>, Self::Error> {
             Database::get_account(&mut self.db, &address)
-        }
-
-        async fn get_code_kind_by_hash(
-            &mut self,
-            hash: B256,
-        ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-            Database::get_code_kind_by_hash(&mut self.db, &hash)
         }
 
         async fn get_code_by_hash(&mut self, hash: B256) -> Result<Bytecode, Self::Error> {
@@ -827,12 +799,9 @@ mod asynchronous {
         }
     }
 
-    /// Public observation contract: AccountHandle::code_size/code_chunks expose
-    /// resolved size and requested analyzed entries; State::code_chunk_stats is
-    /// a cumulative snapshot retained across transaction resets. Cache hits count
-    /// successful requests satisfied without provider I/O, including warm entries.
+    /// Requested chunks and provider reads stay sparse across transaction resets.
     #[test]
-    fn tip1143_t12_t33_sparse_analysis_and_logical_physical_diagnostics() {
+    fn tip1143_t12_sparse_analysis_and_cached_reads() {
         let mut code = vec![0x60, 0, 0x60, 0, 0xa0]; // One explicit empty LOG0.
         let target = 39 * CHUNK;
         code.extend([0x62, (target >> 16) as u8, (target >> 8) as u8, target as u8, 0x56]);
@@ -854,9 +823,6 @@ mod asynchronous {
             assert!(account.code_chunks().is_empty());
         }
         assert!(reads.lock().unwrap().is_empty());
-        let initial = execution.state_mut().code_chunk_stats();
-        assert_eq!(initial.analyzed_chunks, 0);
-        assert_eq!(initial.bytes_fetched, 0);
         for (round, tariff) in [28680, 1000, 28680].into_iter().enumerate() {
             let result = execution.execute_system_call(SystemTx::new(owner, Bytes::new())).unwrap();
             assert_eq!(result.stop, InstrStop::Stop);
@@ -876,31 +842,6 @@ mod asynchronous {
             assert!(account.code_chunks().values().all(|chunk| chunk.is_warm));
             assert_eq!(*reads.lock().unwrap(), [0, 39]);
             drop(account);
-            let stats = execution.state_mut().code_chunk_stats();
-            assert_eq!(stats.logical_cold_accesses, if round < 2 { 2 } else { 4 });
-            assert_eq!(stats.logical_warm_accesses, if round == 0 { 0 } else { 2 });
-            assert_eq!(stats.physical_cache_misses, 2);
-            assert_eq!(stats.physical_cache_hits, 2 * round as u64);
-            assert_eq!(stats.bytes_fetched, 24542);
-            assert_eq!(stats.read_latency_samples, 2);
-            assert_eq!(stats.analyzed_chunks, 2);
-            // Inspect the production diagnostic export, not a fixture-built label map.
-            // Timing magnitude is deliberately unconstrained on shared test hosts.
-            let mut metrics = stats.aggregate_metrics().to_vec();
-            metrics.sort_unstable_by_key(|(key, _)| *key);
-            assert_eq!(
-                metrics,
-                [
-                    ("analyzed_chunks", 2),
-                    ("bytes_fetched", 24542),
-                    ("logical_cold_accesses", if round < 2 { 2 } else { 4 }),
-                    ("logical_warm_accesses", if round == 0 { 0 } else { 2 }),
-                    ("physical_cache_hits", 2 * round as u64),
-                    ("physical_cache_misses", 2),
-                    ("read_latency_ns", stats.read_latency_ns),
-                    ("read_latency_samples", 2),
-                ]
-            );
             if round == 1 {
                 execution.state_mut().clear_transaction_state();
                 assert!(execution.state_mut().account(&owner).unwrap().code_chunks().is_empty());
@@ -953,54 +894,6 @@ mod asynchronous {
                 }
                 assert_eq!(*reads.lock().unwrap(), if index == 0 { vec![0] } else { vec![0, 2] });
                 assert!(execution.state_mut().logs().is_empty());
-                let stats = execution.state_mut().code_chunk_stats();
-                assert_eq!(stats.read_latency_samples, if index == 0 { 1 } else { 2 });
-                assert_eq!(stats.analyzed_chunks, if index == 0 { 0 } else { 1 });
-                assert_eq!(stats.physical_cache_hits, 0);
-            }
-        }
-    }
-
-    /// Diagnostics are opt-in observations, never inputs to execution or caches.
-    /// The public toggle controls collection; snapshots retain prior samples.
-    #[test]
-    fn tip1143_t33_diagnostic_collection_does_not_change_execution_or_reads() {
-        for copy in [false, true] {
-            let mut reference = None;
-            for enabled in [false, true] {
-                let provider = fixture(copy, Response::Valid, 0);
-                let reads = provider.reads.clone();
-                let mut execution = evm(Db::new(provider));
-                execution.state_mut().set_code_chunk_diagnostics(enabled);
-                let mut results = Vec::new();
-                for _ in 0..2 {
-                    results.push(
-                        execution
-                            .system_call(SystemTx::new(Address::repeat_byte(0x44), Bytes::new()))
-                            .unwrap()
-                            .discard(),
-                    );
-                }
-                assert_eq!(results[0], results[1]);
-                let observed = reads.lock().unwrap().clone();
-                assert_eq!(observed, if copy { vec![0, 1, 2] } else { vec![0, 2] });
-                let stats = execution.state_mut().code_chunk_stats();
-                let count = if copy { 3 } else { 2 };
-                if enabled {
-                    assert_eq!(stats.physical_cache_misses, count);
-                    assert_eq!(stats.read_latency_samples, count);
-                    assert_eq!(stats.physical_cache_hits, count);
-                    assert_eq!(stats.logical_cold_accesses, 2 * count);
-                } else {
-                    assert_eq!(stats.physical_cache_misses, 0);
-                    assert_eq!(stats.read_latency_samples, 0);
-                    assert_eq!(stats.physical_cache_hits, 0);
-                    assert_eq!(stats.logical_cold_accesses, 0);
-                }
-                if let Some(expected) = &reference {
-                    assert_eq!(&(results.clone(), observed.clone()), expected);
-                }
-                reference = Some((results, observed));
             }
         }
     }
@@ -1046,13 +939,6 @@ mod asynchronous {
             } else {
                 self.child.account(address)
             })
-        }
-
-        async fn get_code_kind_by_hash(
-            &mut self,
-            _: B256,
-        ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-            Ok(evm2::bytecode::BytecodeKind::Legacy)
         }
 
         async fn get_code_by_hash(&mut self, _: B256) -> Result<Bytecode, Self::Error> {
@@ -1144,8 +1030,8 @@ mod asynchronous {
         }
     }
 
-    /// Retains the prototype's explicit low-level State::load_code_chunk seam.
-    /// This method bounds/loads/journals; its interpreter caller reserves gas.
+    /// Chunk handles check bounds and skipped loads before fetching payloads.
+    /// Warming is explicit; the interpreter caller reserves gas first.
     #[test]
     fn tip1143_t09_state_bounds_and_skipped_loads_precede_provider_calls() {
         for size in [0, 1, 24576, 24577, 981640] {
@@ -1186,16 +1072,24 @@ mod asynchronous {
             ));
             assert!(reads.lock().unwrap().is_empty());
             let checkpoint = execution.state_mut().checkpoint();
-            let first = execution.state_mut().load_code_chunk(&owner, 0, false).unwrap().unwrap();
-            assert!(first.is_cold);
-            assert_eq!(first.chunk.original_bytes().len(), size.min(CHUNK));
+            let first = {
+                let mut chunk =
+                    execution.state_mut().load_code_chunk(&owner, 0, false).unwrap().unwrap();
+                assert!(!chunk.is_warm());
+                assert!(chunk.warm());
+                chunk.get().clone()
+            };
+            assert_eq!(first.original_bytes().len(), size.min(CHUNK));
             assert_eq!(
                 execution.state_mut().account(&owner).unwrap().code_size(),
                 Some(size as u32)
             );
-            let second = execution.state_mut().load_code_chunk(&owner, 0, true).unwrap().unwrap();
-            assert!(!second.is_cold);
-            assert_eq!(first.chunk.original_bytes(), second.chunk.original_bytes());
+            {
+                let mut second =
+                    execution.state_mut().load_code_chunk(&owner, 0, true).unwrap().unwrap();
+                assert!(!second.warm());
+                assert_eq!(first.original_bytes(), second.get().original_bytes());
+            }
             assert_eq!(*reads.lock().unwrap(), [0]);
             let features = execution.version().features;
             execution.state_mut().rollback(checkpoint, features);
@@ -1204,9 +1098,9 @@ mod asynchronous {
                 execution.state_mut().load_code_chunk(&owner, 0, true),
                 Err(evm2::LoadError::ColdLoadSkipped)
             ));
-            let reloaded =
+            let mut reloaded =
                 execution.state_mut().load_code_chunk(&owner, 0, false).unwrap().unwrap();
-            assert!(reloaded.is_cold);
+            assert!(reloaded.warm());
             assert_eq!(*reads.lock().unwrap(), [0]);
         }
     }
@@ -1230,13 +1124,6 @@ mod asynchronous {
             } else {
                 Ok(self.inner.account(*address))
             }
-        }
-
-        fn get_code_kind_by_hash(
-            &mut self,
-            _: &B256,
-        ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-            Ok(evm2::bytecode::BytecodeKind::Legacy)
         }
 
         fn get_code_by_hash(&mut self, _: &B256) -> Result<Bytecode, Self::Error> {
@@ -1323,13 +1210,6 @@ mod asynchronous {
 
         fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
             Ok(self.inner.account(*address))
-        }
-
-        fn get_code_kind_by_hash(
-            &mut self,
-            _hash: &B256,
-        ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-            Ok(evm2::bytecode::BytecodeKind::Legacy)
         }
 
         fn get_code_by_hash(&mut self, hash: &B256) -> Result<Bytecode, Self::Error> {
@@ -1512,7 +1392,7 @@ fn tip1143_t09_t35_original_inmemory_rows_need_no_chunk_index_or_rewrite() {
             },
         );
         let before = database.account_info(&owner).unwrap().clone();
-        assert!(before.code_metadata.is_none());
+        assert!(before.code_metadata().is_none());
         for index in [1, 40, u32::MAX] {
             assert!(
                 DynDatabase::get_code_chunk_by_hash(&mut database, &hash, index).unwrap().is_none()
@@ -1573,7 +1453,7 @@ fn tip1143_t10_counted_cache_composition_preserves_results_and_attempts() {
     );
 }
 
-#[cfg(all(feature = "serde", feature = "account-ext"))]
+#[cfg(feature = "serde")]
 #[test]
 fn tip1143_t08_t35_account_serialization_preserves_optional_identity_and_extension() {
     for size in [0, 17, 24577, 981640] {
@@ -1585,31 +1465,30 @@ fn tip1143_t08_t35_account_serialization_preserves_optional_identity_and_extensi
             nonce: 19,
             balance: Word::from(987654),
             code_hash: keccak256(&bytes),
-            code_metadata: metadata,
-            extension: evm2::evm::AccountExtension::copy_from_slice(&[0xa1, 0x7f, 0x39]),
+            extension: (metadata).map(evm2::evm::AccountExtension::chunked).unwrap_or_default(),
             ..Default::default()
         };
         let json = serde_json::to_value(&account).unwrap();
         let restored = serde_json::from_value::<AccountInfo>(json.clone()).unwrap();
         assert_eq!(restored, account);
-        assert_eq!(restored.code_metadata, account.code_metadata);
-        assert_eq!(restored.extension.as_ref(), &[0xa1, 0x7f, 0x39]);
+        assert_eq!(restored.code_metadata(), account.code_metadata());
         let packed = rmp_serde::to_vec_named(&account).unwrap();
         let restored = rmp_serde::from_slice::<AccountInfo>(&packed).unwrap();
         assert_eq!(restored, account);
-        assert_eq!(restored.code_metadata, account.code_metadata);
+        assert_eq!(restored.code_metadata(), account.code_metadata());
         if size > 24541 {
             for count in [0, 1, 41] {
                 let mut malformed = json.clone();
-                malformed["code_metadata"]["chunk_hashes"] =
-                    serde_json::json!(vec![B256::ZERO; count]);
+                let mut extension = account.extension.encode()[..5].to_vec();
+                extension.resize(5 + count * 32, 0);
+                malformed["extension"] = serde_json::to_value(Bytes::from(extension)).unwrap();
                 assert!(
                     serde_json::from_value::<AccountInfo>(malformed).is_err(),
                     "size={size}, count={count}"
                 );
             }
         } else {
-            assert!(restored.code_metadata.is_none());
+            assert!(restored.code_metadata().is_none());
         }
     }
 }

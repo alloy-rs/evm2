@@ -178,7 +178,7 @@ fn tip1143_t41_delegating_hook_dispatches_once_in_both_modes() {
         let info = result.pending_state.account_info(&Address::repeat_byte(0xcc)).unwrap();
         assert_eq!(info.nonce, 1);
         assert_eq!(info.code_hash, Bytecode::new_eip7702(Address::repeat_byte(0xdd)).hash_slow());
-        assert!(info.code_metadata.is_none());
+        assert!(info.code_metadata().is_none());
     }
 }
 
@@ -413,12 +413,7 @@ fn tip1143_t41_t42_existing_rejected_repeated_cleared_and_redelegated_authoritie
                 } else {
                     Bytecode::default()
                 };
-                let info = AccountInfo {
-                    balance: U256::from(1),
-                    code_hash: code.hash_slow(),
-                    code: Some(code),
-                    ..Default::default()
-                };
+                let info = AccountInfo::default().with_balance(U256::from(1)).with_code(code);
                 let count = entries.len() as u64;
                 let (mut evm, tx) = fixture_details::<Delegating>(
                     enabled,
@@ -446,7 +441,7 @@ fn tip1143_t41_t42_existing_rejected_repeated_cleared_and_redelegated_authoritie
                     Bytecode::new_eip7702(final_target)
                 };
                 assert_eq!(info.code_hash, expected.hash_slow());
-                assert!(info.code_metadata.is_none());
+                assert!(info.code_metadata().is_none());
             }
         }
     }
@@ -718,13 +713,6 @@ impl Database for AuthorizationReads {
             .then(|| AccountInfo { balance: U256::from(u64::MAX), ..Default::default() }))
     }
 
-    fn get_code_kind_by_hash(
-        &mut self,
-        _: &B256,
-    ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-        Ok(evm2::bytecode::BytecodeKind::Legacy)
-    }
-
     fn get_code_by_hash(&mut self, _: &B256) -> Result<Bytecode, Self::Error> {
         *self.payloads.borrow_mut() += 1;
         Err(io::Error::other("unexpected authorization payload read"))
@@ -834,7 +822,7 @@ fn tip1143_t42_authorization_oog_stops_before_later_authorities_and_recipient_re
                         info.code_hash,
                         Bytecode::new_eip7702(Address::repeat_byte(0xdd)).hash_slow()
                     );
-                    assert!(info.code_metadata.is_none());
+                    assert!(info.code_metadata().is_none());
                 } else {
                     assert!(info.is_none(), "partial authorization must roll back");
                 }
@@ -899,7 +887,7 @@ fn tip1143_t31_signed_and_recovered_authorizations_preserve_rejection_and_repeti
                     let info = result.pending_state.account_info(&authority).unwrap();
                     assert_eq!(info.nonce, 1);
                     assert_eq!(info.code_hash, Bytecode::new_eip7702(delegate).hash_slow());
-                    assert!(info.code_metadata.is_none());
+                    assert!(info.code_metadata().is_none());
                 } else {
                     assert!(result.pending_state.account_info(&authority).is_none());
                 }

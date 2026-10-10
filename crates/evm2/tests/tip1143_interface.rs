@@ -84,18 +84,17 @@ fn tip1143_t36_public_creation_transition_full_code_and_sparse_chunk_contract() 
         assert_eq!(info.code_hash, keccak256(&runtime));
         assert_eq!(info.code.as_ref().unwrap().original_byte_slice(), runtime);
         if multi {
-            let metadata = info.code_metadata.as_ref().unwrap();
+            let metadata = info.code_metadata().unwrap();
             assert_eq!(metadata.code_size() as usize, size);
             assert_eq!(
                 metadata.chunk_hashes(),
                 runtime.chunks(CHUNK).map(keccak256).collect::<Vec<_>>()
             );
         } else {
-            assert!(info.code_metadata.is_none());
+            assert!(info.code_metadata().is_none());
         }
         // Creation validates/hashes every original byte but must not construct
         // execution analysis eagerly, even though it retains the original output.
-        assert_eq!(creator.state_mut().code_chunk_stats().analyzed_chunks, 0);
         assert!(creator.state_mut().account(&owner).unwrap().code_chunks().is_empty());
         // Execute before any provider has persisted the newly created code.
         // The middle payload of the three-chunk runtime is never requested.
@@ -103,10 +102,6 @@ fn tip1143_t36_public_creation_transition_full_code_and_sparse_chunk_contract() 
         assert_eq!(immediate.stop, InstrStop::Return);
         assert_eq!(immediate.output.len(), 32);
         assert_eq!(immediate.output[31], 42);
-        assert_eq!(
-            creator.state_mut().code_chunk_stats().analyzed_chunks,
-            if multi { 2 } else { 1 }
-        );
         {
             let account = creator.state_mut().account(&owner).unwrap();
             let mut requested = account.code_chunks().keys().copied().collect::<Vec<_>>();
@@ -126,7 +121,7 @@ fn tip1143_t36_public_creation_transition_full_code_and_sparse_chunk_contract() 
             }
             let restored = provider.account_info(&owner).unwrap();
             assert_eq!(restored.code_hash, info.code_hash);
-            assert_eq!(restored.code_metadata, info.code_metadata);
+            assert_eq!(restored.code_metadata(), info.code_metadata());
             assert_eq!((restored.nonce, restored.balance), (info.nonce, info.balance));
             let full = provider.get_code_by_hash(&info.code_hash).unwrap();
             assert_eq!(full.original_byte_slice(), runtime);
@@ -254,7 +249,7 @@ fn tip1143_t28_actual_detached_creation_handoff_and_enclosing_revert() {
         let info = detached.pending_state.account_info(&child).unwrap();
         assert_eq!(info.code_hash, keccak256(&runtime));
         assert_eq!(info.code.as_ref().unwrap().original_byte_slice(), runtime);
-        let metadata = info.code_metadata.as_ref().unwrap();
+        let metadata = info.code_metadata().unwrap();
         assert_eq!(metadata.code_size() as usize, size);
         assert_eq!(
             metadata.chunk_hashes(),

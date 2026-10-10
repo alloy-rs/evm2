@@ -39,9 +39,6 @@ serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 # "async"
 corosensei = { workspace = true, optional = true }
 
-# "account-ext"
-triomphe = { workspace = true, optional = true }
-
 # nightly
 ruint = { workspace = true, optional = true }
 
@@ -139,7 +136,6 @@ std = [
     "c-kzg?/std",
     "secp256k1?/std",
     "serde?/std",
-    "triomphe?/std",
     "ruint?/std",
 ]
 
@@ -160,7 +156,6 @@ serde = [
     "blst?/serde",
     "c-kzg?/serde",
     "secp256k1?/serde",
-    "triomphe?/serde",
     "ruint?/serde",
 ]
 arbitrary = [
@@ -168,9 +163,6 @@ arbitrary = [
     "alloy-eips/arbitrary",
     "alloy-primitives/arbitrary",
 ]
-
-# Opt-in chain-specific account data; Ethereum builds keep the original account layout.
-account-ext = ["dep:triomphe"]
 
 map-hashbrown = ["alloy-primitives/map-hashbrown"]
 map-foldhash = ["alloy-primitives/map-foldhash"]

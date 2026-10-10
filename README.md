@@ -51,7 +51,6 @@ All features of the `evm2` crate are listed below. Use `default-features = false
 | `async` | No | Enables asynchronous host I/O through stackful coroutines; requires `std`. |
 | `serde` | No | Enables serialization and deserialization with Serde. |
 | `arbitrary` | No | Enables arbitrary test data generation in Alloy dependencies. |
-| `account-ext` | No | Enables chain-specific account data. |
 | `map-hashbrown` | No | Uses hashbrown for Alloy maps and sets. |
 | `map-foldhash` | Yes | Uses foldhash as the default hasher for Alloy maps and sets. |
 | `asm-keccak` | Yes | Uses the assembly Keccak implementation. |

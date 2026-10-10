@@ -109,13 +109,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.
     fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
-        let view = message
-            .code_chunk
+        let view = (message.is_lazy_code && message.code_chunk.prepared().is_some())
+            .then(|| message.code_chunk.execution_view(0));
+        let mut bytecode = view
             .as_ref()
-            .filter(|c| c.prepared().is_some())
-            .map(|chunk| chunk.execution_view(0));
-        let mut bytecode =
-            view.as_ref().map_or_else(|| message.code.clone(), |v| v.bytecode.clone());
+            .map_or_else(|| message.code_chunk.bytecode(false), |v| v.bytecode.clone());
         // Prepared views are safe for their selected entry path. An embedding may pass one
         // without its chunk context; restore ordinary padding before RJUMP can enter any byte.
         if view.is_none()
@@ -132,7 +130,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.pc = bytecode.bytes_slice().as_ptr();
         self.bytecode_ref = None;
         self.bytecode = bytecode;
-        self.code_chunk = message.code_chunk.clone();
+        self.code_chunk = message.is_lazy_code.then(|| message.code_chunk.clone());
         self.code_chunk_index = 0;
         self.code_size =
             if self.code_chunk.is_some() { message.code_size } else { self.bytecode.len() };

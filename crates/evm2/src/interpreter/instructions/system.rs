@@ -100,10 +100,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     let mut code = account.code.clone();
     let mut code_address = to;
     let native = state.host().is_precompile(&to);
-    if draft && !native && !account.is_chunked && account.inline_delegation.is_none() {
-        account.inline_delegation =
-            state.host().resolve_legacy_delegation(&to).map_err(|error| state.fail(error))?;
-    }
+
     let delegation = if draft && native {
         None
     } else if draft {
@@ -129,12 +126,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         }
         code = delegated_account.code.clone();
         account = delegated_account;
-        if draft && !account.is_chunked && account.inline_delegation.is_none() {
-            account.inline_delegation = state
-                .host()
-                .resolve_legacy_delegation(&delegated_address)
-                .map_err(|error| state.fail(error))?;
-        }
+
         code_address = delegated_address;
         disable_precompiles = true;
     }
@@ -176,7 +168,6 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
             let chunk = state.required_code_chunk(&code_address, 0)?;
             code_size =
                 account.code_size.map_or(chunk.original_bytes().len(), |size| size as usize);
-            code = chunk.bytecode(account.is_chunked);
             code_chunk = Some(chunk);
         }
     }
@@ -196,8 +187,8 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         gas_limit,
         new_account_state_gas,
         LoadedCode {
-            code,
-            code_chunk,
+            is_lazy_code: code_chunk.is_some(),
+            code_chunk: code_chunk.unwrap_or_else(|| code.into()),
             code_size,
             code_hash: account.code_hash,
             code_address,
@@ -270,8 +261,8 @@ fn prepare_call<T: EvmTypesHost>(
         caller,
         input,
         value: call_value,
-        code: loaded.code,
         code_chunk: loaded.code_chunk,
+        is_lazy_code: loaded.is_lazy_code,
         code_size: loaded.code_size,
         code_hash: loaded.code_hash,
         code_address,
@@ -446,8 +437,8 @@ fn create_inner<T: EvmTypesHost>(
         destination,
         call_target: destination,
         caller,
-        code: Bytecode::new_legacy(input.clone()),
-        code_chunk: None,
+        code_chunk: (Bytecode::new_legacy(input.clone())).into(),
+        is_lazy_code: false,
         code_size: input.len(),
         code_hash: B256::ZERO,
         input,
@@ -517,8 +508,8 @@ pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
 
 /// Resolved entry code, retaining logical identity separately from the execution buffer.
 struct LoadedCode {
-    code: Bytecode,
-    code_chunk: Option<CodeChunk>,
+    code_chunk: CodeChunk,
+    is_lazy_code: bool,
     code_size: usize,
     code_hash: B256,
     code_address: Address,

@@ -33,30 +33,25 @@ impl Database for Provider {
         }
         Ok(Some(AccountInfo {
             nonce: 7,
-            #[cfg(feature = "account-ext")]
-            extension: evm2::evm::AccountExtension::copy_from_slice(&[0x81, 0xa5, 0x3c]),
             balance: Word::from(1234),
             code_hash: keccak256(&self.code),
-            code_metadata: (self.code.len() > CHUNK).then(|| {
+            extension: ((self.code.len() > CHUNK).then(|| {
                 CodeMetadata::new(
                     self.code.len() as u32,
                     self.code.chunks(CHUNK).map(keccak256).collect(),
                 )
                 .unwrap()
+            }))
+            .map(evm2::evm::AccountExtension::chunked)
+            .unwrap_or_else(|| {
+                Bytecode::new_eip7702_raw(self.code.clone())
+                    .ok()
+                    .and_then(|code| code.eip7702_address())
+                    .map(evm2::evm::AccountExtension::delegated)
+                    .unwrap_or_default()
             }),
             ..Default::default()
         }))
-    }
-
-    fn get_code_kind_by_hash(
-        &mut self,
-        _: &B256,
-    ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-        Ok(if Bytecode::new_eip7702_raw(self.code.clone()).is_ok() {
-            evm2::bytecode::BytecodeKind::Eip7702
-        } else {
-            evm2::bytecode::BytecodeKind::Legacy
-        })
     }
 
     fn get_code_by_hash(&mut self, _: &B256) -> Result<Bytecode, Self::Error> {
@@ -191,9 +186,7 @@ fn tip1143_t27_multi_to_single_or_empty_rollback_restores_identity_and_warmth() 
             .set_code_slow(Bytecode::new_legacy(replacement.clone()));
         let replaced = execution.state_mut().account(&owner).unwrap().get().unwrap().clone();
         assert_eq!(replaced.code_hash, keccak256(&replacement));
-        #[cfg(feature = "account-ext")]
-        assert_eq!(replaced.extension.as_ref(), &[0x81, 0xa5, 0x3c]);
-        assert!(replaced.code_metadata.is_none());
+        assert!(replaced.code_metadata().is_none());
         assert_eq!((replaced.nonce, replaced.balance), (7, Word::from(1234)));
         let result = execution.execute_system_call(SystemTx::new(owner, Bytes::new())).unwrap();
         if replacement.is_empty() {
@@ -209,8 +202,7 @@ fn tip1143_t27_multi_to_single_or_empty_rollback_restores_identity_and_warmth() 
         execution.state_mut().rollback(checkpoint, features);
         let restored = execution.state_mut().account(&owner).unwrap().get().unwrap().clone();
         assert_eq!(restored.code_hash, original_hash);
-        assert_eq!(restored.code_metadata, before.code_metadata);
-        #[cfg(feature = "account-ext")]
+        assert_eq!(restored.code_metadata(), before.code_metadata());
         assert_eq!(restored.extension, before.extension);
         assert_eq!((restored.nonce, restored.balance), (before.nonce, before.balance));
         call(&mut execution, owner, 2 * WARM);
@@ -237,7 +229,7 @@ fn tip1143_t27_single_and_empty_origins_restore_after_replacement() {
             );
             let original_info =
                 execution.state_mut().account(&owner).unwrap().get().unwrap().clone();
-            assert!(original_info.code_metadata.is_none());
+            assert!(original_info.code_metadata().is_none());
             let checkpoint = execution.state_mut().checkpoint();
             execution
                 .state_mut()
@@ -258,9 +250,7 @@ fn tip1143_t27_single_and_empty_origins_restore_after_replacement() {
             let changed_info =
                 execution.state_mut().account(&owner).unwrap().get().unwrap().clone();
             assert_eq!(changed_info.code_hash, keccak256(&replacement));
-            #[cfg(feature = "account-ext")]
-            assert_eq!(changed_info.extension.as_ref(), &[0x81, 0xa5, 0x3c]);
-            assert!(changed_info.code_metadata.is_none());
+            assert!(changed_info.code_metadata().is_none());
             assert_eq!((changed_info.nonce, changed_info.balance), (7, Word::from(1234)));
             execution.state_mut().rollback(checkpoint, features);
             let restored =
@@ -271,8 +261,7 @@ fn tip1143_t27_single_and_empty_origins_restore_after_replacement() {
             let restored_info =
                 execution.state_mut().account(&owner).unwrap().get().unwrap().clone();
             assert_eq!(restored_info.code_hash, original_info.code_hash);
-            assert_eq!(restored_info.code_metadata, original_info.code_metadata);
-            #[cfg(feature = "account-ext")]
+            assert_eq!(restored_info.code_metadata(), original_info.code_metadata());
             assert_eq!(restored_info.extension, original_info.extension);
             assert_eq!((restored_info.nonce, restored_info.balance), (7, Word::from(1234)));
             let expected =
@@ -305,9 +294,7 @@ fn tip1143_t27_t38_every_origin_to_new_multi_code_restores_previous_execution() 
             .unwrap();
         let changed = execution.state_mut().account(&owner).unwrap().get().unwrap().clone();
         assert_eq!(changed.code_hash, keccak256(&replacement));
-        #[cfg(feature = "account-ext")]
-        assert_eq!(changed.extension.as_ref(), &[0x81, 0xa5, 0x3c]);
-        let metadata = changed.code_metadata.as_ref().unwrap();
+        let metadata = changed.code_metadata().unwrap();
         assert_eq!(metadata.code_size() as usize, replacement.len());
         assert_eq!(
             metadata.chunk_hashes(),
@@ -335,8 +322,7 @@ fn tip1143_t27_t38_every_origin_to_new_multi_code_restores_previous_execution() 
         );
         let restored_info = execution.state_mut().account(&owner).unwrap().get().unwrap().clone();
         assert_eq!(restored_info.code_hash, info.code_hash);
-        assert_eq!(restored_info.code_metadata, info.code_metadata);
-        #[cfg(feature = "account-ext")]
+        assert_eq!(restored_info.code_metadata(), info.code_metadata());
         assert_eq!(restored_info.extension, info.extension);
         // Replacement is resident newly supplied code, so no provider row may
         // be consulted under either the replacement hash or an old identity.
@@ -441,33 +427,11 @@ fn tip1143_t25_real_child_failure_reverts_remote_but_not_precheckpoint_entry_war
             .unwrap()
             .set_code_slow(Bytecode::new_legacy(parent_code.into()));
         for round in 0..2 {
-            let before = execution.state_mut().code_chunk_stats();
             let result =
                 execution.execute_system_call(SystemTx::new(parent, Bytes::new())).unwrap();
             assert_eq!(result.stop, InstrStop::Return);
             let success = terminator == 0xf3;
             assert_eq!(Word::from_be_slice(&result.output), Word::from(u8::from(success)));
-            let after = execution.state_mut().code_chunk_stats();
-            assert_eq!(
-                after.logical_cold_accesses - before.logical_cold_accesses,
-                if round == 0 {
-                    3
-                } else if success {
-                    0
-                } else {
-                    1
-                }
-            );
-            assert_eq!(
-                after.logical_warm_accesses - before.logical_warm_accesses,
-                if round == 0 {
-                    0
-                } else if success {
-                    3
-                } else {
-                    2
-                }
-            );
             let account = execution.state_mut().account(&owner).unwrap();
             assert!(account.code_chunks().get(&0).unwrap().is_warm);
             assert_eq!(account.code_chunks().get(&1).is_some_and(|c| c.is_warm), success);
@@ -520,7 +484,7 @@ fn tip1143_t25_successful_child_inside_reverted_parent_loses_all_new_child_warmt
 }
 
 #[test]
-fn tip1143_t31_sender_validation_distinguishes_unknown_legacy_marker_and_multi_metadata() {
+fn tip1143_t31_sender_validation_uses_normalized_account_extensions() {
     let delegate = Address::repeat_byte(0x99);
     let marker = Bytecode::new_eip7702(delegate).original_byte_slice().to_vec();
     let mut short = marker.clone();

@@ -54,7 +54,7 @@ pub fn prepare_code(
     Ok(MessageExt {
         gas_limit: req.tx.gas_limit,
         destination: req.tx.target,
-        code: Bytecode::new_legacy(req.tx.code.clone()),
+        code_chunk: (Bytecode::new_legacy(req.tx.code.clone())).into(),
         code_address: req.tx.target,
         ext: CustomMessageExt { is_system: false },
         ..MessageExt::default()

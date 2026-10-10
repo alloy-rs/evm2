@@ -24,7 +24,7 @@ pub const COLD_CODE_CHUNK_GAS: u64 = 28_680;
 /// Draft warm chunk tariff.
 pub const WARM_CODE_CHUNK_GAS: u64 = 1_000;
 
-/// An original provider payload, without execution padding or analysis.
+/// An original provider payload with optional execution preparation and cached analysis.
 ///
 /// Construction deliberately does not authenticate bytes. Ingestion authenticates hashes;
 /// execution checks the payload length against the requesting account's metadata.
@@ -33,13 +33,30 @@ pub struct CodeChunk {
     bytes: Bytes,
     kind: Option<BytecodeKind>,
     prepared: Option<PreparedCodeChunk>,
-    analysis: Option<(bool, Bytecode)>,
+    analysis: Arc<[OnceLock<Bytecode>; 2]>,
+}
+
+impl Default for CodeChunk {
+    fn default() -> Self {
+        Self::from_bytecode(&Bytecode::default())
+    }
+}
+
+impl From<Bytecode> for CodeChunk {
+    fn from(code: Bytecode) -> Self {
+        Self::from_bytecode(&code)
+    }
 }
 
 impl CodeChunk {
     /// Wraps an original payload returned by a provider.
-    pub const fn new(bytes: Bytes) -> Self {
-        Self { bytes, kind: None, prepared: None, analysis: None }
+    pub fn new(bytes: Bytes) -> Self {
+        Self {
+            bytes,
+            kind: None,
+            prepared: None,
+            analysis: Arc::new(core::array::from_fn(|_| OnceLock::new())),
+        }
     }
 
     /// Returns original bytes, excluding any execution-only padding.
@@ -49,12 +66,14 @@ impl CodeChunk {
 
     /// Preserves the kind of an existing single-chunk database record.
     pub fn from_bytecode(code: &Bytecode) -> Self {
-        Self {
+        let chunk = Self {
             bytes: code.original_bytes(),
             kind: Some(code.kind()),
             prepared: None,
-            analysis: None,
-        }
+            analysis: Arc::new(core::array::from_fn(|_| OnceLock::new())),
+        };
+        let _ = chunk.analysis[0].set(code.clone());
+        chunk
     }
 
     /// Returns the provider's known kind, or `None` for an unclassified payload.
@@ -65,21 +84,20 @@ impl CodeChunk {
     /// Builds an execution view. Multi-chunk payloads always use legacy analysis.
     /// Delegation is selected only by an explicit persisted kind, never by payload prefix.
     pub fn bytecode(&self, multi_chunk: bool) -> Bytecode {
-        if let Some((kind, analysis)) = &self.analysis
-            && *kind == multi_chunk
-        {
-            return analysis.clone();
-        }
         if self.prepared.is_some() {
             return self.execution_view(0).bytecode;
         }
-        if !multi_chunk
-            && self.kind == Some(BytecodeKind::Eip7702)
-            && let Ok(code) = Bytecode::new_eip7702_raw(self.bytes.clone())
-        {
-            return code;
-        }
-        Bytecode::new_legacy(self.bytes.clone())
+        self.analysis[usize::from(multi_chunk)]
+            .get_or_init(|| {
+                if !multi_chunk
+                    && self.kind == Some(BytecodeKind::Eip7702)
+                    && let Ok(code) = Bytecode::new_eip7702_raw(self.bytes.clone())
+                {
+                    return code;
+                }
+                Bytecode::new_legacy(self.bytes.clone())
+            })
+            .clone()
     }
 
     /// Restores bounded preparation previously authenticated against complete original code.
@@ -116,7 +134,7 @@ impl CodeChunk {
         Ok(Self {
             bytes,
             kind: Some(BytecodeKind::Legacy),
-            analysis: None,
+            analysis: Arc::new(core::array::from_fn(|_| OnceLock::new())),
             prepared: Some(PreparedCodeChunk {
                 code_size,
                 index,
@@ -133,10 +151,6 @@ impl CodeChunk {
     /// Authenticated execution layout, absent on unchanged legacy records.
     pub const fn prepared(&self) -> Option<&PreparedCodeChunk> {
         self.prepared.as_ref()
-    }
-
-    pub(crate) fn retain_analysis(&mut self, multi_chunk: bool, bytecode: Bytecode) {
-        self.analysis = Some((multi_chunk, bytecode));
     }
 
     /// Checks preparation against the requesting account's logical size and index.
@@ -402,6 +416,25 @@ mod tests {
         let chunk = CodeChunk::new(Bytes::from_static(&[0xef, 1]));
         assert!(chunk.bytecode(false).is_legacy());
         assert!(chunk.bytecode(true).is_legacy());
+    }
+
+    #[test]
+    fn chunk_clones_share_lazy_analysis_and_jump_tables() {
+        let bytes = Bytes::from(vec![0x5b; CODE_CHUNK_SIZE + 1]);
+        for chunk in [
+            CodeChunk::new(Bytes::from_static(&[0x5b, 0])),
+            CodeChunk::from_bytecode(&Bytecode::new_legacy(Bytes::from_static(&[0x5b, 0]))),
+            code_chunk(&bytes, 0).unwrap(),
+        ] {
+            let cloned = chunk.clone();
+            let first = chunk.bytecode(false);
+            let second = cloned.bytecode(false);
+            assert_eq!(first.bytes_slice().as_ptr(), second.bytes_slice().as_ptr());
+            assert!(core::ptr::eq(
+                first.legacy_jump_table().unwrap(),
+                second.legacy_jump_table().unwrap(),
+            ));
+        }
     }
 
     #[test]

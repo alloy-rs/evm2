@@ -120,8 +120,7 @@ pub fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
         cx.state.resize_memory(cx.gas, offset, len)?;
         let owner = cx.state.message().code_address;
         let size = cx.state.code_size();
-        let multi =
-            cx.state.message().code_chunk.as_ref().is_some_and(|chunk| chunk.prepared().is_some());
+        let multi = cx.state.message().code_chunk.prepared().is_some();
         let bytes = load_code_range(&mut cx, owner, *code_offset, len, size, multi, false)?;
         cx.state.0.memory.set_data(offset, 0, len, &bytes);
         return Ok(());
@@ -138,14 +137,8 @@ pub fn gasprice(cx: _) -> out {
 #[instruction(dynamic_gas)]
 pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
     let draft = cx.state.feature(EvmFeatures::TIP1143);
-    let mut account = load_account(&mut cx, *addr, !draft)?;
-    if draft && !account.is_chunked && account.inline_delegation.is_none() {
-        account.inline_delegation = cx
-            .state
-            .host()
-            .resolve_legacy_delegation(&word_to_address(*addr))
-            .map_err(|error| cx.state.fail(error))?;
-    }
+    let account = load_account(&mut cx, *addr, !draft)?;
+
     let size = if !draft {
         account.code.len()
     } else if account.inline_delegation.is_some() {
@@ -181,19 +174,8 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
         0
     };
     let draft = cx.state.feature(EvmFeatures::TIP1143);
-    let mut account = load_account(&mut cx, *addr, !draft)?;
-    if draft
-        && len != 0
-        && word_to_usize_saturated(*code_offset) < LEGACY_CODE_CHUNK_SIZE
-        && !account.is_chunked
-        && account.inline_delegation.is_none()
-    {
-        account.inline_delegation = cx
-            .state
-            .host()
-            .resolve_legacy_delegation(&word_to_address(*addr))
-            .map_err(|error| cx.state.fail(error))?;
-    }
+    let account = load_account(&mut cx, *addr, !draft)?;
+
     if draft {
         let bytes = if let Some(target) = account.inline_delegation {
             let code = Bytecode::new_eip7702(target);

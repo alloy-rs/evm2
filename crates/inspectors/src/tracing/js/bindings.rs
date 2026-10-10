@@ -1332,13 +1332,6 @@ mod tests {
             Ok((!code.is_empty()).then(|| evm2::bytecode::CodeChunk::from_bytecode(&code)))
         }
 
-        fn get_code_kind_by_hash(
-            &mut self,
-            code_hash: &B256,
-        ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
-            self.get_code_by_hash(code_hash).map(|code| code.kind())
-        }
-
         fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
             Ok(self
                 .account

@@ -638,8 +638,8 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 caller,
                 input: input.clone(),
                 value,
-                code,
-                code_chunk: None,
+                code_chunk: (code).into(),
+                is_lazy_code: false,
                 code_size: 0,
                 code_hash: B256::ZERO,
                 code_address,
@@ -673,8 +673,8 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 caller,
                 input: input.clone(),
                 value,
-                code: Bytecode::new_legacy(input.clone()),
-                code_chunk: None,
+                code_chunk: (Bytecode::new_legacy(input.clone())).into(),
+                is_lazy_code: false,
                 code_size: input.len(),
                 code_hash: B256::ZERO,
                 code_address: destination,
@@ -974,13 +974,7 @@ fn prepare_initial_chunked_frame<T: EvmTypes>(
     let mut owner = to;
     let mut disable_precompiles = false;
     let native = Host::is_precompile(host, &to);
-    if !native && !account.is_chunked && account.inline_delegation.is_none() {
-        account.inline_delegation =
-            Host::resolve_legacy_delegation(host, &to).map_err(|error| match error {
-                HostError::Execution(error) => HandlerError::from(error),
-                HostError::Halt(_) => unreachable!("loaded metadata kind lookup"),
-            })?;
-    }
+
     if !native
         && host.feature(EvmFeatures::EIP7702)
         && let Some(target) = account.inline_delegation
@@ -999,13 +993,7 @@ fn prepare_initial_chunked_frame<T: EvmTypes>(
         if metered && account.is_cold && tx_gas.spend(cold).is_err() {
             return Ok(None);
         }
-        if !account.is_chunked && account.inline_delegation.is_none() {
-            account.inline_delegation =
-                Host::resolve_legacy_delegation(host, &target).map_err(|error| match error {
-                    HostError::Execution(error) => HandlerError::from(error),
-                    HostError::Halt(_) => unreachable!("loaded metadata kind lookup"),
-                })?;
-        }
+
         owner = target;
         disable_precompiles = true;
     }
@@ -1049,7 +1037,6 @@ fn prepare_initial_chunked_frame<T: EvmTypes>(
             };
             code_size =
                 account.code_size.map_or(loaded.chunk.original_bytes().len(), |size| size as usize);
-            code = loaded.chunk.bytecode(account.is_chunked);
             code_chunk = Some(loaded.chunk);
         }
     }
@@ -1065,8 +1052,8 @@ fn prepare_initial_chunked_frame<T: EvmTypes>(
             caller,
             input: input.clone(),
             value,
-            code,
-            code_chunk,
+            is_lazy_code: code_chunk.is_some(),
+            code_chunk: code_chunk.unwrap_or_else(|| (code).into()),
             code_size,
             code_hash: account.code_hash,
             code_address: owner,

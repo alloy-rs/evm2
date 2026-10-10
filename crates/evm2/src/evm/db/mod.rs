@@ -3,7 +3,7 @@
 use super::{NonStaticAny, state::AccountInfo};
 use crate::{
     DatabaseError,
-    bytecode::{Bytecode, BytecodeKind, CodeChunk},
+    bytecode::{Bytecode, CodeChunk},
     interpreter::Word,
 };
 use alloc::{boxed::Box, string::ToString};
@@ -34,9 +34,6 @@ pub trait Database: NonStaticAny {
 
     /// Loads bytecode by code hash.
     fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error>;
-
-    /// Reads the persisted code kind without fetching or analyzing a runtime payload.
-    fn get_code_kind_by_hash(&mut self, code_hash: &B256) -> Result<BytecodeKind, Self::Error>;
 
     /// Loads one original payload. Providers classify legacy rows versus multi-chunk indices.
     /// Never reconstruct full multi-chunk code to satisfy this operation.
@@ -125,14 +122,6 @@ impl<T: Database> DynDatabase for Db<T> {
         })
     }
 
-    #[inline]
-    fn get_code_kind_by_hash(&mut self, code_hash: &B256) -> DbResult<BytecodeKind> {
-        self.db.get_code_kind_by_hash(code_hash).map_err(|err| {
-            let fatal = T::is_fatal(&err);
-            DatabaseError::new(err, fatal)
-        })
-    }
-
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         self.db.get_code_by_hash(code_hash).map_err(|err| {
             let fatal = T::is_fatal(&err);
@@ -166,9 +155,6 @@ pub trait DynDatabase: NonStaticAny {
     /// Loads bytecode by code hash.
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode>;
 
-    /// Reads the persisted code kind without fetching or analyzing a runtime payload.
-    fn get_code_kind_by_hash(&mut self, code_hash: &B256) -> DbResult<BytecodeKind>;
-
     /// Loads one original payload without full-code reconstruction.
     fn get_code_chunk_by_hash(
         &mut self,
@@ -200,7 +186,6 @@ pub struct DbStatsCounts {
     /// Number of bytecode loads by hash.
     pub get_code_by_hash: u64,
     /// Persisted-kind metadata requests, including negative delegation evidence.
-    pub get_code_kind_by_hash: u64,
     /// Number of chunk adapter calls, including misses and failures.
     pub get_code_chunk_by_hash: u64,
     /// Number of storage slot loads.
@@ -218,7 +203,6 @@ impl core::ops::AddAssign for DbStatsCounts {
     fn add_assign(&mut self, rhs: Self) {
         self.get_account += rhs.get_account;
         self.get_code_by_hash += rhs.get_code_by_hash;
-        self.get_code_kind_by_hash += rhs.get_code_kind_by_hash;
         self.get_code_chunk_by_hash += rhs.get_code_chunk_by_hash;
         self.get_storage += rhs.get_storage;
         self.get_storage_same_address_repeats += rhs.get_storage_same_address_repeats;
@@ -247,7 +231,6 @@ impl<D> DbStats<D> {
             counts: DbStatsCounts {
                 get_account: 0,
                 get_code_by_hash: 0,
-                get_code_kind_by_hash: 0,
                 get_code_chunk_by_hash: 0,
                 get_storage: 0,
                 get_storage_same_address_repeats: 0,
@@ -318,12 +301,6 @@ impl<D: DynDatabase> DynDatabase for DbStats<D> {
         self.db.get_account(address)
     }
 
-    #[inline]
-    fn get_code_kind_by_hash(&mut self, code_hash: &B256) -> DbResult<BytecodeKind> {
-        self.counts.get_code_kind_by_hash += 1;
-        self.db.get_code_kind_by_hash(code_hash)
-    }
-
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         self.counts.get_code_by_hash += 1;
         self.db.get_code_by_hash(code_hash)
@@ -384,11 +361,6 @@ impl Database for EmptyDB {
         Ok(None)
     }
 
-    #[inline]
-    fn get_code_kind_by_hash(&mut self, _code_hash: &B256) -> Result<BytecodeKind, Self::Error> {
-        Ok(BytecodeKind::Legacy)
-    }
-
     fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
         Ok(Bytecode::default())
     }
@@ -417,11 +389,6 @@ impl DynDatabase for EmptyDB {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         Db::new(*self).get_account(address)
-    }
-
-    #[inline]
-    fn get_code_kind_by_hash(&mut self, code_hash: &B256) -> DbResult<BytecodeKind> {
-        Db::new(*self).get_code_kind_by_hash(code_hash)
     }
 
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
@@ -459,10 +426,6 @@ mod tests {
 
         fn get_account(&mut self, _address: &Address) -> DbResult<Option<AccountInfo>> {
             Ok(None)
-        }
-
-        fn get_code_kind_by_hash(&mut self, _code_hash: &B256) -> DbResult<BytecodeKind> {
-            Ok(BytecodeKind::Legacy)
         }
 
         fn get_code_by_hash(&mut self, _code_hash: &B256) -> DbResult<Bytecode> {

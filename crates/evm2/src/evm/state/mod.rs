@@ -3,8 +3,7 @@
 mod account;
 mod block;
 mod code_chunks;
-pub use code_chunks::{AccountCodeChunk, CodeChunkLoad, CodeChunkStats};
-#[cfg(feature = "account-ext")]
+pub use code_chunks::{AccountCodeChunk, CodeChunkHandle, CodeChunkLoad};
 mod extension;
 mod journal;
 mod pending;
@@ -16,7 +15,6 @@ mod tracked;
 pub(crate) use account::Account;
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
-#[cfg(feature = "account-ext")]
 pub use extension::AccountExtension;
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use pending::PendingState;
@@ -76,8 +74,6 @@ pub struct StateSnapshot {
     journal: Vec<JournalEntry>,
     logs: Vec<Log>,
     selfdestructs: AddressSet,
-    chunk_stats: CodeChunkStats,
-    chunk_diagnostics: bool,
 }
 
 impl StateSnapshot {
@@ -98,8 +94,6 @@ impl StateSnapshot {
                 journal: self.journal,
                 logs: self.logs,
                 selfdestructs: self.selfdestructs,
-                chunk_stats: self.chunk_stats,
-                chunk_diagnostics: self.chunk_diagnostics,
             },
         }
     }
@@ -125,8 +119,6 @@ impl State<'_> {
             journal: self.journal.clone(),
             logs: self.logs.clone(),
             selfdestructs: self.selfdestructs.clone(),
-            chunk_stats: self.chunk_stats,
-            chunk_diagnostics: self.chunk_diagnostics,
         }
     }
 
@@ -171,8 +163,6 @@ pub struct StateInner<'a> {
     logs: Vec<Log>,
     /// Accounts self-destructed in the current transaction.
     selfdestructs: AddressSet,
-    chunk_stats: CodeChunkStats,
-    chunk_diagnostics: bool,
 }
 
 impl<'a> State<'a> {
@@ -192,8 +182,6 @@ impl<'a> State<'a> {
                 journal: Vec::new(),
                 logs: Vec::new(),
                 selfdestructs: AddressSet::default(),
-                chunk_stats: CodeChunkStats::default(),
-                chunk_diagnostics: true,
             },
         }
     }
@@ -652,19 +640,14 @@ impl<'a> State<'a> {
         // Preserve any balance the address already held (e.g. funds sent before creation) and add
         // the endowment.
         let balance = target.balance().wrapping_add(*value);
-        #[cfg(feature = "account-ext")]
-        let extension = target.get().map(|info| info.extension.clone()).unwrap_or_default();
-        *target.get_or_insert() = AccountInfo {
+        target.set_info(AccountInfo {
             nonce: u64::from(features.contains(EvmFeatures::EIP161)),
             balance,
             code_hash: KECCAK256_EMPTY,
             code: Some(Bytecode::default()),
-            code_metadata: None,
-            inline_delegation: None,
             _non_exhaustive: (),
-            #[cfg(feature = "account-ext")]
-            extension,
-        };
+            extension: AccountExtension::new(),
+        });
         target.mark_created();
         target.touch();
         Ok(Ok(()))
