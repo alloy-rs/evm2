@@ -175,10 +175,10 @@ mod state;
 #[cfg(feature = "account-ext")]
 pub use state::AccountExtension;
 pub use state::{
-    AccountChangeRef, AccountHandle, AccountInfo, BlockStateAccumulator, JournalEntry,
-    NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource, StateCheckpoint,
-    StateInner, StateSnapshot, StorageChange, StorageHandle, StorageOverlay, StorageSlot,
-    StorageSlotHandle, Tee, Tracked,
+    AccountChangeRef, AccountChanges, AccountHandle, AccountInfo, BlockStateAccumulator,
+    JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink, StateChangeSource,
+    StateCheckpoint, StateInner, StateSnapshot, StorageChange, StorageHandle, StorageOverlay,
+    StorageSlot, StorageSlotHandle, Tee, Tracked,
 };
 
 mod prewarm_set;
