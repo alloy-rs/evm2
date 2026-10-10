@@ -264,7 +264,7 @@ impl<'a> State<'a> {
     /// Once enabled, every committed transaction is folded into the builder at the current block
     /// access index. Bump the index once per transaction with [`Self::bump_bal_index`]. The BAL
     /// state lives in the accepted-overlay [`CacheDB`]'s
-    /// [`BalContext`](crate::evm::BalContext).
+    /// [`BalContext`].
     #[inline]
     pub fn enable_bal_builder(&mut self) {
         self.inner.database.bal_context.enable_bal_builder();

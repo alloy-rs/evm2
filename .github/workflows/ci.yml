@@ -447,6 +447,7 @@ jobs:
         run: cargo doc --workspace --all-features --no-deps --document-private-items
         env:
           RUSTFLAGS: -Dwarnings
+          RUSTDOCFLAGS: -Dwarnings
 
   fmt:
     runs-on: ubuntu-latest
