@@ -275,7 +275,7 @@ pub struct RuntimeTuning {
 
     /// Number of JIT compilation worker threads.
     ///
-    /// Defaults to `min(max(1, cpus/2), 4)`.
+    /// Defaults to `clamp(ceil(cpus / 2), 1, 4)`.
     pub jit_worker_count: usize,
 
     /// Timeout for a single out-of-process JIT compilation job.
