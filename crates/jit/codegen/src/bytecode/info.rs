@@ -307,6 +307,8 @@ mod tests {
 
         // Unknown opcode.
         assert!(cancun[0x0C].is_unknown());
+        assert!(cancun[op::RJUMP as usize].is_unknown());
+        assert!(cancun[op::RJUMPI as usize].is_unknown());
 
         // AMSTERDAM-gated opcodes should be disabled on CANCUN.
         assert!(cancun[op::DUPN as usize].is_disabled());

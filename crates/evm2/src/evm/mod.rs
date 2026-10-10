@@ -4158,4 +4158,116 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn tip1143_creation_validation_and_runner_guard() {
+        let version = Version::new(SpecId::PRAGUE).with_tip1143(true);
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::PRAGUE, version),
+            SpecId::PRAGUE,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::PRAGUE),
+        );
+        for len in [0, 24_539, 24_540, 24_541, 24_575, 24_576, 24_577, 981_600, 981_601] {
+            let mut output = Bytes::from(vec![0; len]);
+            let mut gas = Gas::new(1_000_000_000);
+            let result = evm.validate_create_output(&mut gas, &mut output);
+            if len > 981_600 {
+                assert_eq!(result, Err(InstrStop::CreateContractSizeLimit));
+            } else {
+                assert_eq!(result, Ok(()));
+                assert_eq!(gas.remaining(), 1_000_000_000 - len as u64 * 200);
+            }
+        }
+        for len in [24_576, 24_577] {
+            let mut bytes = vec![0; len];
+            bytes[len - 1] = op::PUSH32;
+            let result = evm.validate_create_output(&mut Gas::new(10_000_000), &mut bytes.into());
+            assert_eq!(result, Ok(()));
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        evm.set_interpreter_runner(TestInterpreterRunner {
+            stop: Some(InstrStop::InvalidFEOpcode),
+            calls: Arc::clone(&calls),
+        });
+        let caller = Address::repeat_byte(0x71);
+        let destination = caller.create(0);
+        // Resident initcode returns 24,577 zero bytes without any runtime payload access.
+        let mut message = MessageExt {
+            kind: MessageKind::Create,
+            caller,
+            destination,
+            gas_limit: 10_000_000,
+            code_chunk: (Bytecode::new_legacy(Bytes::from_static(&[
+                op::PUSH2,
+                0x60,
+                1,
+                op::PUSH0,
+                op::RETURN,
+            ])))
+            .into(),
+            ..MessageExt::default()
+        };
+        let checkpoint = evm.state.checkpoint();
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let account = evm.state.account(&destination).unwrap().get().unwrap().clone();
+        assert_eq!(account.code_metadata().unwrap().code_size(), 24_577);
+        assert_eq!(account.code.as_ref().unwrap().original_byte_slice(), vec![0; 24_577]);
+        evm.state.rollback(checkpoint, version.features);
+        assert!(evm.state.account(&destination).unwrap().get().is_none());
+    }
+
+    #[test]
+    fn tip1143_resident_initcode_limit_at_message_entry() {
+        for spec in [SpecId::FRONTIER, SpecId::PRAGUE] {
+            let version = Version::new(spec).with_tip1143(true);
+            for kind in [MessageKind::Create, MessageKind::Create2] {
+                for len in [1_966_080, 1_966_081] {
+                    let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                        ExecutionConfig::for_spec_and_version(spec, version),
+                        spec,
+                        BlockEnvExt::default(),
+                        TxRegistry::new(),
+                        InMemoryDB::default(),
+                        Precompiles::base(spec),
+                    );
+                    let input = Bytes::from(vec![0; len]);
+                    let valid =
+                        crate::ethereum::validate_create_initcode(&version, TxKind::Create, &input);
+                    assert_eq!(valid.is_ok(), len == 1_966_080);
+                    let mut message = MessageExt {
+                        kind,
+                        caller: Address::repeat_byte(0x61),
+                        destination: Address::repeat_byte(0x62),
+                        gas_limit: 100_000,
+                        code_chunk: (Bytecode::new_legacy(input)).into(),
+                        ..MessageExt::default()
+                    };
+                    let result =
+                        Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message)
+                            .unwrap();
+                    assert_eq!(
+                        result.stop,
+                        if len == 1_966_080 {
+                            InstrStop::Stop
+                        } else {
+                            InstrStop::CreateInitCodeSizeLimit
+                        }
+                    );
+                    let account = evm.state.account(&message.destination).unwrap().get().cloned();
+                    if len == 1_966_080 {
+                        let account = account.unwrap();
+                        assert_eq!(account.code_hash, KECCAK256_EMPTY);
+                        assert!(account.code_metadata().is_none());
+                    } else {
+                        assert!(account.is_none());
+                    }
+                }
+            }
+        }
+    }
 }

@@ -874,4 +874,51 @@ mod tests {
         assert_eq!(account.balance, Word::from(100));
         assert_eq!(cache.get_storage(&address, &Word::from(7)).unwrap(), Word::from(9));
     }
+
+    #[test]
+    fn chunk_adapters_preserve_stored_code_kind() {
+        let marker = Bytecode::new_eip7702(Address::repeat_byte(7));
+        let legacy = Bytecode::new_legacy(marker.original_bytes());
+        for code in [marker, legacy] {
+            let hash = code.hash_slow();
+            let provider = CountingDB {
+                account: Some(AccountInfo::default().with_code(code.clone())),
+                ..Default::default()
+            };
+            let mut cache = CacheDB::new(crate::evm::DbStats::new(crate::evm::Db::new(provider)));
+            for _ in 0..2 {
+                let chunk = cache.get_code_chunk_by_hash(&hash, 0).unwrap().unwrap();
+                assert_eq!(chunk.bytecode().kind(), code.kind());
+                assert_eq!(chunk.bytecode(), code);
+                assert_eq!(chunk.bytes(), &code.original_bytes());
+                assert_eq!(chunk.bytecode().kind(), code.kind());
+            }
+            assert_eq!(cache.db.counts().get_code_chunk_by_hash, 1);
+            assert_eq!(cache.db.inner().inner().code_loads, 1);
+            cache.discard_code_chunk(&hash, 0);
+            assert_eq!(cache.get_code_chunk_by_hash(&hash, 0).unwrap().unwrap().bytecode(), code);
+            assert_eq!(cache.db.inner().inner().code_loads, 2);
+        }
+    }
+
+    #[test]
+    fn multi_chunk_cache_requires_explicit_publication() {
+        let mut bytes = alloc::vec![0; CODE_CHUNK_SIZE + 2];
+        bytes[CODE_CHUNK_SIZE] = 0xef;
+        bytes[CODE_CHUNK_SIZE + 1] = 1;
+        let code = Bytecode::new_legacy(bytes.into());
+        let hash = code.hash_slow();
+        let mut cache = InMemoryDB::default();
+        // Full-code API residency must not substitute a missing payload index.
+        cache.cache.contracts.insert(hash, code.clone());
+        assert!(cache.get_code_chunk_by_hash(&hash, 0).unwrap().is_none());
+        cache.cache.insert_code(hash, &code);
+        Cache::insert_chunks(&mut cache.cache.code_chunks, hash, &code);
+        let chunk = cache.get_code_chunk_by_hash(&hash, 1).unwrap().unwrap();
+        assert_eq!(&chunk.bytes()[..chunk.payload_len()], &[0xef, 1]);
+        assert_eq!(&chunk.bytes()[chunk.payload_len() + 32..], &[0, 0]);
+        assert_eq!(chunk.bytecode().kind(), code.kind());
+        assert_eq!(chunk.bytecode().original_byte_slice(), chunk.bytes());
+        assert!(cache.get_code_chunk_by_hash(&hash, 2).unwrap().is_none());
+    }
 }

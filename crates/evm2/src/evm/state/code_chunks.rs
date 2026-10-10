@@ -198,3 +198,208 @@ fn load_chunk(
     let _ = chunk.bytecode().legacy_jump_table();
     Ok(chunk)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        EvmFeatures,
+        bytecode::{Bytecode, CODE_CHUNK_SIZE, code_metadata},
+        evm::{AccountInfo, Database, Db},
+        interpreter::Word,
+    };
+    use alloc::{sync::Arc, vec};
+    use alloy_primitives::{B256, Bytes, keccak256};
+    use core::{
+        convert::Infallible,
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    struct Provider {
+        bytes: Bytes,
+        reads: Arc<AtomicUsize>,
+        malformed: Arc<AtomicBool>,
+    }
+
+    impl Database for Provider {
+        type Error = Infallible;
+
+        fn get_account(&mut self, _: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+            Ok(Some(AccountInfo {
+                code_hash: keccak256(&self.bytes),
+                extension: (code_metadata(&self.bytes).unwrap())
+                    .map(crate::evm::AccountExtension::chunked)
+                    .unwrap_or_default(),
+                ..AccountInfo::default()
+            }))
+        }
+
+        fn get_code_by_hash(&mut self, _: &B256) -> Result<Bytecode, Self::Error> {
+            assert!(self.bytes.len() <= LEGACY_CODE_CHUNK_SIZE);
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Bytecode::new_legacy(self.bytes.clone()))
+        }
+
+        fn get_code_chunk_by_hash(
+            &mut self,
+            _: &B256,
+            index: u32,
+        ) -> Result<Option<CodeChunk>, Self::Error> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.malformed.load(Ordering::SeqCst) {
+                Ok(Some(CodeChunk::new(Bytes::new())))
+            } else {
+                Ok(code_chunk(&self.bytes, index))
+            }
+        }
+
+        fn get_storage(&mut self, _: &Address, _: &Word) -> Result<Word, Self::Error> {
+            Ok(Word::ZERO)
+        }
+
+        fn get_block_hash(&mut self, _: &Word) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
+        }
+    }
+
+    #[test]
+    fn sparse_state_bounds_warmth_and_retained_analysis() {
+        for multi in [false, true] {
+            let bytes = Bytes::from(vec![0; if multi { CODE_CHUNK_SIZE + 1 } else { 17 }]);
+            let reads = Arc::new(AtomicUsize::new(0));
+            let mut state = State::new(Db::new(Provider {
+                bytes: bytes.clone(),
+                reads: reads.clone(),
+                malformed: Arc::new(AtomicBool::new(false)),
+            }));
+            let a = Address::repeat_byte(0x44);
+            let b = Address::repeat_byte(0x45);
+            assert_eq!(
+                state.account(&a).unwrap().code_size(),
+                if multi { Some(bytes.len() as u32) } else { None }
+            );
+            assert!(state.load_code_chunk(&a, u32::MAX, false).unwrap().is_none());
+            assert!(matches!(state.load_code_chunk(&a, 0, true), Err(LoadError::ColdLoadSkipped)));
+            assert_eq!(reads.load(Ordering::SeqCst), 0);
+            assert!(state.load_code_chunk(&a, 0, false).unwrap().unwrap().warm());
+            let checkpoint = state.checkpoint();
+            assert!(!state.load_code_chunk(&a, 0, true).unwrap().unwrap().warm());
+            assert!(state.load_code_chunk(&b, 0, false).unwrap().unwrap().warm());
+            assert_eq!(reads.load(Ordering::SeqCst), 1);
+            state.rollback(checkpoint, EvmFeatures::empty());
+            assert!(state.code_chunk_is_warm(&a, 0));
+            assert!(!state.code_chunk_is_warm(&b, 0));
+            let checkpoint = state.checkpoint();
+            state.account(&a).unwrap().set_code_slow(Bytecode::default());
+            assert!(state.account(&a).unwrap().code_chunks().is_empty());
+            assert_eq!(state.account(&a).unwrap().code_size(), Some(0));
+            state.rollback(checkpoint, EvmFeatures::empty());
+            assert!(state.code_chunk_is_warm(&a, 0));
+            state.clear_transaction_state();
+            assert!(state.load_code_chunk(&a, 0, false).unwrap().unwrap().warm());
+            assert_eq!(reads.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn malformed_chunks_are_evicted_before_repair() {
+        let mut bytes = vec![0; CODE_CHUNK_SIZE];
+        bytes.extend_from_slice(&[0xef, 1]);
+        let reads = Arc::new(AtomicUsize::new(0));
+        let malformed = Arc::new(AtomicBool::new(true));
+        let mut state = State::new(Db::new(Provider {
+            bytes: bytes.into(),
+            reads: reads.clone(),
+            malformed: malformed.clone(),
+        }));
+        let owner = Address::repeat_byte(0x44);
+        let Err(LoadError::Database(error)) = state.load_code_chunk(&owner, 1, false) else {
+            panic!("wrong length must fail")
+        };
+        let error = error.downcast_ref::<CodeChunkError>().unwrap();
+        assert_eq!(error.expected_length, Some(2));
+        assert_eq!(error.actual_length, Some(0));
+        assert!(state.account(&owner).unwrap().code_chunks().is_empty());
+        assert!(state.database.cache.code_chunks.is_empty());
+        malformed.store(false, Ordering::SeqCst);
+        assert!(state.load_code_chunk(&owner, 1, false).unwrap().unwrap().warm());
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        assert!(state.account(&owner).unwrap().code_chunks()[&1].chunk.bytecode().is_legacy());
+    }
+
+    #[test]
+    fn full_code_residency_does_not_hide_sparse_provider_reads() {
+        for malformed in [false, true] {
+            let bytes = Bytes::from(vec![0; CODE_CHUNK_SIZE + 1]);
+            let hash = keccak256(&bytes);
+            let reads = Arc::new(AtomicUsize::new(0));
+            let mut state = State::new(Db::new(Provider {
+                bytes: bytes.clone(),
+                reads: reads.clone(),
+                malformed: Arc::new(AtomicBool::new(malformed)),
+            }));
+            // Full-code RPC residency is not publication of executable chunks.
+            state.database.cache.contracts.insert(hash, Bytecode::new_legacy(bytes));
+            let owner = Address::repeat_byte(0x44);
+            let result = state
+                .load_code_chunk(&owner, 1, false)
+                .map(|chunk| chunk.map(|mut chunk| chunk.warm()));
+            assert_eq!(result.is_err(), malformed);
+            assert_eq!(reads.load(Ordering::SeqCst), 1);
+            assert_eq!(state.code_chunk_is_warm(&owner, 1), !malformed);
+            if !malformed {
+                state.clear_transaction_state();
+                state.load_code_chunk(&owner, 1, false).unwrap();
+                assert_eq!(reads.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn loading_is_read_only_and_warming_is_reversible() {
+        for multi in [false, true] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let mut state = State::new(Db::new(Provider {
+                bytes: Bytes::from(vec![0; if multi { CODE_CHUNK_SIZE + 1 } else { 17 }]),
+                reads: reads.clone(),
+                malformed: Arc::new(AtomicBool::new(false)),
+            }));
+            let owner = Address::repeat_byte(0x44);
+            let checkpoint = state.checkpoint();
+            for _ in 0..2 {
+                let chunk = state.load_code_chunk(&owner, 0, false).unwrap().unwrap();
+                assert_eq!(chunk.address(), owner);
+                assert_eq!(chunk.index(), 0);
+                assert_eq!(chunk.get().payload_len(), if multi { CODE_CHUNK_SIZE } else { 17 });
+                assert!(!chunk.is_warm());
+            }
+            assert_eq!(reads.load(Ordering::SeqCst), 1);
+            assert_eq!(state.checkpoint(), checkpoint);
+            assert!(!state.account(&owner).unwrap().is_warm());
+            assert!(!state.account(&owner).unwrap().is_touched());
+            assert!(matches!(
+                state.load_code_chunk(&owner, 0, true),
+                Err(LoadError::ColdLoadSkipped)
+            ));
+            assert_eq!(state.checkpoint(), checkpoint);
+
+            {
+                let mut chunk = state.load_code_chunk(&owner, 0, false).unwrap().unwrap();
+                assert!(chunk.warm());
+                assert!(chunk.is_warm());
+                assert!(!chunk.warm());
+            }
+            assert_eq!(state.checkpoint().journal_len(), checkpoint.journal_len() + 1);
+            assert!(state.clone().code_chunk_is_warm(&owner, 0));
+            state.rollback(checkpoint.clone(), EvmFeatures::empty());
+            assert_eq!(state.checkpoint(), checkpoint);
+            assert!(!state.code_chunk_is_warm(&owner, 0));
+            assert!(matches!(
+                state.load_code_chunk(&owner, 0, true),
+                Err(LoadError::ColdLoadSkipped)
+            ));
+            assert!(state.load_code_chunk(&owner, 0, false).unwrap().unwrap().warm());
+            assert_eq!(reads.load(Ordering::SeqCst), 1);
+        }
+    }
+}

@@ -364,3 +364,142 @@ fn padding_suffix(continuation_len: usize) -> Vec<u8> {
     }
     padding
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+    use alloy_primitives::{Address, keccak256};
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn metadata_deserialization_validates_invariants() {
+        let metadata = CodeMetadata::new(24577, vec![B256::ZERO; 2]).unwrap();
+        let encoded = serde_json::to_value(&metadata).unwrap();
+        assert_eq!(serde_json::from_value::<CodeMetadata>(encoded).unwrap(), metadata);
+        assert!(
+            serde_json::from_value::<CodeMetadata>(serde_json::json!({
+                "code_size": 24577, "chunk_hashes": []
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn ordinary_payload_never_infers_delegation_from_prefix() {
+        let marker = Bytecode::new_eip7702(Address::repeat_byte(1));
+        assert!(CodeChunk::new(marker.original_bytes()).bytecode().is_legacy());
+        assert!(CodeChunk::from_bytecode(&marker).bytecode().is_eip7702());
+    }
+
+    #[test]
+    fn clones_share_the_only_bytecode_and_jump_analysis() {
+        let raw = Bytes::from(vec![op::JUMPDEST; CODE_CHUNK_SIZE + 40]);
+        for chunk in
+            [CodeChunk::new(Bytes::from_static(&[op::JUMPDEST])), code_chunk(&raw, 0).unwrap()]
+        {
+            let first = chunk.bytecode();
+            let second = chunk.clone().bytecode();
+            assert_eq!(first.bytes_slice().as_ptr(), second.bytes_slice().as_ptr());
+            assert_eq!(
+                first.legacy_jump_table().unwrap().as_slice().as_ptr(),
+                second.legacy_jump_table().unwrap().as_slice().as_ptr()
+            );
+        }
+    }
+
+    #[test]
+    fn all_crossing_pushes_preserve_values_and_record_start_offset() {
+        for width in 1..=32 {
+            for distance in 1..=width {
+                let mut raw = vec![op::JUMPDEST; CODE_CHUNK_SIZE - distance];
+                raw.push(0x5f + width as u8);
+                raw.extend((0..width).map(|i| i as u8));
+                raw.extend([op::POP, op::STOP]);
+                let raw = Bytes::from(raw);
+                let first = code_chunk(&raw, 0).unwrap();
+                let second = code_chunk(&raw, 1).unwrap();
+                let moved = width + 1 - distance;
+                assert_eq!(
+                    &first.bytes()[CODE_CHUNK_SIZE..CODE_CHUNK_SIZE + moved],
+                    &raw[CODE_CHUNK_SIZE..CODE_CHUNK_SIZE + moved]
+                );
+                assert_eq!(
+                    &second.bytes()[..moved],
+                    &raw[CODE_CHUNK_SIZE..CODE_CHUNK_SIZE + moved]
+                );
+                assert_eq!(second.start_offset(), moved);
+                assert_eq!(*second.bytes().last().unwrap(), moved as u8);
+                assert_eq!(first.start_offset(), 0);
+                for pc in 0..moved {
+                    assert!(!second.is_valid_jumpdest(pc));
+                }
+                let tail = first.prepared().unwrap().tail_offset();
+                assert_eq!(&first.bytes()[tail..], &[op::RJUMP, 0x5a, 0x38, 0]);
+                assert_eq!(tail, CODE_CHUNK_SIZE + 32);
+                assert_eq!(first.bytes().len(), LEGACY_CODE_CHUNK_SIZE);
+                assert_eq!(second.bytes()[moved], op::POP);
+                assert!(first.bytes().len() <= LEGACY_CODE_CHUNK_SIZE);
+            }
+        }
+    }
+
+    #[test]
+    fn data_only_final_chunk_and_truncated_push_use_stop() {
+        let mut raw = vec![op::JUMPDEST; CODE_CHUNK_SIZE - 1];
+        raw.extend([op::PUSH32, 0x5b, 0x60, 0x56]);
+        let raw = Bytes::from(raw);
+        let first = code_chunk(&raw, 0).unwrap();
+        let second = code_chunk(&raw, 1).unwrap();
+        assert_eq!(&first.bytes()[CODE_CHUNK_SIZE..CODE_CHUNK_SIZE + 3], &[0x5b, 0x60, 0x56]);
+        assert_eq!(&first.bytes()[CODE_CHUNK_SIZE + 3..CODE_CHUNK_SIZE + 32], &[0; 29]);
+        assert_eq!(&first.bytes()[CODE_CHUNK_SIZE + 32..], &[op::STOP, 0]);
+        assert_eq!(&second.bytes()[..3], &[0x5b, 0x60, 0x56]);
+        assert_eq!(&second.bytes()[3..35], padding_suffix(0));
+        assert_eq!(&second.bytes()[35..], &[op::STOP, 3]);
+    }
+
+    #[test]
+    fn prepared_buffer_commitments_and_roundtrip() {
+        let mut raw = vec![op::JUMPDEST; CODE_CHUNK_SIZE - 1];
+        raw.extend([op::PUSH2, 0x12, 0x34, op::STOP]);
+        let raw = Bytes::from(raw);
+        let metadata = code_metadata(&raw).unwrap().unwrap();
+        for index in 0..2 {
+            let chunk = code_chunk(&raw, index).unwrap();
+            assert_eq!(metadata.chunk_hashes()[index as usize], keccak256(chunk.bytes()));
+            assert_eq!(
+                CodeChunk::from_prepared(
+                    Bytes::copy_from_slice(chunk.bytes()),
+                    raw.len() as u32,
+                    index
+                )
+                .unwrap(),
+                chunk
+            );
+            assert!(chunk.validate_context(raw.len() as u32, index).is_ok());
+            assert!(chunk.validate_context(raw.len() as u32 + 1, index).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_bad_tail_and_context_and_keeps_safety_padding() {
+        assert!(CodeChunk::from_prepared(Bytes::from_static(&[0]), 0, 0).is_err());
+        let raw = Bytes::from(vec![op::JUMPDEST; CODE_CHUNK_SIZE + 40]);
+        let chunk = code_chunk(&raw, 0).unwrap();
+        let mut bad = chunk.bytes().to_vec();
+        bad.pop();
+        assert!(CodeChunk::from_prepared(bad.into(), raw.len() as u32, 0).is_err());
+        for offset in CODE_CHUNK_SIZE..CODE_CHUNK_SIZE + 32 {
+            let mut bad_padding = chunk.bytes().to_vec();
+            bad_padding[offset] ^= 1;
+            assert!(CodeChunk::from_prepared(bad_padding.into(), raw.len() as u32, 0).is_err());
+        }
+        let code = chunk.bytecode();
+        assert!(code.bytes_slice().len() >= code.len() + 33);
+        assert!(!chunk.is_valid_jumpdest(CODE_CHUNK_SIZE));
+        let mut bad_offset = chunk.bytes().to_vec();
+        *bad_offset.last_mut().unwrap() = 33;
+        assert!(CodeChunk::from_prepared(bad_offset.into(), raw.len() as u32, 0).is_err());
+    }
+}
