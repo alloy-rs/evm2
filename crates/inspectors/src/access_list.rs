@@ -1,4 +1,5 @@
 use alloc::collections::BTreeSet;
+use alloy_consensus::Transaction;
 use alloy_eip2930::{AccessList, AccessListItem};
 use alloy_primitives::{
     Address, B256, U256,
@@ -6,7 +7,6 @@ use alloy_primitives::{
 };
 use evm2::{
     Evm, EvmTypes, Inspector,
-    ethereum::RecoveredTxEnvelope,
     interpreter::{Interpreter, Message, MessageResult, op},
 };
 
@@ -52,10 +52,10 @@ impl AccessListInspector {
     ///
     /// 7702 authorities should be excluded because those get loaded anyway.
     /// `chain_id` is the configured execution chain ID used to validate those authorizations.
-    pub fn with_excluded_from_tx(self, tx: &RecoveredTxEnvelope, chain_id: u64) -> Self {
-        let Some(tx) = tx.as_eip7702() else { return self };
+    pub fn with_excluded_from_tx(self, tx: &impl Transaction, chain_id: u64) -> Self {
+        let Some(authorization_list) = tx.authorization_list() else { return self };
         let chain_id = U256::from(chain_id);
-        let authorities = tx.authorization_list.iter().filter_map(|authorization| {
+        let authorities = authorization_list.iter().filter_map(|authorization| {
             let auth_chain_id = authorization.chain_id();
             if !auth_chain_id.is_zero() && auth_chain_id != &chain_id {
                 return None;
@@ -63,7 +63,7 @@ impl AccessListInspector {
             if authorization.nonce() == u64::MAX {
                 return None;
             }
-            authorization.authority()
+            authorization.recover_authority().ok()
         });
         self.with_excluded(authorities)
     }
