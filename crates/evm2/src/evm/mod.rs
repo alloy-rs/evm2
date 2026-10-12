@@ -794,11 +794,15 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         }
     }
 
-    /// Notifies the inspector and records an emitted log.
+    /// Records an emitted log and notifies the inspector.
     #[inline]
     pub fn log(&mut self, log: Log) {
+        if self.inspector.is_none() {
+            self.state.log(log);
+            return;
+        }
+        self.state.log(log.clone());
         self.inspect_log(&log);
-        self.state.log(log);
     }
 
     #[inline]
@@ -2032,6 +2036,44 @@ mod tests {
         let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
         assert_eq!(inspector.0.len(), 1);
         assert_eq!(inspector.0.as_slice(), evm.logs());
+    }
+
+    #[test]
+    fn log_hook_sees_current_log_in_host() {
+        #[derive(Default)]
+        struct LogInspector(Vec<usize>);
+
+        impl Inspector<BaseEvmTypes> for LogInspector {
+            fn log(&mut self, log: &Log, host: &mut Evm<'_, BaseEvmTypes>) {
+                assert_eq!(host.logs().last(), Some(log));
+                self.0.push(host.logs().len());
+            }
+        }
+
+        let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |evm, _, _| {
+            for i in 0..2u8 {
+                evm.log(Log {
+                    address: TEST_PRECOMPILE,
+                    data: LogData::new_unchecked(Vec::new(), Bytes::copy_from_slice(&[i])),
+                });
+            }
+            Ok(PrecompileOutput::new(Bytes::new()))
+        })]);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            precompiles,
+        );
+        evm.set_inspector(LogInspector::default());
+        let mut message = precompile_message(TEST_PRECOMPILE);
+
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+
+        assert_eq!(result.stop, InstrStop::Return);
+        let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
+        assert_eq!(inspector.0, [1, 2]);
     }
 
     #[test]
