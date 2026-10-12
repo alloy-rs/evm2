@@ -704,7 +704,11 @@ impl CallTraceStep {
             gas_cost: self.gas_cost,
             state_gas_cost: self.state_gas_cost,
             state_gas_reservoir: self.state_gas_reservoir,
-            op: if self.op.is_valid() { self.op.as_str().into() } else { "Unknown".into() },
+            op: if self.op.is_valid() {
+                self.op.as_str().into()
+            } else {
+                format!("opcode {:#x} not defined", self.op.get()).into()
+            },
             pc: self.pc as u64,
             refund_counter: Some(self.gas_refund_counter),
             stack: if opts.is_stack_enabled() {
