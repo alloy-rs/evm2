@@ -329,7 +329,9 @@ impl JsInspector {
         let kind = tx.kind();
         let to = Some(match kind {
             TxKind::Call(target) => target,
-            TxKind::Create => tx.signer().create(tx.nonce()),
+            TxKind::Create => {
+                result.created_address.unwrap_or_else(|| tx.signer().create(tx.nonce()))
+            }
         });
 
         let base_fee = block.basefee.try_into().unwrap_or(u64::MAX);
@@ -926,11 +928,11 @@ mod tests {
     use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
     use boa_engine::error::{EngineError, RuntimeLimitError};
     use evm2::{
-        BaseEvmTypes, Evm, Precompiles, SpecId,
+        BaseEvmTypes, Evm, Precompiles, SpecId, Version,
         bytecode::Bytecode,
-        ethereum::{TxEnvelope, ethereum_tx_registry},
+        ethereum::{TxEnvelope, ethereum_tx_registry, floor_gas, intrinsic_gas},
         evm::{AccountInfo, CacheDB, EmptyDB},
-        interpreter::Host,
+        interpreter::{Host, op},
     };
     use serde_json::json;
 
@@ -1662,5 +1664,58 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn test_create_context_to_on_success_revert_halt_and_runtime_oog() {
+        for (spec, initcode, runtime_oog) in [
+            (SpecId::PRAGUE, Bytes::from_static(&[op::STOP]), false),
+            (SpecId::PRAGUE, Bytes::from_static(&[op::PUSH0, op::PUSH0, op::REVERT]), false),
+            (SpecId::PRAGUE, Bytes::from_static(&[op::INVALID]), false),
+            (SpecId::AMSTERDAM, Bytes::from_static(&[op::STOP]), true),
+        ] {
+            let caller = Address::repeat_byte(0xaa);
+            let nonce = 7;
+            let mut db = CacheDB::new(EmptyDB::default());
+            db.insert_account_info(&caller, AccountInfo { nonce, ..AccountInfo::default() });
+            let script = r#"{
+                fault: function() {},
+                result: function(ctx) { return toHex(ctx.to); }
+            }"#;
+            let inspector = JsInspector::new(script.to_string(), serde_json::Value::Null).unwrap();
+            let mut evm = Evm::<BaseEvmTypes>::new(
+                spec,
+                evm2::env::BlockEnvExt::default(),
+                ethereum_tx_registry(spec),
+                db,
+                Precompiles::base(spec),
+            );
+            evm.set_inspector(inspector);
+            let gas_limit = if runtime_oog {
+                let version = Version::base(spec);
+                intrinsic_gas(version, caller, TxKind::Create, &initcode, 0, 0, U256::ZERO)
+                    .max(floor_gas(version, caller, TxKind::Create, &initcode, 0, 0, U256::ZERO))
+            } else {
+                100_000
+            };
+            let tx = Recovered::new_unchecked(
+                TxEnvelope::Legacy(TxLegacy {
+                    nonce,
+                    gas_limit,
+                    to: TxKind::Create,
+                    input: initcode,
+                    ..TxLegacy::default()
+                }),
+                caller,
+            );
+            let result = evm.transact(&tx).unwrap().detach();
+            if runtime_oog {
+                assert_eq!(result.result.stop, InstrStop::OutOfGas);
+            }
+            let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
+            let block = *evm.block_env();
+            let traced = inspector.json_result(&result, &tx, &block, evm.database_mut()).unwrap();
+            assert_eq!(traced, json!(format!("{:#x}", caller.create(nonce))));
+        }
     }
 }
