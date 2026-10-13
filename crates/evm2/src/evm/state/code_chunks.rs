@@ -55,9 +55,6 @@ impl<'a, 'db> CodeChunkHandle<'a, 'db> {
                 return Err(LoadError::ColdLoadSkipped);
             }
             let chunk = load_chunk(inner, info, index, expected)?;
-            if expected.is_none() {
-                account.code_size = Some(chunk.payload_len() as u32);
-            }
             *slot = Some(chunk.bytecode());
         }
         let is_warm = &mut account.code_chunks.warm[index_usize];

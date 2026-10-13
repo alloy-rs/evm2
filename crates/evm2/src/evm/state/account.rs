@@ -233,8 +233,6 @@ pub(crate) struct Account {
     pub(crate) code_changed: bool,
     /// Persistent transaction storage owned by this account.
     pub(crate) storage: StorageOverlay,
-    /// Learned legacy size; committed multi-chunk size remains in account information.
-    pub(crate) code_size: Option<u32>,
     /// Cached runtime chunks and their transaction-local warmth.
     pub(crate) code_chunks: CodeChunks,
 }
@@ -430,7 +428,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
                 previous_is_destroyed: self.tracked.is_destroyed,
                 previous_just_created: self.tracked.just_created,
                 previous_code_changed: self.tracked.code_changed,
-                previous_code_size: self.tracked.code_size,
                 previous_code_chunks: self.tracked.code_chunks.chunks.clone(),
                 previous_code_chunk_warm: self.tracked.code_chunks.warm.clone(),
             });
@@ -473,7 +470,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.tracked.present.as_ref().map_or(KECCAK256_EMPTY, |account| account.code_hash)
     }
 
-    /// Original code size, unknown until a legacy nonempty record is requested.
+    /// Original code size, unknown until a legacy nonempty record is available.
     pub fn code_size(&self) -> Option<u32> {
         if self.code_hash() == KECCAK256_EMPTY || self.code_hash().is_zero() {
             Some(0)
@@ -482,7 +479,11 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         } else if let Some(metadata) = self.get().and_then(|info| info.code_metadata()) {
             Some(metadata.code_size())
         } else {
-            self.tracked.code_size
+            self.get()
+                .and_then(|info| info.code.as_ref())
+                .filter(|code| !code.is_empty())
+                .or_else(|| self.tracked.code_chunks.chunks.first().and_then(Option::as_ref))
+                .map(|code| code.len() as u32)
         }
     }
 
@@ -710,7 +711,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         }
         account.code = Some(code);
         self.tracked.code_changed = true;
-        self.tracked.code_size = None;
         self.tracked.code_chunks.clear();
     }
 
@@ -790,7 +790,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
             let changed = changed || previous.extension != info.extension;
             changed
         }) {
-            self.tracked.code_size = None;
             self.tracked.code_chunks.clear();
             self.tracked.code_changed = true;
         }
@@ -803,7 +802,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.touch();
         if self.present_mut().extension != extension {
             self.present_mut().extension = extension;
-            self.tracked.code_size = None;
             self.tracked.code_chunks.clear();
             self.tracked.code_changed = true;
         }

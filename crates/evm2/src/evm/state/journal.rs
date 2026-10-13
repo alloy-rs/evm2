@@ -57,8 +57,6 @@ pub enum JournalEntry {
         previous_just_created: bool,
         /// Previous code-changed flag.
         previous_code_changed: bool,
-        /// Previously resolved legacy size.
-        previous_code_size: Option<u32>,
         /// Previously requested analyses and warmth.
         previous_code_chunks: Vec<Option<Bytecode>>,
         /// Previous transaction-local chunk warmth.

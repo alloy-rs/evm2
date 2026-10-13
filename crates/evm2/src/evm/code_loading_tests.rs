@@ -668,6 +668,8 @@ fn account_code_size_distinguishes_empty_unknown_and_chunked_without_loading() {
         assert!(metadata.code.is_empty());
         assert!(reads(&evm).is_empty());
     }
+    evm.state.load_code_chunk(&OWNER, 0, false).unwrap().unwrap();
+    assert_eq!(Host::load_account(&mut evm, &OWNER, false, false).unwrap().code_size, Some(1));
     let loaded = Host::load_account(&mut evm, &OWNER, true, false).unwrap();
     assert_eq!(loaded.code_size, Some(1));
     assert_eq!(loaded.code.original_byte_slice(), &[op::STOP]);
