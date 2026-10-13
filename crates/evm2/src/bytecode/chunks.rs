@@ -2,6 +2,8 @@
 
 use super::{Bytecode, BytecodeKind};
 use crate::interpreter::{instructions::encode_rjump_offset, op};
+#[cfg(feature = "serde")]
+use alloc::string::String;
 use alloc::vec::Vec;
 use alloy_primitives::{B256, Bytes};
 use thiserror::Error;
@@ -169,8 +171,7 @@ impl CodeChunk {
 
 /// Validated commitments present only for multi-chunk code.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(try_from = "MetadataFields"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct CodeMetadata {
     last_chunk_size: u32,
     chunk_hashes: Vec<B256>,
@@ -339,18 +340,60 @@ pub const fn code_chunk_gas(cold: u64, warm: u64) -> Option<u64> {
 }
 
 #[cfg(feature = "serde")]
-#[derive(serde::Deserialize)]
-struct MetadataFields {
-    last_chunk_size: u32,
-    chunk_hashes: Vec<B256>,
-}
+impl<'de> serde::Deserialize<'de> for CodeMetadata {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{Error, MapAccess, SeqAccess, Visitor};
 
-#[cfg(feature = "serde")]
-impl TryFrom<MetadataFields> for CodeMetadata {
-    type Error = CodeChunkError;
+        struct MetadataVisitor;
 
-    fn try_from(fields: MetadataFields) -> Result<Self, Self::Error> {
-        Self::new(fields.last_chunk_size, fields.chunk_hashes)
+        impl<'de> Visitor<'de> for MetadataVisitor {
+            type Value = CodeMetadata;
+
+            fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                formatter.write_str("code chunk metadata")
+            }
+
+            fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
+                let last_chunk_size =
+                    seq.next_element()?.ok_or_else(|| S::Error::invalid_length(0, &self))?;
+                let chunk_hashes =
+                    seq.next_element()?.ok_or_else(|| S::Error::invalid_length(1, &self))?;
+                CodeMetadata::new(last_chunk_size, chunk_hashes).map_err(S::Error::custom)
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut last_chunk_size = None;
+                let mut chunk_hashes = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "last_chunk_size" => {
+                            if last_chunk_size.replace(map.next_value()?).is_some() {
+                                return Err(M::Error::duplicate_field("last_chunk_size"));
+                            }
+                        }
+                        "chunk_hashes" => {
+                            if chunk_hashes.replace(map.next_value()?).is_some() {
+                                return Err(M::Error::duplicate_field("chunk_hashes"));
+                            }
+                        }
+                        _ => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                CodeMetadata::new(
+                    last_chunk_size.ok_or_else(|| M::Error::missing_field("last_chunk_size"))?,
+                    chunk_hashes.ok_or_else(|| M::Error::missing_field("chunk_hashes"))?,
+                )
+                .map_err(M::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_struct(
+            "CodeMetadata",
+            &["last_chunk_size", "chunk_hashes"],
+            MetadataVisitor,
+        )
     }
 }
 
@@ -565,6 +608,8 @@ mod tests {
         });
         assert_eq!(serde_json::to_value(&metadata).unwrap(), json);
         assert_eq!(serde_json::from_value::<CodeMetadata>(json).unwrap(), metadata);
+        let encoded = postcard::to_allocvec(&metadata).unwrap();
+        assert_eq!(postcard::from_bytes::<CodeMetadata>(&encoded).unwrap(), metadata);
         for last_chunk_size in [0, CODE_CHUNK_SIZE as u32 + 1] {
             let json = serde_json::json!({
                 "last_chunk_size": last_chunk_size,
