@@ -110,11 +110,13 @@ impl CodeChunk {
             .checked_mul(CODE_CHUNK_SIZE)
             .ok_or(CodeChunkError::InvalidPreparation)?;
         let size = code_size as usize;
+        let bytes = bytecode.original_byte_slice();
         if !(CODE_CHUNK_SIZE + 1..=MAX_CODE_SIZE).contains(&size)
             || start >= size
-            || layout.payload_len() != (size - start).min(CODE_CHUNK_SIZE)
-            || (index == 0 && bytecode.original_byte_slice().last() != Some(&0))
-            || layout.transfers != (start + usize::from(layout.padding_start) < size)
+            || layout.payload_len(bytes) != (size - start).min(CODE_CHUNK_SIZE)
+            || (index == 0 && layout.start_offset != 0)
+            || (bytes[layout.tail_offset(bytes)] == op::RJUMP)
+                != (start + layout.padding_start(bytes) < size)
         {
             return Err(CodeChunkError::InvalidPreparation);
         }
@@ -431,10 +433,7 @@ impl PreparedCodeChunk {
 /// Validated physical layout of a prepared bytecode buffer, independent of account context.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChunkLayout {
-    payload_len: u16,
-    padding_start: u16,
     start_offset: u8,
-    transfers: bool,
 }
 
 impl ChunkLayout {
@@ -445,10 +444,10 @@ impl ChunkLayout {
             return Err(invalid);
         }
         let Some((&start_offset, code)) = bytes.split_last() else { return Err(invalid) };
-        let (tail_len, transfers) = if code.ends_with(&[op::STOP]) {
-            (1, false)
+        let tail_len = if code.ends_with(&[op::STOP]) {
+            1
         } else if code.ends_with(&[op::RJUMP, 0x5a, 0x38]) {
-            (3, true)
+            3
         } else {
             return Err(invalid);
         };
@@ -458,32 +457,25 @@ impl ChunkLayout {
         {
             return Err(invalid);
         }
-        let mut padding_start = usize::from(start_offset);
-        while padding_start < payload_len {
-            padding_start += instruction_len(code[padding_start]);
-        }
+        let padding_start = chunk_padding_start(&code[..payload_len], start_offset as usize);
         let tail_offset = payload_len + 32;
         let continuation_len = padding_start - payload_len;
         if code.get(padding_start..tail_offset) != Some(padding_suffix(continuation_len).as_slice())
         {
             return Err(invalid);
         }
-        Ok(Self {
-            payload_len: payload_len as u16,
-            padding_start: padding_start as u16,
-            start_offset,
-            transfers,
-        })
+        Ok(Self { start_offset })
     }
 
     /// Number of original code positions represented by the buffer.
-    pub const fn payload_len(self) -> usize {
-        self.payload_len as usize
+    pub(super) const fn payload_len(self, bytes: &[u8]) -> usize {
+        let tail_len = if bytes[bytes.len() - 2] == op::STOP { 1 } else { 3 };
+        bytes.len() - 32 - tail_len - 1
     }
 
     /// First generated padding instruction, after any continued immediate.
-    pub(super) const fn padding_start(self) -> usize {
-        self.padding_start as usize
+    pub(super) fn padding_start(self, bytes: &[u8]) -> usize {
+        chunk_padding_start(&bytes[..self.payload_len(bytes)], self.start_offset())
     }
 
     /// Leading bytes continuing the previous chunk's immediate.
@@ -492,9 +484,17 @@ impl ChunkLayout {
     }
 
     /// Local position of the generated transfer or STOP instruction.
-    pub const fn tail_offset(self) -> usize {
-        self.payload_len() + 32
+    pub(super) const fn tail_offset(self, bytes: &[u8]) -> usize {
+        self.payload_len(bytes) + 32
     }
+}
+
+fn chunk_padding_start(payload: &[u8], start_offset: usize) -> usize {
+    let mut pc = start_offset;
+    while pc < payload.len() {
+        pc += instruction_len(payload[pc]);
+    }
+    pc
 }
 
 fn instruction_len(opcode: u8) -> usize {

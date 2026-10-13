@@ -25,12 +25,12 @@ pub(super) fn analyze_legacy(bytecode: &[u8]) -> JumpTable {
 pub(super) fn analyze_chunk(bytecode: &[u8], layout: ChunkLayout) -> JumpTable {
     let mut jumps = JumpTable::new(bytecode.len());
     let table = jumps.as_mut_slice();
-    let payload = &bytecode[..layout.payload_len()];
+    let payload = &bytecode[..layout.payload_len(bytecode)];
     let pc = analyze_simd(payload, table, layout.start_offset());
     analyze_scalar(payload, table, pc);
     // Generated padding has its own instruction boundaries, independent of PUSH-only
     // payload analysis. Never mark continued immediates, the tail, or the trailer.
-    for pc in layout.padding_start()..layout.tail_offset() {
+    for pc in layout.padding_start(bytecode)..layout.tail_offset(bytecode) {
         if bytecode[pc] == op::JUMPDEST {
             table[pc / 8] |= 1 << (pc % 8);
         }
