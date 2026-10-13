@@ -273,7 +273,7 @@ fn inspector_reports_generated_chunk_instructions() {
         [0, 3, target, boundary, boundary + 31, boundary + 32, boundary, boundary + 1]
     );
     assert_eq!(trace.0.len(), steps.len() * 2);
-    assert!(trace.0.chunks_exact(2).all(|pair| !pair[0].0 && pair[1].0));
+    assert!(trace.0.as_chunks::<2>().0.iter().all(|pair| !pair[0].0 && pair[1].0));
 }
 
 #[test]
