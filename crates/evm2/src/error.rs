@@ -1,6 +1,7 @@
 //! Owned errors crossing database and execution boundaries.
 
 use alloc::{string::String, sync::Arc};
+use alloy_primitives::B256;
 use core::{error::Error, fmt};
 
 /// Type-erased host error.
@@ -96,9 +97,15 @@ impl DatabaseError {
     pub fn downcast_ref<E: Error + 'static>(&self) -> Option<&E> {
         self.error.downcast_ref()
     }
+
+    /// Classifies a required provider read as fatal while preserving its concrete error.
+    pub(crate) const fn into_fatal(mut self) -> Self {
+        self.fatal = true;
+        self
+    }
 }
 
-/// A state load can be skipped before reading a cold account or slot.
+/// A state load can be skipped before reading a cold account, slot, or code chunk.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum LoadError {
     /// The requested cold load was skipped without reading the database.
@@ -150,4 +157,18 @@ impl From<crate::interpreter::InstrStop> for HostError {
     fn from(stop: crate::interpreter::InstrStop) -> Self {
         Self::Halt(stop)
     }
+}
+
+/// A required runtime payload could not be obtained from the trusted provider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CodeChunkLoadError {
+    /// Required code or prepared chunk is absent, identified by its committed hash.
+    #[error("missing code payload {0}")]
+    Missing(B256),
+    /// Code or prepared chunk has an invalid length or preparation context.
+    #[error("invalid code payload {0}")]
+    Invalid(B256),
+    /// Inline delegation metadata does not match the account's code hash.
+    #[error("invalid inline delegation metadata for {0}")]
+    InvalidDelegation(B256),
 }

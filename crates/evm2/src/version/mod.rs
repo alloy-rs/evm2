@@ -92,6 +92,20 @@ impl Version {
             (self.tx_gas_limit_cap, u64::MAX)
         }
     }
+
+    /// Enables or disables the unscheduled TIP-1143 draft.
+    /// Configure [`Self::max_code_size`] and [`Self::max_initcode_size`] independently.
+    #[cfg(feature = "account-ext")]
+    pub const fn with_tip1143(mut self, enabled: bool) -> Self {
+        self.features.set(EvmFeatures::TIP1143, enabled);
+        self
+    }
+
+    /// Enables or disables unscheduled relative jump opcodes independently of TIP-1143.
+    pub const fn with_rjump(mut self, enabled: bool) -> Self {
+        self.features.set(EvmFeatures::RJUMP, enabled);
+        self
+    }
 }
 
 const fn base_tx_gas_limit_cap(spec_id: SpecId) -> u64 {
@@ -229,6 +243,9 @@ macro_rules! evm_versions {
 
             let spec_id = Cfg::BASE_SPEC_ID;
             let mut v = OpcodeConfig::empty();
+            // Runtime-gated by RJUMP. Inactive execution retains OpcodeNotFound.
+            v.set_instruction::<instr::rjump<T>>(op::RJUMP, 0);
+            v.set_instruction::<instr::rjumpi<T>>(op::RJUMPI, 0);
 
             $(
                 if spec_id.enables(SpecId::$spec) {

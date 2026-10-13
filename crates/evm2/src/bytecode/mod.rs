@@ -7,7 +7,7 @@ use crate::{
 };
 use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
-use analysis::{analyze_legacy, pad_legacy};
+use analysis::{analyze_chunk, analyze_legacy, pad_legacy};
 use core::{cmp::Ordering, fmt, hash};
 use thiserror::Error;
 
@@ -18,6 +18,9 @@ mod jump_table;
 mod serde_impl;
 
 pub use jump_table::{JumpTable, JumpTableRef};
+
+mod chunks;
+pub use chunks::*;
 
 /// EIP-7702 decode errors.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -61,7 +64,7 @@ struct BytecodeInner {
     bytecode: Bytes,
     /// The original length of the bytecode before padding.
     original_len: usize,
-    /// Lazily initialized jump table for legacy bytecode.
+    /// Lazily initialized jump table for legacy bytecode or a prepared chunk.
     jump_table: OnceLock<JumpTable>,
     /// Cached hash of the original bytecode.
     hash: OnceLock<B256>,
@@ -76,6 +79,8 @@ pub enum BytecodeKind {
     Legacy,
     /// EIP-7702 delegated bytecode.
     Eip7702,
+    /// Prepared runtime chunk with a validated physical layout and offset trailer.
+    Chunk(ChunkLayout),
 }
 
 impl Default for Bytecode {
@@ -171,6 +176,21 @@ impl Bytecode {
             jump_table: OnceLock::new(),
             hash: OnceLock::new(),
         })))
+    }
+
+    /// Creates a prepared runtime chunk with shared, lazy jump analysis.
+    ///
+    /// `bytes` must contain the stored padding, tail and final analysis-offset byte.
+    /// Ordinary memory-safety padding is added after validation and is not stored or hashed.
+    pub fn new_chunk(bytes: Bytes) -> Result<Self, CodeChunkError> {
+        let layout = ChunkLayout::decode(&bytes)?;
+        Ok(Self(Some(Arc::new(BytecodeInner {
+            kind: BytecodeKind::Chunk(layout),
+            original_len: bytes.len(),
+            bytecode: pad_legacy(bytes),
+            jump_table: OnceLock::new(),
+            hash: OnceLock::new(),
+        }))))
     }
 
     /// Creates a new raw [`Bytecode`].
@@ -304,20 +324,19 @@ impl Bytecode {
         }
     }
 
-    /// Returns the legacy jump table, initializing it on first access.
+    /// Returns the legacy-style jump table for ordinary code or a chunk, initializing it on first
+    /// access.
     #[inline]
     pub fn legacy_jump_table(&self) -> Option<&JumpTable> {
-        if self.is_legacy() { Some(self.jump_table()) } else { None }
+        if self.is_eip7702() { None } else { Some(self.jump_table()) }
     }
 
     #[inline]
     pub(crate) fn jump_table(&self) -> &JumpTable {
-        self.inner().jump_table.get_or_init(|| {
-            if self.is_legacy() {
-                analyze_legacy(self.original_byte_slice())
-            } else {
-                JumpTable::default()
-            }
+        self.inner().jump_table.get_or_init(|| match self.kind() {
+            BytecodeKind::Legacy => analyze_legacy(self.original_byte_slice()),
+            BytecodeKind::Eip7702 => JumpTable::default(),
+            BytecodeKind::Chunk(layout) => analyze_chunk(self.original_byte_slice(), layout),
         })
     }
 
@@ -576,5 +595,57 @@ mod tests {
         let _ = empty.hash_slow();
         let _ = empty.jump_table();
         assert_eq!(format!("{empty:?}"), format!("Bytecode({shared:?})"));
+    }
+
+    #[test]
+    fn chunk_analysis_uses_stored_offset_and_is_shared() {
+        for offset in 0..=32 {
+            let mut code = alloc::vec![op::JUMPDEST; CODE_CHUNK_SIZE + 64];
+            code[CODE_CHUNK_SIZE - 1] = if offset == 0 { op::STOP } else { op::PUSH1 + offset - 1 };
+            let chunk = code_chunk(&code.into(), 1).unwrap();
+            let bytecode = chunk.bytecode();
+            assert_eq!(chunk.start_offset(), usize::from(offset));
+            assert_eq!(bytecode.original_byte_slice().last(), Some(&offset));
+            assert_eq!(bytecode.bytes_slice().last(), Some(&0));
+            assert!(bytecode.inner().jump_table.get().is_none());
+            let restored = Bytecode::new_chunk(bytecode.original_bytes()).unwrap();
+            let cloned = bytecode.clone();
+            let table = bytecode.jump_table();
+            assert!(core::ptr::eq(table, cloned.jump_table()));
+            assert_eq!(table, restored.jump_table());
+            for pc in 0..bytecode.len() {
+                assert_eq!(
+                    table.is_valid(pc),
+                    (usize::from(offset)..64).contains(&pc) || pc == 95,
+                    "offset={offset}, pc={pc}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chunk_bytecode_requires_explicit_kind_and_account_context() {
+        let code = Bytes::from(alloc::vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1]);
+        let chunk = code_chunk(&code, 0).unwrap();
+        let bytecode = chunk.bytecode();
+        let legacy = Bytecode::new_legacy(bytecode.original_bytes());
+        assert!(CodeChunk::from_prepared(legacy, code.len() as u32, 0).is_err());
+        assert!(CodeChunk::from_prepared(bytecode.clone(), CODE_CHUNK_SIZE as u32, 0).is_err());
+        assert!(CodeChunk::from_prepared(bytecode.clone(), code.len() as u32, 1).is_err());
+        let loaded = CodeChunk::from_prepared(bytecode.clone(), code.len() as u32, 0).unwrap();
+        assert!(core::ptr::eq(loaded.as_bytecode().inner(), bytecode.inner()));
+        let mut malformed = bytecode.original_bytes().to_vec();
+        malformed[CODE_CHUNK_SIZE] = op::INVALID;
+        assert!(Bytecode::new_chunk(malformed.into()).is_err());
+
+        for size in [CODE_CHUNK_SIZE, CODE_CHUNK_SIZE + 1, LEGACY_CODE_CHUNK_SIZE] {
+            let raw = Bytes::from(alloc::vec![op::JUMPDEST; size]);
+            let ordinary = Bytecode::new_legacy(raw.clone());
+            assert_eq!(ordinary.kind(), BytecodeKind::Legacy);
+            assert!(ordinary.jump_table().is_valid(size - 1));
+            let first = code_chunk(&raw, 0).unwrap();
+            assert_eq!(first.start_offset(), 0);
+            assert_eq!(first.prepared().is_some(), size > LEGACY_CODE_CHUNK_SIZE);
+        }
     }
 }

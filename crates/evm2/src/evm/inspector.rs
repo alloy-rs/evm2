@@ -391,7 +391,7 @@ mod tests {
         evm.set_inspector(inspector);
         let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
-        let mut message = MessageExt { gas_limit, code: bytecode, ..message.clone() };
+        let mut message = MessageExt { gas_limit, code: (bytecode).into(), ..message.clone() };
         let result = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
         let inspector = evm.clear_inspector_as::<I>().unwrap();
         (result, inspector, evm)
@@ -840,7 +840,8 @@ mod tests {
         evm.set_inspector(MutateCallInspector { destination: replacement });
         let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
-        let mut message = MessageExt { gas_limit: 100_000, code: bytecode, ..Default::default() };
+        let mut message =
+            MessageExt { gas_limit: 100_000, code: (bytecode).into(), ..Default::default() };
         let result = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
 
         assert_matches!(result.stop, InstrStop::Stop);
@@ -1186,7 +1187,7 @@ mod tests {
         let tx_env = TxEnvExt::default();
         let message = Message::<TestTypes> {
             gas_limit: 10_000,
-            code: legacy_bytecode(code),
+            code: legacy_bytecode(code).into(),
             ..Default::default()
         };
         let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
@@ -1632,7 +1633,7 @@ mod tests {
             let tx_env = TxEnvExt::default();
             let message = Message::<TestTypes> {
                 gas_limit,
-                code: legacy_bytecode(code),
+                code: legacy_bytecode(code).into(),
                 ..Default::default()
             };
             let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);

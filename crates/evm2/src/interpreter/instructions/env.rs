@@ -1,12 +1,14 @@
 use crate::{
     EvmTypesHost,
-    evm::AccountLoad,
+    bytecode::{Bytecode, LEGACY_CODE_CHUNK_SIZE},
+    evm::{AccountCodeKind, AccountLoad, CodeAccessMode},
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{
         address_to_word, b256_to_word, word_to_address, word_to_usize, word_to_usize_saturated,
     },
     version::GasParams,
 };
+use alloc::vec::Vec;
 use alloy_primitives::B256;
 use evm2_macros::instruction;
 
@@ -101,7 +103,7 @@ pub fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result 
 
 #[instruction]
 pub fn codesize(cx: _) -> out {
-    *out = Word::from(cx.state.0.bytecode.len());
+    *out = Word::from(cx.state.code_size());
 }
 
 #[instruction(dynamic_gas)]
@@ -110,7 +112,20 @@ pub fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
     // SAFETY: Charging and copying data make no host calls.
     let gas_params = unsafe { cx.state.gas_params_detached() };
     cx.gas.spend(gas_params.copy_cost(len))?;
-    let data = cx.state.0.bytecode.original_byte_slice();
+    if cx.state.is_account_code() {
+        if len == 0 {
+            return Ok(());
+        }
+        let offset = word_to_usize(*memory_offset)?;
+        cx.state.resize_memory(cx.gas, offset, len)?;
+        let owner = cx.state.message().code_address;
+        let size = cx.state.code_size();
+        let multi = cx.state.active_chunk().prepared().is_some();
+        let bytes = cx.state.load_code_range(cx.gas, owner, *code_offset, len, size, multi)?;
+        cx.state.0.memory.set_data(offset, 0, len, &bytes);
+        return Ok(());
+    }
+    let data = cx.state.0.code.active().as_bytecode().original_byte_slice();
     copy_data(cx.gas, &mut cx.state.0.memory, gas_params, memory_offset, code_offset, len, data)
 }
 
@@ -121,7 +136,20 @@ pub fn gasprice(cx: _) -> out {
 
 #[instruction(dynamic_gas)]
 pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
-    *out = Word::from(load_account(&mut cx, *addr, true)?.code.len());
+    let mode = CodeAccessMode::from_features(cx.state.version().features);
+    let account = load_account(&mut cx, *addr, mode.loads_full_code())?;
+
+    let size = match (mode, account.code_kind(mode)) {
+        (CodeAccessMode::Eager, _) => account.code.len(),
+        (_, AccountCodeKind::Empty) => 0,
+        (_, AccountCodeKind::Delegated(_)) => 23,
+        (_, AccountCodeKind::Chunked { size }) => size as usize,
+        (_, AccountCodeKind::Legacy) => {
+            let code_owner = word_to_address(*addr);
+            cx.state.load_and_charge_code_chunk(cx.gas, &code_owner, 0)?.payload_len()
+        }
+    };
+    *out = Word::from(size);
 }
 
 #[instruction(dynamic_gas)]
@@ -141,7 +169,36 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
     } else {
         0
     };
-    let code = load_account(&mut cx, *addr, true)?.code;
+    let mode = CodeAccessMode::from_features(cx.state.version().features);
+    let account = load_account(&mut cx, *addr, mode.loads_full_code())?;
+
+    if mode == CodeAccessMode::MeteredChunks {
+        let bytes = match account.code_kind(mode) {
+            AccountCodeKind::Delegated(target) => {
+                let code = Bytecode::new_eip7702(target);
+                let source = word_to_usize_saturated(*code_offset);
+                code.original_byte_slice().get(source..).unwrap_or_default().to_vec()
+            }
+            AccountCodeKind::Empty => Vec::new(),
+            kind @ (AccountCodeKind::Legacy | AccountCodeKind::Chunked { .. }) => {
+                let (size, multi) = match kind {
+                    AccountCodeKind::Chunked { size } => (size as usize, true),
+                    _ => (LEGACY_CODE_CHUNK_SIZE, false),
+                };
+                cx.state.load_code_range(
+                    cx.gas,
+                    word_to_address(*addr),
+                    *code_offset,
+                    len,
+                    size,
+                    multi,
+                )?
+            }
+        };
+        cx.state.0.memory.set_data(memory_offset, 0, len, &bytes);
+        return Ok(());
+    }
+    let code = account.code;
     cx.state.0.memory.set_data(
         memory_offset,
         word_to_usize_saturated(*code_offset),

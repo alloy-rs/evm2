@@ -1,10 +1,9 @@
 use super::{
     BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking,
-    StackMut, StackRef, Word,
+    StackMut, StackRef, Word, code::InterpreterCode,
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
-    bytecode::Bytecode,
     env::TxEnv,
     evm::inspector::Inspector,
     interpreter::dispatch,
@@ -19,14 +18,10 @@ use derive_where::derive_where;
 /// EVM interpreter.
 #[derive_where(Debug)]
 pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
-    pub(in crate::interpreter) bytecode: Bytecode,
-    // Borrows the immutable allocations owned by `bytecode`. Cleared before replacing it;
-    // accessors must shorten the erased lifetime to the borrow of this interpreter.
-    bytecode_ref: Option<BytecodeRef<'static>>,
+    pub(in crate::interpreter) code: InterpreterCode,
     pub(in crate::interpreter) memory: Memory,
     pub(in crate::interpreter) return_data: Bytes,
 
-    pub(in crate::interpreter) pc: *const u8,
     output: Range<u32>,
     #[derive_where(skip)]
     tx_env: Option<&'frame TxEnv<T>>,
@@ -44,9 +39,10 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
+    inspecting_internal_tail: bool,
 }
 
-// SAFETY: The interpreter's internal pointers are always valid. `pc` and `bytecode_ref` point into
+// SAFETY: The interpreter's internal pointers are always valid. Its code cursor points into
 // immutable owned bytecode and its jump table. Frame-local references are cleared before pooling,
 // and host/inspector pointers are installed for
 // execution and not used after the owning execution context is gone. The `Sync` bounds make the
@@ -73,11 +69,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     ///
     /// Must call `init` before use.
     unsafe fn uninit() -> Self {
-        let bytecode = Bytecode::new();
         Self {
-            pc: bytecode.original_byte_slice().as_ptr(),
-            bytecode,
-            bytecode_ref: None,
+            code: InterpreterCode::default(),
             stack_len: 0,
             gas: Gas::new(0),
             memory: Memory::new(),
@@ -87,6 +80,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             tx_env: None,
             message: None,
             is_static: false,
+            inspecting_internal_tail: false,
             return_data: Bytes::new(),
             host: None,
             inspector: None,
@@ -99,12 +93,10 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.
     fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
-        let bytecode = message.code.clone();
+        self.code = InterpreterCode::new(&message.code);
         let gas_limit = message.gas_limit;
         let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
-        self.pc = bytecode.bytes_slice().as_ptr();
-        self.bytecode_ref = None;
-        self.bytecode = bytecode;
+        self.inspecting_internal_tail = false;
         self.stack_len = 0;
         self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
         self.memory.clear();
@@ -117,10 +109,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.return_data = Bytes::new();
     }
 
-    pub(crate) const fn clear_frame_refs(&mut self) {
+    pub(crate) fn clear_frame_refs(&mut self) {
         self.tx_env = None;
         self.message = None;
         self.host = None;
+        self.code = InterpreterCode::default();
         self.inspector = None;
     }
 
@@ -148,54 +141,55 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.output = output;
     }
 
-    /// Returns the current bytecode-relative program counter.
+    /// Returns the current logical global program counter.
     #[inline]
     pub fn pc(&self) -> usize {
-        // SAFETY: `pc` is always in bounds of `bytecode`.
-        unsafe { self.pc.offset_from(self.bytecode.original_byte_slice().as_ptr()) as usize }
+        self.code.pc()
     }
 
-    /// Sets the current bytecode-relative program counter.
+    /// Sets a logical global program counter within the active chunk.
     ///
     /// # Panics
     ///
     /// Panics if `pc` is out of bounds of the active bytecode.
     #[inline]
     pub fn set_pc(&mut self, pc: usize) {
-        let bytecode = self.bytecode.bytes_slice();
-        assert!(pc < bytecode.len());
-        self.pc = unsafe { bytecode.as_ptr().add(pc) };
+        self.code.set_pc(pc);
     }
 
     /// Returns the current opcode.
     #[inline]
     pub const fn opcode(&self) -> u8 {
         // SAFETY: `pc` is always in bounds of `bytecode`.
-        unsafe { *self.pc }
+        unsafe { *self.code.pc }
     }
 
     /// Returns the active bytecode.
     #[inline]
     pub fn bytecode(&self) -> BytecodeRef<'_> {
-        self.bytecode_ref.unwrap_or_else(|| BytecodeRef::new(&self.bytecode))
+        self.code.view()
     }
 
-    /// Returns the original active bytecode bytes.
+    /// Returns the stored active chunk bytes, excluding ordinary safety padding.
     #[inline]
     pub fn original_bytecode(&self) -> Bytes {
-        self.bytecode.original_bytes()
+        self.code.active().as_bytecode().original_bytes()
     }
 
-    /// Returns the original active bytecode as a byte slice.
+    /// Returns the stored active chunk bytes as a slice, excluding safety padding.
     #[inline]
     pub fn original_bytecode_slice(&self) -> &[u8] {
-        self.bytecode.original_byte_slice()
+        self.code.active().as_bytecode().original_byte_slice()
     }
 
     /// Calculates or returns the cached hash of the original active bytecode.
     #[inline]
     pub fn original_bytecode_hash(&self) -> B256 {
-        self.bytecode.hash_slow()
+        if self.code.is_account() {
+            self.message.expect("initialized frame").code_hash
+        } else {
+            self.code.active().as_bytecode().hash_slow()
+        }
     }
 
     /// Returns the current operand stack.
@@ -400,13 +394,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     #[doc(hidden)]
     pub fn prepare_run(&mut self, host: &mut T::Host<'host>) {
-        if self.bytecode_ref.is_none() {
-            // SAFETY: The view borrows immutable allocations retained by our owned `Bytecode`,
-            // so moving the interpreter does not invalidate it. `init` clears the view before
-            // replacing the owner, and accessors tie the returned view to `&self`.
-            let bytecode = unsafe { trustme::decouple_lt(&self.bytecode) };
-            self.bytecode_ref = Some(BytecodeRef::new(bytecode));
-        }
+        self.code.prepare();
         let config = host.execution_config();
         let version = config.version();
         self.memory.set_memory_limit(version.memory_limit);
@@ -502,7 +490,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline]
     pub(crate) const fn set_pc_stack_len(&mut self, pc: *const u8, stack_len: usize) {
-        self.0.pc = pc;
+        self.0.code.pc = pc;
         self.0.stack_len = stack_len;
     }
 
@@ -525,7 +513,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     pub const fn bytecode(&self) -> BytecodeRef<'_> {
         // SAFETY: `prepare_run` initializes the view before instruction execution. It remains
         // valid across call/resume cycles and is only cleared when initializing a new frame.
-        unsafe { self.0.bytecode_ref.unwrap_unchecked() }
+        self.0.code.prepared_view()
     }
 
     /// Returns the host implementation.
@@ -631,8 +619,12 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline]
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
-        self.0.pc = pc.as_ptr();
+        self.0.code.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
+        self.0.inspecting_internal_tail = self.0.code.is_internal(pc);
+        if self.0.inspecting_internal_tail {
+            return;
+        }
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
@@ -641,7 +633,11 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline]
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
-        self.0.pc = pc.as_ptr();
+        if self.0.inspecting_internal_tail {
+            self.0.inspecting_internal_tail = false;
+            return;
+        }
+        self.0.code.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
         if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
             cold_path();

@@ -16,10 +16,10 @@ pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
     Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, COLD_CODE_CHUNK_GAS, CodeChunk, WARM_CODE_CHUNK_GAS},
     env::TxEnv,
     evm::{
-        AccountInfo,
+        AccountInfo, CodeAccessMode,
         handler::{DefaultTxHandlerHooks, GasSettlement},
     },
     interpreter::{
@@ -384,7 +384,7 @@ pub const fn validate_chain_id(
 
 /// Validates top-level create initcode against the active size limit.
 pub fn validate_create_initcode(version: &Version, to: TxKind, input: &Bytes) -> HandlerResult<()> {
-    if version.feature(EvmFeatures::EIP3860)
+    if (version.feature(EvmFeatures::EIP3860) || version.feature(EvmFeatures::TIP1143))
         && to.is_create()
         && input.len() > version.max_initcode_size
     {
@@ -437,11 +437,17 @@ pub fn validate_sender<'a, T: EvmTypes>(
     let has_balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
     let has_balance_top_up = host.feature(EvmFeatures::BALANCE_TOP_UP);
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
+    let chunked = host.feature(EvmFeatures::TIP1143);
 
     let mut sender = host.state.account(&caller)?;
     if has_eip3607 && sender.code_hash() != KECCAK256_EMPTY {
-        let code = sender.load_code()?;
-        if !code.is_empty() && !code.is_eip7702() {
+        let rejected = if chunked {
+            !sender.code_hash().is_zero() && !sender.code_is_eip7702()?
+        } else {
+            let code = sender.load_code()?;
+            !code.is_empty() && !code.is_eip7702()
+        };
+        if rejected {
             return Err(HandlerError::RejectCallerWithCode);
         }
     }
@@ -570,12 +576,13 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
     let mut charged_state_gas = 0;
     let message = match to {
         TxKind::Call(to) => {
-            let (recipient_is_empty, mut code) = {
-                let mut account = host.state.account(&to)?;
-                // A nonexistent recipient reads as an empty account (EIP-161).
-                let recipient_is_empty = account.get().is_none_or(AccountInfo::is_empty);
-                (recipient_is_empty, account.load_code()?)
+            let mode = CodeAccessMode::from_features(host.version().features);
+            let mut account = match Host::load_account(host, &to, mode.loads_full_code(), false) {
+                Ok(account) => account,
+                Err(HostError::Execution(error)) => return Err(error.into()),
+                Err(HostError::Halt(_)) => unreachable!("unconditional account load"),
             };
+            let recipient_is_empty = account.is_empty;
             let mut code_address = to;
             let mut disable_precompiles = false;
             if host.feature(EvmFeatures::EIP2780) && !value.is_zero() && recipient_is_empty {
@@ -585,40 +592,37 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 }
                 charged_state_gas = new_account_state_gas;
             }
-            // An empty recipient is never delegated, so the charge above and the resolution below
-            // are mutually exclusive.
             if host.feature(EvmFeatures::EIP7702)
-                && let Some(delegated_address) = code.eip7702_address()
+                && let Some(delegated_address) = account.code_kind(mode).delegation_target()
             {
-                if host.feature(EvmFeatures::EIP2780) {
-                    // Delegation-target access, EIP-2929 warm/cold: charge the warm access first
-                    // (covered → the target is loaded and enters the block access list), then the
-                    // cold premium after the load. The load is skipped when the cold premium is
-                    // unaffordable, keeping a cold, unafforded target out of the block access
-                    // list.
-                    let cold_additional = host.version().gas_params.cold_account_additional_cost();
-                    if tx_gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
-                        return Ok(None);
-                    }
-                    let skip_cold_load = tx_gas.remaining() < cold_additional;
-                    let load =
-                        match Host::load_account(host, &delegated_address, true, skip_cold_load) {
-                            Ok(load) => load,
-                            Err(HostError::Halt(_)) => return Ok(None),
-                            Err(HostError::Execution(error)) => return Err(error.into()),
-                        };
-                    if load.is_cold && tx_gas.spend(cold_additional).is_err() {
-                        return Ok(None);
-                    }
-                    code = load.code;
-                } else {
-                    let mut account = host.state.account(&delegated_address)?;
-                    account.warm();
-                    code = account.load_code()?;
+                let metered = host.feature(EvmFeatures::EIP2780);
+                let cold_additional = host.version().gas_params.cold_account_additional_cost();
+                if metered && tx_gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
+                    return Ok(None);
+                }
+                account = match Host::load_account(
+                    host,
+                    &delegated_address,
+                    mode.loads_full_code(),
+                    metered && tx_gas.remaining() < cold_additional,
+                ) {
+                    Ok(account) => account,
+                    Err(HostError::Halt(_)) => return Ok(None),
+                    Err(HostError::Execution(error)) => return Err(error.into()),
+                };
+                if metered && account.is_cold && tx_gas.spend(cold_additional).is_err() {
+                    return Ok(None);
                 }
                 code_address = delegated_address;
                 disable_precompiles = true;
             }
+            let code = match account.code_source(mode, || {
+                load_initial_code_chunk(host, tx_gas, &code_address, account.code_hash)
+            }) {
+                Ok(code) => code,
+                Err(HostError::Halt(_)) => return Ok(None),
+                Err(HostError::Execution(error)) => return Err(error.into()),
+            };
             MessageExt {
                 kind: MessageKind::Call,
                 depth: 0,
@@ -630,6 +634,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 input: input.clone(),
                 value,
                 code,
+                code_hash: if mode.loads_full_code() { B256::ZERO } else { account.code_hash },
                 code_address,
                 disable_precompiles,
                 caller_is_static: false,
@@ -661,7 +666,8 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 caller,
                 input: input.clone(),
                 value,
-                code: Bytecode::new_legacy(input.clone()),
+                code: Bytecode::new_legacy(input.clone()).into(),
+                code_hash: B256::ZERO,
                 code_address: destination,
                 disable_precompiles: false,
                 caller_is_static: false,
@@ -934,6 +940,25 @@ fn eip2780_base_to_value_gas(
         }
     }
     gas
+}
+
+/// Loads and charges the entry chunk of a metered top-level call.
+fn load_initial_code_chunk<T: EvmTypes>(
+    host: &mut Evm<'_, T>,
+    tx_gas: &mut GasTracker,
+    owner: &Address,
+    code_hash: B256,
+) -> Result<CodeChunk, HostError> {
+    tx_gas.spend(WARM_CODE_CHUNK_GAS)?;
+    let cold_additional = COLD_CODE_CHUNK_GAS - WARM_CODE_CHUNK_GAS;
+    let loaded = Host::load_code_chunk(host, owner, 0, tx_gas.remaining() < cold_additional)?
+        .ok_or_else(|| {
+            crate::DatabaseError::new(crate::CodeChunkLoadError::Missing(code_hash), true)
+        })?;
+    if loaded.is_cold {
+        tx_gas.spend(cold_additional)?;
+    }
+    Ok(loaded.chunk)
 }
 
 #[cfg(test)]

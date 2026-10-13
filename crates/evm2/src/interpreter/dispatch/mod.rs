@@ -24,7 +24,7 @@ pub(in crate::interpreter) use imp::run;
 fn run_state<'a, 'frame, 'host, T: EvmTypesHost>(
     interpreter: &'a mut Interpreter<'frame, 'host, T>,
 ) -> (&'a mut InterpreterState<'frame, 'host, T>, Pc, RawStack<'a>) {
-    let pc = Pc::new(interpreter.pc);
+    let pc = Pc::new(interpreter.code.pc);
     let stack = RawStack::new(&raw mut *interpreter.stack, interpreter.stack_len);
     // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
     // the dispatch loop does not create an extra `&mut` alias for `interpreter`.
@@ -44,7 +44,7 @@ const fn inc_pc(pc: &mut Pc, op: u8) {
 #[inline(always)]
 const fn instruction_len(op: u8) -> usize {
     match op {
-        op::JUMP | op::JUMPI => 0, // Set inside.
+        op::JUMP | op::JUMPI | op::RJUMP | op::RJUMPI => 0, // Set inside.
         op::PUSH1..=op::PUSH32 => (op - op::PUSH1 + 2) as usize,
         op::DUPN | op::SWAPN | op::EXCHANGE => 2,
         _ => 1,
