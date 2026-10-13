@@ -42,14 +42,14 @@ impl<'a, 'db> CodeChunkHandle<'a, 'db> {
             None
         };
         let index_usize = index as usize;
-        if account.code_chunks.len() <= index_usize {
+        if account.code_chunks.chunks.len() <= index_usize {
             if skip_cold {
                 return Err(LoadError::ColdLoadSkipped);
             }
-            account.code_chunks.resize_with(index_usize + 1, || None);
-            account.code_chunk_warm.resize(index_usize + 1, false);
+            account.code_chunks.chunks.resize_with(index_usize + 1, || None);
+            account.code_chunks.warm.resize(index_usize + 1, false);
         }
-        let slot = &mut account.code_chunks[index_usize];
+        let slot = &mut account.code_chunks.chunks[index_usize];
         if slot.is_none() {
             if skip_cold {
                 return Err(LoadError::ColdLoadSkipped);
@@ -60,7 +60,7 @@ impl<'a, 'db> CodeChunkHandle<'a, 'db> {
             }
             *slot = Some(chunk.bytecode());
         }
-        let is_warm = &mut account.code_chunk_warm[index_usize];
+        let is_warm = &mut account.code_chunks.warm[index_usize];
         if skip_cold && !*is_warm {
             return Err(LoadError::ColdLoadSkipped);
         }
@@ -112,7 +112,7 @@ impl<'db> State<'db> {
     pub fn code_chunk_is_warm(&self, address: &Address, index: u32) -> bool {
         self.accounts
             .get(address)
-            .and_then(|account| account.code_chunk_warm.get(index as usize))
+            .and_then(|account| account.code_chunks.warm.get(index as usize))
             .copied()
             .unwrap_or(false)
     }

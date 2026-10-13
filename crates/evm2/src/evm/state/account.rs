@@ -184,6 +184,22 @@ impl AccountInfo {
     }
 }
 
+/// Cached runtime chunks and their matching transaction-local warmth.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CodeChunks {
+    /// Requested bytecode, indexed by logical chunk number.
+    pub(crate) chunks: Vec<Option<Bytecode>>,
+    /// Transaction-local warmth for the corresponding chunk index.
+    pub(crate) warm: Vec<bool>,
+}
+
+impl CodeChunks {
+    pub(crate) fn clear(&mut self) {
+        self.chunks.clear();
+        self.warm.clear();
+    }
+}
+
 /// Current-transaction account overlay and EIP-2929/account-lifetime metadata.
 ///
 /// An entry exists in the overlay only because it was loaded, so `original` and `present` are
@@ -219,10 +235,8 @@ pub(crate) struct Account {
     pub(crate) storage: StorageOverlay,
     /// Learned legacy size; committed multi-chunk size remains in account information.
     pub(crate) code_size: Option<u32>,
-    /// Requested bytecode, indexed by logical chunk number.
-    pub(crate) code_chunks: Vec<Option<Bytecode>>,
-    /// Transaction-local warmth for the corresponding chunk index.
-    pub(crate) code_chunk_warm: Vec<bool>,
+    /// Cached runtime chunks and their transaction-local warmth.
+    pub(crate) code_chunks: CodeChunks,
 }
 
 impl Account {
@@ -417,8 +431,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
                 previous_just_created: self.tracked.just_created,
                 previous_code_changed: self.tracked.code_changed,
                 previous_code_size: self.tracked.code_size,
-                previous_code_chunks: self.tracked.code_chunks.clone(),
-                previous_code_chunk_warm: self.tracked.code_chunk_warm.clone(),
+                previous_code_chunks: self.tracked.code_chunks.chunks.clone(),
+                previous_code_chunk_warm: self.tracked.code_chunks.warm.clone(),
             });
         }
     }
@@ -474,7 +488,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
 
     /// Analyses requested for this account's current code identity.
     pub const fn code_chunks(&self) -> &Vec<Option<Bytecode>> {
-        &self.tracked.code_chunks
+        &self.tracked.code_chunks.chunks
     }
 
     /// Returns whether the account is warm for EIP-2929 gas accounting, consulting both the
@@ -698,7 +712,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.tracked.code_changed = true;
         self.tracked.code_size = None;
         self.tracked.code_chunks.clear();
-        self.tracked.code_chunk_warm.clear();
     }
 
     /// Sets the account code, computing its hash, touching the account and recording a revert
@@ -779,7 +792,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         }) {
             self.tracked.code_size = None;
             self.tracked.code_chunks.clear();
-            self.tracked.code_chunk_warm.clear();
             self.tracked.code_changed = true;
         }
         self.tracked.present = Some(info);
@@ -793,7 +805,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
             self.present_mut().extension = extension;
             self.tracked.code_size = None;
             self.tracked.code_chunks.clear();
-            self.tracked.code_chunk_warm.clear();
             self.tracked.code_changed = true;
         }
     }

@@ -766,15 +766,15 @@ impl<'a> State<'a> {
                         entry.just_created = previous_just_created;
                         entry.code_changed = previous_code_changed;
                         entry.code_size = previous_code_size;
-                        entry.code_chunks = previous_code_chunks;
-                        entry.code_chunk_warm = previous_code_chunk_warm;
+                        entry.code_chunks.chunks = previous_code_chunks;
+                        entry.code_chunks.warm = previous_code_chunk_warm;
                     }
                 }
                 JournalEntry::CodeChunkWarmed { address, index } => {
                     if let Some(warm) = self
                         .accounts
                         .get_mut(&address)
-                        .and_then(|account| account.code_chunk_warm.get_mut(index as usize))
+                        .and_then(|account| account.code_chunks.warm.get_mut(index as usize))
                     {
                         *warm = false;
                     }
