@@ -244,6 +244,39 @@ fn initcode_inspector_reports_full_input_and_global_pc() {
 }
 
 #[test]
+fn inspector_reports_generated_chunk_instructions() {
+    let boundary = CODE_CHUNK_SIZE;
+    let target = boundary - 1;
+    let mut code = vec![op::STOP; boundary + 40];
+    code[..4].copy_from_slice(&[op::PUSH2, (target >> 8) as u8, target as u8, op::JUMP]);
+    code[target] = op::JUMPDEST;
+    code[boundary] = op::JUMPDEST;
+    let code = Bytes::from(code);
+    let message = MessageExt {
+        gas_limit: GAS_LIMIT,
+        code: CodeSource::Account(crate::bytecode::code_chunk(&code, 0).unwrap()),
+        ..Default::default()
+    };
+    let mut host = TestHost {
+        code,
+        execution_config: ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA)
+            .with_version(Version::base(SpecId::OSAKA).with_tip1143(true).with_rjump(true)),
+        ..Default::default()
+    };
+    let mut trace = InitcodeTrace::default();
+    let tx = TxEnvExt::default();
+    let mut frame = Interpreter::<TestTypes>::new(&tx, &message);
+    assert_eq!(frame.run_inspect(&mut host, &mut trace).unwrap(), InstrStop::Stop);
+    let steps = trace.0.iter().filter_map(|&(end, pc, _)| (!end).then_some(pc)).collect::<Vec<_>>();
+    assert_eq!(
+        steps,
+        [0, 3, target, boundary, boundary + 31, boundary + 32, boundary, boundary + 1]
+    );
+    assert_eq!(trace.0.len(), steps.len() * 2);
+    assert!(trace.0.chunks_exact(2).all(|pair| !pair[0].0 && pair[1].0));
+}
+
+#[test]
 fn pooled_frames_switch_between_account_chunks_and_whole_bytecode() {
     let target = CODE_CHUNK_SIZE;
     let mut bytes = vec![op::STOP; target + 4];

@@ -95,11 +95,6 @@ impl InterpreterCode {
         local as usize + self.active.index() as usize * CODE_CHUNK_SIZE
     }
 
-    pub(super) fn is_internal(&self, pc: Pc) -> bool {
-        matches!(&self.active, CodeSource::Account(CodeChunk::Prepared(chunk))
-            if self.view().pc_offset(pc) >= chunk.payload_len())
-    }
-
     pub(super) fn is_generated_tail(&self, pc: Pc) -> bool {
         matches!(&self.active, CodeSource::Account(CodeChunk::Prepared(chunk))
             if self.view().pc_offset(pc) == chunk.tail_offset())

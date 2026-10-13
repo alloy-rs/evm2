@@ -39,7 +39,6 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
-    inspecting_internal_tail: bool,
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. Its code cursor points into
@@ -80,7 +79,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             tx_env: None,
             message: None,
             is_static: false,
-            inspecting_internal_tail: false,
             return_data: Bytes::new(),
             host: None,
             inspector: None,
@@ -96,7 +94,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.code = InterpreterCode::new(&message.code);
         let gas_limit = message.gas_limit;
         let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
-        self.inspecting_internal_tail = false;
         self.stack_len = 0;
         self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
         self.memory.clear();
@@ -621,10 +618,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         self.0.code.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        self.0.inspecting_internal_tail = self.0.code.is_internal(pc);
-        if self.0.inspecting_internal_tail {
-            return;
-        }
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
@@ -633,10 +626,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
 
     #[inline]
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
-        if self.0.inspecting_internal_tail {
-            self.0.inspecting_internal_tail = false;
-            return;
-        }
         self.0.code.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
         if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
