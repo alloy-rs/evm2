@@ -1546,8 +1546,6 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
 
         let exists = account.exists();
         let info = account.get().cloned().unwrap_or_default();
-        info.inline_delegation_code().map_err(HostError::from)?;
-
         // load code
         let code = if load_code {
             account.load_code().map_err(HostError::from)?
@@ -1558,7 +1556,6 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         Ok(AccountLoad {
             code_size,
             is_chunked: info.code_metadata().is_some(),
-            inline_delegation: info.delegation_target(),
             balance: info.balance,
             nonce: info.nonce,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
@@ -1761,8 +1758,6 @@ pub struct AccountLoad {
     pub code_size: Option<u32>,
     /// Whether original runtime is stored in prepared chunks.
     pub is_chunked: bool,
-    /// Inline account-owned delegation target.
-    pub inline_delegation: Option<Address>,
     /// Whether the account exists in state.
     pub exists: bool,
     /// Whether the account is empty.

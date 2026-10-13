@@ -168,7 +168,4 @@ pub enum CodeChunkLoadError {
     /// Code or prepared chunk has an invalid length or preparation context.
     #[error("invalid code payload {0}")]
     Invalid(B256),
-    /// Inline delegation metadata does not match the account's code hash.
-    #[error("invalid inline delegation metadata for {0}")]
-    InvalidDelegation(B256),
 }

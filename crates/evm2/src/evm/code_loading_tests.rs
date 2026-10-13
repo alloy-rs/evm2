@@ -228,7 +228,7 @@ fn repeated_extcodecopy_charges_warm_chunks_and_revert_restores_coldness() {
 }
 
 #[test]
-fn delegation_external_code_reads_inline_marker_only() {
+fn delegation_external_code_charges_marker_chunk() {
     let bytes = vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1];
     let mut evm = test_evm(&bytes, true);
     let delegated = Address::with_last_byte(0x83);
@@ -248,6 +248,7 @@ fn delegation_external_code_reads_inline_marker_only() {
     assert_eq!(&result.output[23..32], [0; 9]);
     assert_eq!(&result.output[32..64], Word::from(23).to_be_bytes::<32>());
     assert_eq!(&result.output[64..], marker.hash_slow().as_slice());
+    assert!(evm.state.code_chunk_is_warm(&delegated, 0));
     assert!(reads(&evm).is_empty());
 }
 
@@ -279,10 +280,11 @@ fn call_family_codecopy_uses_code_owner_and_global_offsets() {
         for delegate in [false, true] {
             let mut evm = test_evm(&bytes, true);
             let destination = if delegate { Address::with_last_byte(0x83) } else { OWNER };
+            let marker = Bytecode::new_eip7702(OWNER);
             if delegate {
                 evm.overlay_db_mut().insert_account_info(
                     &destination,
-                    AccountInfo::default().with_code(Bytecode::new_eip7702(OWNER)),
+                    AccountInfo::default().with_code(marker.clone()),
                 );
             }
             let mut code = Vec::new();
@@ -293,6 +295,9 @@ fn call_family_codecopy_uses_code_owner_and_global_offsets() {
             assert_eq!(&result.output[..32], Word::from(target + 1).to_be_bytes::<32>());
             assert_eq!(&result.output[32..64], Word::from(bytes.len()).to_be_bytes::<32>());
             assert_eq!(&result.output[64..], [1, 2, 3, 4]);
+            if delegate {
+                assert!(evm.state.code_chunk_is_warm(&destination, 0));
+            }
             assert_eq!(reads(&evm), [0, 2, 1].map(|index| chunk_read(&bytes, index)));
         }
     }
@@ -476,22 +481,6 @@ fn extcodecopy_provider_failure_preserves_original_error_and_is_fatal() {
     }
 }
 
-#[test]
-fn invalid_inline_delegation_is_fatal() {
-    for target in [Address::ZERO, OWNER] {
-        let mut account = AccountInfo::default().with_code(Bytecode::new_eip7702(target));
-        if target == OWNER {
-            account.code_hash = B256::ZERO;
-        }
-        let error = account.inline_delegation_code().unwrap_err();
-        assert!(error.is_fatal());
-        assert_eq!(
-            error.downcast_ref::<crate::CodeChunkLoadError>(),
-            Some(&crate::CodeChunkLoadError::InvalidDelegation(account.code_hash))
-        );
-    }
-}
-
 /// The backing store sees content hashes, never account addresses or logical indices.
 #[derive(Debug, PartialEq, Eq)]
 enum CodeRead {
@@ -653,6 +642,85 @@ fn initial_chunk_skips_cold_read_and_accepts_warm_budget() {
             }
         }
     }
+}
+
+#[test]
+fn delegated_initial_frame_charges_both_code_chunks() {
+    let code = vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1];
+    let delegator = Address::with_last_byte(0x83);
+    let make_evm = || {
+        let mut evm = test_evm(&code, true);
+        evm.overlay_db_mut().insert_account_info(
+            &delegator,
+            AccountInfo::default().with_code(Bytecode::new_eip7702(OWNER)),
+        );
+        evm
+    };
+    let mut evm = make_evm();
+    let delegation_access = if evm.feature(EvmFeatures::EIP2780) {
+        u64::from(crate::interpreter::gas::WARM_STORAGE_READ_COST)
+            + evm.version().gas_params.cold_account_additional_cost()
+    } else {
+        0
+    };
+    let required = 2 * COLD_CODE_CHUNK_GAS + delegation_access;
+    let mut gas = GasTracker::new(required);
+    let frame = prepare_initial_frame(
+        &mut evm,
+        CALLER,
+        0,
+        TxKind::Call(delegator),
+        &Bytes::new(),
+        U256::ZERO,
+        &mut gas,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(gas.remaining(), 0);
+    assert_eq!(frame.message.code_address, OWNER);
+    assert!(evm.state.code_chunk_is_warm(&delegator, 0));
+    assert!(evm.state.code_chunk_is_warm(&OWNER, 0));
+    assert_eq!(reads(&evm), [chunk_read(&code, 0)]);
+
+    let warm_access = if evm.feature(EvmFeatures::EIP2780) {
+        u64::from(crate::interpreter::gas::WARM_STORAGE_READ_COST)
+    } else {
+        0
+    };
+    let mut warm_gas = GasTracker::new(2 * WARM_CODE_CHUNK_GAS + warm_access);
+    assert!(
+        prepare_initial_frame(
+            &mut evm,
+            CALLER,
+            0,
+            TxKind::Call(delegator),
+            &Bytes::new(),
+            U256::ZERO,
+            &mut warm_gas,
+        )
+        .unwrap()
+        .is_some()
+    );
+    assert_eq!(warm_gas.remaining(), 0);
+    assert_eq!(reads(&evm), [chunk_read(&code, 0)]);
+
+    let mut evm = make_evm();
+    let mut gas = GasTracker::new(COLD_CODE_CHUNK_GAS);
+    assert!(
+        prepare_initial_frame(
+            &mut evm,
+            CALLER,
+            0,
+            TxKind::Call(delegator),
+            &Bytes::new(),
+            U256::ZERO,
+            &mut gas,
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(evm.state.code_chunk_is_warm(&delegator, 0));
+    assert!(!evm.state.code_chunk_is_warm(&OWNER, 0));
 }
 
 #[test]

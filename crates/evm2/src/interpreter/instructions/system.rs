@@ -89,7 +89,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     let remaining_gas = gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
     let mode = CodeAccessMode::from_features(state.version().features);
-    let mut account = state
+    let account = state
         .host()
         .load_account(&to, mode.loads_full_code(), skip_cold_load)
         .map_err(|error| state.fail(error))?;
@@ -100,26 +100,6 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     }
     let mut code_address = to;
     let mut disable_precompiles = false;
-    if state.feature(EvmFeatures::EIP7702)
-        && let Some(delegated_address) = account.code_kind(mode).delegation_target()
-    {
-        cost += u64::from(state.gas_params().get(GasId::WarmStorageReadCost));
-        if cost > remaining_gas {
-            return Err(InstrStop::OutOfGas);
-        }
-        let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
-        let delegated_account = state
-            .host()
-            .load_account(&delegated_address, mode.loads_full_code(), skip_cold_load)
-            .map_err(|error| state.fail(error))?;
-        if delegated_account.is_cold {
-            cost += additional_cold_cost;
-        }
-        account = delegated_account;
-
-        code_address = delegated_address;
-        disable_precompiles = true;
-    }
     let features = state.version().features;
     let mut new_account_state_gas = 0;
     if create_empty_account
@@ -141,8 +121,26 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     }
     gas.spend(cost)?;
     gas.spend_state(new_account_state_gas)?;
-    let code =
+    let mut code =
         account.code_source(mode, || state.load_and_charge_code_chunk(gas, &code_address, 0))?;
+    if state.feature(EvmFeatures::EIP7702)
+        && let Some(delegated_address) = code.as_bytecode().eip7702_address()
+    {
+        let warm_read = u64::from(state.gas_params().get(GasId::WarmStorageReadCost));
+        gas.spend(warm_read)?;
+        let skip_cold_load = gas.remaining() < additional_cold_cost;
+        let delegated_account = state
+            .host()
+            .load_account(&delegated_address, mode.loads_full_code(), skip_cold_load)
+            .map_err(|error| state.fail(error))?;
+        if delegated_account.is_cold {
+            gas.spend(additional_cold_cost)?;
+        }
+        code_address = delegated_address;
+        disable_precompiles = true;
+        code = delegated_account
+            .code_source(mode, || state.load_and_charge_code_chunk(gas, &code_address, 0))?;
+    }
 
     let mut gas_limit = if state.feature(EvmFeatures::EIP150) {
         min(state.gas_params().call_stipend_reduction(gas.remaining()), stack_gas_limit)

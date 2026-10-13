@@ -6,7 +6,6 @@ use crate::{
     bytecode::{Bytecode, CodeChunk},
     interpreter::CodeSource,
 };
-use alloy_primitives::Address;
 
 /// How the active version obtains account runtime code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,19 +24,12 @@ impl CodeAccessMode {
     }
 }
 
-/// The account's code identity, separate from how its bytes are loaded.
+/// The account's code representation, separate from how its bytes are loaded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AccountCodeKind {
     Empty,
     Legacy,
-    Delegated(Address),
     Chunked { size: u32 },
-}
-
-impl AccountCodeKind {
-    pub(crate) const fn delegation_target(self) -> Option<Address> {
-        if let Self::Delegated(target) = self { Some(target) } else { None }
-    }
 }
 
 impl AccountLoad {
@@ -46,16 +38,12 @@ impl AccountLoad {
             CodeAccessMode::Eager => {
                 if self.code.is_empty() {
                     AccountCodeKind::Empty
-                } else if let Some(target) = self.code.eip7702_address() {
-                    AccountCodeKind::Delegated(target)
                 } else {
                     AccountCodeKind::Legacy
                 }
             }
             CodeAccessMode::MeteredChunks => {
-                if let Some(target) = self.inline_delegation {
-                    AccountCodeKind::Delegated(target)
-                } else if self.code_size == Some(0) {
+                if self.code_size == Some(0) {
                     AccountCodeKind::Empty
                 } else if self.is_chunked {
                     AccountCodeKind::Chunked { size: self.code_size.expect("chunked code size") }
@@ -78,7 +66,6 @@ impl AccountLoad {
         }
         match self.code_kind(mode) {
             AccountCodeKind::Empty => Ok(Bytecode::default().into()),
-            AccountCodeKind::Delegated(target) => Ok(Bytecode::new_eip7702(target).into()),
             AccountCodeKind::Legacy | AccountCodeKind::Chunked { .. } => {
                 Ok(CodeSource::Account(load_chunk()?))
             }

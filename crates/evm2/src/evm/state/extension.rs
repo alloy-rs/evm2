@@ -1,8 +1,7 @@
 //! Shared, raw chain-specific account data.
 
-use crate::bytecode::Bytecode;
 use alloc::vec::Vec;
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::Bytes;
 use core::ops::Deref;
 use triomphe::ThinArc;
 
@@ -37,34 +36,6 @@ impl AccountExtension {
     /// Returns whether the payload is empty.
     pub const fn is_empty(&self) -> bool {
         self.0.is_none()
-    }
-
-    /// Records a delegation target without changing the raw extension representation.
-    pub fn delegated(target: Address) -> Self {
-        let mut bytes = [2; 21];
-        bytes[1..].copy_from_slice(target.as_slice());
-        Self::copy_from_slice(&bytes)
-    }
-
-    pub(crate) fn for_code(code: &Bytecode) -> Self {
-        code.eip7702_address().map(Self::delegated).unwrap_or_default()
-    }
-
-    pub(crate) fn update_for_code(&mut self, previous_hash: B256, code: &Bytecode) {
-        if let Some(target) = code.eip7702_address() {
-            *self = Self::delegated(target);
-        } else if self
-            .delegation_target()
-            .is_some_and(|target| Bytecode::new_eip7702(target).hash_slow() == previous_hash)
-        {
-            *self = Self::new();
-        }
-    }
-
-    /// Returns an explicitly recorded delegation target.
-    pub fn delegation_target(&self) -> Option<Address> {
-        let [2, target @ ..] = self.as_ref() else { return None };
-        (target.len() == 20).then(|| Address::from_slice(target))
     }
 }
 
@@ -137,6 +108,14 @@ mod tests {
         let mut account = AccountInfo { extension: extension.clone(), ..Default::default() };
         account.set_code(crate::bytecode::Bytecode::new_legacy(Bytes::from_static(&[0x00])));
         assert_eq!(account.extension, extension);
+        account.set_code(crate::bytecode::Bytecode::new_eip7702(Address::repeat_byte(7)));
+        assert_eq!(account.extension, extension);
+        assert!(
+            AccountInfo::default()
+                .with_code(crate::bytecode::Bytecode::new_eip7702(Address::repeat_byte(7)))
+                .extension
+                .is_empty()
+        );
     }
 
     #[test]

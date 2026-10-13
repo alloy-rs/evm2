@@ -577,7 +577,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
     let message = match to {
         TxKind::Call(to) => {
             let mode = CodeAccessMode::from_features(host.version().features);
-            let mut account = match Host::load_account(host, &to, mode.loads_full_code(), false) {
+            let account = match Host::load_account(host, &to, mode.loads_full_code(), false) {
                 Ok(account) => account,
                 Err(HostError::Execution(error)) => return Err(error.into()),
                 Err(HostError::Halt(_)) => unreachable!("unconditional account load"),
@@ -592,15 +592,22 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 }
                 charged_state_gas = new_account_state_gas;
             }
+            let mut code = match account.code_source(mode, || {
+                load_initial_code_chunk(host, tx_gas, &code_address, account.code_hash)
+            }) {
+                Ok(code) => code,
+                Err(HostError::Halt(_)) => return Ok(None),
+                Err(HostError::Execution(error)) => return Err(error.into()),
+            };
             if host.feature(EvmFeatures::EIP7702)
-                && let Some(delegated_address) = account.code_kind(mode).delegation_target()
+                && let Some(delegated_address) = code.as_bytecode().eip7702_address()
             {
                 let metered = host.feature(EvmFeatures::EIP2780);
                 let cold_additional = host.version().gas_params.cold_account_additional_cost();
                 if metered && tx_gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
                     return Ok(None);
                 }
-                account = match Host::load_account(
+                let delegated_account = match Host::load_account(
                     host,
                     &delegated_address,
                     mode.loads_full_code(),
@@ -610,19 +617,24 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     Err(HostError::Halt(_)) => return Ok(None),
                     Err(HostError::Execution(error)) => return Err(error.into()),
                 };
-                if metered && account.is_cold && tx_gas.spend(cold_additional).is_err() {
+                if metered && delegated_account.is_cold && tx_gas.spend(cold_additional).is_err() {
                     return Ok(None);
                 }
                 code_address = delegated_address;
                 disable_precompiles = true;
+                code = match delegated_account.code_source(mode, || {
+                    load_initial_code_chunk(
+                        host,
+                        tx_gas,
+                        &code_address,
+                        delegated_account.code_hash,
+                    )
+                }) {
+                    Ok(code) => code,
+                    Err(HostError::Halt(_)) => return Ok(None),
+                    Err(HostError::Execution(error)) => return Err(error.into()),
+                };
             }
-            let code = match account.code_source(mode, || {
-                load_initial_code_chunk(host, tx_gas, &code_address, account.code_hash)
-            }) {
-                Ok(code) => code,
-                Err(HostError::Halt(_)) => return Ok(None),
-                Err(HostError::Execution(error)) => return Err(error.into()),
-            };
             MessageExt {
                 kind: MessageKind::Call,
                 depth: 0,

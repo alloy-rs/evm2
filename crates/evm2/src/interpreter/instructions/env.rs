@@ -1,6 +1,6 @@
 use crate::{
     EvmTypesHost,
-    bytecode::{Bytecode, LEGACY_CODE_CHUNK_SIZE},
+    bytecode::LEGACY_CODE_CHUNK_SIZE,
     evm::{AccountCodeKind, AccountLoad, CodeAccessMode},
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{
@@ -142,7 +142,6 @@ pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
     let size = match (mode, account.code_kind(mode)) {
         (CodeAccessMode::Eager, _) => account.code.len(),
         (_, AccountCodeKind::Empty) => 0,
-        (_, AccountCodeKind::Delegated(_)) => 23,
         (_, AccountCodeKind::Chunked { size }) => size as usize,
         (_, AccountCodeKind::Legacy) => {
             let code_owner = word_to_address(*addr);
@@ -174,11 +173,6 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
 
     if mode == CodeAccessMode::MeteredChunks {
         let bytes = match account.code_kind(mode) {
-            AccountCodeKind::Delegated(target) => {
-                let code = Bytecode::new_eip7702(target);
-                let source = word_to_usize_saturated(*code_offset);
-                code.original_byte_slice().get(source..).unwrap_or_default().to_vec()
-            }
             AccountCodeKind::Empty => Vec::new(),
             kind @ (AccountCodeKind::Legacy | AccountCodeKind::Chunked { .. }) => {
                 let (size, multi) = match kind {

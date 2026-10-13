@@ -117,7 +117,6 @@ impl Host<TestTypes> for TestHost {
             nonce: 0,
             code_size: Some(self.code.len() as u32),
             is_chunked: self.code.len() > crate::bytecode::CODE_CHUNK_SIZE,
-            inline_delegation: None,
             code_hash: self.code_hash,
             code: if load_code {
                 Bytecode::new_legacy(self.code.clone())
