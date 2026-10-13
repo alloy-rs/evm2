@@ -2,7 +2,7 @@
 
 use crate::runtime::{JitBackend, LookupDecision, LookupRequest, RuntimeCacheKey};
 use evm2::{
-    BaseEvmTypes, Evm, InterpreterRunner,
+    BaseEvmTypes, Evm, EvmFeatures, InterpreterRunner,
     interpreter::{Host, InstrStop, Interpreter},
 };
 
@@ -47,8 +47,9 @@ pub fn run_interpreter<'frame, 'host>(
     interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
     host: &mut Evm<'host, BaseEvmTypes>,
 ) -> Option<InstrStop> {
-    // Disabled runners must not hash code merely to discover that lookup is unavailable.
-    if !backend.enabled() {
+    // JIT builtins do not implement chunk loading or relative jumps.
+    if !backend.enabled() || host.feature(EvmFeatures::TIP1143) || host.feature(EvmFeatures::RJUMP)
+    {
         return None;
     }
     let code_hash = interpreter.original_bytecode_hash();

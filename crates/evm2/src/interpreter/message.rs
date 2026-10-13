@@ -70,8 +70,6 @@ pub struct MessageExt<E = ()> {
     pub value: U256,
     /// Complete bytecode for direct execution, an account's entry chunk, or creation input.
     pub code: CodeSource,
-    /// Global code identity used by inspectors and compiled execution.
-    pub code_hash: B256,
     /// Address whose code is being executed. This can differ from `destination` for `CALLCODE`,
     /// `DELEGATECALL`, and EIP-7702 delegated-code execution.
     pub code_address: Address,
@@ -110,7 +108,6 @@ impl<E> MessageExt<E> {
             input,
             value,
             code,
-            code_hash,
             code_address,
             disable_precompiles,
             caller_is_static,
@@ -129,7 +126,6 @@ impl<E> MessageExt<E> {
             input,
             value,
             code,
-            code_hash,
             code_address,
             disable_precompiles,
             caller_is_static,

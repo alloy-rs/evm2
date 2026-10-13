@@ -155,11 +155,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend).into());
     }
 
-    Ok((
-        gas_limit,
-        new_account_state_gas,
-        LoadedCode { code, code_hash: account.code_hash, code_address, disable_precompiles },
-    ))
+    Ok((gas_limit, new_account_state_gas, LoadedCode { code, code_address, disable_precompiles }))
 }
 
 #[inline(never)]
@@ -227,7 +223,6 @@ fn prepare_call<T: EvmTypesHost>(
         input,
         value: call_value,
         code: loaded.code,
-        code_hash: loaded.code_hash,
         code_address,
         disable_precompiles: loaded.disable_precompiles,
         caller_is_static: state.is_static(),
@@ -401,7 +396,6 @@ fn create_inner<T: EvmTypesHost>(
         call_target: destination,
         caller,
         code: Bytecode::new_legacy(input.clone()).into(),
-        code_hash: B256::ZERO,
         input,
         value,
         code_address: caller,
@@ -467,10 +461,9 @@ pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     Err(InstrStop::SelfDestruct)
 }
 
-/// Resolved entry code, retaining logical identity separately from the execution buffer.
+/// Resolved entry code for a child call.
 struct LoadedCode {
     code: CodeSource,
-    code_hash: B256,
     code_address: Address,
     disable_precompiles: bool,
 }

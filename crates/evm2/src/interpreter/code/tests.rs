@@ -252,6 +252,7 @@ fn inspector_reports_generated_chunk_instructions() {
     code[target] = op::JUMPDEST;
     code[boundary] = op::JUMPDEST;
     let code = Bytes::from(code);
+    let original_hash = alloy_primitives::keccak256(&code);
     let message = MessageExt {
         gas_limit: GAS_LIMIT,
         code: CodeSource::Account(crate::bytecode::code_chunk(&code, 0).unwrap()),
@@ -266,7 +267,13 @@ fn inspector_reports_generated_chunk_instructions() {
     let mut trace = InitcodeTrace::default();
     let tx = TxEnvExt::default();
     let mut frame = Interpreter::<TestTypes>::new(&tx, &message);
+    assert_eq!(frame.original_bytecode_hash(), alloy_primitives::keccak256(message.code.bytes()));
+    assert_ne!(frame.original_bytecode_hash(), original_hash);
     assert_eq!(frame.run_inspect(&mut host, &mut trace).unwrap(), InstrStop::Stop);
+    assert_eq!(
+        frame.original_bytecode_hash(),
+        alloy_primitives::keccak256(frame.original_bytecode())
+    );
     let steps = trace.0.iter().filter_map(|&(end, pc, _)| (!end).then_some(pc)).collect::<Vec<_>>();
     assert_eq!(
         steps,

@@ -736,8 +736,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         call_target: destination,
         caller,
 
-        code_hash: B256::ZERO,
-                code: (Bytecode::new_legacy(code.clone())).into(),
+        code: Bytecode::new_legacy(code.clone()).into(),
         input: code,
         value,
         code_address: caller,
@@ -848,8 +847,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         input,
         value: call_value,
 
-        code_hash: loaded_code.hash_slow(),
-                code: (loaded_code).into(),
+        code: loaded_code.into(),
         code_address,
         disable_precompiles,
         caller_is_static: ecx.is_static(),

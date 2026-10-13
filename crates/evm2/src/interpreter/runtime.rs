@@ -179,14 +179,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.code.active().as_bytecode().original_byte_slice()
     }
 
-    /// Calculates or returns the cached hash of the original active bytecode.
+    /// Calculates or returns the cached hash of the active stored bytecode.
+    /// For chunked accounts this is the active chunk's hash.
     #[inline]
     pub fn original_bytecode_hash(&self) -> B256 {
-        if self.code.is_account() {
-            self.message.expect("initialized frame").code_hash
-        } else {
-            self.code.active().as_bytecode().hash_slow()
-        }
+        self.code.active().as_bytecode().hash_slow()
     }
 
     /// Returns the current operand stack.
