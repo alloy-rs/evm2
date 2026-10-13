@@ -634,7 +634,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 input: input.clone(),
                 value,
                 code,
-                code_hash: if mode.loads_full_code() { B256::ZERO } else { account.code_hash },
+                code_hash: account.code_hash,
                 code_address,
                 disable_precompiles,
                 caller_is_static: false,
