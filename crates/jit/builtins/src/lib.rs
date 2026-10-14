@@ -1158,7 +1158,7 @@ mod tests {
         let caller = Address::from([0x11; 20]);
         let child_output = Bytes::from_static(&[0xaa, 0xbb, 0xcc]);
         let mut host = base_evm(SpecId::CANCUN);
-        host.set_static_inspector(MessageInspector {
+        host.set_inspector(MessageInspector {
             execute_result: MessageResultExt {
                 stop: InstrStop::Return,
                 gas: GasTracker::new(37),
@@ -1219,7 +1219,7 @@ mod tests {
         let caller = Address::from([0x11; 20]);
         let stack_value = Word::from(0x12);
         let mut host = base_evm(SpecId::CANCUN);
-        host.set_static_inspector(MessageInspector::default());
+        host.set_inspector(MessageInspector::default());
         let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 1_000_000,
@@ -1259,7 +1259,7 @@ mod tests {
         let caller = Address::from([0x11; 20]);
         let current_value = Word::from(0x99);
         let mut host = base_evm(SpecId::CANCUN);
-        host.set_static_inspector(MessageInspector::default());
+        host.set_inspector(MessageInspector::default());
         let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 1_000_000,
@@ -1298,7 +1298,7 @@ mod tests {
         let destination = Address::from([0x33; 20]);
         let caller = Address::from([0x11; 20]);
         let mut host = base_evm(SpecId::CANCUN);
-        host.set_static_inspector(MessageInspector::default());
+        host.set_inspector(MessageInspector::default());
         let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 1_000_000,
@@ -1336,7 +1336,7 @@ mod tests {
         let created = Address::from([0x77; 20]);
         let initcode = [op::STOP];
         let mut host = base_evm(SpecId::CANCUN);
-        host.set_static_inspector(MessageInspector {
+        host.set_inspector(MessageInspector {
             execute_result: MessageResultExt {
                 stop: InstrStop::Return,
                 gas: GasTracker::new(11),
@@ -1381,7 +1381,7 @@ mod tests {
         let initcode = [op::STOP];
         let salt = EvmWord::from(Word::from(0xabcdu64));
         let mut host = base_evm(SpecId::CANCUN);
-        host.set_static_inspector(MessageInspector {
+        host.set_inspector(MessageInspector {
             execute_result: MessageResultExt {
                 stop: InstrStop::Return,
                 gas: GasTracker::new(11),
@@ -1443,7 +1443,7 @@ mod tests {
                     db,
                     Precompiles::base(SpecId::AMSTERDAM),
                 );
-                host.set_static_inspector(MessageInspector::default());
+                host.set_inspector(MessageInspector::default());
                 let tx_env = TxEnvExt::default();
                 let message = MessageExt {
                     depth,

@@ -993,7 +993,7 @@ mod tests {
             db,
             Precompiles::base(SpecId::CANCUN),
         );
-        evm.set_static_inspector(insp);
+        evm.set_inspector(insp);
 
         let tx = Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
@@ -1505,7 +1505,7 @@ mod tests {
             Address::ZERO,
         );
         for _ in 0..3 {
-            evm.set_static_inspector(inspector);
+            evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();
             assert!(res.result.status);
             inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
@@ -1584,7 +1584,7 @@ mod tests {
             Address::ZERO,
         );
         for _ in 0..3 {
-            evm.set_static_inspector(inspector);
+            evm.set_inspector(inspector);
             let res = evm.transact(&tx).unwrap().detach();
             assert!(res.result.status);
             inspector = *evm.clear_inspector_as::<JsInspector>().unwrap();
@@ -1690,7 +1690,7 @@ mod tests {
                 db,
                 Precompiles::base(spec),
             );
-            evm.set_static_inspector(inspector);
+            evm.set_inspector(inspector);
             let gas_limit = if runtime_oog {
                 let version = Version::base(spec);
                 intrinsic_gas(version, caller, TxKind::Create, &initcode, 0, 0, U256::ZERO)

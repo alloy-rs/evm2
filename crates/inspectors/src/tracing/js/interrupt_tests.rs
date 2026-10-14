@@ -260,7 +260,7 @@ fn run(
         db,
         Precompiles::base(SpecId::CANCUN),
     );
-    evm.set_static_inspector(inspector);
+    evm.set_inspector(inspector);
     let result = evm.transact(&transaction(kind)).map(|result| result.detach());
     (*evm.clear_inspector_as::<JsInspector>().unwrap(), result)
 }

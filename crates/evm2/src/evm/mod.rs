@@ -136,7 +136,7 @@ use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 #[cfg(feature = "async")]
 use core::future::Future;
-use core::{any::TypeId, ptr::NonNull};
+use core::ptr::NonNull;
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
@@ -222,9 +222,6 @@ pub struct Evm<'a, T: EvmTypesHost> {
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
     inspector: Option<Box<dyn Inspector<T> + 'a>>,
-    /// Exact type of the active inspector, recorded only by [`Self::set_static_inspector`].
-    #[derive_where(skip)]
-    inspector_type: Option<TypeId>,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
     /// The currently running interpreter frame, if any.
@@ -234,6 +231,8 @@ pub struct Evm<'a, T: EvmTypesHost> {
     current_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
     #[derive_where(skip)]
     running: bool,
+    #[derive_where(skip)]
+    transacting: bool,
     #[cfg(feature = "async")]
     #[derive_where(skip)]
     async_stack: r#async::FiberStack,
@@ -350,10 +349,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
-            inspector_type: None,
             interpreter_runner: None,
             current_frame: None,
             running: false,
+            transacting: false,
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
             evm_send: false,
@@ -397,6 +396,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn assert_inspector_mutable(&self) {
         assert!(!self.running, "inspector cannot be modified during EVM execution");
+        assert!(!self.transacting, "inspector cannot be modified during a transaction");
     }
 
     #[inline]
@@ -548,12 +548,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         registry: TxRegistry<T, TxResult<T>>,
         precompiles: Box<dyn PrecompileProvider<T> + 'a>,
     ) {
-        self.evm_send = false;
         self.spec_id = spec_id;
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
         self.registry = registry;
         self.precompiles = precompiles;
+        self.evm_send = false;
     }
 
     /// Returns the accepted-state overlay database.
@@ -604,8 +604,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Replaces the backing database.
     #[inline]
     pub fn set_database(&mut self, database: impl DynDatabase + 'a) {
-        self.evm_send = false;
         self.state.set_initial(database);
+        self.evm_send = false;
     }
 
     #[cfg(feature = "async")]
@@ -753,8 +753,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
-        self.evm_send = false;
         self.precompiles = boxed_precompile_provider(precompiles);
+        self.evm_send = false;
     }
 
     /// Returns the precompile provider as `P` if it has that concrete type.
@@ -830,35 +830,19 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Sets the active execution inspector.
-    ///
-    /// Use [`Self::set_static_inspector`] to recover the inspector by type with
-    /// [`Self::clear_inspector_as`].
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.assert_inspector_mutable();
-        self.inspector_type = None;
-        self.evm_send = false;
         self.inspector = Some(boxed_inspector(inspector));
+        self.evm_send = false;
     }
 
     /// Sets the active boxed execution inspector.
     #[inline]
     pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T> + 'a>) {
         self.assert_inspector_mutable();
-        self.inspector_type = None;
-        self.evm_send = false;
         self.inspector = Some(inspector);
-    }
-
-    /// Sets the active execution inspector and records its type for [`Self::clear_inspector_as`].
-    ///
-    /// Only `'static` inspectors can carry an exact type, so they can be recovered by type even
-    /// when the EVM borrows its database. Any later change to the active inspector drops the
-    /// recorded type.
-    #[inline]
-    pub fn set_static_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
-        self.set_inspector(inspector);
-        self.inspector_type = Some(TypeId::of::<I>());
+        self.evm_send = false;
     }
 
     /// Removes the active execution inspector.
@@ -866,23 +850,18 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T> + 'a>> {
         self.assert_inspector_mutable();
         self.evm_send = false;
-        self.inspector_type = None;
         self.inspector.take()
     }
 
-    /// Removes the active execution inspector if [`Self::set_static_inspector`] installed it with
-    /// type `I`.
+    /// Removes the active execution inspector if it has type `I`.
     #[inline]
-    pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>> {
+    pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>>
+    where
+        'a: 'static,
+    {
         self.assert_inspector_mutable();
-        if self.inspector_type != Some(TypeId::of::<I>()) {
-            return None;
-        }
-        self.inspector_type = None;
-        let inspector = self.inspector.take()?;
-        // SAFETY: Only `set_static_inspector` records a type, together with the boxed `I` it
-        // installs, and every other change to the active inspector clears the record.
-        Some(unsafe { Box::from_raw(Box::into_raw(inspector).cast::<I>()) })
+        let i = self.inspector.take_if(|i| i.is::<I>())?;
+        Some(unsafe { Box::from_raw(Box::into_raw(i).cast::<I>()) })
     }
 
     /// Sets the optional external interpreter runner.
@@ -929,6 +908,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub const fn config_spec_id(&self) -> T::SpecId {
         self.spec_id
     }
+
+    #[inline]
+    const fn enter_transaction(&mut self) -> TransactionGuard<'_, 'a, T> {
+        let was_transacting = self.transacting;
+        self.transacting = true;
+        TransactionGuard { evm: self, was_transacting }
+    }
 }
 
 struct ExecutionGuard<'guard, 'evm, T: EvmTypesHost> {
@@ -940,6 +926,18 @@ impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     #[inline]
     fn drop(&mut self) {
         self.evm.running = self.was_running;
+    }
+}
+
+struct TransactionGuard<'guard, 'evm, T: EvmTypesHost> {
+    evm: &'guard mut Evm<'evm, T>,
+    was_transacting: bool,
+}
+
+impl<T: EvmTypesHost> Drop for TransactionGuard<'_, '_, T> {
+    #[inline]
+    fn drop(&mut self) {
+        self.evm.transacting = self.was_transacting;
     }
 }
 
@@ -974,9 +972,14 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// [`ExecutedTx::detach`] before
     /// another transaction can be executed. Dropping the handle is equivalent to
     /// [`ExecutedTx::discard`].
+    ///
+    /// Transaction handlers cannot obtain mutable access to, replace, or remove the inspector.
+    /// Precompile providers remain mutable outside EVM execution.
     pub fn transact(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        let result = handler.execute(tx, self);
+        let guard = self.enter_transaction();
+        let result = handler.execute(tx, guard.evm);
+        drop(guard);
         match result {
             Ok(result) => self.finish_executed_tx(result),
             Err(err) => {
@@ -2050,7 +2053,7 @@ mod tests {
             InMemoryDB::default(),
             precompiles,
         );
-        evm.set_static_inspector(LogInspector::default());
+        evm.set_inspector(LogInspector::default());
         let mut message = precompile_message(TEST_PRECOMPILE);
 
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
@@ -2101,7 +2104,7 @@ mod tests {
         );
         for revert in [false, true] {
             evm.state.clear_transaction_state();
-            evm.set_static_inspector(LogInspector::default());
+            evm.set_inspector(LogInspector::default());
             let mut message = precompile_message(TEST_PRECOMPILE);
             if revert {
                 message.input = Bytes::from_static(b"revert");
@@ -2697,70 +2700,6 @@ mod tests {
     #[should_panic(expected = "inspector cannot be modified during EVM execution")]
     fn clear_inspector_panics_during_execution() {
         run_inspector_access(InspectorAccess::Clear);
-    }
-
-    #[test]
-    fn clear_inspector_as_recovers_only_static_inspectors() {
-        struct BorrowedDb<'db>(&'db mut InMemoryDB);
-
-        impl DynDatabase for BorrowedDb<'_> {
-            fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-                DynDatabase::get_account(self.0, address)
-            }
-
-            fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
-                DynDatabase::get_code_by_hash(self.0, code_hash)
-            }
-
-            fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-                DynDatabase::get_storage(self.0, address, key)
-            }
-
-            fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
-                DynDatabase::get_block_hash(self.0, number)
-            }
-        }
-
-        #[derive(Default)]
-        struct OtherInspector;
-
-        impl Inspector<BaseEvmTypes> for OtherInspector {}
-
-        // The borrowed database keeps the EVM, and so its inspector slot, non-`'static`.
-        let mut db = InMemoryDB::default();
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnvExt::default(),
-            TxRegistry::new(),
-            BorrowedDb(&mut db),
-            Precompiles::base(SpecId::OSAKA),
-        );
-
-        evm.set_static_inspector(NoopInspector::default());
-        assert!(evm.clear_inspector_as::<OtherInspector>().is_none());
-        assert!(evm.clear_inspector_as::<NoopInspector>().is_some());
-        assert!(evm.inspector().is_none());
-
-        // Inspectors installed without a recorded type are never recovered by type.
-        evm.set_inspector(NoopInspector::default());
-        assert!(evm.clear_inspector_as::<NoopInspector>().is_none());
-        evm.set_boxed_inspector(Box::<NoopInspector>::default());
-        assert!(evm.clear_inspector_as::<NoopInspector>().is_none());
-        assert!(evm.inspector().is_some());
-
-        // Replacing a static inspector drops its recorded type.
-        evm.set_static_inspector(NoopInspector::default());
-        evm.set_inspector(NoopInspector::default());
-        assert!(evm.clear_inspector_as::<NoopInspector>().is_none());
-        evm.set_static_inspector(NoopInspector::default());
-        let _ = evm.clear_inspector();
-        evm.set_boxed_inspector(Box::<NoopInspector>::default());
-        assert!(evm.clear_inspector_as::<NoopInspector>().is_none());
-
-        // System calls restore the inspector together with its recorded type.
-        evm.set_static_inspector(NoopInspector::default());
-        let _ = evm.system_call(SystemTx::new(Address::repeat_byte(1), Bytes::new()));
-        assert!(evm.clear_inspector_as::<NoopInspector>().is_some());
     }
 
     #[test]
@@ -4178,5 +4117,122 @@ mod tests {
                 Word::from(1)
             );
         }
+    }
+
+    #[rstest::rstest]
+    #[case(InspectorAccess::Mut)]
+    #[case(InspectorAccess::Set)]
+    #[case(InspectorAccess::SetBoxed)]
+    #[case(InspectorAccess::Clear)]
+    #[should_panic(expected = "inspector cannot be modified during a transaction")]
+    fn inspector_mutation_panics_during_transact(#[case] access: InspectorAccess) {
+        let mut evm = lifecycle_evm();
+        evm.set_inspector(NoopInspector::default());
+        evm.registry.register(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                move |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    match access {
+                        InspectorAccess::Mut => {
+                            let _ = req.host.inspector_mut();
+                        }
+                        InspectorAccess::Set => req.host.set_inspector(NoopInspector::default()),
+                        InspectorAccess::SetBoxed => {
+                            req.host.set_boxed_inspector(Box::<NoopInspector>::default());
+                        }
+                        InspectorAccess::Clear => {
+                            let _ = req.host.clear_inspector();
+                        }
+                    }
+                    Ok(TxResultExt::default())
+                },
+            ),
+        );
+
+        let _ = evm.transact(&test_tx(0));
+    }
+
+    #[test]
+    fn transact_restores_inspector_access_after_success_error_and_panic() {
+        let mut evm = lifecycle_evm();
+        evm.registry.register(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| match req.tx.nonce {
+                    0 => Ok(TxResultExt::default()),
+                    1 => Err(HandlerError::InsufficientFunds),
+                    _ => panic!("transaction handler panicked"),
+                },
+            ),
+        );
+
+        for nonce in 0..3 {
+            evm.set_inspector(NoopInspector::default());
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                evm.call_tx(&test_tx(nonce))
+            }));
+            match nonce {
+                0 => assert!(result.unwrap().is_ok()),
+                1 => assert_eq!(result.unwrap().unwrap_err(), HandlerError::InsufficientFunds),
+                _ => assert!(result.is_err()),
+            }
+            assert!(evm.clear_inspector_as::<NoopInspector>().is_some());
+        }
+    }
+
+    #[test]
+    fn precompiles_remain_mutable_during_transact() {
+        let mut evm = lifecycle_evm();
+        evm.set_inspector(NoopInspector::default());
+        evm.registry.register(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    assert!(req.host.inspector().is_some());
+                    req.host.set_precompiles(precompiles_with([test_precompile(
+                        TEST_PRECOMPILE,
+                        |_, _, _| Ok(PrecompileOutput::new(Bytes::new())),
+                    )]));
+                    req.host
+                        .precompiles_mut()
+                        .move_precompiles(&[(TEST_PRECOMPILE, INNER_TEST_PRECOMPILE)])
+                        .unwrap();
+                    Ok(TxResultExt::default())
+                },
+            ),
+        );
+
+        let _ = evm.call_tx(&test_tx(0)).unwrap();
+        assert!(evm.precompiles().contains(&INNER_TEST_PRECOMPILE));
+        assert!(!evm.precompiles().contains(&TEST_PRECOMPILE));
+        assert!(evm.clear_inspector_as::<NoopInspector>().is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during a transaction")]
+    fn nested_transact_preserves_inspector_guard() {
+        let mut evm = lifecycle_evm();
+        evm.registry.register(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    if req.tx.nonce == 0 {
+                        let _ = req.host.call_tx(&test_tx(1))?;
+                        req.host.set_inspector(NoopInspector::default());
+                    }
+                    Ok(TxResultExt::default())
+                },
+            ),
+        );
+
+        let _ = evm.transact(&test_tx(0));
     }
 }

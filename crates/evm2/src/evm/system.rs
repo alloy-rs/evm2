@@ -120,12 +120,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn system_call(&mut self, tx: SystemTx) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         // System calls are not inspected.
         let inspector = self.inspector.take();
-        let inspector_type = self.inspector_type.take();
         let result = self.execute_system_call(tx);
-        // Restore the type only after the inspector, which may drop and panic while replaced.
-        self.inspector_type = None;
         self.inspector = inspector;
-        self.inspector_type = inspector_type;
         match result {
             Ok(outcome) => self.finish_executed_tx(outcome),
             Err(error) => {
