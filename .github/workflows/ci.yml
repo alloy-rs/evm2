@@ -211,11 +211,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'push' && github.ref == 'refs/heads/main' && '["ubuntu", "macos"]' || '["ubuntu"]') }}
+        os: [ubuntu, macos]
         mode: [jit, aot]
         exclude:
           - os: macos
             mode: aot
+          # Only pushes to main test macOS.
+          - os: macos
+            mode: ${{ github.event_name == 'push' && 'none' || 'jit' }}
         include:
           - mode: jit
             subset: ci-smoke
