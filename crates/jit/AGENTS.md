@@ -118,7 +118,10 @@ table instead of aborting the run.
 ./scripts/jit/bench.py /tmp/bench --codegen-lines --jump-resolution    # combine multiple analyses
 ```
 
-Use a base revision that already contains the JIT CLI `run` command.
+Use a base revision that already contains the JIT CLI `run` command. Prefer
+`origin/main` after `git fetch` over `main`: a stale local `main` makes the
+diff include unrelated commits. The first line of `results.md` names both
+commits.
 
 With `--diff`, the script builds the base in a git worktree at
 `<dump_dir>.base/.worktree` and caches the binary there per commit, so later
