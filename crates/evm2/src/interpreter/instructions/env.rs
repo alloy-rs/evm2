@@ -1,7 +1,7 @@
 use crate::{
     EvmTypesHost,
     bytecode::LEGACY_CODE_CHUNK_SIZE,
-    evm::{AccountCodeKind, AccountLoad, CodeAccessMode},
+    evm::{AccountCodeKind, AccountLoad},
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{
         address_to_word, b256_to_word, word_to_address, word_to_usize, word_to_usize_saturated,
@@ -136,16 +136,19 @@ pub fn gasprice(cx: _) -> out {
 
 #[instruction(dynamic_gas)]
 pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
-    let mode = CodeAccessMode::from_features(cx.state.version().features);
-    let account = load_account(&mut cx, *addr, mode.loads_full_code())?;
+    let tip1143 = cx.state.feature(crate::EvmFeatures::TIP1143);
+    let account = load_account(&mut cx, *addr, !tip1143)?;
 
-    let size = match (mode, account.code_kind(mode)) {
-        (CodeAccessMode::Eager, _) => account.code.len(),
-        (_, AccountCodeKind::Empty) => 0,
-        (_, AccountCodeKind::Chunked { size }) => size as usize,
-        (_, AccountCodeKind::Legacy) => {
-            let code_owner = word_to_address(*addr);
-            cx.state.load_and_charge_code_chunk(cx.gas, &code_owner, 0)?.payload_len()
+    let size = if !tip1143 {
+        account.code.len()
+    } else {
+        match account.code_kind() {
+            AccountCodeKind::Empty => 0,
+            AccountCodeKind::Chunked { size } => size as usize,
+            AccountCodeKind::Legacy => {
+                let code_owner = word_to_address(*addr);
+                cx.state.load_and_charge_code_chunk(cx.gas, &code_owner, 0)?.payload_len()
+            }
         }
     };
     *out = Word::from(size);
@@ -168,11 +171,11 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
     } else {
         0
     };
-    let mode = CodeAccessMode::from_features(cx.state.version().features);
-    let account = load_account(&mut cx, *addr, mode.loads_full_code())?;
+    let tip1143 = cx.state.feature(crate::EvmFeatures::TIP1143);
+    let account = load_account(&mut cx, *addr, !tip1143)?;
 
-    if mode == CodeAccessMode::MeteredChunks {
-        let bytes = match account.code_kind(mode) {
+    if tip1143 {
+        let bytes = match account.code_kind() {
             AccountCodeKind::Empty => Vec::new(),
             kind @ (AccountCodeKind::Legacy | AccountCodeKind::Chunked { .. }) => {
                 let (size, multi) = match kind {

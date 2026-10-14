@@ -156,7 +156,7 @@ mod any;
 pub use any::NonStaticAny;
 
 mod account_code;
-pub(crate) use account_code::{AccountCodeKind, CodeAccessMode};
+pub(crate) use account_code::AccountCodeKind;
 
 pub mod bal;
 pub use bal::{

@@ -19,7 +19,7 @@ use crate::{
     bytecode::{Bytecode, COLD_CODE_CHUNK_GAS, CodeChunk, WARM_CODE_CHUNK_GAS},
     env::TxEnv,
     evm::{
-        AccountInfo, CodeAccessMode,
+        AccountInfo,
         handler::{DefaultTxHandlerHooks, GasSettlement},
     },
     interpreter::{
@@ -576,8 +576,8 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
     let mut charged_state_gas = 0;
     let message = match to {
         TxKind::Call(to) => {
-            let mode = CodeAccessMode::from_features(host.version().features);
-            let account = match Host::load_account(host, &to, mode.loads_full_code(), false) {
+            let tip1143 = host.feature(EvmFeatures::TIP1143);
+            let account = match Host::load_account(host, &to, !tip1143, false) {
                 Ok(account) => account,
                 Err(HostError::Execution(error)) => return Err(error.into()),
                 Err(HostError::Halt(_)) => unreachable!("unconditional account load"),
@@ -592,7 +592,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 }
                 charged_state_gas = new_account_state_gas;
             }
-            let mut code = match account.code_source(mode, || {
+            let mut code = match account.code_source(tip1143, || {
                 load_initial_code_chunk(host, tx_gas, &code_address, account.code_hash)
             }) {
                 Ok(code) => code,
@@ -610,7 +610,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 let delegated_account = match Host::load_account(
                     host,
                     &delegated_address,
-                    mode.loads_full_code(),
+                    !tip1143,
                     metered && tx_gas.remaining() < cold_additional,
                 ) {
                     Ok(account) => account,
@@ -622,7 +622,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 }
                 code_address = delegated_address;
                 disable_precompiles = true;
-                code = match delegated_account.code_source(mode, || {
+                code = match delegated_account.code_source(tip1143, || {
                     load_initial_code_chunk(
                         host,
                         tx_gas,

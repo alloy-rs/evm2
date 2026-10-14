@@ -4,7 +4,6 @@ use crate::{
     EvmFeatures, EvmTypesHost,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
-    evm::CodeAccessMode,
     interpreter::{
         CodeSource, Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind,
         Result, StackMut, Word, derive_create_destination,
@@ -88,10 +87,10 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     let additional_cold_cost = state.gas_params().cold_account_additional_cost();
     let remaining_gas = gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
-    let mode = CodeAccessMode::from_features(state.version().features);
+    let tip1143 = state.feature(EvmFeatures::TIP1143);
     let account = state
         .host()
-        .load_account(&to, mode.loads_full_code(), skip_cold_load)
+        .load_account(&to, !tip1143, skip_cold_load)
         .map_err(|error| state.fail(error))?;
 
     let mut cost = 0;
@@ -122,7 +121,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     gas.spend(cost)?;
     gas.spend_state(new_account_state_gas)?;
     let mut code =
-        account.code_source(mode, || state.load_and_charge_code_chunk(gas, &code_address, 0))?;
+        account.code_source(tip1143, || state.load_and_charge_code_chunk(gas, &code_address, 0))?;
     if state.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.as_bytecode().eip7702_address()
     {
@@ -131,7 +130,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         let skip_cold_load = gas.remaining() < additional_cold_cost;
         let delegated_account = state
             .host()
-            .load_account(&delegated_address, mode.loads_full_code(), skip_cold_load)
+            .load_account(&delegated_address, !tip1143, skip_cold_load)
             .map_err(|error| state.fail(error))?;
         if delegated_account.is_cold {
             gas.spend(additional_cold_cost)?;
@@ -139,7 +138,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         code_address = delegated_address;
         disable_precompiles = true;
         code = delegated_account
-            .code_source(mode, || state.load_and_charge_code_chunk(gas, &code_address, 0))?;
+            .code_source(tip1143, || state.load_and_charge_code_chunk(gas, &code_address, 0))?;
     }
 
     let mut gas_limit = if state.feature(EvmFeatures::EIP150) {
