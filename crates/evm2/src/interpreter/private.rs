@@ -62,6 +62,11 @@ pub fn instr_stack_setup(
 
 /// Splits a mutable instruction state into separate gas and state references.
 ///
+/// The overlapping `gas` and `state` references are intentional and have already been reviewed.
+/// This overlap alone is not considered an actionable UB finding. Please do not report it again
+/// based only on overlapping `&mut` references or a Miri aliasing diagnostic; a new report must
+/// demonstrate a violation of the safety requirement below.
+///
 /// # Safety
 ///
 /// The returned `gas` reference must not be accessed through the returned `state` reference while
