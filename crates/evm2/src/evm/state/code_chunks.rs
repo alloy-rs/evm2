@@ -3,7 +3,7 @@
 use super::{Account, AccountInfo, CodeChunkSlot, JournalEntry, State, StateInner};
 use crate::{
     CodeChunkLoadError, DatabaseError, LoadError,
-    bytecode::{CodeChunk, CodeManifest, LEGACY_CODE_CHUNK_SIZE},
+    bytecode::{CodeChunk, CodeManifest, CodeRecord, LEGACY_CODE_CHUNK_SIZE},
     evm::db::{DbResult, DynDatabase},
 };
 use alloy_primitives::{Address, KECCAK256_EMPTY};
@@ -40,27 +40,7 @@ impl<'a, 'db> CodeChunkHandle<'a, 'db> {
         }
         account.code_chunks.ensure_code_hash(info.code_hash);
         if account.code_chunks.manifest.is_none() {
-            let (manifest, chunks) = if let Some(code) = info.code.as_ref() {
-                if code.hash_slow() != info.code_hash {
-                    return Err(DatabaseError::new(
-                        CodeChunkLoadError::Invalid(info.code_hash),
-                        true,
-                    )
-                    .into());
-                }
-                crate::bytecode::build_code_artifacts(&code.original_bytes()).map_err(|_| {
-                    DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true)
-                })?
-            } else {
-                let Some(manifest) = inner.database.get_code_manifest(&info.code_hash)? else {
-                    return Err(DatabaseError::new(
-                        CodeChunkLoadError::Missing(info.code_hash),
-                        true,
-                    )
-                    .into());
-                };
-                (manifest, Vec::new())
-            };
+            let (manifest, chunks) = load_code_artifacts(info, &mut inner.database)?;
             account.code_chunks.manifest = Some(manifest);
             if !chunks.is_empty() {
                 account.code_chunks.slots = chunks
@@ -179,6 +159,41 @@ impl<'db> State<'db> {
     }
 }
 
+/// Resolves and validates the record selected by an account's code commitment.
+pub(super) fn load_code_artifacts<D: DynDatabase + ?Sized>(
+    info: &AccountInfo,
+    database: &mut D,
+) -> DbResult<(CodeManifest, Vec<CodeChunk>)> {
+    if let Some(code) = info.code.as_ref() {
+        let artifacts = crate::bytecode::build_code_artifacts(&code.original_bytes())
+            .map_err(|_| DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true))?;
+        let expected = artifacts.0.code_hash().unwrap_or_else(|| code.hash_slow());
+        if expected != info.code_hash {
+            return Err(DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true));
+        }
+        return Ok(artifacts);
+    }
+
+    let record = database.get_code_by_hash(&info.code_hash)?;
+    let manifest = match record {
+        CodeRecord::Chunked(manifest) if manifest.code_hash() == Some(info.code_hash) => manifest,
+        CodeRecord::Bytecode(code) if code.is_empty() => {
+            return Err(DatabaseError::new(CodeChunkLoadError::Missing(info.code_hash), true));
+        }
+        CodeRecord::Bytecode(code)
+            if code.hash_slow() == info.code_hash && code.len() <= LEGACY_CODE_CHUNK_SIZE =>
+        {
+            crate::bytecode::build_code_artifacts(&code.original_bytes())
+                .map_err(|_| DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true))?
+                .0
+        }
+        _ => {
+            return Err(DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true));
+        }
+    };
+    Ok((manifest, Vec::new()))
+}
+
 /// Fetches and validates a missing payload before publishing its execution analysis.
 fn load_chunk(
     inner: &mut StateInner<'_>,
@@ -199,7 +214,10 @@ fn load_chunk(
             Some(CodeChunk::from_legacy_bytecode(code))
         })
     } else if multi {
-        inner.database.get_code_by_hash(&payload_hash).and_then(|bytecode| {
+        inner.database.get_code_by_hash(&payload_hash).and_then(|record| {
+            let CodeRecord::Bytecode(bytecode) = record else {
+                return Err(DatabaseError::new(CodeChunkLoadError::Invalid(payload_hash), true));
+            };
             if bytecode.is_empty() {
                 return Ok(None);
             }
@@ -213,10 +231,12 @@ fn load_chunk(
     } else {
         // Account type selects legacy representation even when the same hash also
         // belongs to an account using the fixed-stride chunk representation.
-        inner
-            .database
-            .get_code_by_hash(&hash)
-            .map(|code| Some(CodeChunk::from_legacy_bytecode(&code)))
+        inner.database.get_code_by_hash(&hash).and_then(|record| match record {
+            CodeRecord::Bytecode(code) => Ok(Some(CodeChunk::from_legacy_bytecode(&code))),
+            CodeRecord::Chunked(_) => {
+                Err(DatabaseError::new(CodeChunkLoadError::Invalid(hash), true))
+            }
+        })
     };
     let chunk = match result {
         Ok(Some(chunk))

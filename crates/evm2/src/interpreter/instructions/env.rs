@@ -137,7 +137,7 @@ pub fn gasprice(cx: _) -> out {
 #[instruction(dynamic_gas)]
 pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
     let tip1143 = cx.state.feature(crate::EvmFeatures::TIP1143);
-    let account = load_account(&mut cx, *addr, !tip1143)?;
+    let account = load_account(&mut cx, *addr, true)?;
 
     let size = if !tip1143 {
         account.code.len()
@@ -174,7 +174,7 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
         0
     };
     let tip1143 = cx.state.feature(crate::EvmFeatures::TIP1143);
-    let account = load_account(&mut cx, *addr, !tip1143)?;
+    let account = load_account(&mut cx, *addr, true)?;
 
     if tip1143 {
         let bytes = match account.code_info {

@@ -6,7 +6,7 @@
 
 use crate::{
     DatabaseError,
-    bytecode::{Bytecode, CodeManifest},
+    bytecode::CodeRecord,
     evm::{AccountInfo, DbResult, DynDatabase, NonStaticAny},
     interpreter::Word,
 };
@@ -424,17 +424,11 @@ pub trait AsyncDatabase: NonStaticAny {
         address: Address,
     ) -> impl Future<Output = Result<Option<AccountInfo>, Self::Error>> + Send + '_;
 
-    /// Loads bytecode by code hash.
+    /// Loads a legacy runtime, chunk manifest, or prepared chunk by commitment.
     fn get_code_by_hash(
         &mut self,
         code_hash: B256,
-    ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_;
-
-    /// Loads the immutable layout record for complete code.
-    fn get_code_manifest(
-        &mut self,
-        code_hash: B256,
-    ) -> impl Future<Output = Result<Option<CodeManifest>, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<CodeRecord, Self::Error>> + Send + '_;
 
     /// Loads a persistent storage slot.
     fn get_storage(
@@ -503,19 +497,10 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<CodeRecord> {
         let result = {
             let Self { db, .. } = self;
             block_on_current_result(db.get_code_by_hash(*code_hash))
-        };
-        self.database_result(result)
-    }
-
-    #[inline]
-    fn get_code_manifest(&mut self, code_hash: &B256) -> DbResult<Option<CodeManifest>> {
-        let result = {
-            let Self { db, .. } = self;
-            block_on_current_result(db.get_code_manifest(*code_hash))
         };
         self.database_result(result)
     }
@@ -551,7 +536,7 @@ mod tests {
     use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
         BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult, TxResultExt,
-        bytecode::{Bytecode, CodeManifest},
+        bytecode::{Bytecode, CodeRecord},
         env::BlockEnvExt,
         evm::{AccountInfo, Database, Db, DynDatabase, InMemoryDB, PrecompileProvider, SystemTx},
         interpreter::{GasTracker, Message, Word, op},
@@ -1107,15 +1092,8 @@ mod tests {
             Ok(None)
         }
 
-        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
-            Ok(Bytecode::default())
-        }
-
-        fn get_code_manifest(
-            &mut self,
-            _code_hash: &B256,
-        ) -> Result<Option<CodeManifest>, Self::Error> {
-            Ok(None)
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<CodeRecord, Self::Error> {
+            Ok(Bytecode::default().into())
         }
 
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
@@ -1146,15 +1124,8 @@ mod tests {
             Ok(None)
         }
 
-        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
-            Ok(Bytecode::default())
-        }
-
-        fn get_code_manifest(
-            &mut self,
-            _code_hash: &B256,
-        ) -> Result<Option<CodeManifest>, Self::Error> {
-            Ok(None)
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<CodeRecord, Self::Error> {
+            Ok(Bytecode::default().into())
         }
 
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
@@ -1253,15 +1224,8 @@ mod tests {
             Ok(None)
         }
 
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
-            Ok(Bytecode::default())
-        }
-
-        async fn get_code_manifest(
-            &mut self,
-            _code_hash: B256,
-        ) -> Result<Option<CodeManifest>, Self::Error> {
-            Ok(None)
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<CodeRecord, Self::Error> {
+            Ok(Bytecode::default().into())
         }
 
         async fn get_storage(
@@ -1291,15 +1255,8 @@ mod tests {
             Ok(None)
         }
 
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
-            Ok(Bytecode::default())
-        }
-
-        async fn get_code_manifest(
-            &mut self,
-            _code_hash: B256,
-        ) -> Result<Option<CodeManifest>, Self::Error> {
-            Ok(None)
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<CodeRecord, Self::Error> {
+            Ok(Bytecode::default().into())
         }
 
         async fn get_storage(
@@ -1334,15 +1291,8 @@ mod tests {
             Ok(Some(crate::evm::AccountInfo::default()))
         }
 
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
-            Ok(self.code.clone())
-        }
-
-        async fn get_code_manifest(
-            &mut self,
-            _code_hash: B256,
-        ) -> Result<Option<CodeManifest>, Self::Error> {
-            Ok(None)
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<CodeRecord, Self::Error> {
+            Ok(self.code.clone().into())
         }
 
         async fn get_storage(
@@ -1388,15 +1338,8 @@ mod tests {
             Ok(None)
         }
 
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
-            Ok(Bytecode::default())
-        }
-
-        async fn get_code_manifest(
-            &mut self,
-            _code_hash: B256,
-        ) -> Result<Option<CodeManifest>, Self::Error> {
-            Ok(None)
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<CodeRecord, Self::Error> {
+            Ok(Bytecode::default().into())
         }
 
         async fn get_storage(

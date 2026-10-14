@@ -3,7 +3,7 @@
 use super::{DbResult, DynDatabase, EmptyDB};
 use crate::{
     DatabaseError,
-    bytecode::{Bytecode, CodeManifest},
+    bytecode::{Bytecode, CodeRecord},
     evm::{
         bal::BalContext,
         state::{
@@ -13,6 +13,7 @@ use crate::{
     },
     interpreter::Word,
 };
+use alloc::vec::Vec;
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
     map::{AddressMap, B256Map, U256Map, hash_map::Entry},
@@ -44,18 +45,16 @@ impl AccountStorageCache {
 
 /// Cache used by [`CacheDB`].
 ///
-/// Accounts and code are stored separately: accounts carry the code hash, and bytecode is keyed by
-/// that hash in [`Self::contracts`]. Account and storage entries are authoritative for this cache
-/// layer: a cached `None` account or wiped per-account storage cache shadows the wrapped database
-/// instead of falling through to it.
+/// Accounts and code are stored separately: accounts carry the code commitment, and code records
+/// are keyed by that commitment in [`Self::contracts`]. Account and storage entries are
+/// authoritative for this cache layer: a cached `None` account or wiped per-account storage cache
+/// shadows the wrapped database instead of falling through to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cache {
     /// Accounts keyed by address. `None` means the account is known to be absent/deleted.
     pub accounts: AddressMap<Option<AccountInfo>>,
-    /// Complete code and prepared chunks keyed by content hash.
-    pub contracts: B256Map<Bytecode>,
-    /// Immutable code layout records keyed by complete code hash.
-    pub code_manifests: B256Map<CodeManifest>,
+    /// Legacy code, chunk manifests, and prepared chunks keyed by their commitment.
+    pub contracts: B256Map<CodeRecord>,
     /// Persistent storage keyed by account, then slot.
     pub storage: AddressMap<AccountStorageCache>,
     /// Cached block hashes keyed by block number.
@@ -74,7 +73,6 @@ impl Cache {
     pub fn merge(&mut self, other: Self) {
         self.accounts.extend(other.accounts);
         self.contracts.extend(other.contracts);
-        self.code_manifests.extend(other.code_manifests);
         self.block_hashes.extend(other.block_hashes);
         for (address, storage) in other.storage {
             let target = self.storage.entry(address).or_default();
@@ -85,8 +83,34 @@ impl Cache {
         }
     }
 
+    /// Reconstructs complete account bytecode from a legacy record or a manifest and its chunks.
+    pub fn complete_code(&self, code_hash: &B256) -> Option<Bytecode> {
+        match self.contracts.get(code_hash)? {
+            CodeRecord::Bytecode(code) => Some(code.clone()),
+            CodeRecord::Chunked(manifest) if manifest.code_hash() == Some(*code_hash) => {
+                let mut bytes = Vec::with_capacity(manifest.code_size() as usize);
+                for (index, chunk_hash) in manifest.chunk_hashes().iter().copied().enumerate() {
+                    let code = self.contracts.get(&chunk_hash)?.bytecode()?.clone();
+                    let chunk = crate::bytecode::CodeChunk::from_chunked(
+                        code,
+                        manifest.code_size(),
+                        index.try_into().ok()?,
+                    )
+                    .ok()?;
+                    if chunk.as_bytecode().hash_slow() != chunk_hash {
+                        return None;
+                    }
+                    bytes.extend_from_slice(&chunk.bytes()[..chunk.payload_len()]);
+                }
+                (bytes.len() == manifest.code_size() as usize)
+                    .then(|| Bytecode::new_legacy(bytes.into()))
+            }
+            CodeRecord::Chunked(_) => None,
+        }
+    }
+
     fn insert_bytecode(&mut self, code_hash: B256, code: &Bytecode) {
-        self.contracts.insert(code_hash, code.clone());
+        self.contracts.insert(code_hash, code.clone().into());
     }
 
     fn insert_complete_code(&mut self, code_hash: B256, code: &Bytecode) {
@@ -94,9 +118,13 @@ impl Cache {
         let bytes = code.original_bytes();
         if let Ok((manifest, chunks)) = crate::bytecode::build_code_artifacts(&bytes) {
             for (hash, chunk) in manifest.chunk_hashes().iter().copied().zip(chunks) {
-                self.contracts.insert(hash, chunk.bytecode());
+                self.contracts.insert(hash, chunk.bytecode().into());
             }
-            self.code_manifests.insert(code_hash, manifest);
+            if let Some(manifest_hash) = manifest.code_hash()
+                && manifest_hash == code_hash
+            {
+                self.contracts.insert(code_hash, CodeRecord::Chunked(manifest));
+            }
         }
     }
 }
@@ -105,12 +133,11 @@ impl Default for Cache {
     #[inline]
     fn default() -> Self {
         let mut contracts = B256Map::default();
-        contracts.insert(KECCAK256_EMPTY, Bytecode::default());
-        contracts.insert(B256::ZERO, Bytecode::default());
+        contracts.insert(KECCAK256_EMPTY, Bytecode::default().into());
+        contracts.insert(B256::ZERO, Bytecode::default().into());
         Self {
             accounts: AddressMap::default(),
             contracts,
-            code_manifests: B256Map::default(),
             storage: AddressMap::default(),
             block_hashes: U256Map::default(),
             _non_exhaustive: (),
@@ -262,20 +289,9 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     type Error = Infallible;
 
     #[inline]
-    fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
-        self.bal_context.bytecode(code_hash, code)?;
-        self.cache.insert_bytecode(code_hash, code);
-        Ok(())
-    }
-
-    #[inline]
-    fn code_manifest(
-        &mut self,
-        code_hash: B256,
-        manifest: &CodeManifest,
-    ) -> Result<(), Self::Error> {
-        self.bal_context.code_manifest(code_hash, manifest)?;
-        self.cache.code_manifests.insert(code_hash, manifest.clone());
+    fn code(&mut self, code_hash: B256, code: &CodeRecord) -> Result<(), Self::Error> {
+        self.bal_context.code(code_hash, code)?;
+        self.cache.contracts.insert(code_hash, code.clone());
         Ok(())
     }
 
@@ -363,21 +379,10 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<CodeRecord> {
         match self.cache.contracts.entry(*code_hash) {
             Entry::Occupied(entry) => Ok(entry.get().clone()),
             Entry::Vacant(entry) => Ok(entry.insert(self.db.get_code_by_hash(code_hash)?).clone()),
-        }
-    }
-
-    #[inline]
-    fn get_code_manifest(&mut self, code_hash: &B256) -> DbResult<Option<CodeManifest>> {
-        match self.cache.code_manifests.entry(*code_hash) {
-            Entry::Occupied(entry) => Ok(Some(entry.get().clone())),
-            Entry::Vacant(entry) => {
-                let Some(manifest) = self.db.get_code_manifest(code_hash)? else { return Ok(None) };
-                Ok(Some(entry.insert(manifest).clone()))
-            }
         }
     }
 
@@ -449,16 +454,8 @@ mod typed {
         }
 
         #[inline]
-        fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<CodeRecord, Self::Error> {
             DynDatabase::get_code_by_hash(self, code_hash)
-        }
-
-        #[inline]
-        fn get_code_manifest(
-            &mut self,
-            code_hash: &B256,
-        ) -> Result<Option<CodeManifest>, Self::Error> {
-            DynDatabase::get_code_manifest(self, code_hash)
         }
 
         #[inline]
@@ -531,13 +528,13 @@ mod tests {
         let mut cache = Cache::default();
         cache.accounts.insert(address, Some(info.clone()));
         cache.accounts.insert(untouched, Some(info.clone()));
-        cache.contracts.insert(hash, Bytecode::default());
+        cache.contracts.insert(hash, Bytecode::default().into());
         cache.block_hashes.insert(Word::ONE, B256::ZERO);
 
         let mut incoming = Cache::default();
         incoming.accounts.insert(address, None);
         incoming.accounts.insert(added, Some(info.clone()));
-        incoming.contracts.insert(hash, code.clone());
+        incoming.contracts.insert(hash, code.clone().into());
         incoming.block_hashes.insert(Word::ONE, hash);
         incoming.storage.entry(added).or_default().slots.insert(Word::ZERO, Word::ONE);
         cache.merge(incoming);
@@ -545,7 +542,7 @@ mod tests {
         assert_eq!(cache.accounts[&address], None);
         assert_eq!(cache.accounts[&untouched], Some(info.clone()));
         assert_eq!(cache.accounts[&added], Some(info));
-        assert_eq!(cache.contracts[&hash], code);
+        assert_eq!(cache.contracts[&hash], CodeRecord::Bytecode(code));
         assert_eq!(cache.block_hashes[&Word::ONE], hash);
         assert_eq!(cache.storage[&added].slots[&Word::ZERO], Word::ONE);
         assert!(!cache.storage[&added].wiped);
@@ -570,21 +567,15 @@ mod tests {
             Ok(self.account.clone())
         }
 
-        fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<CodeRecord, Self::Error> {
             self.code_loads += 1;
             Ok(self
                 .account
                 .as_ref()
                 .filter(|info| info.code_hash == *code_hash)
                 .and_then(|info| info.code.clone())
-                .unwrap_or_default())
-        }
-
-        fn get_code_manifest(
-            &mut self,
-            _code_hash: &B256,
-        ) -> Result<Option<CodeManifest>, Self::Error> {
-            Ok(None)
+                .unwrap_or_default()
+                .into())
         }
 
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
@@ -617,8 +608,8 @@ mod tests {
             cache.get_account(&address).unwrap().map(|info| info.code_hash),
             Some(code_hash)
         );
-        assert_eq!(cache.get_code_by_hash(&code_hash).unwrap(), code);
-        assert_eq!(cache.get_code_by_hash(&code_hash).unwrap(), code);
+        assert_eq!(cache.get_code_by_hash(&code_hash).unwrap(), CodeRecord::Bytecode(code.clone()));
+        assert_eq!(cache.get_code_by_hash(&code_hash).unwrap(), CodeRecord::Bytecode(code));
         assert_eq!(cache.db.inner().account_loads, 1);
         assert_eq!(cache.db.inner().code_loads, 0);
 
@@ -687,7 +678,7 @@ mod tests {
 
         assert_eq!(cache.get_storage(&address, &key).unwrap(), value);
         assert_eq!(cache.get_account(&address).unwrap(), Some(account));
-        assert_eq!(cache.get_code_by_hash(&code.hash_slow()).unwrap(), code);
+        assert_eq!(cache.get_code_by_hash(&code.hash_slow()).unwrap(), CodeRecord::Bytecode(code));
         assert_eq!(cache.db.inner().account_loads, 1);
     }
 

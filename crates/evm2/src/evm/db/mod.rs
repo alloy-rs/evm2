@@ -3,7 +3,7 @@
 use super::{NonStaticAny, state::AccountInfo};
 use crate::{
     DatabaseError,
-    bytecode::{Bytecode, CodeManifest},
+    bytecode::{Bytecode, CodeRecord},
     interpreter::Word,
 };
 use alloc::{boxed::Box, string::ToString};
@@ -32,11 +32,8 @@ pub trait Database: NonStaticAny {
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
 
-    /// Loads bytecode by code hash.
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error>;
-
-    /// Loads the immutable layout record for complete code.
-    fn get_code_manifest(&mut self, code_hash: &B256) -> Result<Option<CodeManifest>, Self::Error>;
+    /// Loads a legacy runtime, chunk manifest, or prepared chunk by commitment.
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<CodeRecord, Self::Error>;
 
     /// Loads a persistent storage slot.
     fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error>;
@@ -97,16 +94,8 @@ impl<T: Database> DynDatabase for Db<T> {
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<CodeRecord> {
         self.db.get_code_by_hash(code_hash).map_err(|err| {
-            let fatal = T::is_fatal(&err);
-            DatabaseError::new(err, fatal)
-        })
-    }
-
-    #[inline]
-    fn get_code_manifest(&mut self, code_hash: &B256) -> DbResult<Option<CodeManifest>> {
-        self.db.get_code_manifest(code_hash).map_err(|err| {
             let fatal = T::is_fatal(&err);
             DatabaseError::new(err, fatal)
         })
@@ -135,11 +124,8 @@ pub trait DynDatabase: NonStaticAny {
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
 
-    /// Loads bytecode by code hash.
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode>;
-
-    /// Loads the immutable layout record for complete code.
-    fn get_code_manifest(&mut self, code_hash: &B256) -> DbResult<Option<CodeManifest>>;
+    /// Loads a legacy runtime, chunk manifest, or prepared chunk by commitment.
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<CodeRecord>;
 
     /// Loads a persistent storage slot.
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word>;
@@ -156,10 +142,8 @@ pub trait DynDatabase: NonStaticAny {
 pub struct DbStatsCounts {
     /// Number of account loads.
     pub get_account: u64,
-    /// Number of bytecode loads by hash.
+    /// Number of code-record loads by commitment.
     pub get_code_by_hash: u64,
-    /// Number of code manifest loads by complete code hash.
-    pub get_code_manifest: u64,
     /// Number of storage slot loads.
     pub get_storage: u64,
     /// Number of storage loads whose address matched the previous storage load.
@@ -175,7 +159,6 @@ impl core::ops::AddAssign for DbStatsCounts {
     fn add_assign(&mut self, rhs: Self) {
         self.get_account += rhs.get_account;
         self.get_code_by_hash += rhs.get_code_by_hash;
-        self.get_code_manifest += rhs.get_code_manifest;
         self.get_storage += rhs.get_storage;
         self.get_storage_same_address_repeats += rhs.get_storage_same_address_repeats;
         self.get_storage_same_address_longest_streak = self
@@ -203,7 +186,6 @@ impl<D> DbStats<D> {
             counts: DbStatsCounts {
                 get_account: 0,
                 get_code_by_hash: 0,
-                get_code_manifest: 0,
                 get_storage: 0,
                 get_storage_same_address_repeats: 0,
                 get_storage_same_address_longest_streak: 0,
@@ -261,15 +243,9 @@ impl<D: DynDatabase> DynDatabase for DbStats<D> {
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<CodeRecord> {
         self.counts.get_code_by_hash += 1;
         self.db.get_code_by_hash(code_hash)
-    }
-
-    #[inline]
-    fn get_code_manifest(&mut self, code_hash: &B256) -> DbResult<Option<CodeManifest>> {
-        self.counts.get_code_manifest += 1;
-        self.db.get_code_manifest(code_hash)
     }
 
     #[inline]
@@ -319,16 +295,8 @@ impl Database for EmptyDB {
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
-        Ok(Bytecode::default())
-    }
-
-    #[inline]
-    fn get_code_manifest(
-        &mut self,
-        _code_hash: &B256,
-    ) -> Result<Option<CodeManifest>, Self::Error> {
-        Ok(None)
+    fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<CodeRecord, Self::Error> {
+        Ok(Bytecode::default().into())
     }
 
     #[inline]
@@ -349,13 +317,8 @@ impl DynDatabase for EmptyDB {
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<CodeRecord> {
         Db::new(*self).get_code_by_hash(code_hash)
-    }
-
-    #[inline]
-    fn get_code_manifest(&mut self, code_hash: &B256) -> DbResult<Option<CodeManifest>> {
-        Db::new(*self).get_code_manifest(code_hash)
     }
 
     #[inline]
@@ -382,12 +345,8 @@ mod tests {
             Ok(None)
         }
 
-        fn get_code_by_hash(&mut self, _code_hash: &B256) -> DbResult<Bytecode> {
-            Ok(Bytecode::default())
-        }
-
-        fn get_code_manifest(&mut self, _code_hash: &B256) -> DbResult<Option<CodeManifest>> {
-            Ok(None)
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> DbResult<CodeRecord> {
+            Ok(Bytecode::default().into())
         }
 
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> DbResult<Word> {

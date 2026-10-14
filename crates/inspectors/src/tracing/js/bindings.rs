@@ -17,7 +17,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsObject, JsResult, JsString, JsValue, js_string,
     native_function::NativeFunction,
@@ -543,17 +543,8 @@ struct ChangesDbReader<'a> {
 
 impl ChangesDbReader<'_> {
     fn code_from_info(&mut self, info: AccountInfo) -> DbResult<Bytecode> {
-        // Note: the changed account from the state output always holds the code.
-        if let Some(code) = info.code
-            && !code.is_empty()
-        {
-            return Ok(code);
-        }
-        let code_hash = info.code_hash;
-        if code_hash == KECCAK256_EMPTY {
-            return Ok(Bytecode::default());
-        }
-        self.db.get_code_by_hash(&code_hash)
+        crate::tracing::utils::load_account_code(self.db, &info)
+            .map(|code| code.map(Bytecode::new_raw).unwrap_or_default())
     }
 }
 
@@ -1320,13 +1311,17 @@ mod tests {
             Ok((*address == self.address).then(|| self.account.clone()))
         }
 
-        fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
+        fn get_code_by_hash(
+            &mut self,
+            code_hash: &B256,
+        ) -> Result<evm2::bytecode::CodeRecord, Self::Error> {
             Ok(self
                 .account
                 .code
                 .clone()
                 .filter(|_| *code_hash == self.account.code_hash)
-                .unwrap_or_default())
+                .unwrap_or_default()
+                .into())
         }
 
         fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error> {

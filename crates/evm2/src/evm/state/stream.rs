@@ -2,7 +2,7 @@
 
 use super::{AccountInfo, CodeChunkSlot, StorageOverlay};
 use crate::{
-    bytecode::{Bytecode, CodeManifest},
+    bytecode::{Bytecode, CodeManifest, CodeRecord},
     interpreter::Word,
 };
 use alloy_primitives::{Address, B256};
@@ -74,7 +74,6 @@ impl<'a> AccountChanges<'a> {
     /// reads, then the metadata as a change or a read.
     pub fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
         if let Some((code_hash, code)) = self.code {
-            sink.bytecode(code_hash, code)?;
             if let Ok((built_manifest, built_chunks)) =
                 crate::bytecode::build_code_artifacts(&code.original_bytes())
             {
@@ -82,26 +81,35 @@ impl<'a> AccountChanges<'a> {
                     .code_manifest
                     .filter(|manifest| **manifest == built_manifest)
                     .unwrap_or(&built_manifest);
-                sink.code_manifest(code_hash, manifest)?;
-                let cached = manifest.is_chunked()
+                let chunked = manifest.code_hash() == Some(code_hash);
+                if chunked {
+                    sink.code(code_hash, &CodeRecord::Chunked(manifest.clone()))?;
+                } else {
+                    sink.code(code_hash, &CodeRecord::Bytecode(code.clone()))?;
+                }
+                let cached = chunked
                     && self.code_chunks.len() == manifest.chunk_count()
                     && self.code_chunks.iter().all(|slot| slot.chunk.is_some());
                 if cached {
                     for (chunk_hash, slot) in
                         manifest.chunk_hashes().iter().copied().zip(self.code_chunks)
                     {
-                        sink.bytecode(
+                        sink.code(
                             chunk_hash,
-                            slot.chunk.as_ref().expect("checked cached chunk").as_bytecode(),
+                            &CodeRecord::Bytecode(
+                                slot.chunk.as_ref().expect("checked cached chunk").bytecode(),
+                            ),
                         )?;
                     }
-                } else {
+                } else if chunked {
                     for (chunk_hash, chunk) in
                         manifest.chunk_hashes().iter().copied().zip(built_chunks.iter())
                     {
-                        sink.bytecode(chunk_hash, chunk.as_bytecode())?;
+                        sink.code(chunk_hash, &CodeRecord::Bytecode(chunk.bytecode()))?;
                     }
                 }
+            } else {
+                sink.code(code_hash, &CodeRecord::Bytecode(code.clone()))?;
             }
         }
         let address = self.address;
@@ -155,19 +163,9 @@ pub trait StateChangeSink {
     /// Error returned by this sink.
     type Error;
 
-    /// Observes complete code or a prepared chunk keyed by its content hash.
+    /// Observes legacy code, a chunk manifest, or a prepared chunk keyed by its commitment.
     #[inline]
-    fn bytecode(&mut self, _code_hash: B256, _code: &Bytecode) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    /// Observes an immutable layout record keyed by complete code hash.
-    #[inline]
-    fn code_manifest(
-        &mut self,
-        _code_hash: B256,
-        _manifest: &CodeManifest,
-    ) -> Result<(), Self::Error> {
+    fn code(&mut self, _code_hash: B256, _code: &CodeRecord) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -260,19 +258,9 @@ where
     type Error = A::Error;
 
     #[inline]
-    fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
-        self.a.bytecode(code_hash, code)?;
-        self.b.bytecode(code_hash, code)
-    }
-
-    #[inline]
-    fn code_manifest(
-        &mut self,
-        code_hash: B256,
-        manifest: &CodeManifest,
-    ) -> Result<(), Self::Error> {
-        self.a.code_manifest(code_hash, manifest)?;
-        self.b.code_manifest(code_hash, manifest)
+    fn code(&mut self, code_hash: B256, code: &CodeRecord) -> Result<(), Self::Error> {
+        self.a.code(code_hash, code)?;
+        self.b.code(code_hash, code)
     }
 
     #[inline]

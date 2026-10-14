@@ -9,7 +9,7 @@
 use super::{Bytecode, BytecodeKind};
 use crate::interpreter::op;
 use alloc::vec::Vec;
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{B256, Bytes, keccak256};
 use thiserror::Error;
 
 #[cfg(feature = "serde")]
@@ -187,7 +187,7 @@ impl CodeChunk {
     }
 }
 
-/// Immutable layout record for code stored under its complete code hash.
+/// Immutable layout record stored under the commitment to its ordered chunk hashes.
 ///
 /// Legacy code has no chunk hashes. Chunked code commits to each prepared stored buffer.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -195,6 +195,46 @@ impl CodeChunk {
 pub struct CodeManifest {
     code_size: u32,
     chunk_hashes: Vec<B256>,
+}
+
+/// Immutable value stored in the code table.
+///
+/// An account code hash resolves to complete bytecode for legacy code or a manifest for chunked
+/// code. Hashes inside a manifest resolve to prepared chunk bytecode through the same table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CodeRecord {
+    /// Complete legacy code or one prepared chunk.
+    Bytecode(Bytecode),
+    /// Ordered commitments for a chunked runtime.
+    Chunked(CodeManifest),
+}
+
+impl From<Bytecode> for CodeRecord {
+    #[inline]
+    fn from(code: Bytecode) -> Self {
+        Self::Bytecode(code)
+    }
+}
+
+impl CodeRecord {
+    /// Borrows bytecode when this record contains executable bytes.
+    #[inline]
+    pub const fn bytecode(&self) -> Option<&Bytecode> {
+        match self {
+            Self::Bytecode(code) => Some(code),
+            Self::Chunked(_) => None,
+        }
+    }
+
+    /// Borrows the manifest when this record describes chunked code.
+    #[inline]
+    pub const fn manifest(&self) -> Option<&CodeManifest> {
+        match self {
+            Self::Bytecode(_) => None,
+            Self::Chunked(manifest) => Some(manifest),
+        }
+    }
 }
 
 impl CodeManifest {
@@ -212,6 +252,17 @@ impl CodeManifest {
     /// Ordered commitments to complete stored chunk buffers, including the start-offset byte.
     pub fn chunk_hashes(&self) -> &[B256] {
         &self.chunk_hashes
+    }
+
+    /// Account code hash for chunked code: the hash of the ordered chunk hashes.
+    pub fn code_hash(&self) -> Option<B256> {
+        self.is_chunked().then(|| {
+            let mut bytes = Vec::with_capacity(self.chunk_hashes.len() * B256::len_bytes());
+            for hash in &self.chunk_hashes {
+                bytes.extend_from_slice(hash.as_slice());
+            }
+            keccak256(bytes)
+        })
     }
 
     /// Number of committed chunks.
@@ -474,6 +525,21 @@ mod tests {
         }
         let code = Bytes::from(alloc::vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1]);
         assert_eq!(build_code_artifacts(&code).unwrap().0.chunk_count(), 2);
+    }
+
+    #[test]
+    fn chunked_code_hash_commits_to_ordered_chunk_hashes() {
+        let code = Bytes::from(alloc::vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1]);
+        let (manifest, _) = build_code_artifacts(&code).unwrap();
+        let concatenated = manifest
+            .chunk_hashes()
+            .iter()
+            .flat_map(|hash| hash.as_slice())
+            .copied()
+            .collect::<Vec<_>>();
+
+        assert_eq!(manifest.code_hash(), Some(keccak256(concatenated)));
+        assert_ne!(manifest.code_hash(), Some(keccak256(code)));
     }
 
     #[test]

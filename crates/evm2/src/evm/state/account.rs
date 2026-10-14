@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     CodeChunkLoadError, DatabaseError, EvmFeatures,
-    bytecode::{Bytecode, CodeChunk, CodeManifest},
+    bytecode::{Bytecode, CodeChunk, CodeManifest, CodeRecord},
     interpreter::Word,
 };
 use alloc::vec::Vec;
@@ -28,7 +28,7 @@ pub struct AccountInfo {
     pub balance: Word,
     /// Account nonce.
     pub nonce: u64,
-    /// Hash of the raw bytes in `code`, or the empty code hash.
+    /// Legacy bytecode hash, ordered chunk-hash commitment, or the empty code hash.
     pub code_hash: B256,
     /// Bytecode associated with this account.
     pub code: Option<Bytecode>,
@@ -537,13 +537,15 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
             return Ok(normalize_account_bytecode(code));
         }
         let code_hash = account.code_hash;
-        self.inner
-            .database
-            .get_code_by_hash(&code_hash)
-            .map(|code| normalize_account_bytecode(&code))
+        match self.inner.database.get_code_by_hash(&code_hash)? {
+            CodeRecord::Bytecode(code) => Ok(normalize_account_bytecode(&code)),
+            CodeRecord::Chunked(_) => {
+                Err(DatabaseError::new(CodeChunkLoadError::Invalid(code_hash), true))
+            }
+        }
     }
 
-    /// Loads and caches the immutable code layout record by complete code hash.
+    /// Loads and caches the immutable code layout record through the account code hash.
     pub(crate) fn load_code_manifest(&mut self) -> DbResult<Option<CodeManifest>> {
         let Some(info) = self.tracked.present.as_ref() else { return Ok(None) };
         if info.code_hash.is_zero() || info.code_hash == KECCAK256_EMPTY {
@@ -553,28 +555,16 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if let Some(manifest) = &self.tracked.code_chunks.manifest {
             return Ok(Some(manifest.clone()));
         }
-        let code_hash = info.code_hash;
-        let (manifest, chunks) = if let Some(code) =
-            info.code.as_ref().filter(|code| !code.is_empty())
-        {
-            if code.hash_slow() != code_hash {
-                return Err(DatabaseError::new(CodeChunkLoadError::Invalid(code_hash), true));
-            }
-            let bytes = code.original_bytes();
-            let artifacts = crate::bytecode::build_code_artifacts(&bytes)
-                .map_err(|_| DatabaseError::new(CodeChunkLoadError::Invalid(code_hash), true))?;
-            (Some(artifacts.0), artifacts.1)
-        } else {
-            (self.inner.database.get_code_manifest(&code_hash)?, Vec::new())
-        };
-        self.tracked.code_chunks.manifest = manifest.clone();
+        let (manifest, chunks) =
+            super::code_chunks::load_code_artifacts(info, &mut self.inner.database)?;
+        self.tracked.code_chunks.manifest = Some(manifest.clone());
         if !chunks.is_empty() {
             self.tracked.code_chunks.slots = chunks
                 .into_iter()
                 .map(|chunk| CodeChunkSlot { chunk: Some(chunk), is_warm: false })
                 .collect();
         }
-        Ok(manifest)
+        Ok(Some(manifest))
     }
 
     /// Loads the account's bytecode as it stood at the start of the transaction.
@@ -597,20 +587,50 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
             return Ok(normalize_account_bytecode(code));
         }
         let code_hash = account.code_hash;
-        self.inner
-            .database
-            .get_code_by_hash(&code_hash)
-            .map(|code| normalize_account_bytecode(&code))
+        match self.inner.database.get_code_by_hash(&code_hash)? {
+            CodeRecord::Bytecode(code) => Ok(normalize_account_bytecode(&code)),
+            CodeRecord::Chunked(_) => {
+                Err(DatabaseError::new(CodeChunkLoadError::Invalid(code_hash), true))
+            }
+        }
     }
 
     /// Recognizes current delegation code from the stored bytecode.
     pub fn code_is_eip7702(&mut self) -> DbResult<bool> {
-        Ok(self.load_code()?.is_eip7702())
+        let Some(account) = self.tracked.present.as_ref() else { return Ok(false) };
+        if account.code_hash == KECCAK256_EMPTY {
+            return Ok(false);
+        }
+        if let Some(code) = account.code.as_ref() {
+            return Ok(code.is_eip7702());
+        }
+        let code_hash = account.code_hash;
+        match self.inner.database.get_code_by_hash(&code_hash)? {
+            CodeRecord::Bytecode(code) => Ok(code.is_eip7702()),
+            CodeRecord::Chunked(manifest) if manifest.code_hash() == Some(code_hash) => Ok(false),
+            CodeRecord::Chunked(_) => {
+                Err(DatabaseError::new(CodeChunkLoadError::Invalid(code_hash), true))
+            }
+        }
     }
 
     /// Recognizes delegation at the transaction boundary from the stored bytecode.
     pub fn original_code_is_eip7702(&mut self) -> DbResult<bool> {
-        Ok(self.original_code()?.is_eip7702())
+        let Some(account) = self.tracked.original.as_ref() else { return Ok(false) };
+        if account.code_hash == KECCAK256_EMPTY {
+            return Ok(false);
+        }
+        if let Some(code) = account.code.as_ref() {
+            return Ok(code.is_eip7702());
+        }
+        let code_hash = account.code_hash;
+        match self.inner.database.get_code_by_hash(&code_hash)? {
+            CodeRecord::Bytecode(code) => Ok(code.is_eip7702()),
+            CodeRecord::Chunked(manifest) if manifest.code_hash() == Some(code_hash) => Ok(false),
+            CodeRecord::Chunked(_) => {
+                Err(DatabaseError::new(CodeChunkLoadError::Invalid(code_hash), true))
+            }
+        }
     }
 
     /// Touches the account, recording a revert snapshot the first time it is mutated.

@@ -89,11 +89,8 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     let skip_cold_load = remaining_gas < additional_cold_cost;
     let tip1143 = state.feature(EvmFeatures::TIP1143);
     let native_precompile = state.host().is_precompile(&to);
-    let inspect_delegation = native_precompile && state.feature(EvmFeatures::EIP7702);
-    let account = state
-        .host()
-        .load_account(&to, !tip1143 || inspect_delegation, skip_cold_load)
-        .map_err(|error| state.fail(error))?;
+    let account =
+        state.host().load_account(&to, true, skip_cold_load).map_err(|error| state.fail(error))?;
 
     let mut cost = 0;
     if account.is_cold {
@@ -137,7 +134,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         let skip_cold_load = gas.remaining() < additional_cold_cost;
         let delegated_account = state
             .host()
-            .load_account(&delegated_address, !tip1143, skip_cold_load)
+            .load_account(&delegated_address, true, skip_cold_load)
             .map_err(|error| state.fail(error))?;
         if delegated_account.is_cold {
             gas.spend(additional_cold_cost)?;

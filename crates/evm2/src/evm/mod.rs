@@ -1274,7 +1274,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 }
             };
             let code = Bytecode::new_legacy(output.clone());
-            let code_hash = code.hash_slow();
+            let code_hash = prepared
+                .as_ref()
+                .and_then(|(manifest, _)| manifest.code_hash())
+                .unwrap_or_else(|| code.hash_slow());
             if let Err(code) = self.state.account(address).map(|mut a| {
                 a.set_code(code_hash, code);
                 if let Some((manifest, chunks)) = &prepared {
@@ -1286,13 +1289,19 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             }
 
             if let Some((manifest, chunks)) = prepared {
-                self.state
-                    .overlay_db_mut()
-                    .cache
-                    .code_manifests
-                    .insert(code_hash, manifest.clone());
+                if manifest.is_chunked() {
+                    self.state
+                        .overlay_db_mut()
+                        .cache
+                        .contracts
+                        .insert(code_hash, crate::bytecode::CodeRecord::Chunked(manifest.clone()));
+                }
                 for (hash, chunk) in manifest.chunk_hashes().iter().copied().zip(chunks) {
-                    self.state.overlay_db_mut().cache.contracts.insert(hash, chunk.bytecode());
+                    self.state
+                        .overlay_db_mut()
+                        .cache
+                        .contracts
+                        .insert(hash, chunk.bytecode().into());
                 }
             }
             output
@@ -1563,7 +1572,10 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
 
         let exists = account.exists();
         let info = account.get().cloned().unwrap_or_default();
-        let manifest = if tip1143 && !info.code_hash.is_zero() && info.code_hash != KECCAK256_EMPTY
+        let manifest = if tip1143
+            && load_code
+            && !info.code_hash.is_zero()
+            && info.code_hash != KECCAK256_EMPTY
         {
             Some(account.load_code_manifest().map_err(HostError::from)?.ok_or_else(|| {
                 DatabaseError::new(CodeChunkLoadError::Missing(info.code_hash), true)
@@ -1572,7 +1584,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             None
         };
         // load code
-        let code = if load_code {
+        let code = if load_code && manifest.as_ref().is_none_or(|manifest| !manifest.is_chunked()) {
             account.load_code().map_err(HostError::from)?
         } else {
             Bytecode::default()
@@ -1954,7 +1966,7 @@ mod tests {
     use super::*;
     use crate::{
         BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
-        bytecode::Bytecode,
+        bytecode::{Bytecode, CodeRecord},
         env::{BlockEnvExt, TxEnvExt},
         ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
         interpreter::{GasTracker, Interpreter, Message, MessageExt, MessageKind, op},
@@ -3466,15 +3478,8 @@ mod tests {
                 Ok(Some(AccountInfo::default()))
             }
 
-            fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
-                Ok(Bytecode::default())
-            }
-
-            fn get_code_manifest(
-                &mut self,
-                _code_hash: &B256,
-            ) -> Result<Option<crate::bytecode::CodeManifest>, Self::Error> {
-                Ok(None)
+            fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<CodeRecord, Self::Error> {
+                Ok(Bytecode::default().into())
             }
 
             fn get_storage(
@@ -3584,15 +3589,8 @@ mod tests {
                 Ok(Some(AccountInfo::default().with_balance(Word::from(1))))
             }
 
-            fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
-                Ok(Bytecode::default())
-            }
-
-            fn get_code_manifest(
-                &mut self,
-                _code_hash: &B256,
-            ) -> Result<Option<crate::bytecode::CodeManifest>, Self::Error> {
-                Ok(None)
+            fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<CodeRecord, Self::Error> {
+                Ok(Bytecode::default().into())
             }
 
             fn get_storage(
@@ -4318,7 +4316,8 @@ mod tests {
             if expected == InstrStop::Return {
                 let code_hash = account.get().unwrap().code_hash;
                 drop(account);
-                let manifest = evm.state.overlay_db().cache.code_manifests.get(&code_hash).unwrap();
+                let manifest =
+                    evm.state.overlay_db().cache.contracts[&code_hash].manifest().unwrap();
                 assert_eq!(manifest.code_size() as usize, LEGACY_CODE_CHUNK_SIZE + 1);
                 assert_eq!(
                     manifest.last_chunk_size() as usize,
