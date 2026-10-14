@@ -1,7 +1,7 @@
 use crate::{
     EvmTypesHost,
     bytecode::LEGACY_CODE_CHUNK_SIZE,
-    evm::{AccountCodeKind, AccountLoad},
+    evm::AccountLoad,
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{
         address_to_word, b256_to_word, word_to_address, word_to_usize, word_to_usize_saturated,
@@ -141,15 +141,13 @@ pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
 
     let size = if !tip1143 {
         account.code.len()
+    } else if account.code_size == Some(0) {
+        0
+    } else if account.is_chunked {
+        account.code_size.expect("chunked code size") as usize
     } else {
-        match account.code_kind() {
-            AccountCodeKind::Empty => 0,
-            AccountCodeKind::Chunked { size } => size as usize,
-            AccountCodeKind::Legacy => {
-                let code_owner = word_to_address(*addr);
-                cx.state.load_and_charge_code_chunk(cx.gas, &code_owner, 0)?.payload_len()
-            }
-        }
+        let code_owner = word_to_address(*addr);
+        cx.state.load_and_charge_code_chunk(cx.gas, &code_owner, 0)?.payload_len()
     };
     *out = Word::from(size);
 }
@@ -175,22 +173,22 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
     let account = load_account(&mut cx, *addr, !tip1143)?;
 
     if tip1143 {
-        let bytes = match account.code_kind() {
-            AccountCodeKind::Empty => Vec::new(),
-            kind @ (AccountCodeKind::Legacy | AccountCodeKind::Chunked { .. }) => {
-                let (size, multi) = match kind {
-                    AccountCodeKind::Chunked { size } => (size as usize, true),
-                    _ => (LEGACY_CODE_CHUNK_SIZE, false),
-                };
-                cx.state.load_code_range(
-                    cx.gas,
-                    word_to_address(*addr),
-                    *code_offset,
-                    len,
-                    size,
-                    multi,
-                )?
-            }
+        let bytes = if account.code_size == Some(0) {
+            Vec::new()
+        } else {
+            let size = if account.is_chunked {
+                account.code_size.expect("chunked code size") as usize
+            } else {
+                LEGACY_CODE_CHUNK_SIZE
+            };
+            cx.state.load_code_range(
+                cx.gas,
+                word_to_address(*addr),
+                *code_offset,
+                len,
+                size,
+                account.is_chunked,
+            )?
         };
         cx.state.0.memory.set_data(memory_offset, 0, len, &bytes);
         return Ok(());

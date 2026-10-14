@@ -156,7 +156,6 @@ mod any;
 pub use any::NonStaticAny;
 
 mod account_code;
-pub(crate) use account_code::AccountCodeKind;
 
 pub mod bal;
 pub use bal::{
@@ -1753,7 +1752,7 @@ pub struct AccountLoad {
     pub code_hash: B256,
     /// Account bytecode.
     pub code: Bytecode,
-    /// Original code size: `Some(0)` for empty code, known for chunked/delegated code,
+    /// Original code size: `Some(0)` for empty code, known for chunked code,
     /// and `None` only for nonempty legacy code whose size has not been loaded.
     pub code_size: Option<u32>,
     /// Whether original runtime is stored in prepared chunks.
