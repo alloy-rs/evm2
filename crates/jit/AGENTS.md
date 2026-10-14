@@ -183,9 +183,6 @@ Experiments that did not pay off, so you don't repeat them blindly:
 - Keeping the remaining gas in a local (`alloca`) synced with `ecx.gas` around
   calls: x86 turns `sub qword ptr [ecx], imm; jb` into `cmp`/`lea` on a
   register that stays live everywhere, so spills went up 72%.
-- `-jump-table-density=1` for the dynamic jump switch: about 5% less code, but
-  the tables grow by about 1 MB across the benchmarks because the switch is on
-  sparse PCs. It needs a dense index first.
 - `preserve_most` stubs for host builtins (`SLOAD`, `CALL`, ...): fewer spills
   in some contracts, many more reloads in others, about neutral overall.
 - Folding the memory offset range check into the resize branch: LLVM merges
