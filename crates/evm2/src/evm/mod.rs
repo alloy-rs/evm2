@@ -117,8 +117,8 @@ use self::{
     precompile::{PrecompileOutput, PrecompileProvider, boxed_precompile_provider},
 };
 use crate::{
-    DatabaseError, EvmConfigSelector, EvmTypes, EvmTypesHost, ExecutionConfig, ExecutionError,
-    HostError, LoadError, PrecompileError, PrecompileHalt, SpecId,
+    CodeChunkLoadError, DatabaseError, EvmConfigSelector, EvmTypes, EvmTypesHost, ExecutionConfig,
+    ExecutionError, HostError, LoadError, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
     constants::{CALL_DEPTH_LIMIT, EIP7708_TRANSFER_TOPIC},
     env::{BlockEnv, TxEnv},
@@ -1273,19 +1273,25 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                     });
                 }
             };
-            let metadata = prepared.as_ref().map(|(metadata, _)| metadata.clone());
+            let code = Bytecode::new_legacy(output.clone());
+            let code_hash = code.hash_slow();
             if let Err(code) = self.state.account(address).map(|mut a| {
-                a.set_code_with_metadata(Bytecode::new_legacy(output.clone()), metadata);
-                if let Some((_, chunks)) = &prepared {
-                    a.cache_code_chunks(chunks);
+                a.set_code(code_hash, code);
+                if let Some((manifest, chunks)) = &prepared {
+                    a.cache_code_artifacts(manifest.clone(), chunks);
                 }
             }) {
                 self.state.rollback(checkpoint, self.features);
                 return Err(code.into());
             }
 
-            if let Some((metadata, chunks)) = prepared {
-                for (hash, chunk) in metadata.chunk_hashes().iter().copied().zip(chunks) {
+            if let Some((manifest, chunks)) = prepared {
+                self.state
+                    .overlay_db_mut()
+                    .cache
+                    .code_manifests
+                    .insert(code_hash, manifest.clone());
+                for (hash, chunk) in manifest.chunk_hashes().iter().copied().zip(chunks) {
                     self.state.overlay_db_mut().cache.contracts.insert(hash, chunk.bytecode());
                 }
             }
@@ -1309,7 +1315,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         &self,
         gas: &mut Gas,
         output: &mut Bytes,
-    ) -> Result<Option<(crate::bytecode::CodeMetadata, Vec<crate::bytecode::CodeChunk>)>, InstrStop>
+    ) -> Result<Option<(crate::bytecode::CodeManifest, Vec<crate::bytecode::CodeChunk>)>, InstrStop>
     {
         if (self.feature(EvmFeatures::CODE_SIZE_CHECK) || self.feature(EvmFeatures::TIP1143))
             && output.len() > self.version().max_code_size
@@ -1318,10 +1324,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         }
         if self.feature(EvmFeatures::EIP3541) && output.first().is_some_and(|byte| *byte == 0xef) {
             return Err(InstrStop::CreateContractStartingWithEF);
-        }
-
-        if self.feature(EvmFeatures::TIP1143) {
-            crate::bytecode::validate_code(output).map_err(map_code_chunk_error)?;
         }
 
         let code_deposit_gas = output
@@ -1337,8 +1339,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             *output = Bytes::new();
             return Ok(None);
         }
-        let prepared = if self.feature(EvmFeatures::TIP1143) {
-            crate::bytecode::prepare_code_chunks(output).map_err(map_code_chunk_error)?
+        let prepared = if self.feature(EvmFeatures::TIP1143) && !output.is_empty() {
+            Some(crate::bytecode::build_code_artifacts(output).map_err(map_code_chunk_error)?)
         } else {
             None
         };
@@ -1523,7 +1525,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 const fn map_code_chunk_error(error: crate::bytecode::CodeChunkError) -> InstrStop {
     match error {
         crate::bytecode::CodeChunkError::CodeTooLarge => InstrStop::CreateContractSizeLimit,
-        crate::bytecode::CodeChunkError::InvalidMetadata
+        crate::bytecode::CodeChunkError::InvalidManifest
         | crate::bytecode::CodeChunkError::InvalidPreparation => InstrStop::InvalidCodeChunk,
     }
 }
@@ -1551,6 +1553,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, HostError> {
+        let tip1143 = self.feature(EvmFeatures::TIP1143);
         let mut account = match self.state.account_with_skip(address, skip_cold_load) {
             Ok(account) => account,
             Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
@@ -1560,18 +1563,30 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
 
         let exists = account.exists();
         let info = account.get().cloned().unwrap_or_default();
+        let manifest = if tip1143 && !info.code_hash.is_zero() && info.code_hash != KECCAK256_EMPTY
+        {
+            Some(account.load_code_manifest().map_err(HostError::from)?.ok_or_else(|| {
+                DatabaseError::new(CodeChunkLoadError::Missing(info.code_hash), true)
+            })?)
+        } else {
+            None
+        };
         // load code
         let code = if load_code {
             account.load_code().map_err(HostError::from)?
         } else {
             Bytecode::default()
         };
-        let known_size = account.code_size().or_else(|| load_code.then_some(code.len() as u32));
         let code_info = if info.code_hash.is_zero() || info.code_hash == KECCAK256_EMPTY {
             AccountCodeInfo::Empty
-        } else if let Some(metadata) = info.code_metadata() {
-            AccountCodeInfo::Chunked { size: metadata.code_size() }
+        } else if let Some(manifest) = manifest {
+            if manifest.is_chunked() {
+                AccountCodeInfo::Chunked { size: manifest.code_size() }
+            } else {
+                AccountCodeInfo::Legacy { size: Some(manifest.code_size()) }
+            }
         } else {
+            let known_size = account.code_size().or_else(|| load_code.then_some(code.len() as u32));
             AccountCodeInfo::Legacy { size: known_size }
         };
         Ok(AccountLoad {
@@ -1931,7 +1946,7 @@ fn eip7708_transfer_log(from: &Address, to: &Address, value: &Word) -> Option<Lo
     })
 }
 
-#[cfg(all(test, feature = "account-ext"))]
+#[cfg(test)]
 mod code_loading_tests;
 
 #[cfg(test)]
@@ -1957,7 +1972,6 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
 
-    #[cfg(feature = "account-ext")]
     use crate::bytecode::{
         CODE_CHUNK_SIZE, LEGACY_CODE_CHUNK_SIZE, MAX_CODE_SIZE, MAX_INITCODE_SIZE,
     };
@@ -3456,6 +3470,13 @@ mod tests {
                 Ok(Bytecode::default())
             }
 
+            fn get_code_manifest(
+                &mut self,
+                _code_hash: &B256,
+            ) -> Result<Option<crate::bytecode::CodeManifest>, Self::Error> {
+                Ok(None)
+            }
+
             fn get_storage(
                 &mut self,
                 _address: &Address,
@@ -3565,6 +3586,13 @@ mod tests {
 
             fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
                 Ok(Bytecode::default())
+            }
+
+            fn get_code_manifest(
+                &mut self,
+                _code_hash: &B256,
+            ) -> Result<Option<crate::bytecode::CodeManifest>, Self::Error> {
+                Ok(None)
             }
 
             fn get_storage(
@@ -4214,7 +4242,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "account-ext")]
     fn large_initcode_evm() -> Evm<'static, BaseEvmTypes> {
         let mut version = Version::base(SpecId::OSAKA).with_tip1143(true).with_rjump(true);
         version.max_code_size = MAX_CODE_SIZE;
@@ -4230,7 +4257,6 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "account-ext")]
     fn large_initcode(stop: u8, runtime_size: usize) -> Bytes {
         let target = MAX_INITCODE_SIZE - 32;
         let mut code = vec![op::STOP; MAX_INITCODE_SIZE];
@@ -4267,7 +4293,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "account-ext")]
     fn large_initcode_creation_commits_only_on_success() {
         for (stop, gas_limit, expected) in [
             (op::RETURN, 10_000_000, InstrStop::Return),
@@ -4291,17 +4316,19 @@ mod tests {
             assert_eq!(result.created_address, (expected == InstrStop::Return).then_some(address));
             let account = evm.state.account(&address).unwrap();
             if expected == InstrStop::Return {
-                let metadata = account.get().unwrap().code_metadata().unwrap();
-                assert_eq!(metadata.code_size() as usize, LEGACY_CODE_CHUNK_SIZE + 1);
+                let code_hash = account.get().unwrap().code_hash;
+                drop(account);
+                let manifest = evm.state.overlay_db().cache.code_manifests.get(&code_hash).unwrap();
+                assert_eq!(manifest.code_size() as usize, LEGACY_CODE_CHUNK_SIZE + 1);
                 assert_eq!(
-                    metadata.last_chunk_size() as usize,
+                    manifest.last_chunk_size() as usize,
                     LEGACY_CODE_CHUNK_SIZE + 1 - CODE_CHUNK_SIZE
                 );
-                assert_eq!(metadata.chunk_count(), 2);
+                assert_eq!(manifest.chunk_count(), 2);
             } else {
                 assert!(account.get().is_none());
+                drop(account);
             }
-            drop(account);
             assert_eq!(
                 evm.state.storage_slot_untracked(&address, &Word::ZERO).unwrap(),
                 Word::from(if expected == InstrStop::Return { 42 } else { 0 })
@@ -4312,7 +4339,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "account-ext")]
     fn large_initcode_factory_create_and_create2_rollback() {
         let factory = Address::with_last_byte(0x72);
         let initcode = large_initcode(op::RETURN, 1);
@@ -4380,7 +4406,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "account-ext")]
     fn large_initcode_enforces_complete_input_limit() {
         let mut evm = large_initcode_evm();
         let mut message = MessageExt {
@@ -4395,7 +4420,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "account-ext")]
     fn large_initcode_creation_transaction() {
         let mut evm = large_initcode_evm();
         // A 2 MiB input exceeds Osaka's default transaction cap under the data gas floor.

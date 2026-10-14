@@ -3,7 +3,7 @@
 use super::{Account, AccountInfo, CodeChunkSlot, JournalEntry, State, StateInner};
 use crate::{
     CodeChunkLoadError, DatabaseError, LoadError,
-    bytecode::{CodeChunk, LEGACY_CODE_CHUNK_SIZE, code_chunk},
+    bytecode::{CodeChunk, CodeManifest, LEGACY_CODE_CHUNK_SIZE},
     evm::db::{DbResult, DynDatabase},
 };
 use alloy_primitives::{Address, KECCAK256_EMPTY};
@@ -32,36 +32,52 @@ impl<'a, 'db> CodeChunkHandle<'a, 'db> {
         if info.code_hash.is_zero() || info.code_hash == KECCAK256_EMPTY {
             return Ok(None);
         }
-        account.code_chunks.ensure_identity(info);
-        if let Some(metadata) = info.code_metadata()
-            && let Some(code) = info.code.as_ref()
-            && (account.code_chunks.slots.len() != metadata.chunk_count()
-                || account.code_chunks.slots.iter().any(|slot| slot.chunk.is_none()))
+        if skip_cold
+            && (account.code_chunks.code_hash != Some(info.code_hash)
+                || account.code_chunks.slots.get(index as usize).is_none_or(|slot| !slot.is_warm))
         {
-            let prepared = crate::bytecode::prepare_code_chunks(&code.original_bytes());
-            let Ok(Some((prepared_metadata, chunks))) = prepared else {
-                return Err(
-                    DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true).into()
-                );
+            return Err(LoadError::ColdLoadSkipped);
+        }
+        account.code_chunks.ensure_code_hash(info.code_hash);
+        if account.code_chunks.manifest.is_none() {
+            let (manifest, chunks) = if let Some(code) = info.code.as_ref() {
+                if code.hash_slow() != info.code_hash {
+                    return Err(DatabaseError::new(
+                        CodeChunkLoadError::Invalid(info.code_hash),
+                        true,
+                    )
+                    .into());
+                }
+                crate::bytecode::build_code_artifacts(&code.original_bytes()).map_err(|_| {
+                    DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true)
+                })?
+            } else {
+                let Some(manifest) = inner.database.get_code_manifest(&info.code_hash)? else {
+                    return Err(DatabaseError::new(
+                        CodeChunkLoadError::Missing(info.code_hash),
+                        true,
+                    )
+                    .into());
+                };
+                (manifest, Vec::new())
             };
-            if code.hash_slow() != info.code_hash || &prepared_metadata != metadata {
-                return Err(
-                    DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true).into()
-                );
-            }
-            account.code_chunks.slots.resize_with(chunks.len(), CodeChunkSlot::default);
-            for (slot, chunk) in account.code_chunks.slots.iter_mut().zip(chunks) {
-                slot.chunk = Some(chunk);
+            account.code_chunks.manifest = Some(manifest);
+            if !chunks.is_empty() {
+                account.code_chunks.slots = chunks
+                    .into_iter()
+                    .map(|chunk| CodeChunkSlot { chunk: Some(chunk), is_warm: false })
+                    .collect();
             }
         }
-        let expected = if let Some(metadata) = &info.code_metadata() {
-            let Some(length) = metadata.chunk_len(index) else { return Ok(None) };
-            Some(length)
+        let manifest = account.code_chunks.manifest.as_ref().expect("manifest loaded").clone();
+        let expected = if manifest.is_chunked() {
+            let Some(length) = manifest.chunk_len(index) else { return Ok(None) };
+            length
         } else {
             if index != 0 {
                 return Ok(None);
             }
-            None
+            manifest.code_size() as usize
         };
         let index_usize = index as usize;
         if account.code_chunks.slots.len() <= index_usize {
@@ -75,17 +91,17 @@ impl<'a, 'db> CodeChunkHandle<'a, 'db> {
             if skip_cold {
                 return Err(LoadError::ColdLoadSkipped);
             }
-            let chunk = load_chunk(inner, info, index, expected)?;
+            let chunk = load_chunk(inner, info, &manifest, index, expected)?;
             slot.chunk = Some(chunk);
         }
         if skip_cold && !slot.is_warm {
             return Err(LoadError::ColdLoadSkipped);
         }
         let chunk = slot.chunk.as_ref().expect("chunk loaded");
-        if let Some(metadata) = info.code_metadata() {
-            let payload_hash = metadata.chunk_hash(index).expect("validated chunk index");
+        if manifest.is_chunked() {
+            let payload_hash = manifest.chunk_hash(index).expect("validated chunk index");
             if chunk.as_bytecode().hash_slow() != payload_hash
-                || chunk.validate_context(metadata.code_size(), index).is_err()
+                || chunk.validate_context(manifest.code_size(), index).is_err()
             {
                 return Err(
                     DatabaseError::new(CodeChunkLoadError::Invalid(payload_hash), true).into()
@@ -167,21 +183,22 @@ impl<'db> State<'db> {
 fn load_chunk(
     inner: &mut StateInner<'_>,
     info: &AccountInfo,
+    manifest: &CodeManifest,
     index: u32,
-    expected: Option<usize>,
+    expected: usize,
 ) -> DbResult<CodeChunk> {
     let hash = info.code_hash;
-    let metadata = info.code_metadata();
-    let multi = metadata.is_some();
-    let payload_hash =
-        metadata.map_or(hash, |m| m.chunk_hash(index).expect("validated chunk index"));
+    let multi = manifest.is_chunked();
+    let payload_hash = manifest.chunk_hash(index).unwrap_or(hash);
     let result = if let Some(code) = &info.code {
         Ok(if multi {
-            code_chunk(&code.original_bytes(), index)
+            crate::bytecode::build_code_artifacts(&code.original_bytes())
+                .ok()
+                .and_then(|(_, chunks)| chunks.into_iter().nth(index as usize))
         } else {
             Some(CodeChunk::from_legacy_bytecode(code))
         })
-    } else if let Some(metadata) = metadata {
+    } else if multi {
         inner.database.get_code_by_hash(&payload_hash).and_then(|bytecode| {
             if bytecode.is_empty() {
                 return Ok(None);
@@ -189,7 +206,7 @@ fn load_chunk(
             if bytecode.hash_slow() != payload_hash {
                 return Err(DatabaseError::new(CodeChunkLoadError::Invalid(payload_hash), true));
             }
-            CodeChunk::from_chunked(bytecode, metadata.code_size(), index)
+            CodeChunk::from_chunked(bytecode, manifest.code_size(), index)
                 .map(Some)
                 .map_err(|_| DatabaseError::new(CodeChunkLoadError::Invalid(payload_hash), true))
         })
@@ -203,16 +220,11 @@ fn load_chunk(
     };
     let chunk = match result {
         Ok(Some(chunk))
-            if expected.map_or_else(
-                || (1..=LEGACY_CODE_CHUNK_SIZE).contains(&chunk.payload_len()),
-                |length| {
-                    chunk.payload_len() == length
-                        && chunk.as_bytecode().hash_slow() == payload_hash
-                        && info.code_metadata().is_some_and(|metadata| {
-                            chunk.validate_context(metadata.code_size(), index).is_ok()
-                        })
-                },
-            ) =>
+            if chunk.payload_len() == expected
+                && (multi
+                    && chunk.as_bytecode().hash_slow() == payload_hash
+                    && chunk.validate_context(manifest.code_size(), index).is_ok()
+                    || !multi && (1..=LEGACY_CODE_CHUNK_SIZE).contains(&chunk.payload_len())) =>
         {
             chunk
         }

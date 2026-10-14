@@ -8,7 +8,6 @@ use crate::{
     interpreter::{instructions as instr, op},
 };
 
-#[cfg(feature = "account-ext")]
 use crate::bytecode::{
     COLD_CODE_CHUNK_GAS, MAX_CODE_SIZE as TIP1143_MAX_CODE_SIZE,
     MAX_INITCODE_SIZE as TIP1143_MAX_INITCODE_SIZE, WARM_CODE_CHUNK_GAS,
@@ -103,7 +102,6 @@ impl Version {
     ///
     /// Enabling installs the protocol's code limits and chunk tariffs. Callers may apply
     /// deliberate custom-chain overrides after this method.
-    #[cfg(feature = "account-ext")]
     pub const fn with_tip1143(mut self, enabled: bool) -> Self {
         self.features.set(EvmFeatures::TIP1143, enabled);
         self.features.set(EvmFeatures::RJUMP, enabled);

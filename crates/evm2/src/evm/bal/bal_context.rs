@@ -245,18 +245,12 @@ impl BalContext {
         let info = BalAccountInfo {
             balance: account.balance.get(self.bal_index).copied(),
             nonce: account.nonce.get(self.bal_index).copied(),
-            code_hash: code.map(|(hash, _, _)| *hash),
+            code_hash: code.map(|(hash, _)| *hash),
         };
         match (info.balance, info.nonce, code) {
-            (Some(balance), Some(nonce), Some((hash, code, _metadata))) => {
-                #[allow(unused_mut)]
-                let mut account = AccountInfo::new(balance, nonce, *hash, Some(code.clone()));
-                #[cfg(feature = "account-ext")]
-                {
-                    account.chunks = _metadata.clone();
-                }
-                Ok(BalAccountLookup::Complete(account))
-            }
+            (Some(balance), Some(nonce), Some((hash, code))) => Ok(BalAccountLookup::Complete(
+                AccountInfo::new(balance, nonce, *hash, Some(code.clone())),
+            )),
             _ => Ok(BalAccountLookup::Partial(info)),
         }
     }
@@ -440,11 +434,9 @@ mod tests {
         ]
         .into();
         account.account_info.nonce = vec![NonceChange::new(BlockAccessIndex::new(2), 5)].into();
-        account.account_info.code = vec![BalCodeChange::new(
-            BlockAccessIndex::new(3),
-            (code.hash_slow(), code.clone(), None),
-        )]
-        .into();
+        account.account_info.code =
+            vec![BalCodeChange::new(BlockAccessIndex::new(3), (code.hash_slow(), code.clone()))]
+                .into();
         let mut bal = Bal::new();
         bal.accounts.insert(ADDRESS, account);
         let mut context = BalContext::new().with_bal(Arc::new(bal));
@@ -491,7 +483,7 @@ mod tests {
             if fields & 4 != 0 {
                 expected.code_hash = Some(code.hash_slow());
                 account.account_info.code =
-                    vec![BalCodeChange::new(index, (code.hash_slow(), code.clone(), None))].into();
+                    vec![BalCodeChange::new(index, (code.hash_slow(), code.clone()))].into();
             }
             let mut bal = Bal::new();
             bal.accounts.insert(ADDRESS, account);

@@ -6,7 +6,7 @@
 
 use crate::{
     DatabaseError,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, CodeManifest},
     evm::{AccountInfo, DbResult, DynDatabase, NonStaticAny},
     interpreter::Word,
 };
@@ -430,6 +430,12 @@ pub trait AsyncDatabase: NonStaticAny {
         code_hash: B256,
     ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_;
 
+    /// Loads the immutable layout record for complete code.
+    fn get_code_manifest(
+        &mut self,
+        code_hash: B256,
+    ) -> impl Future<Output = Result<Option<CodeManifest>, Self::Error>> + Send + '_;
+
     /// Loads a persistent storage slot.
     fn get_storage(
         &mut self,
@@ -506,6 +512,15 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     }
 
     #[inline]
+    fn get_code_manifest(&mut self, code_hash: &B256) -> DbResult<Option<CodeManifest>> {
+        let result = {
+            let Self { db, .. } = self;
+            block_on_current_result(db.get_code_manifest(*code_hash))
+        };
+        self.database_result(result)
+    }
+
+    #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         let result = {
             let Self { db, .. } = self;
@@ -536,7 +551,7 @@ mod tests {
     use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
         BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult, TxResultExt,
-        bytecode::Bytecode,
+        bytecode::{Bytecode, CodeManifest},
         env::BlockEnvExt,
         evm::{AccountInfo, Database, Db, DynDatabase, InMemoryDB, PrecompileProvider, SystemTx},
         interpreter::{GasTracker, Message, Word, op},
@@ -1096,6 +1111,13 @@ mod tests {
             Ok(Bytecode::default())
         }
 
+        fn get_code_manifest(
+            &mut self,
+            _code_hash: &B256,
+        ) -> Result<Option<CodeManifest>, Self::Error> {
+            Ok(None)
+        }
+
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
             let _ = Rc::strong_count(&self.marker);
             Ok(Word::from(9))
@@ -1126,6 +1148,13 @@ mod tests {
 
         fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
+        }
+
+        fn get_code_manifest(
+            &mut self,
+            _code_hash: &B256,
+        ) -> Result<Option<CodeManifest>, Self::Error> {
+            Ok(None)
         }
 
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
@@ -1228,6 +1257,13 @@ mod tests {
             Ok(Bytecode::default())
         }
 
+        async fn get_code_manifest(
+            &mut self,
+            _code_hash: B256,
+        ) -> Result<Option<CodeManifest>, Self::Error> {
+            Ok(None)
+        }
+
         async fn get_storage(
             &mut self,
             _address: Address,
@@ -1257,6 +1293,13 @@ mod tests {
 
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
+        }
+
+        async fn get_code_manifest(
+            &mut self,
+            _code_hash: B256,
+        ) -> Result<Option<CodeManifest>, Self::Error> {
+            Ok(None)
         }
 
         async fn get_storage(
@@ -1293,6 +1336,13 @@ mod tests {
 
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
             Ok(self.code.clone())
+        }
+
+        async fn get_code_manifest(
+            &mut self,
+            _code_hash: B256,
+        ) -> Result<Option<CodeManifest>, Self::Error> {
+            Ok(None)
         }
 
         async fn get_storage(
@@ -1340,6 +1390,13 @@ mod tests {
 
         async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
+        }
+
+        async fn get_code_manifest(
+            &mut self,
+            _code_hash: B256,
+        ) -> Result<Option<CodeManifest>, Self::Error> {
+            Ok(None)
         }
 
         async fn get_storage(

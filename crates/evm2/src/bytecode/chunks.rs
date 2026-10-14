@@ -187,19 +187,20 @@ impl CodeChunk {
     }
 }
 
-/// Validated commitments present only for multi-chunk code.
+/// Immutable layout record for code stored under its complete code hash.
+///
+/// Legacy code has no chunk hashes. Chunked code commits to each prepared stored buffer.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct CodeMetadata {
+pub struct CodeManifest {
     code_size: u32,
     chunk_hashes: Vec<B256>,
 }
 
-impl CodeMetadata {
-    /// Validates the complete logical size and ordered hash count.
-    /// Payload authentication belongs to ingestion.
+impl CodeManifest {
+    /// Validates the complete logical size and ordered chunk commitments.
     pub fn new(code_size: u32, chunk_hashes: Vec<B256>) -> Result<Self, CodeChunkError> {
-        validate_metadata(code_size, chunk_hashes.len())?;
+        validate_manifest(code_size, chunk_hashes.len())?;
         Ok(Self { code_size, chunk_hashes })
     }
 
@@ -218,6 +219,11 @@ impl CodeMetadata {
         self.chunk_hashes.len()
     }
 
+    /// Whether this code uses prepared chunk records.
+    pub const fn is_chunked(&self) -> bool {
+        !self.chunk_hashes.is_empty()
+    }
+
     /// Hash at the given logical chunk index.
     pub fn chunk_hash(&self, index: u32) -> Option<B256> {
         self.chunk_hashes.get(index as usize).copied()
@@ -225,6 +231,9 @@ impl CodeMetadata {
 
     /// Exact payload length for an in-range index, without provider access.
     pub fn chunk_len(&self, index: u32) -> Option<usize> {
+        if !self.is_chunked() {
+            return (index == 0).then_some(self.code_size as usize);
+        }
         let index = usize::try_from(index).ok()?;
         (index < self.chunk_hashes.len()).then(|| {
             if index == self.chunk_hashes.len() - 1 {
@@ -237,16 +246,23 @@ impl CodeMetadata {
 
     /// Committed original payload length of the last chunk.
     pub const fn last_chunk_size(&self) -> u32 {
-        ((self.code_size - 1) % CODE_CHUNK_SIZE as u32) + 1
+        if self.is_chunked() {
+            ((self.code_size - 1) % CODE_CHUNK_SIZE as u32) + 1
+        } else {
+            self.code_size
+        }
     }
 }
 
-fn validate_metadata(code_size: u32, chunk_count: usize) -> Result<(), CodeChunkError> {
+const fn validate_manifest(code_size: u32, chunk_count: usize) -> Result<(), CodeChunkError> {
     let size = code_size as usize;
-    if !(LEGACY_CODE_CHUNK_SIZE + 1..=MAX_CODE_SIZE).contains(&size)
-        || chunk_count != size.div_ceil(CODE_CHUNK_SIZE)
-    {
-        return Err(CodeChunkError::InvalidMetadata);
+    let valid = if size <= LEGACY_CODE_CHUNK_SIZE {
+        chunk_count == 0
+    } else {
+        size <= MAX_CODE_SIZE && chunk_count == size.div_ceil(CODE_CHUNK_SIZE)
+    };
+    if !valid {
+        return Err(CodeChunkError::InvalidManifest);
     }
     Ok(())
 }
@@ -257,81 +273,60 @@ pub enum CodeChunkError {
     /// Runtime exceeds the draft capacity.
     #[error("runtime exceeds the TIP-1143 code size limit")]
     CodeTooLarge,
-    /// Size and commitments do not describe multi-chunk code.
-    #[error("invalid multi-chunk code metadata")]
-    InvalidMetadata,
+    /// Size and commitments do not describe the code layout.
+    #[error("invalid code manifest")]
+    InvalidManifest,
     /// Provider preparation violates the bounded instruction layout.
     #[error("invalid chunk preparation")]
     InvalidPreparation,
 }
 
-/// Checks the capacity of submitted original bytes; boundary continuations are prepared separately.
-pub const fn validate_code(code: &[u8]) -> Result<(), CodeChunkError> {
+/// Builds the immutable manifest and any prepared chunk records in one instruction scan.
+pub fn build_code_artifacts(
+    code: &Bytes,
+) -> Result<(CodeManifest, Vec<CodeChunk>), CodeChunkError> {
     if code.len() > MAX_CODE_SIZE {
         return Err(CodeChunkError::CodeTooLarge);
     }
-
-    Ok(())
-}
-
-/// Validates creation output and commits to the stored, modified chunk buffers.
-pub fn code_metadata(code: &[u8]) -> Result<Option<CodeMetadata>, CodeChunkError> {
-    prepare_code_chunks(&Bytes::copy_from_slice(code))
-        .map(|prepared| prepared.map(|(metadata, _)| metadata))
-}
-
-/// Prepares all runtime chunks and their commitments in one instruction scan.
-pub fn prepare_code_chunks(
-    code: &Bytes,
-) -> Result<Option<(CodeMetadata, Vec<CodeChunk>)>, CodeChunkError> {
-    validate_code(code)?;
+    let code_size = code.len().try_into().map_err(|_| CodeChunkError::CodeTooLarge)?;
     if code.len() <= LEGACY_CODE_CHUNK_SIZE {
-        return Ok(None);
+        return Ok((CodeManifest::new(code_size, Vec::new())?, Vec::new()));
     }
     let count = code.len().div_ceil(CODE_CHUNK_SIZE);
     let mut chunks = Vec::with_capacity(count);
     let mut hashes = Vec::with_capacity(count);
-    let mut scan = InstructionScan::default();
+    let mut instruction_pc = 0;
     for index in 0..count {
-        let chunk = prepare_code_chunk(code, index, &mut scan)?;
+        let chunk = prepare_code_chunk(code, index, &mut instruction_pc)?;
         hashes.push(chunk.as_bytecode().hash_slow());
         chunks.push(chunk);
     }
-    let code_size = code.len().try_into().map_err(|_| CodeChunkError::CodeTooLarge)?;
-    Ok(Some((CodeMetadata::new(code_size, hashes)?, chunks)))
+    Ok((CodeManifest::new(code_size, hashes)?, chunks))
 }
 
-/// Prepares one chunk at creation or ingestion, without retaining its original slice.
-pub fn code_chunk(code: &Bytes, index: u32) -> Option<CodeChunk> {
-    let start = usize::try_from(index).ok()?.checked_mul(CODE_CHUNK_SIZE)?;
-    if start >= code.len() {
-        return None;
-    }
+#[cfg(test)]
+pub(crate) fn code_chunk(code: &Bytes, index: u32) -> Option<CodeChunk> {
     if code.len() <= LEGACY_CODE_CHUNK_SIZE {
         return (index == 0).then(|| CodeChunk::new_legacy(code.clone()));
     }
-    let mut scan = InstructionScan::default();
-    while scan.pc < start {
-        scan.pc += instruction_len(code[scan.pc]);
-    }
-    prepare_code_chunk(code, index as usize, &mut scan).ok()
+    build_code_artifacts(code).ok()?.1.into_iter().nth(index as usize)
 }
 
 fn prepare_code_chunk(
     code: &Bytes,
     index: usize,
-    scan: &mut InstructionScan,
+    instruction_pc: &mut usize,
 ) -> Result<CodeChunk, CodeChunkError> {
     let start = index * CODE_CHUNK_SIZE;
     let end = (start + CODE_CHUNK_SIZE).min(code.len());
-    let leading = scan.pc.min(end).saturating_sub(start);
-    scan.pc = scan.pc.min(end);
-    while scan.pc < end {
-        scan.pc += instruction_len(code[scan.pc]);
+    let leading = (*instruction_pc).min(end).saturating_sub(start);
+    *instruction_pc = (*instruction_pc).min(end);
+    while *instruction_pc < end {
+        *instruction_pc += instruction_len(code[*instruction_pc]);
     }
     let mut bytes = Vec::with_capacity(end - start + 33);
-    bytes.extend_from_slice(&code[start..scan.pc.min(code.len())]);
-    bytes.resize(scan.pc - start, 0);
+    bytes.extend_from_slice(&code[start..(*instruction_pc).min(code.len())]);
+    bytes.resize(*instruction_pc - start, 0);
     // A boundary-straddling instruction reads its immediate here. The dispatcher switches
     // chunks before any padding can execute as code.
     bytes.resize(end - start + 32, 0);
@@ -343,29 +338,16 @@ fn prepare_code_chunk(
     )
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct InstructionScan {
-    pc: usize,
-}
-
-/// Checked aggregate incremental tariff for one operation.
-pub const fn code_chunk_gas(cold: u64, warm: u64) -> Option<u64> {
-    match (cold.checked_mul(COLD_CODE_CHUNK_GAS), warm.checked_mul(WARM_CODE_CHUNK_GAS)) {
-        (Some(cold), Some(warm)) => cold.checked_add(warm),
-        _ => None,
-    }
-}
-
 #[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for CodeMetadata {
+impl<'de> serde::Deserialize<'de> for CodeManifest {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct MetadataVisitor;
+        struct ManifestVisitor;
 
-        impl<'de> Visitor<'de> for MetadataVisitor {
-            type Value = CodeMetadata;
+        impl<'de> Visitor<'de> for ManifestVisitor {
+            type Value = CodeManifest;
 
             fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                formatter.write_str("code chunk metadata")
+                formatter.write_str("code manifest")
             }
 
             fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
@@ -373,7 +355,7 @@ impl<'de> serde::Deserialize<'de> for CodeMetadata {
                     seq.next_element()?.ok_or_else(|| S::Error::invalid_length(0, &self))?;
                 let chunk_hashes =
                     seq.next_element()?.ok_or_else(|| S::Error::invalid_length(1, &self))?;
-                CodeMetadata::new(code_size, chunk_hashes).map_err(S::Error::custom)
+                CodeManifest::new(code_size, chunk_hashes).map_err(S::Error::custom)
             }
 
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
@@ -396,7 +378,7 @@ impl<'de> serde::Deserialize<'de> for CodeMetadata {
                         }
                     }
                 }
-                CodeMetadata::new(
+                CodeManifest::new(
                     code_size.ok_or_else(|| M::Error::missing_field("code_size"))?,
                     chunk_hashes.ok_or_else(|| M::Error::missing_field("chunk_hashes"))?,
                 )
@@ -405,9 +387,9 @@ impl<'de> serde::Deserialize<'de> for CodeMetadata {
         }
 
         deserializer.deserialize_struct(
-            "CodeMetadata",
+            "CodeManifest",
             &["code_size", "chunk_hashes"],
-            MetadataVisitor,
+            ManifestVisitor,
         )
     }
 }
@@ -485,12 +467,13 @@ mod tests {
     fn legacy_boundary_is_24_kib() {
         for size in [CODE_CHUNK_SIZE, CODE_CHUNK_SIZE + 1, LEGACY_CODE_CHUNK_SIZE] {
             let code = Bytes::from(alloc::vec![op::STOP; size]);
-            assert!(prepare_code_chunks(&code).unwrap().is_none());
-            assert!(code_chunk(&code, 0).is_some_and(|chunk| chunk.is_legacy()));
-            assert!(code_chunk(&code, 1).is_none());
+            let (manifest, chunks) = build_code_artifacts(&code).unwrap();
+            assert_eq!(manifest.code_size() as usize, size);
+            assert!(!manifest.is_chunked());
+            assert!(chunks.is_empty());
         }
         let code = Bytes::from(alloc::vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1]);
-        assert_eq!(prepare_code_chunks(&code).unwrap().unwrap().0.chunk_count(), 2);
+        assert_eq!(build_code_artifacts(&code).unwrap().0.chunk_count(), 2);
     }
 
     #[test]
@@ -500,16 +483,15 @@ mod tests {
         code[2 * CODE_CHUNK_SIZE - 2] = op::RJUMP;
         code[3 * CODE_CHUNK_SIZE - 1] = op::DUPN;
         let code = Bytes::from(code);
-        let (metadata, chunks) = prepare_code_chunks(&code).unwrap().unwrap();
+        let (manifest, chunks) = build_code_artifacts(&code).unwrap();
 
         assert_eq!(chunks.len(), 4);
         assert_eq!(chunks[1].start_offset(), 32);
         assert_eq!(chunks[2].start_offset(), 1);
         assert_eq!(chunks[3].start_offset(), 1);
         for (index, chunk) in chunks.iter().enumerate() {
-            assert_eq!(chunk, &code_chunk(&code, index as u32).unwrap());
-            assert_eq!(metadata.chunk_hashes()[index], chunk.as_bytecode().hash_slow());
-            assert_eq!(chunk.payload_len(), metadata.chunk_len(index as u32).unwrap());
+            assert_eq!(manifest.chunk_hashes()[index], chunk.as_bytecode().hash_slow());
+            assert_eq!(chunk.payload_len(), manifest.chunk_len(index as u32).unwrap());
         }
     }
 
@@ -518,14 +500,14 @@ mod tests {
         let mut push = alloc::vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1];
         push[CODE_CHUNK_SIZE - 1] = op::PUSH32;
         push[CODE_CHUNK_SIZE] = op::JUMPDEST;
-        let push_chunk = code_chunk(&Bytes::from(push), 1).unwrap();
+        let push_chunk = build_code_artifacts(&Bytes::from(push)).unwrap().1.remove(1);
         assert_eq!(push_chunk.start_offset(), 32);
         assert!(!push_chunk.is_valid_jumpdest(0));
 
         let mut rjump = alloc::vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1];
         rjump[CODE_CHUNK_SIZE - 1] = op::RJUMP;
         rjump[CODE_CHUNK_SIZE] = op::JUMPDEST;
-        let rjump_chunk = code_chunk(&Bytes::from(rjump), 1).unwrap();
+        let rjump_chunk = build_code_artifacts(&Bytes::from(rjump)).unwrap().1.remove(1);
         assert_eq!(rjump_chunk.start_offset(), 2);
         assert!(!rjump_chunk.is_valid_jumpdest(0));
     }
@@ -538,30 +520,31 @@ mod tests {
     }
 
     #[test]
-    fn metadata_last_chunk_size() {
+    fn manifest_last_chunk_size() {
         for size in [
             LEGACY_CODE_CHUNK_SIZE + 1,
             2 * CODE_CHUNK_SIZE,
             2 * CODE_CHUNK_SIZE + 1,
             MAX_CODE_SIZE,
         ] {
-            let metadata = code_metadata(&alloc::vec![op::STOP; size]).unwrap().unwrap();
+            let manifest =
+                build_code_artifacts(&Bytes::from(alloc::vec![op::STOP; size])).unwrap().0;
             let count = size.div_ceil(CODE_CHUNK_SIZE);
             let last_chunk_size = size - (count - 1) * CODE_CHUNK_SIZE;
-            assert_eq!(metadata.code_size() as usize, size);
-            assert_eq!(metadata.chunk_hashes().len(), count);
-            assert_eq!(metadata.last_chunk_size() as usize, last_chunk_size);
+            assert_eq!(manifest.code_size() as usize, size);
+            assert_eq!(manifest.chunk_hashes().len(), count);
+            assert_eq!(manifest.last_chunk_size() as usize, last_chunk_size);
             for index in 0..count - 1 {
-                assert_eq!(metadata.chunk_len(index as u32), Some(CODE_CHUNK_SIZE));
+                assert_eq!(manifest.chunk_len(index as u32), Some(CODE_CHUNK_SIZE));
             }
-            assert_eq!(metadata.chunk_len(count as u32 - 1), Some(last_chunk_size));
-            assert_eq!(metadata.chunk_len(count as u32), None);
-            assert_eq!(metadata.chunk_len(u32::MAX), None);
+            assert_eq!(manifest.chunk_len(count as u32 - 1), Some(last_chunk_size));
+            assert_eq!(manifest.chunk_len(count as u32), None);
+            assert_eq!(manifest.chunk_len(u32::MAX), None);
         }
     }
 
     #[test]
-    fn metadata_rejects_invalid_size_and_count() {
+    fn manifest_rejects_invalid_size_and_count() {
         for (code_size, count) in [
             (0, 2),
             (LEGACY_CODE_CHUNK_SIZE as u32, 2),
@@ -572,31 +555,31 @@ mod tests {
             (MAX_CODE_SIZE as u32, MAX_CODE_CHUNKS + 1),
         ] {
             assert_eq!(
-                CodeMetadata::new(code_size, alloc::vec![B256::ZERO; count]),
-                Err(CodeChunkError::InvalidMetadata)
+                CodeManifest::new(code_size, alloc::vec![B256::ZERO; count]),
+                Err(CodeChunkError::InvalidManifest)
             );
         }
     }
 
     #[test]
     #[cfg(feature = "serde")]
-    fn metadata_serde_code_size() {
+    fn manifest_serde_code_size() {
         let code_size = 2 * CODE_CHUNK_SIZE as u32 + 7;
-        let metadata = CodeMetadata::new(code_size, alloc::vec![B256::ZERO; 3]).unwrap();
+        let manifest = CodeManifest::new(code_size, alloc::vec![B256::ZERO; 3]).unwrap();
         let json = serde_json::json!({
             "code_size": code_size,
             "chunk_hashes": [B256::ZERO, B256::ZERO, B256::ZERO],
         });
-        assert_eq!(serde_json::to_value(&metadata).unwrap(), json);
-        assert_eq!(serde_json::from_value::<CodeMetadata>(json).unwrap(), metadata);
-        let encoded = postcard::to_allocvec(&metadata).unwrap();
-        assert_eq!(postcard::from_bytes::<CodeMetadata>(&encoded).unwrap(), metadata);
+        assert_eq!(serde_json::to_value(&manifest).unwrap(), json);
+        assert_eq!(serde_json::from_value::<CodeManifest>(json).unwrap(), manifest);
+        let encoded = postcard::to_allocvec(&manifest).unwrap();
+        assert_eq!(postcard::from_bytes::<CodeManifest>(&encoded).unwrap(), manifest);
         for code_size in [0, CODE_CHUNK_SIZE as u32 + 1] {
             let json = serde_json::json!({
                 "code_size": code_size,
                 "chunk_hashes": [B256::ZERO, B256::ZERO],
             });
-            assert!(serde_json::from_value::<CodeMetadata>(json).is_err());
+            assert!(serde_json::from_value::<CodeManifest>(json).is_err());
         }
     }
 }

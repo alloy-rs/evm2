@@ -1,7 +1,10 @@
 //! Borrowed state-change streaming traits and adapters.
 
 use super::{AccountInfo, CodeChunkSlot, StorageOverlay};
-use crate::{bytecode::Bytecode, interpreter::Word};
+use crate::{
+    bytecode::{Bytecode, CodeManifest},
+    interpreter::Word,
+};
 use alloy_primitives::{Address, B256};
 use auto_impl::auto_impl;
 use core::convert::Infallible;
@@ -47,6 +50,8 @@ pub struct AccountChanges<'a> {
     pub code: Option<(B256, &'a Bytecode)>,
     /// The account's loaded storage slots and wipe marker.
     pub storage: &'a StorageOverlay,
+    /// Cached immutable layout record for the current code.
+    pub(crate) code_manifest: Option<&'a CodeManifest>,
     /// Cached runtime chunks associated with the account's current code.
     pub(crate) code_chunks: &'a [CodeChunkSlot],
 }
@@ -70,26 +75,31 @@ impl<'a> AccountChanges<'a> {
     pub fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
         if let Some((code_hash, code)) = self.code {
             sink.bytecode(code_hash, code)?;
-            if let Some(metadata) = self.current.and_then(AccountInfo::code_metadata) {
-                let cached = self.code_chunks.len() == metadata.chunk_count()
+            if let Ok((built_manifest, built_chunks)) =
+                crate::bytecode::build_code_artifacts(&code.original_bytes())
+            {
+                let manifest = self
+                    .code_manifest
+                    .filter(|manifest| **manifest == built_manifest)
+                    .unwrap_or(&built_manifest);
+                sink.code_manifest(code_hash, manifest)?;
+                let cached = manifest.is_chunked()
+                    && self.code_chunks.len() == manifest.chunk_count()
                     && self.code_chunks.iter().all(|slot| slot.chunk.is_some());
                 if cached {
                     for (chunk_hash, slot) in
-                        metadata.chunk_hashes().iter().copied().zip(self.code_chunks)
+                        manifest.chunk_hashes().iter().copied().zip(self.code_chunks)
                     {
-                        sink.code_chunk(
+                        sink.bytecode(
                             chunk_hash,
                             slot.chunk.as_ref().expect("checked cached chunk").as_bytecode(),
                         )?;
                     }
-                } else if let Ok(Some((prepared, chunks))) =
-                    crate::bytecode::prepare_code_chunks(&code.original_bytes())
-                    && &prepared == metadata
-                {
+                } else {
                     for (chunk_hash, chunk) in
-                        metadata.chunk_hashes().iter().copied().zip(chunks.iter())
+                        manifest.chunk_hashes().iter().copied().zip(built_chunks.iter())
                     {
-                        sink.code_chunk(chunk_hash, chunk.as_bytecode())?;
+                        sink.bytecode(chunk_hash, chunk.as_bytecode())?;
                     }
                 }
             }
@@ -145,15 +155,19 @@ pub trait StateChangeSink {
     /// Error returned by this sink.
     type Error;
 
-    /// Observes bytecode keyed by code hash.
+    /// Observes complete code or a prepared chunk keyed by its content hash.
     #[inline]
     fn bytecode(&mut self, _code_hash: B256, _code: &Bytecode) -> Result<(), Self::Error> {
         Ok(())
     }
 
-    /// Observes a prepared code chunk keyed by its commitment hash.
+    /// Observes an immutable layout record keyed by complete code hash.
     #[inline]
-    fn code_chunk(&mut self, _chunk_hash: B256, _chunk: &Bytecode) -> Result<(), Self::Error> {
+    fn code_manifest(
+        &mut self,
+        _code_hash: B256,
+        _manifest: &CodeManifest,
+    ) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -252,9 +266,13 @@ where
     }
 
     #[inline]
-    fn code_chunk(&mut self, chunk_hash: B256, chunk: &Bytecode) -> Result<(), Self::Error> {
-        self.a.code_chunk(chunk_hash, chunk)?;
-        self.b.code_chunk(chunk_hash, chunk)
+    fn code_manifest(
+        &mut self,
+        code_hash: B256,
+        manifest: &CodeManifest,
+    ) -> Result<(), Self::Error> {
+        self.a.code_manifest(code_hash, manifest)?;
+        self.b.code_manifest(code_hash, manifest)
     }
 
     #[inline]

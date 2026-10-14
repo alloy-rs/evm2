@@ -205,7 +205,7 @@ fn rjump_inner<T: EvmTypesHost>(offset: isize, cx: &mut GasInstructionCx<'_, '_,
 
 /// Two base-219 digits use the exact DUPN/SWAPN alphabet (decoded values 17..=235).
 /// Balanced signed displacements span -23980..=23980; no digit is PUSHn or JUMPDEST.
-#[cfg(all(test, feature = "account-ext"))]
+#[cfg(test)]
 pub(crate) const fn encode_rjump_offset(offset: isize) -> Option<[u8; 2]> {
     if offset < -23980 || offset > 23980 {
         return None;

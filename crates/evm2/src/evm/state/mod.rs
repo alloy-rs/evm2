@@ -11,7 +11,7 @@ mod storage_pool;
 mod stream;
 mod tracked;
 
-pub(crate) use account::{Account, CodeChunkSlot, CodeIdentity};
+pub(crate) use account::{Account, CodeChunkSlot};
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
 pub use journal::{JournalEntry, StateCheckpoint};
@@ -650,8 +650,6 @@ impl<'a> State<'a> {
             nonce: u64::from(features.contains(EvmFeatures::EIP161)),
             balance,
             code_hash: KECCAK256_EMPTY,
-            #[cfg(feature = "account-ext")]
-            chunks: None,
             code: Some(Bytecode::default()),
             _non_exhaustive: (),
             #[cfg(feature = "account-ext")]
@@ -743,7 +741,6 @@ impl<'a> State<'a> {
                     previous_just_created,
                     previous_code_changed,
                     previous_code_hash,
-                    previous_code_metadata,
                     previous_code_warmth,
                 } => {
                     // Reconcile the self-destruct set with the restored destroyed flag.
@@ -766,10 +763,7 @@ impl<'a> State<'a> {
                         entry.is_destroyed = previous_is_destroyed;
                         entry.just_created = previous_just_created;
                         entry.code_changed = previous_code_changed;
-                        let previous_code_identity = previous_code_hash.map(|code_hash| {
-                            CodeIdentity { code_hash, metadata: previous_code_metadata }
-                        });
-                        if entry.code_chunks.identity == previous_code_identity {
+                        if entry.code_chunks.code_hash == previous_code_hash {
                             entry
                                 .code_chunks
                                 .slots
@@ -780,7 +774,8 @@ impl<'a> State<'a> {
                                 slot.is_warm = is_warm;
                             }
                         } else {
-                            entry.code_chunks.identity = previous_code_identity;
+                            entry.code_chunks.code_hash = previous_code_hash;
+                            entry.code_chunks.manifest = None;
                             entry.code_chunks.slots = previous_code_warmth
                                 .into_iter()
                                 .map(|is_warm| CodeChunkSlot { chunk: None, is_warm })

@@ -4,8 +4,8 @@ use super::*;
 use crate::{
     BaseEvmConfigSelector, BaseEvmTypes, Precompiles, SpecId, Version,
     bytecode::{
-        Bytecode, CODE_CHUNK_SIZE, COLD_CODE_CHUNK_GAS, CodeMetadata, LEGACY_CODE_CHUNK_SIZE,
-        WARM_CODE_CHUNK_GAS, code_metadata,
+        Bytecode, CODE_CHUNK_SIZE, COLD_CODE_CHUNK_GAS, CodeManifest, LEGACY_CODE_CHUNK_SIZE,
+        WARM_CODE_CHUNK_GAS, build_code_artifacts,
     },
     env::{BlockEnvExt, TxEnvExt},
     ethereum::{ethereum_tx_registry, prepare_initial_frame},
@@ -17,6 +17,10 @@ use alloy_primitives::{Bytes, TxKind, U256, hex, keccak256};
 
 const OWNER: Address = Address::with_last_byte(0x81);
 const CALLER: Address = Address::with_last_byte(0x82);
+
+fn code_manifest(code: &[u8]) -> Result<CodeManifest, crate::bytecode::CodeChunkError> {
+    build_code_artifacts(&Bytes::copy_from_slice(code)).map(|(manifest, _)| manifest)
+}
 
 #[derive(Default)]
 struct CodeReads {
@@ -43,6 +47,13 @@ impl DynDatabase for CodeReads {
         DynDatabase::get_code_by_hash(&mut self.db, hash)
     }
 
+    fn get_code_manifest(
+        &mut self,
+        hash: &B256,
+    ) -> DbResult<Option<crate::bytecode::CodeManifest>> {
+        DynDatabase::get_code_manifest(&mut self.db, hash)
+    }
+
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         DynDatabase::get_storage(&mut self.db, address, key)
     }
@@ -58,12 +69,10 @@ fn test_evm(code: &[u8], chunked: bool) -> Evm<'static, BaseEvmTypes> {
 
 fn test_evm_with_rjump(code: &[u8], chunked: bool, rjump: bool) -> Evm<'static, BaseEvmTypes> {
     let mut db = CodeReads::default();
-    let mut account = AccountInfo::default().with_code(Bytecode::new_legacy(code.to_vec().into()));
-    if chunked {
-        account.chunks = code_metadata(code).unwrap();
-        db.chunk_hashes =
-            account.chunks.as_ref().map_or_else(Vec::new, |m| m.chunk_hashes().to_vec());
-    }
+    let account = AccountInfo::default().with_code(Bytecode::new_legacy(code.to_vec().into()));
+    let manifest = code_manifest(code).unwrap();
+    assert_eq!(manifest.is_chunked(), chunked);
+    db.chunk_hashes = manifest.chunk_hashes().to_vec();
     db.db.insert_account_info(&OWNER, account);
     Evm::new_with_execution_config(
         ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA)
@@ -168,7 +177,7 @@ fn extcodecopy_skips_unaffordable_cold_chunk() {
 }
 
 #[test]
-fn external_code_metadata_does_not_load_chunk_payloads() {
+fn external_code_manifest_does_not_load_chunk_payloads() {
     let bytes = vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1];
     let mut evm = test_evm(&bytes, true);
     let mut code = Vec::new();
@@ -424,7 +433,7 @@ fn extcodecopy_missing_or_malformed_chunk_is_fatal() {
     let bytes = vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1];
     for malformed in [false, true] {
         let mut evm = test_evm(&bytes, true);
-        let chunk_hash = code_metadata(&bytes).unwrap().unwrap().chunk_hashes()[1];
+        let chunk_hash = code_manifest(&bytes).unwrap().chunk_hashes()[1];
         let db = evm.database_mut().downcast_mut::<CodeReads>().unwrap();
         if malformed {
             db.db
@@ -493,7 +502,7 @@ enum CodeRead {
 }
 
 fn chunk_read(code: &[u8], index: u32) -> CodeRead {
-    CodeRead::Chunk(code_metadata(code).unwrap().unwrap().chunk_hashes()[index as usize])
+    CodeRead::Chunk(code_manifest(code).unwrap().chunk_hashes()[index as usize])
 }
 
 #[test]
@@ -738,7 +747,7 @@ fn account_code_size_distinguishes_empty_unknown_and_chunked_without_loading() {
         .insert_account_info(&funded, AccountInfo { balance: Word::from(1), ..Default::default() });
     for address in [OWNER, funded, Address::with_last_byte(0x86)] {
         let metadata = Host::load_account(&mut evm, &address, false, false).unwrap();
-        assert_eq!(metadata.code_info.size(), if address == OWNER { None } else { Some(0) });
+        assert_eq!(metadata.code_info.size(), if address == OWNER { Some(1) } else { Some(0) });
         assert_eq!(metadata.is_empty, address != OWNER && address != funded);
         assert!(metadata.code.is_empty());
         assert!(reads(&evm).is_empty());
@@ -826,17 +835,13 @@ fn tip1143_enables_relative_jumps_and_chunk_fallthrough() {
 }
 
 #[test]
-fn replacing_chunk_metadata_invalidates_cached_payloads() {
+fn replacing_account_code_invalidates_cached_payloads() {
     let bytes = vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1];
     let mut evm = test_evm(&bytes, true);
     evm.state.load_code_chunk(&OWNER, 0, false).unwrap().unwrap();
-    evm.state.account(&OWNER).unwrap().set_extension(AccountExtension::copy_from_slice(&[7]));
-    assert_eq!(evm.state.account(&OWNER).unwrap().code_chunk_cache_len(), 1);
     let mut info = evm.state.account(&OWNER).unwrap().get().unwrap().clone();
-    let metadata = info.chunks.as_ref().unwrap();
-    let mut hashes = metadata.chunk_hashes().to_vec();
-    hashes[0] = B256::repeat_byte(0x42);
-    info.chunks = Some(CodeMetadata::new(metadata.code_size(), hashes).unwrap());
+    info.code_hash = B256::repeat_byte(0x42);
+    info.code = None;
     evm.state.account(&OWNER).unwrap().set_info(info);
     assert_eq!(evm.state.account(&OWNER).unwrap().code_chunk_cache_len(), 0);
     assert!(matches!(

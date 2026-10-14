@@ -3,7 +3,7 @@
 use super::{DbResult, DynDatabase, EmptyDB};
 use crate::{
     DatabaseError,
-    bytecode::{Bytecode, LEGACY_CODE_CHUNK_SIZE},
+    bytecode::{Bytecode, CodeManifest},
     evm::{
         bal::BalContext,
         state::{
@@ -52,8 +52,10 @@ impl AccountStorageCache {
 pub struct Cache {
     /// Accounts keyed by address. `None` means the account is known to be absent/deleted.
     pub accounts: AddressMap<Option<AccountInfo>>,
-    /// Contracts keyed by code hash.
+    /// Complete code and prepared chunks keyed by content hash.
     pub contracts: B256Map<Bytecode>,
+    /// Immutable code layout records keyed by complete code hash.
+    pub code_manifests: B256Map<CodeManifest>,
     /// Persistent storage keyed by account, then slot.
     pub storage: AddressMap<AccountStorageCache>,
     /// Cached block hashes keyed by block number.
@@ -72,6 +74,7 @@ impl Cache {
     pub fn merge(&mut self, other: Self) {
         self.accounts.extend(other.accounts);
         self.contracts.extend(other.contracts);
+        self.code_manifests.extend(other.code_manifests);
         self.block_hashes.extend(other.block_hashes);
         for (address, storage) in other.storage {
             let target = self.storage.entry(address).or_default();
@@ -82,20 +85,18 @@ impl Cache {
         }
     }
 
-    /// Publishes resident deployment or ingestion output with its chunk lookup entries.
-    /// The caller supplies validated bytes and their complete-code identity.
-    pub fn insert_code(&mut self, code_hash: B256, code: &Bytecode) {
+    fn insert_bytecode(&mut self, code_hash: B256, code: &Bytecode) {
         self.contracts.insert(code_hash, code.clone());
     }
 
-    fn insert_chunks(contracts: &mut B256Map<Bytecode>, code: &Bytecode) {
-        if code.len() > LEGACY_CODE_CHUNK_SIZE {
-            let bytes = code.original_bytes();
-            if let Ok(Some((metadata, prepared))) = crate::bytecode::prepare_code_chunks(&bytes) {
-                for (hash, chunk) in metadata.chunk_hashes().iter().copied().zip(prepared) {
-                    contracts.insert(hash, chunk.bytecode());
-                }
+    fn insert_complete_code(&mut self, code_hash: B256, code: &Bytecode) {
+        self.insert_bytecode(code_hash, code);
+        let bytes = code.original_bytes();
+        if let Ok((manifest, chunks)) = crate::bytecode::build_code_artifacts(&bytes) {
+            for (hash, chunk) in manifest.chunk_hashes().iter().copied().zip(chunks) {
+                self.contracts.insert(hash, chunk.bytecode());
             }
+            self.code_manifests.insert(code_hash, manifest);
         }
     }
 }
@@ -109,6 +110,7 @@ impl Default for Cache {
         Self {
             accounts: AddressMap::default(),
             contracts,
+            code_manifests: B256Map::default(),
             storage: AddressMap::default(),
             block_hashes: U256Map::default(),
             _non_exhaustive: (),
@@ -190,7 +192,7 @@ impl<ExtDB> CacheDB<ExtDB> {
             }
 
             if let Some((code_hash, code)) = entry.changed_code() {
-                self.cache.insert_code(code_hash, code);
+                self.cache.insert_complete_code(code_hash, code);
             }
             if !entry.is_changed() {
                 continue;
@@ -208,21 +210,18 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// Inserts account code into the contract cache.
     #[inline]
     pub fn insert_contract(&mut self, info: &mut AccountInfo) {
-        Self::insert_contract_inner(&mut self.cache.contracts, info);
+        Self::insert_contract_inner(&mut self.cache, info);
     }
 
     #[inline]
-    fn insert_contract_inner(contracts: &mut B256Map<Bytecode>, info: &mut AccountInfo) {
+    fn insert_contract_inner(cache: &mut Cache, info: &mut AccountInfo) {
         if let Some(code) = &info.code
             && !code.is_empty()
         {
             if info.code_hash == KECCAK256_EMPTY {
                 info.code_hash = code.hash_slow();
             }
-            contracts.entry(info.code_hash).or_insert_with(|| code.clone());
-            if info.code_metadata().is_some() {
-                Cache::insert_chunks(contracts, code);
-            }
+            cache.insert_complete_code(info.code_hash, code);
         }
         if info.code_hash.is_zero() {
             info.code_hash = KECCAK256_EMPTY;
@@ -232,9 +231,6 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// Inserts account info.
     #[inline]
     pub fn insert_account_info(&mut self, address: &Address, mut info: AccountInfo) {
-        if info.code_metadata().is_some() && info.code.is_none() {
-            info.code = self.cache.contracts.get(&info.code_hash).cloned();
-        }
         self.insert_contract(&mut info);
         info.code = None;
         self.cache.accounts.insert(*address, Some(info));
@@ -268,14 +264,18 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     #[inline]
     fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
         self.bal_context.bytecode(code_hash, code)?;
-        self.cache.insert_code(code_hash, code);
+        self.cache.insert_bytecode(code_hash, code);
         Ok(())
     }
 
     #[inline]
-    fn code_chunk(&mut self, chunk_hash: B256, chunk: &Bytecode) -> Result<(), Self::Error> {
-        self.bal_context.code_chunk(chunk_hash, chunk)?;
-        self.cache.insert_code(chunk_hash, chunk);
+    fn code_manifest(
+        &mut self,
+        code_hash: B256,
+        manifest: &CodeManifest,
+    ) -> Result<(), Self::Error> {
+        self.bal_context.code_manifest(code_hash, manifest)?;
+        self.cache.code_manifests.insert(code_hash, manifest.clone());
         Ok(())
     }
 
@@ -343,19 +343,16 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
         // Resolve the raw account from the cache or backing database. The cache always stores the
         // raw value; any attached BAL is layered onto the returned value only.
-        let mut account = {
-            let Cache { accounts, contracts, .. } = &mut self.cache;
-            match accounts.entry(*address) {
-                Entry::Occupied(entry) => entry.get().clone(),
-                Entry::Vacant(entry) => match self.db.get_account(address)? {
-                    Some(mut info) => {
-                        Self::insert_contract_inner(contracts, &mut info);
-                        info.code = None;
-                        entry.insert(Some(info)).clone()
-                    }
-                    None => entry.insert(None).clone(),
-                },
+        let mut account = if let Some(account) = self.cache.accounts.get(address) {
+            account.clone()
+        } else {
+            let mut account = self.db.get_account(address)?;
+            if let Some(info) = &mut account {
+                Self::insert_contract_inner(&mut self.cache, info);
+                info.code = None;
             }
+            self.cache.accounts.insert(*address, account.clone());
+            account
         };
 
         // Apply the resolved BAL account's info at the current block access index.
@@ -370,6 +367,17 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
         match self.cache.contracts.entry(*code_hash) {
             Entry::Occupied(entry) => Ok(entry.get().clone()),
             Entry::Vacant(entry) => Ok(entry.insert(self.db.get_code_by_hash(code_hash)?).clone()),
+        }
+    }
+
+    #[inline]
+    fn get_code_manifest(&mut self, code_hash: &B256) -> DbResult<Option<CodeManifest>> {
+        match self.cache.code_manifests.entry(*code_hash) {
+            Entry::Occupied(entry) => Ok(Some(entry.get().clone())),
+            Entry::Vacant(entry) => {
+                let Some(manifest) = self.db.get_code_manifest(code_hash)? else { return Ok(None) };
+                Ok(Some(entry.insert(manifest).clone()))
+            }
         }
     }
 
@@ -443,6 +451,14 @@ mod typed {
         #[inline]
         fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
             DynDatabase::get_code_by_hash(self, code_hash)
+        }
+
+        #[inline]
+        fn get_code_manifest(
+            &mut self,
+            code_hash: &B256,
+        ) -> Result<Option<CodeManifest>, Self::Error> {
+            DynDatabase::get_code_manifest(self, code_hash)
         }
 
         #[inline]
@@ -562,6 +578,13 @@ mod tests {
                 .filter(|info| info.code_hash == *code_hash)
                 .and_then(|info| info.code.clone())
                 .unwrap_or_default())
+        }
+
+        fn get_code_manifest(
+            &mut self,
+            _code_hash: &B256,
+        ) -> Result<Option<CodeManifest>, Self::Error> {
+            Ok(None)
         }
 
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {

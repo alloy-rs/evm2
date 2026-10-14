@@ -1,7 +1,7 @@
 //! Revert journal and checkpoint types.
 
 use super::AccountInfo;
-use crate::{bytecode::CodeMetadata, interpreter::Word};
+use crate::interpreter::Word;
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256};
 
@@ -59,8 +59,6 @@ pub enum JournalEntry {
         previous_code_changed: bool,
         /// Previous complete-code hash governing cached slots.
         previous_code_hash: Option<B256>,
-        /// Previous chunk commitments governing cached slots.
-        previous_code_metadata: Option<CodeMetadata>,
         /// Previous transaction-local warmth indexed by chunk number.
         previous_code_warmth: Vec<bool>,
     },
