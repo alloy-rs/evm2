@@ -21,7 +21,9 @@ mod vstack;
 use vstack::{VSlot, VStack};
 
 const STACK_CAP: usize = 1024;
-// const WORD_SIZE: usize = 32;
+/// The size of a stack word in bytes. Stack lengths are kept in bytes so that stack addresses
+/// need no scaling.
+const WORD_SIZE: i64 = 32;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct FcxConfig {
@@ -74,7 +76,8 @@ pub(super) struct FunctionCx<'a, B: Backend> {
     i8_type: B::Type,
 
     // Locals.
-    /// The stack length. Either passed in the arguments as a pointer or allocated locally.
+    /// The stack length in bytes. Either passed in the arguments as a pointer or allocated
+    /// locally.
     stack_len: Pointer<B::Builder<'a>>,
     /// The stack value. Constant throughout the function, either passed in the arguments as a
     /// pointer or allocated locally.
@@ -84,7 +87,7 @@ pub(super) struct FunctionCx<'a, B: Backend> {
     sp_arg: Option<B::Value>,
     /// The EVM context. Opaque pointer, only passed to builtins.
     ecx: B::Value,
-    /// Stack length before the current instruction.
+    /// Stack length in bytes before the current instruction.
     len_before: B::Value,
     /// Stack length offset for the current instruction, used for push/pop.
     len_offset: i8,
@@ -92,8 +95,8 @@ pub(super) struct FunctionCx<'a, B: Backend> {
     /// Section-local virtual stack that caches values as SSA instead of
     /// immediately storing/loading from the stack alloca.
     vstack: VStack<B::Value>,
-    /// Stack length at the start of the current stack section, loaded once from the alloca.
-    /// All intra-section `len_before` values are derived from this + `section_len_offset`.
+    /// Stack length in bytes at the start of the current stack section, loaded once from the
+    /// alloca. All intra-section `len_before` values are derived from this + `section_len_offset`.
     section_start_len: B::Value,
     /// Stack pointer at the start of the current stack section (`&stack[section_start_len]`).
     /// All intra-section stack pointer GEPs are derived from this base to preserve pointer
@@ -316,8 +319,9 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         fx.bcx.switch_to_block(post_entry_block);
         if config.inspect_stack {
             let stack_len = fx.bcx.load(fx.isize_type, stack_len_arg, "stack_len");
-            fx.stack_len.store(&mut fx.bcx, stack_len);
-            fx.copy_stack_from_arg(stack_len);
+            let stack_len_bytes = fx.bcx.imul_imm(stack_len, WORD_SIZE);
+            fx.stack_len.store(&mut fx.bcx, stack_len_bytes);
+            fx.copy_stack_from_arg(stack_len_bytes);
         } else {
             fx.stack_len.store_imm(&mut fx.bcx, 0);
         }
@@ -482,7 +486,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.len_before = if self.section_len_offset == 0 {
             self.section_start_len
         } else {
-            self.bcx.iadd_imm(self.section_start_len, self.section_len_offset as i64)
+            self.bcx.iadd_imm(self.section_start_len, self.section_len_offset as i64 * WORD_SIZE)
         };
 
         // Check stack length for the current section.
@@ -501,7 +505,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // correct value, i.e. the offset we'd write matches what's already stored.
         let new_len_offset = self.section_len_offset + diff;
         if new_len_offset != self.stored_len_offset {
-            let len_changed = self.bcx.iadd_imm(self.len_before, diff as i64);
+            let len_changed = self.bcx.iadd_imm(self.len_before, diff as i64 * WORD_SIZE);
             self.stack_len.store(&mut self.bcx, len_changed);
             self.stored_len_offset = new_len_offset;
         }
@@ -1333,18 +1337,18 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
     /// Saves the local `stack_len` to `stack_len_arg`.
     fn save_stack_len(&mut self) {
-        let len = self.stack_len.load(&mut self.bcx, "stack_len");
+        let len_bytes = self.stack_len.load(&mut self.bcx, "stack_len");
+        let word_size = self.bcx.iconst(self.isize_type, WORD_SIZE);
+        let len = self.bcx.udiv(len_bytes, word_size);
         let ptr = self.stack_len_arg();
         self.bcx.store(len, ptr);
     }
 
     /// Copies the live prefix of the stack from the argument to the local alloca.
-    /// `len` is the number of live stack elements.
-    fn copy_stack_from_arg(&mut self, len: B::Value) {
+    /// `byte_len` is the size of the live stack in bytes.
+    fn copy_stack_from_arg(&mut self, byte_len: B::Value) {
         if let Some(src) = self.sp_arg {
             let dst = self.stack.addr(&mut self.bcx);
-            let word_size = 32i64;
-            let byte_len = self.bcx.imul_imm(len, word_size);
             self.bcx.memcpy(dst, src, byte_len);
         }
     }
@@ -1352,10 +1356,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     /// Copies the live prefix of the stack from the local alloca to the argument.
     fn copy_stack_to_arg(&mut self) {
         if let Some(dst) = self.sp_arg {
-            let len = self.stack_len.load(&mut self.bcx, "stack_len");
+            let byte_len = self.stack_len.load(&mut self.bcx, "stack_len");
             let src = self.stack.addr(&mut self.bcx);
-            let word_size = 32i64;
-            let byte_len = self.bcx.imul_imm(len, word_size);
             self.bcx.memcpy(dst, src, byte_len);
         }
     }
@@ -1439,10 +1441,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.gep(self.word_type, self.section_start_sp, &[offset], "sp")
     }
 
-    /// Returns the stack pointer at `len` (`&stack[len]`).
-    fn sp_at(&mut self, len: B::Value) -> B::Value {
+    /// Returns the stack pointer at `len_bytes` (`&stack[len_bytes / 32]`).
+    fn sp_at(&mut self, len_bytes: B::Value) -> B::Value {
         let ptr = self.stack.addr(&mut self.bcx);
-        self.bcx.gep(self.word_type, ptr, &[len], "sp")
+        self.bcx.gep(self.i8_type, ptr, &[len_bytes], "sp")
     }
 
     /// Returns the stack pointer at `n` from the top (`&stack[len - n]`).
@@ -1635,14 +1637,15 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
         let underflow = |this: &mut Self| {
             debug_assert!(inp > 0);
-            this.bcx.icmp_imm(IntCC::UnsignedLessThan, this.len_before, inp as i64)
+            this.bcx.icmp_imm(IntCC::UnsignedLessThan, this.len_before, inp as i64 * WORD_SIZE)
         };
         let overflow = |this: &mut Self| {
             debug_assert!(diff > 0);
             if diff > STACK_CAP as i64 {
                 return this.bcx.bool_const(true);
             }
-            this.bcx.icmp_imm(IntCC::UnsignedGreaterThan, this.len_before, STACK_CAP as i64 - diff)
+            let max = (STACK_CAP as i64 - diff) * WORD_SIZE;
+            this.bcx.icmp_imm(IntCC::UnsignedGreaterThan, this.len_before, max)
         };
 
         let may_underflow = inp > 0;
