@@ -4,7 +4,7 @@ use super::{
     AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange, Tracked,
 };
 use crate::{
-    bytecode::CodeRecord,
+    bytecode::Bytecode,
     interpreter::Word,
     storage_key::{StorageKey, StorageKeyMap},
 };
@@ -22,7 +22,7 @@ pub struct BlockStateAccumulator {
     accounts: AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: AddressSet,
     storage: StorageKeyMap<Tracked<Word>>,
-    code: B256Map<CodeRecord>,
+    code: B256Map<Bytecode>,
 }
 
 impl BlockStateAccumulator {
@@ -64,7 +64,7 @@ impl BlockStateAccumulator {
 
     /// Returns complete code and prepared chunk entries in arbitrary map order.
     #[inline]
-    pub fn code_records(&self) -> impl Iterator<Item = (&B256, &CodeRecord)> {
+    pub fn code(&self) -> impl Iterator<Item = (&B256, &Bytecode)> {
         self.code.iter()
     }
 
@@ -89,14 +89,14 @@ impl BlockStateAccumulator {
         storage
     }
 
-    /// Returns code records sorted by commitment.
+    /// Returns bytecode values sorted by commitment.
     ///
     /// The counterpart to [`Self::accounts_sorted`], [`Self::storage_sorted`], and
-    /// [`Self::storage_wipes_sorted`]: [`Self::code_records`] iterates a map, so a consumer
+    /// [`Self::storage_wipes_sorted`]: [`Self::code`] iterates a map, so a consumer
     /// that needs a deterministic enumeration of the whole accumulator would
     /// otherwise have to sort this one collection itself.
-    pub fn code_records_sorted(&self) -> Vec<(&B256, &CodeRecord)> {
-        let mut code = self.code_records().collect::<Vec<_>>();
+    pub fn code_sorted(&self) -> Vec<(&B256, &Bytecode)> {
+        let mut code = self.code().collect::<Vec<_>>();
         code.sort_unstable_by_key(|(hash, _)| *hash);
         code
     }
@@ -106,7 +106,7 @@ impl StateChangeSink for BlockStateAccumulator {
     type Error = Infallible;
 
     #[inline]
-    fn code(&mut self, code_hash: B256, code: &CodeRecord) -> Result<(), Self::Error> {
+    fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
         self.code.entry(code_hash).or_insert_with(|| code.clone());
         Ok(())
     }
@@ -203,13 +203,13 @@ fn visit_block_changes<S: StateChangeSink>(
     accounts: &AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: &AddressSet,
     storage: &StorageKeyMap<Tracked<Word>>,
-    code: &B256Map<CodeRecord>,
+    code: &B256Map<Bytecode>,
     sink: &mut S,
 ) -> Result<(), S::Error> {
     let mut code_entries = code.iter().collect::<Vec<_>>();
     code_entries.sort_by_key(|(code_hash, _)| **code_hash);
     for (&code_hash, code) in code_entries {
-        sink.code(code_hash, code)?;
+        sink.bytecode(code_hash, code)?;
     }
 
     let mut storage_wipes = storage_wipes.iter().copied().collect::<Vec<_>>();
@@ -264,28 +264,28 @@ mod tests {
     use alloy_primitives::B256;
 
     #[test]
-    fn code_records_sorted_orders_by_hash() {
-        use crate::bytecode::{Bytecode, CodeRecord};
+    fn code_sorted_orders_by_hash() {
+        use crate::bytecode::Bytecode;
         use alloy_primitives::{B256, Bytes};
 
         let mut block = BlockStateAccumulator::new();
         // Inserted descending, so map order cannot be mistaken for sorted order.
         for byte in [0xcc_u8, 0x11, 0x77] {
-            StateChangeSink::code(
+            StateChangeSink::bytecode(
                 &mut block,
                 B256::repeat_byte(byte),
-                &CodeRecord::Bytecode(Bytecode::new_raw_checked(Bytes::from(vec![byte])).unwrap()),
+                &Bytecode::new_raw_checked(Bytes::from(vec![byte])).unwrap(),
             )
             .unwrap();
         }
 
-        let hashes: Vec<_> = block.code_records_sorted().iter().map(|(hash, _)| **hash).collect();
+        let hashes: Vec<_> = block.code_sorted().iter().map(|(hash, _)| **hash).collect();
         assert_eq!(
             hashes,
             vec![B256::repeat_byte(0x11), B256::repeat_byte(0x77), B256::repeat_byte(0xcc)]
         );
         // Same entries as the unsorted accessor, only ordered.
-        assert_eq!(block.code_records_sorted().len(), block.code_records().count());
+        assert_eq!(block.code_sorted().len(), block.code().count());
     }
 
     fn changes(
@@ -321,12 +321,7 @@ mod tests {
         let mut accumulator = BlockStateAccumulator::new();
         let code_hash = B256::with_last_byte(1);
         let bytecode = Bytecode::new_raw_checked(vec![0x60, 0x00].into()).unwrap();
-        StateChangeSink::code(
-            &mut accumulator,
-            code_hash,
-            &crate::bytecode::CodeRecord::Bytecode(bytecode),
-        )
-        .unwrap();
+        StateChangeSink::bytecode(&mut accumulator, code_hash, &bytecode).unwrap();
 
         let encoded = postcard::to_allocvec(&accumulator).unwrap();
         let deserialized: BlockStateAccumulator = postcard::from_bytes(&encoded).unwrap();

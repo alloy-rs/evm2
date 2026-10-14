@@ -4,8 +4,8 @@ use super::*;
 use crate::{
     BaseEvmConfigSelector, BaseEvmTypes, Precompiles, SpecId, Version,
     bytecode::{
-        Bytecode, CODE_CHUNK_SIZE, COLD_CODE_CHUNK_GAS, CodeManifest, CodeRecord,
-        LEGACY_CODE_CHUNK_SIZE, WARM_CODE_CHUNK_GAS, build_code_artifacts,
+        Bytecode, CODE_CHUNK_SIZE, COLD_CODE_CHUNK_GAS, CodeManifest, LEGACY_CODE_CHUNK_SIZE,
+        WARM_CODE_CHUNK_GAS, build_code_artifacts,
     },
     env::{BlockEnvExt, TxEnvExt},
     ethereum::{ethereum_tx_registry, prepare_initial_frame},
@@ -36,20 +36,22 @@ impl DynDatabase for CodeReads {
         DynDatabase::get_account(&mut self.db, address)
     }
 
-    fn get_code_by_hash(&mut self, hash: &B256) -> DbResult<CodeRecord> {
+    fn get_code_by_hash(&mut self, hash: &B256) -> DbResult<Bytecode> {
         if self.chunk_hashes.contains(hash) {
             self.reads.push(CodeRead::Chunk(*hash));
             if let Some(error) = &self.chunk_error {
                 return Err(error.clone());
             }
         }
-        let record = DynDatabase::get_code_by_hash(&mut self.db, hash)?;
-        if matches!(record, CodeRecord::Chunked(_)) {
+        let code = DynDatabase::get_code_by_hash(&mut self.db, hash)?;
+        if CodeManifest::from_bytecode(&code)
+            .is_ok_and(|manifest| manifest.code_hash() == Some(*hash))
+        {
             self.manifest_reads += 1;
         } else if !self.chunk_hashes.contains(hash) {
             self.reads.push(CodeRead::Legacy(*hash));
         }
-        Ok(record)
+        Ok(code)
     }
 
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
@@ -464,7 +466,7 @@ fn extcodecopy_missing_or_malformed_chunk_is_fatal() {
             db.db
                 .cache
                 .contracts
-                .insert(chunk_hash, Bytecode::new_legacy(vec![op::STOP; 7].into()).into());
+                .insert(chunk_hash, Bytecode::new_legacy(vec![op::STOP; 7].into()));
         } else {
             db.db.cache.contracts.remove(&chunk_hash);
         }

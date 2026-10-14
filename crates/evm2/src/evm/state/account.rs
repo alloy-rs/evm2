@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     CodeChunkLoadError, DatabaseError, EvmFeatures,
-    bytecode::{Bytecode, CodeChunk, CodeManifest, CodeRecord},
+    bytecode::{Bytecode, CodeChunk, CodeManifest},
     interpreter::Word,
 };
 use alloc::vec::Vec;
@@ -360,6 +360,10 @@ fn normalize_account_bytecode(code: &Bytecode) -> Bytecode {
     code.normalize_complete()
 }
 
+fn is_stored_manifest(code_hash: B256, code: &Bytecode) -> bool {
+    CodeManifest::from_bytecode(code).is_ok_and(|manifest| manifest.code_hash() == Some(code_hash))
+}
+
 impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Creates a handle over a loaded account overlay slot and the shared inner state (backing
     /// database, revert journal, and transaction-initial base warm set).
@@ -537,12 +541,11 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
             return Ok(normalize_account_bytecode(code));
         }
         let code_hash = account.code_hash;
-        match self.inner.database.get_code_by_hash(&code_hash)? {
-            CodeRecord::Bytecode(code) => Ok(normalize_account_bytecode(&code)),
-            CodeRecord::Chunked(_) => {
-                Err(DatabaseError::new(CodeChunkLoadError::Invalid(code_hash), true))
-            }
+        let code = self.inner.database.get_code_by_hash(&code_hash)?;
+        if is_stored_manifest(code_hash, &code) {
+            return Err(DatabaseError::new(CodeChunkLoadError::Invalid(code_hash), true));
         }
+        Ok(normalize_account_bytecode(&code))
     }
 
     /// Loads and caches the immutable code layout record through the account code hash.
@@ -587,12 +590,11 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
             return Ok(normalize_account_bytecode(code));
         }
         let code_hash = account.code_hash;
-        match self.inner.database.get_code_by_hash(&code_hash)? {
-            CodeRecord::Bytecode(code) => Ok(normalize_account_bytecode(&code)),
-            CodeRecord::Chunked(_) => {
-                Err(DatabaseError::new(CodeChunkLoadError::Invalid(code_hash), true))
-            }
+        let code = self.inner.database.get_code_by_hash(&code_hash)?;
+        if is_stored_manifest(code_hash, &code) {
+            return Err(DatabaseError::new(CodeChunkLoadError::Invalid(code_hash), true));
         }
+        Ok(normalize_account_bytecode(&code))
     }
 
     /// Recognizes current delegation code from the stored bytecode.
@@ -605,13 +607,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
             return Ok(code.is_eip7702());
         }
         let code_hash = account.code_hash;
-        match self.inner.database.get_code_by_hash(&code_hash)? {
-            CodeRecord::Bytecode(code) => Ok(code.is_eip7702()),
-            CodeRecord::Chunked(manifest) if manifest.code_hash() == Some(code_hash) => Ok(false),
-            CodeRecord::Chunked(_) => {
-                Err(DatabaseError::new(CodeChunkLoadError::Invalid(code_hash), true))
-            }
-        }
+        let code = self.inner.database.get_code_by_hash(&code_hash)?;
+        Ok(!is_stored_manifest(code_hash, &code) && code.is_eip7702())
     }
 
     /// Recognizes delegation at the transaction boundary from the stored bytecode.
@@ -624,13 +621,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
             return Ok(code.is_eip7702());
         }
         let code_hash = account.code_hash;
-        match self.inner.database.get_code_by_hash(&code_hash)? {
-            CodeRecord::Bytecode(code) => Ok(code.is_eip7702()),
-            CodeRecord::Chunked(manifest) if manifest.code_hash() == Some(code_hash) => Ok(false),
-            CodeRecord::Chunked(_) => {
-                Err(DatabaseError::new(CodeChunkLoadError::Invalid(code_hash), true))
-            }
-        }
+        let code = self.inner.database.get_code_by_hash(&code_hash)?;
+        Ok(!is_stored_manifest(code_hash, &code) && code.is_eip7702())
     }
 
     /// Touches the account, recording a revert snapshot the first time it is mutated.

@@ -2,7 +2,7 @@
 
 use super::{AccountInfo, CodeChunkSlot, StorageOverlay};
 use crate::{
-    bytecode::{Bytecode, CodeManifest, CodeRecord},
+    bytecode::{Bytecode, CodeManifest},
     interpreter::Word,
 };
 use alloy_primitives::{Address, B256};
@@ -83,9 +83,12 @@ impl<'a> AccountChanges<'a> {
                     .unwrap_or(&built_manifest);
                 let chunked = manifest.code_hash() == Some(code_hash);
                 if chunked {
-                    sink.code(code_hash, &CodeRecord::Chunked(manifest.clone()))?;
+                    sink.bytecode(
+                        code_hash,
+                        &manifest.bytecode().expect("chunked manifest has storage encoding"),
+                    )?;
                 } else {
-                    sink.code(code_hash, &CodeRecord::Bytecode(code.clone()))?;
+                    sink.bytecode(code_hash, code)?;
                 }
                 let cached = chunked
                     && self.code_chunks.len() == manifest.chunk_count()
@@ -94,22 +97,20 @@ impl<'a> AccountChanges<'a> {
                     for (chunk_hash, slot) in
                         manifest.chunk_hashes().iter().copied().zip(self.code_chunks)
                     {
-                        sink.code(
+                        sink.bytecode(
                             chunk_hash,
-                            &CodeRecord::Bytecode(
-                                slot.chunk.as_ref().expect("checked cached chunk").bytecode(),
-                            ),
+                            &slot.chunk.as_ref().expect("checked cached chunk").bytecode(),
                         )?;
                     }
                 } else if chunked {
                     for (chunk_hash, chunk) in
                         manifest.chunk_hashes().iter().copied().zip(built_chunks.iter())
                     {
-                        sink.code(chunk_hash, &CodeRecord::Bytecode(chunk.bytecode()))?;
+                        sink.bytecode(chunk_hash, &chunk.bytecode())?;
                     }
                 }
             } else {
-                sink.code(code_hash, &CodeRecord::Bytecode(code.clone()))?;
+                sink.bytecode(code_hash, code)?;
             }
         }
         let address = self.address;
@@ -163,9 +164,9 @@ pub trait StateChangeSink {
     /// Error returned by this sink.
     type Error;
 
-    /// Observes legacy code, a chunk manifest, or a prepared chunk keyed by its commitment.
+    /// Observes bytecode keyed by its commitment.
     #[inline]
-    fn code(&mut self, _code_hash: B256, _code: &CodeRecord) -> Result<(), Self::Error> {
+    fn bytecode(&mut self, _code_hash: B256, _code: &Bytecode) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -258,9 +259,9 @@ where
     type Error = A::Error;
 
     #[inline]
-    fn code(&mut self, code_hash: B256, code: &CodeRecord) -> Result<(), Self::Error> {
-        self.a.code(code_hash, code)?;
-        self.b.code(code_hash, code)
+    fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
+        self.a.bytecode(code_hash, code)?;
+        self.b.bytecode(code_hash, code)
     }
 
     #[inline]

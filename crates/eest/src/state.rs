@@ -30,7 +30,7 @@ pub(crate) fn system_contract_has_code(database: &InMemoryDB, address: Address) 
         .get(&address)
         .and_then(Option::as_ref)
         .and_then(|info| database.cache.contracts.get(&info.code_hash))
-        .is_some_and(|code| code.bytecode().is_none_or(|code| !code.is_empty()))
+        .is_some_and(|code| !code.is_empty())
 }
 
 /// Returns persistent storage values for trie-root calculation.

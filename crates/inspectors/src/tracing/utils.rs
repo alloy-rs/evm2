@@ -9,7 +9,7 @@ use alloy_primitives::{Bytes, KECCAK256_EMPTY, hex};
 use alloy_sol_types::{ContractError, GenericRevertReason};
 use evm2::{
     AccountInfo, CodeChunkLoadError, DatabaseError, SpecId,
-    bytecode::{CodeChunk, CodeRecord},
+    bytecode::{CodeChunk, CodeManifest},
     evm::{DbResult, DynDatabase},
     interpreter::InstrStop,
 };
@@ -143,30 +143,24 @@ pub(crate) fn load_account_code(
     if let Some(code) = &account.code {
         return Ok(Some(code.original_bytes()));
     }
-    match db.get_code_by_hash(&account.code_hash)? {
-        CodeRecord::Bytecode(code) => Ok(Some(code.original_bytes())),
-        CodeRecord::Chunked(manifest) => {
-            if manifest.code_hash() != Some(account.code_hash) {
-                return Err(DatabaseError::new(
-                    CodeChunkLoadError::Invalid(account.code_hash),
-                    true,
-                ));
-            }
-            let mut bytes = Vec::with_capacity(manifest.code_size() as usize);
-            for (index, hash) in manifest.chunk_hashes().iter().copied().enumerate() {
-                let CodeRecord::Bytecode(code) = db.get_code_by_hash(&hash)? else {
-                    return Err(DatabaseError::new(CodeChunkLoadError::Invalid(hash), true));
-                };
-                let chunk = CodeChunk::from_chunked(code, manifest.code_size(), index as u32)
-                    .map_err(|_| DatabaseError::new(CodeChunkLoadError::Invalid(hash), true))?;
-                if chunk.as_bytecode().hash_slow() != hash {
-                    return Err(DatabaseError::new(CodeChunkLoadError::Invalid(hash), true));
-                }
-                bytes.extend_from_slice(&chunk.bytes()[..chunk.payload_len()]);
-            }
-            Ok(Some(bytes.into()))
-        }
+    let code = db.get_code_by_hash(&account.code_hash)?;
+    let Ok(manifest) = CodeManifest::from_bytecode(&code) else {
+        return Ok(Some(code.original_bytes()));
+    };
+    if manifest.code_hash() != Some(account.code_hash) {
+        return Ok(Some(code.original_bytes()));
     }
+    let mut bytes = Vec::with_capacity(manifest.code_size() as usize);
+    for (index, hash) in manifest.chunk_hashes().iter().copied().enumerate() {
+        let code = db.get_code_by_hash(&hash)?;
+        let chunk = CodeChunk::from_chunked(code, manifest.code_size(), index as u32)
+            .map_err(|_| DatabaseError::new(CodeChunkLoadError::Invalid(hash), true))?;
+        if chunk.as_bytecode().hash_slow() != hash {
+            return Err(DatabaseError::new(CodeChunkLoadError::Invalid(hash), true));
+        }
+        bytes.extend_from_slice(&chunk.bytes()[..chunk.payload_len()]);
+    }
+    Ok(Some(bytes.into()))
 }
 
 /// Returns a non-empty revert reason if the output is a revert/error.

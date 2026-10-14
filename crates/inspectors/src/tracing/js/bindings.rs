@@ -1311,17 +1311,13 @@ mod tests {
             Ok((*address == self.address).then(|| self.account.clone()))
         }
 
-        fn get_code_by_hash(
-            &mut self,
-            code_hash: &B256,
-        ) -> Result<evm2::bytecode::CodeRecord, Self::Error> {
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
             Ok(self
                 .account
                 .code
                 .clone()
                 .filter(|_| *code_hash == self.account.code_hash)
-                .unwrap_or_default()
-                .into())
+                .unwrap_or_default())
         }
 
         fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error> {

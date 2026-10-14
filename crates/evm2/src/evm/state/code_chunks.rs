@@ -3,7 +3,7 @@
 use super::{Account, AccountInfo, CodeChunkSlot, JournalEntry, State, StateInner};
 use crate::{
     CodeChunkLoadError, DatabaseError, LoadError,
-    bytecode::{CodeChunk, CodeManifest, CodeRecord, LEGACY_CODE_CHUNK_SIZE},
+    bytecode::{CodeChunk, CodeManifest, LEGACY_CODE_CHUNK_SIZE},
     evm::db::{DbResult, DynDatabase},
 };
 use alloy_primitives::{Address, KECCAK256_EMPTY};
@@ -159,7 +159,7 @@ impl<'db> State<'db> {
     }
 }
 
-/// Resolves and validates the record selected by an account's code commitment.
+/// Resolves and validates the bytecode selected by an account's code commitment.
 pub(super) fn load_code_artifacts<D: DynDatabase + ?Sized>(
     info: &AccountInfo,
     database: &mut D,
@@ -174,22 +174,20 @@ pub(super) fn load_code_artifacts<D: DynDatabase + ?Sized>(
         return Ok(artifacts);
     }
 
-    let record = database.get_code_by_hash(&info.code_hash)?;
-    let manifest = match record {
-        CodeRecord::Chunked(manifest) if manifest.code_hash() == Some(info.code_hash) => manifest,
-        CodeRecord::Bytecode(code) if code.is_empty() => {
-            return Err(DatabaseError::new(CodeChunkLoadError::Missing(info.code_hash), true));
-        }
-        CodeRecord::Bytecode(code)
-            if code.hash_slow() == info.code_hash && code.len() <= LEGACY_CODE_CHUNK_SIZE =>
-        {
-            crate::bytecode::build_code_artifacts(&code.original_bytes())
-                .map_err(|_| DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true))?
-                .0
-        }
-        _ => {
-            return Err(DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true));
-        }
+    let code = database.get_code_by_hash(&info.code_hash)?;
+    if code.is_empty() {
+        return Err(DatabaseError::new(CodeChunkLoadError::Missing(info.code_hash), true));
+    }
+    let manifest = if let Ok(manifest) = CodeManifest::from_bytecode(&code)
+        && manifest.code_hash() == Some(info.code_hash)
+    {
+        manifest
+    } else if code.hash_slow() == info.code_hash && code.len() <= LEGACY_CODE_CHUNK_SIZE {
+        crate::bytecode::build_code_artifacts(&code.original_bytes())
+            .map_err(|_| DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true))?
+            .0
+    } else {
+        return Err(DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true));
     };
     Ok((manifest, Vec::new()))
 }
@@ -214,10 +212,7 @@ fn load_chunk(
             Some(CodeChunk::from_legacy_bytecode(code))
         })
     } else if multi {
-        inner.database.get_code_by_hash(&payload_hash).and_then(|record| {
-            let CodeRecord::Bytecode(bytecode) = record else {
-                return Err(DatabaseError::new(CodeChunkLoadError::Invalid(payload_hash), true));
-            };
+        inner.database.get_code_by_hash(&payload_hash).and_then(|bytecode| {
             if bytecode.is_empty() {
                 return Ok(None);
             }
@@ -231,12 +226,10 @@ fn load_chunk(
     } else {
         // Account type selects legacy representation even when the same hash also
         // belongs to an account using the fixed-stride chunk representation.
-        inner.database.get_code_by_hash(&hash).and_then(|record| match record {
-            CodeRecord::Bytecode(code) => Ok(Some(CodeChunk::from_legacy_bytecode(&code))),
-            CodeRecord::Chunked(_) => {
-                Err(DatabaseError::new(CodeChunkLoadError::Invalid(hash), true))
-            }
-        })
+        inner
+            .database
+            .get_code_by_hash(&hash)
+            .map(|code| Some(CodeChunk::from_legacy_bytecode(&code)))
     };
     let chunk = match result {
         Ok(Some(chunk))

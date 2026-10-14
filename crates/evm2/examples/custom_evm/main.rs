@@ -9,7 +9,7 @@ use alloy_primitives::{Address, B256, Bytes, U256};
 use config::{CustomBlockEnvExt, CustomSpecId, CustomTypes, custom_version};
 use evm2::{
     Evm, EvmConfigSelector, ExecutionConfig, SpecId, Version,
-    bytecode::CodeRecord,
+    bytecode::Bytecode,
     env::BlockEnv,
     evm::{
         AccountChangeRef, AccountInfo, InMemoryDB, StateChangeSink, StorageChange,
@@ -262,7 +262,7 @@ struct ExampleStateConsumer {
 impl StateChangeSink for ExampleStateConsumer {
     type Error = core::convert::Infallible;
 
-    fn code(&mut self, _code_hash: B256, _code: &CodeRecord) -> Result<(), Self::Error> {
+    fn bytecode(&mut self, _code_hash: B256, _code: &Bytecode) -> Result<(), Self::Error> {
         self.bytecodes += 1;
         Ok(())
     }

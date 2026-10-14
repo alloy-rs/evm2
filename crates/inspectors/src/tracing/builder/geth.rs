@@ -663,7 +663,7 @@ mod tests {
     use alloy_primitives::{B256, U256, address};
     use evm2::{
         AccountInfo, DatabaseError,
-        bytecode::{Bytecode, CodeRecord},
+        bytecode::Bytecode,
         evm::{CacheDB, DbResult, DynDatabase, EmptyDB},
         interpreter::{InstrStop, Word},
     };
@@ -683,7 +683,7 @@ mod tests {
             Err(self.error.clone())
         }
 
-        fn get_code_by_hash(&mut self, _code_hash: &B256) -> DbResult<CodeRecord> {
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> DbResult<Bytecode> {
             Err(self.error.clone())
         }
 

@@ -197,46 +197,6 @@ pub struct CodeManifest {
     chunk_hashes: Vec<B256>,
 }
 
-/// Immutable value stored in the code table.
-///
-/// An account code hash resolves to complete bytecode for legacy code or a manifest for chunked
-/// code. Hashes inside a manifest resolve to prepared chunk bytecode through the same table.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum CodeRecord {
-    /// Complete legacy code or one prepared chunk.
-    Bytecode(Bytecode),
-    /// Ordered commitments for a chunked runtime.
-    Chunked(CodeManifest),
-}
-
-impl From<Bytecode> for CodeRecord {
-    #[inline]
-    fn from(code: Bytecode) -> Self {
-        Self::Bytecode(code)
-    }
-}
-
-impl CodeRecord {
-    /// Borrows bytecode when this record contains executable bytes.
-    #[inline]
-    pub const fn bytecode(&self) -> Option<&Bytecode> {
-        match self {
-            Self::Bytecode(code) => Some(code),
-            Self::Chunked(_) => None,
-        }
-    }
-
-    /// Borrows the manifest when this record describes chunked code.
-    #[inline]
-    pub const fn manifest(&self) -> Option<&CodeManifest> {
-        match self {
-            Self::Bytecode(_) => None,
-            Self::Chunked(manifest) => Some(manifest),
-        }
-    }
-}
-
 impl CodeManifest {
     /// Validates the complete logical size and ordered chunk commitments.
     pub fn new(code_size: u32, chunk_hashes: Vec<B256>) -> Result<Self, CodeChunkError> {
@@ -263,6 +223,31 @@ impl CodeManifest {
             }
             keccak256(bytes)
         })
+    }
+
+    /// Encodes this chunked manifest for storage through the bytecode database API.
+    pub fn bytecode(&self) -> Option<Bytecode> {
+        self.is_chunked().then(|| {
+            let mut bytes = Vec::with_capacity(4 + self.chunk_hashes.len() * B256::len_bytes());
+            bytes.extend_from_slice(&self.code_size.to_be_bytes());
+            for hash in &self.chunk_hashes {
+                bytes.extend_from_slice(hash.as_slice());
+            }
+            Bytecode::new_legacy(bytes.into())
+        })
+    }
+
+    /// Decodes a chunked manifest stored through the bytecode database API.
+    pub fn from_bytecode(code: &Bytecode) -> Result<Self, CodeChunkError> {
+        let bytes = code.original_byte_slice();
+        let hashes = bytes.get(4..).ok_or(CodeChunkError::InvalidManifest)?;
+        if hashes.is_empty() || hashes.len() % B256::len_bytes() != 0 {
+            return Err(CodeChunkError::InvalidManifest);
+        }
+        let code_size =
+            u32::from_be_bytes(bytes[..4].try_into().map_err(|_| CodeChunkError::InvalidManifest)?);
+        let chunk_hashes = hashes.as_chunks::<32>().0.iter().copied().map(B256::from).collect();
+        Self::new(code_size, chunk_hashes)
     }
 
     /// Number of committed chunks.
@@ -625,6 +610,20 @@ mod tests {
                 Err(CodeChunkError::InvalidManifest)
             );
         }
+    }
+
+    #[test]
+    fn manifest_bytecode_roundtrip() {
+        let code_size = 2 * CODE_CHUNK_SIZE as u32 + 7;
+        let manifest = CodeManifest::new(
+            code_size,
+            alloc::vec![B256::repeat_byte(1), B256::repeat_byte(2), B256::repeat_byte(3)],
+        )
+        .unwrap();
+        let bytecode = manifest.bytecode().unwrap();
+
+        assert_eq!(CodeManifest::from_bytecode(&bytecode), Ok(manifest));
+        assert_eq!(bytecode.len(), 4 + 3 * B256::len_bytes());
     }
 
     #[test]

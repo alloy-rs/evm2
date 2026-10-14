@@ -6,7 +6,7 @@
 
 use crate::{
     DatabaseError,
-    bytecode::CodeRecord,
+    bytecode::Bytecode,
     evm::{AccountInfo, DbResult, DynDatabase, NonStaticAny},
     interpreter::Word,
 };
@@ -424,11 +424,11 @@ pub trait AsyncDatabase: NonStaticAny {
         address: Address,
     ) -> impl Future<Output = Result<Option<AccountInfo>, Self::Error>> + Send + '_;
 
-    /// Loads a legacy runtime, chunk manifest, or prepared chunk by commitment.
+    /// Loads bytecode by commitment.
     fn get_code_by_hash(
         &mut self,
         code_hash: B256,
-    ) -> impl Future<Output = Result<CodeRecord, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_;
 
     /// Loads a persistent storage slot.
     fn get_storage(
@@ -497,7 +497,7 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<CodeRecord> {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         let result = {
             let Self { db, .. } = self;
             block_on_current_result(db.get_code_by_hash(*code_hash))
@@ -536,7 +536,7 @@ mod tests {
     use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
         BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult, TxResultExt,
-        bytecode::{Bytecode, CodeRecord},
+        bytecode::Bytecode,
         env::BlockEnvExt,
         evm::{AccountInfo, Database, Db, DynDatabase, InMemoryDB, PrecompileProvider, SystemTx},
         interpreter::{GasTracker, Message, Word, op},
@@ -1092,8 +1092,8 @@ mod tests {
             Ok(None)
         }
 
-        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<CodeRecord, Self::Error> {
-            Ok(Bytecode::default().into())
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
         }
 
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
@@ -1124,8 +1124,8 @@ mod tests {
             Ok(None)
         }
 
-        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<CodeRecord, Self::Error> {
-            Ok(Bytecode::default().into())
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
         }
 
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
@@ -1224,8 +1224,8 @@ mod tests {
             Ok(None)
         }
 
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<CodeRecord, Self::Error> {
-            Ok(Bytecode::default().into())
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
         }
 
         async fn get_storage(
@@ -1255,8 +1255,8 @@ mod tests {
             Ok(None)
         }
 
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<CodeRecord, Self::Error> {
-            Ok(Bytecode::default().into())
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
         }
 
         async fn get_storage(
@@ -1291,8 +1291,8 @@ mod tests {
             Ok(Some(crate::evm::AccountInfo::default()))
         }
 
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<CodeRecord, Self::Error> {
-            Ok(self.code.clone().into())
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(self.code.clone())
         }
 
         async fn get_storage(
@@ -1338,8 +1338,8 @@ mod tests {
             Ok(None)
         }
 
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<CodeRecord, Self::Error> {
-            Ok(Bytecode::default().into())
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
         }
 
         async fn get_storage(

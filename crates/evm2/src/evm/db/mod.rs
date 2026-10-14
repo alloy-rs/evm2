@@ -1,11 +1,7 @@
 //! Database helpers for the EVM state overlay.
 
 use super::{NonStaticAny, state::AccountInfo};
-use crate::{
-    DatabaseError,
-    bytecode::{Bytecode, CodeRecord},
-    interpreter::Word,
-};
+use crate::{DatabaseError, bytecode::Bytecode, interpreter::Word};
 use alloc::{boxed::Box, string::ToString};
 use alloy_primitives::{Address, B256, keccak256};
 use auto_impl::auto_impl;
@@ -32,8 +28,8 @@ pub trait Database: NonStaticAny {
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
 
-    /// Loads a legacy runtime, chunk manifest, or prepared chunk by commitment.
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<CodeRecord, Self::Error>;
+    /// Loads bytecode by commitment.
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error>;
 
     /// Loads a persistent storage slot.
     fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error>;
@@ -94,7 +90,7 @@ impl<T: Database> DynDatabase for Db<T> {
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<CodeRecord> {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         self.db.get_code_by_hash(code_hash).map_err(|err| {
             let fatal = T::is_fatal(&err);
             DatabaseError::new(err, fatal)
@@ -124,8 +120,8 @@ pub trait DynDatabase: NonStaticAny {
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
 
-    /// Loads a legacy runtime, chunk manifest, or prepared chunk by commitment.
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<CodeRecord>;
+    /// Loads bytecode by commitment.
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode>;
 
     /// Loads a persistent storage slot.
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word>;
@@ -142,7 +138,7 @@ pub trait DynDatabase: NonStaticAny {
 pub struct DbStatsCounts {
     /// Number of account loads.
     pub get_account: u64,
-    /// Number of code-record loads by commitment.
+    /// Number of bytecode loads by commitment.
     pub get_code_by_hash: u64,
     /// Number of storage slot loads.
     pub get_storage: u64,
@@ -243,7 +239,7 @@ impl<D: DynDatabase> DynDatabase for DbStats<D> {
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<CodeRecord> {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         self.counts.get_code_by_hash += 1;
         self.db.get_code_by_hash(code_hash)
     }
@@ -295,8 +291,8 @@ impl Database for EmptyDB {
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<CodeRecord, Self::Error> {
-        Ok(Bytecode::default().into())
+    fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+        Ok(Bytecode::default())
     }
 
     #[inline]
@@ -317,7 +313,7 @@ impl DynDatabase for EmptyDB {
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<CodeRecord> {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         Db::new(*self).get_code_by_hash(code_hash)
     }
 
@@ -345,8 +341,8 @@ mod tests {
             Ok(None)
         }
 
-        fn get_code_by_hash(&mut self, _code_hash: &B256) -> DbResult<CodeRecord> {
-            Ok(Bytecode::default().into())
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> DbResult<Bytecode> {
+            Ok(Bytecode::default())
         }
 
         fn get_storage(&mut self, _address: &Address, _key: &Word) -> DbResult<Word> {
