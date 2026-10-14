@@ -6,7 +6,7 @@
 use super::{BytecodeRef, Gas, Host, InstrStop, InterpreterState, Pc, Result, Word};
 use crate::{
     EvmTypesHost,
-    bytecode::{CODE_CHUNK_SIZE, CodeChunk, CodeChunkKind},
+    bytecode::{CODE_CHUNK_SIZE, CodeChunk},
     evm::CodeChunkLoad,
     trustme,
     utils::word_to_usize_saturated,
@@ -80,8 +80,8 @@ impl InterpreterCode {
         let local = pc
             .checked_sub(self.active.index() as usize * CODE_CHUNK_SIZE)
             .expect("PC is outside the active chunk");
-        if let CodeChunkKind::Chunked(chunk) = self.active.kind() {
-            assert!(local < chunk.payload_len(), "PC is outside the logical payload");
+        if self.active.is_chunked() {
+            assert!(local < self.active.payload_len(), "PC is outside the logical payload");
         }
         let bytes = self.active.as_bytecode().bytes_slice();
         assert!(local < bytes.len());
@@ -145,7 +145,7 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
             })?;
         if loaded.chunk.index() != index
             || expected_code_size.is_some_and(|code_size| {
-                loaded.chunk.chunked().is_some()
+                loaded.chunk.is_chunked()
                     && loaded.chunk.validate_context(code_size, index).is_err()
             })
         {
@@ -163,23 +163,24 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
 
     /// Whether an executed instruction ended outside the active logical payload.
     #[inline(always)]
-    pub(crate) const fn needs_code_chunk_advance(&self, pc: Pc) -> bool {
-        matches!(self.0.code.active().kind(), CodeChunkKind::Chunked(chunk)
-            if self.bytecode().pc_offset(pc) >= chunk.payload_len())
+    pub(crate) fn needs_code_chunk_advance(&self, pc: Pc) -> bool {
+        let active = self.0.code.active();
+        active.is_chunked() && self.bytecode().pc_offset(pc) >= active.payload_len()
     }
 
     /// Completes fallthrough at the logical payload boundary without executing padding.
     pub(crate) fn advance_code_chunk(&mut self, pc: &mut Pc) -> Result {
-        let CodeChunkKind::Chunked(active) = self.0.code.active().kind() else {
+        let active = self.0.code.active();
+        if !active.is_chunked() {
             return Ok(());
-        };
+        }
         let local = self.bytecode().pc_offset(*pc);
         let payload_len = active.payload_len();
         if local < payload_len {
             return Ok(());
         }
         let next_pc = active.index() as usize * CODE_CHUNK_SIZE + local;
-        if next_pc >= active.code_size() as usize {
+        if next_pc >= active.code_size() {
             return Err(InstrStop::Stop);
         }
         let index = active.index() + 1;

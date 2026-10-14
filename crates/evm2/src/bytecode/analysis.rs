@@ -1,6 +1,6 @@
 //! Legacy bytecode padding and jump destination analysis.
 
-use super::{ChunkLayout, JumpTable};
+use super::{JumpTable, chunk_payload_len, chunk_start_offset};
 use crate::interpreter::op;
 use alloc::vec::Vec;
 use alloy_primitives::Bytes;
@@ -22,11 +22,11 @@ pub(super) fn analyze_legacy(bytecode: &[u8]) -> JumpTable {
 
 /// Analyzes the logical payload of a prepared chunk from its stored offset.
 /// Layout validation is done by `Bytecode::new_chunk`; no account size or index is needed.
-pub(super) fn analyze_chunk(bytecode: &[u8], layout: ChunkLayout) -> JumpTable {
+pub(super) fn analyze_chunk(bytecode: &[u8]) -> JumpTable {
     let mut jumps = JumpTable::new(bytecode.len());
     let table = jumps.as_mut_slice();
-    let payload = &bytecode[..layout.payload_len(bytecode)];
-    let pc = analyze_simd(payload, table, layout.start_offset());
+    let payload = &bytecode[..chunk_payload_len(bytecode)];
+    let pc = analyze_simd(payload, table, chunk_start_offset(bytecode));
     analyze_scalar(payload, table, pc);
     jumps
 }

@@ -26,7 +26,7 @@ enum BytecodeSerdeOld {
 impl Serialize for Bytecode {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if serializer.is_human_readable() {
-            if matches!(self.kind(), BytecodeKind::Chunk(_)) {
+            if matches!(self.kind(), BytecodeKind::Chunk) {
                 let mut record = serializer.serialize_struct("Bytecode", 1)?;
                 record.serialize_field("chunk", &self.original_bytes())?;
                 record.end()
@@ -34,7 +34,7 @@ impl Serialize for Bytecode {
                 self.original_bytes().serialize(serializer)
             }
         } else {
-            if matches!(self.kind(), BytecodeKind::Chunk(_)) {
+            if matches!(self.kind(), BytecodeKind::Chunk) {
                 return Err(S::Error::custom("binary chunk bytecode requires explicit decoding"));
             }
             serializer.serialize_bytes(self.original_byte_slice())

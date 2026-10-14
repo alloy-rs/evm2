@@ -72,14 +72,14 @@ impl<'a> AccountChanges<'a> {
             sink.bytecode(code_hash, code)?;
             if let Some(metadata) = self.current.and_then(AccountInfo::code_metadata) {
                 let cached = self.code_chunks.len() == metadata.chunk_count()
-                    && self.code_chunks.iter().all(|slot| slot.bytecode.is_some());
+                    && self.code_chunks.iter().all(|slot| slot.chunk.is_some());
                 if cached {
                     for (chunk_hash, slot) in
                         metadata.chunk_hashes().iter().copied().zip(self.code_chunks)
                     {
                         sink.code_chunk(
                             chunk_hash,
-                            slot.bytecode.as_ref().expect("checked cached chunk"),
+                            slot.chunk.as_ref().expect("checked cached chunk").as_bytecode(),
                         )?;
                     }
                 } else if let Ok(Some((prepared, chunks))) =

@@ -14,7 +14,7 @@ use derive_where::derive_where;
 pub struct CodeChunkHandle<'a, 'db> {
     address: Address,
     index: u32,
-    chunk: CodeChunk,
+    chunk: &'a CodeChunk,
     is_warm: &'a mut bool,
     #[derive_where(skip)]
     inner: &'a mut StateInner<'db>,
@@ -36,7 +36,7 @@ impl<'a, 'db> CodeChunkHandle<'a, 'db> {
         if let Some(metadata) = info.code_metadata()
             && let Some(code) = info.code.as_ref()
             && (account.code_chunks.slots.len() != metadata.chunk_count()
-                || account.code_chunks.slots.iter().any(|slot| slot.bytecode.is_none()))
+                || account.code_chunks.slots.iter().any(|slot| slot.chunk.is_none()))
         {
             let prepared = crate::bytecode::prepare_code_chunks(&code.original_bytes());
             let Ok(Some((prepared_metadata, chunks))) = prepared else {
@@ -51,7 +51,7 @@ impl<'a, 'db> CodeChunkHandle<'a, 'db> {
             }
             account.code_chunks.slots.resize_with(chunks.len(), CodeChunkSlot::default);
             for (slot, chunk) in account.code_chunks.slots.iter_mut().zip(chunks) {
-                slot.bytecode = Some(chunk.bytecode());
+                slot.chunk = Some(chunk);
             }
         }
         let expected = if let Some(metadata) = &info.code_metadata() {
@@ -71,33 +71,28 @@ impl<'a, 'db> CodeChunkHandle<'a, 'db> {
             account.code_chunks.slots.resize_with(index_usize + 1, CodeChunkSlot::default);
         }
         let slot = &mut account.code_chunks.slots[index_usize];
-        if slot.bytecode.is_none() {
+        if slot.chunk.is_none() {
             if skip_cold {
                 return Err(LoadError::ColdLoadSkipped);
             }
             let chunk = load_chunk(inner, info, index, expected)?;
-            slot.bytecode = Some(chunk.bytecode());
+            slot.chunk = Some(chunk);
         }
-        let is_warm = &mut slot.is_warm;
-        if skip_cold && !*is_warm {
+        if skip_cold && !slot.is_warm {
             return Err(LoadError::ColdLoadSkipped);
         }
-        let bytecode = slot.bytecode.as_ref().expect("chunk loaded");
+        let chunk = slot.chunk.as_ref().expect("chunk loaded");
         if let Some(metadata) = info.code_metadata() {
             let payload_hash = metadata.chunk_hash(index).expect("validated chunk index");
-            if bytecode.hash_slow() != payload_hash {
+            if chunk.as_bytecode().hash_slow() != payload_hash
+                || chunk.validate_context(metadata.code_size(), index).is_err()
+            {
                 return Err(
                     DatabaseError::new(CodeChunkLoadError::Invalid(payload_hash), true).into()
                 );
             }
         }
-        let chunk = if let Some(metadata) = info.code_metadata() {
-            CodeChunk::from_chunked(bytecode.clone(), metadata.code_size(), index)
-                .expect("cached validated chunk")
-        } else {
-            CodeChunk::from_legacy_bytecode(bytecode)
-        };
-        Ok(Some(Self { address, index, chunk, is_warm, inner }))
+        Ok(Some(Self { address, index, chunk, is_warm: &mut slot.is_warm, inner }))
     }
 
     /// Returns the account address.
@@ -112,7 +107,7 @@ impl<'a, 'db> CodeChunkHandle<'a, 'db> {
 
     /// Returns the loaded payload and its cached execution analysis.
     pub const fn get(&self) -> &CodeChunk {
-        &self.chunk
+        self.chunk
     }
 
     /// Returns transaction-local warmth, independently of cached bytes.

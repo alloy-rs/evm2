@@ -783,7 +783,7 @@ impl<'a> State<'a> {
                             entry.code_chunks.identity = previous_code_identity;
                             entry.code_chunks.slots = previous_code_warmth
                                 .into_iter()
-                                .map(|is_warm| CodeChunkSlot { bytecode: None, is_warm })
+                                .map(|is_warm| CodeChunkSlot { chunk: None, is_warm })
                                 .collect();
                         }
                     }

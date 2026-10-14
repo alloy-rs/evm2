@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     EvmFeatures,
-    bytecode::{Bytecode, CodeMetadata},
+    bytecode::{Bytecode, CodeChunk, CodeMetadata},
     interpreter::Word,
 };
 use alloc::vec::Vec;
@@ -215,7 +215,7 @@ pub(crate) struct CodeIdentity {
 /// One account-local code payload and its transaction-local warmth.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CodeChunkSlot {
-    pub(crate) bytecode: Option<Bytecode>,
+    pub(crate) chunk: Option<CodeChunk>,
     pub(crate) is_warm: bool,
 }
 
@@ -395,11 +395,7 @@ fn empty_account() -> AccountInfo {
 }
 
 fn normalize_account_bytecode(code: &Bytecode) -> Bytecode {
-    if !matches!(code.kind(), crate::bytecode::BytecodeKind::Chunk(_)) {
-        return code.clone();
-    }
-    let bytes = code.original_bytes();
-    Bytecode::new_raw_checked(bytes.clone()).unwrap_or_else(|_| Bytecode::new_legacy(bytes))
+    code.normalize_complete()
 }
 
 impl<'a, 'db> AccountHandle<'a, 'db> {
@@ -508,7 +504,11 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
                 .and_then(|info| info.code.as_ref())
                 .filter(|code| !code.is_empty())
                 .or_else(|| {
-                    self.tracked.code_chunks.slots.first().and_then(|slot| slot.bytecode.as_ref())
+                    self.tracked
+                        .code_chunks
+                        .slots
+                        .first()
+                        .and_then(|slot| slot.chunk.as_ref().map(CodeChunk::as_bytecode))
                 })
                 .map(|code| code.len() as u32)
         }
@@ -764,7 +764,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.tracked.code_chunks.ensure_identity(info);
         self.tracked.code_chunks.slots = chunks
             .iter()
-            .map(|chunk| CodeChunkSlot { bytecode: Some(chunk.bytecode()), is_warm: false })
+            .cloned()
+            .map(|chunk| CodeChunkSlot { chunk: Some(chunk), is_warm: false })
             .collect();
     }
 

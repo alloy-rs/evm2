@@ -8,6 +8,7 @@ use crate::{
 use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
 use analysis::{analyze_chunk, analyze_legacy, pad_legacy};
+use chunks::validate_chunk;
 use core::{cmp::Ordering, fmt, hash};
 use thiserror::Error;
 
@@ -80,7 +81,7 @@ pub enum BytecodeKind {
     /// EIP-7702 delegated bytecode.
     Eip7702,
     /// Prepared runtime chunk with a validated physical layout and offset trailer.
-    Chunk(ChunkLayout),
+    Chunk,
 }
 
 impl Default for Bytecode {
@@ -183,9 +184,9 @@ impl Bytecode {
     /// `bytes` must contain the stored padding, tail and final analysis-offset byte.
     /// Ordinary memory-safety padding is added after validation and is not stored or hashed.
     pub(crate) fn new_chunk(bytes: Bytes) -> Result<Self, CodeChunkError> {
-        let layout = ChunkLayout::decode(&bytes)?;
+        validate_chunk(&bytes)?;
         Ok(Self(Some(Arc::new(BytecodeInner {
-            kind: BytecodeKind::Chunk(layout),
+            kind: BytecodeKind::Chunk,
             original_len: bytes.len(),
             bytecode: pad_legacy(bytes),
             jump_table: OnceLock::new(),
@@ -302,6 +303,15 @@ impl Bytecode {
         self.inner().kind
     }
 
+    /// Reinterprets stored chunk bytes as complete code while preserving ordinary bytecode.
+    pub(crate) fn normalize_complete(&self) -> Self {
+        if !matches!(self.kind(), BytecodeKind::Chunk) {
+            return self.clone();
+        }
+        let bytes = self.original_bytes();
+        Self::new_raw_checked(bytes.clone()).unwrap_or_else(|_| Self::new_legacy(bytes))
+    }
+
     /// Returns `true` if bytecode is legacy.
     #[inline]
     pub fn is_legacy(&self) -> bool {
@@ -336,7 +346,7 @@ impl Bytecode {
         self.inner().jump_table.get_or_init(|| match self.kind() {
             BytecodeKind::Legacy => analyze_legacy(self.original_byte_slice()),
             BytecodeKind::Eip7702 => JumpTable::default(),
-            BytecodeKind::Chunk(layout) => analyze_chunk(self.original_byte_slice(), layout),
+            BytecodeKind::Chunk => analyze_chunk(self.original_byte_slice()),
         })
     }
 
@@ -645,7 +655,7 @@ mod tests {
             assert!(ordinary.jump_table().is_valid(size - 1));
             let first = code_chunk(&raw, 0).unwrap();
             assert_eq!(first.start_offset(), 0);
-            assert_eq!(first.chunked().is_some(), size > LEGACY_CODE_CHUNK_SIZE);
+            assert_eq!(first.is_chunked(), size > LEGACY_CODE_CHUNK_SIZE);
         }
     }
 }

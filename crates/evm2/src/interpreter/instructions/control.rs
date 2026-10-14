@@ -36,7 +36,7 @@ fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut GasInstructionCx<'_, '_, '
         }
         let index = (target / CODE_CHUNK_SIZE) as u32;
         // Legacy records may be up to 24 KiB and have no chunk slicing.
-        let multi = cx.state.active_chunk().chunked().is_some();
+        let multi = cx.state.active_chunk().is_chunked();
         if multi {
             let local = target % CODE_CHUNK_SIZE;
             let chunk = if index != cx.state.code_chunk_index() {
@@ -174,7 +174,7 @@ fn rjump_inner<T: EvmTypesHost>(offset: isize, cx: &mut GasInstructionCx<'_, '_,
         .and_then(|post_pc| post_pc.checked_add_signed(offset))
         .filter(|&target| target < cx.state.code_size())
         .ok_or(InstrStop::InvalidJump)?;
-    let chunked = cx.state.is_account_code() && cx.state.active_chunk().chunked().is_some();
+    let chunked = cx.state.is_account_code() && cx.state.active_chunk().is_chunked();
     let local = if chunked {
         let index = (target / CODE_CHUNK_SIZE) as u32;
         let local = target % CODE_CHUNK_SIZE;

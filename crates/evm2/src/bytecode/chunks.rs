@@ -33,56 +33,44 @@ pub const COLD_CODE_CHUNK_GAS: u64 = 28_680;
 pub const WARM_CODE_CHUNK_GAS: u64 = 1_000;
 
 /// Code supplied to a frame or loaded from an account.
-#[derive(Clone, Debug)]
-pub struct CodeChunk(CodeChunkKind);
-
-#[derive(Clone, Debug)]
-pub(crate) enum CodeChunkKind {
-    /// Complete bytecode, including initcode, executed without account chunk loading.
-    Direct(Bytecode),
-    /// Complete legacy account code, without chunk context or an offset trailer.
-    Legacy(Bytecode),
-    /// One slice of a larger runtime, with its logical size and index.
-    Chunked(ChunkedCodeChunk),
+#[derive(Clone, Debug, Default)]
+pub struct CodeChunk {
+    bytecode: Bytecode,
+    /// Complete account code size, absent for directly executed code such as initcode.
+    code_size: Option<usize>,
+    index: u32,
 }
 
 impl PartialEq for CodeChunk {
     fn eq(&self, other: &Self) -> bool {
-        match (&self.0, &other.0) {
-            (CodeChunkKind::Direct(code), CodeChunkKind::Direct(other))
-            | (CodeChunkKind::Legacy(code), CodeChunkKind::Legacy(other)) => {
-                code == other && code.kind() == other.kind()
-            }
-            (CodeChunkKind::Chunked(chunk), CodeChunkKind::Chunked(other)) => chunk == other,
-            _ => false,
-        }
+        self.bytecode == other.bytecode
+            && self.bytecode.kind() == other.bytecode.kind()
+            && self.code_size == other.code_size
+            && self.index == other.index
     }
 }
 
 impl Eq for CodeChunk {}
 
-impl Default for CodeChunk {
-    fn default() -> Self {
-        Self(CodeChunkKind::Direct(Bytecode::default()))
-    }
-}
-
 impl From<Bytecode> for CodeChunk {
     fn from(code: Bytecode) -> Self {
-        let code = normalize_complete_code(&code);
-        Self(CodeChunkKind::Direct(code))
+        Self { bytecode: code.normalize_complete(), code_size: None, index: 0 }
     }
 }
 
 impl CodeChunk {
     /// Wraps legacy account code without interpreting a delegation-shaped prefix.
     pub fn new_legacy(bytes: Bytes) -> Self {
-        Self(CodeChunkKind::Legacy(Bytecode::new_legacy(bytes)))
+        let bytecode = Bytecode::new_legacy(bytes);
+        let code_size = Some(bytecode.len());
+        Self { bytecode, code_size, index: 0 }
     }
 
     /// Retains a legacy account's bytecode allocation and its shared analysis.
     pub fn from_legacy_bytecode(code: &Bytecode) -> Self {
-        Self(CodeChunkKind::Legacy(normalize_complete_code(code)))
+        let bytecode = code.normalize_complete();
+        let code_size = Some(bytecode.len());
+        Self { bytecode, code_size, index: 0 }
     }
 
     /// Returns the single stored execution buffer and its lazy jump analysis.
@@ -98,19 +86,13 @@ impl CodeChunk {
 
     /// Number of logical code positions represented by this chunk.
     pub fn payload_len(&self) -> usize {
-        match self {
-            Self(CodeChunkKind::Direct(code) | CodeChunkKind::Legacy(code)) => code.len(),
-            Self(CodeChunkKind::Chunked(chunk)) => chunk.payload_len(),
-        }
+        if self.is_chunked() { chunk_payload_len(self.bytes()) } else { self.bytecode.len() }
     }
 
     /// Number of leading immediate bytes belonging to the previous chunk's instruction.
     /// The count is the last stored byte; ordinary legacy records have no trailer.
     pub fn start_offset(&self) -> usize {
-        match self.as_bytecode().kind() {
-            BytecodeKind::Chunk(layout) => layout.start_offset(),
-            _ => 0,
-        }
+        if self.is_chunked() { chunk_start_offset(self.bytes()) } else { 0 }
     }
 
     /// Attaches account context to a provider's validated, shared chunk bytecode.
@@ -120,10 +102,9 @@ impl CodeChunk {
         index: u32,
     ) -> Result<Self, CodeChunkError> {
         let bytecode = match bytecode.kind() {
-            BytecodeKind::Chunk(_) => bytecode,
+            BytecodeKind::Chunk => bytecode,
             _ => Bytecode::new_chunk(bytecode.original_bytes())?,
         };
-        let BytecodeKind::Chunk(layout) = bytecode.kind() else { unreachable!() };
         let start = (index as usize)
             .checked_mul(CODE_CHUNK_SIZE)
             .ok_or(CodeChunkError::InvalidPreparation)?;
@@ -131,25 +112,22 @@ impl CodeChunk {
         let bytes = bytecode.original_byte_slice();
         if !(LEGACY_CODE_CHUNK_SIZE + 1..=MAX_CODE_SIZE).contains(&size)
             || start >= size
-            || layout.payload_len(bytes) != (size - start).min(CODE_CHUNK_SIZE)
-            || (index == 0 && layout.start_offset != 0)
+            || chunk_payload_len(bytes) != (size - start).min(CODE_CHUNK_SIZE)
+            || (index == 0 && chunk_start_offset(bytes) != 0)
         {
             return Err(CodeChunkError::InvalidPreparation);
         }
-        Ok(Self(CodeChunkKind::Chunked(ChunkedCodeChunk { bytecode, code_size, index })))
+        Ok(Self { bytecode, code_size: Some(size), index })
     }
 
-    /// Chunked runtime buffer and its logical context, absent for complete code.
-    pub const fn chunked(&self) -> Option<&ChunkedCodeChunk> {
-        match self {
-            Self(CodeChunkKind::Direct(_) | CodeChunkKind::Legacy(_)) => None,
-            Self(CodeChunkKind::Chunked(chunk)) => Some(chunk),
-        }
+    /// Whether this is one slice of a multi-chunk account runtime.
+    pub fn is_chunked(&self) -> bool {
+        self.is_account() && matches!(self.bytecode.kind(), BytecodeKind::Chunk)
     }
 
     /// Checks the loaded buffer's logical size and index against the account.
     pub fn validate_context(&self, code_size: u32, index: u32) -> Result<(), CodeChunkError> {
-        if self.chunked().is_some_and(|p| p.code_size == code_size && p.index == index) {
+        if self.is_chunked() && self.code_size == Some(code_size as usize) && self.index == index {
             Ok(())
         } else {
             Err(CodeChunkError::InvalidPreparation)
@@ -164,57 +142,46 @@ impl CodeChunk {
 
     /// Borrows the owned bytecode and its immutable execution analysis.
     pub const fn as_bytecode(&self) -> &Bytecode {
-        match self {
-            Self(CodeChunkKind::Direct(code) | CodeChunkKind::Legacy(code)) => code,
-            Self(CodeChunkKind::Chunked(chunk)) => &chunk.bytecode,
-        }
+        &self.bytecode
     }
 
     /// Logical chunk index; ordinary unchunked code starts at zero.
     pub const fn index(&self) -> u32 {
-        match self {
-            Self(CodeChunkKind::Direct(_) | CodeChunkKind::Legacy(_)) => 0,
-            Self(CodeChunkKind::Chunked(chunk)) => chunk.index,
-        }
+        self.index
     }
 
     /// Complete logical code length, excluding chunk padding and tails.
     pub fn code_size(&self) -> usize {
-        match self {
-            Self(CodeChunkKind::Direct(code) | CodeChunkKind::Legacy(code)) => code.len(),
-            Self(CodeChunkKind::Chunked(chunk)) => chunk.code_size as usize,
-        }
+        self.code_size.unwrap_or_else(|| self.bytecode.len())
     }
 
     /// Whether this code was loaded from an account and uses account gas rules.
     pub const fn is_account(&self) -> bool {
-        matches!(self.0, CodeChunkKind::Legacy(_) | CodeChunkKind::Chunked(_))
+        self.code_size.is_some()
     }
 
     /// Whether this is complete code executed without account loading.
     pub const fn is_direct(&self) -> bool {
-        matches!(self.0, CodeChunkKind::Direct(_))
+        self.code_size.is_none()
     }
 
     /// Whether this is a complete legacy account record.
-    pub const fn is_legacy(&self) -> bool {
-        matches!(self.0, CodeChunkKind::Legacy(_))
-    }
-
-    pub(crate) const fn kind(&self) -> &CodeChunkKind {
-        &self.0
+    pub fn is_legacy(&self) -> bool {
+        self.is_account() && !self.is_chunked()
     }
 
     /// Checks the duplicated immediate bytes shared with the following chunk.
     pub(crate) fn continues_into(&self, next: &Self, overlap: usize) -> bool {
-        let Some(active) = self.chunked() else { return false };
-        let Some(next) = next.chunked() else { return false };
+        let Some(code_size) = self.code_size.filter(|_| self.is_chunked()) else { return false };
+        let Some(next_code_size) = next.code_size.filter(|_| next.is_chunked()) else {
+            return false;
+        };
         overlap == next.start_offset()
-            && active.index + 1 == next.index
-            && active.code_size == next.code_size
+            && self.index + 1 == next.index
+            && code_size == next_code_size
             && self
                 .bytes()
-                .get(active.payload_len()..active.payload_len() + overlap)
+                .get(self.payload_len()..self.payload_len() + overlap)
                 .zip(next.bytecode.original_byte_slice().get(..overlap))
                 .is_some_and(|(current, following)| current == following)
     }
@@ -445,76 +412,35 @@ impl<'de> serde::Deserialize<'de> for CodeMetadata {
     }
 }
 
-/// One validated runtime buffer and the context needed to load adjacent chunks.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChunkedCodeChunk {
-    bytecode: Bytecode,
-    code_size: u32,
-    index: u32,
+/// Validates stored bytes before the ordinary in-memory safety padding is added.
+pub(super) fn validate_chunk(bytes: &[u8]) -> Result<(), CodeChunkError> {
+    let invalid = CodeChunkError::InvalidPreparation;
+    if bytes.len() > LEGACY_CODE_CHUNK_SIZE {
+        return Err(invalid);
+    }
+    let Some((&encoded_offset, code)) = bytes.split_last() else { return Err(invalid) };
+    let start_offset = decode_chunk_offset(encoded_offset)?;
+    let payload_len = code.len().checked_sub(32).ok_or(invalid)?;
+    if !(1..=CODE_CHUNK_SIZE).contains(&payload_len)
+        || usize::from(start_offset) > payload_len.min(32)
+    {
+        return Err(invalid);
+    }
+    let padding_start = chunk_padding_start(&code[..payload_len], start_offset as usize);
+    if !code.get(padding_start..).is_some_and(|padding| padding.iter().all(|&byte| byte == 0)) {
+        return Err(invalid);
+    }
+    Ok(())
 }
 
-impl ChunkedCodeChunk {
-    fn start_offset(&self) -> usize {
-        match self.bytecode.kind() {
-            BytecodeKind::Chunk(layout) => layout.start_offset(),
-            _ => 0,
-        }
-    }
-
-    /// Complete logical code size.
-    pub const fn code_size(&self) -> u32 {
-        self.code_size
-    }
-
-    /// Position in the account's ordered chunk list.
-    pub const fn index(&self) -> u32 {
-        self.index
-    }
-
-    /// Logical bytes in this chunk, excluding continuation bytes and padding.
-    pub const fn payload_len(&self) -> usize {
-        let remaining = self.code_size as usize - self.index as usize * CODE_CHUNK_SIZE;
-        if remaining < CODE_CHUNK_SIZE { remaining } else { CODE_CHUNK_SIZE }
-    }
+/// Number of original code positions represented by a validated stored chunk.
+pub(super) const fn chunk_payload_len(bytes: &[u8]) -> usize {
+    bytes.len() - 33
 }
 
-/// Validated physical layout of a stored chunk buffer, independent of account context.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ChunkLayout {
-    start_offset: u8,
-}
-
-impl ChunkLayout {
-    /// Validates stored bytes before the ordinary in-memory safety padding is added.
-    pub(super) fn decode(bytes: &[u8]) -> Result<Self, CodeChunkError> {
-        let invalid = CodeChunkError::InvalidPreparation;
-        if bytes.len() > LEGACY_CODE_CHUNK_SIZE {
-            return Err(invalid);
-        }
-        let Some((&encoded_offset, code)) = bytes.split_last() else { return Err(invalid) };
-        let start_offset = decode_chunk_offset(encoded_offset)?;
-        let payload_len = code.len().checked_sub(32).ok_or(invalid)?;
-        if !(1..=CODE_CHUNK_SIZE).contains(&payload_len)
-            || usize::from(start_offset) > payload_len.min(32)
-        {
-            return Err(invalid);
-        }
-        let padding_start = chunk_padding_start(&code[..payload_len], start_offset as usize);
-        if !code.get(padding_start..).is_some_and(|padding| padding.iter().all(|&byte| byte == 0)) {
-            return Err(invalid);
-        }
-        Ok(Self { start_offset })
-    }
-
-    /// Number of original code positions represented by the buffer.
-    pub(super) const fn payload_len(self, bytes: &[u8]) -> usize {
-        bytes.len() - 33
-    }
-
-    /// Leading bytes continuing the previous chunk's immediate.
-    pub const fn start_offset(self) -> usize {
-        self.start_offset as usize
-    }
+/// Leading bytes continuing the previous chunk's instruction.
+pub(super) const fn chunk_start_offset(bytes: &[u8]) -> usize {
+    bytes[bytes.len() - 1] as usize
 }
 
 const fn encode_chunk_offset(start_offset: usize) -> Result<u8, CodeChunkError> {
@@ -549,14 +475,6 @@ fn instruction_len(opcode: u8) -> usize {
     } else {
         1
     }
-}
-
-fn normalize_complete_code(code: &Bytecode) -> Bytecode {
-    if !matches!(code.kind(), BytecodeKind::Chunk(_)) {
-        return code.clone();
-    }
-    let bytes = code.original_bytes();
-    Bytecode::new_raw_checked(bytes.clone()).unwrap_or_else(|_| Bytecode::new_legacy(bytes))
 }
 
 #[cfg(test)]

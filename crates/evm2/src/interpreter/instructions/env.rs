@@ -120,7 +120,7 @@ pub fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
         cx.state.resize_memory(cx.gas, offset, len)?;
         let owner = cx.state.message().code_address;
         let size = cx.state.code_size();
-        let multi = cx.state.active_chunk().chunked().is_some();
+        let multi = cx.state.active_chunk().is_chunked();
         let bytes = cx.state.load_code_range(cx.gas, owner, *code_offset, len, size, multi)?;
         cx.state.0.memory.set_data(offset, 0, len, &bytes);
         return Ok(());
