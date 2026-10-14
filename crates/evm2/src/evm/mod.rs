@@ -231,8 +231,6 @@ pub struct Evm<'a, T: EvmTypesHost> {
     current_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
     #[derive_where(skip)]
     running: bool,
-    #[derive_where(skip)]
-    transacting: bool,
     #[cfg(feature = "async")]
     #[derive_where(skip)]
     async_stack: r#async::FiberStack,
@@ -352,7 +350,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             interpreter_runner: None,
             current_frame: None,
             running: false,
-            transacting: false,
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
             evm_send: false,
@@ -396,7 +393,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     fn assert_inspector_mutable(&self) {
         assert!(!self.running, "inspector cannot be modified during EVM execution");
-        assert!(!self.transacting, "inspector cannot be modified during a transaction");
     }
 
     #[inline]
@@ -908,13 +904,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub const fn config_spec_id(&self) -> T::SpecId {
         self.spec_id
     }
-
-    #[inline]
-    const fn enter_transaction(&mut self) -> TransactionGuard<'_, 'a, T> {
-        let was_transacting = self.transacting;
-        self.transacting = true;
-        TransactionGuard { evm: self, was_transacting }
-    }
 }
 
 struct ExecutionGuard<'guard, 'evm, T: EvmTypesHost> {
@@ -926,18 +915,6 @@ impl<'guard, 'evm, T: EvmTypesHost> Drop for ExecutionGuard<'guard, 'evm, T> {
     #[inline]
     fn drop(&mut self) {
         self.evm.running = self.was_running;
-    }
-}
-
-struct TransactionGuard<'guard, 'evm, T: EvmTypesHost> {
-    evm: &'guard mut Evm<'evm, T>,
-    was_transacting: bool,
-}
-
-impl<T: EvmTypesHost> Drop for TransactionGuard<'_, '_, T> {
-    #[inline]
-    fn drop(&mut self) {
-        self.evm.transacting = self.was_transacting;
     }
 }
 
@@ -973,11 +950,11 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// another transaction can be executed. Dropping the handle is equivalent to
     /// [`ExecutedTx::discard`].
     ///
-    /// Transaction handlers cannot obtain mutable access to, replace, or remove the inspector.
-    /// Precompile providers remain mutable outside EVM execution.
+    /// Transaction handlers cannot modify the inspector, precompile provider, interpreter runner,
+    /// or execution configuration while the transaction is being executed.
     pub fn transact(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        let guard = self.enter_transaction();
+        let guard = self.enter_execution();
         let result = handler.execute(tx, guard.evm);
         drop(guard);
         match result {
@@ -4124,7 +4101,7 @@ mod tests {
     #[case(InspectorAccess::Set)]
     #[case(InspectorAccess::SetBoxed)]
     #[case(InspectorAccess::Clear)]
-    #[should_panic(expected = "inspector cannot be modified during a transaction")]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
     fn inspector_mutation_panics_during_transact(#[case] access: InspectorAccess) {
         let mut evm = lifecycle_evm();
         evm.set_inspector(NoopInspector::default());
@@ -4154,6 +4131,7 @@ mod tests {
         let _ = evm.transact(&test_tx(0));
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn transact_restores_inspector_access_after_success_error_and_panic() {
         let mut evm = lifecycle_evm();
@@ -4181,41 +4159,39 @@ mod tests {
                 _ => assert!(result.is_err()),
             }
             assert!(evm.clear_inspector_as::<NoopInspector>().is_some());
+            evm.set_precompiles(empty_precompiles());
         }
     }
 
-    #[test]
-    fn precompiles_remain_mutable_during_transact() {
+    #[rstest::rstest]
+    #[case(PrecompileAccess::Mut)]
+    #[case(PrecompileAccess::Set)]
+    #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
+    fn precompiles_cannot_be_modified_during_transact(#[case] access: PrecompileAccess) {
         let mut evm = lifecycle_evm();
-        evm.set_inspector(NoopInspector::default());
         evm.registry.register(
             TEST_TX_TYPE,
             TxEnvelope::as_legacy,
             handler(
                 |_| Ok(()),
-                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
-                    assert!(req.host.inspector().is_some());
-                    req.host.set_precompiles(precompiles_with([test_precompile(
-                        TEST_PRECOMPILE,
-                        |_, _, _| Ok(PrecompileOutput::new(Bytes::new())),
-                    )]));
-                    req.host
-                        .precompiles_mut()
-                        .move_precompiles(&[(TEST_PRECOMPILE, INNER_TEST_PRECOMPILE)])
-                        .unwrap();
+                move |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    match access {
+                        PrecompileAccess::Mut => {
+                            let _ = req.host.precompiles_mut();
+                        }
+                        PrecompileAccess::Set => req.host.set_precompiles(empty_precompiles()),
+                        PrecompileAccess::AsMut => unreachable!(),
+                    }
                     Ok(TxResultExt::default())
                 },
             ),
         );
 
-        let _ = evm.call_tx(&test_tx(0)).unwrap();
-        assert!(evm.precompiles().contains(&INNER_TEST_PRECOMPILE));
-        assert!(!evm.precompiles().contains(&TEST_PRECOMPILE));
-        assert!(evm.clear_inspector_as::<NoopInspector>().is_some());
+        let _ = evm.transact(&test_tx(0));
     }
 
     #[test]
-    #[should_panic(expected = "inspector cannot be modified during a transaction")]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
     fn nested_transact_preserves_inspector_guard() {
         let mut evm = lifecycle_evm();
         evm.registry.register(
