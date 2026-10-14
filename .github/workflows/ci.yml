@@ -203,7 +203,7 @@ jobs:
 
   jit:
     name: jit ${{ matrix.os }} ${{ matrix.mode }}
-    runs-on: ${{ matrix.runner_label }}
+    runs-on: ${{ matrix.os == 'macos' && 'depot-macos-latest' || 'depot-ubuntu-latest-4' }}
     timeout-minutes: 120
     permissions:
       id-token: write
@@ -211,22 +211,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu
-            runner_label: depot-ubuntu-latest-4
-            mode: jit
-            subset: all
-            filter: test(statetests::jit)
-          - os: ubuntu
-            runner_label: depot-ubuntu-latest-4
-            mode: aot
-            subset: ci-aot
-            filter: test(statetests::aot)
+        os: ${{ fromJSON(github.event_name == 'push' && github.ref == 'refs/heads/main' && '["ubuntu", "macos"]' || '["ubuntu"]') }}
+        mode: [jit, aot]
+        exclude:
           - os: macos
-            runner_label: depot-macos-latest
-            mode: jit
+            mode: aot
+        include:
+          - mode: jit
             subset: ci-smoke
             filter: test(statetests::jit)
+          - mode: aot
+            subset: ci-aot
+            filter: test(statetests::aot)
+          - os: ubuntu
+            mode: jit
+            subset: all
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@2ab28a31ae569be9f780c7675b684471060afa40 # 2026-10-09T21-43-19Z-2ab28a31
