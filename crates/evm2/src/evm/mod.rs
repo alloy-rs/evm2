@@ -836,8 +836,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.assert_inspector_mutable();
-        // Clear metadata first: the replaced inspector's destructor may panic, and the new
-        // inspector is still installed while unwinding.
         self.inspector_type = None;
         self.evm_send = false;
         self.inspector = Some(boxed_inspector(inspector));
