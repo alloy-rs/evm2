@@ -36,6 +36,7 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 import statistics
 import subprocess
 import sys
@@ -968,12 +969,26 @@ def git(root: str, *args: str) -> str:
     ).stdout.strip()
 
 
+def ensure_private_dir(path: str):
+    """Create ``path`` if needed, and refuse it unless only the current user can write to it.
+
+    The script executes the cached base binary and builds the cached worktree, so another
+    user must not be able to plant them, e.g. under a shared ``/tmp``.
+    """
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o022:
+        eprint(f"error: {path} must be a directory that only you can write to")
+        raise SystemExit(1)
+
+
 def base_binary(root: str, sha: str, base_dump: str) -> str:
     """Build the CLI at ``sha``, reusing the binary cached in ``base_dump`` when it matches.
 
     The base worktree lives in ``base_dump`` and must outlive the build: the CLI reads
     its fixtures from the source tree it was built from.
     """
+    ensure_private_dir(base_dump)
     frozen = os.path.join(base_dump, ".evm2")
     stamp = os.path.join(base_dump, ".rev")
     worktree = os.path.join(base_dump, ".worktree")
@@ -986,7 +1001,6 @@ def base_binary(root: str, sha: str, base_dump: str) -> str:
         eprint(f"Reusing base binary for {sha[:12]}")
         return frozen
 
-    os.makedirs(base_dump, exist_ok=True)
     if os.path.exists(stamp):
         os.remove(stamp)
     if os.path.isdir(worktree):
@@ -1065,6 +1079,7 @@ def main():
     args = parser.parse_args()
     # Absolute, so the dump path embedded in debug info is known.
     args.dump_dir = os.path.abspath(args.dump_dir)
+    ensure_private_dir(args.dump_dir)
 
     # Default to codegen-lines + compile-times if no analysis flags given.
     if not (
@@ -1139,7 +1154,6 @@ def main():
     if need_timing:
         measure(sides, benches, args.runs)
 
-    os.makedirs(args.dump_dir, exist_ok=True)
     results_path = os.path.join(args.dump_dir, "results.md")
     with open(results_path, "w") as md:
         old_stdout = sys.stdout
