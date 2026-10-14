@@ -1,6 +1,6 @@
 //! Borrowed state-change streaming traits and adapters.
 
-use super::AccountInfo;
+use super::{AccountInfo, CodeChunkSlot, StorageOverlay};
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256};
 use auto_impl::auto_impl;
@@ -25,6 +25,105 @@ pub struct AccountChangeRef<'a> {
     /// Only transaction-level sources report this; block-level aggregation loses per-transaction
     /// lifecycle flags and reports `false`.
     pub selfdestructed: bool,
+}
+
+/// One loaded account's transaction changes: its metadata, new bytecode, and storage overlay.
+///
+/// Returned by [`PendingState::account_changes`](super::PendingState::account_changes) and
+/// [`ExecutedTx::account_changes`](crate::evm::ExecutedTx::account_changes).
+#[derive(Clone, Copy, Debug)]
+pub struct AccountChanges<'a> {
+    /// Account address.
+    pub address: Address,
+    /// Account at the start of the transaction.
+    pub original: Option<&'a AccountInfo>,
+    /// Account after the transaction. `None` means the account does not exist.
+    pub current: Option<&'a AccountInfo>,
+    /// Whether the account was created during the transaction.
+    pub created: bool,
+    /// Whether the account was selfdestructed during the transaction.
+    pub selfdestructed: bool,
+    /// The account's new bytecode keyed by code hash, when its code changed to non-empty code.
+    pub code: Option<(B256, &'a Bytecode)>,
+    /// The account's loaded storage slots and wipe marker.
+    pub storage: &'a StorageOverlay,
+    /// Cached runtime chunks associated with the account's current code.
+    pub(crate) code_chunks: &'a [CodeChunkSlot],
+}
+
+impl<'a> AccountChanges<'a> {
+    /// Returns whether the account info or lifecycle changed: different info, creation, or
+    /// selfdestruct. Storage is not considered; see [`Self::is_changed`].
+    #[inline]
+    pub fn is_info_changed(&self) -> bool {
+        self.original != self.current || self.created || self.selfdestructed
+    }
+
+    /// Returns whether the account changes state at all, through its info or its storage.
+    #[inline]
+    pub fn is_changed(&self) -> bool {
+        self.is_info_changed() || self.storage.is_changed()
+    }
+
+    /// Emits these changes to `sink`: new bytecode, then the storage wipe, changed slots and slot
+    /// reads, then the metadata as a change or a read.
+    pub fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
+        if let Some((code_hash, code)) = self.code {
+            sink.bytecode(code_hash, code)?;
+            if let Some(metadata) = self.current.and_then(AccountInfo::code_metadata) {
+                let cached = self.code_chunks.len() == metadata.chunk_count()
+                    && self.code_chunks.iter().all(|slot| slot.bytecode.is_some());
+                if cached {
+                    for (chunk_hash, slot) in
+                        metadata.chunk_hashes().iter().copied().zip(self.code_chunks)
+                    {
+                        sink.code_chunk(
+                            chunk_hash,
+                            slot.bytecode.as_ref().expect("checked cached chunk"),
+                        )?;
+                    }
+                } else if let Ok(Some((prepared, chunks))) =
+                    crate::bytecode::prepare_code_chunks(&code.original_bytes())
+                    && &prepared == metadata
+                {
+                    for (chunk_hash, chunk) in
+                        metadata.chunk_hashes().iter().copied().zip(chunks.iter())
+                    {
+                        sink.code_chunk(chunk_hash, chunk.as_bytecode())?;
+                    }
+                }
+            }
+        }
+        let address = self.address;
+        let storage = self.storage;
+        if storage.wiped {
+            sink.storage_wipe(address)?;
+        }
+        for (&key, slot) in &storage.slots {
+            let value = &slot.value;
+            if slot.is_changed(storage.wiped) {
+                sink.storage(StorageChange {
+                    address,
+                    key,
+                    original: value.original,
+                    current: value.current,
+                })?;
+            } else {
+                sink.storage_read(address, key, value.current)?;
+            }
+        }
+        if self.is_info_changed() {
+            sink.account(AccountChangeRef {
+                address,
+                original: self.original,
+                current: self.current,
+                created: self.created,
+                selfdestructed: self.selfdestructed,
+            })
+        } else {
+            sink.account_read(address, self.current)
+        }
+    }
 }
 
 /// Storage slot change passed to [`StateChangeSink`].

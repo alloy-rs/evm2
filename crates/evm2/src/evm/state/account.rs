@@ -1,8 +1,8 @@
 //! Account models held by the state overlay and emitted in transitions.
 
 use super::{
-    AccountChangeRef, DbResult, DynDatabase, JournalEntry, StateChangeSink, StateInner,
-    StorageChange, StorageHandle, StorageOverlay, storage_pool::StoragePool,
+    AccountChanges, DbResult, DynDatabase, JournalEntry, StateInner, StorageHandle, StorageOverlay,
+    storage_pool::StoragePool,
 };
 use crate::{
     EvmFeatures,
@@ -329,73 +329,17 @@ impl Account {
             .then_some((code_hash, code))
     }
 
-    /// Emits this account's changes to `sink`: new bytecode, then its storage wipe, changed slots
-    /// and slot reads, then its metadata as a change or a read.
-    ///
-    /// Changed accounts, including created or selfdestructed accounts whose info ended up
-    /// unchanged, go through [`StateChangeSink::account`]; loaded-but-unchanged entries go through
-    /// the read callbacks.
-    pub(super) fn visit<S: StateChangeSink>(
-        &self,
-        address: Address,
-        selfdestructed: bool,
-        sink: &mut S,
-    ) -> Result<(), S::Error> {
-        if let Some((code_hash, code)) = self.changed_code() {
-            sink.bytecode(code_hash, code)?;
-            if let Some(metadata) = self.present.as_ref().and_then(AccountInfo::code_metadata) {
-                let cached = self.code_chunks.slots.len() == metadata.chunk_count()
-                    && self.code_chunks.slots.iter().all(|slot| slot.bytecode.is_some());
-                if cached {
-                    for (chunk_hash, slot) in
-                        metadata.chunk_hashes().iter().copied().zip(&self.code_chunks.slots)
-                    {
-                        sink.code_chunk(
-                            chunk_hash,
-                            slot.bytecode.as_ref().expect("checked cached chunk"),
-                        )?;
-                    }
-                } else if let Ok(Some((prepared, chunks))) =
-                    crate::bytecode::prepare_code_chunks(&code.original_bytes())
-                    && &prepared == metadata
-                {
-                    for (chunk_hash, chunk) in
-                        metadata.chunk_hashes().iter().copied().zip(chunks.iter())
-                    {
-                        sink.code_chunk(chunk_hash, chunk.as_bytecode())?;
-                    }
-                }
-            }
-        }
-
-        let storage = &self.storage;
-        if storage.wiped {
-            sink.storage_wipe(address)?;
-        }
-        for (&key, slot) in &storage.slots {
-            let value = &slot.value;
-            if slot.is_changed(storage.wiped) {
-                sink.storage(StorageChange {
-                    address,
-                    key,
-                    original: value.original,
-                    current: value.current,
-                })?;
-            } else {
-                sink.storage_read(address, key, value.current)?;
-            }
-        }
-
-        if self.is_changed() || self.is_created() || selfdestructed {
-            sink.account(AccountChangeRef {
-                address,
-                original: self.original.as_ref(),
-                current: self.present.as_ref(),
-                created: self.is_created(),
-                selfdestructed,
-            })
-        } else {
-            sink.account_read(address, self.present.as_ref())
+    /// Returns this account's transaction changes.
+    pub(super) fn changes(&self, address: Address, selfdestructed: bool) -> AccountChanges<'_> {
+        AccountChanges {
+            address,
+            original: self.original.as_ref(),
+            current: self.present.as_ref(),
+            created: self.is_created(),
+            selfdestructed,
+            code: self.changed_code(),
+            storage: &self.storage,
+            code_chunks: &self.code_chunks.slots,
         }
     }
 }

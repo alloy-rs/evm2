@@ -1,6 +1,8 @@
 //! Owned pending transaction state detached from the EVM.
 
-use super::{Account, AccountInfo, StateChangeSink, StateChangeSource, StorageSlot, Tracked};
+use super::{
+    Account, AccountChanges, AccountInfo, StateChangeSink, StateChangeSource, StorageSlot, Tracked,
+};
 use crate::interpreter::Word;
 use alloy_primitives::{
     Address,
@@ -91,10 +93,14 @@ impl PendingState {
     /// Loaded-but-unchanged accounts and storage slots are ignored.
     #[cfg(test)]
     pub(crate) fn is_changed(&self) -> bool {
-        self.accounts.values().any(|account| {
-            account.is_changed()
-                || account.storage.wiped
-                || account.storage.changed_slots().next().is_some()
+        self.accounts.values().any(|account| account.is_changed() || account.storage.is_changed())
+    }
+
+    /// Returns each loaded account's changes, in an unspecified account order.
+    #[inline]
+    pub fn account_changes(&self) -> impl Iterator<Item = AccountChanges<'_>> {
+        self.accounts.iter().map(|(&address, account)| {
+            account.changes(address, self.selfdestructs.contains(&address))
         })
     }
 }
@@ -110,8 +116,8 @@ impl StateChangeSource for PendingState {
     /// unchanged — go through [`StateChangeSink::account`]; loaded-but-unchanged entries go
     /// through the read callbacks.
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        for (&address, entry) in &self.accounts {
-            entry.visit(address, self.selfdestructs.contains(&address), sink)?;
+        for changes in self.account_changes() {
+            changes.visit(sink)?;
         }
         Ok(())
     }

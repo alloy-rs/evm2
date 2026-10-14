@@ -1,11 +1,11 @@
 //! Accesslist tests
 
 use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, TransactTo, TxEnv};
-use alloy_consensus::{TxEip7702, transaction::Recovered};
+use alloy_consensus::{TxEip7702, crypto::secp256k1::sign_message};
 use alloy_eip2930::{AccessList, AccessListItem};
-use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
-use alloy_primitives::{Address, B256, U256, address, hex};
-use evm2::ethereum::{LazyTxEip7702, TxEnvelope};
+use alloy_eips::eip7702::Authorization;
+use alloy_primitives::{Address, B256, Signature, U256, address, hex};
+use evm2::ethereum::TxEnvelope;
 use evm2_inspectors::access_list::AccessListInspector;
 
 #[test]
@@ -103,39 +103,38 @@ fn test_access_list_authorization_exclusions() {
     const CHAIN_ID: u64 = 1;
     const TX_CHAIN_ID: u64 = CHAIN_ID + 1;
 
-    let current_chain = address!("00000000000000000000000000000000000000c0");
-    let zero_chain = address!("00000000000000000000000000000000000000d0");
-    let wrong_chain = address!("00000000000000000000000000000000000000e0");
-    let max_nonce = address!("00000000000000000000000000000000000000f0");
-
-    let authorization = |chain_id, nonce, authority| {
-        RecoveredAuthorization::new_unchecked(
-            Authorization { chain_id: U256::from(chain_id), address: Address::ZERO, nonce },
-            authority,
-        )
+    let authorization = |chain_id: u64, nonce| Authorization {
+        chain_id: U256::from(chain_id),
+        address: Address::ZERO,
+        nonce,
     };
-    let authorizations = vec![
-        authorization(CHAIN_ID, 0, RecoveredAuthority::Valid(current_chain)),
-        authorization(0, 0, RecoveredAuthority::Valid(zero_chain)),
-        authorization(CHAIN_ID + 1, 0, RecoveredAuthority::Valid(wrong_chain)),
-        authorization(CHAIN_ID, u64::MAX, RecoveredAuthority::Valid(max_nonce)),
-        authorization(CHAIN_ID, 0, RecoveredAuthority::Invalid),
-    ];
-    let tx = Recovered::new_unchecked(
-        TxEnvelope::Eip7702(LazyTxEip7702::from_cached_recovered_authorizations(
-            TxEip7702 { chain_id: TX_CHAIN_ID, ..Default::default() },
-            authorizations,
-        )),
-        Address::ZERO,
-    );
+    let sign = |authorization: Authorization, secret| {
+        let signature = sign_message(B256::with_last_byte(secret), authorization.signature_hash());
+        authorization.into_signed(signature.unwrap())
+    };
+    let current_chain = sign(authorization(CHAIN_ID, 0), 1);
+    let zero_chain = sign(authorization(0, 0), 2);
+    let wrong_chain = sign(authorization(TX_CHAIN_ID, 0), 3);
+    let max_nonce = sign(authorization(CHAIN_ID, u64::MAX), 4);
+    let unrecoverable =
+        authorization(CHAIN_ID, 0).into_signed(Signature::new(U256::ZERO, U256::ZERO, false));
+    let [current_chain_authority, zero_chain_authority, wrong_chain_authority, max_nonce_authority] =
+        [&current_chain, &zero_chain, &wrong_chain, &max_nonce]
+            .map(|authorization| authorization.recover_authority().unwrap());
+
+    let tx = TxEnvelope::from(TxEip7702 {
+        chain_id: TX_CHAIN_ID,
+        authorization_list: vec![current_chain, zero_chain, wrong_chain, max_nonce, unrecoverable],
+        ..Default::default()
+    });
 
     let inspector = AccessListInspector::default().with_excluded_from_tx(&tx, CHAIN_ID);
     let excluded = inspector.excluded();
 
-    assert!(excluded.contains(&current_chain));
-    assert!(excluded.contains(&zero_chain));
-    assert!(!excluded.contains(&wrong_chain));
-    assert!(!excluded.contains(&max_nonce));
+    assert!(excluded.contains(&current_chain_authority));
+    assert!(excluded.contains(&zero_chain_authority));
+    assert!(!excluded.contains(&wrong_chain_authority));
+    assert!(!excluded.contains(&max_nonce_authority));
     // The unrecoverable authorization has no authority and therefore adds nothing.
     assert_eq!(excluded.len(), 2);
 }

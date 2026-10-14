@@ -4,6 +4,8 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import time
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -87,3 +89,51 @@ def run_cli(
     if capture_stderr:
         return r.stdout + r.stderr
     return r.stdout
+
+
+PERF_EVENTS = "instructions:u,task-clock"
+
+
+def perf_available() -> bool:
+    """Whether ``perf stat`` can count user-space instructions."""
+    try:
+        r = subprocess.run(
+            ["perf", "stat", "-x,", "-e", PERF_EVENTS, "true"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return False
+    return r.returncode == 0 and "<not" not in r.stderr and "instructions" in r.stderr
+
+
+def time_cli(binary: str, args: list[str], perf: bool) -> tuple[int | None, float]:
+    """Run the CLI and return ``(instructions, seconds)``.
+
+    With *perf*, returns user-space instructions and task clock (CPU time) from
+    ``perf stat``. Otherwise returns no instruction count and wall time.
+    """
+    cmd = [binary, *args]
+    if not perf:
+        start = time.perf_counter()
+        subprocess.run(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=True
+        )
+        return None, time.perf_counter() - start
+    with tempfile.NamedTemporaryFile("r") as out:
+        subprocess.run(
+            ["perf", "stat", "-x,", "-e", PERF_EVENTS, "-o", out.name, *cmd],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        stats = {}
+        for line in out:
+            parts = line.strip().split(",")
+            if len(parts) > 2:
+                try:
+                    stats[parts[2]] = float(parts[0])
+                except ValueError:
+                    pass
+    return int(stats["instructions:u"]), stats["task-clock"] / 1e3

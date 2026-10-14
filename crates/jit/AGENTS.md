@@ -98,9 +98,11 @@ line counts, compile times, jump resolution stats, and constant-input
 statistics.
 
 The script writes its full markdown output to `<dump_dir>/results.md` in
-addition to printing it to stdout. Summary tables hide changes within a noise
-threshold (1% for codegen, 5% for compile times); the `<details>` tables still
-show every change.
+addition to printing it to stdout. Summary tables hide rows within a noise
+threshold (1% for codegen and instructions, 5% for time) and end with a
+`TOTAL` row and an equal-weight `GEOMEAN` row; the `<details>` tables still
+show every value. Benchmarks that fail on either side go in a `Failures`
+table instead of aborting the run.
 
 ```bash
 ./scripts/jit/bench.py /tmp/bench --diff <base-rev>                    # codegen + compile time vs base
@@ -109,13 +111,57 @@ show every change.
 ./scripts/jit/bench.py /tmp/bench                                      # current branch only (no diff)
 ./scripts/jit/bench.py /tmp/bench --diff <base-rev> --compile-times    # compile times only
 ./scripts/jit/bench.py /tmp/bench --diff <base-rev> --codegen-lines    # codegen lines only
+./scripts/jit/bench.py /tmp/bench --diff <base-rev> --runs 5           # more compile-cost samples
 ./scripts/jit/bench.py /tmp/bench --jump-resolution                    # jump resolution stats
 ./scripts/jit/bench.py /tmp/bench --input-stats                        # constant-input stats
 ./scripts/jit/bench.py /tmp/bench --block-stats                        # block stats
 ./scripts/jit/bench.py /tmp/bench --codegen-lines --jump-resolution    # combine multiple analyses
 ```
 
-Use a base revision that already contains the JIT CLI `run` command.
+Use a base revision that already contains the JIT CLI `run` command. Prefer
+`origin/main` after `git fetch` over `main`: a stale local `main` makes the
+diff include unrelated commits. The first line of `results.md` names both
+commits.
+
+With `--diff`, the script builds the base in a git worktree at
+`<dump_dir>.base/.worktree` and caches the binary there per commit, so later
+runs against the same base rebuild only the head. The worktree must stay: the
+CLI reads fixtures from the source tree it was built from. Delete
+`<dump_dir>.base` and run `git worktree prune` to drop the cache.
+
+The codegen section starts with the number of benchmarks whose `opt.s` changed,
+ignoring dump paths. `0/N` shows that a refactor leaves codegen alone.
+
+### Compile times
+
+- `instructions` and `time` are medians of `--runs` (default 3) runs of
+  `evm2 run <bench> 0`, which JIT-compiles every contract in the fixture
+  without dumps or execution. `instructions` counts user-space instructions
+  with `perf stat` and varies by about 0.3% between runs. `time` is CPU time
+  (wall time without `perf`); on a busy machine it moved by more than 10% for
+  identical code. Head and base runs alternate, so load hits both sides
+  alike. Judge compile-time changes by `instructions`.
+- `parse`, `translate`, `optimize`, and `codegen` come from the single dump
+  run's `remarks.txt` and appear only in the details table. They are noisy:
+  use them to find which phase moved, not by how much.
+- Do not read `finalize` or `total` in `remarks.txt` as compile time.
+  `finalize` includes writing `unopt.ll` and `opt.ll` and generating `opt.s`;
+  seaport compiles in 2.4s without dumps but reports 4.4s total with them.
+
+### Runtime
+
+`bench.py` does not measure execution. The CodSpeed job in
+`.github/workflows/bench.yml` runs `crates/cli/benches/evm.rs` on every PR, so
+cite its report for runtime claims. For a quick local check,
+`cargo cli run <bench> <iters> --jit-only` prints the time per iteration.
+
+### LLVM experiments
+
+`EVM2_JIT_PASSES` and `EVM2_JIT_LLVM_ARGS` let you try pass pipelines and
+flags without rebuilding, but `bench.py` passes the environment to both sides.
+To diff a pipeline change, make it in code. `EVM2_JIT_PASSES` also replaces the
+pipeline for every function size, which drops the LICM size gate in
+`optimize_module`.
 
 ## Bench-and-PR workflow
 
@@ -129,9 +175,9 @@ making a perf change that needs benchmark numbers in the PR description:
 3. Add prose explaining what the PR does ABOVE the inlined results, under a
    `## Benchmarks` (or similar) heading.
 4. Under `## Benchmarks`, ABOVE the inlined `results.md`, write a short
-   textual summary of the headline numbers (e.g. the `**TOTAL**` row diffs
-   from the codegen + compile-time tables, plus any notable per-bench wins
-   or regressions worth calling out). Keep it to a few sentences or a tight
+   textual summary of the headline numbers (e.g. the `**TOTAL**` and
+   `**GEOMEAN**` rows from the codegen + compile-time tables, plus any notable
+   per-bench wins or regressions worth calling out). Keep it to a few sentences or a tight
    bullet list — this is the at-a-glance summary readers see before the
    tables. The tables themselves stay verbatim.
 5. Update the PR with `gh pr edit <number> --body-file <body.md>`.
@@ -148,8 +194,9 @@ More prose: motivation, design notes, caveats, anything reviewers need.
 
 ## Benchmarks
 
-Headline numbers vs `main`: jit size -7.5%, opt.s +2.9%, total compile time
-+0.2%. `counter` regresses on opt.s (+26%); `seaport` is roughly flat.
+Headline numbers vs `main`: jit size -7.5%, opt.s +2.9%, compile
+instructions -4.1%. `counter` regresses on opt.s (+26%); `seaport` is roughly
+flat. Runtime: see the CodSpeed report.
 
 EOF
   cat /tmp/bench/results.md

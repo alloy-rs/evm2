@@ -37,6 +37,7 @@ boa_gc = { workspace = true, optional = true }
 num-bigint = { workspace = true, optional = true }
 
 [dev-dependencies]
+alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-eips.workspace = true
 alloy-hardforks.workspace = true
 snapbox = { workspace = true, features = ["term-svg"] }

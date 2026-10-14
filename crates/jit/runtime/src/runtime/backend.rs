@@ -15,7 +15,7 @@ use crate::{
 };
 use alloy_primitives::{
     Bytes, keccak256,
-    map::{DefaultHashBuilder, HashMap},
+    map::{DefaultHashBuilder, HashMap, hash_map::Entry},
 };
 use crossbeam_channel as chan;
 use crossbeam_queue::ArrayQueue;
@@ -177,6 +177,8 @@ struct EntryState {
     last_observed_at: Instant,
     /// Sync notifiers waiting for this entry to finish compiling.
     pending_notifiers: Vec<SyncNotifier>,
+    /// Links in the cold-entry FIFO; absent while compilation is in progress.
+    cold_links: Option<ColdLinks>,
 }
 
 /// Phase of a backend entry.
@@ -197,6 +199,12 @@ enum AdmitMode {
     Explicit,
 }
 
+/// Links stored directly on cold entries, avoiding stale queue keys.
+struct ColdLinks {
+    prev: Option<RuntimeCacheKey>,
+    next: Option<RuntimeCacheKey>,
+}
+
 /// All backend-thread-owned mutable state.
 struct BackendState {
     /// Shared state (resident map, event queue, stats).
@@ -205,6 +213,9 @@ struct BackendState {
     resident_meta: HashMap<RuntimeCacheKey, ResidentMeta>,
     /// Per-key tracking state (backend-only).
     entries: HashMap<RuntimeCacheKey, EntryState>,
+    /// Oldest and newest cold entries in insertion order.
+    cold_head: Option<RuntimeCacheKey>,
+    cold_tail: Option<RuntimeCacheKey>,
     /// Worker pool for JIT compilation.
     workers: WorkerPool,
     /// Backend-thread-owned linker for out-of-process JIT objects.
@@ -313,8 +324,11 @@ impl BackendState {
         }
 
         if matches!(mode, AdmitMode::Observed) {
-            let max_entries = self.tuning.jit_max_pending_jobs * 10;
-            if !self.entries.contains_key(&key) && self.entries.len() >= max_entries {
+            let max_entries = self.tuning.jit_max_pending_jobs.saturating_mul(10);
+            if !self.entries.contains_key(&key)
+                && self.entries.len() >= max_entries
+                && !self.evict_oldest_cold_entry()
+            {
                 return;
             }
         }
@@ -325,13 +339,29 @@ impl BackendState {
         }
 
         let now = Instant::now();
-        let entry = self.entries.entry(key).or_insert_with(|| EntryState {
-            hotness: 0,
-            phase: EntryPhase::Cold,
-            bytecode: bytecode.clone(),
-            last_observed_at: now,
-            pending_notifiers: Vec::new(),
-        });
+        let inserted = match self.entries.entry(key) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(entry) => {
+                entry.insert(EntryState {
+                    hotness: 0,
+                    phase: EntryPhase::Cold,
+                    bytecode,
+                    last_observed_at: now,
+                    pending_notifiers: Vec::new(),
+                    cold_links: Some(ColdLinks { prev: self.cold_tail, next: None }),
+                });
+                true
+            }
+        };
+        if inserted {
+            if let Some(tail) = self.cold_tail {
+                self.entries.get_mut(&tail).unwrap().cold_links.as_mut().unwrap().next = Some(key);
+            } else {
+                self.cold_head = Some(key);
+            }
+            self.cold_tail = Some(key);
+        }
+        let entry = self.entries.get_mut(&key).unwrap();
         entry.last_observed_at = now;
 
         if entry.phase == EntryPhase::Working {
@@ -381,6 +411,7 @@ impl BackendState {
                     "dispatched compilation",
                 );
                 entry.phase = EntryPhase::Working;
+                self.unlink_cold_entry(&key);
                 self.pending_jobs += 1;
                 self.inner.stats.compilations_dispatched.fetch_add(1, Ordering::Relaxed);
             }
@@ -455,6 +486,8 @@ impl BackendState {
         self.workers.cancel_in_flight();
         self.inner.resident.clear();
         self.resident_meta.clear();
+        self.cold_head = None;
+        self.cold_tail = None;
         // Notify any pending sync callers before clearing entries.
         for (_, entry) in self.entries.drain() {
             for n in entry.pending_notifiers {
@@ -519,7 +552,7 @@ impl BackendState {
                 current_gen = self.generation,
                 "discarding stale worker result",
             );
-            self.entries.remove(&result.key);
+            self.remove_entry(&result.key);
             notify();
             return;
         }
@@ -543,7 +576,7 @@ impl BackendState {
                 let program =
                     Arc::new(CompiledProgram::new_jit(result.key, success.func, success.backing));
                 self.insert_resident(result.key, program);
-                self.entries.remove(&result.key);
+                self.remove_entry(&result.key);
                 self.inner.stats.compilations_succeeded.fetch_add(1, Ordering::Relaxed);
 
                 debug!(
@@ -560,7 +593,7 @@ impl BackendState {
                 self.handle_jit_object_success(result.key, success, result.compile_duration);
             }
             Err(err) => {
-                self.entries.remove(&result.key);
+                self.remove_entry(&result.key);
                 self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
 
                 warn!(
@@ -585,7 +618,7 @@ impl BackendState {
             Ok((func, backing)) => {
                 let program = Arc::new(CompiledProgram::new_jit(key, func, backing));
                 self.insert_resident(key, program);
-                self.entries.remove(&key);
+                self.remove_entry(&key);
                 self.inner.stats.compilations_succeeded.fetch_add(1, Ordering::Relaxed);
 
                 debug!(
@@ -597,7 +630,7 @@ impl BackendState {
                 );
             }
             Err(err) => {
-                self.entries.remove(&key);
+                self.remove_entry(&key);
                 self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
 
                 warn!(
@@ -639,7 +672,7 @@ impl BackendState {
                     error = %e,
                     "failed to persist AOT artifact",
                 );
-                self.entries.remove(&key);
+                self.remove_entry(&key);
                 self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
                 return;
             }
@@ -669,7 +702,7 @@ impl BackendState {
                     })() {
                         Ok(program) => {
                             self.insert_resident(key, Arc::new(program));
-                            self.entries.remove(&key);
+                            self.remove_entry(&key);
                             self.inner.stats.compilations_succeeded.fetch_add(1, Ordering::Relaxed);
 
                             debug!(
@@ -685,7 +718,7 @@ impl BackendState {
                                 "failed to load persisted AOT artifact",
                             );
                             // Persisted successfully but couldn't load — remove so JIT can retry.
-                            self.entries.remove(&key);
+                            self.remove_entry(&key);
                             self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
                         }
                     }
@@ -695,7 +728,7 @@ impl BackendState {
                         code_hash = %key.code_hash,
                         "stored AOT artifact not found on reload",
                     );
-                    self.entries.remove(&key);
+                    self.remove_entry(&key);
                     self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(e) => {
@@ -704,17 +737,17 @@ impl BackendState {
                         error = %e,
                         "failed to reload persisted AOT artifact",
                     );
-                    self.entries.remove(&key);
+                    self.remove_entry(&key);
                     self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
                 }
             }
         } else {
-            // No store configured — can't persist, remove so JIT can retry.
+            // Only reachable through explicit `prepare_aot` requests; AOT mode requires a store.
             warn!(
                 code_hash = %key.code_hash,
                 "AOT compilation completed but no artifact store configured",
             );
-            self.entries.remove(&key);
+            self.remove_entry(&key);
             self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -747,20 +780,26 @@ impl BackendState {
                     "evicting idle entry",
                 );
                 self.remove_resident(key);
-                self.entries.remove(key);
+                self.remove_entry(key);
                 self.inner.stats.evictions.fetch_add(1, Ordering::Relaxed);
             }
         }
 
         // Phase 2: evict stale cold entries that never became hot enough to compile.
         if let Some(idle) = idle_duration {
-            let resident = &self.inner.resident;
-            self.entries.retain(|key, entry| {
-                let stale = entry.phase == EntryPhase::Cold
-                    && now.duration_since(entry.last_observed_at) > idle
-                    && !resident.contains_key(key);
-                !stale
-            });
+            let stale_keys = self
+                .entries
+                .iter()
+                .filter(|(key, entry)| {
+                    entry.phase == EntryPhase::Cold
+                        && now.duration_since(entry.last_observed_at) > idle
+                        && !self.inner.resident.contains_key(key)
+                })
+                .map(|(key, _)| *key)
+                .collect::<Vec<_>>();
+            for key in stale_keys {
+                self.remove_entry(&key);
+            }
         }
 
         // Phase 3: enforce memory budget by evicting LRU JIT entries.
@@ -787,7 +826,7 @@ impl BackendState {
                     "evicting entry to stay within memory budget",
                 );
                 self.remove_resident(&key);
-                self.entries.remove(&key);
+                self.remove_entry(&key);
                 self.inner.stats.evictions.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -802,6 +841,40 @@ impl BackendState {
         }
         self.tuning.idle_evict_duration.is_some()
             && self.last_sweep.elapsed() >= self.tuning.eviction_sweep_interval
+    }
+
+    /// Evicts the first-in cold entry with constant-time queue maintenance.
+    fn evict_oldest_cold_entry(&mut self) -> bool {
+        let Some(key) = self.cold_head else { return false };
+        // Cold entries never accumulate waiters: those belong to working entries.
+        debug_assert_eq!(self.entries[&key].phase, EntryPhase::Cold);
+        debug_assert!(self.entries[&key].pending_notifiers.is_empty());
+        self.remove_entry(&key);
+        true
+    }
+
+    /// Unlinks a cold entry on dispatch or removal, without scanning the table.
+    fn unlink_cold_entry(&mut self, key: &RuntimeCacheKey) {
+        let Some(links) = self.entries.get_mut(key).and_then(|entry| entry.cold_links.take())
+        else {
+            return;
+        };
+        if let Some(prev) = links.prev {
+            self.entries.get_mut(&prev).unwrap().cold_links.as_mut().unwrap().next = links.next;
+        } else {
+            self.cold_head = links.next;
+        }
+        if let Some(next) = links.next {
+            self.entries.get_mut(&next).unwrap().cold_links.as_mut().unwrap().prev = links.prev;
+        } else {
+            self.cold_tail = links.prev;
+        }
+    }
+
+    /// Removes tracking state and its FIFO links together.
+    fn remove_entry(&mut self, key: &RuntimeCacheKey) {
+        self.unlink_cold_entry(key);
+        self.entries.remove(key);
     }
 }
 
@@ -831,6 +904,8 @@ pub(crate) fn run(
         inner,
         resident_meta: preload_meta,
         entries: HashMap::default(),
+        cold_head: None,
+        cold_tail: None,
         workers,
         jit_object_linker: JitObjectLinker::new(),
         result_rx,
@@ -882,15 +957,13 @@ pub(crate) fn run(
 mod notifier_tests {
     use super::*;
     use crate::runtime::{BackendShared, stats::RuntimeStats};
-    use evm2::SpecId;
+    use evm2::{SpecId, interpreter::op};
     use std::{sync::atomic::AtomicUsize, time::Duration};
 
-    #[test]
-    fn working_entry_retains_only_real_waiters_and_notifies_on_completion() {
-        // Seed an in-flight entry without starting a compiler: its completion must
-        // not race the repeated observations or require an LLVM backend.
+    /// Creates backend state without starting compiler workers.
+    fn new_state(tuning: RuntimeTuning) -> BackendState {
         let config = RuntimeConfig {
-            tuning: RuntimeTuning { jit_worker_count: 0, ..RuntimeTuning::default() },
+            tuning: RuntimeTuning { jit_worker_count: 0, ..tuning },
             ..RuntimeConfig::default()
         };
         let inner = Arc::new(BackendShared {
@@ -901,33 +974,54 @@ mod notifier_tests {
         });
         let (result_tx, result_rx) = chan::unbounded();
         let workers = WorkerPool::new(result_tx, config.clone(), Arc::clone(&inner.stats));
-        let bytecode = Bytes::from_static(&[0x00]);
-        let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
-        let now = Instant::now();
-        let mut state = BackendState {
+        BackendState {
             inner,
             resident_meta: HashMap::default(),
-            entries: HashMap::from_iter([(
-                key,
-                EntryState {
-                    hotness: 1,
-                    phase: EntryPhase::Working,
-                    bytecode: bytecode.clone(),
-                    last_observed_at: now,
-                    pending_notifiers: Vec::new(),
-                },
-            )]),
+            entries: HashMap::default(),
+            cold_head: None,
+            cold_tail: None,
             workers,
             jit_object_linker: JitObjectLinker::new(),
             result_rx,
             store: config.store,
             tuning: config.tuning,
             aot: false,
-            pending_jobs: 1,
+            pending_jobs: 0,
             generation: 0,
-            last_sweep: now,
+            last_sweep: Instant::now(),
             on_compilation: None,
-        };
+        }
+    }
+
+    fn observe(state: &mut BackendState, i: u32) -> RuntimeCacheKey {
+        let mut code = vec![op::PUSH4];
+        code.extend_from_slice(&i.to_be_bytes());
+        code.push(op::STOP);
+        let bytecode = Bytes::from(code);
+        let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
+        state.handle_lookup_observed(LookupRequest { key, code: bytecode });
+        key
+    }
+
+    #[test]
+    fn working_entry_retains_only_real_waiters_and_notifies_on_completion() {
+        // Seed an in-flight entry without starting a compiler: its completion must
+        // not race the repeated observations or require an LLVM backend.
+        let mut state = new_state(RuntimeTuning::default());
+        let bytecode = Bytes::from_static(&[0x00]);
+        let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
+        state.entries.insert(
+            key,
+            EntryState {
+                hotness: 1,
+                phase: EntryPhase::Working,
+                bytecode: bytecode.clone(),
+                last_observed_at: Instant::now(),
+                pending_notifiers: Vec::new(),
+                cold_links: None,
+            },
+        );
+        state.pending_jobs = 1;
         for _ in 0..10_000 {
             state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
         }
@@ -968,6 +1062,216 @@ mod notifier_tests {
         for receiver in [original_rx, first_rx, second_rx] {
             assert_eq!(receiver.try_recv(), Ok(()));
             assert_eq!(receiver.try_recv(), Err(chan::TryRecvError::Disconnected));
+        }
+    }
+
+    #[test]
+    fn full_cold_table_evicts_first_inserted_cold_entry() {
+        let mut state = new_state(RuntimeTuning {
+            jit_hot_threshold: usize::MAX,
+            jit_max_pending_jobs: 1,
+            ..RuntimeTuning::default()
+        });
+        let keys = (0..10).map(|i| observe(&mut state, i)).collect::<Vec<_>>();
+        // A repeated observation does not change FIFO position.
+        observe(&mut state, 0);
+
+        let new_key = observe(&mut state, 10);
+        assert_eq!(state.entries.len(), 10);
+        assert!(state.entries.contains_key(&new_key));
+        assert!(!state.entries.contains_key(&keys[0]));
+        assert!(keys[1..].iter().all(|key| state.entries.contains_key(key)));
+    }
+
+    #[test]
+    fn cold_table_cap_saturates() {
+        let mut state = new_state(RuntimeTuning {
+            jit_hot_threshold: usize::MAX,
+            jit_max_pending_jobs: usize::MAX,
+            ..RuntimeTuning::default()
+        });
+        let key = observe(&mut state, 0);
+        assert!(state.entries.contains_key(&key));
+    }
+
+    #[test]
+    fn removing_and_reinserting_cold_entries_preserves_fifo() {
+        let mut state =
+            new_state(RuntimeTuning { jit_hot_threshold: usize::MAX, ..Default::default() });
+        let keys = (0..4).map(|i| observe(&mut state, i)).collect::<Vec<_>>();
+        // Remove the middle, head, and tail without leaving stale links.
+        for i in [1, 0, 3] {
+            state.remove_entry(&keys[i]);
+        }
+        assert_eq!(state.cold_head, Some(keys[2]));
+        assert_eq!(state.cold_tail, Some(keys[2]));
+        observe(&mut state, 1);
+        assert!(state.evict_oldest_cold_entry());
+        assert!(!state.entries.contains_key(&keys[2]));
+        assert_eq!(state.cold_head, Some(keys[1]));
+        assert!(state.evict_oldest_cold_entry());
+        assert_eq!(state.cold_head, None);
+        assert_eq!(state.cold_tail, None);
+        assert!(!state.evict_oldest_cold_entry());
+    }
+
+    #[test]
+    fn cold_fifo_does_not_evict_working_entries_or_waiters() {
+        let mut state = new_state(RuntimeTuning {
+            jit_hot_threshold: usize::MAX,
+            jit_max_pending_jobs: 1,
+            ..Default::default()
+        });
+        let working = observe(&mut state, 0);
+        state.entries.get_mut(&working).unwrap().phase = EntryPhase::Working;
+        state.unlink_cold_entry(&working);
+        let (sender, receiver) = chan::bounded(1);
+        state.entries.get_mut(&working).unwrap().pending_notifiers.push(SyncNotifier::new(sender));
+        for i in 1..=20 {
+            observe(&mut state, i);
+        }
+        assert_eq!(state.entries.len(), 10);
+        assert_eq!(state.entries[&working].phase, EntryPhase::Working);
+        assert_eq!(receiver.try_recv(), Err(chan::TryRecvError::Empty));
+        while state.evict_oldest_cold_entry() {}
+        assert_eq!(state.entries.len(), 1);
+        // No cold candidate: deny a new key when the table is full of working entries.
+        for i in 21..30 {
+            let key = observe(&mut state, i);
+            state.entries.get_mut(&key).unwrap().phase = EntryPhase::Working;
+            state.unlink_cold_entry(&key);
+        }
+        let denied = observe(&mut state, 30);
+        assert!(!state.entries.contains_key(&denied));
+        assert_eq!(state.entries.len(), 10);
+    }
+
+    #[test]
+    fn idle_sweep_and_clear_remove_fifo_links() {
+        let mut state = new_state(RuntimeTuning {
+            jit_hot_threshold: usize::MAX,
+            idle_evict_duration: Some(Duration::ZERO),
+            eviction_sweep_interval: Duration::ZERO,
+            ..Default::default()
+        });
+        for i in 0..10 {
+            observe(&mut state, i);
+        }
+        std::thread::sleep(Duration::from_millis(1));
+        state.run_eviction_sweep();
+        assert!(state.entries.is_empty());
+        assert_eq!(state.cold_head, None);
+        assert_eq!(state.cold_tail, None);
+        let key = observe(&mut state, 0);
+        assert_eq!(state.cold_head, Some(key));
+        state.handle_clear_resident();
+        assert_eq!(state.cold_head, None);
+        assert_eq!(state.cold_tail, None);
+        assert!(!state.evict_oldest_cold_entry());
+        observe(&mut state, 0);
+        assert!(state.evict_oldest_cold_entry());
+    }
+
+    #[test]
+    fn cold_fifo_stays_bounded_without_idle_sweeps() {
+        let mut state = new_state(RuntimeTuning {
+            jit_hot_threshold: usize::MAX,
+            jit_max_pending_jobs: 1,
+            idle_evict_duration: None,
+            ..Default::default()
+        });
+        for i in 0..10_000 {
+            observe(&mut state, i);
+        }
+        assert_eq!(state.entries.len(), 10);
+        for i in 9_990..10_000 {
+            let key = observe(&mut state, i);
+            assert!(state.entries.contains_key(&key));
+        }
+        for _ in 0..10 {
+            assert!(state.evict_oldest_cold_entry());
+        }
+        assert!(state.entries.is_empty());
+        assert_eq!(state.cold_head, None);
+        assert_eq!(state.cold_tail, None);
+    }
+
+    #[test]
+    fn rejected_dispatch_keeps_entry_in_cold_fifo() {
+        let mut state = new_state(RuntimeTuning { jit_hot_threshold: 1, ..Default::default() });
+        // The helper starts no workers, so dispatch must fail without unlinking.
+        let key = observe(&mut state, 0);
+        assert_eq!(state.entries[&key].phase, EntryPhase::Cold);
+        assert_eq!(state.cold_head, Some(key));
+        assert!(state.evict_oldest_cold_entry());
+        assert!(state.entries.is_empty());
+    }
+
+    #[test]
+    fn successful_dispatch_unlinks_cold_entry_before_completion() {
+        let tuning =
+            RuntimeTuning { jit_hot_threshold: 2, jit_worker_count: 1, ..Default::default() };
+        let mut state = new_state(tuning);
+        let (result_tx, result_rx) = chan::unbounded();
+        state.workers = WorkerPool::new(
+            result_tx,
+            RuntimeConfig { tuning, ..Default::default() },
+            Arc::clone(&state.inner.stats),
+        );
+        state.result_rx = result_rx;
+        let first = observe(&mut state, 0);
+        let second = observe(&mut state, 1);
+        observe(&mut state, 0);
+        assert_eq!(state.entries[&first].phase, EntryPhase::Working);
+        assert!(state.entries[&first].cold_links.is_none());
+        assert_eq!(state.cold_head, Some(second));
+        assert_eq!(state.cold_tail, Some(second));
+        assert!(state.evict_oldest_cold_entry());
+        assert!(!state.entries.contains_key(&second));
+        assert!(state.entries.contains_key(&first));
+        // Worker completion removes only the working entry and cannot damage the FIFO.
+        let result = state.result_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        state.handle_worker_result(result);
+        assert!(state.entries.is_empty());
+        assert_eq!(state.cold_head, None);
+        assert_eq!(state.cold_tail, None);
+        state.workers.shutdown().unwrap();
+    }
+
+    #[test]
+    #[ignore = "local admission microbenchmark"]
+    fn cold_table_churn_benchmark() {
+        println!("entry_bytes={}", std::mem::size_of::<EntryState>());
+        for capacity in [1_000, 20_480] {
+            for _ in 0..3 {
+                let mut state = new_state(RuntimeTuning {
+                    jit_hot_threshold: usize::MAX,
+                    jit_max_pending_jobs: capacity / 10,
+                    idle_evict_duration: None,
+                    ..Default::default()
+                });
+                for i in 0..capacity as u32 {
+                    observe(&mut state, i);
+                }
+                let start = std::time::Instant::now();
+                for i in capacity as u32..capacity as u32 + 2_000 {
+                    std::hint::black_box(observe(&mut state, i));
+                }
+                println!(
+                    "capacity={capacity} new_keys=2000 elapsed_us={}",
+                    start.elapsed().as_micros()
+                );
+                assert_eq!(state.entries.len(), capacity);
+                let existing = capacity as u32 + 1_999;
+                let start = std::time::Instant::now();
+                for _ in 0..100_000 {
+                    std::hint::black_box(observe(&mut state, existing));
+                }
+                println!(
+                    "capacity={capacity} repeated_keys=100000 elapsed_us={}",
+                    start.elapsed().as_micros()
+                );
+            }
         }
     }
 }

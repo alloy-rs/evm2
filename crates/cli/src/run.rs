@@ -263,6 +263,8 @@ impl RunArgs {
             _compiler = None;
             _lib = Some(lib);
         } else if let Some((mut compiler, functions)) = pending_jit {
+            // Keep the entry contract's dump; other fixture contracts would overwrite it.
+            compiler.set_dump_to(None);
             prepared = PreparedBench::load_with_functions(&bench_entry, &mut compiler, functions)?;
             _compiler = Some(compiler);
             _lib = None;
