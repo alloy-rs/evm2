@@ -20,7 +20,7 @@ pub(super) fn analyze_legacy(bytecode: &[u8]) -> JumpTable {
     jumps
 }
 
-/// Analyzes a prepared chunk from its stored offset, preserving physical padding destinations.
+/// Analyzes the logical payload of a prepared chunk from its stored offset.
 /// Layout validation is done by `Bytecode::new_chunk`; no account size or index is needed.
 pub(super) fn analyze_chunk(bytecode: &[u8], layout: ChunkLayout) -> JumpTable {
     let mut jumps = JumpTable::new(bytecode.len());
@@ -28,13 +28,6 @@ pub(super) fn analyze_chunk(bytecode: &[u8], layout: ChunkLayout) -> JumpTable {
     let payload = &bytecode[..layout.payload_len(bytecode)];
     let pc = analyze_simd(payload, table, layout.start_offset());
     analyze_scalar(payload, table, pc);
-    // Generated padding has its own instruction boundaries, independent of PUSH-only
-    // payload analysis. Never mark continued immediates, the tail, or the trailer.
-    for pc in layout.padding_start(bytecode)..layout.tail_offset(bytecode) {
-        if bytecode[pc] == op::JUMPDEST {
-            table[pc / 8] |= 1 << (pc % 8);
-        }
-    }
     jumps
 }
 

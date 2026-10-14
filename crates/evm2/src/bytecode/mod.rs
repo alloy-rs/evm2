@@ -616,7 +616,7 @@ mod tests {
             for pc in 0..bytecode.len() {
                 assert_eq!(
                     table.is_valid(pc),
-                    (usize::from(offset)..64).contains(&pc) || pc == 95,
+                    (usize::from(offset)..64).contains(&pc),
                     "offset={offset}, pc={pc}",
                 );
             }
@@ -629,10 +629,10 @@ mod tests {
         let chunk = code_chunk(&code, 0).unwrap();
         let bytecode = chunk.bytecode();
         let legacy = Bytecode::new_legacy(bytecode.original_bytes());
-        assert!(CodeChunk::from_prepared(legacy, code.len() as u32, 0).is_err());
-        assert!(CodeChunk::from_prepared(bytecode.clone(), CODE_CHUNK_SIZE as u32, 0).is_err());
-        assert!(CodeChunk::from_prepared(bytecode.clone(), code.len() as u32, 1).is_err());
-        let loaded = CodeChunk::from_prepared(bytecode.clone(), code.len() as u32, 0).unwrap();
+        assert!(CodeChunk::from_chunked(legacy, code.len() as u32, 0).is_err());
+        assert!(CodeChunk::from_chunked(bytecode.clone(), CODE_CHUNK_SIZE as u32, 0).is_err());
+        assert!(CodeChunk::from_chunked(bytecode.clone(), code.len() as u32, 1).is_err());
+        let loaded = CodeChunk::from_chunked(bytecode.clone(), code.len() as u32, 0).unwrap();
         assert!(core::ptr::eq(loaded.as_bytecode().inner(), bytecode.inner()));
         let mut malformed = bytecode.original_bytes().to_vec();
         malformed[CODE_CHUNK_SIZE] = op::INVALID;
@@ -645,7 +645,7 @@ mod tests {
             assert!(ordinary.jump_table().is_valid(size - 1));
             let first = code_chunk(&raw, 0).unwrap();
             assert_eq!(first.start_offset(), 0);
-            assert_eq!(first.prepared().is_some(), size > LEGACY_CODE_CHUNK_SIZE);
+            assert_eq!(first.chunked().is_some(), size > LEGACY_CODE_CHUNK_SIZE);
         }
     }
 }

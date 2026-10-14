@@ -35,8 +35,8 @@ fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut GasInstructionCx<'_, '_, '
             return Err(InstrStop::InvalidJump);
         }
         let index = (target / CODE_CHUNK_SIZE) as u32;
-        // Legacy records may be up to 24 KiB and have no prepared slicing.
-        let multi = cx.state.active_chunk().prepared().is_some();
+        // Legacy records may be up to 24 KiB and have no chunk slicing.
+        let multi = cx.state.active_chunk().chunked().is_some();
         if multi {
             let local = target % CODE_CHUNK_SIZE;
             let chunk = if index != cx.state.code_chunk_index() {
@@ -132,7 +132,7 @@ pub fn invalid(cx: _) -> Result {
 /// The logical destination is relative to the PC after the three-byte instruction.
 #[instruction(dynamic_gas)]
 pub fn rjump(cx: _) -> Result {
-    if !cx.state.feature(EvmFeatures::RJUMP) {
+    if !cx.state.feature(EvmFeatures::RJUMP) && !cx.state.feature(EvmFeatures::TIP1143) {
         return Err(InstrStop::OpcodeNotFound);
     }
     // Like EOF RJUMP, every executed relative jump costs two gas, including loops.
@@ -140,15 +140,14 @@ pub fn rjump(cx: _) -> Result {
     let immediate = unsafe { cx.pc.read_bytes_offset_unchecked(1, 2) };
     let offset = decode_rjump_offset([immediate[0], immediate[1]])
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
-    let transfer = cx.state.is_generated_tail(*cx.pc);
-    rjump_inner(offset, transfer, &mut cx)
+    rjump_inner(offset, &mut cx)
 }
 
 /// Conditional relative jump using the same immediate encoding as RJUMP.
 #[instruction(dynamic_gas, no_stack_preamble)]
 pub fn rjumpi(cx: _) -> Result {
     // Check activation before touching the stack, preserving unknown-opcode behavior.
-    if !cx.state.feature(EvmFeatures::RJUMP) {
+    if !cx.state.feature(EvmFeatures::RJUMP) && !cx.state.feature(EvmFeatures::TIP1143) {
         return Err(InstrStop::OpcodeNotFound);
     }
     cx.gas.spend(4)?;
@@ -161,35 +160,12 @@ pub fn rjumpi(cx: _) -> Result {
         unsafe { cx.pc.advance_unchecked(3) };
         Ok(())
     } else {
-        rjump_inner(offset, false, &mut cx)
+        rjump_inner(offset, &mut cx)
     }
 }
 
 #[inline(always)]
-fn rjump_inner<T: EvmTypesHost>(
-    offset: isize,
-    transfer: bool,
-    cx: &mut GasInstructionCx<'_, '_, '_, T>,
-) -> Result {
-    // Generated padding lives outside logical code positions. Its local RJUMP still
-    // requires an analyzed JUMPDEST, and never resolves or loads another chunk.
-    let local_pc = cx.state.bytecode().pc_offset(*cx.pc);
-    if cx.state.is_account_code()
-        && let Some(prepared) = cx.state.active_chunk().prepared()
-        && local_pc >= cx.state.active_chunk().payload_len()
-        && local_pc < prepared.tail_offset()
-    {
-        let target = local_pc
-            .checked_add(3)
-            .and_then(|post_pc| post_pc.checked_add_signed(offset))
-            .filter(|&target| target < prepared.tail_offset())
-            .ok_or(InstrStop::InvalidJump)?;
-        if !cx.state.bytecode().is_valid_jumpdest(target) {
-            return Err(InstrStop::InvalidJump);
-        }
-        unsafe { cx.pc.set_unchecked(cx.state.bytecode(), target) };
-        return Ok(());
-    }
+fn rjump_inner<T: EvmTypesHost>(offset: isize, cx: &mut GasInstructionCx<'_, '_, '_, T>) -> Result {
     let target = cx
         .state
         .global_pc(*cx.pc)
@@ -197,8 +173,8 @@ fn rjump_inner<T: EvmTypesHost>(
         .and_then(|post_pc| post_pc.checked_add_signed(offset))
         .filter(|&target| target < cx.state.code_size())
         .ok_or(InstrStop::InvalidJump)?;
-    let prepared = cx.state.is_account_code() && cx.state.active_chunk().prepared().is_some();
-    let local = if prepared {
+    let chunked = cx.state.is_account_code() && cx.state.active_chunk().chunked().is_some();
+    let local = if chunked {
         let index = (target / CODE_CHUNK_SIZE) as u32;
         let local = target % CODE_CHUNK_SIZE;
         let chunk = if index == cx.state.code_chunk_index() {
@@ -206,16 +182,9 @@ fn rjump_inner<T: EvmTypesHost>(
         } else {
             cx.state.load_and_charge_code_chunk(cx.gas, &cx.state.message().code_address, index)?
         };
-        let local = if transfer {
-            // Only the authenticated generated tail may enter a non-JUMPDEST.
-            // The successor's trailer identifies its first actual opcode.
-            chunk.start_offset()
-        } else {
-            if !chunk.is_valid_jumpdest(local) {
-                return Err(InstrStop::InvalidJump);
-            }
-            local
-        };
+        if !chunk.is_valid_jumpdest(local) {
+            return Err(InstrStop::InvalidJump);
+        }
         cx.state.activate_code_chunk(chunk);
         local
     } else {
@@ -230,6 +199,7 @@ fn rjump_inner<T: EvmTypesHost>(
 
 /// Two base-219 digits use the exact DUPN/SWAPN alphabet (decoded values 17..=235).
 /// Balanced signed displacements span -23980..=23980; no digit is PUSHn or JUMPDEST.
+#[cfg(test)]
 pub(crate) const fn encode_rjump_offset(offset: isize) -> Option<[u8; 2]> {
     if offset < -23980 || offset > 23980 {
         return None;

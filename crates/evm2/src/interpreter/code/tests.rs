@@ -17,7 +17,7 @@ use alloy_primitives::Bytes;
 const GAS_LIMIT: u64 = 10_000_000;
 
 #[test]
-fn relative_jumps_have_an_independent_flag() {
+fn relative_jumps_activate_with_either_feature() {
     let [high, low] = encode_rjump_offset(0).unwrap();
     let message = MessageExt {
         gas_limit: GAS_LIMIT,
@@ -28,7 +28,8 @@ fn relative_jumps_have_an_independent_flag() {
     let tx = TxEnvExt::default();
     for (version, expected) in [
         (Version::base(SpecId::OSAKA).with_rjump(true), InstrStop::Stop),
-        (Version::base(SpecId::OSAKA).with_tip1143(true), InstrStop::OpcodeNotFound),
+        (Version::base(SpecId::OSAKA).with_tip1143(true), InstrStop::Stop),
+        (*Version::base(SpecId::OSAKA), InstrStop::OpcodeNotFound),
     ] {
         let mut host = TestHost {
             execution_config: ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(
@@ -59,7 +60,7 @@ fn run_initcode(code: Vec<u8>, expected: InstrStop) -> (Vec<Word>, Bytes, u64) {
     assert_eq!(frame.original_bytecode_slice(), bytes.as_ref());
     assert_eq!(frame.original_bytecode_hash(), alloy_primitives::keccak256(&bytes));
     assert_eq!(frame.run(&mut host).unwrap(), expected);
-    assert!(matches!(frame.code.active(), CodeSource::Direct(_)));
+    assert!(matches!(frame.code.active(), CodeChunk::Direct(_)));
     assert_eq!(frame.original_bytecode_slice(), bytes.as_ref());
     (
         frame.stack().as_slice().to_vec(),
@@ -244,7 +245,7 @@ fn initcode_inspector_reports_full_input_and_global_pc() {
 }
 
 #[test]
-fn inspector_reports_generated_chunk_instructions() {
+fn inspector_reports_logical_chunk_instructions() {
     let boundary = CODE_CHUNK_SIZE;
     let target = boundary - 1;
     let mut code = vec![op::STOP; boundary + 40];
@@ -255,7 +256,7 @@ fn inspector_reports_generated_chunk_instructions() {
     let original_hash = alloy_primitives::keccak256(&code);
     let message = MessageExt {
         gas_limit: GAS_LIMIT,
-        code: CodeSource::Account(crate::bytecode::code_chunk(&code, 0).unwrap()),
+        code: crate::bytecode::code_chunk(&code, 0).unwrap(),
         ..Default::default()
     };
     let mut host = TestHost {
@@ -275,10 +276,7 @@ fn inspector_reports_generated_chunk_instructions() {
         alloy_primitives::keccak256(frame.original_bytecode())
     );
     let steps = trace.0.iter().filter_map(|&(end, pc, _)| (!end).then_some(pc)).collect::<Vec<_>>();
-    assert_eq!(
-        steps,
-        [0, 3, target, boundary, boundary + 31, boundary + 32, boundary, boundary + 1]
-    );
+    assert_eq!(steps, [0, 3, target, boundary, boundary + 1]);
     assert_eq!(trace.0.len(), steps.len() * 2);
     assert!(trace.0.as_chunks::<2>().0.iter().all(|pair| !pair[0].0 && pair[1].0));
 }
@@ -296,12 +294,9 @@ fn pooled_frames_switch_between_account_chunks_and_whole_bytecode() {
     let cases = [
         (Bytecode::new_legacy(bytes.clone()).into(), large_result.as_slice()),
         (Bytecode::new_legacy(small.clone()).into(), small_result.as_slice()),
-        (
-            CodeSource::Account(crate::bytecode::code_chunk(&bytes, 0).unwrap()),
-            large_result.as_slice(),
-        ),
+        (crate::bytecode::code_chunk(&bytes, 0).unwrap(), large_result.as_slice()),
         (Bytecode::new_legacy(small).into(), small_result.as_slice()),
-        (CodeSource::default(), &[]),
+        (CodeChunk::default(), &[]),
     ];
     let mut host = TestHost {
         code: bytes,

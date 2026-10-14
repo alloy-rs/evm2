@@ -11,7 +11,7 @@ mod storage_pool;
 mod stream;
 mod tracked;
 
-pub(crate) use account::Account;
+pub(crate) use account::{Account, CodeChunkSlot};
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
 pub use journal::{JournalEntry, StateCheckpoint};
@@ -742,7 +742,6 @@ impl<'a> State<'a> {
                     previous_just_created,
                     previous_code_changed,
                     previous_code_chunks,
-                    previous_code_chunk_warm,
                 } => {
                     // Reconcile the self-destruct set with the restored destroyed flag.
                     let was_destroyed =
@@ -764,17 +763,19 @@ impl<'a> State<'a> {
                         entry.is_destroyed = previous_is_destroyed;
                         entry.just_created = previous_just_created;
                         entry.code_changed = previous_code_changed;
-                        entry.code_chunks.chunks = previous_code_chunks;
-                        entry.code_chunks.warm = previous_code_chunk_warm;
+                        entry.code_chunks.slots = previous_code_chunks
+                            .into_iter()
+                            .map(|(bytecode, is_warm)| CodeChunkSlot { bytecode, is_warm })
+                            .collect();
                     }
                 }
                 JournalEntry::CodeChunkWarmed { address, index } => {
                     if let Some(warm) = self
                         .accounts
                         .get_mut(&address)
-                        .and_then(|account| account.code_chunks.warm.get_mut(index as usize))
+                        .and_then(|account| account.code_chunks.slots.get_mut(index as usize))
                     {
-                        *warm = false;
+                        warm.is_warm = false;
                     }
                 }
                 JournalEntry::StorageChange { address, key, previous } => {

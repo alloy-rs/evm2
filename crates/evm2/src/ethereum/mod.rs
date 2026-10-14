@@ -592,7 +592,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 }
                 charged_state_gas = new_account_state_gas;
             }
-            let mut code = match account.code_source(tip1143, || {
+            let mut code = match account.frame_code(tip1143, || {
                 load_initial_code_chunk(host, tx_gas, &code_address, account.code_hash)
             }) {
                 Ok(code) => code,
@@ -622,7 +622,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 }
                 code_address = delegated_address;
                 disable_precompiles = true;
-                code = match delegated_account.code_source(tip1143, || {
+                code = match delegated_account.frame_code(tip1143, || {
                     load_initial_code_chunk(
                         host,
                         tx_gas,

@@ -1,6 +1,6 @@
 //! Requested runtime analyses and checkpoint-local code warmth.
 
-use super::{Account, AccountInfo, JournalEntry, State, StateInner};
+use super::{Account, AccountInfo, CodeChunkSlot, JournalEntry, State, StateInner};
 use crate::{
     CodeChunkLoadError, DatabaseError, LoadError,
     bytecode::{CodeChunk, LEGACY_CODE_CHUNK_SIZE, code_chunk},
@@ -42,31 +42,38 @@ impl<'a, 'db> CodeChunkHandle<'a, 'db> {
             None
         };
         let index_usize = index as usize;
-        if account.code_chunks.chunks.len() <= index_usize {
+        if account.code_chunks.slots.len() <= index_usize {
             if skip_cold {
                 return Err(LoadError::ColdLoadSkipped);
             }
-            account.code_chunks.chunks.resize_with(index_usize + 1, || None);
-            account.code_chunks.warm.resize(index_usize + 1, false);
+            account.code_chunks.slots.resize_with(index_usize + 1, CodeChunkSlot::default);
         }
-        let slot = &mut account.code_chunks.chunks[index_usize];
-        if slot.is_none() {
+        let slot = &mut account.code_chunks.slots[index_usize];
+        if slot.bytecode.is_none() {
             if skip_cold {
                 return Err(LoadError::ColdLoadSkipped);
             }
             let chunk = load_chunk(inner, info, index, expected)?;
-            *slot = Some(chunk.bytecode());
+            slot.bytecode = Some(chunk.bytecode());
         }
-        let is_warm = &mut account.code_chunks.warm[index_usize];
+        let is_warm = &mut slot.is_warm;
         if skip_cold && !*is_warm {
             return Err(LoadError::ColdLoadSkipped);
         }
-        let bytecode = slot.as_ref().expect("chunk loaded");
+        let bytecode = slot.bytecode.as_ref().expect("chunk loaded");
+        if let Some(metadata) = info.code_metadata() {
+            let payload_hash = metadata.chunk_hash(index).expect("validated chunk index");
+            if bytecode.hash_slow() != payload_hash {
+                return Err(
+                    DatabaseError::new(CodeChunkLoadError::Invalid(payload_hash), true).into()
+                );
+            }
+        }
         let chunk = if let Some(metadata) = info.code_metadata() {
-            CodeChunk::from_prepared(bytecode.clone(), metadata.code_size(), index)
+            CodeChunk::from_chunked(bytecode.clone(), metadata.code_size(), index)
                 .expect("cached validated chunk")
         } else {
-            CodeChunk::from_bytecode(bytecode)
+            CodeChunk::from_legacy_bytecode(bytecode)
         };
         Ok(Some(Self { address, index, chunk, is_warm, inner }))
     }
@@ -109,8 +116,8 @@ impl<'db> State<'db> {
     pub fn code_chunk_is_warm(&self, address: &Address, index: u32) -> bool {
         self.accounts
             .get(address)
-            .and_then(|account| account.code_chunks.warm.get(index as usize))
-            .copied()
+            .and_then(|account| account.code_chunks.slots.get(index as usize))
+            .map(|slot| slot.is_warm)
             .unwrap_or(false)
     }
 
@@ -155,7 +162,7 @@ fn load_chunk(
         Ok(if multi {
             code_chunk(&code.original_bytes(), index)
         } else {
-            Some(CodeChunk::from_bytecode(code))
+            Some(CodeChunk::from_legacy_bytecode(code))
         })
     } else if let Some(metadata) = metadata {
         inner.database.get_code_by_hash(&payload_hash).and_then(|bytecode| {
@@ -165,14 +172,17 @@ fn load_chunk(
             if bytecode.hash_slow() != payload_hash {
                 return Err(DatabaseError::new(CodeChunkLoadError::Invalid(payload_hash), true));
             }
-            CodeChunk::from_prepared(bytecode, metadata.code_size(), index)
+            CodeChunk::from_chunked(bytecode, metadata.code_size(), index)
                 .map(Some)
                 .map_err(|_| DatabaseError::new(CodeChunkLoadError::Invalid(payload_hash), true))
         })
     } else {
         // Account type selects legacy representation even when the same hash also
         // belongs to an account using the fixed-stride chunk representation.
-        inner.database.get_code_by_hash(&hash).map(|code| Some(CodeChunk::from_bytecode(&code)))
+        inner
+            .database
+            .get_code_by_hash(&hash)
+            .map(|code| Some(CodeChunk::from_legacy_bytecode(&code)))
     };
     let chunk = match result {
         Ok(Some(chunk))

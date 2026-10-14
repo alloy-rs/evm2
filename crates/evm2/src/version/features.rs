@@ -232,11 +232,11 @@ evm_features! {
     ///
     /// Default: on since Amsterdam
     EIP2780,
-    /// Enables the unscheduled TIP-1143 chunked-code draft.
+    /// Enables the unscheduled TIP-1143 chunked-code draft and relative jumps.
     ///
     /// Default: off for every fork. Configure with `Version::with_tip1143`.
     TIP1143,
-    /// Enables RJUMP and RJUMPI before a future fork schedules them.
+    /// Enables RJUMP and RJUMPI independently of TIP-1143.
     ///
     /// Default: off for every fork. Configure with `Version::with_rjump`.
     RJUMP,

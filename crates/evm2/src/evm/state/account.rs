@@ -181,16 +181,20 @@ impl AccountInfo {
 /// Cached runtime chunks and their matching transaction-local warmth.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CodeChunks {
-    /// Requested bytecode, indexed by logical chunk number.
-    pub(crate) chunks: Vec<Option<Bytecode>>,
-    /// Transaction-local warmth for the corresponding chunk index.
-    pub(crate) warm: Vec<bool>,
+    /// Requested bytecode and warmth, indexed by logical chunk number.
+    pub(crate) slots: Vec<CodeChunkSlot>,
+}
+
+/// One account-local code payload and its transaction-local warmth.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CodeChunkSlot {
+    pub(crate) bytecode: Option<Bytecode>,
+    pub(crate) is_warm: bool,
 }
 
 impl CodeChunks {
     pub(crate) fn clear(&mut self) {
-        self.chunks.clear();
-        self.warm.clear();
+        self.slots.clear();
     }
 }
 
@@ -422,8 +426,13 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
                 previous_is_destroyed: self.tracked.is_destroyed,
                 previous_just_created: self.tracked.just_created,
                 previous_code_changed: self.tracked.code_changed,
-                previous_code_chunks: self.tracked.code_chunks.chunks.clone(),
-                previous_code_chunk_warm: self.tracked.code_chunks.warm.clone(),
+                previous_code_chunks: self
+                    .tracked
+                    .code_chunks
+                    .slots
+                    .iter()
+                    .map(|slot| (slot.bytecode.clone(), slot.is_warm))
+                    .collect(),
             });
         }
     }
@@ -474,14 +483,16 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
             self.get()
                 .and_then(|info| info.code.as_ref())
                 .filter(|code| !code.is_empty())
-                .or_else(|| self.tracked.code_chunks.chunks.first().and_then(Option::as_ref))
+                .or_else(|| {
+                    self.tracked.code_chunks.slots.first().and_then(|slot| slot.bytecode.as_ref())
+                })
                 .map(|code| code.len() as u32)
         }
     }
 
-    /// Analyses requested for this account's current code identity.
-    pub const fn code_chunks(&self) -> &Vec<Option<Bytecode>> {
-        &self.tracked.code_chunks.chunks
+    /// Number of account-local chunk cache slots allocated so far.
+    pub const fn code_chunk_cache_len(&self) -> usize {
+        self.tracked.code_chunks.slots.len()
     }
 
     /// Returns whether the account is warm for EIP-2929 gas accounting, consulting both the
@@ -766,7 +777,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if self.tracked.present.as_ref().is_none_or(|previous| {
             let changed = previous.code_hash != info.code_hash;
             #[cfg(feature = "account-ext")]
-            let changed = changed || previous.extension != info.extension;
+            let changed = changed || previous.chunks != info.chunks;
             changed
         }) {
             self.tracked.code_chunks.clear();
@@ -781,8 +792,6 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.touch();
         if self.present_mut().extension != extension {
             self.present_mut().extension = extension;
-            self.tracked.code_chunks.clear();
-            self.tracked.code_changed = true;
         }
     }
 

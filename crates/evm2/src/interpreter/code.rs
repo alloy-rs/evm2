@@ -3,7 +3,7 @@
 //! Account chunks are loaded and warmed by the host. Initcode executes as complete bytecode.
 //! This module owns the active allocation, its borrowed view, and every chunk switch.
 
-use super::{BytecodeRef, CodeSource, Gas, Host, InterpreterState, Pc, Result, Word};
+use super::{BytecodeRef, Gas, Host, InstrStop, InterpreterState, Pc, Result, Word};
 use crate::{
     EvmTypesHost,
     bytecode::{CODE_CHUNK_SIZE, COLD_CODE_CHUNK_GAS, CodeChunk, WARM_CODE_CHUNK_GAS},
@@ -17,7 +17,7 @@ use alloy_primitives::Address;
 /// Code ownership and execution position for one interpreter frame.
 #[derive(Debug)]
 pub(super) struct InterpreterCode {
-    active: CodeSource,
+    active: CodeChunk,
     // Borrows immutable allocations owned by `active`. Accessors shorten the erased lifetime;
     // activation clears this view before replacing the owning chunk.
     view: Option<BytecodeRef<'static>>,
@@ -26,23 +26,23 @@ pub(super) struct InterpreterCode {
 
 impl Default for InterpreterCode {
     fn default() -> Self {
-        Self::new(&CodeSource::default())
+        Self::new(&CodeChunk::default())
     }
 }
 
 impl InterpreterCode {
-    pub(super) fn new(code: &CodeSource) -> Self {
+    pub(super) fn new(code: &CodeChunk) -> Self {
         let active = code.clone();
         let pc = active.as_bytecode().bytes_slice().as_ptr();
         Self { active, pc, view: None }
     }
 
-    pub(super) const fn active(&self) -> &CodeSource {
+    pub(super) const fn active(&self) -> &CodeChunk {
         &self.active
     }
 
     pub(super) const fn is_account(&self) -> bool {
-        matches!(self.active, CodeSource::Account(_))
+        self.active.is_account()
     }
 
     pub(super) fn view(&self) -> BytecodeRef<'_> {
@@ -66,7 +66,7 @@ impl InterpreterCode {
 
     pub(super) fn activate(&mut self, chunk: CodeChunk) {
         self.view = None;
-        self.active = CodeSource::Account(chunk);
+        self.active = chunk;
         self.pc = self.active.as_bytecode().bytes_slice().as_ptr();
         self.prepare();
     }
@@ -79,7 +79,7 @@ impl InterpreterCode {
         let local = pc
             .checked_sub(self.active.index() as usize * CODE_CHUNK_SIZE)
             .expect("PC is outside the active chunk");
-        if let CodeSource::Account(CodeChunk::Prepared(chunk)) = &self.active {
+        if let CodeChunk::Chunked(chunk) = &self.active {
             assert!(local < chunk.payload_len(), "PC is outside the logical payload");
         }
         let bytes = self.active.as_bytecode().bytes_slice();
@@ -93,11 +93,6 @@ impl InterpreterCode {
         let local =
             unsafe { pc.as_ptr().offset_from(self.active.as_bytecode().bytes_slice().as_ptr()) };
         local as usize + self.active.index() as usize * CODE_CHUNK_SIZE
-    }
-
-    pub(super) fn is_generated_tail(&self, pc: Pc) -> bool {
-        matches!(&self.active, CodeSource::Account(CodeChunk::Prepared(chunk))
-            if self.view().pc_offset(pc) == chunk.tail_offset())
     }
 }
 
@@ -122,17 +117,11 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
         self.0.code.global_pc(pc)
     }
 
-    /// Authenticates the generated tail by its recorded offset, never by opcode alone.
-    pub(crate) fn is_generated_tail(&self, pc: Pc) -> bool {
-        self.0.code.is_generated_tail(pc)
-    }
-
     /// Returns the active account buffer; only valid for account execution.
     pub(crate) fn active_chunk(&self) -> &CodeChunk {
-        match self.0.code.active() {
-            CodeSource::Account(chunk) => chunk,
-            CodeSource::Direct(_) => unreachable!("account code required"),
-        }
+        let chunk = self.0.code.active();
+        assert!(chunk.is_account(), "account code required");
+        chunk
     }
 
     /// Loads an account execution buffer and its prior coldness in one host access.
@@ -156,6 +145,43 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
     /// Replaces the owner before rebuilding its borrowed view. Callers reset their PC next.
     pub(crate) fn activate_code_chunk(&mut self, chunk: CodeChunk) {
         self.0.code.activate(chunk);
+    }
+
+    /// Whether an executed instruction ended outside the active logical payload.
+    #[inline(always)]
+    pub(crate) const fn needs_code_chunk_advance(&self, pc: Pc) -> bool {
+        matches!(self.0.code.active(), CodeChunk::Chunked(chunk)
+            if self.bytecode().pc_offset(pc) >= chunk.payload_len())
+    }
+
+    /// Completes fallthrough at the logical payload boundary without executing padding.
+    pub(crate) fn advance_code_chunk(&mut self, pc: &mut Pc) -> Result {
+        let CodeChunk::Chunked(active) = self.0.code.active() else {
+            return Ok(());
+        };
+        let local = self.bytecode().pc_offset(*pc);
+        let payload_len = active.payload_len();
+        if local < payload_len {
+            return Ok(());
+        }
+        let next_pc = active.index() as usize * CODE_CHUNK_SIZE + local;
+        if next_pc >= active.code_size() as usize {
+            return Err(InstrStop::Stop);
+        }
+        let index = active.index() + 1;
+        let address = self.message().code_address;
+        self.0.gas.spend(WARM_CODE_CHUNK_GAS)?;
+        let cold_additional = COLD_CODE_CHUNK_GAS - WARM_CODE_CHUNK_GAS;
+        let loaded =
+            self.execution_code_chunk(&address, index, self.0.gas.remaining() < cold_additional)?;
+        if loaded.is_cold {
+            self.0.gas.spend(cold_additional)?;
+        }
+        let offset = loaded.chunk.start_offset();
+        debug_assert_eq!(offset, local - payload_len);
+        self.activate_code_chunk(loaded.chunk);
+        unsafe { pc.set_unchecked(self.bytecode(), offset) };
+        Ok(())
     }
 
     /// Pays the warm charge first, skipping a cold load if its premium is unaffordable.

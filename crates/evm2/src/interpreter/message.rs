@@ -1,7 +1,4 @@
-use crate::{
-    BaseEvmTypes, EvmTypesHost,
-    bytecode::{Bytecode, CodeChunk},
-};
+use crate::{BaseEvmTypes, EvmTypesHost, bytecode::CodeChunk};
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 
 /// EVM message kind.
@@ -69,7 +66,7 @@ pub struct MessageExt<E = ()> {
     /// Value transferred with the message.
     pub value: U256,
     /// Complete bytecode for direct execution, an account's entry chunk, or creation input.
-    pub code: CodeSource,
+    pub code: CodeChunk,
     /// Address whose code is being executed. This can differ from `destination` for `CALLCODE`,
     /// `DELEGATECALL`, and EIP-7702 delegated-code execution.
     pub code_address: Address,
@@ -152,57 +149,5 @@ pub fn derive_create_destination(
     match kind {
         MessageKind::Create2 => caller.create2(salt, keccak256(init_code)),
         _ => caller.create(nonce),
-    }
-}
-
-/// Code supplied to a frame. Each source carries exactly the data needed to execute it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CodeSource {
-    /// Complete bytecode, including initcode, executed directly without chunk loading.
-    Direct(Bytecode),
-    /// Entry chunk of account code. Further chunks use the frame's code address and host.
-    Account(CodeChunk),
-}
-
-impl Default for CodeSource {
-    fn default() -> Self {
-        Self::Direct(Bytecode::default())
-    }
-}
-
-impl From<Bytecode> for CodeSource {
-    fn from(code: Bytecode) -> Self {
-        Self::Direct(code)
-    }
-}
-
-impl CodeSource {
-    /// Original creation input or stored entry bytes, without ordinary memory safety padding.
-    pub fn bytes(&self) -> Bytes {
-        self.as_bytecode().original_bytes()
-    }
-
-    /// Borrows the complete direct bytecode or the active account chunk's buffer.
-    pub const fn as_bytecode(&self) -> &Bytecode {
-        match self {
-            Self::Direct(code) => code,
-            Self::Account(chunk) => chunk.as_bytecode(),
-        }
-    }
-
-    /// Complete logical size; direct bytecode already contains the whole input.
-    pub fn code_size(&self) -> usize {
-        match self {
-            Self::Direct(code) => code.len(),
-            Self::Account(chunk) => chunk.code_size(),
-        }
-    }
-
-    /// Index of the active account chunk; direct bytecode starts at zero.
-    pub const fn index(&self) -> u32 {
-        match self {
-            Self::Direct(_) => 0,
-            Self::Account(chunk) => chunk.index(),
-        }
     }
 }

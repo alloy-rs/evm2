@@ -58,9 +58,7 @@ pub enum JournalEntry {
         /// Previous code-changed flag.
         previous_code_changed: bool,
         /// Previously requested analyses and warmth.
-        previous_code_chunks: Vec<Option<Bytecode>>,
-        /// Previous transaction-local chunk warmth.
-        previous_code_chunk_warm: Vec<bool>,
+        previous_code_chunks: Vec<(Option<Bytecode>, bool)>,
     },
     /// A successful cold code access warmed an account's payload.
     CodeChunkWarmed {

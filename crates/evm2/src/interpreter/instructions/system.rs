@@ -2,11 +2,11 @@
 
 use crate::{
     EvmFeatures, EvmTypesHost,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, CodeChunk},
     constants::CALL_DEPTH_LIMIT,
     interpreter::{
-        CodeSource, Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind,
-        Result, StackMut, Word, derive_create_destination,
+        Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Result, StackMut,
+        Word, derive_create_destination,
     },
     utils::{word_to_address, word_to_usize},
     version::GasId,
@@ -121,7 +121,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     gas.spend(cost)?;
     gas.spend_state(new_account_state_gas)?;
     let mut code =
-        account.code_source(tip1143, || state.load_and_charge_code_chunk(gas, &code_address, 0))?;
+        account.frame_code(tip1143, || state.load_and_charge_code_chunk(gas, &code_address, 0))?;
     if state.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.as_bytecode().eip7702_address()
     {
@@ -138,7 +138,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         code_address = delegated_address;
         disable_precompiles = true;
         code = delegated_account
-            .code_source(tip1143, || state.load_and_charge_code_chunk(gas, &code_address, 0))?;
+            .frame_code(tip1143, || state.load_and_charge_code_chunk(gas, &code_address, 0))?;
     }
 
     let mut gas_limit = if state.feature(EvmFeatures::EIP150) {
@@ -460,7 +460,7 @@ pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
 
 /// Resolved entry code for a child call.
 struct LoadedCode {
-    code: CodeSource,
+    code: CodeChunk,
     code_address: Address,
     disable_precompiles: bool,
 }

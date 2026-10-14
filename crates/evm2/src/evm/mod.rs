@@ -121,8 +121,8 @@ use crate::{
     constants::{CALL_DEPTH_LIMIT, EIP7708_TRANSFER_TOPIC},
     env::{BlockEnv, TxEnv},
     interpreter::{
-        CodeSource, Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message,
-        MessageKind, MessageResult, MessageResultExt, Word,
+        Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
+        MessageResult, MessageResultExt, Word,
     },
     registry::{HandlerResult, TxRegistry},
     trustme,
@@ -1198,12 +1198,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline(never)]
     fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), HostError> {
         if self.feature(EvmFeatures::TIP1143) {
-            let bytes = message.code.bytes();
+            let bytes = message.code.as_bytecode().original_bytes();
             if bytes.len() > self.version().max_initcode_size {
                 return Err(InstrStop::CreateInitCodeSizeLimit.into());
             }
             // Creation executes the complete input, never an account chunk.
-            if matches!(message.code, CodeSource::Account(_)) {
+            if message.code.is_account() {
                 message.code = Bytecode::new_legacy(bytes).into();
             }
         }
@@ -1906,7 +1906,9 @@ mod tests {
     };
 
     #[cfg(feature = "account-ext")]
-    use crate::bytecode::{LEGACY_CODE_CHUNK_SIZE, MAX_CODE_SIZE, MAX_INITCODE_SIZE};
+    use crate::bytecode::{
+        CODE_CHUNK_SIZE, LEGACY_CODE_CHUNK_SIZE, MAX_CODE_SIZE, MAX_INITCODE_SIZE,
+    };
 
     const TEST_TX_TYPE: u8 = 0x00;
     const TEST_PRECOMPILE: Address = Address::with_last_byte(0x42);
@@ -4216,7 +4218,10 @@ mod tests {
             if expected == InstrStop::Return {
                 let metadata = account.get().unwrap().code_metadata().unwrap();
                 assert_eq!(metadata.code_size() as usize, LEGACY_CODE_CHUNK_SIZE + 1);
-                assert_eq!(metadata.last_chunk_size(), 37);
+                assert_eq!(
+                    metadata.last_chunk_size() as usize,
+                    LEGACY_CODE_CHUNK_SIZE + 1 - CODE_CHUNK_SIZE
+                );
                 assert_eq!(metadata.chunk_count(), 2);
             } else {
                 assert!(account.get().is_none());

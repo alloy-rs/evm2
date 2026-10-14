@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     BaseEvmConfigSelector, BaseEvmTypes, Precompiles, SpecId, Version,
     bytecode::{
-        Bytecode, CODE_CHUNK_SIZE, COLD_CODE_CHUNK_GAS, LEGACY_CODE_CHUNK_SIZE,
+        Bytecode, CODE_CHUNK_SIZE, COLD_CODE_CHUNK_GAS, CodeMetadata, LEGACY_CODE_CHUNK_SIZE,
         WARM_CODE_CHUNK_GAS, code_metadata,
     },
     env::{BlockEnvExt, TxEnvExt},
@@ -53,6 +53,10 @@ impl DynDatabase for CodeReads {
 }
 
 fn test_evm(code: &[u8], chunked: bool) -> Evm<'static, BaseEvmTypes> {
+    test_evm_with_rjump(code, chunked, true)
+}
+
+fn test_evm_with_rjump(code: &[u8], chunked: bool, rjump: bool) -> Evm<'static, BaseEvmTypes> {
     let mut db = CodeReads::default();
     let mut account = AccountInfo::default().with_code(Bytecode::new_legacy(code.to_vec().into()));
     if chunked {
@@ -63,7 +67,7 @@ fn test_evm(code: &[u8], chunked: bool) -> Evm<'static, BaseEvmTypes> {
     db.db.insert_account_info(&OWNER, account);
     Evm::new_with_execution_config(
         ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA)
-            .with_version(Version::base(SpecId::OSAKA).with_tip1143(true).with_rjump(true)),
+            .with_version(Version::base(SpecId::OSAKA).with_tip1143(true).with_rjump(rjump)),
         SpecId::OSAKA,
         BlockEnvExt::default(),
         ethereum_tx_registry(SpecId::OSAKA),
@@ -332,7 +336,7 @@ fn execute_account(
     let mut message = MessageExt {
         destination: OWNER,
         code_address: OWNER,
-        code: CodeSource::Account(entry),
+        code: entry,
         gas_limit,
         ..Default::default()
     };
@@ -450,7 +454,7 @@ fn extcodecopy_missing_or_malformed_chunk_is_fatal() {
             })
         );
         assert_eq!(reads(&evm), [chunk_read(&bytes, 1)]);
-        assert!(evm.state.account(&OWNER).unwrap().code_chunks().is_empty());
+        assert_eq!(evm.state.account(&OWNER).unwrap().code_chunk_cache_len(), 0);
     }
 }
 
@@ -567,7 +571,10 @@ fn chunk_skip_cold_preserves_resident_coldness_and_journal() {
         assert_eq!(reads(&evm).len(), usize::from(resident));
         assert_eq!(evm.state.journal().len(), journal_len);
         assert!(!evm.state.code_chunk_is_warm(&OWNER, 0));
-        assert_eq!(evm.state.account(&OWNER).unwrap().code_chunks().len(), usize::from(resident));
+        assert_eq!(
+            evm.state.account(&OWNER).unwrap().code_chunk_cache_len(),
+            usize::from(resident)
+        );
 
         let cold = Host::load_code_chunk(&mut evm, &OWNER, 0, false).unwrap().unwrap();
         assert!(cold.is_cold);
@@ -786,4 +793,51 @@ fn precompile_calls_skip_chunk_loading_and_tariffs() {
     assert_eq!(result.output.as_ref(), expected);
     assert_eq!(result.gas.remaining(), 9_940);
     assert!(reads(&evm).is_empty());
+}
+
+#[test]
+fn tip1143_enables_relative_jumps_and_chunk_fallthrough() {
+    let mut bytes = vec![op::JUMPDEST; LEGACY_CODE_CHUNK_SIZE + 1];
+    *bytes.last_mut().unwrap() = op::STOP;
+    let mut evm = test_evm_with_rjump(&bytes, true, false);
+    let result = execute_account(&mut evm, 100_000).unwrap();
+    assert_eq!(result.stop, InstrStop::Stop);
+    assert_eq!(
+        result.gas.remaining(),
+        100_000 - COLD_CODE_CHUNK_GAS - LEGACY_CODE_CHUNK_SIZE as u64
+    );
+    assert_eq!(reads(&evm), [chunk_read(&bytes, 0), chunk_read(&bytes, 1)]);
+
+    for opcode in [op::RJUMP, op::RJUMPI] {
+        let mut code = Vec::new();
+        if opcode == op::RJUMPI {
+            code.push(op::PUSH0);
+        }
+        code.push(opcode);
+        code.extend(encode_rjump_offset(0).unwrap());
+        code.push(op::JUMPDEST);
+        code.push(op::STOP);
+        let mut evm = test_evm_with_rjump(&[op::STOP], false, false);
+        assert_eq!(execute(&mut evm, code, 10_000).stop, InstrStop::Stop);
+    }
+}
+
+#[test]
+fn replacing_chunk_metadata_invalidates_cached_payloads() {
+    let bytes = vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1];
+    let mut evm = test_evm(&bytes, true);
+    evm.state.load_code_chunk(&OWNER, 0, false).unwrap().unwrap();
+    evm.state.account(&OWNER).unwrap().set_extension(AccountExtension::copy_from_slice(&[7]));
+    assert_eq!(evm.state.account(&OWNER).unwrap().code_chunk_cache_len(), 1);
+    let mut info = evm.state.account(&OWNER).unwrap().get().unwrap().clone();
+    let metadata = info.chunks.as_ref().unwrap();
+    let mut hashes = metadata.chunk_hashes().to_vec();
+    hashes[0] = B256::repeat_byte(0x42);
+    info.chunks = Some(CodeMetadata::new(metadata.last_chunk_size(), hashes).unwrap());
+    evm.state.account(&OWNER).unwrap().set_info(info);
+    assert_eq!(evm.state.account(&OWNER).unwrap().code_chunk_cache_len(), 0);
+    assert!(matches!(
+        evm.state.load_code_chunk(&OWNER, 0, false),
+        Err(LoadError::Database(error)) if error.is_fatal()
+    ));
 }

@@ -84,7 +84,7 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
     let instruction = C::OPCODE_CONFIG.instruction(op);
     let instr = instruction.instr;
     let dynamic_gas = instruction.dynamic_gas;
-    let r;
+    let mut r;
     match gas.pre_step::<T, C>(state, op) {
         Ok(()) => {
             gas.sync_before_exec(state, dynamic_gas);
@@ -93,6 +93,11 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
                 inc_pc(&mut pc, op);
             }
             gas.sync_after_exec(state, dynamic_gas);
+            if r.is_ok() && state.needs_code_chunk_advance(pc) {
+                gas.sync_before_exec(state, true);
+                r = state.advance_code_chunk(&mut pc);
+                gas.sync_after_exec(state, true);
+            }
         }
         Err(e) => {
             gas.sync_before_exec(state, false);
