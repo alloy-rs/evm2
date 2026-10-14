@@ -2060,6 +2060,12 @@ fn init_() -> Result<()> {
         // the cheaper splitting path; this preserves code size on snailtracer while cutting llc
         // time by ~3x.
         c"--huge-size-for-split=64".as_ptr(),
+        // SimplifyCFG folds each block's out-of-gas and stack-bound checks into a logical-or
+        // `select` with branch weights. CodeGenPrepare would turn that back into a branch
+        // diamond with an `i1` phi; kept as a `select`, SelectionDAG splits it into two plain
+        // conditional branches instead. The flag applies to every `select`, but the IR has few
+        // others.
+        c"-disable-cgp-select2branch".as_ptr(),
     ];
     args.extend(extra.iter().map(|s| s.as_ptr()));
     unsafe {
