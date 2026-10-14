@@ -605,8 +605,7 @@ mod tests {
             let chunk = code_chunk(&code.into(), 1).unwrap();
             let bytecode = chunk.bytecode();
             assert_eq!(chunk.start_offset(), usize::from(offset));
-            let encoded_offset = if offset == 0 { 0 } else { offset | 0x80 };
-            assert_eq!(bytecode.original_byte_slice().last(), Some(&encoded_offset));
+            assert_eq!(bytecode.original_byte_slice().last(), Some(&offset));
             assert_eq!(bytecode.bytes_slice().last(), Some(&0));
             assert!(bytecode.inner().jump_table.get().is_none());
             let restored = Bytecode::new_chunk(bytecode.original_bytes()).unwrap();

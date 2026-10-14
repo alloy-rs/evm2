@@ -26,7 +26,7 @@ pub(super) fn analyze_chunk(bytecode: &[u8], layout: ChunkLayout) -> JumpTable {
     let mut jumps = JumpTable::new(bytecode.len());
     let table = jumps.as_mut_slice();
     let payload = &bytecode[..layout.payload_len(bytecode)];
-    let pc = analyze_simd(payload, table, layout.jumpdest_offset());
+    let pc = analyze_simd(payload, table, layout.start_offset());
     analyze_scalar(payload, table, pc);
     jumps
 }

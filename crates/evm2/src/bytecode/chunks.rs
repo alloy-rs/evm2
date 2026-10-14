@@ -298,7 +298,7 @@ pub enum CodeChunkError {
     InvalidPreparation,
 }
 
-/// Checks the capacity of submitted original bytes; PUSH continuations are prepared separately.
+/// Checks the capacity of submitted original bytes; boundary continuations are prepared separately.
 pub const fn validate_code(code: &[u8]) -> Result<(), CodeChunkError> {
     if code.len() > MAX_CODE_SIZE {
         return Err(CodeChunkError::CodeTooLarge);
@@ -345,7 +345,6 @@ pub fn code_chunk(code: &Bytes, index: u32) -> Option<CodeChunk> {
     }
     let mut scan = InstructionScan::default();
     while scan.pc < start {
-        scan.instruction_start = scan.pc;
         scan.pc += instruction_len(code[scan.pc]);
     }
     prepare_code_chunk(code, index as usize, &mut scan).ok()
@@ -359,18 +358,8 @@ fn prepare_code_chunk(
     let start = index * CODE_CHUNK_SIZE;
     let end = (start + CODE_CHUNK_SIZE).min(code.len());
     let leading = scan.pc.min(end).saturating_sub(start);
-    let jumpdest_offset = if leading > 0
-        && code
-            .get(scan.instruction_start)
-            .is_some_and(|opcode| (op::PUSH1..=op::PUSH32).contains(opcode))
-    {
-        leading
-    } else {
-        0
-    };
     scan.pc = scan.pc.min(end);
     while scan.pc < end {
-        scan.instruction_start = scan.pc;
         scan.pc += instruction_len(code[scan.pc]);
     }
     let mut bytes = Vec::with_capacity(end - start + 33);
@@ -379,7 +368,7 @@ fn prepare_code_chunk(
     // A boundary-straddling instruction reads its immediate here. The dispatcher switches
     // chunks before any padding can execute as code.
     bytes.resize(end - start + 32, 0);
-    bytes.push(encode_chunk_offset(leading, jumpdest_offset)?);
+    bytes.push(encode_chunk_offset(leading)?);
     CodeChunk::from_chunked(
         Bytecode::new_chunk(bytes.into())?,
         code.len().try_into().map_err(|_| CodeChunkError::CodeTooLarge)?,
@@ -390,7 +379,6 @@ fn prepare_code_chunk(
 #[derive(Clone, Copy, Debug, Default)]
 struct InstructionScan {
     pc: usize,
-    instruction_start: usize,
 }
 
 /// Checked aggregate incremental tariff for one operation.
@@ -494,7 +482,6 @@ impl ChunkedCodeChunk {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChunkLayout {
     start_offset: u8,
-    jumpdest_offset: u8,
 }
 
 impl ChunkLayout {
@@ -505,7 +492,7 @@ impl ChunkLayout {
             return Err(invalid);
         }
         let Some((&encoded_offset, code)) = bytes.split_last() else { return Err(invalid) };
-        let (start_offset, jumpdest_offset) = decode_chunk_offset(encoded_offset)?;
+        let start_offset = decode_chunk_offset(encoded_offset)?;
         let payload_len = code.len().checked_sub(32).ok_or(invalid)?;
         if !(1..=CODE_CHUNK_SIZE).contains(&payload_len)
             || usize::from(start_offset) > payload_len.min(32)
@@ -516,7 +503,7 @@ impl ChunkLayout {
         if !code.get(padding_start..).is_some_and(|padding| padding.iter().all(|&byte| byte == 0)) {
             return Err(invalid);
         }
-        Ok(Self { start_offset, jumpdest_offset })
+        Ok(Self { start_offset })
     }
 
     /// Number of original code positions represented by the buffer.
@@ -528,30 +515,20 @@ impl ChunkLayout {
     pub const fn start_offset(self) -> usize {
         self.start_offset as usize
     }
-
-    /// Leading PUSH continuation bytes excluded from legacy jump destination analysis.
-    pub const fn jumpdest_offset(self) -> usize {
-        self.jumpdest_offset as usize
-    }
 }
 
-const fn encode_chunk_offset(
-    start_offset: usize,
-    jumpdest_offset: usize,
-) -> Result<u8, CodeChunkError> {
-    if start_offset > 32 || !matches!(jumpdest_offset, 0) && jumpdest_offset != start_offset {
+const fn encode_chunk_offset(start_offset: usize) -> Result<u8, CodeChunkError> {
+    if start_offset > 32 {
         return Err(CodeChunkError::InvalidPreparation);
     }
-    Ok(start_offset as u8 | if jumpdest_offset == 0 { 0 } else { 0x80 })
+    Ok(start_offset as u8)
 }
 
-const fn decode_chunk_offset(encoded: u8) -> Result<(u8, u8), CodeChunkError> {
-    let start_offset = encoded & 0x7f;
-    if start_offset > 32 || encoded == 0x80 {
+const fn decode_chunk_offset(encoded: u8) -> Result<u8, CodeChunkError> {
+    if encoded > 32 {
         return Err(CodeChunkError::InvalidPreparation);
     }
-    let jumpdest_offset = if encoded & 0x80 == 0 { 0 } else { start_offset };
-    Ok((start_offset, jumpdest_offset))
+    Ok(encoded)
 }
 
 fn chunk_padding_start(payload: &[u8], start_offset: usize) -> usize {
@@ -619,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn jump_analysis_skips_only_push_continuations() {
+    fn jump_analysis_skips_all_continuations() {
         let mut push = alloc::vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1];
         push[CODE_CHUNK_SIZE - 1] = op::PUSH32;
         push[CODE_CHUNK_SIZE] = op::JUMPDEST;
@@ -632,13 +609,13 @@ mod tests {
         rjump[CODE_CHUNK_SIZE] = op::JUMPDEST;
         let rjump_chunk = code_chunk(&Bytes::from(rjump), 1).unwrap();
         assert_eq!(rjump_chunk.start_offset(), 2);
-        assert!(rjump_chunk.is_valid_jumpdest(0));
+        assert!(!rjump_chunk.is_valid_jumpdest(0));
     }
 
     #[test]
-    fn chunk_layout_rejects_noncanonical_push_flag_without_continuation() {
+    fn chunk_layout_rejects_offset_above_instruction_limit() {
         let mut bytes = alloc::vec![0; 34];
-        *bytes.last_mut().unwrap() = 0x80;
+        *bytes.last_mut().unwrap() = 33;
         assert_eq!(Bytecode::new_chunk(bytes.into()), Err(CodeChunkError::InvalidPreparation));
     }
 
