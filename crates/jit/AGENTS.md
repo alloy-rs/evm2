@@ -138,9 +138,9 @@ ignoring dump paths. `0/N` shows that a refactor leaves codegen alone.
   `evm2 run <bench> 0`, which JIT-compiles every contract in the fixture
   without dumps or execution. `instructions` counts user-space instructions
   with `perf stat` and varies by about 0.3% between runs. `time` is CPU time
-  (wall time without `perf`) and varies by 5-10% on a busy machine. Head and
-  base runs alternate, so load hits both sides alike. Judge compile-time
-  changes by `instructions`.
+  (wall time without `perf`); on a busy machine it moved by more than 10% for
+  identical code. Head and base runs alternate, so load hits both sides
+  alike. Judge compile-time changes by `instructions`.
 - `parse`, `translate`, `optimize`, and `codegen` come from the single dump
   run's `remarks.txt` and appear only in the details table. They are noisy:
   use them to find which phase moved, not by how much.
