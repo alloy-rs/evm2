@@ -388,7 +388,7 @@ mod tests {
             db,
             Precompiles::base(spec_id),
         );
-        evm.set_inspector(inspector);
+        evm.set_static_inspector(inspector);
         let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
         let mut message = MessageExt { gas_limit, code: bytecode, ..message.clone() };

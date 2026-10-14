@@ -136,7 +136,7 @@ use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 #[cfg(feature = "async")]
 use core::future::Future;
-use core::ptr::NonNull;
+use core::{any::TypeId, ptr::NonNull};
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
@@ -222,6 +222,9 @@ pub struct Evm<'a, T: EvmTypesHost> {
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
     inspector: Option<Box<dyn Inspector<T> + 'a>>,
+    /// Exact type of the active inspector, recorded only by [`Self::set_static_inspector`].
+    #[derive_where(skip)]
+    inspector_type: Option<TypeId>,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
     /// The currently running interpreter frame, if any.
@@ -347,6 +350,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
+            inspector_type: None,
             interpreter_runner: None,
             current_frame: None,
             running: false,
@@ -544,12 +548,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         registry: TxRegistry<T, TxResult<T>>,
         precompiles: Box<dyn PrecompileProvider<T> + 'a>,
     ) {
+        self.evm_send = false;
         self.spec_id = spec_id;
         self.features = execution_config.version().features;
         self.execution_config = execution_config;
         self.registry = registry;
         self.precompiles = precompiles;
-        self.evm_send = false;
     }
 
     /// Returns the accepted-state overlay database.
@@ -600,8 +604,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// Replaces the backing database.
     #[inline]
     pub fn set_database(&mut self, database: impl DynDatabase + 'a) {
-        self.state.set_initial(database);
         self.evm_send = false;
+        self.state.set_initial(database);
     }
 
     #[cfg(feature = "async")]
@@ -749,8 +753,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
-        self.precompiles = boxed_precompile_provider(precompiles);
         self.evm_send = false;
+        self.precompiles = boxed_precompile_provider(precompiles);
     }
 
     /// Returns the precompile provider as `P` if it has that concrete type.
@@ -826,19 +830,37 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Sets the active execution inspector.
+    ///
+    /// Use [`Self::set_static_inspector`] to recover the inspector by type with
+    /// [`Self::clear_inspector_as`].
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.assert_inspector_mutable();
-        self.inspector = Some(boxed_inspector(inspector));
+        // Clear metadata first: the replaced inspector's destructor may panic, and the new
+        // inspector is still installed while unwinding.
+        self.inspector_type = None;
         self.evm_send = false;
+        self.inspector = Some(boxed_inspector(inspector));
     }
 
     /// Sets the active boxed execution inspector.
     #[inline]
     pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T> + 'a>) {
         self.assert_inspector_mutable();
-        self.inspector = Some(inspector);
+        self.inspector_type = None;
         self.evm_send = false;
+        self.inspector = Some(inspector);
+    }
+
+    /// Sets the active execution inspector and records its type for [`Self::clear_inspector_as`].
+    ///
+    /// Only `'static` inspectors can carry an exact type, so they can be recovered by type even
+    /// when the EVM borrows its database. Any later change to the active inspector drops the
+    /// recorded type.
+    #[inline]
+    pub fn set_static_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
+        self.set_inspector(inspector);
+        self.inspector_type = Some(TypeId::of::<I>());
     }
 
     /// Removes the active execution inspector.
@@ -846,18 +868,23 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T> + 'a>> {
         self.assert_inspector_mutable();
         self.evm_send = false;
+        self.inspector_type = None;
         self.inspector.take()
     }
 
-    /// Removes the active execution inspector if it has type `I`.
+    /// Removes the active execution inspector if [`Self::set_static_inspector`] installed it with
+    /// type `I`.
     #[inline]
-    pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>>
-    where
-        'a: 'static,
-    {
+    pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>> {
         self.assert_inspector_mutable();
-        let i = self.inspector.take_if(|i| i.is::<I>())?;
-        Some(unsafe { Box::from_raw(Box::into_raw(i).cast::<I>()) })
+        if self.inspector_type != Some(TypeId::of::<I>()) {
+            return None;
+        }
+        self.inspector_type = None;
+        let inspector = self.inspector.take()?;
+        // SAFETY: Only `set_static_inspector` records a type, together with the boxed `I` it
+        // installs, and every other change to the active inspector clears the record.
+        Some(unsafe { Box::from_raw(Box::into_raw(inspector).cast::<I>()) })
     }
 
     /// Sets the optional external interpreter runner.
@@ -2025,7 +2052,7 @@ mod tests {
             InMemoryDB::default(),
             precompiles,
         );
-        evm.set_inspector(LogInspector::default());
+        evm.set_static_inspector(LogInspector::default());
         let mut message = precompile_message(TEST_PRECOMPILE);
 
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
@@ -2076,7 +2103,7 @@ mod tests {
         );
         for revert in [false, true] {
             evm.state.clear_transaction_state();
-            evm.set_inspector(LogInspector::default());
+            evm.set_static_inspector(LogInspector::default());
             let mut message = precompile_message(TEST_PRECOMPILE);
             if revert {
                 message.input = Bytes::from_static(b"revert");
@@ -2672,6 +2699,70 @@ mod tests {
     #[should_panic(expected = "inspector cannot be modified during EVM execution")]
     fn clear_inspector_panics_during_execution() {
         run_inspector_access(InspectorAccess::Clear);
+    }
+
+    #[test]
+    fn clear_inspector_as_recovers_only_static_inspectors() {
+        struct BorrowedDb<'db>(&'db mut InMemoryDB);
+
+        impl DynDatabase for BorrowedDb<'_> {
+            fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+                DynDatabase::get_account(self.0, address)
+            }
+
+            fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+                DynDatabase::get_code_by_hash(self.0, code_hash)
+            }
+
+            fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+                DynDatabase::get_storage(self.0, address, key)
+            }
+
+            fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
+                DynDatabase::get_block_hash(self.0, number)
+            }
+        }
+
+        #[derive(Default)]
+        struct OtherInspector;
+
+        impl Inspector<BaseEvmTypes> for OtherInspector {}
+
+        // The borrowed database keeps the EVM, and so its inspector slot, non-`'static`.
+        let mut db = InMemoryDB::default();
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            BorrowedDb(&mut db),
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        evm.set_static_inspector(NoopInspector::default());
+        assert!(evm.clear_inspector_as::<OtherInspector>().is_none());
+        assert!(evm.clear_inspector_as::<NoopInspector>().is_some());
+        assert!(evm.inspector().is_none());
+
+        // Inspectors installed without a recorded type are never recovered by type.
+        evm.set_inspector(NoopInspector::default());
+        assert!(evm.clear_inspector_as::<NoopInspector>().is_none());
+        evm.set_boxed_inspector(Box::<NoopInspector>::default());
+        assert!(evm.clear_inspector_as::<NoopInspector>().is_none());
+        assert!(evm.inspector().is_some());
+
+        // Replacing a static inspector drops its recorded type.
+        evm.set_static_inspector(NoopInspector::default());
+        evm.set_inspector(NoopInspector::default());
+        assert!(evm.clear_inspector_as::<NoopInspector>().is_none());
+        evm.set_static_inspector(NoopInspector::default());
+        let _ = evm.clear_inspector();
+        evm.set_boxed_inspector(Box::<NoopInspector>::default());
+        assert!(evm.clear_inspector_as::<NoopInspector>().is_none());
+
+        // System calls restore the inspector together with its recorded type.
+        evm.set_static_inspector(NoopInspector::default());
+        let _ = evm.system_call(SystemTx::new(Address::repeat_byte(1), Bytes::new()));
+        assert!(evm.clear_inspector_as::<NoopInspector>().is_some());
     }
 
     #[test]

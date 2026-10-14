@@ -104,7 +104,7 @@ fn compare(code: Bytes, child: Option<Bytes>) -> Vec<Value> {
         db,
         Precompiles::base(SpecId::CANCUN),
     );
-    evm.set_inspector(inspector);
+    evm.set_static_inspector(inspector);
     let tx = Recovered::new_unchecked(
         TxEnvelope::Legacy(TxLegacy {
             gas_limit: 1_000_000,
