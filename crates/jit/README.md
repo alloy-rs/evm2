@@ -4,7 +4,7 @@ Experimental [JIT] and [AOT] compiler for the [Ethereum Virtual Machine][EVM].
 
 The compiler implementation is abstracted over an intermediate representation backend and integrates with evm2's interpreter runner.
 
-![image](https://github.com/paradigmxyz/evm2-jit/assets/17802178/96adf64b-8513-469d-925d-4f8d902e4e0a)
+![image](https://github.com/user-attachments/assets/96adf64b-8513-469d-925d-4f8d902e4e0a)
 
 The compiler backend is abstracted behind a trait ([`evm2-jit-backend`]), with an [LLVM] implementation ([`evm2-jit-llvm`]) providing full test coverage.
 
