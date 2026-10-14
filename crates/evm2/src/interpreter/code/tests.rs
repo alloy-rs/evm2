@@ -60,7 +60,7 @@ fn run_initcode(code: Vec<u8>, expected: InstrStop) -> (Vec<Word>, Bytes, u64) {
     assert_eq!(frame.original_bytecode_slice(), bytes.as_ref());
     assert_eq!(frame.original_bytecode_hash(), alloy_primitives::keccak256(&bytes));
     assert_eq!(frame.run(&mut host).unwrap(), expected);
-    assert!(matches!(frame.code.active(), CodeChunk::Direct(_)));
+    assert!(frame.code.active().is_direct());
     assert_eq!(frame.original_bytecode_slice(), bytes.as_ref());
     (
         frame.stack().as_slice().to_vec(),

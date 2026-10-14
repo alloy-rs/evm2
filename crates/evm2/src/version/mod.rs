@@ -7,6 +7,12 @@ use crate::{
     },
     interpreter::{instructions as instr, op},
 };
+
+#[cfg(feature = "account-ext")]
+use crate::bytecode::{
+    COLD_CODE_CHUNK_GAS, MAX_CODE_SIZE as TIP1143_MAX_CODE_SIZE,
+    MAX_INITCODE_SIZE as TIP1143_MAX_INITCODE_SIZE, WARM_CODE_CHUNK_GAS,
+};
 use alloy_eips::{eip4844::MAX_BLOBS_PER_BLOCK_DENCUN, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 
 mod gas_params;
@@ -93,11 +99,20 @@ impl Version {
         }
     }
 
-    /// Enables or disables the unscheduled TIP-1143 draft, including RJUMP and RJUMPI.
-    /// Configure [`Self::max_code_size`] and [`Self::max_initcode_size`] independently.
+    /// Enables or disables the unscheduled TIP-1143 execution features.
+    ///
+    /// Enabling installs the protocol's code limits and chunk tariffs. Callers may apply
+    /// deliberate custom-chain overrides after this method.
     #[cfg(feature = "account-ext")]
     pub const fn with_tip1143(mut self, enabled: bool) -> Self {
         self.features.set(EvmFeatures::TIP1143, enabled);
+        self.features.set(EvmFeatures::RJUMP, enabled);
+        if enabled {
+            self.max_code_size = TIP1143_MAX_CODE_SIZE;
+            self.max_initcode_size = TIP1143_MAX_INITCODE_SIZE;
+            self.gas_params.set(GasId::ColdCodeChunkCost, COLD_CODE_CHUNK_GAS as u32);
+            self.gas_params.set(GasId::WarmCodeChunkCost, WARM_CODE_CHUNK_GAS as u32);
+        }
         self
     }
 

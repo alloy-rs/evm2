@@ -1,9 +1,9 @@
 //! Revert journal and checkpoint types.
 
 use super::AccountInfo;
-use crate::{bytecode::Bytecode, interpreter::Word};
+use crate::{bytecode::CodeMetadata, interpreter::Word};
 use alloc::vec::Vec;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 
 /// State checkpoint for reverting state changes.
 #[allow(missing_copy_implementations)]
@@ -57,8 +57,12 @@ pub enum JournalEntry {
         previous_just_created: bool,
         /// Previous code-changed flag.
         previous_code_changed: bool,
-        /// Previously requested analyses and warmth.
-        previous_code_chunks: Vec<(Option<Bytecode>, bool)>,
+        /// Previous complete-code hash governing cached slots.
+        previous_code_hash: Option<B256>,
+        /// Previous chunk commitments governing cached slots.
+        previous_code_metadata: Option<CodeMetadata>,
+        /// Previous transaction-local warmth indexed by chunk number.
+        previous_code_warmth: Vec<bool>,
     },
     /// A successful cold code access warmed an account's payload.
     CodeChunkWarmed {

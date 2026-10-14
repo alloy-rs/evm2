@@ -182,7 +182,7 @@ impl Bytecode {
     ///
     /// `bytes` must contain the stored padding, tail and final analysis-offset byte.
     /// Ordinary memory-safety padding is added after validation and is not stored or hashed.
-    pub fn new_chunk(bytes: Bytes) -> Result<Self, CodeChunkError> {
+    pub(crate) fn new_chunk(bytes: Bytes) -> Result<Self, CodeChunkError> {
         let layout = ChunkLayout::decode(&bytes)?;
         Ok(Self(Some(Arc::new(BytecodeInner {
             kind: BytecodeKind::Chunk(layout),
@@ -605,7 +605,8 @@ mod tests {
             let chunk = code_chunk(&code.into(), 1).unwrap();
             let bytecode = chunk.bytecode();
             assert_eq!(chunk.start_offset(), usize::from(offset));
-            assert_eq!(bytecode.original_byte_slice().last(), Some(&offset));
+            let encoded_offset = if offset == 0 { 0 } else { offset | 0x80 };
+            assert_eq!(bytecode.original_byte_slice().last(), Some(&encoded_offset));
             assert_eq!(bytecode.bytes_slice().last(), Some(&0));
             assert!(bytecode.inner().jump_table.get().is_none());
             let restored = Bytecode::new_chunk(bytecode.original_bytes()).unwrap();
@@ -624,16 +625,16 @@ mod tests {
     }
 
     #[test]
-    fn chunk_bytecode_requires_explicit_kind_and_account_context() {
+    fn chunk_loading_is_provider_representation_neutral() {
         let code = Bytes::from(alloc::vec![op::STOP; LEGACY_CODE_CHUNK_SIZE + 1]);
         let chunk = code_chunk(&code, 0).unwrap();
         let bytecode = chunk.bytecode();
         let legacy = Bytecode::new_legacy(bytecode.original_bytes());
-        assert!(CodeChunk::from_chunked(legacy, code.len() as u32, 0).is_err());
+        assert!(CodeChunk::from_chunked(legacy, code.len() as u32, 0).is_ok());
         assert!(CodeChunk::from_chunked(bytecode.clone(), CODE_CHUNK_SIZE as u32, 0).is_err());
         assert!(CodeChunk::from_chunked(bytecode.clone(), code.len() as u32, 1).is_err());
         let loaded = CodeChunk::from_chunked(bytecode.clone(), code.len() as u32, 0).unwrap();
-        assert!(core::ptr::eq(loaded.as_bytecode().inner(), bytecode.inner()));
+        assert_eq!(loaded.as_bytecode(), &bytecode);
         let mut malformed = bytecode.original_bytes().to_vec();
         malformed[CODE_CHUNK_SIZE] = op::INVALID;
         assert!(Bytecode::new_chunk(malformed.into()).is_err());

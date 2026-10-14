@@ -115,8 +115,7 @@ impl Host<TestTypes> for TestHost {
         Ok(AccountLoad {
             balance: address.into_word().into(),
             nonce: 0,
-            code_size: Some(self.code.len() as u32),
-            is_chunked: self.code.len() > crate::bytecode::CODE_CHUNK_SIZE,
+            code_info: crate::evm::AccountCodeInfo::Legacy { size: Some(self.code.len() as u32) },
             code_hash: self.code_hash,
             code: if load_code {
                 Bytecode::new_legacy(self.code.clone())

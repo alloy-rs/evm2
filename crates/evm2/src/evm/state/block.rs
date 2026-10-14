@@ -23,6 +23,7 @@ pub struct BlockStateAccumulator {
     storage_wipes: AddressSet,
     storage: StorageKeyMap<Tracked<Word>>,
     code: B256Map<Bytecode>,
+    code_chunks: B256Map<Bytecode>,
 }
 
 impl BlockStateAccumulator {
@@ -39,6 +40,7 @@ impl BlockStateAccumulator {
             && self.storage_wipes.is_empty()
             && self.storage.is_empty()
             && self.code.is_empty()
+            && self.code_chunks.is_empty()
     }
 
     /// Returns account deltas with addresses in arbitrary map order.
@@ -66,6 +68,12 @@ impl BlockStateAccumulator {
     #[inline]
     pub fn code(&self) -> impl Iterator<Item = (&B256, &Bytecode)> {
         self.code.iter()
+    }
+
+    /// Returns prepared code chunks in arbitrary commitment-hash order.
+    #[inline]
+    pub fn code_chunks(&self) -> impl Iterator<Item = (&B256, &Bytecode)> {
+        self.code_chunks.iter()
     }
 
     /// Returns account deltas with addresses sorted by address.
@@ -108,6 +116,12 @@ impl StateChangeSink for BlockStateAccumulator {
     #[inline]
     fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
         self.code.entry(code_hash).or_insert_with(|| code.clone());
+        Ok(())
+    }
+
+    #[inline]
+    fn code_chunk(&mut self, chunk_hash: B256, chunk: &Bytecode) -> Result<(), Self::Error> {
+        self.code_chunks.entry(chunk_hash).or_insert_with(|| chunk.clone());
         Ok(())
     }
 
@@ -195,7 +209,14 @@ impl StateChangeSink for BlockStateAccumulator {
 impl StateChangeSource for BlockStateAccumulator {
     #[inline]
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        visit_block_changes(&self.accounts, &self.storage_wipes, &self.storage, &self.code, sink)
+        visit_block_changes(
+            &self.accounts,
+            &self.storage_wipes,
+            &self.storage,
+            &self.code,
+            &self.code_chunks,
+            sink,
+        )
     }
 }
 
@@ -204,12 +225,19 @@ fn visit_block_changes<S: StateChangeSink>(
     storage_wipes: &AddressSet,
     storage: &StorageKeyMap<Tracked<Word>>,
     code: &B256Map<Bytecode>,
+    code_chunks: &B256Map<Bytecode>,
     sink: &mut S,
 ) -> Result<(), S::Error> {
     let mut code_entries = code.iter().collect::<Vec<_>>();
     code_entries.sort_by_key(|(code_hash, _)| **code_hash);
     for (&code_hash, code) in code_entries {
         sink.bytecode(code_hash, code)?;
+    }
+
+    let mut chunk_entries = code_chunks.iter().collect::<Vec<_>>();
+    chunk_entries.sort_by_key(|(chunk_hash, _)| **chunk_hash);
+    for (&chunk_hash, chunk) in chunk_entries {
+        sink.code_chunk(chunk_hash, chunk)?;
     }
 
     let mut storage_wipes = storage_wipes.iter().copied().collect::<Vec<_>>();

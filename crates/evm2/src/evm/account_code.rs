@@ -1,6 +1,6 @@
 //! Account code representation and frame source selection.
 
-use super::AccountLoad;
+use super::{AccountCodeInfo, AccountLoad};
 use crate::bytecode::{Bytecode, CodeChunk};
 
 impl AccountLoad {
@@ -14,6 +14,10 @@ impl AccountLoad {
         if !tip1143 {
             return Ok(self.code.clone().into());
         }
-        if self.code_size == Some(0) { Ok(Bytecode::default().into()) } else { load_chunk() }
+        if matches!(self.code_info, AccountCodeInfo::Empty) {
+            Ok(Bytecode::default().into())
+        } else {
+            load_chunk()
+        }
     }
 }

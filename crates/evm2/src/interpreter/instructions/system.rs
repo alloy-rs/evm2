@@ -88,9 +88,11 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     let remaining_gas = gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
     let tip1143 = state.feature(EvmFeatures::TIP1143);
+    let native_precompile = state.host().is_precompile(&to);
+    let inspect_delegation = native_precompile && state.feature(EvmFeatures::EIP7702);
     let account = state
         .host()
-        .load_account(&to, !tip1143, skip_cold_load)
+        .load_account(&to, !tip1143 || inspect_delegation, skip_cold_load)
         .map_err(|error| state.fail(error))?;
 
     let mut cost = 0;
@@ -120,8 +122,13 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     }
     gas.spend(cost)?;
     gas.spend_state(new_account_state_gas)?;
-    let mut code =
-        account.frame_code(tip1143, || state.load_and_charge_code_chunk(gas, &code_address, 0))?;
+    let mut code = if native_precompile && !account.code.is_eip7702() {
+        Bytecode::default().into()
+    } else {
+        account.frame_code(tip1143, || {
+            state.load_and_charge_code_chunk(gas, &code_address, 0, account.code_info.size())
+        })?
+    };
     if state.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.as_bytecode().eip7702_address()
     {
@@ -137,8 +144,14 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         }
         code_address = delegated_address;
         disable_precompiles = true;
-        code = delegated_account
-            .frame_code(tip1143, || state.load_and_charge_code_chunk(gas, &code_address, 0))?;
+        code = delegated_account.frame_code(tip1143, || {
+            state.load_and_charge_code_chunk(
+                gas,
+                &code_address,
+                0,
+                delegated_account.code_info.size(),
+            )
+        })?;
     }
 
     let mut gas_limit = if state.feature(EvmFeatures::EIP150) {

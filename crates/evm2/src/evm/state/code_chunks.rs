@@ -32,6 +32,28 @@ impl<'a, 'db> CodeChunkHandle<'a, 'db> {
         if info.code_hash.is_zero() || info.code_hash == KECCAK256_EMPTY {
             return Ok(None);
         }
+        account.code_chunks.ensure_identity(info);
+        if let Some(metadata) = info.code_metadata()
+            && let Some(code) = info.code.as_ref()
+            && (account.code_chunks.slots.len() != metadata.chunk_count()
+                || account.code_chunks.slots.iter().any(|slot| slot.bytecode.is_none()))
+        {
+            let prepared = crate::bytecode::prepare_code_chunks(&code.original_bytes());
+            let Ok(Some((prepared_metadata, chunks))) = prepared else {
+                return Err(
+                    DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true).into()
+                );
+            };
+            if code.hash_slow() != info.code_hash || &prepared_metadata != metadata {
+                return Err(
+                    DatabaseError::new(CodeChunkLoadError::Invalid(info.code_hash), true).into()
+                );
+            }
+            account.code_chunks.slots.resize_with(chunks.len(), CodeChunkSlot::default);
+            for (slot, chunk) in account.code_chunks.slots.iter_mut().zip(chunks) {
+                slot.bytecode = Some(chunk.bytecode());
+            }
+        }
         let expected = if let Some(metadata) = &info.code_metadata() {
             let Some(length) = metadata.chunk_len(index) else { return Ok(None) };
             Some(length)

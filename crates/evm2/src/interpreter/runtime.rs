@@ -144,6 +144,30 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.code.pc()
     }
 
+    /// Returns the current offset in the active execution buffer.
+    #[inline]
+    pub fn local_pc(&self) -> usize {
+        // SAFETY: Every execution PC points into the active bytecode allocation.
+        unsafe {
+            self.code.pc.offset_from(self.code.active().as_bytecode().bytes_slice().as_ptr())
+                as usize
+        }
+    }
+
+    /// Returns the complete logical code size, excluding chunk continuation data.
+    #[inline]
+    pub fn code_size(&self) -> usize {
+        self.code.active().code_size()
+    }
+
+    /// Returns the active logical payload and its offset in the complete code.
+    #[inline]
+    pub fn active_bytecode(&self) -> (usize, &[u8]) {
+        let chunk = self.code.active();
+        let offset = chunk.index() as usize * crate::bytecode::CODE_CHUNK_SIZE;
+        (offset, &chunk.bytes()[..chunk.payload_len()])
+    }
+
     /// Sets a logical global program counter within the active chunk.
     ///
     /// # Panics

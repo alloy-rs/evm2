@@ -131,7 +131,7 @@ use crate::{
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, Log, LogData};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData};
 #[cfg(feature = "async")]
 use core::future::Future;
 use core::ptr::NonNull;
@@ -1274,6 +1274,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             let metadata = prepared.as_ref().map(|(metadata, _)| metadata.clone());
             if let Err(code) = self.state.account(address).map(|mut a| {
                 a.set_code_with_metadata(Bytecode::new_legacy(output.clone()), metadata);
+                if let Some((_, chunks)) = &prepared {
+                    a.cache_code_chunks(chunks);
+                }
             }) {
                 self.state.rollback(checkpoint, self.features);
                 return Err(code.into());
@@ -1316,8 +1319,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         }
 
         if self.feature(EvmFeatures::TIP1143) {
-            crate::bytecode::validate_code(output)
-                .map_err(|_| InstrStop::InvalidImmediateEncoding)?;
+            crate::bytecode::validate_code(output).map_err(map_code_chunk_error)?;
         }
 
         let code_deposit_gas = output
@@ -1334,8 +1336,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return Ok(None);
         }
         let prepared = if self.feature(EvmFeatures::TIP1143) {
-            crate::bytecode::prepare_code_chunks(output)
-                .map_err(|_| InstrStop::InvalidImmediateEncoding)?
+            crate::bytecode::prepare_code_chunks(output).map_err(map_code_chunk_error)?
         } else {
             None
         };
@@ -1517,6 +1518,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 }
 
+const fn map_code_chunk_error(error: crate::bytecode::CodeChunkError) -> InstrStop {
+    match error {
+        crate::bytecode::CodeChunkError::CodeTooLarge => InstrStop::CreateContractSizeLimit,
+        crate::bytecode::CodeChunkError::InvalidMetadata
+        | crate::bytecode::CodeChunkError::InvalidPreparation => InstrStop::InvalidCodeChunk,
+    }
+}
+
 impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     fn spec_id(&self) -> SpecId {
         self.spec_id()
@@ -1528,6 +1537,10 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
 
     fn block_env(&mut self) -> &BlockEnv<T> {
         &self.block
+    }
+
+    fn is_precompile(&self, address: &Address) -> bool {
+        self.precompiles.contains(address)
     }
 
     fn load_account(
@@ -1551,10 +1564,16 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         } else {
             Bytecode::default()
         };
-        let code_size = account.code_size().or_else(|| load_code.then_some(code.len() as u32));
+        let known_size = account.code_size().or_else(|| load_code.then_some(code.len() as u32));
+        let code_info = if info.code_hash.is_zero() || info.code_hash == KECCAK256_EMPTY {
+            AccountCodeInfo::Empty
+        } else if let Some(metadata) = info.code_metadata() {
+            AccountCodeInfo::Chunked { size: metadata.code_size() }
+        } else {
+            AccountCodeInfo::Legacy { size: known_size }
+        };
         Ok(AccountLoad {
-            code_size,
-            is_chunked: info.code_metadata().is_some(),
+            code_info,
             balance: info.balance,
             nonce: info.nonce,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
@@ -1752,11 +1771,8 @@ pub struct AccountLoad {
     pub code_hash: B256,
     /// Account bytecode.
     pub code: Bytecode,
-    /// Original code size: `Some(0)` for empty code, known for chunked code,
-    /// and `None` only for nonempty legacy code whose size has not been loaded.
-    pub code_size: Option<u32>,
-    /// Whether original runtime is stored in prepared chunks.
-    pub is_chunked: bool,
+    /// Validated account code representation and logical size information.
+    pub code_info: AccountCodeInfo,
     /// Whether the account exists in state.
     pub exists: bool,
     /// Whether the account is empty.
@@ -1765,6 +1781,40 @@ pub struct AccountLoad {
     pub is_cold: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
+}
+
+/// Account code representation returned by [`Host::load_account`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AccountCodeInfo {
+    /// Empty account code.
+    #[default]
+    Empty,
+    /// Complete legacy code. The size is absent until its bytes have been loaded.
+    Legacy {
+        /// Complete logical size when its bytes have been loaded.
+        size: Option<u32>,
+    },
+    /// Multi-chunk runtime with a committed complete logical size.
+    Chunked {
+        /// Complete committed logical size.
+        size: u32,
+    },
+}
+
+impl AccountCodeInfo {
+    /// Complete logical size when known.
+    pub const fn size(self) -> Option<u32> {
+        match self {
+            Self::Empty => Some(0),
+            Self::Legacy { size } => size,
+            Self::Chunked { size } => Some(size),
+        }
+    }
+
+    /// Whether the runtime uses multiple committed chunks.
+    pub const fn is_chunked(self) -> bool {
+        matches!(self, Self::Chunked { .. })
+    }
 }
 
 /// Result of a code chunk host load, including its warmth before access.

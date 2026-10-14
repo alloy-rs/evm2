@@ -738,22 +738,25 @@ fn account_code_size_distinguishes_empty_unknown_and_chunked_without_loading() {
         .insert_account_info(&funded, AccountInfo { balance: Word::from(1), ..Default::default() });
     for address in [OWNER, funded, Address::with_last_byte(0x86)] {
         let metadata = Host::load_account(&mut evm, &address, false, false).unwrap();
-        assert_eq!(metadata.code_size, if address == OWNER { None } else { Some(0) });
+        assert_eq!(metadata.code_info.size(), if address == OWNER { None } else { Some(0) });
         assert_eq!(metadata.is_empty, address != OWNER && address != funded);
         assert!(metadata.code.is_empty());
         assert!(reads(&evm).is_empty());
     }
     evm.state.load_code_chunk(&OWNER, 0, false).unwrap().unwrap();
-    assert_eq!(Host::load_account(&mut evm, &OWNER, false, false).unwrap().code_size, Some(1));
+    assert_eq!(
+        Host::load_account(&mut evm, &OWNER, false, false).unwrap().code_info.size(),
+        Some(1)
+    );
     let loaded = Host::load_account(&mut evm, &OWNER, true, false).unwrap();
-    assert_eq!(loaded.code_size, Some(1));
+    assert_eq!(loaded.code_info.size(), Some(1));
     assert_eq!(loaded.code.original_byte_slice(), &[op::STOP]);
 
     let bytes = vec![op::STOP; 2 * CODE_CHUNK_SIZE + 7];
     let mut evm = test_evm(&bytes, true);
     let metadata = Host::load_account(&mut evm, &OWNER, false, false).unwrap();
-    assert!(metadata.is_chunked);
-    assert_eq!(metadata.code_size, Some(bytes.len() as u32));
+    assert!(metadata.code_info.is_chunked());
+    assert_eq!(metadata.code_info.size(), Some(bytes.len() as u32));
     assert!(metadata.code.is_empty());
     assert!(reads(&evm).is_empty());
 }
@@ -833,7 +836,7 @@ fn replacing_chunk_metadata_invalidates_cached_payloads() {
     let metadata = info.chunks.as_ref().unwrap();
     let mut hashes = metadata.chunk_hashes().to_vec();
     hashes[0] = B256::repeat_byte(0x42);
-    info.chunks = Some(CodeMetadata::new(metadata.last_chunk_size(), hashes).unwrap());
+    info.chunks = Some(CodeMetadata::new(metadata.code_size(), hashes).unwrap());
     evm.state.account(&OWNER).unwrap().set_info(info);
     assert_eq!(evm.state.account(&OWNER).unwrap().code_chunk_cache_len(), 0);
     assert!(matches!(

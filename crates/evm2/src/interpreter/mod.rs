@@ -115,6 +115,8 @@ pub enum InstrStop {
     FatalExternalError,
     /// Invalid encoding of an instruction's immediate operand.
     InvalidImmediateEncoding,
+    /// Invalid prepared representation for chunked contract code.
+    InvalidCodeChunk,
 }
 
 impl InstrStop {

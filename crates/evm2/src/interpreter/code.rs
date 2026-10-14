@@ -6,10 +6,11 @@
 use super::{BytecodeRef, Gas, Host, InstrStop, InterpreterState, Pc, Result, Word};
 use crate::{
     EvmTypesHost,
-    bytecode::{CODE_CHUNK_SIZE, COLD_CODE_CHUNK_GAS, CodeChunk, WARM_CODE_CHUNK_GAS},
+    bytecode::{CODE_CHUNK_SIZE, CodeChunk, CodeChunkKind},
     evm::CodeChunkLoad,
     trustme,
     utils::word_to_usize_saturated,
+    version::GasId,
 };
 use alloc::vec::Vec;
 use alloy_primitives::Address;
@@ -79,7 +80,7 @@ impl InterpreterCode {
         let local = pc
             .checked_sub(self.active.index() as usize * CODE_CHUNK_SIZE)
             .expect("PC is outside the active chunk");
-        if let CodeChunk::Chunked(chunk) = &self.active {
+        if let CodeChunkKind::Chunked(chunk) = self.active.kind() {
             assert!(local < chunk.payload_len(), "PC is outside the logical payload");
         }
         let bytes = self.active.as_bytecode().bytes_slice();
@@ -130,8 +131,10 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
         address: &Address,
         index: u32,
         skip_cold: bool,
+        expected_code_size: Option<u32>,
     ) -> Result<CodeChunkLoad> {
-        self.host()
+        let loaded = self
+            .host()
             .load_code_chunk(address, index, skip_cold)
             .map_err(|error| self.fail(error))?
             .ok_or_else(|| {
@@ -139,7 +142,18 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
                     MissingRuntimeChunk { address: *address, index },
                     true,
                 ))
+            })?;
+        if loaded.chunk.index() != index
+            || expected_code_size.is_some_and(|code_size| {
+                loaded.chunk.chunked().is_some()
+                    && loaded.chunk.validate_context(code_size, index).is_err()
             })
+        {
+            let hash = loaded.chunk.as_bytecode().hash_slow();
+            return Err(self
+                .fail(crate::DatabaseError::new(crate::CodeChunkLoadError::Invalid(hash), true)));
+        }
+        Ok(loaded)
     }
 
     /// Replaces the owner before rebuilding its borrowed view. Callers reset their PC next.
@@ -150,13 +164,13 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
     /// Whether an executed instruction ended outside the active logical payload.
     #[inline(always)]
     pub(crate) const fn needs_code_chunk_advance(&self, pc: Pc) -> bool {
-        matches!(self.0.code.active(), CodeChunk::Chunked(chunk)
+        matches!(self.0.code.active().kind(), CodeChunkKind::Chunked(chunk)
             if self.bytecode().pc_offset(pc) >= chunk.payload_len())
     }
 
     /// Completes fallthrough at the logical payload boundary without executing padding.
     pub(crate) fn advance_code_chunk(&mut self, pc: &mut Pc) -> Result {
-        let CodeChunk::Chunked(active) = self.0.code.active() else {
+        let CodeChunkKind::Chunked(active) = self.0.code.active().kind() else {
             return Ok(());
         };
         let local = self.bytecode().pc_offset(*pc);
@@ -170,15 +184,26 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
         }
         let index = active.index() + 1;
         let address = self.message().code_address;
-        self.0.gas.spend(WARM_CODE_CHUNK_GAS)?;
-        let cold_additional = COLD_CODE_CHUNK_GAS - WARM_CODE_CHUNK_GAS;
-        let loaded =
-            self.execution_code_chunk(&address, index, self.0.gas.remaining() < cold_additional)?;
+        let warm = u64::from(self.gas_params().get(GasId::WarmCodeChunkCost));
+        let cold = u64::from(self.gas_params().get(GasId::ColdCodeChunkCost));
+        self.0.gas.spend(warm)?;
+        let cold_additional = cold.saturating_sub(warm);
+        let code_size = self.code_size() as u32;
+        let loaded = self.execution_code_chunk(
+            &address,
+            index,
+            self.0.gas.remaining() < cold_additional,
+            Some(code_size),
+        )?;
         if loaded.is_cold {
             self.0.gas.spend(cold_additional)?;
         }
-        let offset = loaded.chunk.start_offset();
-        debug_assert_eq!(offset, local - payload_len);
+        let offset = local - payload_len;
+        if !self.active_chunk().continues_into(&loaded.chunk, offset) {
+            let hash = loaded.chunk.as_bytecode().hash_slow();
+            return Err(self
+                .fail(crate::DatabaseError::new(crate::CodeChunkLoadError::Invalid(hash), true)));
+        }
         self.activate_code_chunk(loaded.chunk);
         unsafe { pc.set_unchecked(self.bytecode(), offset) };
         Ok(())
@@ -190,11 +215,18 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
         gas: &mut Gas,
         address: &Address,
         index: u32,
+        expected_code_size: Option<u32>,
     ) -> Result<CodeChunk> {
-        gas.spend(WARM_CODE_CHUNK_GAS)?;
-        let cold_additional = COLD_CODE_CHUNK_GAS - WARM_CODE_CHUNK_GAS;
-        let loaded =
-            self.execution_code_chunk(address, index, gas.remaining() < cold_additional)?;
+        let warm = u64::from(self.gas_params().get(GasId::WarmCodeChunkCost));
+        let cold = u64::from(self.gas_params().get(GasId::ColdCodeChunkCost));
+        gas.spend(warm)?;
+        let cold_additional = cold.saturating_sub(warm);
+        let loaded = self.execution_code_chunk(
+            address,
+            index,
+            gas.remaining() < cold_additional,
+            expected_code_size,
+        )?;
         if loaded.is_cold {
             gas.spend(cold_additional)?;
         }
@@ -224,15 +256,27 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
         } else {
             (0, 0)
         };
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(end - source);
+        let mut previous: Option<CodeChunk> = None;
         for index in first..=last {
-            let chunk = self.load_and_charge_code_chunk(gas, &code_owner, index)?;
+            let chunk =
+                self.load_and_charge_code_chunk(gas, &code_owner, index, u32::try_from(size).ok())?;
+            if let Some(previous) = &previous
+                && !previous.continues_into(&chunk, chunk.start_offset())
+            {
+                let hash = chunk.as_bytecode().hash_slow();
+                return Err(self.fail(crate::DatabaseError::new(
+                    crate::CodeChunkLoadError::Invalid(hash),
+                    true,
+                )));
+            }
             let base = if multi { index as usize * CODE_CHUNK_SIZE } else { 0 };
             let from = source.saturating_sub(base).min(chunk.payload_len());
             let to = end.saturating_sub(base).min(chunk.payload_len());
             if from < to {
                 bytes.extend_from_slice(&chunk.bytes()[from..to]);
             }
+            previous = Some(chunk);
         }
         Ok(bytes)
     }

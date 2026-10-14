@@ -273,6 +273,13 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     }
 
     #[inline]
+    fn code_chunk(&mut self, chunk_hash: B256, chunk: &Bytecode) -> Result<(), Self::Error> {
+        self.bal_context.code_chunk(chunk_hash, chunk)?;
+        self.cache.insert_code(chunk_hash, chunk);
+        Ok(())
+    }
+
+    #[inline]
     fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
         self.bal_context.storage_wipe(address)?;
         self.cache.storage.entry(address).or_default().wipe();

@@ -168,6 +168,24 @@ impl AccountInfo {
         self.code = Some(code);
     }
 
+    /// Backfills TIP-1143 commitments from cached complete code without changing its code hash.
+    ///
+    /// Chain state migration must call this for every account whose runtime exceeds the legacy
+    /// threshold before enabling TIP-1143. Returns whether the stored metadata changed.
+    #[cfg(feature = "account-ext")]
+    pub fn migrate_tip1143_code(&mut self) -> Result<bool, crate::bytecode::CodeChunkError> {
+        let Some(code) = self.code.as_ref() else {
+            return Err(crate::bytecode::CodeChunkError::InvalidMetadata);
+        };
+        if code.hash_slow() != self.code_hash {
+            return Err(crate::bytecode::CodeChunkError::InvalidMetadata);
+        }
+        let metadata = crate::bytecode::code_metadata(code.original_byte_slice())?;
+        let changed = self.chunks != metadata;
+        self.chunks = metadata;
+        Ok(changed)
+    }
+
     /// Returns whether this account is empty by the Spurious Dragon definition.
     #[inline]
     pub fn is_empty(&self) -> bool {
@@ -181,8 +199,17 @@ impl AccountInfo {
 /// Cached runtime chunks and their matching transaction-local warmth.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CodeChunks {
+    /// Code identity for which the slots were validated.
+    pub(crate) identity: Option<CodeIdentity>,
     /// Requested bytecode and warmth, indexed by logical chunk number.
     pub(crate) slots: Vec<CodeChunkSlot>,
+}
+
+/// Complete code identity governing account-local chunk slots.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CodeIdentity {
+    pub(crate) code_hash: B256,
+    pub(crate) metadata: Option<CodeMetadata>,
 }
 
 /// One account-local code payload and its transaction-local warmth.
@@ -194,7 +221,17 @@ pub(crate) struct CodeChunkSlot {
 
 impl CodeChunks {
     pub(crate) fn clear(&mut self) {
+        self.identity = None;
         self.slots.clear();
+    }
+
+    pub(crate) fn ensure_identity(&mut self, info: &AccountInfo) {
+        let identity =
+            CodeIdentity { code_hash: info.code_hash, metadata: info.code_metadata().cloned() };
+        if self.identity.as_ref() != Some(&identity) {
+            self.slots.clear();
+            self.identity = Some(identity);
+        }
     }
 }
 
@@ -306,6 +343,29 @@ impl Account {
     ) -> Result<(), S::Error> {
         if let Some((code_hash, code)) = self.changed_code() {
             sink.bytecode(code_hash, code)?;
+            if let Some(metadata) = self.present.as_ref().and_then(AccountInfo::code_metadata) {
+                let cached = self.code_chunks.slots.len() == metadata.chunk_count()
+                    && self.code_chunks.slots.iter().all(|slot| slot.bytecode.is_some());
+                if cached {
+                    for (chunk_hash, slot) in
+                        metadata.chunk_hashes().iter().copied().zip(&self.code_chunks.slots)
+                    {
+                        sink.code_chunk(
+                            chunk_hash,
+                            slot.bytecode.as_ref().expect("checked cached chunk"),
+                        )?;
+                    }
+                } else if let Ok(Some((prepared, chunks))) =
+                    crate::bytecode::prepare_code_chunks(&code.original_bytes())
+                    && &prepared == metadata
+                {
+                    for (chunk_hash, chunk) in
+                        metadata.chunk_hashes().iter().copied().zip(chunks.iter())
+                    {
+                        sink.code_chunk(chunk_hash, chunk.as_bytecode())?;
+                    }
+                }
+            }
         }
 
         let storage = &self.storage;
@@ -390,6 +450,14 @@ fn empty_account() -> AccountInfo {
     AccountInfo::default()
 }
 
+fn normalize_account_bytecode(code: &Bytecode) -> Bytecode {
+    if !matches!(code.kind(), crate::bytecode::BytecodeKind::Chunk(_)) {
+        return code.clone();
+    }
+    let bytes = code.original_bytes();
+    Bytecode::new_raw_checked(bytes.clone()).unwrap_or_else(|_| Bytecode::new_legacy(bytes))
+}
+
 impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Creates a handle over a loaded account overlay slot and the shared inner state (backing
     /// database, revert journal, and transaction-initial base warm set).
@@ -426,12 +494,24 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
                 previous_is_destroyed: self.tracked.is_destroyed,
                 previous_just_created: self.tracked.just_created,
                 previous_code_changed: self.tracked.code_changed,
-                previous_code_chunks: self
+                previous_code_hash: self
+                    .tracked
+                    .code_chunks
+                    .identity
+                    .as_ref()
+                    .map(|identity| identity.code_hash),
+                previous_code_metadata: self
+                    .tracked
+                    .code_chunks
+                    .identity
+                    .as_ref()
+                    .and_then(|identity| identity.metadata.clone()),
+                previous_code_warmth: self
                     .tracked
                     .code_chunks
                     .slots
                     .iter()
-                    .map(|slot| (slot.bytecode.clone(), slot.is_warm))
+                    .map(|slot| slot.is_warm)
                     .collect(),
             });
         }
@@ -559,10 +639,13 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if let Some(code) = account.code.as_ref()
             && !code.is_empty()
         {
-            return Ok(code.clone());
+            return Ok(normalize_account_bytecode(code));
         }
         let code_hash = account.code_hash;
-        self.inner.database.get_code_by_hash(&code_hash)
+        self.inner
+            .database
+            .get_code_by_hash(&code_hash)
+            .map(|code| normalize_account_bytecode(&code))
     }
 
     /// Loads the account's bytecode as it stood at the start of the transaction.
@@ -582,10 +665,13 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if let Some(code) = account.code.as_ref()
             && !code.is_empty()
         {
-            return Ok(code.clone());
+            return Ok(normalize_account_bytecode(code));
         }
         let code_hash = account.code_hash;
-        self.inner.database.get_code_by_hash(&code_hash)
+        self.inner
+            .database
+            .get_code_by_hash(&code_hash)
+            .map(|code| normalize_account_bytecode(&code))
     }
 
     /// Recognizes current delegation code from the stored bytecode.
@@ -726,6 +812,16 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         {
             self.present_mut().chunks = metadata;
         }
+    }
+
+    /// Seeds validated deployment chunks without changing their transaction-local warmth.
+    pub(crate) fn cache_code_chunks(&mut self, chunks: &[crate::bytecode::CodeChunk]) {
+        let Some(info) = self.tracked.present.as_ref() else { return };
+        self.tracked.code_chunks.ensure_identity(info);
+        self.tracked.code_chunks.slots = chunks
+            .iter()
+            .map(|chunk| CodeChunkSlot { bytecode: Some(chunk.bytecode()), is_warm: false })
+            .collect();
     }
 
     /// Validates and installs code explicitly using the draft chunked runtime representation.
@@ -891,18 +987,45 @@ mod tests {
     use crate::evm::{CacheDB, state::State};
     use alloy_primitives::Address;
 
+    #[cfg(feature = "account-ext")]
+    use crate::bytecode::LEGACY_CODE_CHUNK_SIZE;
+
     #[test]
     #[cfg(all(feature = "serde", feature = "account-ext"))]
     fn chunk_metadata_roundtrips_without_an_extension() {
         let account = AccountInfo {
             code_hash: B256::repeat_byte(0x42),
-            chunks: Some(CodeMetadata::new(37, alloc::vec![B256::repeat_byte(0x17); 2]).unwrap()),
+            chunks: Some(
+                CodeMetadata::new(
+                    LEGACY_CODE_CHUNK_SIZE as u32 + 1,
+                    alloc::vec![B256::repeat_byte(0x17); 2],
+                )
+                .unwrap(),
+            ),
             ..Default::default()
         };
         let encoded = rmp_serde::to_vec(&account).unwrap();
         let decoded: AccountInfo = rmp_serde::from_slice(&encoded).unwrap();
         assert_eq!(decoded, account);
         assert_eq!(decoded.code_metadata().unwrap().code_size() as usize, 24 * 1024 + 1);
+    }
+
+    #[test]
+    #[cfg(feature = "account-ext")]
+    fn tip1143_migration_preserves_complete_code_hash() {
+        let code = Bytecode::new_legacy(
+            alloc::vec![crate::interpreter::op::STOP; LEGACY_CODE_CHUNK_SIZE + 1].into(),
+        );
+        let code_hash = code.hash_slow();
+        let mut account = AccountInfo::default().with_code(code);
+
+        assert!(account.migrate_tip1143_code().unwrap());
+        assert_eq!(account.code_hash, code_hash);
+        assert_eq!(
+            account.code_metadata().unwrap().code_size() as usize,
+            LEGACY_CODE_CHUNK_SIZE + 1
+        );
+        assert!(!account.migrate_tip1143_code().unwrap());
     }
 
     #[test]

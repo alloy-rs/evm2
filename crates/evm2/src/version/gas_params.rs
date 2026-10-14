@@ -171,6 +171,10 @@ gas_ids! {
     TxValueCost;
     /// EIP-2780/EIP-8038 execution gas cost of a top-level CREATE access.
     TxCreateAccessCost;
+    /// Total gas charged for a cold TIP-1143 code chunk access.
+    ColdCodeChunkCost;
+    /// Gas charged for a warm TIP-1143 code chunk access.
+    WarmCodeChunkCost;
 
     // Reserved custom gas parameter slots.
 

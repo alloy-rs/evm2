@@ -44,6 +44,7 @@ fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut GasInstructionCx<'_, '_, '
                     cx.gas,
                     &cx.state.message().code_address,
                     index,
+                    u32::try_from(cx.state.code_size()).ok(),
                 )?
             } else {
                 cx.state.active_chunk().clone()
@@ -180,7 +181,12 @@ fn rjump_inner<T: EvmTypesHost>(offset: isize, cx: &mut GasInstructionCx<'_, '_,
         let chunk = if index == cx.state.code_chunk_index() {
             cx.state.active_chunk().clone()
         } else {
-            cx.state.load_and_charge_code_chunk(cx.gas, &cx.state.message().code_address, index)?
+            cx.state.load_and_charge_code_chunk(
+                cx.gas,
+                &cx.state.message().code_address,
+                index,
+                u32::try_from(cx.state.code_size()).ok(),
+            )?
         };
         if !chunk.is_valid_jumpdest(local) {
             return Err(InstrStop::InvalidJump);
@@ -199,7 +205,7 @@ fn rjump_inner<T: EvmTypesHost>(offset: isize, cx: &mut GasInstructionCx<'_, '_,
 
 /// Two base-219 digits use the exact DUPN/SWAPN alphabet (decoded values 17..=235).
 /// Balanced signed displacements span -23980..=23980; no digit is PUSHn or JUMPDEST.
-#[cfg(test)]
+#[cfg(all(test, feature = "account-ext"))]
 pub(crate) const fn encode_rjump_offset(offset: isize) -> Option<[u8; 2]> {
     if offset < -23980 || offset > 23980 {
         return None;

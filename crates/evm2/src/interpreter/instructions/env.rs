@@ -141,13 +141,17 @@ pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
 
     let size = if !tip1143 {
         account.code.len()
-    } else if account.code_size == Some(0) {
-        0
-    } else if account.is_chunked {
-        account.code_size.expect("chunked code size") as usize
     } else {
-        let code_owner = word_to_address(*addr);
-        cx.state.load_and_charge_code_chunk(cx.gas, &code_owner, 0)?.payload_len()
+        match account.code_info {
+            crate::evm::AccountCodeInfo::Empty => 0,
+            crate::evm::AccountCodeInfo::Chunked { size } => size as usize,
+            crate::evm::AccountCodeInfo::Legacy { .. } => {
+                let code_owner = word_to_address(*addr);
+                cx.state
+                    .load_and_charge_code_chunk(cx.gas, &code_owner, 0, account.code_info.size())?
+                    .payload_len()
+            }
+        }
     };
     *out = Word::from(size);
 }
@@ -173,22 +177,24 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
     let account = load_account(&mut cx, *addr, !tip1143)?;
 
     if tip1143 {
-        let bytes = if account.code_size == Some(0) {
-            Vec::new()
-        } else {
-            let size = if account.is_chunked {
-                account.code_size.expect("chunked code size") as usize
-            } else {
-                LEGACY_CODE_CHUNK_SIZE
-            };
-            cx.state.load_code_range(
+        let bytes = match account.code_info {
+            crate::evm::AccountCodeInfo::Empty => Vec::new(),
+            crate::evm::AccountCodeInfo::Legacy { size } => cx.state.load_code_range(
                 cx.gas,
                 word_to_address(*addr),
                 *code_offset,
                 len,
-                size,
-                account.is_chunked,
-            )?
+                size.map_or(LEGACY_CODE_CHUNK_SIZE, |size| size as usize),
+                false,
+            )?,
+            crate::evm::AccountCodeInfo::Chunked { size } => cx.state.load_code_range(
+                cx.gas,
+                word_to_address(*addr),
+                *code_offset,
+                len,
+                size as usize,
+                true,
+            )?,
         };
         cx.state.0.memory.set_data(memory_offset, 0, len, &bytes);
         return Ok(());

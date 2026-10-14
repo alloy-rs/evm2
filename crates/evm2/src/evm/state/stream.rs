@@ -52,6 +52,12 @@ pub trait StateChangeSink {
         Ok(())
     }
 
+    /// Observes a prepared code chunk keyed by its commitment hash.
+    #[inline]
+    fn code_chunk(&mut self, _chunk_hash: B256, _chunk: &Bytecode) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     /// Observes an account change.
     #[inline]
     fn account(&mut self, _change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
@@ -144,6 +150,12 @@ where
     fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
         self.a.bytecode(code_hash, code)?;
         self.b.bytecode(code_hash, code)
+    }
+
+    #[inline]
+    fn code_chunk(&mut self, chunk_hash: B256, chunk: &Bytecode) -> Result<(), Self::Error> {
+        self.a.code_chunk(chunk_hash, chunk)?;
+        self.b.code_chunk(chunk_hash, chunk)
     }
 
     #[inline]

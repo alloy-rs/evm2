@@ -99,6 +99,11 @@ impl core::ops::Not for EvmFeatures {
 
 macro_rules! evm_features {
     (@const $bit:expr;) => {};
+    (@const $bit:expr; $(#[$attr:meta])* pub(crate) $name:ident, $($rest:tt)*) => {
+        $(#[$attr])*
+        pub(crate) const $name: Self = Self::from_bit($bit);
+        evm_features!(@const $bit + 1; $($rest)*);
+    };
     (@const $bit:expr; $(#[$attr:meta])* $name:ident, $($rest:tt)*) => {
         $(#[$attr])*
         pub const $name: Self = Self::from_bit($bit);
@@ -235,7 +240,10 @@ evm_features! {
     /// Enables the unscheduled TIP-1143 chunked-code draft and relative jumps.
     ///
     /// Default: off for every fork. Configure with `Version::with_tip1143`.
+    #[cfg(feature = "account-ext")]
     TIP1143,
+    #[cfg(not(feature = "account-ext"))]
+    pub(crate) TIP1143,
     /// Enables RJUMP and RJUMPI independently of TIP-1143.
     ///
     /// Default: off for every fork. Configure with `Version::with_rjump`.

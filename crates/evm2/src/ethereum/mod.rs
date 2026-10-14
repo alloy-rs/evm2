@@ -16,7 +16,7 @@ pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
     Evm, EvmFeatures, EvmTypes, HostError, SpecId, TxResult, TxResultExt, Version,
-    bytecode::{Bytecode, COLD_CODE_CHUNK_GAS, CodeChunk, WARM_CODE_CHUNK_GAS},
+    bytecode::{Bytecode, CodeChunk},
     env::TxEnv,
     evm::{
         AccountInfo,
@@ -577,7 +577,10 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
     let message = match to {
         TxKind::Call(to) => {
             let tip1143 = host.feature(EvmFeatures::TIP1143);
-            let account = match Host::load_account(host, &to, !tip1143, false) {
+            let native_precompile = host.precompiles().contains(&to);
+            let inspect_delegation = native_precompile && host.feature(EvmFeatures::EIP7702);
+            let account = match Host::load_account(host, &to, !tip1143 || inspect_delegation, false)
+            {
                 Ok(account) => account,
                 Err(HostError::Execution(error)) => return Err(error.into()),
                 Err(HostError::Halt(_)) => unreachable!("unconditional account load"),
@@ -592,12 +595,16 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 }
                 charged_state_gas = new_account_state_gas;
             }
-            let mut code = match account.frame_code(tip1143, || {
-                load_initial_code_chunk(host, tx_gas, &code_address, account.code_hash)
-            }) {
-                Ok(code) => code,
-                Err(HostError::Halt(_)) => return Ok(None),
-                Err(HostError::Execution(error)) => return Err(error.into()),
+            let mut code = if native_precompile && !account.code.is_eip7702() {
+                Bytecode::default().into()
+            } else {
+                match account.frame_code(tip1143, || {
+                    load_initial_code_chunk(host, tx_gas, &code_address, account.code_hash)
+                }) {
+                    Ok(code) => code,
+                    Err(HostError::Halt(_)) => return Ok(None),
+                    Err(HostError::Execution(error)) => return Err(error.into()),
+                }
             };
             if host.feature(EvmFeatures::EIP7702)
                 && let Some(delegated_address) = code.as_bytecode().eip7702_address()
@@ -959,8 +966,10 @@ fn load_initial_code_chunk<T: EvmTypes>(
     owner: &Address,
     code_hash: B256,
 ) -> Result<CodeChunk, HostError> {
-    tx_gas.spend(WARM_CODE_CHUNK_GAS)?;
-    let cold_additional = COLD_CODE_CHUNK_GAS - WARM_CODE_CHUNK_GAS;
+    let warm = u64::from(host.version().gas_params.get(GasId::WarmCodeChunkCost));
+    let cold = u64::from(host.version().gas_params.get(GasId::ColdCodeChunkCost));
+    tx_gas.spend(warm)?;
+    let cold_additional = cold.saturating_sub(warm);
     let loaded = Host::load_code_chunk(host, owner, 0, tx_gas.remaining() < cold_additional)?
         .ok_or_else(|| {
             crate::DatabaseError::new(crate::CodeChunkLoadError::Missing(code_hash), true)

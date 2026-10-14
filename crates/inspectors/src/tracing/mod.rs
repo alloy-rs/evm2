@@ -11,7 +11,7 @@ use crate::{
         utils::gas_used,
     },
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, vec, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use alloy_rpc_types_trace::parity::StorageDelta;
 use core::{mem, ops::Range};
@@ -505,7 +505,7 @@ impl TracingInspector {
         if self.config.record_immediate_bytes {
             let size = usize::from(immediate_size(op.get()));
             if size != 0 {
-                let pc = interp.pc() + 1;
+                let pc = interp.local_pc() + 1;
                 let bytes = interp.original_bytecode_slice().get(pc..pc + size).unwrap_or_default();
                 if self.budget.reserve(bytes.len()) {
                     immediate_bytes = Some(Bytes::copy_from_slice(bytes));
@@ -688,12 +688,32 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         }
         self.features = interp.version().features;
         if self.config.record_bytecode {
-            self.last_trace().trace.bytecode = Some(interp.original_bytecode());
+            let code_size = interp.code_size();
+            let (offset, payload) = interp.active_bytecode();
+            if offset == 0 && payload.len() == code_size {
+                self.last_trace().trace.bytecode = Some(interp.original_bytecode());
+            } else if self.budget.reserve(code_size) {
+                let mut code = vec![0; code_size];
+                code[offset..offset + payload.len()].copy_from_slice(payload);
+                self.last_trace().trace.bytecode = Some(code.into());
+            }
         }
     }
 
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        if self.config.record_bytecode
+            && let Some(code) = self.last_trace().trace.bytecode.as_mut()
+        {
+            let (offset, payload) = interp.active_bytecode();
+            if offset + payload.len() <= code.len()
+                && &code[offset..offset + payload.len()] != payload
+            {
+                let mut complete = code.to_vec();
+                complete[offset..offset + payload.len()].copy_from_slice(payload);
+                *code = complete.into();
+            }
+        }
         if self.config.record_steps {
             self.start_step(interp);
         }

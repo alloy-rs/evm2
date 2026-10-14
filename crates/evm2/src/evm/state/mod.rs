@@ -11,7 +11,7 @@ mod storage_pool;
 mod stream;
 mod tracked;
 
-pub(crate) use account::{Account, CodeChunkSlot};
+pub(crate) use account::{Account, CodeChunkSlot, CodeIdentity};
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
 pub use journal::{JournalEntry, StateCheckpoint};
@@ -741,7 +741,9 @@ impl<'a> State<'a> {
                     previous_is_destroyed,
                     previous_just_created,
                     previous_code_changed,
-                    previous_code_chunks,
+                    previous_code_hash,
+                    previous_code_metadata,
+                    previous_code_warmth,
                 } => {
                     // Reconcile the self-destruct set with the restored destroyed flag.
                     let was_destroyed =
@@ -763,10 +765,26 @@ impl<'a> State<'a> {
                         entry.is_destroyed = previous_is_destroyed;
                         entry.just_created = previous_just_created;
                         entry.code_changed = previous_code_changed;
-                        entry.code_chunks.slots = previous_code_chunks
-                            .into_iter()
-                            .map(|(bytecode, is_warm)| CodeChunkSlot { bytecode, is_warm })
-                            .collect();
+                        let previous_code_identity = previous_code_hash.map(|code_hash| {
+                            CodeIdentity { code_hash, metadata: previous_code_metadata }
+                        });
+                        if entry.code_chunks.identity == previous_code_identity {
+                            entry
+                                .code_chunks
+                                .slots
+                                .resize_with(previous_code_warmth.len(), CodeChunkSlot::default);
+                            for (slot, is_warm) in
+                                entry.code_chunks.slots.iter_mut().zip(previous_code_warmth)
+                            {
+                                slot.is_warm = is_warm;
+                            }
+                        } else {
+                            entry.code_chunks.identity = previous_code_identity;
+                            entry.code_chunks.slots = previous_code_warmth
+                                .into_iter()
+                                .map(|is_warm| CodeChunkSlot { bytecode: None, is_warm })
+                                .collect();
+                        }
                     }
                 }
                 JournalEntry::CodeChunkWarmed { address, index } => {

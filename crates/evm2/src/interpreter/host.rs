@@ -131,6 +131,12 @@ pub trait Host<T: EvmTypesHost> {
         skip_cold_load: bool,
     ) -> Result<AccountLoad, HostError>;
 
+    /// Returns whether `address` is handled by the active precompile provider.
+    #[inline]
+    fn is_precompile(&self, _address: &Address) -> bool {
+        false
+    }
+
     /// Loads and warms a runtime chunk, returning its prior coldness.
     /// With `skip_cold`, cold chunks halt with out-of-gas before fetching or warming.
     fn load_code_chunk(
