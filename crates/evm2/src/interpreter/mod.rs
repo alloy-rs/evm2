@@ -41,6 +41,8 @@ mod runtime;
 pub(crate) use runtime::InterpreterPool;
 pub use runtime::{Interpreter, InterpreterState};
 
+mod code;
+
 /// Instruction result type.
 pub type Result<T = (), E = InstrStop> = core::result::Result<T, E>;
 
@@ -113,6 +115,8 @@ pub enum InstrStop {
     FatalExternalError,
     /// Invalid encoding of an instruction's immediate operand.
     InvalidImmediateEncoding,
+    /// Invalid prepared representation for chunked contract code.
+    InvalidCodeChunk,
 }
 
 impl InstrStop {

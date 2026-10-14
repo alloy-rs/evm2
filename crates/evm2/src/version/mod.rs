@@ -7,6 +7,12 @@ use crate::{
     },
     interpreter::{instructions as instr, op},
 };
+
+#[cfg(feature = "account-ext")]
+use crate::bytecode::{
+    COLD_CODE_CHUNK_GAS, MAX_CODE_SIZE as TIP1143_MAX_CODE_SIZE,
+    MAX_INITCODE_SIZE as TIP1143_MAX_INITCODE_SIZE, WARM_CODE_CHUNK_GAS,
+};
 use alloy_eips::{eip4844::MAX_BLOBS_PER_BLOCK_DENCUN, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 
 mod gas_params;
@@ -91,6 +97,29 @@ impl Version {
         } else {
             (self.tx_gas_limit_cap, u64::MAX)
         }
+    }
+
+    /// Enables or disables the unscheduled TIP-1143 execution features.
+    ///
+    /// Enabling installs the protocol's code limits and chunk tariffs. Callers may apply
+    /// deliberate custom-chain overrides after this method.
+    #[cfg(feature = "account-ext")]
+    pub const fn with_tip1143(mut self, enabled: bool) -> Self {
+        self.features.set(EvmFeatures::TIP1143, enabled);
+        self.features.set(EvmFeatures::RJUMP, enabled);
+        if enabled {
+            self.max_code_size = TIP1143_MAX_CODE_SIZE;
+            self.max_initcode_size = TIP1143_MAX_INITCODE_SIZE;
+            self.gas_params.set(GasId::ColdCodeChunkCost, COLD_CODE_CHUNK_GAS as u32);
+            self.gas_params.set(GasId::WarmCodeChunkCost, WARM_CODE_CHUNK_GAS as u32);
+        }
+        self
+    }
+
+    /// Enables or disables unscheduled relative jump opcodes independently of TIP-1143.
+    pub const fn with_rjump(mut self, enabled: bool) -> Self {
+        self.features.set(EvmFeatures::RJUMP, enabled);
+        self
     }
 }
 
@@ -229,6 +258,9 @@ macro_rules! evm_versions {
 
             let spec_id = Cfg::BASE_SPEC_ID;
             let mut v = OpcodeConfig::empty();
+            // Runtime-gated by RJUMP. Inactive execution retains OpcodeNotFound.
+            v.set_instruction::<instr::rjump<T>>(op::RJUMP, 0);
+            v.set_instruction::<instr::rjumpi<T>>(op::RJUMPI, 0);
 
             $(
                 if spec_id.enables(SpecId::$spec) {

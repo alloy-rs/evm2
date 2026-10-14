@@ -260,7 +260,7 @@ impl core::fmt::Display for Bal {
             } else {
                 writeln!(f, "    Code writes:")?;
                 for change in &account.account_info.code.changes {
-                    let (code_hash, bytecode) = &change.code;
+                    let (code_hash, bytecode, _) = &change.code;
                     writeln!(
                         f,
                         "      [{}] -> hash: {:?}, size: {} bytes",
@@ -351,8 +351,14 @@ mod tests {
                 },
                 code: BalChanges {
                     changes: vec![
-                        BalCodeChange::new(idx(7), code(7)),
-                        BalCodeChange::new(idx(3), code(3)),
+                        BalCodeChange::new(idx(7), {
+                            let (hash, code) = code(7);
+                            (hash, code, None)
+                        }),
+                        BalCodeChange::new(idx(3), {
+                            let (hash, code) = code(3);
+                            (hash, code, None)
+                        }),
                     ],
                 },
             },
@@ -540,7 +546,7 @@ mod tests {
 
         let bal = Bal::try_from(alloy_bal).unwrap();
         let account = bal.accounts.get(&address).unwrap();
-        let (_, bytecode) = &account.account_info.code.changes[0].code;
+        let (_, bytecode, _) = &account.account_info.code.changes[0].code;
 
         assert_eq!(bytecode.original_bytes(), code_bytes);
     }

@@ -391,7 +391,7 @@ fn with_evm_context_and_host_mut<
         modify_message(&mut message);
     }
     let message = Message::<BaseEvmTypes> {
-        code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
+        code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)).into(),
         ..message
     };
     let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
@@ -508,7 +508,7 @@ fn run_compiled_test_case_with_context(
     }
     message.caller_is_static = is_static;
     let message = Message::<BaseEvmTypes> {
-        code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
+        code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)).into(),
         ..message
     };
     let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);

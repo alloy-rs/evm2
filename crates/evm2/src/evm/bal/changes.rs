@@ -1,7 +1,7 @@
 //! BAL change types and the per-item change list.
 
 use super::BlockAccessIndex;
-use crate::bytecode::{Bytecode, BytecodeDecodeError};
+use crate::bytecode::{Bytecode, BytecodeDecodeError, CodeMetadata};
 use alloc::vec::Vec;
 use alloy_eip7928::{BalanceChange, CodeChange as AlloyCodeChange, NonceChange, StorageChange};
 use alloy_primitives::{B256, U256};
@@ -97,19 +97,22 @@ impl BalChange for StorageChange {
 pub struct BalCodeChange {
     /// The [`BlockAccessIndex`] at which the code changed.
     pub block_access_index: BlockAccessIndex,
-    /// The post-state code hash and decoded bytecode.
-    pub code: (B256, Bytecode),
+    /// The post-state code hash, decoded bytecode, and optional chunk commitments.
+    pub code: (B256, Bytecode, Option<CodeMetadata>),
 }
 
 impl BalCodeChange {
     /// Create a new code change.
-    pub const fn new(block_access_index: BlockAccessIndex, code: (B256, Bytecode)) -> Self {
+    pub const fn new(
+        block_access_index: BlockAccessIndex,
+        code: (B256, Bytecode, Option<CodeMetadata>),
+    ) -> Self {
         Self { block_access_index, code }
     }
 }
 
 impl BalChange for BalCodeChange {
-    type Value = (B256, Bytecode);
+    type Value = (B256, Bytecode, Option<CodeMetadata>);
 
     fn new(index: BlockAccessIndex, value: Self::Value) -> Self {
         Self { block_access_index: index, code: value }
@@ -134,7 +137,7 @@ impl TryFrom<&AlloyCodeChange> for BalCodeChange {
     fn try_from(change: &AlloyCodeChange) -> Result<Self, Self::Error> {
         let bytecode = Bytecode::new_raw_checked(change.new_code().clone())?;
         let hash = bytecode.hash_slow();
-        Ok(Self { block_access_index: change.block_access_index, code: (hash, bytecode) })
+        Ok(Self { block_access_index: change.block_access_index, code: (hash, bytecode, None) })
     }
 }
 

@@ -1,5 +1,6 @@
 use crate::{
     EvmTypesHost,
+    bytecode::LEGACY_CODE_CHUNK_SIZE,
     evm::AccountLoad,
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{
@@ -7,6 +8,7 @@ use crate::{
     },
     version::GasParams,
 };
+use alloc::vec::Vec;
 use alloy_primitives::B256;
 use evm2_macros::instruction;
 
@@ -101,7 +103,7 @@ pub fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result 
 
 #[instruction]
 pub fn codesize(cx: _) -> out {
-    *out = Word::from(cx.state.0.bytecode.len());
+    *out = Word::from(cx.state.code_size());
 }
 
 #[instruction(dynamic_gas)]
@@ -110,7 +112,20 @@ pub fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
     // SAFETY: Charging and copying data make no host calls.
     let gas_params = unsafe { cx.state.gas_params_detached() };
     cx.gas.spend(gas_params.copy_cost(len))?;
-    let data = cx.state.0.bytecode.original_byte_slice();
+    if cx.state.is_account_code() {
+        if len == 0 {
+            return Ok(());
+        }
+        let offset = word_to_usize(*memory_offset)?;
+        cx.state.resize_memory(cx.gas, offset, len)?;
+        let owner = cx.state.message().code_address;
+        let size = cx.state.code_size();
+        let multi = cx.state.active_chunk().chunked().is_some();
+        let bytes = cx.state.load_code_range(cx.gas, owner, *code_offset, len, size, multi)?;
+        cx.state.0.memory.set_data(offset, 0, len, &bytes);
+        return Ok(());
+    }
+    let data = cx.state.0.code.active().as_bytecode().original_byte_slice();
     copy_data(cx.gas, &mut cx.state.0.memory, gas_params, memory_offset, code_offset, len, data)
 }
 
@@ -121,7 +136,24 @@ pub fn gasprice(cx: _) -> out {
 
 #[instruction(dynamic_gas)]
 pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
-    *out = Word::from(load_account(&mut cx, *addr, true)?.code.len());
+    let tip1143 = cx.state.feature(crate::EvmFeatures::TIP1143);
+    let account = load_account(&mut cx, *addr, !tip1143)?;
+
+    let size = if !tip1143 {
+        account.code.len()
+    } else {
+        match account.code_info {
+            crate::evm::AccountCodeInfo::Empty => 0,
+            crate::evm::AccountCodeInfo::Chunked { size } => size as usize,
+            crate::evm::AccountCodeInfo::Legacy { .. } => {
+                let code_owner = word_to_address(*addr);
+                cx.state
+                    .load_and_charge_code_chunk(cx.gas, &code_owner, 0, account.code_info.size())?
+                    .payload_len()
+            }
+        }
+    };
+    *out = Word::from(size);
 }
 
 #[instruction(dynamic_gas)]
@@ -141,7 +173,33 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
     } else {
         0
     };
-    let code = load_account(&mut cx, *addr, true)?.code;
+    let tip1143 = cx.state.feature(crate::EvmFeatures::TIP1143);
+    let account = load_account(&mut cx, *addr, !tip1143)?;
+
+    if tip1143 {
+        let bytes = match account.code_info {
+            crate::evm::AccountCodeInfo::Empty => Vec::new(),
+            crate::evm::AccountCodeInfo::Legacy { size } => cx.state.load_code_range(
+                cx.gas,
+                word_to_address(*addr),
+                *code_offset,
+                len,
+                size.map_or(LEGACY_CODE_CHUNK_SIZE, |size| size as usize),
+                false,
+            )?,
+            crate::evm::AccountCodeInfo::Chunked { size } => cx.state.load_code_range(
+                cx.gas,
+                word_to_address(*addr),
+                *code_offset,
+                len,
+                size as usize,
+                true,
+            )?,
+        };
+        cx.state.0.memory.set_data(memory_offset, 0, len, &bytes);
+        return Ok(());
+    }
+    let code = account.code;
     cx.state.0.memory.set_data(
         memory_offset,
         word_to_usize_saturated(*code_offset),

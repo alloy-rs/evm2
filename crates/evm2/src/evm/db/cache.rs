@@ -3,7 +3,7 @@
 use super::{DbResult, DynDatabase, EmptyDB};
 use crate::{
     DatabaseError,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, LEGACY_CODE_CHUNK_SIZE},
     evm::{
         bal::BalContext,
         state::{
@@ -79,6 +79,23 @@ impl Cache {
                 target.wipe();
             }
             target.slots.extend(storage.slots);
+        }
+    }
+
+    /// Publishes resident deployment or ingestion output with its chunk lookup entries.
+    /// The caller supplies validated bytes and their complete-code identity.
+    pub fn insert_code(&mut self, code_hash: B256, code: &Bytecode) {
+        self.contracts.insert(code_hash, code.clone());
+    }
+
+    fn insert_chunks(contracts: &mut B256Map<Bytecode>, code: &Bytecode) {
+        if code.len() > LEGACY_CODE_CHUNK_SIZE {
+            let bytes = code.original_bytes();
+            if let Ok(Some((metadata, prepared))) = crate::bytecode::prepare_code_chunks(&bytes) {
+                for (hash, chunk) in metadata.chunk_hashes().iter().copied().zip(prepared) {
+                    contracts.insert(hash, chunk.bytecode());
+                }
+            }
         }
     }
 }
@@ -173,7 +190,7 @@ impl<ExtDB> CacheDB<ExtDB> {
             }
 
             if let Some((code_hash, code)) = entry.changed_code() {
-                self.cache.contracts.insert(code_hash, code.clone());
+                self.cache.insert_code(code_hash, code);
             }
             if !entry.is_changed() {
                 continue;
@@ -203,6 +220,9 @@ impl<ExtDB> CacheDB<ExtDB> {
                 info.code_hash = code.hash_slow();
             }
             contracts.entry(info.code_hash).or_insert_with(|| code.clone());
+            if info.code_metadata().is_some() {
+                Cache::insert_chunks(contracts, code);
+            }
         }
         if info.code_hash.is_zero() {
             info.code_hash = KECCAK256_EMPTY;
@@ -212,6 +232,9 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// Inserts account info.
     #[inline]
     pub fn insert_account_info(&mut self, address: &Address, mut info: AccountInfo) {
+        if info.code_metadata().is_some() && info.code.is_none() {
+            info.code = self.cache.contracts.get(&info.code_hash).cloned();
+        }
         self.insert_contract(&mut info);
         info.code = None;
         self.cache.accounts.insert(*address, Some(info));
@@ -245,7 +268,14 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     #[inline]
     fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
         self.bal_context.bytecode(code_hash, code)?;
-        self.cache.contracts.insert(code_hash, code.clone());
+        self.cache.insert_code(code_hash, code);
+        Ok(())
+    }
+
+    #[inline]
+    fn code_chunk(&mut self, chunk_hash: B256, chunk: &Bytecode) -> Result<(), Self::Error> {
+        self.bal_context.code_chunk(chunk_hash, chunk)?;
+        self.cache.insert_code(chunk_hash, chunk);
         Ok(())
     }
 

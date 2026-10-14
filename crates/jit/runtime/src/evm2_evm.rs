@@ -2,7 +2,7 @@
 
 use crate::runtime::{JitBackend, LookupDecision, LookupRequest, RuntimeCacheKey};
 use evm2::{
-    BaseEvmTypes, Evm, InterpreterRunner,
+    BaseEvmTypes, Evm, EvmFeatures, InterpreterRunner,
     interpreter::{Host, InstrStop, Interpreter},
 };
 
@@ -47,8 +47,9 @@ pub fn run_interpreter<'frame, 'host>(
     interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
     host: &mut Evm<'host, BaseEvmTypes>,
 ) -> Option<InstrStop> {
-    // Disabled runners must not hash code merely to discover that lookup is unavailable.
-    if !backend.enabled() {
+    // JIT builtins do not implement chunk loading or relative jumps.
+    if !backend.enabled() || host.feature(EvmFeatures::TIP1143) || host.feature(EvmFeatures::RJUMP)
+    {
         return None;
     }
     let code_hash = interpreter.original_bytecode_hash();
@@ -208,7 +209,7 @@ mod tests {
         let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 1_000_000,
-            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            code: (Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))).into(),
             ..Default::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
@@ -264,7 +265,7 @@ mod tests {
         let message = MessageExt {
             gas_limit: 1_000_000,
             destination: caller,
-            code: Bytecode::new_legacy(code.into()),
+            code: (Bytecode::new_legacy(code.into())).into(),
             ..MessageExt::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
@@ -322,7 +323,7 @@ mod tests {
         let message = MessageExt {
             gas_limit: 1_000_000,
             destination: creator,
-            code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            code: (Bytecode::new_legacy(Bytes::copy_from_slice(&code))).into(),
             ..MessageExt::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
@@ -383,7 +384,7 @@ mod tests {
             gas_limit: 1_000_000,
             destination: caller,
             value: Word::from(30),
-            code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            code: (Bytecode::new_legacy(Bytes::copy_from_slice(&code))).into(),
             ..MessageExt::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
@@ -453,7 +454,7 @@ mod tests {
             gas_limit: 1_000_000,
             destination: caller,
             value: Word::from(30),
-            code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            code: (Bytecode::new_legacy(Bytes::copy_from_slice(&code))).into(),
             ..MessageExt::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
@@ -479,7 +480,7 @@ mod tests {
             caller,
             input: Bytes::copy_from_slice(&input),
             value: Word::from(10),
-            code: Bytecode::new_legacy(Bytes::copy_from_slice(&outer_code)),
+            code: (Bytecode::new_legacy(Bytes::copy_from_slice(&outer_code))).into(),
             code_address: outer,
             ..MessageExt::default()
         };

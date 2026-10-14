@@ -205,9 +205,13 @@ impl AccountInfoBal {
             account.balance = *balance;
             changed = true;
         }
-        if let Some((code_hash, code)) = self.code.get(bal_index) {
+        if let Some((code_hash, code, _metadata)) = self.code.get(bal_index) {
             account.code_hash = *code_hash;
             account.code = Some(code.clone());
+            #[cfg(feature = "account-ext")]
+            {
+                account.chunks = _metadata.clone();
+            }
             changed = true;
         }
         changed
@@ -225,12 +229,21 @@ impl AccountInfoBal {
     ) {
         self.nonce.update(index, &original.nonce, present.nonce);
         self.balance.update(index, &original.balance, present.balance);
-        if original.code_hash != present.code_hash {
-            self.code.update_with_key(
+        if original.code_hash != present.code_hash
+            || original.code_metadata() != present.code_metadata()
+        {
+            self.code.update(
                 index,
-                &original.code_hash,
-                (present.code_hash, present.code.clone().unwrap_or_default()),
-                |i| &i.0,
+                &(
+                    original.code_hash,
+                    original.code.clone().unwrap_or_default(),
+                    original.code_metadata().cloned(),
+                ),
+                (
+                    present.code_hash,
+                    present.code.clone().unwrap_or_default(),
+                    present.code_metadata().cloned(),
+                ),
             );
         }
     }
@@ -269,7 +282,7 @@ impl AccountInfoBal {
         code_hash: B256,
         code: Bytecode,
     ) {
-        self.code.update_with_key(bal_index, original_code_hash, (code_hash, code), |i| &i.0);
+        self.code.update_with_key(bal_index, original_code_hash, (code_hash, code, None), |i| &i.0);
     }
 }
 

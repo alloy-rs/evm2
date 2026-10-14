@@ -174,7 +174,9 @@ const fn make_map<const BASE_SPEC_ID: u32>() -> [OpcodeInfo; 256] {
         let op = i as u8;
 
         // Skip opcodes not defined in the opcode table.
-        if OpCode::new(op).is_none() {
+        // TIP-1143 execution is routed through the interpreter. Preserve unknown-opcode
+        // behavior for RJUMP/RJUMPI in ordinary JIT/AOT frames.
+        if matches!(op, op::RJUMP | op::RJUMPI) || OpCode::new(op).is_none() {
             i += 1;
             continue;
         }

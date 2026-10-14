@@ -1,6 +1,6 @@
 //! Borrowed state-change streaming traits and adapters.
 
-use super::{AccountInfo, StorageOverlay};
+use super::{AccountInfo, CodeChunkSlot, StorageOverlay};
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256};
 use auto_impl::auto_impl;
@@ -47,6 +47,8 @@ pub struct AccountChanges<'a> {
     pub code: Option<(B256, &'a Bytecode)>,
     /// The account's loaded storage slots and wipe marker.
     pub storage: &'a StorageOverlay,
+    /// Cached runtime chunks associated with the account's current code.
+    pub(crate) code_chunks: &'a [CodeChunkSlot],
 }
 
 impl<'a> AccountChanges<'a> {
@@ -68,6 +70,29 @@ impl<'a> AccountChanges<'a> {
     pub fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
         if let Some((code_hash, code)) = self.code {
             sink.bytecode(code_hash, code)?;
+            if let Some(metadata) = self.current.and_then(AccountInfo::code_metadata) {
+                let cached = self.code_chunks.len() == metadata.chunk_count()
+                    && self.code_chunks.iter().all(|slot| slot.bytecode.is_some());
+                if cached {
+                    for (chunk_hash, slot) in
+                        metadata.chunk_hashes().iter().copied().zip(self.code_chunks)
+                    {
+                        sink.code_chunk(
+                            chunk_hash,
+                            slot.bytecode.as_ref().expect("checked cached chunk"),
+                        )?;
+                    }
+                } else if let Ok(Some((prepared, chunks))) =
+                    crate::bytecode::prepare_code_chunks(&code.original_bytes())
+                    && &prepared == metadata
+                {
+                    for (chunk_hash, chunk) in
+                        metadata.chunk_hashes().iter().copied().zip(chunks.iter())
+                    {
+                        sink.code_chunk(chunk_hash, chunk.as_bytecode())?;
+                    }
+                }
+            }
         }
         let address = self.address;
         let storage = self.storage;
@@ -123,6 +148,12 @@ pub trait StateChangeSink {
     /// Observes bytecode keyed by code hash.
     #[inline]
     fn bytecode(&mut self, _code_hash: B256, _code: &Bytecode) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Observes a prepared code chunk keyed by its commitment hash.
+    #[inline]
+    fn code_chunk(&mut self, _chunk_hash: B256, _chunk: &Bytecode) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -218,6 +249,12 @@ where
     fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
         self.a.bytecode(code_hash, code)?;
         self.b.bytecode(code_hash, code)
+    }
+
+    #[inline]
+    fn code_chunk(&mut self, chunk_hash: B256, chunk: &Bytecode) -> Result<(), Self::Error> {
+        self.a.code_chunk(chunk_hash, chunk)?;
+        self.b.code_chunk(chunk_hash, chunk)
     }
 
     #[inline]

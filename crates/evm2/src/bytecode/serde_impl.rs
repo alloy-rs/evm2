@@ -1,9 +1,10 @@
-use super::Bytecode;
+use super::{Bytecode, BytecodeKind};
 use alloy_primitives::{Address, Bytes};
 use core::fmt;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{Error, Visitor},
+    ser::{Error as _, SerializeStruct},
 };
 
 // TODO: eventually remove `BytecodeSerdeOld`.
@@ -11,6 +12,7 @@ use serde::{
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum BytecodeSerde {
+    Chunk { chunk: Bytes },
     New(Bytes),
     Old(BytecodeSerdeOld),
 }
@@ -24,8 +26,17 @@ enum BytecodeSerdeOld {
 impl Serialize for Bytecode {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if serializer.is_human_readable() {
-            self.original_bytes().serialize(serializer)
+            if matches!(self.kind(), BytecodeKind::Chunk(_)) {
+                let mut record = serializer.serialize_struct("Bytecode", 1)?;
+                record.serialize_field("chunk", &self.original_bytes())?;
+                record.end()
+            } else {
+                self.original_bytes().serialize(serializer)
+            }
         } else {
+            if matches!(self.kind(), BytecodeKind::Chunk(_)) {
+                return Err(S::Error::custom("binary chunk bytecode requires explicit decoding"));
+            }
             serializer.serialize_bytes(self.original_byte_slice())
         }
     }
@@ -35,6 +46,7 @@ impl<'de> Deserialize<'de> for Bytecode {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
             match BytecodeSerde::deserialize(deserializer)? {
+                BytecodeSerde::Chunk { chunk } => Self::new_chunk(chunk).map_err(D::Error::custom),
                 BytecodeSerde::New(bytes) => Ok(from_original_bytes(bytes)),
                 BytecodeSerde::Old(bytecode_serde_old) => match bytecode_serde_old {
                     BytecodeSerdeOld::LegacyAnalyzed { bytecode, original_len } => {
@@ -81,7 +93,10 @@ fn from_original_bytes(bytes: Bytes) -> Bytecode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytecode::BytecodeKind;
+    use crate::{
+        bytecode::{CODE_CHUNK_SIZE, LEGACY_CODE_CHUNK_SIZE, code_chunk},
+        interpreter::op,
+    };
     use alloy_primitives::hex;
 
     #[test]
@@ -191,6 +206,32 @@ mod tests {
             assert!(restored.inner().jump_table.get().is_none());
             assert!(restored.legacy_jump_table().unwrap().is_valid(0));
             assert!(!restored.legacy_jump_table().unwrap().is_valid(1));
+        }
+    }
+
+    #[test]
+    fn serde_preserves_chunk_kind_and_lazy_offset_analysis() {
+        let mut raw = alloc::vec![op::JUMPDEST; LEGACY_CODE_CHUNK_SIZE + 1];
+        raw[CODE_CHUNK_SIZE - 1] = op::PUSH2;
+        let chunk = code_chunk(&raw.into(), 1).unwrap().bytecode();
+        for bytecode in [chunk.clone(), Bytecode::new_legacy(chunk.original_bytes())] {
+            let json = serde_json::to_string(&bytecode).unwrap();
+            assert!(bytecode.inner().jump_table.get().is_none());
+            let mut restored = alloc::vec![serde_json::from_str::<Bytecode>(&json).unwrap()];
+            if bytecode.is_legacy() {
+                let binary = postcard::to_allocvec(&bytecode).unwrap();
+                restored.push(postcard::from_bytes::<Bytecode>(&binary).unwrap());
+            } else {
+                assert!(postcard::to_allocvec(&bytecode).is_err());
+            }
+            for restored in restored {
+                assert_eq!(restored.kind(), bytecode.kind());
+                assert_eq!(restored.original_byte_slice(), bytecode.original_byte_slice());
+                assert!(restored.inner().jump_table.get().is_none());
+                assert_eq!(restored.jump_table(), bytecode.jump_table());
+                assert_eq!(restored.jump_table().is_valid(0), bytecode.is_legacy());
+                assert!(restored.jump_table().is_valid(2));
+            }
         }
     }
 }

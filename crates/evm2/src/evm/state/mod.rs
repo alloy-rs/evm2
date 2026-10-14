@@ -2,8 +2,8 @@
 
 mod account;
 mod block;
-#[cfg(feature = "account-ext")]
-mod extension;
+mod code_chunks;
+pub use code_chunks::CodeChunkHandle;
 mod journal;
 mod pending;
 mod storage;
@@ -11,11 +11,9 @@ mod storage_pool;
 mod stream;
 mod tracked;
 
-pub(crate) use account::Account;
+pub(crate) use account::{Account, CodeChunkSlot, CodeIdentity};
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
-#[cfg(feature = "account-ext")]
-pub use extension::AccountExtension;
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use pending::PendingState;
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
@@ -24,6 +22,11 @@ pub use stream::{
     StorageChange, Tee,
 };
 pub use tracked::Tracked;
+
+#[cfg(feature = "account-ext")]
+mod extension;
+#[cfg(feature = "account-ext")]
+pub use extension::AccountExtension;
 
 use super::{
     PrewarmSet,
@@ -417,7 +420,7 @@ impl<'a> State<'a> {
             accounts,
             storage_pool,
             transient_storage,
-            inner: StateInner { prewarm_set, journal, selfdestructs, logs, database: _ },
+            inner: StateInner { prewarm_set, journal, selfdestructs, logs, .. },
             ..
         } = self;
         for account in accounts.values_mut() {
@@ -643,15 +646,17 @@ impl<'a> State<'a> {
         let balance = target.balance().wrapping_add(*value);
         #[cfg(feature = "account-ext")]
         let extension = target.get().map(|info| info.extension.clone()).unwrap_or_default();
-        *target.get_or_insert() = AccountInfo {
+        target.set_info(AccountInfo {
             nonce: u64::from(features.contains(EvmFeatures::EIP161)),
             balance,
             code_hash: KECCAK256_EMPTY,
+            #[cfg(feature = "account-ext")]
+            chunks: None,
             code: Some(Bytecode::default()),
             _non_exhaustive: (),
             #[cfg(feature = "account-ext")]
             extension,
-        };
+        });
         target.mark_created();
         target.touch();
         Ok(Ok(()))
@@ -737,6 +742,9 @@ impl<'a> State<'a> {
                     previous_is_destroyed,
                     previous_just_created,
                     previous_code_changed,
+                    previous_code_hash,
+                    previous_code_metadata,
+                    previous_code_warmth,
                 } => {
                     // Reconcile the self-destruct set with the restored destroyed flag.
                     let was_destroyed =
@@ -758,6 +766,35 @@ impl<'a> State<'a> {
                         entry.is_destroyed = previous_is_destroyed;
                         entry.just_created = previous_just_created;
                         entry.code_changed = previous_code_changed;
+                        let previous_code_identity = previous_code_hash.map(|code_hash| {
+                            CodeIdentity { code_hash, metadata: previous_code_metadata }
+                        });
+                        if entry.code_chunks.identity == previous_code_identity {
+                            entry
+                                .code_chunks
+                                .slots
+                                .resize_with(previous_code_warmth.len(), CodeChunkSlot::default);
+                            for (slot, is_warm) in
+                                entry.code_chunks.slots.iter_mut().zip(previous_code_warmth)
+                            {
+                                slot.is_warm = is_warm;
+                            }
+                        } else {
+                            entry.code_chunks.identity = previous_code_identity;
+                            entry.code_chunks.slots = previous_code_warmth
+                                .into_iter()
+                                .map(|is_warm| CodeChunkSlot { bytecode: None, is_warm })
+                                .collect();
+                        }
+                    }
+                }
+                JournalEntry::CodeChunkWarmed { address, index } => {
+                    if let Some(warm) = self
+                        .accounts
+                        .get_mut(&address)
+                        .and_then(|account| account.code_chunks.slots.get_mut(index as usize))
+                    {
+                        warm.is_warm = false;
                     }
                 }
                 JournalEntry::StorageChange { address, key, previous } => {
