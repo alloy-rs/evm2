@@ -26,16 +26,21 @@ Examples:
 
     # Only codegen line counts:
     ./scripts/jit/bench.py /tmp/bench --diff main --codegen-lines
+
+    # More compile-cost samples:
+    ./scripts/jit/bench.py /tmp/bench --diff main --runs 5
 """
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
-import tempfile
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 
 from tabulate import tabulate
 from tqdm import tqdm
@@ -44,9 +49,11 @@ from utils import (
     cargo_env,
     eprint,
     get_benches,
+    perf_available,
     repo_root,
     run_cli,
     strip_ansi,
+    time_cli,
 )
 
 # ---------------------------------------------------------------------------
@@ -120,13 +127,24 @@ def fmt_diff(base: int, current: int) -> str:
     return "=" if d == 0 else f"{d:+d}"
 
 
-def fmt_pct(base: float | int, current: float | int) -> str:
-    if base == 0:
-        return "-"
-    pct = (current - base) / base * 100
+def fmt_rel(pct: float) -> str:
     if round(pct, 1) == 0:
         return "="
     return f"{pct:+.1f}%{_indicator(pct)}"
+
+
+def fmt_pct(base: float | int, current: float | int) -> str:
+    if base == 0:
+        return "-"
+    return fmt_rel((current - base) / base * 100)
+
+
+def fmt_geomean(pairs: list[tuple[float, float]]) -> str:
+    """Geometric mean of the current/base ratios, so every benchmark weighs the same."""
+    ratios = [c / b for b, c in pairs if b > 0 and c > 0]
+    if not ratios:
+        return "-"
+    return fmt_rel((statistics.geometric_mean(ratios) - 1) * 100)
 
 
 def fmt_detail(current: str | int, base: str | int, diff: str) -> str:
@@ -149,6 +167,7 @@ def is_noise(base: float | int, current: float | int, noise: float) -> bool:
 # Rows where every change is within the threshold are dropped from the summary
 # (the `<details>` table still shows them).
 NOISE_CODEGEN = 1.0  # codegen line counts, jit size, spills, reloads
+NOISE_INSTRUCTIONS = 1.0  # retired instructions (~0.3% run-to-run variance)
 NOISE_TIME = 5.0  # compile times (high run-to-run variance)
 
 
@@ -162,6 +181,15 @@ def fmt_dur(s: float) -> str:
     if s < 1.0:
         return f"{s * 1e3:.1f}ms"
     return f"{s:.3f}s"
+
+
+def fmt_count(n: float) -> str:
+    if n == 0:
+        return "-"
+    for div, suffix in ((1e9, "G"), (1e6, "M"), (1e3, "K")):
+        if n >= div:
+            return f"{n / div:.2f}{suffix}"
+    return f"{n:.0f}"
 
 
 def fmt_size(b: int) -> str:
@@ -180,6 +208,20 @@ def line_count(path: str) -> int:
             return sum(1 for _ in f)
     except FileNotFoundError:
         return 0
+
+
+STRING_OFFSET_RE = re.compile(r"# string offset=\d+")
+
+
+def asm_digest(dump_dir: str, bench: str) -> str | None:
+    """Hash a benchmark's ``opt.s``, ignoring the dump path embedded in its debug info."""
+    try:
+        with open(os.path.join(dump_dir, dump_subdir(bench), "opt.s")) as f:
+            text = f.read()
+    except FileNotFoundError:
+        return None
+    text = STRING_OFFSET_RE.sub("", text.replace(dump_dir, "<dump>"))
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def spill_reload_counts(path: str) -> tuple[int, int]:
@@ -315,6 +357,20 @@ def parse_jit_size(dump_dir: str, bench: str) -> int:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class Side:
+    """Collected results for one revision."""
+
+    label: str
+    rev: str
+    binary: str
+    dump_dir: str
+    outputs: dict[str, str] = field(default_factory=dict)
+    failures: dict[str, str] = field(default_factory=dict)
+    # Compile-cost samples per bench: (instructions | None, seconds).
+    samples: dict[str, list[tuple[int | None, float]]] = field(default_factory=dict)
+
+
 class Analysis(ABC):
     """Base class for benchmark analyses."""
 
@@ -328,22 +384,102 @@ class Analysis(ABC):
         """RUST_LOG value needed, or None."""
         ...
 
+    def needs_timing(self) -> bool:
+        """Whether this analysis needs compile-cost samples."""
+        return False
+
     @abstractmethod
-    def report(self, benches: list[str], dump_dir: str, outputs: dict[str, str]):
-        """Print results. dump_dir has codegen artifacts, outputs has stdout per bench."""
+    def report(self, benches: list[str], side: Side):
+        """Print results for a single revision."""
         ...
 
-    def report_diff(
-        self,
-        benches: list[str],
-        dump_dir: str,
-        outputs: dict[str, str],
-        base_dump: str,
-        base_outputs: dict[str, str],
-        base_label: str,
-    ):
+    def report_diff(self, benches: list[str], cur: Side, base: Side):
         """Print diff results. Default falls back to solo report."""
-        self.report(benches, dump_dir, outputs)
+        self.report(benches, cur)
+
+
+def column_totals(rows: dict[str, dict], columns: list[str]) -> dict:
+    return {c: sum(r[c] for r in rows.values()) for c in columns}
+
+
+def print_solo(rows: dict[str, dict], columns: list[str], fmt):
+    """Print every row and a TOTAL row. ``fmt(column, value)`` formats a cell."""
+    totals = column_totals(rows, columns)
+    table = [[name, *(fmt(c, r[c]) for c in columns)] for name, r in rows.items()]
+    table.append(["**TOTAL**", *(f"**{fmt(c, totals[c])}**" for c in columns)])
+    print_table(["benchmark", *columns], table)
+
+
+def print_diff(
+    cur_rows: dict[str, dict],
+    base_rows: dict[str, dict],
+    columns: list[str],
+    fmt,
+    changed,
+    details: str,
+    summary_columns: list[str] | None = None,
+):
+    """Print a summary of changed rows with TOTAL and GEOMEAN, then every value in ``<details>``.
+
+    ``changed`` gets ``{column: (base, current)}`` and decides whether a row goes in the summary.
+    """
+    summary_columns = summary_columns or columns
+    cur_totals = column_totals(cur_rows, columns)
+    base_totals = column_totals(base_rows, columns)
+    empty = dict.fromkeys(columns, 0)
+    pairs = {
+        name: {c: (base_rows.get(name, empty)[c], r[c]) for c in columns}
+        for name, r in cur_rows.items()
+    }
+
+    table = [
+        [name, *(fmt_pct(*ps[c]) for c in summary_columns)]
+        for name, ps in pairs.items()
+        if changed(ps)
+    ]
+    table.append(
+        [
+            "**TOTAL**",
+            *(f"**{fmt_pct(base_totals[c], cur_totals[c])}**" for c in summary_columns),
+        ]
+    )
+    table.append(
+        [
+            "**GEOMEAN**",
+            *(f"**{fmt_geomean([ps[c] for ps in pairs.values()])}**" for c in summary_columns),
+        ]
+    )
+    print_table(["benchmark", *summary_columns], table)
+
+    def cell(c, b, v, detail=fmt_detail):
+        return detail(fmt(c, v), fmt(c, b), fmt_pct(b, v))
+
+    print(f"<details><summary>{details}</summary>\n")
+    detail_table = [[name, *(cell(c, *ps[c]) for c in columns)] for name, ps in pairs.items()]
+    detail_table.append(
+        [
+            "**TOTAL**",
+            *(cell(c, base_totals[c], cur_totals[c], fmt_detail_bold) for c in columns),
+        ]
+    )
+    print_table(["benchmark", *columns], detail_table)
+    print("</details>\n")
+
+
+CODEGEN_FILES = ["unopt.ll", "opt.ll", "opt.s"]
+CODEGEN_COLUMNS = [
+    *CODEGEN_FILES,
+    "jit size",
+    "i256 loads",
+    "i256 stores",
+    "mresize",
+    "spills",
+    "reloads",
+]
+
+
+def fmt_codegen(col: str, v: int) -> str | int:
+    return fmt_size(v) if col == "jit size" else v
 
 
 class CodegenLines(Analysis):
@@ -353,326 +489,125 @@ class CodegenLines(Analysis):
     def rust_log(self) -> str | None:
         return None
 
-    def _collect(self, benches, dump_dir):
-        """Collect line counts per file type + JIT size + i256 loads/stores + spills/reloads.
-
-        Each row is (name, [line_counts...], jit_size, i256_loads, i256_stores, mresize, spills, reloads).
-        """
-        FILES = ["unopt.ll", "opt.ll", "opt.s"]
-        rows = []
-        totals = [0] * len(FILES)
-        total_size = 0
-        total_i256_loads = 0
-        total_i256_stores = 0
-        total_mresize = 0
-        total_spills = 0
-        total_reloads = 0
+    def _collect(self, benches, dump_dir) -> dict[str, dict[str, int]]:
+        """Collect line counts per file type + JIT size + i256 loads/stores + spills/reloads."""
+        rows = {}
         for bench in benches:
-            sub = dump_subdir(bench)
-            counts = [line_count(os.path.join(dump_dir, sub, f)) for f in FILES]
+            sub = os.path.join(dump_dir, dump_subdir(bench))
+            counts = [line_count(os.path.join(sub, f)) for f in CODEGEN_FILES]
             if all(c == 0 for c in counts):
                 continue
-            jit_size = parse_jit_size(dump_dir, bench)
-            opt_ll = os.path.join(dump_dir, sub, "opt.ll")
+            opt_ll = os.path.join(sub, "opt.ll")
             i256_loads, i256_stores = i256_load_store_counts(opt_ll)
-            mresize = mresize_call_count(opt_ll)
-            spills, reloads = spill_reload_counts(os.path.join(dump_dir, sub, "opt.s"))
-            rows.append(
-                (
-                    bench_name(bench),
-                    counts,
-                    jit_size,
-                    i256_loads,
-                    i256_stores,
-                    mresize,
-                    spills,
-                    reloads,
-                )
-            )
-            for i, c in enumerate(counts):
-                totals[i] += c
-            total_size += jit_size
-            total_i256_loads += i256_loads
-            total_i256_stores += i256_stores
-            total_mresize += mresize
-            total_spills += spills
-            total_reloads += reloads
-        return (
-            rows,
-            totals,
-            total_size,
-            total_i256_loads,
-            total_i256_stores,
-            total_mresize,
-            total_spills,
-            total_reloads,
-        )
+            spills, reloads = spill_reload_counts(os.path.join(sub, "opt.s"))
+            values = [
+                *counts,
+                parse_jit_size(dump_dir, bench),
+                i256_loads,
+                i256_stores,
+                mresize_call_count(opt_ll),
+                spills,
+                reloads,
+            ]
+            rows[bench_name(bench)] = dict(zip(CODEGEN_COLUMNS, values))
+        return rows
 
-    def report(self, benches, dump_dir, outputs):
-        (
-            rows,
-            totals,
-            total_size,
-            total_i256_ld,
-            total_i256_st,
-            total_mresize,
-            total_spills,
-            total_reloads,
-        ) = self._collect(benches, dump_dir)
+    def report(self, benches, side):
         print("### Codegen statistics\n")
-        table = [
-            [name, *counts, fmt_size(jit_size), i256_ld, i256_st, mresize, spills, reloads]
-            for name, counts, jit_size, i256_ld, i256_st, mresize, spills, reloads in rows
-        ]
-        table.append(
-            [
-                "**TOTAL**",
-                *[f"**{t}**" for t in totals],
-                f"**{fmt_size(total_size)}**",
-                f"**{total_i256_ld}**",
-                f"**{total_i256_st}**",
-                f"**{total_mresize}**",
-                f"**{total_spills}**",
-                f"**{total_reloads}**",
-            ]
-        )
-        print_table(
-            [
-                "benchmark",
-                "unopt.ll",
-                "opt.ll",
-                "opt.s",
-                "jit size",
-                "i256 loads",
-                "i256 stores",
-                "mresize",
-                "spills",
-                "reloads",
-            ],
-            table,
-        )
+        print_solo(self._collect(benches, side.dump_dir), CODEGEN_COLUMNS, fmt_codegen)
 
-    def report_diff(
-        self, benches, dump_dir, outputs, base_dump, base_outputs, base_label
-    ):
-        cur_rows, cur_totals, cur_total_size, cur_tld, cur_tst, cur_tmresize, cur_tsp, cur_trl = (
-            self._collect(benches, dump_dir)
-        )
-        (
-            base_rows,
-            base_totals,
-            base_total_size,
-            base_tld,
-            base_tst,
-            base_tmresize,
-            base_tsp,
-            base_trl,
-        ) = self._collect(benches, base_dump)
-        base_map = {
-            name: (counts, jit_size, i256_ld, i256_st, mresize, spills, reloads)
-            for name, counts, jit_size, i256_ld, i256_st, mresize, spills, reloads in base_rows
-        }
-
-        # Summary table.
+    def report_diff(self, benches, cur, base):
         print("### Codegen statistics\n")
-        headers = [
-            "benchmark",
-            "unopt.ll",
-            "opt.ll",
-            "opt.s",
-            "jit size",
-            "i256 loads",
-            "i256 stores",
-            "mresize",
-            "spills",
-            "reloads",
-        ]
-        table = []
-        n = NOISE_CODEGEN
-        for name, counts, jit_size, i256_ld, i256_st, mresize, spills, reloads in cur_rows:
-            base_counts, base_jit, base_ld, base_st, base_mresize, base_sp, base_rl = base_map.get(
-                name, ([0] * 3, 0, 0, 0, 0, 0, 0)
-            )
-            pairs = [
-                *list(zip(base_counts, counts)),
-                (base_jit, jit_size),
-                (base_ld, i256_ld),
-                (base_st, i256_st),
-                (base_mresize, mresize),
-                (base_sp, spills),
-                (base_rl, reloads),
-            ]
-            if all(is_noise(b, c, n) for b, c in pairs):
-                continue
-            table.append([name, *[fmt_pct(b, c) for b, c in pairs]])
-        table.append(
-            [
-                "**TOTAL**",
-                *[f"**{fmt_pct(b, c)}**" for b, c in zip(base_totals, cur_totals)],
-                f"**{fmt_pct(base_total_size, cur_total_size)}**",
-                f"**{fmt_pct(base_tld, cur_tld)}**",
-                f"**{fmt_pct(base_tst, cur_tst)}**",
-                f"**{fmt_pct(base_tmresize, cur_tmresize)}**",
-                f"**{fmt_pct(base_tsp, cur_tsp)}**",
-                f"**{fmt_pct(base_trl, cur_trl)}**",
-            ]
+        print(opt_s_identity(benches, cur, base))
+        print_diff(
+            self._collect(benches, cur.dump_dir),
+            self._collect(benches, base.dump_dir),
+            CODEGEN_COLUMNS,
+            fmt_codegen,
+            lambda ps: not all(is_noise(b, c, NOISE_CODEGEN) for b, c in ps.values()),
+            "Full details",
         )
-        print_table(headers, table)
-
-        # Detailed table.
-        print("<details><summary>Full details</summary>\n")
-        detail_headers = [
-            "benchmark",
-            "unopt.ll",
-            "opt.ll",
-            "opt.s",
-            "jit size",
-            "i256 loads",
-            "i256 stores",
-            "mresize",
-            "spills",
-            "reloads",
-        ]
-        detail_table = []
-        for name, counts, jit_size, i256_ld, i256_st, mresize, spills, reloads in cur_rows:
-            base_counts, base_jit, base_ld, base_st, base_mresize, base_sp, base_rl = base_map.get(
-                name, ([0] * 3, 0, 0, 0, 0, 0, 0)
-            )
-            row = [name]
-            for b, c in zip(base_counts, counts):
-                row.append(fmt_detail(c, b, fmt_pct(b, c)))
-            row.append(
-                fmt_detail(fmt_size(jit_size), fmt_size(base_jit), fmt_pct(base_jit, jit_size))
-            )
-            row.append(fmt_detail(i256_ld, base_ld, fmt_pct(base_ld, i256_ld)))
-            row.append(fmt_detail(i256_st, base_st, fmt_pct(base_st, i256_st)))
-            row.append(fmt_detail(mresize, base_mresize, fmt_pct(base_mresize, mresize)))
-            row.append(fmt_detail(spills, base_sp, fmt_pct(base_sp, spills)))
-            row.append(fmt_detail(reloads, base_rl, fmt_pct(base_rl, reloads)))
-            detail_table.append(row)
-        total_row = ["**TOTAL**"]
-        for b, c in zip(base_totals, cur_totals):
-            total_row.append(fmt_detail_bold(c, b, fmt_pct(b, c)))
-        total_row.append(
-            fmt_detail_bold(
-                fmt_size(cur_total_size),
-                fmt_size(base_total_size),
-                fmt_pct(base_total_size, cur_total_size),
-            )
-        )
-        total_row.append(fmt_detail_bold(cur_tld, base_tld, fmt_pct(base_tld, cur_tld)))
-        total_row.append(fmt_detail_bold(cur_tst, base_tst, fmt_pct(base_tst, cur_tst)))
-        total_row.append(fmt_detail_bold(cur_tmresize, base_tmresize, fmt_pct(base_tmresize, cur_tmresize)))
-        total_row.append(fmt_detail_bold(cur_tsp, base_tsp, fmt_pct(base_tsp, cur_tsp)))
-        total_row.append(fmt_detail_bold(cur_trl, base_trl, fmt_pct(base_trl, cur_trl)))
-        detail_table.append(total_row)
-        print_table(detail_headers, detail_table)
-        print("</details>\n")
 
 
-PHASES = ["parse", "translate", "finalize", "codegen"]
+def opt_s_identity(benches: list[str], cur: Side, base: Side) -> str:
+    """Summarize how many benchmarks produced identical `opt.s` on both sides."""
+    compared = changed = 0
+    for bench in benches:
+        c = asm_digest(cur.dump_dir, bench)
+        b = asm_digest(base.dump_dir, bench)
+        if c is None or b is None:
+            continue
+        compared += 1
+        changed += c != b
+    return f"`opt.s` changed in {changed}/{compared} benchmarks.\n"
+
+
+PHASES = ["parse", "translate", "optimize", "codegen"]
+SUMMARY_TIME_KEYS = ["instructions", "time"]
+TIME_KEYS = [*SUMMARY_TIME_KEYS, *PHASES]
+
+
+def fmt_time_key(key: str, v: float) -> str:
+    return fmt_count(v) if key == "instructions" else fmt_dur(v)
+
+
+def time_changed(ps: dict[str, tuple[float, float]]) -> bool:
+    # Instruction counts are stable enough to pick rows; time is the fallback.
+    b, c = ps["instructions"]
+    if b and c:
+        return not is_noise(b, c, NOISE_INSTRUCTIONS)
+    return not is_noise(*ps["time"], NOISE_TIME)
 
 
 class CompileTime(Analysis):
+    """Compile cost from ``evm2 run <bench> 0`` samples plus per-phase times from remarks.
+
+    ``instructions`` and ``time`` are medians over runs without dumps. They cover the
+    whole process: startup, fixture loading, and compiling every contract in the fixture.
+    Phase times come from the single dump run of the entry contract, so they are noisy and
+    only appear in the details table; ``finalize`` is left out because it includes writing
+    the IR and assembly dumps.
+    """
+
     def needs_codegen(self) -> bool:
         return True
 
     def rust_log(self) -> str | None:
         return None
 
-    def _collect(self, benches, dump_dir):
-        """Collect timing data, returns (rows, totals).
+    def needs_timing(self) -> bool:
+        return True
 
-        Each row is (name, {phase: dur}). totals is {phase: dur}.
-        """
-        keys = ["total"] + PHASES
-        rows = []
-        totals = {p: 0.0 for p in keys}
+    def _collect(self, benches, side) -> dict[str, dict[str, float]]:
+        rows = {}
         for bench in benches:
-            r = parse_remarks(dump_dir, bench)
-            if r.get("total", 0.0) == 0:
+            samples = side.samples.get(bench)
+            if not samples:
                 continue
-            rows.append((bench_name(bench), r))
-            for p in keys:
-                totals[p] += r.get(p, 0.0)
-        return rows, totals
+            remarks = parse_remarks(side.dump_dir, bench)
+            instructions = [i for i, _ in samples if i is not None]
+            rows[bench_name(bench)] = {
+                "instructions": statistics.median(instructions) if instructions else 0,
+                "time": statistics.median(t for _, t in samples),
+                **{p: remarks.get(p, 0.0) for p in PHASES},
+            }
+        return rows
 
-    def report(self, benches, dump_dir, outputs):
-        rows, totals = self._collect(benches, dump_dir)
+    def report(self, benches, side):
         print("### Compile times\n")
-        table = [
-            [
-                name,
-                fmt_dur(r.get("total", 0.0)),
-                *[fmt_dur(r.get(p, 0.0)) for p in PHASES],
-            ]
-            for name, r in rows
-        ]
-        table.append(["**TOTAL**", f"**{fmt_dur(totals['total'])}**", "", "", "", ""])
-        print_table(
-            ["benchmark", "total", "parse", "translate", "finalize", "codegen"], table
-        )
+        print_solo(self._collect(benches, side), TIME_KEYS, fmt_time_key)
 
-    def report_diff(
-        self, benches, dump_dir, outputs, base_dump, base_outputs, base_label
-    ):
-        cur_rows, cur_totals = self._collect(benches, dump_dir)
-        base_rows, base_totals = self._collect(benches, base_dump)
-        base_map = dict(base_rows)
-
-        keys = ["total"] + PHASES
-
-        # Summary table.
+    def report_diff(self, benches, cur, base):
         print("### Compile times\n")
-        table = []
-        n = NOISE_TIME
-        for name, cur in cur_rows:
-            base = base_map.get(name, {})
-            pairs = [(base.get(p, 0.0), cur.get(p, 0.0)) for p in keys]
-            if all(is_noise(b, c, n) for b, c in pairs):
-                continue
-            table.append([name, *[fmt_pct(b, c) for b, c in pairs]])
-        table.append(
-            [
-                "**TOTAL**",
-                *[f"**{fmt_pct(base_totals[p], cur_totals[p])}**" for p in keys],
-            ]
+        print_diff(
+            self._collect(benches, cur),
+            self._collect(benches, base),
+            TIME_KEYS,
+            fmt_time_key,
+            time_changed,
+            "Full compile times",
+            SUMMARY_TIME_KEYS,
         )
-        print_table(
-            ["benchmark", "total", "parse", "translate", "finalize", "codegen"], table
-        )
-
-        # Detailed table.
-        print("<details><summary>Full compile times</summary>\n")
-        detail_headers = ["benchmark", "total", *PHASES]
-        detail_table = []
-        for name, cur in cur_rows:
-            base = base_map.get(name, {})
-            bt, ct = base.get("total", 0.0), cur.get("total", 0.0)
-            row = [name, fmt_detail(fmt_dur(ct), fmt_dur(bt), fmt_pct(bt, ct))]
-            for phase in PHASES:
-                bp, cp = base.get(phase, 0.0), cur.get(phase, 0.0)
-                row.append(fmt_detail(fmt_dur(cp), fmt_dur(bp), fmt_pct(bp, cp)))
-            detail_table.append(row)
-        total_row = [
-            "**TOTAL**",
-            fmt_detail_bold(
-                fmt_dur(cur_totals["total"]),
-                fmt_dur(base_totals["total"]),
-                fmt_pct(base_totals["total"], cur_totals["total"]),
-            ),
-        ]
-        for phase in PHASES:
-            total_row.append(
-                fmt_detail_bold(
-                    fmt_dur(cur_totals[phase]),
-                    fmt_dur(base_totals[phase]),
-                    fmt_pct(base_totals[phase], cur_totals[phase]),
-                )
-            )
-        detail_table.append(total_row)
-        print_table(detail_headers, detail_table)
-        print("</details>\n")
 
 
 # ---------------------------------------------------------------------------
@@ -727,12 +662,12 @@ class JumpResolution(Analysis):
             "total": total,
         }
 
-    def report(self, benches, dump_dir, outputs):
+    def report(self, benches, side):
         print("### Jump resolution\n")
         headers = ["benchmark", "local", "nonadj", "pcr", "fixpt", "unres", "total"]
         table = []
         for bench in benches:
-            s = self._analyze(outputs.get(bench, ""))
+            s = self._analyze(side.outputs.get(bench, ""))
             table.append(
                 [
                     bench_name(bench),
@@ -800,35 +735,30 @@ class BlockStats(Analysis):
             "block_median": int(m.group(9)),
         }
 
-    def report(self, benches, dump_dir, outputs):
+    def report(self, benches, side):
         print("### IR stats\n")
         headers = ["benchmark"] + IR_STAT_KEYS
         table = []
         for bench in benches:
-            s = self._parse(outputs.get(bench, ""))
+            s = self._parse(side.outputs.get(bench, ""))
             if not s:
                 continue
             table.append([bench_name(bench)] + [s[k] for k in IR_STAT_KEYS])
         print_table(headers, table)
 
-    def report_diff(
-        self, benches, dump_dir, outputs, base_dump, base_outputs, base_label
-    ):
+    def report_diff(self, benches, cur_side, base_side):
         print("### IR stats\n")
         headers = ["benchmark"] + IR_STAT_KEYS
         table = []
         for bench in benches:
-            cur = self._parse(outputs.get(bench, ""))
-            base = self._parse(base_outputs.get(bench, ""))
+            cur = self._parse(cur_side.outputs.get(bench, ""))
+            base = self._parse(base_side.outputs.get(bench, ""))
             if not cur:
                 continue
             if not base:
                 table.append([bench_name(bench)] + [cur[k] for k in IR_STAT_KEYS])
             else:
-                table.append(
-                    [bench_name(bench)]
-                    + [fmt_pct(base[k], cur[k]) for k in IR_STAT_KEYS]
-                )
+                table.append([bench_name(bench)] + [fmt_pct(base[k], cur[k]) for k in IR_STAT_KEYS])
         print_table(headers, table)
 
 
@@ -946,11 +876,11 @@ class InputStats(Analysis):
                         f"fits_usize={usize}/{total} ({cls._pct(usize, total)})"
                     )
 
-    def report(self, benches, dump_dir, outputs):
+    def report(self, benches, side):
         print("### Constant-input stats\n")
         aggregate = {}
         for bench in benches:
-            stats = self._parse(outputs.get(bench, ""))
+            stats = self._parse(side.outputs.get(bench, ""))
             if stats:
                 self._merge(aggregate, stats)
                 self._print(stats, bench_name(bench))
@@ -963,33 +893,112 @@ class InputStats(Analysis):
 # ---------------------------------------------------------------------------
 
 
-def collect(
-    benches: list[str],
-    binary: str,
-    dump_dir: str | None,
-    rust_log: str | None,
-) -> dict[str, str]:
-    """Run benchmarks once and return captured output per bench.
+def collect(side: Side, benches: list[str], need_codegen: bool, rust_log: str | None):
+    """Run benchmarks once and store captured output per bench in ``side``.
 
-    If dump_dir is set, runs full compilation with ``-o dump_dir``.
+    If need_codegen is set, runs full compilation with ``-o side.dump_dir``.
     Otherwise runs ``--parse-only``.
     When rust_log is set, stderr is captured too (trace output goes there).
+    Failing benchmarks are recorded in ``side.failures`` instead of aborting.
     """
     env = cargo_env(rust_log) if rust_log else None
-    outputs: dict[str, str] = {}
-    label = "Compiling" if dump_dir else "Analyzing"
-    for bench in tqdm(benches, desc=label, unit="bench"):
+    label = "Compiling" if need_codegen else "Analyzing"
+    for bench in tqdm(benches, desc=f"{label} {side.label}", unit="bench"):
         args = ["run", bench]
-        if dump_dir:
-            sub = os.path.join(dump_dir, dump_subdir(bench))
+        if need_codegen:
+            sub = os.path.join(side.dump_dir, dump_subdir(bench))
             if os.path.isdir(sub):
                 shutil.rmtree(sub)
-            args += ["-o", dump_dir]
+            args += ["-o", side.dump_dir]
         else:
             args.append("--parse-only")
-        output = run_cli(binary, args, env, capture_stderr=rust_log is not None)
-        outputs[bench] = strip_ansi(output)
-    return outputs
+        try:
+            output = run_cli(side.binary, args, env, capture_stderr=rust_log is not None)
+        except subprocess.CalledProcessError as e:
+            side.failures[bench] = last_line(e.stderr)
+            continue
+        side.outputs[bench] = strip_ansi(output)
+
+
+def measure(sides: list[Side], benches: list[str], runs: int):
+    """Sample compile cost with ``run <bench> 0`` (compile, no dumps, no execution).
+
+    Runs of the same bench on each side are adjacent, and the side order alternates
+    every round, so load changes on the machine hit both sides alike.
+    """
+    perf = perf_available()
+    if not perf:
+        eprint("warning: `perf stat` is unavailable; recording wall time without instructions")
+    with tqdm(total=runs * len(benches) * len(sides), desc="Timing", unit="run") as bar:
+        for i in range(runs):
+            order = sides if i % 2 == 0 else sides[::-1]
+            for bench in benches:
+                for side in order:
+                    bar.update()
+                    if bench in side.failures:
+                        continue
+                    try:
+                        sample = time_cli(side.binary, ["run", bench, "0"], perf)
+                    except subprocess.CalledProcessError as e:
+                        side.failures[bench] = last_line(e.stderr)
+                        side.samples.pop(bench, None)
+                        continue
+                    side.samples.setdefault(bench, []).append(sample)
+
+
+def last_line(s: str | None) -> str:
+    lines = [line.strip() for line in strip_ansi(s or "").splitlines() if line.strip()]
+    return lines[-1] if lines else "unknown error"
+
+
+def report_failures(sides: list[Side]):
+    rows = [
+        [side.label, bench_name(bench), err.replace("|", "\\|")]
+        for side in sides
+        for bench, err in side.failures.items()
+    ]
+    if rows:
+        print("### Failures\n")
+        print_table(["revision", "benchmark", "error"], rows, right_cols=0)
+
+
+def git(root: str, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], capture_output=True, text=True, check=True, cwd=root
+    ).stdout.strip()
+
+
+def base_binary(root: str, sha: str, base_dump: str) -> str:
+    """Build the CLI at ``sha``, reusing the binary cached in ``base_dump`` when it matches.
+
+    The base worktree lives in ``base_dump`` and must outlive the build: the CLI reads
+    its fixtures from the source tree it was built from.
+    """
+    frozen = os.path.join(base_dump, ".evm2")
+    stamp = os.path.join(base_dump, ".rev")
+    worktree = os.path.join(base_dump, ".worktree")
+    try:
+        with open(stamp) as f:
+            cached = f.read().strip()
+    except FileNotFoundError:
+        cached = None
+    if cached == sha and os.path.isfile(frozen) and os.path.isdir(worktree):
+        eprint(f"Reusing base binary for {sha[:12]}")
+        return frozen
+
+    os.makedirs(base_dump, exist_ok=True)
+    if os.path.exists(stamp):
+        os.remove(stamp)
+    if os.path.isdir(worktree):
+        git(worktree, "checkout", "--detach", "--force", "--quiet", sha)
+    else:
+        git(root, "worktree", "prune")
+        git(root, "worktree", "add", "--detach", "--quiet", worktree, sha)
+    # Copy the binary out of the shared target dir, which the head build reuses.
+    shutil.copy2(cargo_build(worktree, incremental=False), frozen)
+    with open(stamp, "w") as f:
+        f.write(sha)
+    return frozen
 
 
 # ---------------------------------------------------------------------------
@@ -1004,9 +1013,7 @@ def main():
         epilog=__doc__,
     )
     parser.add_argument("dump_dir", help="Directory to dump generated files into")
-    parser.add_argument(
-        "benches", nargs="*", help="Specific benchmarks to run (default: all)"
-    )
+    parser.add_argument("benches", nargs="*", help="Specific benchmarks to run (default: all)")
     parser.add_argument(
         "--diff",
         metavar="REV",
@@ -1021,6 +1028,12 @@ def main():
         "Defaults to ['tmp/mainnet'] when running all benchmarks; "
         "pass any --extra-dir to override or to include extras with explicit "
         "benchmarks.",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=3,
+        help="Compile-cost samples per benchmark and revision (default: 3)",
     )
 
     # Analysis selectors. Default: --codegen-lines --compile-times.
@@ -1050,6 +1063,8 @@ def main():
         help="Report IR stats (inst counts, block size distribution, message opcodes)",
     )
     args = parser.parse_args()
+    # Absolute, so the dump path embedded in debug info is known.
+    args.dump_dir = os.path.abspath(args.dump_dir)
 
     # Default to codegen-lines + compile-times if no analysis flags given.
     if not (
@@ -1081,17 +1096,33 @@ def main():
 
     # Determine collection requirements from the union of all analyses.
     need_codegen = any(a.needs_codegen() for a in analyses)
+    need_timing = any(a.needs_timing() for a in analyses)
     rust_log_parts = {r for a in analyses if (r := a.rust_log())}
     rust_log = ",".join(sorted(rust_log_parts)) if rust_log_parts else None
 
     root = repo_root()
+    head_sha = git(root, "rev-parse", "HEAD")
+    is_dirty = git(root, "status", "--porcelain") != ""
 
-    binary = cargo_build(root)
-    builtin = args.benches or get_benches(binary)
+    if args.base_rev:
+        # Abort if base_rev resolves to HEAD and there are no working-tree changes to compare.
+        base_sha = git(root, "rev-parse", "--verify", f"{args.base_rev}^{{commit}}")
+        if head_sha == base_sha and not is_dirty:
+            eprint(
+                f"error: --diff {args.base_rev!r} resolves to HEAD ({head_sha[:12]}); "
+                f"diffing a branch against itself is pointless"
+            )
+            raise SystemExit(1)
+
+    if args.base_rev:
+        # Build the base first: it replaces the shared target dir's binary, and the head
+        # build afterwards restores it.
+        base_dump = args.dump_dir + ".base"
+        base = Side("base", base_sha, base_binary(root, base_sha, base_dump), base_dump)
+    head = Side("head", head_sha, cargo_build(root), args.dump_dir)
+    builtin = args.benches or get_benches(head.binary)
     extra_dirs = (
-        args.extra_dir
-        if args.extra_dir is not None
-        else ([] if args.benches else ["tmp/mainnet"])
+        args.extra_dir if args.extra_dir is not None else ([] if args.benches else ["tmp/mainnet"])
     )
     extra = find_extra_benches(extra_dirs, root)
     benches = builtin + extra
@@ -1102,83 +1133,11 @@ def main():
 
     eprint(f"Benchmarks: {len(builtin)} built-in + {len(extra)} extra")
 
-    dump_dir = args.dump_dir if need_codegen else None
-    outputs = collect(benches, binary, dump_dir, rust_log)
-
-    if args.base_rev:
-        # Detect self-diff: abort if base_rev resolves to the same commit as HEAD
-        # and there are no working-tree changes to compare against.
-        head_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=root,
-        ).stdout.strip()
-        base_sha = subprocess.run(
-            ["git", "rev-parse", args.base_rev],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=root,
-        ).stdout.strip()
-        is_dirty = subprocess.run(
-            ["git", "status", "--porcelain"],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=root,
-        ).stdout.strip()
-        if head_sha == base_sha and not is_dirty:
-            eprint(
-                f"error: --diff {args.base_rev!r} resolves to HEAD ({head_sha[:12]}); "
-                f"diffing a branch against itself is pointless"
-            )
-            raise SystemExit(1)
-
-        base_dump = args.dump_dir + ".base"
-        base_worktree = tempfile.mkdtemp()
-        try:
-            subprocess.run(
-                [
-                    "git",
-                    "worktree",
-                    "add",
-                    "--detach",
-                    "--quiet",
-                    base_worktree,
-                    args.base_rev,
-                ],
-                check=True,
-                cwd=root,
-            )
-            base_binary = cargo_build(base_worktree, incremental=False)
-            base_dump_dir = base_dump if need_codegen else None
-            base_outputs = collect(benches, base_binary, base_dump_dir, rust_log)
-        finally:
-            subprocess.run(
-                ["git", "worktree", "remove", "--force", base_worktree],
-                capture_output=True,
-                cwd=root,
-            )
-            if os.path.isdir(base_worktree):
-                shutil.rmtree(base_worktree)
-
-        def run_reports():
-            for a in analyses:
-                a.report_diff(
-                    benches,
-                    args.dump_dir,
-                    outputs,
-                    base_dump,
-                    base_outputs,
-                    args.base_rev,
-                )
-    else:
-
-        def run_reports():
-            for a in analyses:
-                a.report(benches, args.dump_dir, outputs)
+    sides = [head, base] if args.base_rev else [head]
+    for side in sides:
+        collect(side, benches, need_codegen, rust_log)
+    if need_timing:
+        measure(sides, benches, args.runs)
 
     os.makedirs(args.dump_dir, exist_ok=True)
     results_path = os.path.join(args.dump_dir, "results.md")
@@ -1186,7 +1145,17 @@ def main():
         old_stdout = sys.stdout
         sys.stdout = _Tee(old_stdout, md)
         try:
-            run_reports()
+            head_desc = f"`{head.rev[:10]}`" + (" with uncommitted changes" if is_dirty else "")
+            if args.base_rev:
+                print(f"Head {head_desc} vs base `{args.base_rev}` (`{base.rev[:10]}`).\n")
+            else:
+                print(f"Head {head_desc}.\n")
+            report_failures(sides)
+            for a in analyses:
+                if args.base_rev:
+                    a.report_diff(benches, head, base)
+                else:
+                    a.report(benches, head)
         finally:
             sys.stdout = old_stdout
     eprint(f"Wrote {results_path}")
