@@ -377,6 +377,8 @@ class Side:
     failures: dict[str, str] = field(default_factory=dict)
     # Compile-cost samples per bench: (instructions | None, seconds).
     samples: dict[str, list[tuple[int | None, float]]] = field(default_factory=dict)
+    # Execution instructions per iteration, per bench.
+    runtime: dict[str, float] = field(default_factory=dict)
 
 
 class Analysis(ABC):
@@ -394,6 +396,10 @@ class Analysis(ABC):
 
     def needs_timing(self) -> bool:
         """Whether this analysis needs compile-cost samples."""
+        return False
+
+    def needs_runtime(self) -> bool:
+        """Whether this analysis needs execution instruction counts."""
         return False
 
     @abstractmethod
@@ -532,7 +538,7 @@ class CodegenLines(Analysis):
             self._collect(benches, base.dump_dir),
             CODEGEN_COLUMNS,
             fmt_codegen,
-            lambda ps: not all(is_noise(b, c, NOISE_CODEGEN) for b, c in ps.values()),
+            all_noise(NOISE_CODEGEN),
             "Full details",
         )
 
@@ -615,6 +621,53 @@ class CompileTime(Analysis):
             time_changed,
             "Full compile times",
             SUMMARY_TIME_KEYS,
+        )
+
+
+RUNTIME_KEY = "instructions/iter"
+
+
+def fmt_runtime_key(_key: str, v: float) -> str:
+    return fmt_count(v)
+
+
+def all_noise(noise: float):
+    """Row filter for `print_diff`: keep rows where any column moved by more than `noise`%."""
+    return lambda ps: not all(is_noise(b, c, noise) for b, c in ps.values())
+
+
+class Runtime(Analysis):
+    """User-space instructions per JIT execution of each benchmark.
+
+    Deterministic, like CodSpeed's simulation mode, so it works on a busy machine. It counts
+    instructions, not cycles: cache misses and branch mispredictions don't show.
+    """
+
+    def needs_codegen(self) -> bool:
+        return False
+
+    def rust_log(self) -> str | None:
+        return None
+
+    def needs_runtime(self) -> bool:
+        return True
+
+    def _collect(self, benches, side) -> dict[str, dict[str, float]]:
+        return {bench_name(b): {RUNTIME_KEY: side.runtime[b]} for b in benches if b in side.runtime}
+
+    def report(self, benches, side):
+        print("### Runtime\n")
+        print_solo(self._collect(benches, side), [RUNTIME_KEY], fmt_runtime_key)
+
+    def report_diff(self, benches, cur, base):
+        print("### Runtime\n")
+        print_diff(
+            self._collect(benches, cur),
+            self._collect(benches, base),
+            [RUNTIME_KEY],
+            fmt_runtime_key,
+            all_noise(NOISE_INSTRUCTIONS),
+            "Full runtime",
         )
 
 
@@ -901,6 +954,11 @@ class InputStats(Analysis):
 # ---------------------------------------------------------------------------
 
 
+# Dev-profile CLI builds enable frame pointers through `debug_assertions`, and dumps force them
+# on; release builds keep them off, so match those.
+RUN_ARGS = ["--no-frame-pointers"]
+
+
 def collect(side: Side, benches: list[str], need_codegen: bool, rust_log: str | None):
     """Run benchmarks once and store captured output per bench in ``side``.
 
@@ -912,7 +970,7 @@ def collect(side: Side, benches: list[str], need_codegen: bool, rust_log: str | 
     env = cargo_env(rust_log) if rust_log else None
     label = "Compiling" if need_codegen else "Analyzing"
     for bench in tqdm(benches, desc=f"{label} {side.label}", unit="bench"):
-        args = ["run", bench]
+        args = ["run", bench, *RUN_ARGS]
         if need_codegen:
             sub = os.path.join(side.dump_dir, dump_subdir(bench))
             if os.path.isdir(sub):
@@ -945,12 +1003,55 @@ def measure(sides: list[Side], benches: list[str], runs: int, perf: bool):
                     if bench in side.failures:
                         continue
                     try:
-                        sample = time_cli(side.binary, ["run", bench, "0"], perf)
+                        sample = time_cli(side.binary, ["run", bench, "0", *RUN_ARGS], perf)
                     except subprocess.CalledProcessError as e:
                         side.failures[bench] = last_line(e.stderr)
                         side.samples.pop(bench, None)
                         continue
                     side.samples.setdefault(bench, []).append(sample)
+
+
+# Instructions spent executing per measurement, so compile-time noise stays negligible.
+RUNTIME_TARGET = 20e9
+
+
+def total_iters(n: int) -> int:
+    """`evm2 run <bench> N` runs `max(N / 10, 10)` warmup iterations before the timed ones.
+
+    Keep in sync with `bench` in `crates/cli/src/run.rs`.
+    """
+    return n + max(n // 10, 10)
+
+
+def runtime_per_iter(side: Side, bench: str) -> float:
+    def instructions(n: int) -> int:
+        return time_cli(side.binary, ["run", bench, str(n), "--jit-only", *RUN_ARGS], True)[0]
+
+    # `run <bench> 0` is what the compile-cost samples measure.
+    samples = [i for i, _ in side.samples.get(bench, []) if i is not None]
+    compile_only = statistics.median(samples) if samples else instructions(0)
+    # Compile cost varies by about 0.3%, which can swamp a short probe and make it
+    # negative, so grow the probe until execution clearly dominates that noise.
+    n = 100
+    while (probe := instructions(n) - compile_only) < compile_only / 20 and n < 10**7:
+        n *= 10
+    n = max(100, int(RUNTIME_TARGET / max(probe / total_iters(n), 1)))
+    return (instructions(n) - compile_only) / total_iters(n)
+
+
+def measure_runtime(sides: list[Side], benches: list[str]):
+    """Measure execution instructions per iteration with `perf stat`."""
+    if not perf_available():
+        eprint("warning: `perf stat` is unavailable; skipping runtime")
+        return
+    for bench in tqdm(benches, desc="Runtime", unit="bench"):
+        for side in sides:
+            if bench in side.failures:
+                continue
+            try:
+                side.runtime[bench] = runtime_per_iter(side, bench)
+            except subprocess.CalledProcessError as e:
+                side.failures[bench] = last_line(e.stderr)
 
 
 def last_line(s: str | None) -> str:
@@ -1203,6 +1304,11 @@ def main():
         help="Report per-opcode constant-input statistics",
     )
     parser.add_argument(
+        "--runtime",
+        action="store_true",
+        help="Report execution instructions per iteration (slow; needs perf)",
+    )
+    parser.add_argument(
         "--block-stats",
         action="store_true",
         help="Report IR stats (inst counts, block size distribution, message opcodes)",
@@ -1224,6 +1330,7 @@ def main():
         or args.jump_resolution
         or args.input_stats
         or args.block_stats
+        or args.runtime
     ):
         args.codegen_lines = True
         args.compile_times = True
@@ -1240,6 +1347,8 @@ def main():
         analyses.append(InputStats())
     if args.block_stats:
         analyses.append(BlockStats())
+    if args.runtime:
+        analyses.append(Runtime())
 
     if not analyses:
         eprint("No analyses selected.")
@@ -1248,6 +1357,7 @@ def main():
     # Determine collection requirements from the union of all analyses.
     need_codegen = any(a.needs_codegen() for a in analyses)
     need_timing = any(a.needs_timing() for a in analyses)
+    need_runtime = any(a.needs_runtime() for a in analyses)
     rust_log_parts = {r for a in analyses if (r := a.rust_log())}
     rust_log = ",".join(sorted(rust_log_parts)) if rust_log_parts else None
 
@@ -1290,6 +1400,8 @@ def main():
     perf = need_timing and perf_available()
     if need_timing:
         measure(sides, benches, args.runs, perf)
+    if need_runtime:
+        measure_runtime(sides, benches)
 
     results_path = os.path.join(args.dump_dir, "results.md")
     with open(results_path, "w") as md:

@@ -115,6 +115,7 @@ table instead of aborting the run.
 ./scripts/jit/bench.py /tmp/bench --jump-resolution                    # jump resolution stats
 ./scripts/jit/bench.py /tmp/bench --input-stats                        # constant-input stats
 ./scripts/jit/bench.py /tmp/bench --block-stats                        # block stats
+./scripts/jit/bench.py /tmp/bench --diff <base-rev> --runtime          # execution instructions per iteration
 ./scripts/jit/bench.py /tmp/bench --codegen-lines --jump-resolution    # combine multiple analyses
 ```
 
@@ -152,10 +153,21 @@ ignoring dump paths. `0/N` shows that a refactor leaves codegen alone.
 
 ### Runtime
 
-`bench.py` does not measure execution. The CodSpeed job in
-`.github/workflows/bench.yml` runs `crates/cli/benches/evm.rs` on every PR, so
-cite its report for runtime claims. For a quick local check,
-`cargo cli run <bench> <iters> --jit-only` prints the time per iteration.
+`--runtime` counts user-space instructions per JIT execution of each benchmark:
+`perf stat` over `evm2 run <bench> N --jit-only`, minus a compile-only run, with
+`N` chosen so execution dominates. Like CodSpeed's simulation mode, the count is
+deterministic, so it works on a busy machine, but it does not see cache misses or
+branch mispredictions. It is opt-in because it takes a few minutes; add the
+default analyses explicitly (`--codegen-lines --compile-times --runtime`) to get
+all three. The CodSpeed job in `.github/workflows/bench.yml` still has the final
+word on runtime; cite its report for runtime claims.
+
+### Codegen settings
+
+All runs pass `--no-frame-pointers`. The dev-profile CLI enables frame pointers
+through `debug_assertions`, and dumps force them on, but release builds keep
+them off; with them on, the dumped assembly has one register fewer and 38%
+more spills than the code that actually runs.
 
 ### LLVM experiments
 
@@ -163,7 +175,23 @@ cite its report for runtime claims. For a quick local check,
 flags without rebuilding, but `bench.py` passes the environment to both sides.
 To diff a pipeline change, make it in code. `EVM2_JIT_PASSES` also replaces the
 pipeline for every function size, which drops the LICM size gate in
-`optimize_module`.
+`optimize_module`. Passing an option that `init_` already sets, such as
+`--huge-size-for-split`, does not reliably override it.
+
+Experiments that did not pay off, so you don't repeat them blindly:
+
+- Keeping the remaining gas in a local (`alloca`) synced with `ecx.gas` around
+  calls: x86 turns `sub qword ptr [ecx], imm; jb` into `cmp`/`lea` on a
+  register that stays live everywhere, so spills went up 72%.
+- `-jump-table-density=1` for the dynamic jump switch: about 5% less code, but
+  the tables grow by about 1 MB across the benchmarks because the switch is on
+  sparse PCs. It needs a dense index first.
+- `preserve_most` stubs for host builtins (`SLOAD`, `CALL`, ...): fewer spills
+  in some contracts, many more reloads in others, about neutral overall.
+- Folding the memory offset range check into the resize branch: LLVM merges
+  the conditions back into the same compare chain and the cold path grows.
+- `early-cse<memssa>`: forwards stack loads across blocks but raises register
+  pressure; erc20_transfer spills went from 12 to 87.
 
 ### CI
 
