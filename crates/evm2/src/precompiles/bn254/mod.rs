@@ -7,23 +7,20 @@ use crate::{
 };
 use alloc::vec::Vec;
 
-#[cfg_attr(all(feature = "bn", not(feature = "bn254-mcl")), expect(dead_code))]
+#[cfg_attr(any(feature = "bn", feature = "bn254-mcl"), expect(dead_code))]
 pub(crate) mod arkworks;
 
 core::cfg_select! {
     feature = "bn254-mcl" => {
         pub(crate) mod mcl;
-        type ArithmeticOps = mcl::MclOps;
-        type PairingOps = arkworks::ArkworksOps;
+        type Ops = mcl::MclOps;
     }
     feature = "bn" => {
         pub(crate) mod substrate;
-        type ArithmeticOps = substrate::SubstrateOps;
-        type PairingOps = substrate::SubstrateOps;
+        type Ops = substrate::SubstrateOps;
     }
     _ => {
-        type ArithmeticOps = arkworks::ArkworksOps;
-        type PairingOps = arkworks::ArkworksOps;
+        type Ops = arkworks::ArkworksOps;
     }
 }
 
@@ -49,10 +46,10 @@ pub(crate) trait Bn254Ops {
 /// Performs point addition on two G1 points using the selected backend.
 #[inline]
 pub(crate) fn g1_point_add(p1_bytes: &[u8], p2_bytes: &[u8]) -> Result<[u8; 64], PrecompileHalt> {
-    ArithmeticOps::init();
-    let p1 = ArithmeticOps::read_g1(p1_bytes)?;
-    let p2 = ArithmeticOps::read_g1(p2_bytes)?;
-    Ok(ArithmeticOps::encode_g1(ArithmeticOps::g1_add(p1, p2)))
+    Ops::init();
+    let p1 = Ops::read_g1(p1_bytes)?;
+    let p2 = Ops::read_g1(p2_bytes)?;
+    Ok(Ops::encode_g1(Ops::g1_add(p1, p2)))
 }
 
 /// Performs a G1 scalar multiplication using the selected backend.
@@ -61,25 +58,25 @@ pub(crate) fn g1_point_mul(
     point_bytes: &[u8],
     fr_bytes: &[u8],
 ) -> Result<[u8; 64], PrecompileHalt> {
-    ArithmeticOps::init();
-    let p = ArithmeticOps::read_g1(point_bytes)?;
-    let fr = ArithmeticOps::read_scalar(fr_bytes);
-    Ok(ArithmeticOps::encode_g1(ArithmeticOps::g1_mul(p, fr)))
+    Ops::init();
+    let p = Ops::read_g1(point_bytes)?;
+    let fr = Ops::read_scalar(fr_bytes);
+    Ok(Ops::encode_g1(Ops::g1_mul(p, fr)))
 }
 
 /// Performs a pairing check on a list of G1 and G2 point pairs using the selected backend.
 #[inline]
 pub(crate) fn pairing_check(pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileHalt> {
-    PairingOps::init();
+    Ops::init();
     let mut g1_points = Vec::with_capacity(pairs.len());
     let mut g2_points = Vec::with_capacity(pairs.len());
 
     for (g1_bytes, g2_bytes) in pairs {
-        let g1 = PairingOps::read_g1(g1_bytes)?;
-        let g2 = PairingOps::read_g2(g2_bytes)?;
+        let g1 = Ops::read_g1(g1_bytes)?;
+        let g2 = Ops::read_g2(g2_bytes)?;
 
         // Skip pairs where either point is at infinity
-        if !PairingOps::g1_is_zero(&g1) && !PairingOps::g2_is_zero(&g2) {
+        if !Ops::g1_is_zero(&g1) && !Ops::g2_is_zero(&g2) {
             g1_points.push(g1);
             g2_points.push(g2);
         }
@@ -89,7 +86,7 @@ pub(crate) fn pairing_check(pairs: &[(&[u8], &[u8])]) -> Result<bool, Precompile
         return Ok(true);
     }
 
-    Ok(PairingOps::pairing_check(&g1_points, &g2_points))
+    Ok(Ops::pairing_check(&g1_points, &g2_points))
 }
 
 /// BN254 point addition precompile entrypoints.
@@ -557,6 +554,29 @@ mod tests {
             1111111111111111111111111111111111111111111111111111111111111111\
             1111111111111111111111111111111111111111111111111111111111111111\
             1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+
+        let res = run_pair(
+            &input,
+            BYZANTIUM_PAIR_PER_POINT,
+            BYZANTIUM_PAIR_BASE,
+            &mut GasTracker::new(260_000),
+        );
+        assert_matches!(
+            res,
+            Err(PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)),
+        );
+
+        // G2 point on the curve but not in the subgroup fail
+        let input = hex::decode(
+            "\
+            0000000000000000000000000000000000000000000000000000000000000001\
+            0000000000000000000000000000000000000000000000000000000000000002\
+            0000000000000000000000000000000000000000000000000000000000000000\
+            0000000000000000000000000000000000000000000000000000000000000001\
+            0d1271953ed9ea0836846e70a1934187998c7f790cb4d7511b7f8da82de048a4\
+            2869111d5381f072f8e2728fdb825a51aadd70e52c9830e9ab4b871c0531f1bb",
         )
         .unwrap();
 
