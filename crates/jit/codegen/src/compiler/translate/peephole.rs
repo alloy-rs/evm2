@@ -69,9 +69,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     /// SDIV a, b => signed(a) / signed(b), rounded toward zero.
-    ///
-    /// Pow2 cases are intentionally skipped: signed division rounds toward zero while
-    /// arithmetic shift right rounds toward negative infinity, so the semantics differ.
     fn peephole_sdiv(&mut self) -> bool {
         let [dividend, divisor] = self.const_operands();
         match divisor {
@@ -95,6 +92,14 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 let min = self.bcx.iconst_256(INT_MIN);
                 let cmp = self.bcx.icmp(IntCC::Equal, a, min);
                 let r = self.bcx.zext(self.word_type, cmp);
+                self.push(r);
+            }
+            // x / ±C (pow2) => native sdiv, LLVM lowers to a biased ashr.
+            // Cannot overflow: -1 and INT_MIN are handled above.
+            Some(d) if d.is_power_of_two() || d.wrapping_neg().is_power_of_two() => {
+                let [a, _] = self.popn();
+                let d = self.bcx.iconst_256(d);
+                let r = self.bcx.sdiv(a, d);
                 self.push(r);
             }
             // 0 / x => 0 (EVM: 0 / 0 = 0).
@@ -132,6 +137,13 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         match modulus {
             // x % 0 => 0, x % 1 => 0, x % -1 => 0.
             Some(U256::ZERO) | Some(U256::ONE) | Some(U256::MAX) => self.fold_const(0),
+            // x % ±C (pow2) => native srem. Cannot overflow: -1 is handled above.
+            Some(m) if m.is_power_of_two() || m.wrapping_neg().is_power_of_two() => {
+                let [a, _] = self.popn();
+                let m = self.bcx.iconst_256(m);
+                let r = self.bcx.srem(a, m);
+                self.push(r);
+            }
             // 0 % x => 0 (EVM: 0 % 0 = 0).
             _ if dividend == Some(U256::ZERO) => self.fold_const(0),
             _ => return false,
@@ -145,6 +157,14 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         match modulus {
             // (a + b) % 0 => 0, (a + b) % 1 => 0.
             Some(U256::ZERO) | Some(U256::ONE) => self.fold_const(0),
+            // (a + b) % C (pow2) => (a + b) & (C - 1), exact since C divides 2^256.
+            Some(m) if m.is_power_of_two() => {
+                let [a, b, _] = self.popn();
+                let sum = self.bcx.iadd(a, b);
+                let mask = self.bcx.iconst_256(m - U256::ONE);
+                let r = self.bcx.bitand(sum, mask);
+                self.push(r);
+            }
             _ => match (a, b) {
                 // (0 + 0) % N => 0.
                 (Some(U256::ZERO), Some(U256::ZERO)) => self.fold_const(0),
@@ -160,6 +180,14 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         match modulus {
             // (a * b) % 0 => 0, (a * b) % 1 => 0.
             Some(U256::ZERO) | Some(U256::ONE) => self.fold_const(0),
+            // (a * b) % C (pow2) => (a * b) & (C - 1), exact since C divides 2^256.
+            Some(m) if m.is_power_of_two() => {
+                let [a, b, _] = self.popn();
+                let product = self.bcx.imul(a, b);
+                let mask = self.bcx.iconst_256(m - U256::ONE);
+                let r = self.bcx.bitand(product, mask);
+                self.push(r);
+            }
             _ => {
                 // a * 0 => 0, 0 * b => 0.
                 if a == Some(U256::ZERO) || b == Some(U256::ZERO) {
