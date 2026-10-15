@@ -6,7 +6,7 @@ Cargo.lock
 /tests/GeneralStateTests
 /tests/BlockchainTests
 /test-fixtures
-/scripts/__pycache__
+__pycache__/
 
 # samply profiler output
 profile.json.gz
