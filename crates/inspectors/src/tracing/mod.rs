@@ -72,7 +72,7 @@ pub use debug::{DebugInspector, DebugInspectorError};
 /// Returns the effective gas refund after the calldata floor adjustment.
 #[inline]
 pub(crate) const fn final_refunded<E>(gas: &TxResultExt<E>) -> u64 {
-    if gas.total_gas_spent.saturating_sub(gas.refunded) < gas.floor_gas { 0 } else { gas.refunded }
+    gas.final_refunded()
 }
 
 /// An inspector that collects call traces.

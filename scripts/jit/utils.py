@@ -2,6 +2,7 @@
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -37,7 +38,7 @@ def cargo_env(rust_log: str | None = None) -> dict[str, str]:
 def cargo_build(root: str, incremental: bool = True, target_dir: str | None = None) -> str:
     """Build the CLI binary and return its path."""
     target_dir = target_dir or _shared_target_dir()
-    env = {**os.environ, "CARGO_TARGET_DIR": target_dir}
+    env = {**os.environ, **llvm_env(root), "CARGO_TARGET_DIR": target_dir}
     if not incremental:
         env["CARGO_INCREMENTAL"] = "0"
     subprocess.run(
@@ -47,6 +48,23 @@ def cargo_build(root: str, incremental: bool = True, target_dir: str | None = No
         env=env,
     )
     return os.path.join(target_dir, "debug", "evm2")
+
+
+def llvm_env(root: str) -> dict[str, str]:
+    """Put the LLVM version that ``root`` requires first in PATH, if it is installed.
+
+    Base and head can require different LLVM versions, and both llvm-sys and the
+    evm2-jit-llvm build script otherwise use whichever llvm-config comes first in PATH.
+    """
+    with open(os.path.join(root, "crates", "jit", "llvm", "Cargo.toml")) as f:
+        m = re.search(r'"llvm(\d+)-\d+"', f.read())
+    llvm_config = m and shutil.which(f"llvm-config-{m[1]}")
+    if not llvm_config:
+        return {}
+    bindir = subprocess.run(
+        [llvm_config, "--bindir"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    return {"PATH": bindir + os.pathsep + os.environ.get("PATH", "")}
 
 
 def get_benches(binary: str) -> list[str]:

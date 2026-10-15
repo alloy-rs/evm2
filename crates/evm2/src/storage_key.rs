@@ -4,6 +4,7 @@ use alloy_primitives::{
     map::{FbBuildHasher, HashMap, HashSet},
 };
 use core::{
+    cmp::Ordering,
     hash::{Hash, Hasher},
     mem,
 };
@@ -57,6 +58,21 @@ impl PartialEq for StorageKey {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.as_fixed_bytes() == other.as_fixed_bytes()
+    }
+}
+
+/// Orders by address, then by slot: the big-endian slot bytes compare like the numeric slot.
+impl Ord for StorageKey {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_fixed_bytes().cmp(other.as_fixed_bytes())
+    }
+}
+
+impl PartialOrd for StorageKey {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 

@@ -3,7 +3,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=cpp/lib.cpp");
 
-    let cxxflags = ["llvm-config", "llvm-config-22"]
+    let cxxflags = ["llvm-config", "llvm-config-23"]
         .into_iter()
         .find_map(detect_cxxflags)
         .expect("no llvm-config found");
