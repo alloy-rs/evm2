@@ -52,7 +52,8 @@ impl Bn254Ops for ArkworksOps {
 
     #[inline]
     fn g1_mul(p: Self::G1, s: Self::Scalar) -> Self::G1 {
-        p.mul_bigint(s.into_bigint()).into_affine()
+        // Multiply in projective form so that arkworks uses the GLV endomorphism.
+        (G1Projective::from(p) * s).into_affine()
     }
 
     #[inline]
