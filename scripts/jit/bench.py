@@ -1014,8 +1014,10 @@ def base_binary(root: str, sha: str, base_dump: str) -> str:
     else:
         git(root, "worktree", "prune")
         git(root, "worktree", "add", "--detach", "--quiet", worktree, sha)
-    # Copy the binary out of the shared target dir, which the head build reuses.
-    shutil.copy2(cargo_build(worktree, incremental=False), frozen)
+    # Cargo fingerprints workspace crates by paths relative to the workspace root, so a
+    # target dir shared with the head would count unchanged-mtime head files as fresh.
+    target = os.path.join(base_dump, "target")
+    shutil.copy2(cargo_build(worktree, incremental=False, target_dir=target), frozen)
     with open(stamp, "w") as f:
         f.write(sha)
     return frozen
@@ -1265,8 +1267,6 @@ def main():
 
     base = None
     if args.base_rev:
-        # Build the base first: it replaces the shared target dir's binary, and the head
-        # build afterwards restores it.
         base_dump = args.dump_dir + ".base"
         base_root = os.path.join(base_dump, ".worktree")
         base = Side("base", base_sha, base_binary(root, base_sha, base_dump), base_dump, base_root)

@@ -124,8 +124,10 @@ diff include unrelated commits. The first line of `results.md` names both
 commits.
 
 With `--diff`, the script builds the base in a git worktree at
-`<dump_dir>.base/.worktree` and caches the binary there per commit, so later
-runs against the same base rebuild only the head. The worktree must stay: the
+`<dump_dir>.base/.worktree` with its own target dir, `<dump_dir>.base/target`,
+and caches the binary there per commit, so later runs against the same base
+rebuild only the head. Sharing the head's target dir would let Cargo treat
+head files older than the base build as fresh. The worktree must stay: the
 CLI reads fixtures from the source tree it was built from. Delete
 `<dump_dir>.base` and run `git worktree prune` to drop the cache.
 
