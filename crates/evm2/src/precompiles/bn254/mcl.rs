@@ -10,6 +10,7 @@ use crate::precompiles::PrecompileHalt;
 use mcl_rust::{CurveType, Fp, Fp2, Fr, G1, G2, GT};
 use std::sync::{Once, OnceLock};
 
+// Not exposed by `mcl_rust`.
 unsafe extern "C" {
     fn mclBn_getCurveType() -> i32;
     fn mclBn_millerLoopVec(z: *mut GT, x: *const G1, y: *const G2, n: usize);
@@ -140,6 +141,8 @@ impl Bn254Ops for MclOps {
     #[inline]
     fn pairing_check(g1: &[Self::G1], g2: &[Self::G2]) -> bool {
         debug_assert_eq!(g1.len(), g2.len());
+        // One batched Miller loop shares its squarings across all pairs, which is cheaper than
+        // running a loop per pair and multiplying the results.
         let mut acc = GT::zero();
         unsafe { mclBn_millerLoopVec(&mut acc, g1.as_ptr(), g2.as_ptr(), g1.len()) };
 
@@ -186,12 +189,19 @@ fn read_fp2(input: &[u8]) -> Result<Fp2, PrecompileHalt> {
     Ok(fp2)
 }
 
+/// `6x^2`, where `x` is the BN254 curve parameter.
+const SIX_X_SQUARED: u128 = 147946756881789318990833708069417712966;
+
 /// Checks that an on-curve G2 point is in the r-torsion subgroup by testing `[6x^2]P == psi(P)`,
-/// from section 4.3 of <https://eprint.iacr.org/2022/352.pdf>.
+/// from section 4.3 of <https://eprint.iacr.org/2022/352.pdf>. This is the same check arkworks
+/// uses.
+///
+/// mcl's own check multiplies by the 254-bit group order, while this needs a 127-bit
+/// multiplication and one endomorphism.
 #[inline]
 fn g2_in_subgroup(p: &G2) -> bool {
-    static CONSTANTS: OnceLock<(Fp2, Fp2, Fr)> = OnceLock::new();
-    let (psi_x, psi_y, six_x_squared) = CONSTANTS.get_or_init(|| {
+    static PSI_COEFFS: OnceLock<(Fp2, Fp2)> = OnceLock::new();
+    let (psi_x, psi_y) = PSI_COEFFS.get_or_init(|| {
         let fp2 = |c0, c1| {
             let mut r = Fp2::zero();
             assert!(r.d[0].set_str(c0, 10) && r.d[1].set_str(c1, 10));
@@ -208,11 +218,11 @@ fn g2_in_subgroup(p: &G2) -> bool {
                 "2821565182194536844548159561693502659359617185244120367078079554186484126554",
                 "3505843767911556378687030309984248845540243509899259641013678093033130930403",
             ),
-            Fr::from_str("147946756881789318990833708069417712966", 10).unwrap(),
         )
     });
 
-    // psi(x, y) = (conj(x) * psi_x, conj(y) * psi_y) for affine P.
+    // psi is the untwist-Frobenius-twist endomorphism. For affine P it maps
+    // (x, y) to (conj(x) * psi_x, conj(y) * psi_y), where conj negates the imaginary part.
     let conj = |a: &Fp2| {
         let mut r = a.clone();
         Fp::neg(&mut r.d[1], &a.d[1]);
@@ -223,7 +233,17 @@ fn g2_in_subgroup(p: &G2) -> bool {
     psi.y = &conj(&p.y) * psi_y;
     psi.z.d[0] = Fp::from_int(1);
 
-    let mut q = G2::zero();
-    G2::mul(&mut q, p, six_x_squared);
+    // Compute [6x^2]P with plain double-and-add. `G2::mul` splits the scalar with the GLV
+    // endomorphism, which only gives the right product for points that are already in the
+    // subgroup, so it cannot be used to test membership.
+    let mut q = p.clone();
+    for i in (0..SIX_X_SQUARED.ilog2()).rev() {
+        let mut doubled = G2::zero();
+        G2::dbl(&mut doubled, &q);
+        q = doubled;
+        if (SIX_X_SQUARED >> i) & 1 == 1 {
+            q += p;
+        }
+    }
     q == psi
 }
