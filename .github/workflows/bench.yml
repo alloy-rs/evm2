@@ -45,9 +45,18 @@ jobs:
 
       - name: Enable perf counters
         run: |
-          sudo apt-get install -y --no-install-recommends "linux-tools-$(uname -r)" linux-tools-common ||
-            echo "::warning::perf is unavailable; compile cost falls back to wall time"
           sudo sysctl -w kernel.perf_event_paranoid=1
+          # Runner kernels often have no matching linux-tools package. perf's user-space tool
+          # works across kernel versions, so fall back to the newest packaged one.
+          if ! perf stat -e instructions:u true >/dev/null 2>&1; then
+            sudo apt-get install -y --no-install-recommends "linux-tools-$(uname -r)" linux-tools-common ||
+              sudo apt-get install -y --no-install-recommends linux-tools-generic linux-tools-common || true
+            perf_bin="$(find /usr/lib/linux-tools* -name perf -type f 2>/dev/null | sort -V | tail -n1)"
+            if [[ -n "$perf_bin" ]]; then sudo ln -sf "$perf_bin" /usr/local/bin/perf; fi
+          fi
+          if ! perf stat -e instructions:u true; then
+            echo "::warning::perf is unavailable; compile cost falls back to wall time and runtime is skipped"
+          fi
 
       - name: Resolve and download exact baseline
         id: baseline
@@ -126,7 +135,7 @@ jobs:
           BASELINE_FOUND: ${{ steps.baseline.outputs.found }}
         run: |
           set -euo pipefail
-          args=(--output target/jit-bench)
+          args=(--output target/jit-bench --runtime)
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" && "$BASELINE_FOUND" != "true" ]]; then
             args+=(--diff "$BASE_SHA" --base-output target/jit-bench/baseline)
           fi

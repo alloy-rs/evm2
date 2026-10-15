@@ -1143,6 +1143,7 @@ RESULT_KEYS = {
     "instructions": "compile_instructions",
     "time": "compile_time_seconds",
     **{p: f"{p}_seconds" for p in PHASES},
+    RUNTIME_KEY: "runtime_instructions",
 }
 # Metrics the perf site charts, all lower-is-better.
 METRICS = {
@@ -1152,6 +1153,7 @@ METRICS = {
     "unopt_ll_lines": {"title": "Unoptimized IR lines", "unit": "lines"},
     "compile_instructions": {"title": "Compile instructions", "unit": "instructions"},
     "compile_time_seconds": {"title": "Compile time", "unit": "seconds"},
+    "runtime_instructions": {"title": "Runtime instructions", "unit": "instructions"},
 }
 ARTIFACT_FILES = ["bytecode.txt", "unopt.ll", "opt.ll", "opt.s"]
 TARGET_CPU_RE = re.compile(r'"target-cpu"="([^"]+)"')
@@ -1205,6 +1207,8 @@ def write_results(out_dir: str, benches: list[str], side: Side, perf: bool):
             continue
         metrics = {**codegen[name], **times.get(name, {})}
         values = {RESULT_KEYS[k]: v for k, v in metrics.items() if v or k != "instructions"}
+        if bench in side.runtime:
+            values["runtime_instructions"] = round(side.runtime[bench])
         result["compilers"] = {COMPILER: {"status": "ok", **values}}
         results.append(result)
 

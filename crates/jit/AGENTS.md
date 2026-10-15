@@ -195,8 +195,9 @@ Experiments that did not pay off, so you don't repeat them blindly:
 
 ### CI
 
-The `jit` job in `.github/workflows/bench.yml` runs `bench.py --output` on
-every push to `main` and every PR. `--output DIR` (and `--base-output DIR` with
+The `jit` job in `.github/workflows/bench.yml` runs `bench.py --output
+--runtime` on every push to `main` and every PR; `results.json` then also holds
+`runtime_instructions`, the instructions per execution from `--runtime`. `--output DIR` (and `--base-output DIR` with
 `--diff`) writes `results.json` and `artifacts/<bench>/evm2/` (`bytecode.hex`,
 `bytecode.txt`, `unopt.ll`, `opt.ll`, `opt.s`, with dump paths removed). PRs
 reuse the `jit-bench-results` artifact of the exact base commit's run when it
