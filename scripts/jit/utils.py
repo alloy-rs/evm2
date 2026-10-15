@@ -35,12 +35,15 @@ def cargo_env(rust_log: str | None = None) -> dict[str, str]:
     return env
 
 
-def cargo_build(root: str, incremental: bool = True, target_dir: str | None = None) -> str:
-    """Build the CLI binary and return its path."""
+def cargo_build(root: str, target_dir: str | None = None) -> str:
+    """Build the CLI binary and return its path.
+
+    Always builds non-incrementally: incremental builds split crates into more codegen
+    units, which changes the host code and skews head-vs-base measurements.
+    """
     target_dir = target_dir or _shared_target_dir()
     env = {**os.environ, **llvm_env(root), "CARGO_TARGET_DIR": target_dir}
-    if not incremental:
-        env["CARGO_INCREMENTAL"] = "0"
+    env["CARGO_INCREMENTAL"] = "0"
     subprocess.run(
         ["cargo", "build", "--quiet", "-p", "evm2-cli", "--bin", "evm2", "--all-features"],
         check=True,
