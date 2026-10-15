@@ -76,11 +76,16 @@ pub fn callvalue(cx: _) -> out {
 pub fn calldataload(cx: _, [offset]: [Word]) -> out {
     let offset = word_to_usize_saturated(*offset);
     let input = cx.state.message().input.as_ref();
-    let mut word = B256::ZERO;
-    if offset < input.len() {
-        let len = 32.min(input.len() - offset);
-        word[..len].copy_from_slice(&input[offset..offset + len]);
-    }
+    // A fixed-size read for the common in-bounds case avoids a `memcpy` call.
+    let word = if let Some(chunk) = input.get(offset..).and_then(<[u8]>::first_chunk::<32>) {
+        B256::new(*chunk)
+    } else {
+        let mut word = B256::ZERO;
+        if let Some(rest) = input.get(offset..) {
+            word[..rest.len()].copy_from_slice(rest);
+        }
+        word
+    };
     *out = b256_to_word(word);
 }
 

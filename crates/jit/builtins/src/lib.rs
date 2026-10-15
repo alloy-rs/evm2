@@ -249,20 +249,17 @@ pub unsafe extern "C" fn __revmc_builtin_calldataload_c(
 }
 
 fn do_calldataload(ecx: &EvmContext, out: &mut EvmWord, offset: usize) {
-    let mut word = B256::ZERO;
-    let input = ecx.input();
-    let input_len = input.len();
-    if offset < input_len {
-        let count = 32.min(input_len - offset);
-        let input = ecx.input().as_ref();
-        // SAFETY: `count` is bounded by the calldata length.
-        // This is `word[..count].copy_from_slice(input[offset..offset + count])`, written using
-        // raw pointers as apparently the compiler cannot optimize the slice version, and using
-        // `get_unchecked` twice is uglier.
-        unsafe {
-            core::ptr::copy_nonoverlapping(input.as_ptr().add(offset), word.as_mut_ptr(), count)
-        };
-    }
+    let input = ecx.input().as_ref();
+    // A fixed-size read for the common in-bounds case avoids a `memcpy` call.
+    let word = if let Some(chunk) = input.get(offset..).and_then(<[u8]>::first_chunk::<32>) {
+        B256::new(*chunk)
+    } else {
+        let mut word = B256::ZERO;
+        if let Some(rest) = input.get(offset..) {
+            word[..rest.len()].copy_from_slice(rest);
+        }
+        word
+    };
     *out = EvmWord::from_be_bytes(word);
 }
 
