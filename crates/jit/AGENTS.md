@@ -125,8 +125,10 @@ diff include unrelated commits. The first line of `results.md` names both
 commits.
 
 With `--diff`, the script builds the base in a git worktree at
-`<dump_dir>.base/.worktree` and caches the binary there per commit, so later
-runs against the same base rebuild only the head. The worktree must stay: the
+`<dump_dir>.base/.worktree` with its own target dir, `<dump_dir>.base/target`,
+and caches the binary there per commit, so later runs against the same base
+rebuild only the head. Sharing the head's target dir would let Cargo treat
+head files older than the base build as fresh. The worktree must stay: the
 CLI reads fixtures from the source tree it was built from. Delete
 `<dump_dir>.base` and run `git worktree prune` to drop the cache.
 
@@ -190,6 +192,27 @@ Experiments that did not pay off, so you don't repeat them blindly:
   the conditions back into the same compare chain and the cold path grows.
 - `early-cse<memssa>`: forwards stack loads across blocks but raises register
   pressure; erc20_transfer spills went from 12 to 87.
+
+### CI
+
+The `jit` job in `.github/workflows/bench.yml` runs `bench.py --output` on
+every push to `main` and every PR. `--output DIR` (and `--base-output DIR` with
+`--diff`) writes `results.json` and `artifacts/<bench>/evm2/` (`bytecode.hex`,
+`bytecode.txt`, `unopt.ll`, `opt.ll`, `opt.s`, with dump paths removed). PRs
+reuse the `jit-bench-results` artifact of the exact base commit's run when it
+targets the same host CPU, and otherwise benchmark the base in the same job.
+`compare.py` writes the job summary. The benchmark job has a read-only token;
+`bench-comment.yml` posts the sticky PR comment after the run, regenerating it
+with the default branch's `compare.py` from the run's `jit-bench-results` and
+`jit-bench-baseline` artifacts. Its links open
+`https://www.getfoundry.sh/perf/evm2/`. Baselines come only from this
+repository's runs, never from fork PR runs. The site imports `jit-bench-results`,
+and `jit-bench-baseline` for bases without a run of their own.
+
+```bash
+./scripts/jit/bench.py /tmp/bench --diff origin/main --output /tmp/out/head --base-output /tmp/out/base
+./scripts/jit/compare.py /tmp/out/base /tmp/out/head --pr-comment-output /tmp/out/comment.md
+```
 
 ## Bench-and-PR workflow
 

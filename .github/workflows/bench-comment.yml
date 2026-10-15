@@ -1,0 +1,123 @@
+name: bench-comment
+
+permissions: {}
+
+on: # zizmor: ignore[dangerous-triggers] Artifacts are read as data by default-branch scripts, never executed; the PR is resolved from the run SHA.
+  workflow_run:
+    workflows: [Benchmark]
+    types: [completed]
+
+jobs:
+  comment:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Find pull request
+        id: pr
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const head = `${run.head_repository.owner.login}:${run.head_branch}`;
+            const { data: pulls } = await github.rest.pulls.list({
+              ...context.repo,
+              state: "all",
+              head,
+            });
+            const pull = pulls.find((candidate) => candidate.head.sha === run.head_sha);
+            if (!pull) {
+              core.setFailed(`No pull request found for ${head} at ${run.head_sha}`);
+              return;
+            }
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              ...context.repo,
+              pull_number: pull.number,
+              per_page: 100,
+            });
+            const tooling = [
+              ".github/workflows/bench.yml",
+              "scripts/jit/bench.py",
+              "scripts/jit/compare.py",
+            ];
+            let behind = false;
+            try {
+              const { data: comparison } = await github.rest.repos.compareCommitsWithBasehead({
+                ...context.repo,
+                basehead: `${pull.base.ref}...${run.head_sha}`,
+              });
+              behind = comparison.behind_by > 0;
+            } catch (error) {
+              core.warning(`Could not compare ${run.head_sha} with ${pull.base.ref}: ${error.message}`);
+            }
+            core.setOutput("number", pull.number);
+            core.setOutput("behind", behind);
+            core.setOutput("base-ref", pull.base.ref);
+            core.setOutput("head-sha", run.head_sha);
+            core.setOutput("tooling-changed", files.some((file) => tooling.includes(file.filename)));
+
+      # Default-branch code only; the PR's scripts never run with this job's token.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Download benchmark results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: jit-bench-results
+          path: ${{ runner.temp }}/jit-bench/head
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Download baseline results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: jit-bench-baseline
+          path: ${{ runner.temp }}/jit-bench/base
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      # The artifacts are untrusted data: compare.py keeps only valid benchmark IDs and
+      # numeric metrics, so the comment holds fixed text, those IDs and numbers.
+      - name: Generate comment
+        id: report
+        env:
+          BENCHMARK_BASE_REF: ${{ steps.pr.outputs.base-ref }}
+          BENCHMARK_BEHIND_BASE: ${{ steps.pr.outputs.behind }}
+          BENCHMARK_PR_HEAD_SHA: ${{ steps.pr.outputs.head-sha }}
+          JIT_BENCH: ${{ runner.temp }}/jit-bench
+          TOOLING_CHANGED: ${{ steps.pr.outputs.tooling-changed }}
+        run: |
+          set -euo pipefail
+          args=(
+            --results "$JIT_BENCH/head"
+            --pr-comment-output "$JIT_BENCH/comment.md"
+            --comment-output "$JIT_BENCH/should-comment"
+          )
+          if [[ -f "$JIT_BENCH/base/results.json" ]]; then
+            base_sha="$(jq -r .commit "$JIT_BENCH/base/results.json")"
+            if [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              export BENCHMARK_BASE_SHA="$base_sha"
+            fi
+            args+=(--baseline "$JIT_BENCH/base")
+          fi
+          # The benchmark run already has the report; keep artifact text out of this job's summary.
+          env -u GITHUB_STEP_SUMMARY uv run scripts/jit/compare.py "${args[@]}" > /dev/null
+          should_comment="$(< "$JIT_BENCH/should-comment")"
+          [[ "$TOOLING_CHANGED" == "true" ]] && should_comment=true
+          echo "should-comment=$should_comment" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+        with:
+          header: jit-bench
+          path: ${{ runner.temp }}/jit-bench/comment.md
+          number_force: ${{ steps.pr.outputs.number }}
+          only_update: ${{ steps.report.outputs.should-comment != 'true' }}
