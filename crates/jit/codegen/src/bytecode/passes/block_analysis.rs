@@ -180,7 +180,12 @@ enum BlockState {
     /// Block has not been reached yet.
     Bottom,
     /// Block has been reached with a known stack state (top-aligned).
-    Known(Vec<AbsValue>),
+    Known {
+        stack: Vec<AbsValue>,
+        /// Whether entries below `stack` were dropped by [`MAX_ABS_STACK_DEPTH`] clamping, so
+        /// that running out of tracked entries is not a stack underflow.
+        truncated: bool,
+    },
 }
 
 impl BlockState {
@@ -190,16 +195,29 @@ impl BlockState {
     /// bottom-padded with `Top`. This handles the common Solidity dispatch pattern where
     /// the "no selector match" fallthrough leaves an extra item on the stack that the
     /// fallback ignores.
-    fn join(&mut self, incoming: &[AbsValue], sets: &mut ConstSetInterner) -> bool {
+    fn join(
+        &mut self,
+        incoming: &[AbsValue],
+        incoming_truncated: bool,
+        sets: &mut ConstSetInterner,
+    ) -> bool {
+        let incoming_truncated = incoming_truncated || incoming.len() > MAX_ABS_STACK_DEPTH;
         match self {
             Self::Bottom => {
                 let start = incoming.len().saturating_sub(MAX_ABS_STACK_DEPTH);
-                *self = Self::Known(incoming[start..].to_vec());
+                *self = Self::Known {
+                    stack: incoming[start..].to_vec(),
+                    truncated: incoming_truncated,
+                };
                 true
             }
-            Self::Known(existing) => {
+            Self::Known { stack: existing, truncated } => {
                 let new_len = existing.len().max(incoming.len());
                 let mut changed = false;
+                if incoming_truncated && !*truncated {
+                    *truncated = true;
+                    changed = true;
+                }
 
                 // Clamp to MAX_ABS_STACK_DEPTH by only joining the top portion.
                 let join_len = new_len.min(MAX_ABS_STACK_DEPTH);
@@ -211,6 +229,7 @@ impl BlockState {
                     changed = true;
                 } else if existing.len() > join_len {
                     existing.drain(..existing.len() - join_len);
+                    *truncated = true;
                     changed = true;
                 }
 
@@ -408,7 +427,7 @@ impl Bytecode<'_> {
             // Interpret the block with `Top` as inputs.
             stack.clear();
             stack.resize(section.inputs as usize, AbsValue::Top);
-            if !self.interpret_block(block.insts(), &mut stack) {
+            if !self.interpret_block(block.insts(), &mut stack, false) {
                 continue;
             }
 
@@ -710,7 +729,8 @@ impl Bytecode<'_> {
         // Initialize block states. Entry block starts with an empty stack.
         let mut block_states: IndexVec<Block, BlockState> =
             index_vec![BlockState::Bottom; num_blocks];
-        block_states[Block::from_usize(0)] = BlockState::Known(Vec::new());
+        block_states[Block::from_usize(0)] =
+            BlockState::Known { stack: Vec::new(), truncated: false };
 
         // Collect unresolved jumps, plus static JUMPI instructions whose condition
         // may become constant only after CFG fixpoint.
@@ -1014,13 +1034,16 @@ impl Bytecode<'_> {
 
             // Copy input state into reusable buffer.
             stack_buf.clear();
-            match &block_states[bid] {
-                BlockState::Known(s) => stack_buf.extend_from_slice(s),
+            let truncated = match &block_states[bid] {
+                BlockState::Known { stack, truncated } => {
+                    stack_buf.extend_from_slice(stack);
+                    *truncated
+                }
                 BlockState::Bottom => continue,
             };
 
             let block = &self.cfg.blocks[bid];
-            if !self.interpret_block(block.insts(), &mut stack_buf) {
+            if !self.interpret_block(block.insts(), &mut stack_buf, truncated) {
                 continue;
             }
             let block = &self.cfg.blocks[bid];
@@ -1043,7 +1066,7 @@ impl Bytecode<'_> {
 
             // Propagate to static CFG successors and discovered dynamic-jump targets.
             for &succ in block.succs.iter().chain(&discovered[bid]) {
-                if block_states[succ].join(&stack_buf, const_sets) {
+                if block_states[succ].join(&stack_buf, truncated, const_sets) {
                     worklist.push(succ);
                 }
             }
@@ -1061,11 +1084,13 @@ impl Bytecode<'_> {
     /// Returns `false` on stack underflow (conflict).
     ///
     /// The caller must pre-fill `stack` with the input state; on return it contains the output.
+    /// When `truncated` is set, missing entries below `stack` are `Top` instead of an underflow.
     /// Records per-instruction operand snapshots into `self.snapshots`.
     fn interpret_block(
         &mut self,
         insts: impl IntoIterator<Item = Inst>,
         stack: &mut Vec<AbsValue>,
+        truncated: bool,
     ) -> bool {
         for i in insts {
             let inst = &self.insts[i];
@@ -1076,6 +1101,10 @@ impl Bytecode<'_> {
             let (inp, out) = inst.stack_io();
             let inp = inp as usize;
             let out = out as usize;
+
+            if truncated && stack.len() < inp {
+                stack.splice(0..0, std::iter::repeat_n(AbsValue::Top, inp - stack.len()));
+            }
 
             // Record pre-instruction input operand snapshot (in stack order, TOS last).
             if inp > 0 {
