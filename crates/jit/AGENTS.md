@@ -201,8 +201,12 @@ every push to `main` and every PR. `--output DIR` (and `--base-output DIR` with
 `bytecode.txt`, `unopt.ll`, `opt.ll`, `opt.s`, with dump paths removed). PRs
 reuse the `jit-bench-results` artifact of the exact base commit's run when it
 targets the same host CPU, and otherwise benchmark the base in the same job.
-`compare.py` writes the job summary and the sticky PR comment, whose links open
-`https://www.getfoundry.sh/perf/evm2/`. The site imports `jit-bench-results`,
+`compare.py` writes the job summary. The benchmark job has a read-only token;
+`bench-comment.yml` posts the sticky PR comment after the run, regenerating it
+with the default branch's `compare.py` from the run's `jit-bench-results` and
+`jit-bench-baseline` artifacts. Its links open
+`https://www.getfoundry.sh/perf/evm2/`. Baselines come only from this
+repository's runs, never from fork PR runs. The site imports `jit-bench-results`,
 and `jit-bench-baseline` for bases without a run of their own.
 
 ```bash

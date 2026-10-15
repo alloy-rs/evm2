@@ -21,8 +21,7 @@ jobs:
       id-token: write
       actions: read
       contents: read
-      issues: write
-      pull-requests: write
+      pull-requests: read
     env:
       BASE_BRANCH: ${{ github.base_ref || 'main' }}
     steps:
@@ -70,14 +69,14 @@ jobs:
             echo "ref=$(jq -r .ref <<< "$baseline")"
           } >> "$GITHUB_OUTPUT"
 
-          runs_json="$(
-            gh run list \
-              --workflow bench.yml \
-              --commit "$base_sha" \
-              --limit 10 \
-              --json createdAt,databaseId,status \
-              2>/dev/null || true
-          )"
+          # Fork PR runs execute the fork's own bench.py, so only this repository's runs
+          # are trusted baselines.
+          list_runs() {
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/bench.yml/runs?head_sha=$base_sha&per_page=20" \
+              --jq '[.workflow_runs[] | select(.head_repository.full_name == env.GITHUB_REPOSITORY)
+                | {createdAt: .created_at, databaseId: .id, status}]'
+          }
+          runs_json="$(list_runs 2>/dev/null || echo '[]')"
           latest_run_id="$(
             jq -r --argjson current "$CURRENT_RUN_ID" \
               '[.[] | select(.databaseId != $current)] | max_by(.createdAt).databaseId // empty' \
@@ -92,13 +91,7 @@ jobs:
             if [[ "$latest_status" != "completed" ]]; then
               echo "Waiting for exact-base benchmark run $latest_run_id"
               gh run watch "$latest_run_id" --interval 10 || true
-              runs_json="$(
-                gh run list \
-                  --workflow bench.yml \
-                  --commit "$base_sha" \
-                  --limit 10 \
-                  --json createdAt,databaseId,status
-              )"
+              runs_json="$(list_runs)"
             fi
           fi
           run_ids="$(
@@ -141,8 +134,8 @@ jobs:
             echo "::warning::JIT benchmark failed to complete"
           fi
 
+      # The PR comment is posted by bench-comment.yml, which regenerates it with trusted code.
       - name: Generate report
-        id: report
         if: always()
         env:
           BENCHMARK_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -154,7 +147,6 @@ jobs:
             --results target/jit-bench
             --report-output target/jit-bench/report.md
             --pr-comment-output target/jit-bench/comment.md
-            --comment-output target/jit-bench/should-comment
           )
           if [[ -f target/jit-bench/baseline/results.json ]]; then
             args+=(
@@ -163,24 +155,6 @@ jobs:
             )
           fi
           uv run scripts/jit/compare.py "${args[@]}"
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-            changed="$(git diff --name-only "$BENCHMARK_BASE_SHA...$BENCHMARK_PR_HEAD_SHA" -- \
-              scripts/jit/bench.py scripts/jit/compare.py .github/workflows/bench.yml)"
-            if [[ -n "$changed" ]]; then
-              echo 'should_comment=true' >> "$GITHUB_OUTPUT"
-              echo true > target/jit-bench/should-comment
-            fi
-          fi
-
-      - name: Comment on PR
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == github.repository
-        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
-        with:
-          header: jit-bench
-          path: target/jit-bench/comment.md
-          only_update: ${{ steps.report.outputs.should_comment != 'true' }}
 
       - name: Upload results
         if: always()
@@ -193,8 +167,9 @@ jobs:
           retention-days: ${{ github.event_name == 'push' && 90 || 30 }}
           if-no-files-found: ignore
 
+      # Always uploaded on PRs: bench-comment.yml compares against it.
       - name: Upload baseline
-        if: always() && github.event_name == 'pull_request' && steps.baseline.outputs.found != 'true'
+        if: always() && github.event_name == 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: jit-bench-baseline

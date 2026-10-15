@@ -19,6 +19,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -46,6 +47,9 @@ from bench import (
 PERF_SITE_URL = "https://www.getfoundry.sh/perf/evm2/"
 # Metrics whose changes are deterministic and decide whether a benchmark changed.
 CODEGEN_METRICS = ["jit_size_bytes", "opt_s_lines", "opt_ll_lines", "unopt_ll_lines"]
+# The PR comment workflow reads results from untrusted PR runs; IDs and metrics are the only
+# values from them that reach the comment.
+TEST_ID_RE = re.compile(r"[\w.-]{1,128}")
 
 
 def load(path: Path) -> dict:
@@ -54,6 +58,20 @@ def load(path: Path) -> dict:
     document = json.loads(path.read_text())
     if not isinstance(document, dict) or not isinstance(document.get("results"), list):
         raise ValueError(f"{path}: expected a bench.py results document")
+    for result in document["results"]:
+        if not isinstance(result, dict) or not isinstance(result.get("test_id"), str):
+            raise ValueError(f"{path}: expected results with string test IDs")
+        if not TEST_ID_RE.fullmatch(result["test_id"]):
+            raise ValueError(f"{path}: invalid test ID {result['test_id']!r}")
+        values = compiler(result)
+        if not isinstance(values, dict):
+            raise ValueError(f"{path}: invalid {COMPILER} results for {result['test_id']}")
+        for name in METRICS:
+            value = values.get(name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, (int, float))
+            ):
+                raise ValueError(f"{path}: {result['test_id']} {name} is not a number")
     document["path"] = path
     return document
 
@@ -308,6 +326,8 @@ def pr_comment(comparison: dict, has_baseline: bool, behind_base: bool, base_ref
 
 
 def branch_is_behind(base_ref: str) -> bool:
+    if (behind := os.environ.get("BENCHMARK_BEHIND_BASE")) in ("true", "false"):
+        return behind == "true"
     head = os.environ.get("BENCHMARK_PR_HEAD_SHA")
     if not head:
         return False
