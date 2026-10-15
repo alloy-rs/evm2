@@ -930,12 +930,14 @@ fn load_acc_and_calc_gas(
         code_address = delegated_address;
     }
     let features = ecx.version().features;
+    // Check emptiness only when new-account gas can apply: after EIP-161 a zero-value call never
+    // pays it, so it skips the extra account lookup.
     if create_empty_account
-        && should_charge_new_account_gas(
-            features.contains(EvmFeatures::EIP161),
-            transfers_value,
-            ecx.host().target_is_empty_for_new_account_gas(&to, features).map_err(|error| ecx.interpreter_mut().fail(error))?,
-        )
+        && (!features.contains(EvmFeatures::EIP161) || transfers_value)
+        && ecx
+            .host()
+            .target_is_empty_for_new_account_gas(&to, features)
+            .map_err(|error| ecx.interpreter_mut().fail(error))?
     {
         cost += u64::from(version.gas_params.get(GasId::NewAccountCost));
         if features.contains(EvmFeatures::EIP8037) && transfers_value {

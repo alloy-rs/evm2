@@ -2186,7 +2186,8 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::Writable => ("writable", AttrValue::Enum(0)),
         // memory(argmem: readwrite) = ModRef(3) << ArgMem(0) = 3.
         OurAttr::ArgMemOnly => ("memory", AttrValue::Enum(3)),
-        OurAttr::DeadOnReturn => ("dead_on_return", AttrValue::Enum(0)),
+        // `u64::MAX` marks all reachable memory as dead; `0` would mark zero bytes.
+        OurAttr::DeadOnReturn => ("dead_on_return", AttrValue::Enum(u64::MAX)),
 
         OurAttr::Initializes(size) => {
             return cpp::create_initializes_attr(bcx.cx, 0, size as i64);

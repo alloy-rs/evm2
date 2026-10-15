@@ -175,6 +175,36 @@ pub(crate) const fn bool_to_b256(value: bool) -> &'static B256 {
     if value { TRUE } else { FALSE }
 }
 
+/// Fixed-size bit array stored inline in `WORDS` 64-bit words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct BitArray<const WORDS: usize>([u64; WORDS]);
+
+impl<const WORDS: usize> BitArray<WORDS> {
+    /// Creates a bit array with every bit unset.
+    #[inline]
+    pub(crate) const fn new() -> Self {
+        Self([0; WORDS])
+    }
+
+    /// Returns whether bit `index` is set.
+    #[inline]
+    pub(crate) const fn get(&self, index: usize) -> bool {
+        self.0[index / 64] & (1 << (index % 64)) != 0
+    }
+
+    /// Sets bit `index`.
+    #[inline]
+    pub(crate) const fn set(&mut self, index: usize) {
+        self.0[index / 64] |= 1 << (index % 64);
+    }
+
+    /// Unsets every bit.
+    #[inline]
+    pub(crate) fn clear(&mut self) {
+        self.0.fill(0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

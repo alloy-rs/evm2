@@ -136,6 +136,11 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
     }
 
     #[inline]
+    fn for_each_address(&self, f: &mut dyn FnMut(Address)) {
+        self.map.as_ref().addresses().for_each(f);
+    }
+
+    #[inline]
     fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
         self.map
             .as_ref()

@@ -701,6 +701,20 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.database_mut().downcast_mut()
     }
 
+    /// Consumes the EVM and returns the current backing database, dropping all execution state.
+    ///
+    /// This is the consuming counterpart to [`Self::database`]. Unlike
+    /// [`Self::database_as_mut`] it needs neither a `'static` bound nor a downcast, so it also
+    /// works for databases that borrow. The in-memory layers — accepted state, the journal, and
+    /// transaction scratch — are never written through to the database, so nothing the EVM
+    /// executed reaches it. The database itself is returned as-is and may differ from the one
+    /// passed to the constructor: it can be replaced through [`Self::set_database`], mutated
+    /// through [`Self::database_mut`], or changed by its own reads.
+    #[inline]
+    pub fn into_db(self) -> Box<dyn DynDatabase + 'a> {
+        self.state.into_db()
+    }
+
     /// Returns the mutable EVM state.
     #[inline]
     pub const fn state(&self) -> &State<'a> {
@@ -728,14 +742,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     /// Warms every precompile address in the prewarm set.
     ///
-    /// Consumes the precompile address iterator directly into the prewarm set. This relies on
-    /// disjoint borrows of the `precompiles` and `state` fields, which a caller holding only
-    /// `&mut Evm` cannot express through [`Self::precompiles`] (it borrows all of `self`).
+    /// Feeds the precompile addresses directly into the prewarm set. This relies on disjoint
+    /// borrows of the `precompiles` and `state` fields, which a caller holding only `&mut Evm`
+    /// cannot express through [`Self::precompiles`] (it borrows all of `self`).
     #[inline]
     pub fn warm_precompiles(&mut self) {
-        for address in self.precompiles.addresses() {
-            self.state.prewarm(&address);
-        }
+        let state = &mut self.state;
+        self.precompiles.for_each_address(&mut |address| state.prewarm(&address));
     }
 
     /// Returns the precompile provider mutably.
@@ -1641,33 +1654,24 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         target: &Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, HostError> {
-        let is_cold = if self.feature(EvmFeatures::EIP2929) {
-            match self.state.account_with_skip(target, skip_cold_load).map(|mut a| a.warm()) {
-                Ok(is_cold) => is_cold,
+        let features = self.features;
+        let eip2929 = features.contains(EvmFeatures::EIP2929);
+        let (is_cold, target_is_empty_for_new_account_gas) =
+            match self.state.account_with_skip(target, eip2929 && skip_cold_load) {
+                Ok(mut account) => {
+                    let is_cold = account.warm() && eip2929;
+                    (is_cold, account.is_empty_for_new_account_gas(features))
+                }
                 Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
                 Err(code) => return Err(code.into()),
-            }
-        } else {
-            if let Err(code) = self.state.account(target).map(|mut a| a.warm()) {
-                return Err(code.into());
-            }
-            false
-        };
+            };
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas.into());
         }
-        let target_is_empty_for_new_account_gas =
-            self.target_is_empty_for_new_account_gas(target, self.features)?;
-        let previously_destroyed = self.state.account(contract)?.is_destructed();
-        let balance = self
-            .state
-            .account_info_untracked(contract)
-            .map_err(HostError::from)?
-            .map_or(Word::ZERO, |info| info.balance);
-        let should_destroy = if self.feature(EvmFeatures::EIP6780) {
-            self.state.account(contract)?.is_created()
-        } else {
-            true
+        let (previously_destroyed, balance, should_destroy) = {
+            let account = self.state.account(contract)?;
+            let should_destroy = !features.contains(EvmFeatures::EIP6780) || account.is_created();
+            (account.is_destructed(), account.balance(), should_destroy)
         };
 
         if contract != target {

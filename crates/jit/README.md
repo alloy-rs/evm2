@@ -22,18 +22,18 @@ The compiler backend is abstracted behind a trait ([`evm2-jit-backend`]), with a
 ### LLVM backend
 
 - Linux or macOS, Windows is not supported
-- LLVM 22
+- LLVM 23
   - On Debian-based Linux distros: see [apt.llvm.org](https://apt.llvm.org/)
   - On Arch-based Linux distros: `pacman -S llvm`
-  - On macOS: `brew install llvm@22`
+  - On macOS: `brew install llvm@23`
   - The following environment variables may be required:
     ```bash
     prefix=$(llvm-config --prefix)
     # or
-    #prefix=$(llvm-config-22 --prefix)
+    #prefix=$(llvm-config-23 --prefix)
     # on macOS:
-    #prefix=$(brew --prefix llvm@22)
-    export LLVM_SYS_221_PREFIX=$prefix
+    #prefix=$(brew --prefix llvm@23)
+    export LLVM_SYS_231_PREFIX=$prefix
     ```
 
 ## Usage
