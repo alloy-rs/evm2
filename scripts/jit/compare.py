@@ -51,6 +51,14 @@ PERF_SITE_URL = "https://www.getfoundry.sh/perf/evm2/"
 # Metrics whose changes are deterministic and decide whether a benchmark changed.
 CODEGEN_METRICS = ["jit_size_bytes", "opt_s_lines", "opt_ll_lines", "unopt_ll_lines"]
 RUNTIME_METRICS = ["runtime_instructions", "runtime_cycles"]
+# The PR comment's columns; the report and the perf site show every metric.
+COMMENT_METRICS = [
+    "opt_ll_lines",
+    "opt_s_lines",
+    "jit_size_bytes",
+    "compile_cycles",
+    "runtime_cycles",
+]
 # The PR comment workflow reads results from untrusted PR runs; IDs and metrics are the only
 # values from them that reach the comment.
 TEST_ID_RE = re.compile(r"[\w.-]{1,128}")
@@ -144,12 +152,16 @@ def fmt_change(value: float | None) -> str:
     return f"{'❌' if rounded > 0 else '✅'} {rounded:+.2f}%"
 
 
-def compile_metric(head: dict, base: dict | None) -> str:
-    """Retired instructions when both runs counted them, else (noisy) wall time."""
+def perf_counters(head: dict, base: dict | None) -> bool:
     docs = [head] if base is None else [head, base]
-    if all(d.get("environment", {}).get("perf_counters") for d in docs):
-        return "compile_instructions"
-    return "compile_time_seconds"
+    return all(d.get("environment", {}).get("perf_counters") for d in docs)
+
+
+def compile_metrics(head: dict, base: dict | None) -> list[str]:
+    """Hardware counts when both runs have them, else only (noisy) wall time."""
+    if perf_counters(head, base):
+        return ["compile_instructions", "compile_cycles", "compile_time_seconds"]
+    return ["compile_time_seconds"]
 
 
 def has_runtime(document: dict | None) -> bool:
@@ -159,7 +171,7 @@ def has_runtime(document: dict | None) -> bool:
 def compare(head: dict, base: dict | None) -> dict:
     head_ok = ok_results(head)
     base_ok = ok_results(base)
-    metrics = [*CODEGEN_METRICS, compile_metric(head, base)]
+    metrics = [*CODEGEN_METRICS, *compile_metrics(head, base)]
     if has_runtime(head):
         metrics += RUNTIME_METRICS
     rows = []
@@ -264,7 +276,7 @@ def detailed_report(head: dict, base: dict | None, comparison: dict, base_ref: s
                 "Full details",
             )
             print("### Compile times\n")
-            if compile_metric(head, base) == "compile_time_seconds":
+            if not perf_counters(head, base):
                 print("Wall times from separate runs; expect noise.\n")
             print_diff(
                 table_rows(head, TIME_KEYS),
@@ -311,8 +323,16 @@ def perf_link(label: str, benchmark: str | None = None, section: str = "benchmar
     return f"[{label}]({site}?{urlencode(query)}#{section})"
 
 
+def comment_metrics(metrics: list[str]) -> list[str]:
+    """`COMMENT_METRICS`, with wall time in place of compile cycles without perf counters."""
+    shown = [m for m in COMMENT_METRICS if m in metrics]
+    if "compile_cycles" not in metrics:
+        shown.insert(shown.index("jit_size_bytes") + 1, "compile_time_seconds")
+    return shown
+
+
 def pr_comment(comparison: dict, has_baseline: bool, behind_base: bool, base_ref: str) -> str:
-    metrics = comparison["metrics"]
+    metrics = comment_metrics(comparison["metrics"])
     titles = {name: METRICS[name]["title"] for name in metrics}
     lines = ["## JIT benchmarks", ""]
     changed = [r for r in comparison["rows"] if r["changed"]]

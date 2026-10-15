@@ -376,8 +376,8 @@ class Side:
     root: str
     outputs: dict[str, str] = field(default_factory=dict)
     failures: dict[str, str] = field(default_factory=dict)
-    # Compile-cost samples per bench: (instructions | None, seconds).
-    samples: dict[str, list[tuple[int | None, float]]] = field(default_factory=dict)
+    # Compile-cost samples per bench: (instructions | None, cycles | None, seconds).
+    samples: dict[str, list[tuple[int | None, int | None, float]]] = field(default_factory=dict)
     # Execution instructions and cycles per iteration, per bench.
     runtime: dict[str, float] = field(default_factory=dict)
     runtime_cycles: dict[str, float] = field(default_factory=dict)
@@ -559,12 +559,12 @@ def opt_s_identity(benches: list[str], cur: Side, base: Side) -> str:
 
 
 PHASES = ["parse", "translate", "optimize", "codegen"]
-SUMMARY_TIME_KEYS = ["instructions", "time"]
+SUMMARY_TIME_KEYS = ["instructions", "cycles", "time"]
 TIME_KEYS = [*SUMMARY_TIME_KEYS, *PHASES]
 
 
 def fmt_time_key(key: str, v: float) -> str:
-    return fmt_count(v) if key == "instructions" else fmt_dur(v)
+    return fmt_count(v) if key in ("instructions", "cycles") else fmt_dur(v)
 
 
 def time_changed(ps: dict[str, tuple[float, float]]) -> bool:
@@ -578,8 +578,8 @@ def time_changed(ps: dict[str, tuple[float, float]]) -> bool:
 class CompileTime(Analysis):
     """Compile cost from ``evm2 run <bench> 0`` samples plus per-phase times from remarks.
 
-    ``instructions`` and ``time`` are medians over runs without dumps. They cover the
-    whole process: startup, fixture loading, and compiling every contract in the fixture.
+    ``instructions``, ``cycles`` and ``time`` are medians over runs without dumps. They
+    cover the whole process: startup, fixture loading, and compiling every contract in the fixture.
     Phase times come from the single dump run of the entry contract, so they are noisy and
     only appear in the details table; ``finalize`` is left out because it includes writing
     the IR and assembly dumps.
@@ -601,10 +601,12 @@ class CompileTime(Analysis):
             if not samples:
                 continue
             remarks = parse_remarks(side.dump_dir, bench)
-            instructions = [i for i, _ in samples if i is not None]
+            instructions = [i for i, _, _ in samples if i is not None]
+            cycles = [c for _, c, _ in samples if c is not None]
             rows[bench_name(bench)] = {
                 "instructions": statistics.median(instructions) if instructions else 0,
-                "time": statistics.median(t for _, t in samples),
+                "cycles": statistics.median(cycles) if cycles else 0,
+                "time": statistics.median(t for _, _, t in samples),
                 **{p: remarks.get(p, 0.0) for p in PHASES},
             }
         return rows
@@ -1140,7 +1142,7 @@ def base_binary(root: str, sha: str, base_dump: str) -> str:
     # Cargo fingerprints workspace crates by paths relative to the workspace root, so a
     # target dir shared with the head would count unchanged-mtime head files as fresh.
     target = os.path.join(base_dump, "target")
-    shutil.copy2(cargo_build(worktree, incremental=False, target_dir=target), frozen)
+    shutil.copy2(cargo_build(worktree, target_dir=target), frozen)
     with open(stamp, "w") as f:
         f.write(sha)
     return frozen
@@ -1163,19 +1165,27 @@ RESULT_KEYS = {
     "spills": "spills",
     "reloads": "reloads",
     "instructions": "compile_instructions",
+    "cycles": "compile_cycles",
     "time": "compile_time_seconds",
     **{p: f"{p}_seconds" for p in PHASES},
     RUNTIME_KEY: "runtime_instructions",
     RUNTIME_CYCLES_KEY: "runtime_cycles",
 }
-# Metrics the perf site charts, all lower-is-better.
+# Every metric in `results.json`, all lower-is-better; the perf site stores the declared ones.
 METRICS = {
     "jit_size_bytes": {"title": "JIT size", "unit": "bytes"},
     "opt_s_lines": {"title": "Assembly lines", "unit": "lines"},
     "opt_ll_lines": {"title": "Optimized IR lines", "unit": "lines"},
     "unopt_ll_lines": {"title": "Unoptimized IR lines", "unit": "lines"},
+    "spills": {"title": "Spills", "unit": "spills"},
+    "reloads": {"title": "Reloads", "unit": "reloads"},
+    "i256_loads": {"title": "i256 loads", "unit": "loads"},
+    "i256_stores": {"title": "i256 stores", "unit": "stores"},
+    "mresize_calls": {"title": "mresize calls", "unit": "calls"},
     "compile_instructions": {"title": "Compile instructions", "unit": "instructions"},
+    "compile_cycles": {"title": "Compile cycles", "unit": "cycles"},
     "compile_time_seconds": {"title": "Compile time", "unit": "seconds"},
+    **{f"{p}_seconds": {"title": f"{p.capitalize()} time", "unit": "seconds"} for p in PHASES},
     "runtime_instructions": {"title": "Runtime instructions", "unit": "instructions"},
     "runtime_cycles": {"title": "Runtime cycles", "unit": "cycles"},
 }
@@ -1230,7 +1240,8 @@ def write_results(out_dir: str, benches: list[str], side: Side, perf: bool):
             results.append(result)
             continue
         metrics = {**codegen[name], **times.get(name, {})}
-        values = {RESULT_KEYS[k]: v for k, v in metrics.items() if v or k != "instructions"}
+        counts = ("instructions", "cycles")
+        values = {RESULT_KEYS[k]: v for k, v in metrics.items() if v or k not in counts}
         if bench in side.runtime:
             values["runtime_instructions"] = round(side.runtime[bench])
             values["runtime_cycles"] = round(side.runtime_cycles[bench])

@@ -156,14 +156,14 @@ pub struct StateInner<'a> {
     /// Database plus accepted transaction-boundary state overlay.
     #[derive_where(skip)]
     database: CacheDB<Box<dyn DynDatabase + 'a>>,
-    /// Pre-warmed set: precompiles, coinbase, and the EIP-2930 access list.
-    prewarm_set: PrewarmSet,
     /// Revert journal.
     journal: Vec<JournalEntry>,
     /// Logs emitted by the current transaction.
     logs: Vec<Log>,
     /// Accounts self-destructed in the current transaction.
     selfdestructs: AddressSet,
+    /// Pre-warmed set: precompiles, coinbase, and the EIP-2930 access list.
+    prewarm_set: PrewarmSet,
 }
 
 impl<'a> State<'a> {
@@ -179,10 +179,10 @@ impl<'a> State<'a> {
             transient_storage: StorageKeyMap::default(),
             inner: StateInner {
                 database: CacheDB::new(initial),
-                prewarm_set: PrewarmSet::new(),
                 journal: Vec::new(),
                 logs: Vec::new(),
                 selfdestructs: AddressSet::default(),
+                prewarm_set: PrewarmSet::new(),
             },
         }
     }

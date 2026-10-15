@@ -45,6 +45,14 @@ pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
         Vec::new()
     }
 
+    /// Calls `f` with each precompile address.
+    ///
+    /// Defaults to iterating [`Self::addresses`]; providers should override it to avoid the
+    /// allocation, since it runs once per transaction.
+    fn for_each_address(&self, f: &mut dyn FnMut(Address)) {
+        self.addresses().into_iter().for_each(f);
+    }
+
     /// Returns precompile addresses and identifiers.
     fn precompile_ids(&self) -> Vec<(Address, PrecompileId)>;
 

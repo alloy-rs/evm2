@@ -35,12 +35,15 @@ def cargo_env(rust_log: str | None = None) -> dict[str, str]:
     return env
 
 
-def cargo_build(root: str, incremental: bool = True, target_dir: str | None = None) -> str:
-    """Build the CLI binary and return its path."""
+def cargo_build(root: str, target_dir: str | None = None) -> str:
+    """Build the CLI binary and return its path.
+
+    Always builds non-incrementally: incremental builds split crates into more codegen
+    units, which changes the host code and skews head-vs-base measurements.
+    """
     target_dir = target_dir or _shared_target_dir()
     env = {**os.environ, **llvm_env(root), "CARGO_TARGET_DIR": target_dir}
-    if not incremental:
-        env["CARGO_INCREMENTAL"] = "0"
+    env["CARGO_INCREMENTAL"] = "0"
     subprocess.run(
         ["cargo", "build", "--quiet", "-p", "evm2-cli", "--bin", "evm2", "--all-features"],
         check=True,
@@ -109,7 +112,7 @@ def run_cli(
     return r.stdout
 
 
-PERF_EVENTS = "instructions:u,task-clock"
+PERF_EVENTS = "instructions:u,cycles:u,task-clock"
 RUNTIME_EVENTS = "instructions:u,cycles:u"
 
 
@@ -126,11 +129,11 @@ def perf_available() -> bool:
     return r.returncode == 0 and "<not" not in r.stderr and "instructions" in r.stderr
 
 
-def time_cli(binary: str, args: list[str], perf: bool) -> tuple[int | None, float]:
-    """Run the CLI and return ``(instructions, seconds)``.
+def time_cli(binary: str, args: list[str], perf: bool) -> tuple[int | None, int | None, float]:
+    """Run the CLI and return ``(instructions, cycles, seconds)``.
 
-    With *perf*, returns user-space instructions and task clock (CPU time) from
-    ``perf stat``. Otherwise returns no instruction count and wall time.
+    With *perf*, returns user-space instructions, user-space cycles and task clock (CPU time)
+    from ``perf stat``. Otherwise returns no counts and wall time.
     """
     cmd = [binary, *args]
     if not perf:
@@ -138,7 +141,7 @@ def time_cli(binary: str, args: list[str], perf: bool) -> tuple[int | None, floa
         subprocess.run(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=True
         )
-        return None, time.perf_counter() - start
+        return None, None, time.perf_counter() - start
     with tempfile.NamedTemporaryFile("r") as out:
         subprocess.run(
             ["perf", "stat", "-x,", "-e", PERF_EVENTS, "-o", out.name, *cmd],
@@ -155,7 +158,7 @@ def time_cli(binary: str, args: list[str], perf: bool) -> tuple[int | None, floa
                     stats[parts[2]] = float(parts[0])
                 except ValueError:
                     pass
-    return int(stats["instructions:u"]), stats["task-clock"] / 1e3
+    return int(stats["instructions:u"]), int(stats["cycles:u"]), stats["task-clock"] / 1e3
 
 
 def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
