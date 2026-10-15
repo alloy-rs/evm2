@@ -137,14 +137,14 @@ ignoring dump paths. `0/N` shows that a refactor leaves codegen alone.
 
 ### Compile times
 
-- `instructions` and `time` are medians of `--runs` (default 3) runs of
-  `evm2 run <bench> 0`, which JIT-compiles every contract in the fixture
-  without dumps or execution. `instructions` counts user-space instructions
-  with `perf stat` and varies by about 0.3% between runs. `time` is CPU time
-  (wall time without `perf`); on a busy machine it moved by more than 10% for
-  identical code. Head and base runs alternate, so load hits both sides
-  alike. Judge compile-time changes by `instructions`.
-- `parse`, `translate`, `optimize`, and `codegen` come from the single dump
+- Compile instructions and compile time are medians of `--runs` (default 3)
+  runs of `evm2 run <bench> 0`, which JIT-compiles every contract in the
+  fixture without dumps or execution. Compile instructions count user-space
+  instructions with `perf stat` and vary by about 0.3% between runs. Compile
+  time is CPU time (wall time without `perf`); on a busy machine it moved by
+  more than 10% for identical code. Head and base runs alternate, so load hits
+  both sides alike. Judge compile-time changes by compile instructions.
+- The parse, translate, optimize, and codegen times come from the single dump
   run's `remarks.txt` and appear only in the details table. They are noisy:
   use them to find which phase moved, not by how much.
 - Do not read `finalize` or `total` in `remarks.txt` as compile time.
@@ -214,6 +214,22 @@ and `jit-bench-baseline` for bases without a run of their own.
 ./scripts/jit/compare.py /tmp/out/base /tmp/out/head --pr-comment-output /tmp/out/comment.md
 ```
 
+### Output names
+
+Each metric has one ID and one title. The ID is a snake_case name, with a unit
+suffix where there is one, such as `opt_s_lines` or `compile_time_seconds`.
+Code uses it as the row and column key and as the `results.json` key. `TITLES`
+in `bench.py` maps every ID to the title people read, such as `Assembly lines`,
+and `METRICS` takes its perf-site titles from the same map. When you add a
+metric or a table column, give it an ID and a `TITLES` entry; don't add a
+second mapping.
+
+Everything a person reads must look good: tables, `results.md`, the job
+summary, and the PR comment. Use titles as headers, never IDs, file names, or
+made-up abbreviations; write them in sentence case; and format values with
+units (`20.6 KiB`, `1.30G`, `96.9ms`). Render the output after changing it and
+read it as a reviewer would.
+
 ## Bench-and-PR workflow
 
 When the user asks to "bench and open pr", "post results to pr", or whenever
@@ -245,9 +261,9 @@ More prose: motivation, design notes, caveats, anything reviewers need.
 
 ## Benchmarks
 
-Headline numbers vs `main`: jit size -7.5%, opt.s +2.9%, compile
-instructions -4.1%. `counter` regresses on opt.s (+26%); `seaport` is roughly
-flat. Runtime: see the CodSpeed report.
+Headline numbers vs `main`: JIT size -7.5%, assembly lines +2.9%, compile
+instructions -4.1%. `counter` regresses on assembly lines (+26%); `seaport` is
+roughly flat. Runtime: see the CodSpeed report.
 
 EOF
   cat /tmp/bench/results.md

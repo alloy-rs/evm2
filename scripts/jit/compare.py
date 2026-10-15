@@ -32,7 +32,6 @@ from bench import (
     COMPILER,
     METRICS,
     NOISE_CODEGEN,
-    RESULT_KEYS,
     SUMMARY_TIME_KEYS,
     TIME_KEYS,
     fmt_codegen,
@@ -212,7 +211,7 @@ def asm_summary(comparison: dict) -> str:
 
 def table_rows(document: dict | None, columns: list[str]) -> dict[str, dict]:
     return {
-        test_id: {c: values.get(RESULT_KEYS[c]) or 0 for c in columns}
+        test_id: {c: values.get(c) or 0 for c in columns}
         for test_id, values in ok_results(document).items()
     }
 
@@ -230,7 +229,7 @@ def detailed_report(head: dict, base: dict | None, comparison: dict, base_ref: s
         if comparison["failures"]:
             print("### Failures\n")
             print_table(
-                ["benchmark", "error"],
+                ["Benchmark", "Error"],
                 [[t, e.replace("|", "\\|")] for t, e in comparison["failures"].items()],
                 right_cols=0,
             )
@@ -269,7 +268,7 @@ def detailed_report(head: dict, base: dict | None, comparison: dict, base_ref: s
             ]
             if artifacts:
                 print("### Artifact changes\n")
-                print_table(["benchmark", "files"], artifacts, right_cols=0)
+                print_table(["Benchmark", "Files"], artifacts, right_cols=0)
     return out.getvalue()
 
 

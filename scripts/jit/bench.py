@@ -412,6 +412,46 @@ class Analysis(ABC):
         self.report(benches, cur)
 
 
+# Each table column has one ID, which keys the rows and `results.json`; output shows its title.
+TITLES = {
+    "unopt_ll_lines": "Unoptimized IR lines",
+    "opt_ll_lines": "Optimized IR lines",
+    "opt_s_lines": "Assembly lines",
+    "jit_size_bytes": "JIT size",
+    "i256_loads": "256-bit loads",
+    "i256_stores": "256-bit stores",
+    "mresize_calls": "Memory resizes",
+    "spills": "Spills",
+    "reloads": "Reloads",
+    "compile_instructions": "Compile instructions",
+    "compile_time_seconds": "Compile time",
+    "parse_seconds": "Parse time",
+    "translate_seconds": "Translate time",
+    "optimize_seconds": "Optimize time",
+    "codegen_seconds": "Codegen time",
+    "runtime_instructions": "Instructions per iteration",
+    "local": "Local",
+    "non_adj": "Non-adjacent",
+    "pcr": "PCR hint",
+    "fixpt": "Fixpoint",
+    "unresolved": "Unresolved",
+    "total": "Total",
+    "total_insts": "Instructions",
+    "live": "Live",
+    "dead": "Dead",
+    "noops": "No-ops",
+    "blocks": "Blocks",
+    "block_min": "Min block",
+    "block_max": "Max block",
+    "block_avg": "Mean block",
+    "block_median": "Median block",
+}
+
+
+def titles(columns: list[str]) -> list[str]:
+    return [TITLES[c] for c in columns]
+
+
 def column_totals(rows: dict[str, dict], columns: list[str]) -> dict:
     return {c: sum(r[c] for r in rows.values()) for c in columns}
 
@@ -421,7 +461,7 @@ def print_solo(rows: dict[str, dict], columns: list[str], fmt):
     totals = column_totals(rows, columns)
     table = [[name, *(fmt(c, r[c]) for c in columns)] for name, r in rows.items()]
     table.append(["**TOTAL**", *(f"**{fmt(c, totals[c])}**" for c in columns)])
-    print_table(["benchmark", *columns], table)
+    print_table(["Benchmark", *titles(columns)], table)
 
 
 def print_diff(
@@ -463,7 +503,7 @@ def print_diff(
             *(f"**{fmt_geomean([ps[c] for ps in pairs.values()])}**" for c in summary_columns),
         ]
     )
-    print_table(["benchmark", *summary_columns], table)
+    print_table(["Benchmark", *titles(summary_columns)], table)
 
     def cell(c, b, v, detail=fmt_detail):
         return detail(fmt(c, v), fmt(c, b), fmt_pct(b, v))
@@ -476,24 +516,26 @@ def print_diff(
             *(cell(c, base_totals[c], cur_totals[c], fmt_detail_bold) for c in columns),
         ]
     )
-    print_table(["benchmark", *columns], detail_table)
+    print_table(["Benchmark", *titles(columns)], detail_table)
     print("</details>\n")
 
 
 CODEGEN_FILES = ["unopt.ll", "opt.ll", "opt.s"]
 CODEGEN_COLUMNS = [
-    *CODEGEN_FILES,
-    "jit size",
-    "i256 loads",
-    "i256 stores",
-    "mresize",
+    "unopt_ll_lines",
+    "opt_ll_lines",
+    "opt_s_lines",
+    "jit_size_bytes",
+    "i256_loads",
+    "i256_stores",
+    "mresize_calls",
     "spills",
     "reloads",
 ]
 
 
 def fmt_codegen(col: str, v: int) -> str | int:
-    return fmt_size(v) if col == "jit size" else v
+    return fmt_size(v) if col == "jit_size_bytes" else v
 
 
 class CodegenLines(Analysis):
@@ -557,20 +599,20 @@ def opt_s_identity(benches: list[str], cur: Side, base: Side) -> str:
 
 
 PHASES = ["parse", "translate", "optimize", "codegen"]
-SUMMARY_TIME_KEYS = ["instructions", "time"]
-TIME_KEYS = [*SUMMARY_TIME_KEYS, *PHASES]
+SUMMARY_TIME_KEYS = ["compile_instructions", "compile_time_seconds"]
+TIME_KEYS = [*SUMMARY_TIME_KEYS, *(f"{p}_seconds" for p in PHASES)]
 
 
 def fmt_time_key(key: str, v: float) -> str:
-    return fmt_count(v) if key == "instructions" else fmt_dur(v)
+    return fmt_count(v) if key == "compile_instructions" else fmt_dur(v)
 
 
 def time_changed(ps: dict[str, tuple[float, float]]) -> bool:
     # Instruction counts are stable enough to pick rows; time is the fallback.
-    b, c = ps["instructions"]
+    b, c = ps["compile_instructions"]
     if b and c:
         return not is_noise(b, c, NOISE_INSTRUCTIONS)
-    return not is_noise(*ps["time"], NOISE_TIME)
+    return not is_noise(*ps["compile_time_seconds"], NOISE_TIME)
 
 
 class CompileTime(Analysis):
@@ -601,9 +643,9 @@ class CompileTime(Analysis):
             remarks = parse_remarks(side.dump_dir, bench)
             instructions = [i for i, _ in samples if i is not None]
             rows[bench_name(bench)] = {
-                "instructions": statistics.median(instructions) if instructions else 0,
-                "time": statistics.median(t for _, t in samples),
-                **{p: remarks.get(p, 0.0) for p in PHASES},
+                "compile_instructions": statistics.median(instructions) if instructions else 0,
+                "compile_time_seconds": statistics.median(t for _, t in samples),
+                **{f"{p}_seconds": remarks.get(p, 0.0) for p in PHASES},
             }
         return rows
 
@@ -624,7 +666,7 @@ class CompileTime(Analysis):
         )
 
 
-RUNTIME_KEY = "instructions/iter"
+RUNTIME_KEY = "runtime_instructions"
 
 
 def fmt_runtime_key(_key: str, v: float) -> str:
@@ -725,22 +767,12 @@ class JumpResolution(Analysis):
 
     def report(self, benches, side):
         print("### Jump resolution\n")
-        headers = ["benchmark", "local", "nonadj", "pcr", "fixpt", "unres", "total"]
+        keys = ["local", "non_adj", "pcr", "fixpt", "unresolved", "total"]
         table = []
         for bench in benches:
             s = self._analyze(side.outputs.get(bench, ""))
-            table.append(
-                [
-                    bench_name(bench),
-                    s["local"],
-                    s["non_adj"],
-                    s["pcr"],
-                    s["fixpt"],
-                    s["unresolved"],
-                    s["total"],
-                ]
-            )
-        print_table(headers, table)
+            table.append([bench_name(bench), *(s[k] for k in keys)])
+        print_table(["Benchmark", *titles(keys)], table)
 
 
 # ---------------------------------------------------------------------------
@@ -798,7 +830,7 @@ class BlockStats(Analysis):
 
     def report(self, benches, side):
         print("### IR stats\n")
-        headers = ["benchmark"] + IR_STAT_KEYS
+        headers = ["Benchmark", *titles(IR_STAT_KEYS)]
         table = []
         for bench in benches:
             s = self._parse(side.outputs.get(bench, ""))
@@ -809,7 +841,7 @@ class BlockStats(Analysis):
 
     def report_diff(self, benches, cur_side, base_side):
         print("### IR stats\n")
-        headers = ["benchmark"] + IR_STAT_KEYS
+        headers = ["Benchmark", *titles(IR_STAT_KEYS)]
         table = []
         for bench in benches:
             cur = self._parse(cur_side.outputs.get(bench, ""))
@@ -1067,7 +1099,7 @@ def report_failures(sides: list[Side]):
     ]
     if rows:
         print("### Failures\n")
-        print_table(["revision", "benchmark", "error"], rows, right_cols=0)
+        print_table(["Revision", "Benchmark", "Error"], rows, right_cols=0)
 
 
 def git(root: str, *args: str) -> str:
@@ -1129,29 +1161,17 @@ def base_binary(root: str, sha: str, base_dump: str) -> str:
 # ---------------------------------------------------------------------------
 
 COMPILER = "evm2"
-# `results.json` keys of the codegen and compile-time table columns.
-RESULT_KEYS = {
-    "unopt.ll": "unopt_ll_lines",
-    "opt.ll": "opt_ll_lines",
-    "opt.s": "opt_s_lines",
-    "jit size": "jit_size_bytes",
-    "i256 loads": "i256_loads",
-    "i256 stores": "i256_stores",
-    "mresize": "mresize_calls",
-    "spills": "spills",
-    "reloads": "reloads",
-    "instructions": "compile_instructions",
-    "time": "compile_time_seconds",
-    **{p: f"{p}_seconds" for p in PHASES},
-}
 # Metrics the perf site charts, all lower-is-better.
 METRICS = {
-    "jit_size_bytes": {"title": "JIT size", "unit": "bytes"},
-    "opt_s_lines": {"title": "Assembly lines", "unit": "lines"},
-    "opt_ll_lines": {"title": "Optimized IR lines", "unit": "lines"},
-    "unopt_ll_lines": {"title": "Unoptimized IR lines", "unit": "lines"},
-    "compile_instructions": {"title": "Compile instructions", "unit": "instructions"},
-    "compile_time_seconds": {"title": "Compile time", "unit": "seconds"},
+    key: {"title": TITLES[key], "unit": unit}
+    for key, unit in [
+        ("jit_size_bytes", "bytes"),
+        ("opt_s_lines", "lines"),
+        ("opt_ll_lines", "lines"),
+        ("unopt_ll_lines", "lines"),
+        ("compile_instructions", "instructions"),
+        ("compile_time_seconds", "seconds"),
+    ]
 }
 ARTIFACT_FILES = ["bytecode.txt", "unopt.ll", "opt.ll", "opt.s"]
 TARGET_CPU_RE = re.compile(r'"target-cpu"="([^"]+)"')
@@ -1204,7 +1224,7 @@ def write_results(out_dir: str, benches: list[str], side: Side, perf: bool):
             results.append(result)
             continue
         metrics = {**codegen[name], **times.get(name, {})}
-        values = {RESULT_KEYS[k]: v for k, v in metrics.items() if v or k != "instructions"}
+        values = {k: v for k, v in metrics.items() if v or k != "compile_instructions"}
         result["compilers"] = {COMPILER: {"status": "ok", **values}}
         results.append(result)
 
