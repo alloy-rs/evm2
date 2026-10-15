@@ -20,11 +20,13 @@ use alloy_primitives::{
     Address,
     map::{AddressMap, HashSet},
 };
-use bitvec::{bitvec, vec::BitVec};
 
 /// Short-address optimization cap. Addresses with 18 leading zero bytes whose last two bytes are
 /// less than this value are tracked in a bit vector for fast warm lookups.
 const SHORT_ADDRESS_CAP: usize = 300;
+
+/// Number of 64-bit words in the short-address bit set.
+const SHORT_ADDRESS_WORDS: usize = SHORT_ADDRESS_CAP.div_ceil(64);
 
 /// Returns the short-address index for an address, if it qualifies.
 ///
@@ -50,7 +52,7 @@ fn short_address(address: &Address) -> Option<usize> {
 pub struct PrewarmSet {
     /// Bit vector of warm short addresses. An address shorter than [`SHORT_ADDRESS_CAP`] sets
     /// its bit here for faster access; precompiles and other low-numbered addresses land here.
-    short_addresses: BitVec,
+    short_addresses: [u64; SHORT_ADDRESS_WORDS],
     /// Warm addresses keyed by address, each holding its warm storage slots.
     ///
     /// This holds the EIP-2930 access list, non-short warm addresses, and the non-revertible base
@@ -71,7 +73,7 @@ impl PrewarmSet {
     /// Creates a new, empty warm-address set.
     #[inline]
     pub fn new() -> Self {
-        Self { short_addresses: bitvec![0; SHORT_ADDRESS_CAP], access_list: AddressMap::default() }
+        Self { short_addresses: [0; SHORT_ADDRESS_WORDS], access_list: AddressMap::default() }
     }
 
     /// Returns the access list (non-short warm addresses and all warm storage slots).
@@ -118,7 +120,7 @@ impl PrewarmSet {
     #[inline]
     fn warm_short_address(&mut self, address: &Address) -> bool {
         if let Some(short_address) = short_address(address) {
-            self.short_addresses.set(short_address, true);
+            self.short_addresses[short_address / 64] |= 1 << (short_address % 64);
             true
         } else {
             false
@@ -128,7 +130,7 @@ impl PrewarmSet {
     /// Clears the per-transaction warm entries, leaving an empty set.
     #[inline]
     pub fn clear(&mut self) {
-        self.short_addresses.fill(false);
+        self.short_addresses = [0; SHORT_ADDRESS_WORDS];
         self.access_list.clear();
     }
 
@@ -136,13 +138,19 @@ impl PrewarmSet {
     pub fn is_warm(&self, address: &Address) -> bool {
         // check if it is a short address
         if let Some(short_address) = short_address(address)
-            && self.short_addresses[short_address]
+            && self.is_short_address_warm(short_address)
         {
             return true;
         }
 
         // otherwise check the access list (which also holds the base warm accounts)
         self.access_list.contains_key(address)
+    }
+
+    /// Returns whether the short-address bit is set.
+    #[inline]
+    const fn is_short_address_warm(&self, short_address: usize) -> bool {
+        self.short_addresses[short_address / 64] & (1 << (short_address % 64)) != 0
     }
 
     /// Returns whether the storage slot is warm-loaded.
@@ -166,8 +174,7 @@ mod tests {
     #[test]
     fn test_initialization() {
         let prewarm_set = PrewarmSet::new();
-        assert_eq!(prewarm_set.short_addresses.len(), SHORT_ADDRESS_CAP);
-        assert!(!prewarm_set.short_addresses.any());
+        assert_eq!(prewarm_set.short_addresses, [0; SHORT_ADDRESS_WORDS]);
         assert!(prewarm_set.access_list.is_empty());
 
         let default_addresses = PrewarmSet::default();
@@ -180,17 +187,27 @@ mod tests {
 
         let short_addr1 = Address::with_last_byte(1);
         let short_addr2 = Address::with_last_byte(5);
+        let mut bytes = [0u8; 20];
+        bytes[18] = 1u8;
+        bytes[19] = 43u8; // 299
+        let last_short_addr = Address::from(bytes);
 
         prewarm_set.warm(&short_addr1);
         prewarm_set.warm(&short_addr2);
+        prewarm_set.warm(&last_short_addr);
 
-        assert!(prewarm_set.short_addresses[1]);
-        assert!(prewarm_set.short_addresses[5]);
-        assert!(!prewarm_set.short_addresses[0]);
+        assert!(prewarm_set.is_short_address_warm(1));
+        assert!(prewarm_set.is_short_address_warm(5));
+        assert!(prewarm_set.is_short_address_warm(299));
+        assert!(!prewarm_set.is_short_address_warm(0));
+        assert!(!prewarm_set.is_short_address_warm(43));
+        assert!(!prewarm_set.is_short_address_warm(235));
 
         assert!(prewarm_set.is_warm(&short_addr1));
         assert!(prewarm_set.is_warm(&short_addr2));
+        assert!(prewarm_set.is_warm(&last_short_addr));
         assert!(!prewarm_set.is_warm(&Address::with_last_byte(20)));
+        assert!(prewarm_set.access_list.is_empty());
     }
 
     #[test]
@@ -207,7 +224,7 @@ mod tests {
         prewarm_set.warm(&boundary_addr);
 
         // Non-short addresses are not tracked in the short-address bit vector.
-        assert!(!prewarm_set.short_addresses.iter().any(|b| *b));
+        assert_eq!(prewarm_set.short_addresses, [0; SHORT_ADDRESS_WORDS]);
 
         assert!(prewarm_set.is_warm(&regular_addr));
         assert!(prewarm_set.is_warm(&boundary_addr));
