@@ -289,3 +289,16 @@ appends the benchmark tables exactly as the script produced them.
   // GOOD
   trace!("resolved jump");
   ```
+- Name IR values after the Rust field path they access, so `unopt.ll` maps
+  back to the source: `<base>.<field>` for a loaded value and
+  `<base>.<field>.addr` for its address, where `<base>` is the Rust name of the
+  struct pointer (`ecx`, `interpreter`, `message`). `ecx.gas.remaining` is
+  `ecx.gas.remaining()`, `message.caller.addr` points at `Message::caller`.
+  Locals take the Rust name too: the alloca behind `stack_bytes` is
+  `stack_bytes.addr`.
+  The `field!` macro builds these names; pass them to `get_field` by hand
+  elsewhere. When a field moves or changes meaning, update its names.
+- Keep the IR dumps readable: no instructions that do nothing (`get_field`
+  returns the base pointer for a field at offset 0 instead of emitting a zero
+  GEP), and no names that contradict the value. Check `unopt.ll` after
+  changing codegen.
