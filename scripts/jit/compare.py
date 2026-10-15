@@ -50,6 +50,7 @@ CODEGEN_METRICS = ["jit_size_bytes", "opt_s_lines", "opt_ll_lines", "unopt_ll_li
 # The PR comment workflow reads results from untrusted PR runs; IDs and metrics are the only
 # values from them that reach the comment.
 TEST_ID_RE = re.compile(r"[\w.-]{1,128}")
+TARGET_CPU_RE = re.compile(r"[\w.+-]{1,64}")
 
 
 def load(path: Path) -> dict:
@@ -66,12 +67,22 @@ def load(path: Path) -> dict:
         values = compiler(result)
         if not isinstance(values, dict):
             raise ValueError(f"{path}: invalid {COMPILER} results for {result['test_id']}")
+        # Errors reach workflow commands and Markdown: keep one line of plain text.
+        if "error" in values:
+            error = " ".join(str(values["error"]).split())[:500]
+            values["error"] = re.sub(r"[^\w .,:;=()/'+-]", "?", error) or "unknown error"
         for name in METRICS:
             value = values.get(name)
             if value is not None and (
                 isinstance(value, bool) or not isinstance(value, (int, float))
             ):
                 raise ValueError(f"{path}: {result['test_id']} {name} is not a number")
+    environment = document.get("environment")
+    if not isinstance(environment, dict):
+        environment = document["environment"] = {}
+    cpu = environment.get("target_cpu")
+    if not (isinstance(cpu, str) and TARGET_CPU_RE.fullmatch(cpu)):
+        environment["target_cpu"] = None
     document["path"] = path
     return document
 

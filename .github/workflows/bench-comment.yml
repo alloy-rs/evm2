@@ -108,7 +108,8 @@ jobs:
             fi
             args+=(--baseline "$JIT_BENCH/base")
           fi
-          uv run scripts/jit/compare.py "${args[@]}" > /dev/null
+          # The benchmark run already has the report; keep artifact text out of this job's summary.
+          env -u GITHUB_STEP_SUMMARY uv run scripts/jit/compare.py "${args[@]}" > /dev/null
           should_comment="$(< "$JIT_BENCH/should-comment")"
           [[ "$TOOLING_CHANGED" == "true" ]] && should_comment=true
           echo "should-comment=$should_comment" >> "$GITHUB_OUTPUT"
