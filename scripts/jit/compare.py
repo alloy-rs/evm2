@@ -32,12 +32,10 @@ from bench import (
     COMPILER,
     METRICS,
     NOISE_CODEGEN,
-    NOISE_INSTRUCTIONS,
     RESULT_KEYS,
-    RUNTIME_KEY,
+    RUNTIME_KEYS,
     SUMMARY_TIME_KEYS,
     TIME_KEYS,
-    all_noise,
     fmt_codegen,
     fmt_runtime_key,
     fmt_time_key,
@@ -45,13 +43,14 @@ from bench import (
     print_diff,
     print_solo,
     print_table,
+    runtime_changed,
     time_changed,
 )
 
 PERF_SITE_URL = "https://www.getfoundry.sh/perf/evm2/"
 # Metrics whose changes are deterministic and decide whether a benchmark changed.
 CODEGEN_METRICS = ["jit_size_bytes", "opt_s_lines", "opt_ll_lines", "unopt_ll_lines"]
-RUNTIME_METRIC = "runtime_instructions"
+RUNTIME_METRICS = ["runtime_instructions", "runtime_cycles"]
 # The PR comment workflow reads results from untrusted PR runs; IDs and metrics are the only
 # values from them that reach the comment.
 TEST_ID_RE = re.compile(r"[\w.-]{1,128}")
@@ -154,7 +153,7 @@ def compile_metric(head: dict, base: dict | None) -> str:
 
 
 def has_runtime(document: dict | None) -> bool:
-    return any(RUNTIME_METRIC in values for values in ok_results(document).values())
+    return any(RUNTIME_METRICS[0] in values for values in ok_results(document).values())
 
 
 def compare(head: dict, base: dict | None) -> dict:
@@ -162,7 +161,7 @@ def compare(head: dict, base: dict | None) -> dict:
     base_ok = ok_results(base)
     metrics = [*CODEGEN_METRICS, compile_metric(head, base)]
     if has_runtime(head):
-        metrics.append(RUNTIME_METRIC)
+        metrics += RUNTIME_METRICS
     rows = []
     for test_id, after in head_ok.items():
         before = base_ok.get(test_id)
@@ -252,7 +251,7 @@ def detailed_report(head: dict, base: dict | None, comparison: dict, base_ref: s
             print_solo(table_rows(head, TIME_KEYS), TIME_KEYS, fmt_time_key)
             if has_runtime(head):
                 print("### Runtime\n")
-                print_solo(table_rows(head, [RUNTIME_KEY]), [RUNTIME_KEY], fmt_runtime_key)
+                print_solo(table_rows(head, RUNTIME_KEYS), RUNTIME_KEYS, fmt_runtime_key)
         else:
             print("### Codegen statistics\n")
             print(f"`opt.s` changed in {asm_summary(comparison)} benchmarks.\n")
@@ -281,11 +280,11 @@ def detailed_report(head: dict, base: dict | None, comparison: dict, base_ref: s
                 if not has_runtime(base):
                     print("The baseline has no runtime measurements.\n")
                 print_diff(
-                    table_rows(head, [RUNTIME_KEY]),
-                    table_rows(base, [RUNTIME_KEY]),
-                    [RUNTIME_KEY],
+                    table_rows(head, RUNTIME_KEYS),
+                    table_rows(base, RUNTIME_KEYS),
+                    RUNTIME_KEYS,
                     fmt_runtime_key,
-                    all_noise(NOISE_INSTRUCTIONS),
+                    runtime_changed,
                     "Full runtime",
                 )
             artifacts = [

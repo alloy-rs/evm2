@@ -92,6 +92,7 @@ def run_cli(
 
 
 PERF_EVENTS = "instructions:u,task-clock"
+RUNTIME_EVENTS = "instructions:u,cycles:u"
 
 
 def perf_available() -> bool:
@@ -137,3 +138,24 @@ def time_cli(binary: str, args: list[str], perf: bool) -> tuple[int | None, floa
                 except ValueError:
                     pass
     return int(stats["instructions:u"]), stats["task-clock"] / 1e3
+
+
+def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
+    """Run the CLI under ``perf stat`` and return user-space ``(instructions, cycles)``."""
+    with tempfile.NamedTemporaryFile("r") as out:
+        subprocess.run(
+            ["perf", "stat", "-x,", "-e", RUNTIME_EVENTS, "-o", out.name, binary, *args],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        stats = {}
+        for line in out:
+            parts = line.strip().split(",")
+            if len(parts) > 2:
+                try:
+                    stats[parts[2]] = float(parts[0])
+                except ValueError:
+                    pass
+    return int(stats["instructions:u"]), int(stats["cycles:u"])
