@@ -1278,12 +1278,16 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     /// Operands that fit in 64 bits, with a nonzero divisor, use a native 64-bit division.
     /// Everything else calls the builtin on a cold path. `INT64_MIN / -1` takes the slow
     /// path too, since its quotient doesn't fit.
+    ///
+    /// Constant divisors always call the builtin: LLVM expands the 64-bit division into a
+    /// multiply sequence, which grows small contracts by up to a half for a small runtime gain.
     fn build_div_rem(&mut self, builtin: Builtin, signed: bool, rem: bool) {
         let fits = |c: U256| {
             let magnitude = if signed && c.bit(255) { !c } else { c };
             magnitude.bit_len() < 64 + usize::from(!signed)
         };
-        if self.const_operands::<2>().into_iter().flatten().any(|c| !fits(c)) {
+        let [a_const, b_const] = self.const_operands::<2>();
+        if b_const.is_some() || a_const.is_some_and(|c| !fits(c)) {
             let sp = self.sp_after_inputs();
             let _ = self.call_builtin(builtin, &[sp]);
             return;
