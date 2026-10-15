@@ -1790,25 +1790,34 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             .map(|(inst, data)| (data.jumpdest_pc() as usize, inst))
             .collect::<Vec<_>>();
 
+        let Some(&(max_pc, _)) = jumpdests.last() else {
+            let invalid_jump = self.add_invalid_jump();
+            self.bcx.br(invalid_jump);
+            return;
+        };
+
         // Switch on the target's rank among the valid targets instead of its sparse PC,
-        // so that the switch lowers to a jump table. Each pair in the table covers 32 PCs:
-        // the number of targets in earlier pairs minus one, then the bitmap of targets in
-        // this pair. A trailing empty pair catches PCs past the last target.
-        let pairs = jumpdests.last().map_or(0, |&(pc, _)| pc / 32 + 1) + 1;
-        let mut table = vec![[0u64; 2]; pairs];
+        // so that the switch lowers to a jump table. Ranks count down from the last target.
+        // Each pair in the table covers 32 PCs: the number of targets in later pairs minus
+        // one, then the bitmap of targets in this pair, with the first PC in the top bit.
+        let mut table = vec![[0u64; 2]; max_pc / 32 + 1];
         let mut targets = Vec::with_capacity(jumpdests.len());
-        for (i, &(pc, inst)) in jumpdests.iter().enumerate() {
-            table[pc / 32][1] |= 1 << (pc % 32);
+        for (i, &(pc, inst)) in jumpdests.iter().rev().enumerate() {
+            table[pc / 32][1] |= 1 << (31 - pc % 32);
             targets.push((i as u64, self.effective_entry(inst)));
         }
         let mut rank = 0u32;
-        for pair in &mut table {
+        for pair in table.iter_mut().rev() {
             pair[0] = rank.wrapping_sub(1).into();
             rank += pair[1].count_ones();
         }
 
-        let max_pc = self.bcx.iconst(i64_type, (pairs as i64 - 1) * 32);
-        let pc = self.bcx.umin(pc, max_pc);
+        let in_range = self.bcx.icmp_imm(IntCC::UnsignedLessThanOrEqual, pc, max_pc as i64);
+        let lookup = self.bcx.create_block("jump_table.lookup");
+        let invalid_jump = self.add_invalid_jump();
+        self.bcx.brif_cold(in_range, lookup, invalid_jump, false);
+
+        self.bcx.switch_to_block(lookup);
         let five = self.bcx.iconst(i64_type, 5);
         let pair_index = self.bcx.ushr(pc, five);
         let table = self.bcx.const_array(i32_type, table.as_flattened());
@@ -1819,9 +1828,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let base = self.bcx.load(i32_type, base_ptr, "jump_table.base");
         let bitmap_ptr = self.bcx.gep(pair_type, table, &[pair_index, one], "jump_table.bitmap");
         let bitmap = self.bcx.load(i32_type, bitmap_ptr, "jump_table.bitmap");
-        // Shift the target's bit into the sign bit, dropping the bits above it.
+        // Shift the target's bit into the sign bit, dropping the bits of earlier PCs.
         let shift = self.bcx.ireduce(i32_type, pc);
-        let shift = self.bcx.bitnot(shift);
         let shift = self.bcx.bitand_imm(shift, 31);
         let bits = self.bcx.ishl(bitmap, shift);
         let is_valid = self.bcx.icmp_imm(IntCC::SignedLessThan, bits, 0);
@@ -1830,8 +1838,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.brif_cold(is_valid, dispatch, invalid_jump, false);
 
         self.bcx.switch_to_block(dispatch);
-        let below = self.bcx.popcnt(bits);
-        let index = self.bcx.iadd(base, below);
+        let at_or_after = self.bcx.popcnt(bits);
+        let index = self.bcx.iadd(base, at_or_after);
         self.bcx.switch(index, unreachable_block, &targets, false);
     }
 
