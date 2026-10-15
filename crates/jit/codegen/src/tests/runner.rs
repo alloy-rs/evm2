@@ -39,12 +39,8 @@ pub struct DefBlock {
     pub prevrandao: Option<B256>,
     pub gas_limit: U256,
     pub basefee: U256,
-}
-
-impl DefBlock {
-    pub fn get_blob_gasprice(&self) -> Option<u64> {
-        Some(0) // Default blob gas price for tests
-    }
+    pub blob_basefee: U256,
+    pub slot_num: U256,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -54,7 +50,7 @@ pub struct DefCfg {
 
 impl DefEnv {
     pub fn effective_gas_price(&self) -> U256 {
-        U256::from(0x4567)
+        uint!(0x0f_0000000000000010_0000000000004567_U256)
     }
 }
 
@@ -62,17 +58,19 @@ impl DefEnv {
 pub fn def_env() -> DefEnv {
     DefEnv {
         tx: DefTx {
-            caller: Address::repeat_byte(0xcc),
+            caller: Address::new(hex!("cc0102030405060708090a0b0c0d0e0f101112dd")),
             blob_hashes: vec![B256::repeat_byte(0x01), B256::repeat_byte(0x02)],
         },
         block: DefBlock {
-            coinbase: Address::repeat_byte(0xcb),
-            timestamp: U256::from(0x1234),
+            coinbase: Address::new(hex!("cb1112131415161718191a1b1c1d1e1f202122ee")),
+            timestamp: uint!(0x01_0000000000000002_0000000000001234_U256),
             number: DEF_BN,
-            difficulty: U256::from(0xcdef),
-            prevrandao: Some(B256::from(U256::from(0x0123))),
-            gas_limit: U256::from(0x5678),
-            basefee: U256::from(0x1231),
+            difficulty: uint!(0x03_0000000000000004_000000000000cdef_U256),
+            prevrandao: Some(B256::from(uint!(0x05_0000000000000006_0000000000000123_U256))),
+            gas_limit: uint!(0x07_0000000000000008_0000000000005678_U256),
+            basefee: uint!(0x09_000000000000000a_0000000000001231_U256),
+            blob_basefee: uint!(0x0b_000000000000000c_0000000000004321_U256),
+            slot_num: uint!(0x0d_000000000000000e_0000000000008765_U256),
         },
         cfg: DefCfg { chain_id: 69 },
     }
@@ -239,9 +237,9 @@ fn def_block_env() -> BlockEnv<BaseEvmTypes> {
         gas_limit: env.block.gas_limit,
         basefee: env.block.basefee,
         difficulty: env.block.difficulty,
-        prevrandao: U256::from(0x0123),
-        blob_basefee: U256::ZERO,
-        slot_num: U256::ZERO,
+        prevrandao: env.block.prevrandao.unwrap().into(),
+        blob_basefee: env.block.blob_basefee,
+        slot_num: env.block.slot_num,
         ..Default::default()
     }
 }

@@ -7,7 +7,8 @@ use crate::{
 };
 use alloy_primitives::U256;
 use evm2::{
-    BaseEvmTypes,
+    BaseEvmTypes, EvmFeatures, Version,
+    env::{BlockEnv, TxEnv},
     interpreter::{InstrStop, Interpreter, Message, op},
 };
 use evm2_jit_backend::{Attribute, BackendTypes, FunctionAttributeLocation, Pointer, TypeMethods};
@@ -737,9 +738,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.call_fallible_builtin(Builtin::Balance, &[self.ecx, sp]);
             }
             op::ORIGIN => {
-                let slot = self.sp_at_top();
-                let _ = self.call_builtin(Builtin::Origin, &[self.ecx, slot]);
-                self.narrow_to_address(slot);
+                let tx_env = self.load_tx_env_ptr();
+                field!(@push @[endian = "big"] self.address_type, tx_env, TxEnv<BaseEvmTypes>; origin);
             }
             op::CALLER => {
                 let message = self.load_message_ptr();
@@ -771,8 +771,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
 
             op::GASPRICE => {
-                let sp = self.sp_after_inputs();
-                let _ = self.call_builtin(Builtin::GasPrice, &[self.ecx, sp]);
+                let tx_env = self.load_tx_env_ptr();
+                field!(@push self.word_type, tx_env, TxEnv<BaseEvmTypes>; gas_price);
             }
             op::EXTCODESIZE => {
                 let sp = self.sp_after_inputs();
@@ -799,49 +799,52 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.call_fallible_builtin(Builtin::BlockHash, &[self.ecx, sp]);
             }
             op::COINBASE => {
-                let slot = self.sp_at_top();
-                let _ = self.call_builtin(Builtin::Coinbase, &[self.ecx, slot]);
-                self.narrow_to_address(slot);
+                let block_env = self.load_block_env_ptr();
+                field!(@push @[endian = "big"] self.address_type, block_env, BlockEnv<BaseEvmTypes>; beneficiary);
             }
             op::TIMESTAMP => {
-                let slot = self.sp_at_top();
-                let _ = self.call_builtin(Builtin::Timestamp, &[self.ecx, slot]);
+                let block_env = self.load_block_env_ptr();
+                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; timestamp);
             }
             op::NUMBER => {
-                let slot = self.sp_at_top();
-                let _ = self.call_builtin(Builtin::Number, &[self.ecx, slot]);
+                let block_env = self.load_block_env_ptr();
+                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; number);
             }
             op::DIFFICULTY => {
-                let slot = self.sp_at_top();
-                let _ = self.call_builtin(Builtin::Difficulty, &[self.ecx, slot]);
+                let block_env = self.load_block_env_ptr();
+                if Version::base(self.bytecode.spec_id).feature(EvmFeatures::EIP4399) {
+                    field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; prevrandao);
+                } else {
+                    field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; difficulty);
+                }
             }
             op::GASLIMIT => {
-                let slot = self.sp_at_top();
-                let _ = self.call_builtin(Builtin::GasLimit, &[self.ecx, slot]);
+                let block_env = self.load_block_env_ptr();
+                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; gas_limit);
             }
             op::CHAINID => {
-                let slot = self.sp_at_top();
-                let _ = self.call_builtin(Builtin::ChainId, &[self.ecx, slot]);
+                let tx_env = self.load_tx_env_ptr();
+                field!(@push self.word_type, tx_env, TxEnv<BaseEvmTypes>; chain_id);
             }
             op::SELFBALANCE => {
                 let slot = self.sp_at_top();
                 self.call_fallible_builtin(Builtin::SelfBalance, &[self.ecx, slot]);
             }
             op::BASEFEE => {
-                let slot = self.sp_at_top();
-                let _ = self.call_builtin(Builtin::Basefee, &[self.ecx, slot]);
+                let block_env = self.load_block_env_ptr();
+                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; basefee);
             }
             op::BLOBHASH => {
                 let sp = self.sp_after_inputs();
                 let _ = self.call_builtin(Builtin::BlobHash, &[self.ecx, sp]);
             }
             op::BLOBBASEFEE => {
-                let slot = self.sp_at_top();
-                let _ = self.call_builtin(Builtin::BlobBaseFee, &[self.ecx, slot]);
+                let block_env = self.load_block_env_ptr();
+                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; blob_basefee);
             }
             op::SLOTNUM => {
-                let slot = self.sp_at_top();
-                let _ = self.call_builtin(Builtin::SlotNum, &[self.ecx, slot]);
+                let block_env = self.load_block_env_ptr();
+                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; slot_num);
             }
 
             op::POP => {
@@ -1325,22 +1328,29 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.load(ptr_type, field, "interpreter.message")
     }
 
+    fn load_block_env_ptr(&mut self) -> B::Value {
+        let ptr_type = self.bcx.type_ptr();
+        let field = self.get_field(
+            self.ecx,
+            mem::offset_of!(EvmContext<'_, '_, '_>, block_env),
+            "ecx.block_env.addr",
+        );
+        self.bcx.load(ptr_type, field, "ecx.block_env")
+    }
+
+    fn load_tx_env_ptr(&mut self) -> B::Value {
+        let ptr_type = self.bcx.type_ptr();
+        let field = self.get_field(
+            self.ecx,
+            mem::offset_of!(EvmContext<'_, '_, '_>, tx_env),
+            "ecx.tx_env.addr",
+        );
+        self.bcx.load(ptr_type, field, "ecx.tx_env")
+    }
+
     /// Gets a field at the given offset.
     fn get_field(&mut self, ptr: B::Value, offset: usize, name: &str) -> B::Value {
         get_field(&mut self.bcx, ptr, offset, name)
-    }
-
-    /// Re-loads the address at `slot` as i160, zero-extends to i256, and stores it back.
-    ///
-    /// On little-endian the low 160 bits sit at byte offset 0, so a direct
-    /// `load i160` + `zext i256` gives LLVM a typed narrow load — no AND needed
-    /// to prove the high 96 bits are zero.
-    #[allow(clippy::assertions_on_constants)]
-    fn narrow_to_address(&mut self, slot: B::Value) {
-        debug_assert!(self.little_endian(), "big-endian not yet supported");
-        let value = self.bcx.load(self.address_type, slot, "address");
-        let value = self.bcx.zext(self.word_type, value);
-        self.bcx.store(value, slot);
     }
 
     fn gas_remaining_addr(&mut self) -> B::Value {

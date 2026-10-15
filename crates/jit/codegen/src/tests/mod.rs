@@ -354,7 +354,7 @@ tests! {
         slotnum(@raw {
             bytecode: &[op::SLOTNUM],
             spec_id: SpecId::AMSTERDAM,
-            expected_stack: &[U256::ZERO],
+            expected_stack: &[def_env().block.slot_num],
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
 
@@ -1101,8 +1101,14 @@ tests! {
         }),
         blobbasefee(@raw {
             bytecode: &[op::BLOBBASEFEE, op::BLOBBASEFEE],
-            expected_stack: &[U256::from(def_env().block.get_blob_gasprice().unwrap()), U256::from(def_env().block.get_blob_gasprice().unwrap())],
+            expected_stack: &[def_env().block.blob_basefee, def_env().block.blob_basefee],
             expected_gas: 4,
+        }),
+        // Inlined environment values stay correct across a builtin call and feed arithmetic.
+        env_across_builtin(@raw {
+            bytecode: &[op::ORIGIN, op::TIMESTAMP, op::PUSH0, op::BLOBHASH, op::GASPRICE, op::ADD, op::COINBASE, op::XOR],
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
     }
 

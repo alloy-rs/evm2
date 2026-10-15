@@ -43,6 +43,10 @@ pub struct EvmContext<'ctx, 'frame, 'host> {
 
     /// Active interpreter frame.
     pub interpreter: NonNull<Interpreter<'frame, 'host, BaseEvmTypes>>,
+    /// The host's block environment, cached for block opcodes.
+    pub block_env: NonNull<BlockEnv<BaseEvmTypes>>,
+    /// The transaction environment, cached for transaction opcodes.
+    pub tx_env: &'frame TxEnv<BaseEvmTypes>,
 
     /// The size of return data from the last call-like operation.
     pub return_data_len: usize,
@@ -91,6 +95,8 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
     ) -> (Self, &'ctx mut EvmStack, &'ctx mut usize) {
         let interpreter_ptr = ptr::from_mut(&mut *interpreter);
         let interpreter_ptr = unsafe { NonNull::new_unchecked(interpreter_ptr) };
+        let block_env = NonNull::from(interpreter.host().block_env());
+        let tx_env = interpreter.tx_env();
         let message = interpreter.message();
         let gas = interpreter.gas();
         let calldatasize = message.input.len();
@@ -99,6 +105,8 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
         let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
         let mut this = Self {
             interpreter: interpreter_ptr,
+            block_env,
+            tx_env,
             gas,
             return_data_len,
             calldatasize,
@@ -168,14 +176,14 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
 
     /// Returns the current block environment.
     #[inline]
-    pub fn block_env(&mut self) -> &BlockEnv<BaseEvmTypes> {
-        self.host().block_env()
+    pub const fn block_env(&self) -> &BlockEnv<BaseEvmTypes> {
+        unsafe { self.block_env.as_ref() }
     }
 
     /// Returns the transaction-global environment.
     #[inline]
     pub const fn tx_env(&self) -> &'frame TxEnv<BaseEvmTypes> {
-        self.interpreter().tx_env()
+        self.tx_env
     }
 
     /// Returns active runtime version data.
