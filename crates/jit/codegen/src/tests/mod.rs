@@ -645,6 +645,82 @@ tests! {
             expected_gas: 3 + (1 + 3 + 3 + 3 + 3 + 3 + 10) * 3 + 2 + 3,
         }),
 
+        // `outer` and `inner` are internal functions; `inner` is also called directly. The
+        // return of `outer` reads its return address from below `inner`'s frame.
+        nested_internal_returns(@raw {
+            bytecode: &asm("
+                PUSH %ret1
+                PUSH1 0x01
+                PUSH %inner
+                JUMP
+            ret1:
+                JUMPDEST
+                PUSH %ret2
+                PUSH1 0x02
+                PUSH %outer
+                JUMP
+            ret2:
+                JUMPDEST
+                STOP
+            outer:
+                JUMPDEST        ; [ret, x]
+                PUSH %outer_ret
+                SWAP1
+                PUSH %inner
+                JUMP
+            outer_ret:
+                JUMPDEST        ; [ret, inner(x)]
+                PUSH1 0x10
+                ADD
+                SWAP1
+                JUMP
+            inner:
+                JUMPDEST        ; [ret, x]
+                PUSH1 0x03
+                MUL
+                SWAP1
+                JUMP
+            "),
+            expected_stack: &[3_U256, 0x16_U256],
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        recursive_internal_returns(@raw {
+            bytecode: &asm("
+                PUSH %done
+                PUSH1 0x03
+                PUSH %rec
+                JUMP
+            done:
+                JUMPDEST
+                STOP
+            rec:
+                JUMPDEST        ; [ret, n]
+                DUP1
+                ISZERO
+                PUSH %base
+                JUMPI
+                PUSH %back
+                SWAP1
+                PUSH1 0x01
+                SWAP1
+                SUB             ; [ret, back, n - 1]
+                PUSH %rec
+                JUMP
+            back:
+                JUMPDEST        ; [ret, r]
+                PUSH1 0x02
+                ADD
+                SWAP1
+                JUMP
+            base:
+                JUMPDEST        ; [ret, 0]
+                SWAP1
+                JUMP
+            "),
+            expected_stack: &[6_U256],
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+
         pc(@raw {
             bytecode: &[op::PC, op::PC, op::PUSH1, 69, op::PC, op::PUSH0, op::PC],
             expected_stack: &[0_U256, 1_U256, 69_U256, 4_U256, 0_U256, 6_U256],
