@@ -1413,17 +1413,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.sp_from_top(inputs)
     }
 
-    /// Like [`sp_after_inputs`](Self::sp_after_inputs) but only materializes the
-    /// specified operand depths.
+    /// Like [`sp_after_inputs`](Self::sp_after_inputs) but only writes the known-constant
+    /// operands, leaving the other inputs virtual.
     #[must_use]
-    fn sp_after_inputs_with(&mut self, depths: &[usize]) -> B::Value {
-        let (inputs, _) = self.current_inst().stack_io();
-        let inputs = inputs as usize;
-        let top = self.section_len_offset;
-        for &depth in depths {
-            let off = top - inputs as i32 + (inputs - 1 - depth) as i32;
-            self.materialize_range(off, off + 1);
-        }
+    fn sp_after_const_inputs(&mut self) -> B::Value {
+        let inputs = self.current_inst().stack_io().0 as usize;
         self.write_const_operands(inputs);
         self.sp_from_top(inputs)
     }

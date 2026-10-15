@@ -257,6 +257,37 @@ tests! {
             expected_stack: &[0_U256],
             expected_gas: 6 + 10 + 100,
         }),
+        // Dynamic exponent at the pre-SPURIOUS_DRAGON rate (the default spec's rate is covered by
+        // the `_const_dyn` arith tests): storing and loading it costs 21 gas, pushing the base 3,
+        // and EXP 10.
+        exp_dyn_zero_frontier(@raw {
+            bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, 0_U256, true, false),
+            spec_id: SpecId::FRONTIER,
+            expected_stack: &[1_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: 34,
+        }),
+        exp_dyn_ff_frontier(@raw {
+            bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, 0xff_U256, true, false),
+            spec_id: SpecId::FRONTIER,
+            expected_stack: &[1_U256 << 255],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: 34 + 10,
+        }),
+        exp_dyn_100_frontier(@raw {
+            bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, 0x100_U256, true, false),
+            spec_id: SpecId::FRONTIER,
+            expected_stack: &[0_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: 34 + 20,
+        }),
+        exp_dyn_max_frontier(@raw {
+            bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, U256::MAX, true, false),
+            spec_id: SpecId::FRONTIER,
+            expected_stack: &[0_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: 34 + 320,
+        }),
     }
 
     stack {
@@ -788,6 +819,10 @@ tests! {
         exp_large(op::EXP, 2_U256, 0xFFFF_U256 => 2_U256.pow(0xFFFF_U256); op_gas(110)),
         // Max exponent (32 bytes), dynamic = 50 * 32 = 1600, total = 10 + 1600 = 1610.
         exp_max_exponent(op::EXP, 2_U256, U256::MAX => 0_U256; op_gas(1610)),
+        exp_byte_boundary_ff(op::EXP, 2_U256, 0xff_U256 => 1_U256 << 255; op_gas(60)),
+        exp_byte_boundary_100(op::EXP, 1_U256, 0x100_U256 => 1_U256; op_gas(110)),
+        exp_zero_base_max_exp(op::EXP, 0_U256, U256::MAX => 0_U256; op_gas(1610)),
+        exp_minus_one_base_max_exp(op::EXP, -1_U256, U256::MAX => -1_U256; op_gas(1610)),
 
         signextend1(op::SIGNEXTEND, 0_U256, 0_U256 => 0_U256),
         signextend2(op::SIGNEXTEND, 1_U256, 0_U256 => 0_U256),

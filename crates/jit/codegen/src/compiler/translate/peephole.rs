@@ -7,7 +7,10 @@
 use super::FunctionCx;
 use crate::{Backend, Builder, InstData, IntCC};
 use alloy_primitives::U256;
-use evm2::interpreter::{InstrStop, op};
+use evm2::{
+    interpreter::{InstrStop, op},
+    version::GasId,
+};
 use evm2_jit_builtins::Builtin;
 
 /// i256 INT_MIN: 1 << 255.
@@ -176,8 +179,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     ///
     /// Dynamic gas is folded into the section gas cost by `SectionsAnalysis` when the
     /// exponent is a compile-time constant, so the section gas check already covers it.
-    /// For constant-base cases with a dynamic exponent, call `ExpGas` to charge only the
-    /// dynamic gas and compute the result inline.
+    /// For constant-base cases with a dynamic exponent, charge the dynamic gas and compute the
+    /// result inline.
     fn peephole_exp(&mut self) -> bool {
         let [base, exponent] = self.const_operands();
         match exponent {
@@ -246,9 +249,22 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         true
     }
 
+    /// Charges `per_byte * byte_len(exponent)` without popping the exponent.
     fn pay_exp_dynamic_gas(&mut self) {
-        let exponent = self.sp_after_inputs_with(&[1]);
-        self.call_fallible_builtin(Builtin::ExpGas, &[self.ecx, exponent]);
+        if !self.config.gas_metering {
+            return;
+        }
+        let per_byte = self.bytecode.gas_params.get(GasId::ExpByte);
+        let exponent = self.stack_value_at_depth(1, 1, "b");
+        let clz = self.bcx.clz(exponent);
+        let clz = self.bcx.ireduce(self.isize_type, clz);
+        // (256 - clz + 7) / 8
+        let max = self.bcx.iconst(self.isize_type, 256 + 7);
+        let bits = self.bcx.isub(max, clz);
+        let three = self.bcx.iconst(self.isize_type, 3);
+        let bytes = self.bcx.ushr(bits, three);
+        let cost = self.bcx.imul_imm(bytes, per_byte.into());
+        self.gas_cost(cost);
     }
 
     /// SIGNEXTEND ext, x => sign-extend x from (ext+1) bytes.
@@ -307,7 +323,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         if let Some((offset, len)) = self.const_memory_operands(self.const_operands()) {
             let offset = self.bcx.iconst(self.isize_type, offset as i64);
             let len = self.bcx.iconst(self.isize_type, len as i64);
-            let sp = self.sp_after_inputs_with(&[]);
+            let sp = self.sp_after_const_inputs();
             self.call_fallible_builtin(Builtin::Keccak256CC, &[self.ecx, sp, offset, len]);
             true
         } else {
