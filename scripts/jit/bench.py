@@ -33,6 +33,7 @@ Examples:
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -211,7 +212,12 @@ def line_count(path: str) -> int:
         return 0
 
 
-STRING_OFFSET_RE = re.compile(r"# string offset=\d+")
+STRING_OFFSET_RE = re.compile(r"\s*# string offset=\d+")
+
+
+def normalize_dump(text: str, dump_dir: str) -> str:
+    """Remove the dump path embedded in debug info, and the string offsets that depend on it."""
+    return STRING_OFFSET_RE.sub("", text.replace(dump_dir, "<dump>"))
 
 
 def asm_digest(dump_dir: str, bench: str) -> str | None:
@@ -221,8 +227,7 @@ def asm_digest(dump_dir: str, bench: str) -> str | None:
             text = f.read()
     except FileNotFoundError:
         return None
-    text = STRING_OFFSET_RE.sub("", text.replace(dump_dir, "<dump>"))
-    return hashlib.sha256(text.encode()).hexdigest()
+    return hashlib.sha256(normalize_dump(text, dump_dir).encode()).hexdigest()
 
 
 def spill_reload_counts(path: str) -> tuple[int, int]:
@@ -366,6 +371,8 @@ class Side:
     rev: str
     binary: str
     dump_dir: str
+    # Source tree the binary was built from.
+    root: str
     outputs: dict[str, str] = field(default_factory=dict)
     failures: dict[str, str] = field(default_factory=dict)
     # Compile-cost samples per bench: (instructions | None, seconds).
@@ -921,13 +928,12 @@ def collect(side: Side, benches: list[str], need_codegen: bool, rust_log: str | 
         side.outputs[bench] = strip_ansi(output)
 
 
-def measure(sides: list[Side], benches: list[str], runs: int):
+def measure(sides: list[Side], benches: list[str], runs: int, perf: bool):
     """Sample compile cost with ``run <bench> 0`` (compile, no dumps, no execution).
 
     Runs of the same bench on each side are adjacent, and the side order alternates
     every round, so load changes on the machine hit both sides alike.
     """
-    perf = perf_available()
     if not perf:
         eprint("warning: `perf stat` is unavailable; recording wall time without instructions")
     with tqdm(total=runs * len(benches) * len(sides), desc="Timing", unit="run") as bar:
@@ -1016,6 +1022,119 @@ def base_binary(root: str, sha: str, base_dump: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Result export
+# ---------------------------------------------------------------------------
+
+COMPILER = "evm2"
+# `results.json` keys of the codegen and compile-time table columns.
+RESULT_KEYS = {
+    "unopt.ll": "unopt_ll_lines",
+    "opt.ll": "opt_ll_lines",
+    "opt.s": "opt_s_lines",
+    "jit size": "jit_size_bytes",
+    "i256 loads": "i256_loads",
+    "i256 stores": "i256_stores",
+    "mresize": "mresize_calls",
+    "spills": "spills",
+    "reloads": "reloads",
+    "instructions": "compile_instructions",
+    "time": "compile_time_seconds",
+    **{p: f"{p}_seconds" for p in PHASES},
+}
+# Metrics the perf site charts, all lower-is-better.
+METRICS = {
+    "jit_size_bytes": {"title": "JIT size", "unit": "bytes"},
+    "opt_s_lines": {"title": "Assembly lines", "unit": "lines"},
+    "opt_ll_lines": {"title": "Optimized IR lines", "unit": "lines"},
+    "unopt_ll_lines": {"title": "Unoptimized IR lines", "unit": "lines"},
+    "compile_instructions": {"title": "Compile instructions", "unit": "instructions"},
+    "compile_time_seconds": {"title": "Compile time", "unit": "seconds"},
+}
+ARTIFACT_FILES = ["bytecode.txt", "unopt.ll", "opt.ll", "opt.s"]
+TARGET_CPU_RE = re.compile(r'"target-cpu"="([^"]+)"')
+BENCH_FIXTURE_RE = re.compile(r'Bench::\w+\(\s*"([^"]+)",[^"]*"([^"]+)"')
+
+
+def source_links(root: str, rev: str) -> dict[str, list[dict[str, str]]]:
+    """Link each built-in benchmark to its fixture in the benchmark catalog."""
+    try:
+        with open(os.path.join(root, "crates/cli/src/evm_bench.rs")) as f:
+            catalog = f.read()
+    except FileNotFoundError:
+        return {}
+    repo = os.environ.get("GITHUB_REPOSITORY", "alloy-rs/evm2")
+    return {
+        name: [{"label": path, "url": f"https://github.com/{repo}/blob/{rev}/{path}"}]
+        for name, path in BENCH_FIXTURE_RE.findall(catalog)
+    }
+
+
+def target_cpu(side: Side, benches: list[str]) -> str | None:
+    for bench in benches:
+        try:
+            with open(os.path.join(side.dump_dir, dump_subdir(bench), "opt.ll")) as f:
+                if m := TARGET_CPU_RE.search(f.read()):
+                    return m.group(1)
+        except FileNotFoundError:
+            continue
+    return None
+
+
+def write_results(out_dir: str, benches: list[str], side: Side, perf: bool):
+    """Write ``results.json`` and normalized artifacts for the perf site and ``compare.py``."""
+    codegen = CodegenLines()._collect(benches, side.dump_dir)
+    times = CompileTime()._collect(benches, side)
+    links = source_links(side.root, side.rev)
+    artifacts = os.path.join(out_dir, "artifacts")
+    if os.path.isdir(artifacts):
+        shutil.rmtree(artifacts)
+    results = []
+    for bench in benches:
+        test_id = dump_subdir(bench)
+        name = bench_name(bench)
+        result = {"test_id": test_id, "suite": "jit"}
+        if test_id in links:
+            result["source_links"] = links[test_id]
+        if bench in side.failures or name not in codegen:
+            error = side.failures.get(bench, "no codegen output")
+            result["compilers"] = {COMPILER: {"status": "failed", "error": error}}
+            results.append(result)
+            continue
+        metrics = {**codegen[name], **times.get(name, {})}
+        values = {RESULT_KEYS[k]: v for k, v in metrics.items() if v or k != "instructions"}
+        result["compilers"] = {COMPILER: {"status": "ok", **values}}
+        results.append(result)
+
+        src = os.path.join(side.dump_dir, test_id)
+        dst = os.path.join(artifacts, test_id, COMPILER)
+        os.makedirs(dst)
+        for file in ARTIFACT_FILES:
+            try:
+                with open(os.path.join(src, file)) as f:
+                    text = f.read()
+            except FileNotFoundError:
+                continue
+            with open(os.path.join(dst, file), "w") as f:
+                f.write(normalize_dump(text, side.dump_dir))
+        with open(os.path.join(src, "bytecode.bin"), "rb") as f:
+            code = f.read()
+        with open(os.path.join(dst, "bytecode.hex"), "w") as f:
+            f.write(code.hex() + "\n")
+
+    document = {
+        "schema_version": 1,
+        "commit": side.rev,
+        "environment": {"target_cpu": target_cpu(side, benches), "perf_counters": perf},
+        "metrics": METRICS,
+        "results": results,
+    }
+    with open(os.path.join(out_dir, "results.json"), "w") as f:
+        json.dump(document, f, indent=2)
+        f.write("\n")
+    eprint(f"Wrote {os.path.join(out_dir, 'results.json')}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1049,6 +1168,16 @@ def main():
         default=3,
         help="Compile-cost samples per benchmark and revision (default: 3)",
     )
+    parser.add_argument(
+        "--output",
+        metavar="DIR",
+        help="Write head results.json and artifacts for compare.py and the perf site",
+    )
+    parser.add_argument(
+        "--base-output",
+        metavar="DIR",
+        help="Like --output, for the --diff base",
+    )
 
     # Analysis selectors. Default: --codegen-lines --compile-times.
     parser.add_argument(
@@ -1077,11 +1206,16 @@ def main():
         help="Report IR stats (inst counts, block size distribution, message opcodes)",
     )
     args = parser.parse_args()
+    if args.base_output and not args.base_rev:
+        parser.error("--base-output requires --diff")
     # Absolute, so the dump path embedded in debug info is known.
     args.dump_dir = os.path.abspath(args.dump_dir)
     ensure_private_dir(args.dump_dir)
 
-    # Default to codegen-lines + compile-times if no analysis flags given.
+    # Default to codegen-lines + compile-times if no analysis flags given; --output needs both.
+    if args.output or args.base_output:
+        args.codegen_lines = True
+        args.compile_times = True
     if not (
         args.codegen_lines
         or args.compile_times
@@ -1129,12 +1263,14 @@ def main():
             )
             raise SystemExit(1)
 
+    base = None
     if args.base_rev:
         # Build the base first: it replaces the shared target dir's binary, and the head
         # build afterwards restores it.
         base_dump = args.dump_dir + ".base"
-        base = Side("base", base_sha, base_binary(root, base_sha, base_dump), base_dump)
-    head = Side("head", head_sha, cargo_build(root), args.dump_dir)
+        base_root = os.path.join(base_dump, ".worktree")
+        base = Side("base", base_sha, base_binary(root, base_sha, base_dump), base_dump, base_root)
+    head = Side("head", head_sha, cargo_build(root), args.dump_dir, root)
     builtin = args.benches or get_benches(head.binary)
     extra_dirs = (
         args.extra_dir if args.extra_dir is not None else ([] if args.benches else ["tmp/mainnet"])
@@ -1151,8 +1287,9 @@ def main():
     sides = [head, base] if args.base_rev else [head]
     for side in sides:
         collect(side, benches, need_codegen, rust_log)
+    perf = need_timing and perf_available()
     if need_timing:
-        measure(sides, benches, args.runs)
+        measure(sides, benches, args.runs, perf)
 
     results_path = os.path.join(args.dump_dir, "results.md")
     with open(results_path, "w") as md:
@@ -1173,6 +1310,11 @@ def main():
         finally:
             sys.stdout = old_stdout
     eprint(f"Wrote {results_path}")
+
+    for side, out_dir in [(head, args.output), (base, args.base_output)]:
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+            write_results(out_dir, benches, side, perf)
 
 
 if __name__ == "__main__":

@@ -163,6 +163,23 @@ To diff a pipeline change, make it in code. `EVM2_JIT_PASSES` also replaces the
 pipeline for every function size, which drops the LICM size gate in
 `optimize_module`.
 
+### CI
+
+The `jit` job in `.github/workflows/bench.yml` runs `bench.py --output` on
+every push to `main` and every PR. `--output DIR` (and `--base-output DIR` with
+`--diff`) writes `results.json` and `artifacts/<bench>/evm2/` (`bytecode.hex`,
+`bytecode.txt`, `unopt.ll`, `opt.ll`, `opt.s`, with dump paths removed). PRs
+reuse the `jit-bench-results` artifact of the exact base commit's run when it
+targets the same host CPU, and otherwise benchmark the base in the same job.
+`compare.py` writes the job summary and the sticky PR comment, whose links open
+`https://www.getfoundry.sh/perf/evm2/`. The site imports `jit-bench-results`,
+and `jit-bench-baseline` for bases without a run of their own.
+
+```bash
+./scripts/jit/bench.py /tmp/bench --diff origin/main --output /tmp/out/head --base-output /tmp/out/base
+./scripts/jit/compare.py /tmp/out/base /tmp/out/head --pr-comment-output /tmp/out/comment.md
+```
+
 ## Bench-and-PR workflow
 
 When the user asks to "bench and open pr", "post results to pr", or whenever
