@@ -52,6 +52,7 @@ from utils import (
     eprint,
     get_benches,
     perf_available,
+    perf_counts,
     repo_root,
     run_cli,
     strip_ansi,
@@ -377,8 +378,9 @@ class Side:
     failures: dict[str, str] = field(default_factory=dict)
     # Compile-cost samples per bench: (instructions | None, seconds).
     samples: dict[str, list[tuple[int | None, float]]] = field(default_factory=dict)
-    # Execution instructions per iteration, per bench.
+    # Execution instructions and cycles per iteration, per bench.
     runtime: dict[str, float] = field(default_factory=dict)
+    runtime_cycles: dict[str, float] = field(default_factory=dict)
 
 
 class Analysis(ABC):
@@ -625,6 +627,10 @@ class CompileTime(Analysis):
 
 
 RUNTIME_KEY = "instructions/iter"
+RUNTIME_CYCLES_KEY = "cycles/iter"
+RUNTIME_KEYS = [RUNTIME_KEY, RUNTIME_CYCLES_KEY]
+# Cycles depend on caches, frequency and other load, unlike instruction counts.
+NOISE_CYCLES = 5.0
 
 
 def fmt_runtime_key(_key: str, v: float) -> str:
@@ -636,11 +642,18 @@ def all_noise(noise: float):
     return lambda ps: not all(is_noise(b, c, noise) for b, c in ps.values())
 
 
-class Runtime(Analysis):
-    """User-space instructions per JIT execution of each benchmark.
+def runtime_changed(ps: dict[str, tuple[float, float]]) -> bool:
+    return not is_noise(*ps[RUNTIME_KEY], NOISE_INSTRUCTIONS) or not is_noise(
+        *ps[RUNTIME_CYCLES_KEY], NOISE_CYCLES
+    )
 
-    Deterministic, like CodSpeed's simulation mode, so it works on a busy machine. It counts
-    instructions, not cycles: cache misses and branch mispredictions don't show.
+
+class Runtime(Analysis):
+    """User-space instructions and cycles per JIT execution of each benchmark.
+
+    Instruction counts are deterministic, like CodSpeed's simulation mode, so they work on a
+    busy machine. Cycles also reflect cache misses and branch mispredictions, but vary with the
+    machine and its load.
     """
 
     def needs_codegen(self) -> bool:
@@ -653,20 +666,27 @@ class Runtime(Analysis):
         return True
 
     def _collect(self, benches, side) -> dict[str, dict[str, float]]:
-        return {bench_name(b): {RUNTIME_KEY: side.runtime[b]} for b in benches if b in side.runtime}
+        return {
+            bench_name(b): {
+                RUNTIME_KEY: side.runtime[b],
+                RUNTIME_CYCLES_KEY: side.runtime_cycles.get(b, 0),
+            }
+            for b in benches
+            if b in side.runtime
+        }
 
     def report(self, benches, side):
         print("### Runtime\n")
-        print_solo(self._collect(benches, side), [RUNTIME_KEY], fmt_runtime_key)
+        print_solo(self._collect(benches, side), RUNTIME_KEYS, fmt_runtime_key)
 
     def report_diff(self, benches, cur, base):
         print("### Runtime\n")
         print_diff(
             self._collect(benches, cur),
             self._collect(benches, base),
-            [RUNTIME_KEY],
+            RUNTIME_KEYS,
             fmt_runtime_key,
-            all_noise(NOISE_INSTRUCTIONS),
+            runtime_changed,
             "Full runtime",
         )
 
@@ -1023,20 +1043,22 @@ def total_iters(n: int) -> int:
     return n + max(n // 10, 10)
 
 
-def runtime_per_iter(side: Side, bench: str) -> float:
-    def instructions(n: int) -> int:
-        return time_cli(side.binary, ["run", bench, str(n), "--jit-only", *RUN_ARGS], True)[0]
+def runtime_per_iter(side: Side, bench: str) -> tuple[float, float]:
+    """Return execution ``(instructions, cycles)`` per iteration."""
 
-    # `run <bench> 0` is what the compile-cost samples measure.
-    samples = [i for i, _ in side.samples.get(bench, []) if i is not None]
-    compile_only = statistics.median(samples) if samples else instructions(0)
+    def counts(n: int) -> tuple[int, int]:
+        return perf_counts(side.binary, ["run", bench, str(n), "--jit-only", *RUN_ARGS])
+
+    compile_only = counts(0)
     # Compile cost varies by about 0.3%, which can swamp a short probe and make it
     # negative, so grow the probe until execution clearly dominates that noise.
     n = 100
-    while (probe := instructions(n) - compile_only) < compile_only / 20 and n < 10**7:
+    while (probe := counts(n)[0] - compile_only[0]) < compile_only[0] / 20 and n < 10**7:
         n *= 10
     n = max(100, int(RUNTIME_TARGET / max(probe / total_iters(n), 1)))
-    return (instructions(n) - compile_only) / total_iters(n)
+    instructions, cycles = counts(n)
+    iters = total_iters(n)
+    return (instructions - compile_only[0]) / iters, (cycles - compile_only[1]) / iters
 
 
 def measure_runtime(sides: list[Side], benches: list[str]):
@@ -1049,7 +1071,7 @@ def measure_runtime(sides: list[Side], benches: list[str]):
             if bench in side.failures:
                 continue
             try:
-                side.runtime[bench] = runtime_per_iter(side, bench)
+                side.runtime[bench], side.runtime_cycles[bench] = runtime_per_iter(side, bench)
             except subprocess.CalledProcessError as e:
                 side.failures[bench] = last_line(e.stderr)
 
@@ -1143,6 +1165,8 @@ RESULT_KEYS = {
     "instructions": "compile_instructions",
     "time": "compile_time_seconds",
     **{p: f"{p}_seconds" for p in PHASES},
+    RUNTIME_KEY: "runtime_instructions",
+    RUNTIME_CYCLES_KEY: "runtime_cycles",
 }
 # Metrics the perf site charts, all lower-is-better.
 METRICS = {
@@ -1152,6 +1176,8 @@ METRICS = {
     "unopt_ll_lines": {"title": "Unoptimized IR lines", "unit": "lines"},
     "compile_instructions": {"title": "Compile instructions", "unit": "instructions"},
     "compile_time_seconds": {"title": "Compile time", "unit": "seconds"},
+    "runtime_instructions": {"title": "Runtime instructions", "unit": "instructions"},
+    "runtime_cycles": {"title": "Runtime cycles", "unit": "cycles"},
 }
 ARTIFACT_FILES = ["bytecode.txt", "unopt.ll", "opt.ll", "opt.s"]
 TARGET_CPU_RE = re.compile(r'"target-cpu"="([^"]+)"')
@@ -1205,6 +1231,9 @@ def write_results(out_dir: str, benches: list[str], side: Side, perf: bool):
             continue
         metrics = {**codegen[name], **times.get(name, {})}
         values = {RESULT_KEYS[k]: v for k, v in metrics.items() if v or k != "instructions"}
+        if bench in side.runtime:
+            values["runtime_instructions"] = round(side.runtime[bench])
+            values["runtime_cycles"] = round(side.runtime_cycles[bench])
         result["compilers"] = {COMPILER: {"status": "ok", **values}}
         results.append(result)
 

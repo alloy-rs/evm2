@@ -1,4 +1,6 @@
 name: Benchmark
+# The perf site imports a backfill run under the commit named here, not the run's head.
+run-name: ${{ inputs.commit && format('Benchmark backfill {0}', inputs.commit) || '' }}
 
 permissions: {}
 
@@ -7,6 +9,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      commit:
+        description: Benchmark this older commit's code with the dispatched ref's scripts (backfill)
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -45,9 +52,34 @@ jobs:
 
       - name: Enable perf counters
         run: |
-          sudo apt-get install -y --no-install-recommends "linux-tools-$(uname -r)" linux-tools-common ||
-            echo "::warning::perf is unavailable; compile cost falls back to wall time"
           sudo sysctl -w kernel.perf_event_paranoid=1
+          # Runner kernels often have no matching linux-tools package. perf's user-space tool
+          # works across kernel versions, so fall back to the newest packaged one.
+          if ! perf stat -e instructions:u true >/dev/null 2>&1; then
+            sudo apt-get install -y --no-install-recommends "linux-tools-$(uname -r)" linux-tools-common ||
+              sudo apt-get install -y --no-install-recommends linux-tools-generic linux-tools-common || true
+            perf_bin="$(find /usr/lib/linux-tools* -name perf -type f 2>/dev/null | sort -V | tail -n1)"
+            if [[ -n "$perf_bin" ]]; then sudo ln -sf "$perf_bin" /usr/local/bin/perf; fi
+          fi
+          if ! perf stat -e instructions:u true; then
+            echo "::warning::perf is unavailable; compile cost falls back to wall time and runtime is skipped"
+          fi
+
+      # The CLI reads fixtures from its source tree, so check out the old code in place and
+      # keep only this ref's benchmark scripts.
+      - name: Check out backfill commit
+        if: inputs.commit != ''
+        env:
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "commit must be a full SHA" >&2; exit 1; }
+          git merge-base --is-ancestor "$COMMIT" HEAD || { echo "$COMMIT is not in this ref's history" >&2; exit 1; }
+          scripts="$RUNNER_TEMP/jit-scripts"
+          cp -R scripts/jit "$scripts"
+          git checkout --quiet --detach "$COMMIT"
+          rm -rf scripts/jit
+          cp -R "$scripts" scripts/jit
 
       - name: Resolve and download exact baseline
         id: baseline
@@ -70,10 +102,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           # Fork PR runs execute the fork's own bench.py, so only this repository's runs
-          # are trusted baselines.
+          # are trusted baselines. A backfill run's head is the dispatched ref, not the
+          # commit it measured.
           list_runs() {
-            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/bench.yml/runs?head_sha=$base_sha&per_page=20" \
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/bench.yml/runs?head_sha=$base_sha&per_page=100" \
               --jq '[.workflow_runs[] | select(.head_repository.full_name == env.GITHUB_REPOSITORY)
+                | select(.display_title | startswith("Benchmark backfill ") | not)
                 | {createdAt: .created_at, databaseId: .id, status}]'
           }
           runs_json="$(list_runs 2>/dev/null || echo '[]')"
@@ -106,6 +140,11 @@ jobs:
             download_dir="$RUNNER_TEMP/jit-baseline-$run_id"
             if gh run download "$run_id" --name jit-bench-results --dir "$download_dir" 2>/dev/null &&
               [[ -f "$download_dir/results.json" && -d "$download_dir/artifacts" ]]; then
+              base_commit="$(jq -r .commit "$download_dir/results.json")"
+              if [[ "$base_commit" != "$base_sha" ]]; then
+                echo "Baseline run $run_id measured $base_commit, not $base_sha"
+                continue
+              fi
               base_cpu="$(jq -r .environment.target_cpu "$download_dir/results.json")"
               if [[ "$base_cpu" != "$host_cpu" ]]; then
                 echo "Baseline run $run_id targets $base_cpu, not $host_cpu"
@@ -126,7 +165,7 @@ jobs:
           BASELINE_FOUND: ${{ steps.baseline.outputs.found }}
         run: |
           set -euo pipefail
-          args=(--output target/jit-bench)
+          args=(--output target/jit-bench --runtime)
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" && "$BASELINE_FOUND" != "true" ]]; then
             args+=(--diff "$BASE_SHA" --base-output target/jit-bench/baseline)
           fi
@@ -179,6 +218,7 @@ jobs:
 
   codspeed:
     name: codspeed (${{ matrix.shard }})
+    if: ${{ !inputs.commit }}
     runs-on: depot-ubuntu-latest
     strategy:
       fail-fast: false

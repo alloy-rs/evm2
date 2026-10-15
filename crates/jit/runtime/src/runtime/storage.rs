@@ -26,6 +26,8 @@ pub struct ArtifactKey {
     pub backend: BackendSelection,
     /// The optimization level used.
     pub opt_level: OptimizationLevel,
+    /// The [`ABI_VERSION`](crate::ABI_VERSION) of the compiler that produced the artifact.
+    pub abi_version: u32,
 }
 
 /// A stored artifact consisting of a manifest and a path to the compiled dylib.
@@ -116,8 +118,8 @@ impl RuntimeArtifactStore {
 
     fn artifact_path(&self, key: &ArtifactKey) -> PathBuf {
         self.dir.path().join(format!(
-            "{:x}_{:?}_{:?}_{:?}.so",
-            key.runtime.code_hash, key.runtime.spec_id, key.backend, key.opt_level,
+            "{:x}_{:?}_{:?}_{:?}_v{}.so",
+            key.runtime.code_hash, key.runtime.spec_id, key.backend, key.opt_level, key.abi_version,
         ))
     }
 }
@@ -176,6 +178,7 @@ mod tests {
             runtime: RuntimeCacheKey { code_hash, spec_id: SpecId::OSAKA },
             backend: BackendSelection::Llvm,
             opt_level: OptimizationLevel::Default,
+            abi_version: crate::ABI_VERSION,
         }
     }
 

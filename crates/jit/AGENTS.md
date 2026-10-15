@@ -195,8 +195,11 @@ Experiments that did not pay off, so you don't repeat them blindly:
 
 ### CI
 
-The `jit` job in `.github/workflows/bench.yml` runs `bench.py --output` on
-every push to `main` and every PR. `--output DIR` (and `--base-output DIR` with
+The `jit` job in `.github/workflows/bench.yml` runs `bench.py --output
+--runtime` on every push to `main` and every PR; `results.json` then also holds
+`runtime_instructions` and `runtime_cycles`, the user-space instructions and
+cycles per execution from `--runtime`. Cycles vary with the runner and its
+load; compare instructions first. `--output DIR` (and `--base-output DIR` with
 `--diff`) writes `results.json` and `artifacts/<bench>/evm2/` (`bytecode.hex`,
 `bytecode.txt`, `unopt.ll`, `opt.ll`, `opt.s`, with dump paths removed). PRs
 reuse the `jit-bench-results` artifact of the exact base commit's run when it
@@ -286,3 +289,16 @@ appends the benchmark tables exactly as the script produced them.
   // GOOD
   trace!("resolved jump");
   ```
+- Name IR values after the Rust field path they access, so `unopt.ll` maps
+  back to the source: `<base>.<field>` for a loaded value and
+  `<base>.<field>.addr` for its address, where `<base>` is the Rust name of the
+  struct pointer (`ecx`, `interpreter`, `message`). `ecx.gas.remaining` is
+  `ecx.gas.remaining()`, `message.caller.addr` points at `Message::caller`.
+  Locals take the Rust name too: the alloca behind `stack_bytes` is
+  `stack_bytes.addr`.
+  The `field!` macro builds these names; pass them to `get_field` by hand
+  elsewhere. When a field moves or changes meaning, update its names.
+- Keep the IR dumps readable: no instructions that do nothing (`get_field`
+  returns the base pointer for a field at offset 0 instead of emitting a zero
+  GEP), and no names that contradict the value. Check `unopt.ll` after
+  changing codegen.

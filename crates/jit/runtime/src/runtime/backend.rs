@@ -434,6 +434,7 @@ impl BackendState {
             runtime: *key,
             backend: BackendSelection::Llvm,
             opt_level: self.tuning.aot_opt_level,
+            abi_version: crate::ABI_VERSION,
         };
 
         match store.load(&artifact_key) {
@@ -648,6 +649,7 @@ impl BackendState {
             runtime: key,
             backend: BackendSelection::Llvm,
             opt_level: self.tuning.aot_opt_level,
+            abi_version: crate::ABI_VERSION,
         };
 
         let content_hash = keccak256(&success.dylib_bytes).0;
