@@ -43,10 +43,6 @@ pub struct EvmContext<'ctx, 'frame, 'host> {
 
     /// Active interpreter frame.
     pub interpreter: NonNull<Interpreter<'frame, 'host, BaseEvmTypes>>,
-    /// The host's block environment, cached for block opcodes.
-    pub block_env: NonNull<BlockEnv<BaseEvmTypes>>,
-    /// The transaction environment, cached for transaction opcodes.
-    pub tx_env: &'frame TxEnv<BaseEvmTypes>,
 
     /// The size of return data from the last call-like operation.
     pub return_data_len: usize,
@@ -64,6 +60,11 @@ pub struct EvmContext<'ctx, 'frame, 'host> {
     /// Cached length of the current memory context in bytes.
     /// Refreshed after any memory resize.
     pub mem_len: usize,
+
+    /// The host's block environment, cached for block opcodes.
+    pub block_env: NonNull<BlockEnv<BaseEvmTypes>>,
+    /// The transaction environment, cached for transaction opcodes.
+    pub tx_env: &'frame TxEnv<BaseEvmTypes>,
 
     _marker: PhantomData<&'ctx mut Interpreter<'frame, 'host, BaseEvmTypes>>,
 }
@@ -105,8 +106,6 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
         let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
         let mut this = Self {
             interpreter: interpreter_ptr,
-            block_env,
-            tx_env,
             gas,
             return_data_len,
             calldatasize,
@@ -114,6 +113,8 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
             exit_sp: ptr::null_mut(),
             mem_base: ptr::null_mut(),
             mem_len: 0,
+            block_env,
+            tx_env,
             _marker: PhantomData,
         };
         this.refresh_memory_cache();
