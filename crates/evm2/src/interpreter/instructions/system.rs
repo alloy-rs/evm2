@@ -116,15 +116,14 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     }
     let features = state.version().features;
     let mut new_account_state_gas = 0;
+    // Check emptiness only when new-account gas can apply: after EIP-161 a zero-value call never
+    // pays it, so it skips the extra account lookup.
     if create_empty_account
-        && should_charge_new_account_gas(
-            features.contains(EvmFeatures::EIP161),
-            transfers_value,
-            state
-                .host()
-                .target_is_empty_for_new_account_gas(&to, features)
-                .map_err(|error| state.fail(error))?,
-        )
+        && (!features.contains(EvmFeatures::EIP161) || transfers_value)
+        && state
+            .host()
+            .target_is_empty_for_new_account_gas(&to, features)
+            .map_err(|error| state.fail(error))?
     {
         cost += u64::from(state.gas_params().get(GasId::NewAccountCost));
         // EIP-8037: value transfer to a new account also charges state gas from

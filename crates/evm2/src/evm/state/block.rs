@@ -85,7 +85,7 @@ impl BlockStateAccumulator {
     /// Returns storage deltas with storage keys sorted by address and slot.
     pub fn storage_sorted(&self) -> Vec<(StorageKey, &Tracked<Word>)> {
         let mut storage = self.storage().collect::<Vec<_>>();
-        storage.sort_by_key(|(key, _)| (key.address(), key.key()));
+        storage.sort_unstable_by_key(|(key, _)| *key);
         storage
     }
 
@@ -115,6 +115,7 @@ impl StateChangeSink for BlockStateAccumulator {
         let original = change.original.map(AccountInfo::clone_no_code);
         let current = change.current.map(AccountInfo::clone_no_code);
         let deletes_account = current.is_none();
+        let mut created = false;
 
         match self.accounts.entry(change.address) {
             hash_map::Entry::Occupied(mut entry) => {
@@ -133,6 +134,7 @@ impl StateChangeSink for BlockStateAccumulator {
             }
             hash_map::Entry::Vacant(entry) => {
                 if original != current {
+                    created = original.is_none();
                     entry.insert(Tracked::from_parts(original, current));
                 }
             }
@@ -141,14 +143,16 @@ impl StateChangeSink for BlockStateAccumulator {
         if deletes_account {
             self.storage_wipes.remove(&change.address);
             self.storage.retain(|key, _| key.address() != change.address);
-        } else if self.accounts.get(&change.address).is_some_and(|delta| delta.original.is_none()) {
-            for (key, delta) in &mut self.storage {
-                if key.address() == change.address {
-                    delta.original = Word::ZERO;
+        } else if created {
+            // Only a newly created delta can have slots recorded against pre-block storage: while
+            // the delta exists, `storage` and `storage_wipe` already treat the account as created.
+            self.storage.retain(|key, delta| {
+                if key.address() != change.address {
+                    return true;
                 }
-            }
-            self.storage
-                .retain(|key, delta| key.address() != change.address || !delta.current.is_zero());
+                delta.original = Word::ZERO;
+                !delta.current.is_zero()
+            });
             self.storage_wipes.remove(&change.address);
         }
         Ok(())
@@ -219,7 +223,7 @@ fn visit_block_changes<S: StateChangeSink>(
     }
 
     let mut storage_deltas = storage.iter().collect::<Vec<_>>();
-    storage_deltas.sort_by_key(|entry| (entry.0.address(), entry.0.key()));
+    storage_deltas.sort_unstable_by_key(|entry| *entry.0);
     for (key, delta) in storage_deltas {
         sink.storage(StorageChange {
             address: key.address(),
