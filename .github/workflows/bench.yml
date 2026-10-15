@@ -75,6 +75,11 @@ jobs:
           set -euo pipefail
           [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "commit must be a full SHA" >&2; exit 1; }
           git merge-base --is-ancestor "$COMMIT" HEAD || { echo "$COMMIT is not in this ref's history" >&2; exit 1; }
+          # bench.py builds against the LLVM version the old code requires.
+          llvm="$(git show "$COMMIT:crates/jit/llvm/Cargo.toml" | sed -nE 's/.*"llvm([0-9]+)-[0-9]+".*/\1/p')"
+          if ! command -v "llvm-config-$llvm" >/dev/null; then
+            sudo .github/scripts/install_llvm_ubuntu.sh "$llvm" dev
+          fi
           scripts="$RUNNER_TEMP/jit-scripts"
           cp -R scripts/jit "$scripts"
           git checkout --quiet --detach "$COMMIT"
