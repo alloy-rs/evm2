@@ -35,11 +35,15 @@ pub use arch::evm2_jit_exit;
 /// generates code that accesses fields by offset using `offset_of!`.
 #[repr(C)]
 pub struct EvmContext<'ctx, 'frame, 'host> {
+    /// The gas.
+    ///
+    /// First, so compiled code addresses the remaining gas through the context pointer
+    /// itself instead of keeping a separate pointer live.
+    pub gas: Gas,
+
     /// Active interpreter frame.
     pub interpreter: NonNull<Interpreter<'frame, 'host, BaseEvmTypes>>,
 
-    /// The gas.
-    pub gas: Gas,
     /// The size of return data from the last call-like operation.
     pub return_data_len: usize,
     /// The size of the call input data, cached for CALLDATASIZE.
