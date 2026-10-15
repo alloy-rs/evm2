@@ -936,6 +936,7 @@ pub(crate) struct InstData {
     /// - `JUMPDEST`: program counter in low 31 bits, reachable flag in high bit
     ///   ([`InstData::JUMPDEST_REACHABLE`]).
     /// - `JUMP | JUMPI` with [`InstFlags::STATIC_JUMP`]: target instruction index.
+    /// - `GAS`: static gas of the rest of its gas section, which the section head already charged.
     /// - otherwise: unused.
     pub(crate) data: u32,
     /// The gas section this instruction belongs to.
@@ -1043,6 +1044,20 @@ impl InstData {
     /// High bit of `data` set when a `JUMPDEST` is a reachable static jump target.
     pub(crate) const JUMPDEST_REACHABLE: u32 = 1 << 31;
 
+    /// Returns the static gas that the section head charged for instructions after this `GAS`.
+    #[inline]
+    pub(crate) fn gas_owed(&self) -> u32 {
+        debug_assert_eq!(self.opcode, op::GAS);
+        self.data
+    }
+
+    /// Sets the static gas charged ahead of this `GAS` instruction.
+    #[inline]
+    pub(crate) fn set_gas_owed(&mut self, gas: u32) {
+        debug_assert_eq!(self.opcode, op::GAS);
+        self.data = gas;
+    }
+
     /// Returns the program counter of a `JUMPDEST`.
     #[inline]
     pub(crate) fn jumpdest_pc(&self) -> u32 {
@@ -1095,13 +1110,17 @@ impl InstData {
         self.flags.contains(InstFlags::DEAD_CODE)
     }
 
-    /// Returns `true` if this instruction requires to know `gasleft()`.
+    /// Returns `true` if this instruction has host effects that depend on `gasleft()`.
+    ///
+    /// These end the gas and stack sections: charging the static gas of later instructions, or
+    /// failing their stack checks, ahead of the instruction would change its gas checks and skip
+    /// host reads that survive a revert, such as EIP-7928 block access list entries. `GAS` also
+    /// reads `gasleft()`, but it is pure, so it adds back the gas charged ahead of it instead.
     #[inline]
-    pub(crate) const fn requires_gasleft(&self, spec_id: SpecId) -> bool {
+    pub(crate) const fn ends_sections(&self, spec_id: SpecId) -> bool {
         match self.opcode {
-            // GAS pushes the remaining gas after paying its own base cost.
-            op::GAS => true,
-            // Calls and contract creation cap the gas forwarded based on the remaining gas.
+            // Calls and contract creation cap the gas forwarded based on the remaining gas, and
+            // the callee can return a value transfer's stipend, leaving more gas than before.
             op::CREATE
             | op::CALL
             | op::CALLCODE

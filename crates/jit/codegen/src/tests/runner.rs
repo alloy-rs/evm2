@@ -214,6 +214,19 @@ pub fn def_codemap() -> &'static HashMap<Address, Bytecode> {
                 op::STOP,
             ])),
         );
+        // Returns its remaining gas.
+        map.insert(
+            Address::with_last_byte(0x67),
+            Bytecode::new_legacy(Bytes::from_static(&[
+                op::GAS,
+                op::PUSH0,
+                op::MSTORE,
+                op::PUSH1,
+                0x20,
+                op::PUSH0,
+                op::RETURN,
+            ])),
+        );
         map.insert(
             Address::with_last_byte(0x68),
             Bytecode::new_legacy(Bytes::from_static(&[

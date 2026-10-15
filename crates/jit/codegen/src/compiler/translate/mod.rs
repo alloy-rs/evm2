@@ -977,7 +977,12 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             op::GAS => {
                 let addr = self.gas_remaining_addr();
                 let i64_type = self.bcx.type_int(64);
-                let remaining = self.bcx.load(i64_type, addr, "ecx.gas.remaining");
+                let mut remaining = self.bcx.load(i64_type, addr, "ecx.gas.remaining");
+                // The section head already charged the static gas of the instructions after this.
+                let owed = data.gas_owed();
+                if self.config.gas_metering && owed != 0 {
+                    remaining = self.bcx.iadd_imm(remaining, owed as i64);
+                }
                 let remaining = self.bcx.zext(self.word_type, remaining);
                 self.push(remaining);
             }

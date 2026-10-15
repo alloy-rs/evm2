@@ -894,6 +894,24 @@ tests! {
             expected_stack: &[DEF_GAS_LIMIT_U256 - 2_U256, DEF_GAS_LIMIT_U256 - 4_U256, DEF_GAS_LIMIT_U256 - 7_U256],
             expected_gas: 2 + 2 + 1 + 2,
         }),
+        // The section head charges the gas after each `GAS` up front.
+        gas_mid_section(@raw {
+            bytecode: &[op::PUSH0, op::GAS, op::PUSH1, 1, op::GAS, op::SWAP1, op::POP],
+            expected_stack: &[0_U256, DEF_GAS_LIMIT_U256 - 4_U256, DEF_GAS_LIMIT_U256 - 9_U256],
+            expected_gas: 2 + 2 + 3 + 2 + 3 + 2,
+        }),
+        // Folded `EXP` gas (10 + 50 * 2) after `GAS` is charged up front too.
+        gas_before_folded_exp(@raw {
+            bytecode: &[op::GAS, op::PUSH2, 1, 0, op::PUSH1, 2, op::EXP, op::POP, op::GAS],
+            expected_stack: &[DEF_GAS_LIMIT_U256 - 2_U256, DEF_GAS_LIMIT_U256 - 122_U256],
+            expected_gas: 2 + 3 + 3 + 110 + 2 + 2,
+        }),
+        // `SLOAD` ends the gas section, so only its base gas is owed by the first `GAS`.
+        gas_around_sload(@raw {
+            bytecode: &[op::GAS, op::PUSH1, 69, op::SLOAD, op::GAS],
+            expected_stack: &[DEF_GAS_LIMIT_U256 - 2_U256, 42_U256, DEF_GAS_LIMIT_U256 - 107_U256],
+            expected_gas: 2 + 3 + 100 + 2,
+        }),
         keccak256_empty1(@raw {
             bytecode: &[op::PUSH0, op::PUSH0, op::KECCAK256],
             expected_stack: &[KECCAK_EMPTY.into()],
@@ -1269,6 +1287,18 @@ tests! {
             assert_host: Some(|host| {
                 assert_eq!(host.storage.get(&200_U256), Some(&100_U256));
             }),
+        }),
+        // EIP-2200: `SSTORE` needs more than the call stipend left. The gas of the
+        // instructions after it does not count.
+        sstore_stipend_boundary_ok(@raw {
+            bytecode: &[op::PUSH1, 1, op::PUSH0, op::SSTORE, op::PUSH0, op::POP],
+            gas_limit: 3 + 2 + 2301,
+            expected_gas: 3 + 2 + 100 + 2 + 2,
+        }),
+        sstore_stipend_boundary_fail(@raw {
+            bytecode: &[op::PUSH1, 1, op::PUSH0, op::SSTORE, op::PUSH0, op::POP],
+            gas_limit: 3 + 2 + 2300,
+            expected_return: InstrStop::ReentrancySentryOOG,
         }),
         sstore_const_inputs(@raw {
             bytecode: &[op::PUSH1, 42, op::PUSH0, op::SSTORE],
@@ -1783,6 +1813,25 @@ tests! {
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // The callee returns its remaining gas: 63/64 of the gas left after the call's own
+        // costs (16 before it, 100 static, 3 memory, 2500 cold), not counting the gas after it.
+        call_forwards_gas(@raw {
+            bytecode: &[
+                op::PUSH1, 32,   // ret length
+                op::PUSH0,       // ret offset
+                op::PUSH0,       // args length
+                op::PUSH0,       // args offset
+                op::PUSH0,       // value
+                op::PUSH1, 0x67, // address
+                op::GAS,         // gas
+                op::CALL,
+                op::PUSH0,
+                op::MLOAD,
+            ],
+            expected_stack: &[1_U256, 95858_U256],
+            expected_memory: &95858_U256.to_be_bytes::<32>(),
+            expected_gas: 16 + 100 + 3 + 2500 + 15 + 2 + 3,
         }),
         call_gas_after_dynamic_target(@raw {
             bytecode: &[
