@@ -114,6 +114,22 @@ impl<E> TxResultExt<E> {
     pub const fn state_gas_spent(&self) -> u64 {
         self.state_gas_spent
     }
+
+    /// Returns the effective gas refund after the EIP-7623 floor adjustment.
+    ///
+    /// [`Self::refunded`] is capped per EIP-3529 but still pre-floor. When the floor binds —
+    /// `total_gas_spent - refunded < floor_gas` — the floor charge absorbs the refund entirely
+    /// and this returns zero; otherwise it returns [`Self::refunded`]. Consumers computing net
+    /// cost as `total_gas_spent - refund` should use this rather than the raw field; the receipt
+    /// value is [`Self::tx_gas_used`].
+    #[inline]
+    pub const fn final_refunded(&self) -> u64 {
+        if self.total_gas_spent.saturating_sub(self.refunded) < self.floor_gas {
+            0
+        } else {
+            self.refunded
+        }
+    }
 }
 
 /// Whether the transaction scratch is still pending resolution. Not the owned
