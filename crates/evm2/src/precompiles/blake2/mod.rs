@@ -103,15 +103,15 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 
     // Parse state vector h (8 × u64)
     let mut h = [0u64; 8];
-    input[4..68].as_chunks::<8>().0.iter().enumerate().for_each(|(i, chunk)| {
-        h[i] = u64::from_le_bytes(*chunk);
-    });
+    for (h, chunk) in h.iter_mut().zip(input[4..68].as_chunks().0) {
+        *h = u64::from_le_bytes(*chunk);
+    }
 
     // Parse message block m (16 × u64)
     let mut m = [0u64; 16];
-    input[68..196].as_chunks::<8>().0.iter().enumerate().for_each(|(i, chunk)| {
-        m[i] = u64::from_le_bytes(*chunk);
-    });
+    for (m, chunk) in m.iter_mut().zip(input[68..196].as_chunks().0) {
+        *m = u64::from_le_bytes(*chunk);
+    }
 
     // Parse offset counters
     let t_0 = u64::from_le_bytes(*input[196..].first_chunk().unwrap());
@@ -120,8 +120,8 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     crate::precompiles::crypto().blake2_compress(rounds, &mut h, &m, &[t_0, t_1], f);
 
     let mut out = [0u8; 64];
-    for (i, h) in (0..64).step_by(8).zip(h.iter()) {
-        out[i..i + 8].copy_from_slice(&h.to_le_bytes());
+    for (chunk, h) in out.as_chunks_mut().0.iter_mut().zip(&h) {
+        *chunk = h.to_le_bytes();
     }
 
     Ok(PrecompileOutput::new(out.into()))
