@@ -63,14 +63,6 @@ pub const fn u64_to_address(x: u64) -> Address {
     ])
 }
 
-/// Right-pads the given slice at `offset` with zeroes until `LEN`.
-///
-/// Returns the first `LEN` bytes if it does not need padding.
-#[inline]
-pub fn right_pad_with_offset<const LEN: usize>(data: &[u8], offset: usize) -> Cow<'_, [u8; LEN]> {
-    right_pad(data.get(offset..).unwrap_or_default())
-}
-
 /// Right-pads the given slice at `offset` with zeroes until `len`.
 ///
 /// Returns the first `len` bytes if it does not need padding.
@@ -234,28 +226,27 @@ mod tests {
     #[test]
     fn get_with_right_padding() {
         let data = [1, 2, 3, 4];
-        let padded = right_pad_with_offset::<8>(&data, 4);
-        assert_matches!(padded, Cow::Owned(_));
-        assert_eq!(padded[..], [0, 0, 0, 0, 0, 0, 0, 0]);
         let padded = right_pad_with_offset_vec(&data, 4, 8);
         assert_matches!(padded, Cow::Owned(_));
         assert_eq!(padded[..], [0, 0, 0, 0, 0, 0, 0, 0]);
 
         let data = [1, 2, 3, 4, 5, 6, 7, 8];
-        let padded = right_pad_with_offset::<8>(&data, 0);
-        assert_matches!(padded, Cow::Borrowed(_));
-        assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
         let padded = right_pad_with_offset_vec(&data, 0, 8);
         assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
 
         let data = [1, 2, 3, 4, 5, 6, 7, 8];
-        let padded = right_pad_with_offset::<8>(&data, 4);
-        assert_matches!(padded, Cow::Owned(_));
-        assert_eq!(padded[..], [5, 6, 7, 8, 0, 0, 0, 0]);
         let padded = right_pad_with_offset_vec(&data, 4, 8);
         assert_matches!(padded, Cow::Owned(_));
         assert_eq!(padded[..], [5, 6, 7, 8, 0, 0, 0, 0]);
+
+        let data: [u8; 40] = core::array::from_fn(|i| i as u8 + 1);
+        assert_eq!(read_word_padded(&data, 8).0, core::array::from_fn(|i| i as u8 + 9));
+        let mut tail = [0; 32];
+        tail[..2].copy_from_slice(&[39, 40]);
+        assert_eq!(read_word_padded(&data, 38).0, tail);
+        assert_eq!(read_word_padded(&data, 40), B256::ZERO);
+        assert_eq!(read_word_padded(&data, usize::MAX), B256::ZERO);
     }
 
     #[test]
