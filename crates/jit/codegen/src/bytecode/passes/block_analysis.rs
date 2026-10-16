@@ -3161,6 +3161,54 @@ mod tests_edge_cases {
         assert!(!bytecode.has_dynamic_jumps);
     }
 
+    /// The return trampoline of a function that never returns is unreachable once every
+    /// other jump is resolved, even though its block-local operand is unknown.
+    #[test]
+    fn unreached_return_trampoline() {
+        let src = |opaque: &str| {
+            format!(
+                "
+                {opaque}
+                PUSH %tramp
+                PUSH %ret
+                PUSH %func
+                JUMP
+            ret:
+                JUMPDEST
+                PUSH %exit
+                JUMP
+            tramp:
+                JUMPDEST
+                JUMP            ; reached only if `exit` returned
+            func:
+                JUMPDEST
+                JUMP            ; returns to `ret`
+            exit:
+                JUMPDEST
+                STOP
+            opaque:
+                JUMPDEST
+                PUSH0
+                MLOAD
+                JUMP
+            "
+            )
+        };
+        let bytecode = analyze_asm(&src(""));
+        assert!(!bytecode.has_dynamic_jumps);
+
+        // An unresolved jump could reach the trampoline, so it must stay dynamic.
+        let bytecode = analyze_asm(&src("PUSH0 CALLDATALOAD PUSH %opaque JUMPI"));
+        assert!(bytecode.has_dynamic_jumps);
+        let tramp_jump = bytecode
+            .iter_insts()
+            .filter(|(_, d)| d.is_jump() && !d.is_dead_code())
+            // `tramp` is the first `JUMPDEST JUMP` block.
+            .find(|&(i, _)| bytecode.inst(i - 1).opcode == op::JUMPDEST)
+            .unwrap();
+        assert!(!tramp_jump.1.flags.contains(InstFlags::STATIC_JUMP));
+    }
+
     /// Many callers to a shared internal function through relay blocks.
     /// When the fixpoint iteration cap is exceeded, partially-discovered
     /// multi-target jumps must NOT be committed as closed MULTI_JUMPs.
@@ -3261,54 +3309,6 @@ mod tests_edge_cases {
         assert_eq!(bytecode.const_output(Inst::from_usize(16)), None);
         let targets = bytecode.multi_jump_targets(Inst::from_usize(18)).unwrap();
         assert_eq!(targets, [Inst::from_usize(5), Inst::from_usize(12)]);
-    }
-
-    /// The return trampoline of a function that never returns is unreachable once every
-    /// other jump is resolved, even though its block-local operand is unknown.
-    #[test]
-    fn unreached_return_trampoline() {
-        let src = |opaque: &str| {
-            format!(
-                "
-                {opaque}
-                PUSH %tramp
-                PUSH %ret
-                PUSH %func
-                JUMP
-            ret:
-                JUMPDEST
-                PUSH %exit
-                JUMP
-            tramp:
-                JUMPDEST
-                JUMP            ; reached only if `exit` returned
-            func:
-                JUMPDEST
-                JUMP            ; returns to `ret`
-            exit:
-                JUMPDEST
-                STOP
-            opaque:
-                JUMPDEST
-                PUSH0
-                MLOAD
-                JUMP
-            "
-            )
-        };
-        let bytecode = analyze_asm(&src(""));
-        assert!(!bytecode.has_dynamic_jumps);
-
-        // An unresolved jump could reach the trampoline, so it must stay dynamic.
-        let bytecode = analyze_asm(&src("PUSH0 CALLDATALOAD PUSH %opaque JUMPI"));
-        assert!(bytecode.has_dynamic_jumps);
-        let tramp_jump = bytecode
-            .iter_insts()
-            .filter(|(_, d)| d.is_jump() && !d.is_dead_code())
-            // `tramp` is the first `JUMPDEST JUMP` block.
-            .find(|&(i, _)| bytecode.inst(i - 1).opcode == op::JUMPDEST)
-            .unwrap();
-        assert!(!tramp_jump.1.flags.contains(InstFlags::STATIC_JUMP));
     }
 
     /// A recursive function's return must not resolve to a partial set of return sites.

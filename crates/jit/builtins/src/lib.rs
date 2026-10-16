@@ -18,7 +18,7 @@ use evm2::{
     bytecode::Bytecode,
     constants::{BLOCK_HASH_HISTORY, CALL_DEPTH_LIMIT},
     interpreter::{Host, MessageExt, MessageKind, Word, derive_create_destination, i256},
-    utils::{word_to_usize, word_to_usize_saturated},
+    utils::{read_word_padded, word_to_usize, word_to_usize_saturated},
     version::{EvmFeatures, GasId},
 };
 use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
@@ -249,21 +249,7 @@ pub unsafe extern "C" fn __revmc_builtin_calldataload_c(
 }
 
 fn do_calldataload(ecx: &EvmContext, out: &mut EvmWord, offset: usize) {
-    let mut word = B256::ZERO;
-    let input = ecx.input();
-    let input_len = input.len();
-    if offset < input_len {
-        let count = 32.min(input_len - offset);
-        let input = ecx.input().as_ref();
-        // SAFETY: `count` is bounded by the calldata length.
-        // This is `word[..count].copy_from_slice(input[offset..offset + count])`, written using
-        // raw pointers as apparently the compiler cannot optimize the slice version, and using
-        // `get_unchecked` twice is uglier.
-        unsafe {
-            core::ptr::copy_nonoverlapping(input.as_ptr().add(offset), word.as_mut_ptr(), count)
-        };
-    }
-    *out = EvmWord::from_be_bytes(word);
+    *out = EvmWord::from_be_bytes(read_word_padded(ecx.input(), offset));
 }
 
 #[unsafe(no_mangle)]
