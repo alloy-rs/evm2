@@ -239,11 +239,11 @@ impl SectionsAnalysis {
         }
 
         // When EXP's builtin will be skipped — either because both operands are known
-        // (const_output) or because the exponent is known and handled by a peephole (≤ 2) —
+        // (foldable_output) or because the exponent is known and handled by a peephole (≤ 2) —
         // fold the dynamic gas into the section statically.
         if data.opcode == op::EXP
             && let Some(exponent) = bytecode.const_operand(inst, 1)
-            && (bytecode.const_output(inst).is_some() || exponent <= U256::from(2))
+            && (bytecode.foldable_output(inst).is_some() || exponent <= U256::from(2))
         {
             self.gas.process_extra(bytecode.gas_params.exp_cost(exponent));
         }

@@ -260,35 +260,35 @@ tests! {
             expected_gas: 6 + 10 + 100,
         }),
         // Dynamic exponent at the pre-SPURIOUS_DRAGON rate (the default spec's rate is covered by
-        // the `_const_dyn` arith tests): storing and loading it costs 21 gas, pushing the base 3,
+        // the `_const_dyn` arith tests): storing and loading it costs 32 gas, pushing the base 3,
         // and EXP 10.
         exp_dyn_zero_frontier(@raw {
             bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, 0_U256, true, false),
             spec_id: SpecId::FRONTIER,
             expected_stack: &[1_U256],
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: 34,
+            expected_gas: 45,
         }),
         exp_dyn_ff_frontier(@raw {
             bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, 0xff_U256, true, false),
             spec_id: SpecId::FRONTIER,
             expected_stack: &[1_U256 << 255],
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: 34 + 10,
+            expected_gas: 45 + 10,
         }),
         exp_dyn_100_frontier(@raw {
             bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, 0x100_U256, true, false),
             spec_id: SpecId::FRONTIER,
             expected_stack: &[0_U256],
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: 34 + 20,
+            expected_gas: 45 + 20,
         }),
         exp_dyn_max_frontier(@raw {
             bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, U256::MAX, true, false),
             spec_id: SpecId::FRONTIER,
             expected_stack: &[0_U256],
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: 34 + 320,
+            expected_gas: 45 + 320,
         }),
     }
 
@@ -699,6 +699,696 @@ tests! {
             ],
             expected_stack: &[69_U256],
             expected_gas: 3 + (1 + 3 + 3 + 3 + 3 + 3 + 10) * 3 + 2 + 3,
+        }),
+
+        // `outer` and `inner` are internal functions; `inner` is also called directly. The
+        // return of `outer` reads its return address from below `inner`'s frame.
+        nested_internal_returns(@raw {
+            bytecode: &asm("
+                PUSH %ret1
+                PUSH1 0x01
+                PUSH %inner
+                JUMP
+            ret1:
+                JUMPDEST
+                PUSH %ret2
+                PUSH1 0x02
+                PUSH %outer
+                JUMP
+            ret2:
+                JUMPDEST
+                STOP
+            outer:
+                JUMPDEST        ; [ret, x]
+                PUSH %outer_ret
+                SWAP1
+                PUSH %inner
+                JUMP
+            outer_ret:
+                JUMPDEST        ; [ret, inner(x)]
+                PUSH1 0x10
+                ADD
+                SWAP1
+                JUMP
+            inner:
+                JUMPDEST        ; [ret, x]
+                PUSH1 0x03
+                MUL
+                SWAP1
+                JUMP
+            "),
+            expected_stack: &[3_U256, 0x16_U256],
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        recursive_internal_returns(@raw {
+            bytecode: &asm("
+                PUSH %done
+                PUSH1 0x03
+                PUSH %rec
+                JUMP
+            done:
+                JUMPDEST
+                STOP
+            rec:
+                JUMPDEST        ; [ret, n]
+                DUP1
+                ISZERO
+                PUSH %base
+                JUMPI
+                PUSH %back
+                SWAP1
+                PUSH1 0x01
+                SWAP1
+                SUB             ; [ret, back, n - 1]
+                PUSH %rec
+                JUMP
+            back:
+                JUMPDEST        ; [ret, r]
+                PUSH1 0x02
+                ADD
+                SWAP1
+                JUMP
+            base:
+                JUMPDEST        ; [ret, 0]
+                SWAP1
+                JUMP
+            "),
+            expected_stack: &[6_U256],
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+
+        // Adversarial checks of the block analysis under the production configuration
+        // (`inspect_stack: false`), which observes results through `RETURN`.
+        //
+        // One caller leaves the return address at the deepest tracked abstract stack slot
+        // and the other one below it, with a flag selecting how many entries the callee pops.
+        deep_frame_split_return(@raw {
+            bytecode: &asm(&[
+                "
+                PUSH %ret1
+                ",
+                &"PUSH0\n".repeat(62),
+                "
+                PUSH0
+                PUSH %f
+                JUMP
+            ret1:
+                JUMPDEST
+                PUSH %ret2
+                ",
+                &"PUSH0\n".repeat(63),
+                "
+                PUSH1 0x01
+                PUSH %f
+                JUMP
+            ret2:
+                JUMPDEST
+                PUSH1 0x42
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+            f:
+                JUMPDEST
+                DUP1
+                PUSH %path2
+                JUMPI
+                ",
+                &"POP\n".repeat(63),
+                "
+                JUMP
+            path2:
+                JUMPDEST
+                ",
+                &"POP\n".repeat(64),
+                "
+                JUMP
+                ",
+            ].concat()),
+            inspect_stack: Some(false),
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // A return through `JUMPI` whose condition is opaque and whose target has two callers.
+        multi_jump_jumpi_unknown_condition(@raw {
+            bytecode: &asm("
+                PUSH %ret1
+                PUSH1 0x01
+                PUSH %f
+                JUMP
+            ret1:
+                JUMPDEST
+                PUSH1 0x42
+                PUSH %ret2
+                PUSH1 0x01
+                PUSH %f
+                JUMP
+            ret2:
+                JUMPDEST
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+            f:
+                JUMPDEST        ; [ret, x]
+                PUSH1 0x20
+                MLOAD
+                ADD             ; [ret, x + mem[0x20]]
+                SWAP1
+                JUMPI
+                PUSH1 0xff
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+            "),
+            inspect_stack: Some(false),
+            expected_return: InstrStop::Return,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // The `JUMPI` condition is a different valid jump target in each caller, so its
+        // constant set proves it nonzero.
+        jumpi_condition_from_jumpdest_set(@raw {
+            bytecode: &asm("
+                PUSH %ret1
+                PUSH %l1
+                PUSH %f
+                JUMP
+            ret1:
+                JUMPDEST
+                PUSH %ret2
+                PUSH %l2
+                PUSH %f
+                JUMP
+            ret2:
+                JUMPDEST
+                PUSH1 0x42
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+            f:
+                JUMPDEST        ; [ret, l]
+                SWAP1
+                JUMPI
+                PUSH1 0xff
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+            l1:
+                JUMPDEST
+                STOP
+            l2:
+                JUMPDEST
+                STOP
+            "),
+            inspect_stack: Some(false),
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // Like the above, but pc 0 is a `JUMPDEST` and one caller passes 0, so the condition
+        // set mixes zero and nonzero values and the fallthrough must stay live.
+        jumpi_condition_set_with_zero(@raw {
+            bytecode: &asm("
+                JUMPDEST
+                PUSH %ret1
+                PUSH0
+                PUSH %f
+                JUMP
+            ret1:
+                JUMPDEST
+                PUSH %ret2
+                PUSH %l2
+                PUSH %f
+                JUMP
+            ret2:
+                JUMPDEST
+                PUSH1 0x42
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+            f:
+                JUMPDEST        ; [ret, c]
+                SWAP1
+                JUMPI
+                PUSH1 0x07
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+            l2:
+                JUMPDEST
+                STOP
+            "),
+            inspect_stack: Some(false),
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(0x07).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(0x07).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // The constant folding budget runs out between the fixpoint and the snapshot pass: 20
+        // EXP folds and 377 ADD folds per pass leave 1 gas for the last ADD in the third pass,
+        // so the jump operand reaches `b` folded while the ADD's recorded output is unknown.
+        fold_budget_exhausted_before_jump(@raw {
+            bytecode: &asm(&[
+                &"PUSH32 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+                  PUSH32 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+                  EXP
+                  POP\n".repeat(20),
+                &"PUSH1 0x01 PUSH1 0x01 ADD POP\n".repeat(377),
+                "
+                PUSH %t
+                PUSH0
+                ADD
+                PUSH %b
+                JUMP
+            b:
+                JUMPDEST
+                JUMP
+            t:
+                JUMPDEST
+                PUSH1 0x42
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+                ",
+            ].concat()),
+            inspect_stack: Some(false),
+            gas_limit: 1_000_000,
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // Here the budget runs out before the fold inside `b` in the snapshot pass: the fixpoint
+        // discovered `b`'s edge to `t`, but the recorded operand is unknown.
+        fold_budget_exhausted_in_snapshot_pass(@raw {
+            bytecode: &asm(&[
+                &"PUSH32 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+                  PUSH32 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+                  EXP
+                  POP\n".repeat(20),
+                &"PUSH1 0x01 PUSH1 0x01 ADD POP\n".repeat(378),
+                "
+                PUSH %t
+                PUSH %b
+                JUMP
+            b:
+                JUMPDEST
+                PUSH0
+                ADD
+                JUMP
+            t:
+                JUMPDEST
+                PUSH1 0x42
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+                ",
+            ].concat()),
+            inspect_stack: Some(false),
+            gas_limit: 1_000_000,
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // A function returns to pc 0, which is a `JUMPDEST`, so the entry block is also a
+        // jump target reached with a different stack.
+        return_to_entry_jumpdest(@raw {
+            bytecode: &asm("
+                JUMPDEST
+                PUSH0
+                MLOAD
+                PUSH %cont
+                JUMPI
+                PUSH1 0x01
+                PUSH0
+                MSTORE
+                PUSH0           ; return address 0
+                PUSH %f
+                JUMP
+            f:
+                JUMPDEST
+                JUMP
+            cont:
+                JUMPDEST
+                PUSH1 0x42
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+            "),
+            inspect_stack: Some(false),
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // An unreached block ends in a `JUMPI` with an opaque target; it must not disturb the
+        // reachable code.
+        unreached_opaque_jumpi(@raw {
+            bytecode: &asm("
+                PUSH %b
+                JUMP
+            a:
+                JUMPDEST
+                PUSH0
+                CALLDATALOAD
+                PUSH0
+                CALLDATALOAD
+                JUMPI
+                PUSH1 0x01
+                STOP
+            b:
+                JUMPDEST
+                PUSH1 0x42
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+            c:
+                JUMPDEST
+                PUSH1 0x02
+                STOP
+            "),
+            inspect_stack: Some(false),
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // A function pointer chosen by `JUMPI`, called through a shared call block, where the
+        // callees return to a shared return site.
+        function_pointer_call(@raw {
+            bytecode: &asm("
+                PUSH %g
+                PUSH0
+                CALLDATALOAD
+                PUSH %use_f
+                JUMPI
+                PUSH %call
+                JUMP
+            use_f:
+                JUMPDEST
+                POP
+                PUSH %f
+                PUSH %call
+                JUMP
+            call:
+                JUMPDEST        ; [ptr]
+                PUSH %ret
+                SWAP1
+                JUMP
+            f:
+                JUMPDEST        ; [ret]
+                PUSH1 0xf0
+                SWAP1
+                JUMP
+            g:
+                JUMPDEST
+                PUSH1 0x90
+                SWAP1
+                JUMP
+            ret:
+                JUMPDEST
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+            "),
+            inspect_stack: Some(false),
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(0xf0).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(0xf0).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // EXP folds to 1 in both call contexts, but its exponent differs, so its gas does too.
+        context_joined_exp_gas(@raw {
+            bytecode: &asm("
+                PUSH %ret1
+                PUSH1 0x01
+                PUSH %f
+                JUMP
+            ret1:
+                JUMPDEST
+                POP
+                PUSH %ret2
+                PUSH2 0x0100
+                PUSH %f
+                JUMP
+            ret2:
+                JUMPDEST
+                POP
+                STOP
+            f:
+                JUMPDEST        ; [ret, x]
+                PUSH1 0x01
+                EXP             ; 1 ** x
+                SWAP1
+                JUMP
+            "),
+            inspect_stack: Some(false),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // Like `context_joined_exp_gas`, but the exponent is produced inside the EXP block, so dead
+        // store elimination must keep it.
+        context_joined_exp_dup_exponent(@raw {
+            bytecode: &asm("
+                PUSH %ret1
+                PUSH1 0x01
+                PUSH %f
+                JUMP
+            ret1:
+                JUMPDEST
+                POP
+                PUSH %ret2
+                PUSH2 0x0100
+                PUSH %f
+                JUMP
+            ret2:
+                JUMPDEST
+                POP
+                STOP
+            f:
+                JUMPDEST        ; [ret, x]
+                DUP1
+                PUSH1 0x01
+                EXP             ; [ret, x, 1 ** x]
+                SWAP1
+                POP
+                SWAP1
+                JUMP
+            "),
+            inspect_stack: Some(false),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // Recursion deeper than the tracked abstract stack.
+        deep_recursive_internal_returns(@raw {
+            bytecode: &asm("
+                PUSH %done
+                PUSH1 0x46
+                PUSH %rec
+                JUMP
+            done:
+                JUMPDEST
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+            rec:
+                JUMPDEST        ; [ret, n]
+                DUP1
+                ISZERO
+                PUSH %base
+                JUMPI
+                PUSH %back
+                SWAP1
+                PUSH1 0x01
+                SWAP1
+                SUB             ; [ret, back, n - 1]
+                PUSH %rec
+                JUMP
+            back:
+                JUMPDEST        ; [ret, r]
+                PUSH1 0x02
+                ADD
+                SWAP1
+                JUMP
+            base:
+                JUMPDEST        ; [ret, 0]
+                SWAP1
+                JUMP
+            "),
+            inspect_stack: Some(false),
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(140).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(140).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // One caller passes an invalid return address, so the return must stay dynamic and
+        // fail only when that caller's frame returns.
+        return_set_with_invalid_member(@raw {
+            bytecode: &asm("
+                PUSH %ret1
+                PUSH %f
+                JUMP
+            ret1:
+                JUMPDEST
+                PUSH1 0x01
+                PUSH %f
+                JUMP
+            f:
+                JUMPDEST
+                JUMP
+            "),
+            inspect_stack: Some(false),
+            expected_return: InstrStop::InvalidJump,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // The return address sits below the tracked abstract stack and is brought up with
+        // `SWAPN`, so the return must stay dynamic.
+        swapn_deep_return(@raw {
+            bytecode: &asm(&[
+                "
+                PUSH %ret
+                ",
+                &"PUSH0\n".repeat(64),
+                "
+                PUSH %f
+                JUMP
+            f:
+                JUMPDEST
+                SWAPN 64
+                JUMP
+            ret:
+                JUMPDEST
+                ",
+                &"POP\n".repeat(64),
+                "
+                PUSH1 0x42
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+                ",
+            ].concat()),
+            spec_id: SpecId::AMSTERDAM,
+            inspect_stack: Some(false),
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // Same with `DUPN` copying the deep return address.
+        dupn_deep_return(@raw {
+            bytecode: &asm(&[
+                "
+                PUSH %ret
+                ",
+                &"PUSH0\n".repeat(64),
+                "
+                PUSH %f
+                JUMP
+            f:
+                JUMPDEST
+                DUPN 65
+                JUMP
+            ret:
+                JUMPDEST
+                ",
+                &"POP\n".repeat(65),
+                "
+                PUSH1 0x42
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+                ",
+            ].concat()),
+            spec_id: SpecId::AMSTERDAM,
+            inspect_stack: Some(false),
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(0x42).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // Two callers of a function that moves its return address with `EXCHANGE`.
+        exchange_return_two_callers(@raw {
+            bytecode: &asm("
+                PUSH %ret1
+                PUSH1 0x0a
+                PUSH1 0x0b
+                PUSH %f
+                JUMP
+            ret1:
+                JUMPDEST        ; [a, b]
+                ADD
+                PUSH %ret2
+                PUSH1 0x0c
+                PUSH1 0x0d
+                PUSH %f
+                JUMP
+            ret2:
+                JUMPDEST        ; [a + b, c, d]
+                ADD
+                ADD
+                PUSH0
+                MSTORE
+                PUSH1 0x20
+                PUSH0
+                RETURN
+            f:
+                JUMPDEST        ; [ret, a, b]
+                EXCHANGE 1 2    ; [a, ret, b]
+                SWAP1           ; [a, b, ret]
+                JUMP
+            "),
+            spec_id: SpecId::AMSTERDAM,
+            inspect_stack: Some(false),
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(0x0a + 0x0b + 0x0c + 0x0d).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(0x0a + 0x0b + 0x0c + 0x0d).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // Eleven binary choices give one block 2^11 Full contexts, past the Full budget. The
+        // Coarse fallback keys on the topmost target only and must still find both targets of
+        // every return jump.
+        coarse_fallback_binary_choice_chain(@raw {
+            bytecode: &asm(&binary_choice_chain(11)),
+            inspect_stack: Some(false),
+            modify_message: Some(|message| {
+                message.input = Bytes::from_static(&[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]);
+            }),
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(606).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(606).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
 
         pc(@raw {
@@ -1353,6 +2043,143 @@ tests! {
             },
             expected_gas: 3 + 2 + (3 + memory_gas_cost(1)) +
                           3 + 3 + 3 + verylowcopy_cost(2).unwrap(),
+        }),
+        mload_known_word(@raw {
+            bytecode: &asm("
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                PUSH %next
+                JUMP
+            next:
+                JUMPDEST
+                PUSH 0x40
+                MLOAD
+            "),
+            expected_stack: &[0x80_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        mload_known_word_join(@raw {
+            bytecode: &asm("
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                CALLDATASIZE
+                PUSH %a
+                JUMPI
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                PUSH %join
+                JUMP
+            a:
+                JUMPDEST
+                PUSH 0xa0
+                PUSH 0x40
+                MSTORE
+            join:
+                JUMPDEST
+                PUSH 0x40
+                MLOAD
+            "),
+            expected_stack: &[0xa0_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        mload_known_word_after_dyn_mstore(@raw {
+            bytecode: &asm("
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                PUSH 0x42
+                CALLVALUE
+                DUP1
+                PUSH 0x40
+                ADD
+                SUB
+                MSTORE
+                PUSH 0x40
+                MLOAD
+            "),
+            expected_stack: &[0x42_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        mload_known_word_after_unaligned_mstore(@raw {
+            bytecode: &asm("
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                PUSH 0x42
+                PUSH 0x30
+                MSTORE
+                PUSH 0x40
+                MLOAD
+            "),
+            expected_stack: &[0x42_U256 << 128 | 0x80_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        mload_known_word_after_mstore8(@raw {
+            bytecode: &asm("
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                PUSH 0x11
+                PUSH 0x5f
+                MSTORE8
+                PUSH 0x40
+                MLOAD
+                PUSH 0x22
+                PUSH 0x40
+                MSTORE8
+                PUSH 0x40
+                MLOAD
+            "),
+            expected_stack: &[0x11_U256, 0x22_U256 << 248 | 0x11_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        mload_known_word_after_copy(@raw {
+            bytecode: &asm("
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                PUSH 1
+                PUSH0
+                PUSH 0x5f
+                CALLDATACOPY
+                PUSH 0x40
+                MLOAD
+                PUSH 1
+                PUSH0
+                PUSH 0x40
+                CODECOPY
+                PUSH 0x40
+                MLOAD
+                PUSH 1
+                PUSH 0x5f
+                PUSH 0x41
+                MCOPY
+                PUSH 0x40
+                MLOAD
+                PUSH 1
+                PUSH0
+                PUSH 0x5f
+                PUSH0
+                EXTCODECOPY
+                PUSH 0x40
+                MLOAD
+            "),
+            expected_stack: &[
+                0xaa_U256,
+                0x60_U256 << 248 | 0xaa_U256,
+                0x60aa_U256 << 240 | 0xaa_U256,
+                0x60aa_U256 << 240,
+            ],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
     }
 
@@ -2564,14 +3391,8 @@ fn bytecode_ternop(op: u8, a: U256, b: U256, c: U256) -> [u8; 100] {
 /// Build opaque unop bytecode: MSTORE(a, 0), MLOAD(0), `<op>`.
 fn bytecode_unop_opaque(opcode: u8, a: U256) -> Vec<u8> {
     let mut code = Vec::with_capacity(64);
-    code.push(op::PUSH32);
-    code.extend_from_slice(&a.to_be_bytes::<32>());
-    code.push(op::PUSH1);
-    code.push(0x00);
-    code.push(op::MSTORE);
-    code.push(op::PUSH1);
-    code.push(0x00);
-    code.push(op::MLOAD);
+    store_dynamic_operands(&mut code, &[(a, false, 0x00)]);
+    push_const_or_load(&mut code, a, false, 0x00);
     code.push(opcode);
     code
 }
@@ -2590,11 +3411,19 @@ fn push_const_or_load(code: &mut Vec<u8>, value: U256, is_const: bool, offset: u
 fn store_dynamic_operands(code: &mut Vec<u8>, operands: &[(U256, bool, u8)]) {
     for &(value, is_const, offset) in operands {
         if !is_const {
+            // Store through `offset + CALLVALUE - CALLVALUE`, which the compiler cannot fold,
+            // so that loading the value back stays dynamic.
             code.push(op::PUSH32);
             code.extend_from_slice(&value.to_be_bytes::<32>());
-            code.push(op::PUSH1);
-            code.push(offset);
-            code.push(op::MSTORE);
+            code.extend_from_slice(&[
+                op::CALLVALUE,
+                op::DUP1,
+                op::PUSH1,
+                offset,
+                op::ADD,
+                op::SUB,
+                op::MSTORE,
+            ]);
         }
     }
 }
@@ -2631,4 +3460,29 @@ fn bytecode_ternop_mixed(
 
 fn asm(s: &str) -> Vec<u8> {
     crate::parse_asm(s).unwrap()
+}
+
+/// Pushes `done`, then for each stage pushes one of two targets depending on a calldata byte,
+/// then jumps through the pushed targets. Stage `i` adds `i` to memory word 0 for `A` and
+/// `16 * i` for `B`.
+fn binary_choice_chain(stages: usize) -> String {
+    let mut s = String::from("PUSH %done\n");
+    for i in 1..=stages {
+        s += &format!(
+            "PUSH1 0x{i:02x} CALLDATALOAD PUSH1 0xf8 SHR PUSH %b{i} JUMPI\n\
+             PUSH %A{i} PUSH %j{i} JUMP\n\
+             b{i}:\n JUMPDEST PUSH %B{i}\n\
+             j{i}:\n JUMPDEST\n"
+        );
+    }
+    s += "JUMP\n";
+    for i in 1..=stages {
+        s += &format!(
+            "A{i}:\n JUMPDEST PUSH0 MLOAD PUSH1 0x{i:02x} ADD PUSH0 MSTORE JUMP\n\
+             B{i}:\n JUMPDEST PUSH0 MLOAD PUSH1 0x{:02x} ADD PUSH0 MSTORE JUMP\n",
+            16 * i
+        );
+    }
+    s += "done:\n JUMPDEST PUSH1 0x20 PUSH0 RETURN\n";
+    s
 }

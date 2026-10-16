@@ -523,7 +523,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // store the folded constant. Works for single-output arithmetic (ADD, MUL,
         // ...) and DUP (which adds one new TOS without consuming its input).
         if out >= 1
-            && let Some(const_out) = self.bytecode.const_output(inst)
+            && let Some(const_out) = self.bytecode.foldable_output(inst)
         {
             debug_assert!(
                 out == 1 || out == inp + 1,

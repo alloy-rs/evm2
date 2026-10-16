@@ -625,7 +625,10 @@ impl<'a> Bytecode<'a> {
 
     /// Returns `true` if the given program counter is a valid jump destination.
     pub(crate) fn is_valid_jump(&self, pc: usize) -> bool {
-        self.jumpdests.get(pc).as_deref().copied() == Some(true)
+        // Reads the raw words: `BitVec::get` costs several times more in the jump analyses.
+        let bits = usize::BITS as usize;
+        pc < self.jumpdests.len()
+            && self.jumpdests.as_raw_slice()[pc / bits] >> (pc % bits) & 1 != 0
     }
 
     /// Returns `true` if the bytecode has dynamic jumps.
@@ -674,6 +677,18 @@ impl<'a> Bytecode<'a> {
     pub(crate) fn const_output(&self, inst: Inst) -> Option<U256> {
         let imm = self.snapshots.outputs[inst]?.as_const()?;
         Some(imm.get(&self.u256_interner.borrow()))
+    }
+
+    /// Returns the known output of the given instruction if translation can store it instead of
+    /// executing the instruction.
+    ///
+    /// EXP's dynamic gas is only charged statically when its exponent is known, and a constant
+    /// output joined across call contexts does not imply a constant exponent.
+    pub(crate) fn foldable_output(&self, inst: Inst) -> Option<U256> {
+        if self.insts[inst].opcode == op::EXP && self.const_operand(inst, 1).is_none() {
+            return None;
+        }
+        self.const_output(inst)
     }
 
     /// Returns the first constant EVM memory access `(offset, len)` for the given instruction.
