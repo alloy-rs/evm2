@@ -113,13 +113,26 @@ impl AbsValue {
 /// Constant-set interner used by the abstract interpreter.
 struct ConstSetInterner {
     interner: Interner<ConstSetIdx, Box<[U256Imm]>>,
+    /// `JUMPDEST` map: sets only keep valid jump targets.
+    jumpdests: BitVec,
     /// Number of constants merged by [`Self::join`], for the fixpoint budget.
     merged: u64,
 }
 
 impl ConstSetInterner {
-    fn new() -> Self {
-        Self { interner: Interner::new(), merged: 0 }
+    fn new(jumpdests: BitVec) -> Self {
+        Self { interner: Interner::new(), jumpdests, merged: 0 }
+    }
+
+    /// Returns `true` if `value` may be part of a set.
+    fn is_set_member(&self, value: AbsValue) -> bool {
+        match value {
+            AbsValue::Const(imm) => imm
+                .get_inline()
+                .is_some_and(|pc| self.jumpdests.get(pc as usize).is_some_and(|bit| *bit)),
+            AbsValue::ConstSet(_) => true,
+            AbsValue::Top => false,
+        }
     }
 
     /// Returns the constants in the given set.
@@ -149,7 +162,8 @@ impl ConstSetInterner {
     fn join(&mut self, a: AbsValue, b: AbsValue) -> AbsValue {
         match (a, b) {
             _ if a == b => a,
-            (AbsValue::Top, _) | (_, AbsValue::Top) => AbsValue::Top,
+            // Sets only matter as jump targets, and any other member makes a jump unresolvable.
+            _ if !self.is_set_member(a) || !self.is_set_member(b) => AbsValue::Top,
             _ => {
                 let a = self.abs_const_set(&a).unwrap();
                 let b = self.abs_const_set(&b).unwrap();
@@ -511,7 +525,7 @@ impl Bytecode<'_> {
     pub(crate) fn block_analysis_local(&mut self) {
         self.init_snapshots();
 
-        let empty_sets = ConstSetInterner::new();
+        let empty_sets = ConstSetInterner::new(BitVec::new());
         let mut resolved = Vec::new();
         let mut stack = Vec::new();
         let trace_logs = enabled!(tracing::Level::TRACE);
@@ -1084,7 +1098,7 @@ impl Bytecode<'_> {
     /// the safe block-local values computed by `block_analysis_local`.
     fn run_fixpoint(&mut self, mode: ContextMode) -> Fixpoint {
         let num_blocks = self.cfg.blocks.len();
-        let mut const_sets = ConstSetInterner::new();
+        let mut const_sets = ConstSetInterner::new(self.jumpdests.clone());
         let budget = mode.budget(num_blocks, self.insts.len());
 
         let mut states = IndexVec::<Part, (Block, BlockState)>::new();
