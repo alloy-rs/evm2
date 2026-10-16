@@ -26,6 +26,7 @@ pub const ABI_VERSION: u32 = 2;
 pub mod tests;
 
 type FxHashMap<K, V> = alloy_primitives::map::HashMap<K, V, alloy_primitives::map::FxBuildHasher>;
+type FxHashSet<K> = alloy_primitives::map::HashSet<K, alloy_primitives::map::FxBuildHasher>;
 
 /// Enable for `cargo asm -p evm2_jit --lib`.
 #[cfg(any())]

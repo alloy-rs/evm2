@@ -569,6 +569,29 @@ tests! {
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
+        // Same, but the target sits in the truncated immediate of a PUSH2 at the end of
+        // the code.
+        jump_into_desynced_truncated_push_immediate(@raw {
+            bytecode: &[
+                op::PUSH1, 6, op::JUMP,
+                op::DUPN, op::PUSH1, op::PUSH2, op::JUMPDEST, // decoded: DUPN(PUSH1), PUSH2(0x5b)
+            ],
+            spec_id: SpecId::AMSTERDAM,
+            expected_return: InstrStop::Stop,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // Same target, reached through an unresolved dynamic jump (CALLDATASIZE).
+        dynamic_jump_into_desynced_truncated_push_immediate(@raw {
+            bytecode: &[
+                op::PUSH1, 56, op::CALLDATASIZE, op::SUB, op::JUMP, // 64 - 56 = pc 8
+                op::DUPN, op::PUSH1, op::PUSH2, op::JUMPDEST,
+            ],
+            spec_id: SpecId::AMSTERDAM,
+            expected_return: InstrStop::Stop,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
 
         // Truncated PUSH2 at EOF: only 1 of 2 immediate bytes present.
         // EVM spec right-pads with zeros: PUSH2 0x42 → 0x4200.
@@ -1120,6 +1143,66 @@ tests! {
             expected_return: InstrStop::Return,
             expected_memory: &U256::from(0xf0).to_be_bytes::<32>(),
             expected_output: Some(&U256::from(0xf0).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // EXP folds to 1 in both call contexts, but its exponent differs, so its gas does too.
+        context_joined_exp_gas(@raw {
+            bytecode: &asm("
+                PUSH %ret1
+                PUSH1 0x01
+                PUSH %f
+                JUMP
+            ret1:
+                JUMPDEST
+                POP
+                PUSH %ret2
+                PUSH2 0x0100
+                PUSH %f
+                JUMP
+            ret2:
+                JUMPDEST
+                POP
+                STOP
+            f:
+                JUMPDEST        ; [ret, x]
+                PUSH1 0x01
+                EXP             ; 1 ** x
+                SWAP1
+                JUMP
+            "),
+            inspect_stack: Some(false),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // Like `context_joined_exp_gas`, but the exponent is produced inside the EXP block, so dead
+        // store elimination must keep it.
+        context_joined_exp_dup_exponent(@raw {
+            bytecode: &asm("
+                PUSH %ret1
+                PUSH1 0x01
+                PUSH %f
+                JUMP
+            ret1:
+                JUMPDEST
+                POP
+                PUSH %ret2
+                PUSH2 0x0100
+                PUSH %f
+                JUMP
+            ret2:
+                JUMPDEST
+                POP
+                STOP
+            f:
+                JUMPDEST        ; [ret, x]
+                DUP1
+                PUSH1 0x01
+                EXP             ; [ret, x, 1 ** x]
+                SWAP1
+                POP
+                SWAP1
+                JUMP
+            "),
+            inspect_stack: Some(false),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
         // Recursion deeper than the tracked abstract stack.

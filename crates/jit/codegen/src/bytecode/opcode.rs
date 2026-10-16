@@ -34,12 +34,11 @@ impl<'a> Iterator for OpcodesIterWithPc<'a> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
+        let len = self.iter.inner().len();
         self.iter.next().map(|opcode| {
             let pc = self.pc;
-            self.pc += 1;
-            if let Some(imm) = opcode.immediate {
-                self.pc += imm.len();
-            }
+            // Count the bytes consumed, including a truncated immediate at the end of the code.
+            self.pc += len - self.iter.inner().len();
             (pc, opcode)
         })
     }
