@@ -679,6 +679,18 @@ impl<'a> Bytecode<'a> {
         Some(imm.get(&self.u256_interner.borrow()))
     }
 
+    /// Returns the known output of the given instruction if translation can store it instead of
+    /// executing the instruction.
+    ///
+    /// EXP's dynamic gas is only charged statically when its exponent is known, and a constant
+    /// output joined across call contexts does not imply a constant exponent.
+    pub(crate) fn foldable_output(&self, inst: Inst) -> Option<U256> {
+        if self.insts[inst].opcode == op::EXP && self.const_operand(inst, 1).is_none() {
+            return None;
+        }
+        self.const_output(inst)
+    }
+
     /// Returns the first constant EVM memory access `(offset, len)` for the given instruction.
     #[allow(dead_code)]
     pub(crate) fn const_memory_access(&self, inst: Inst) -> Option<(Option<u64>, Option<u64>)> {

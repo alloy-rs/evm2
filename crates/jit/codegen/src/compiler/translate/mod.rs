@@ -522,11 +522,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // Pure ops with a known-constant output: skip the opcode logic and just
         // store the folded constant. Works for single-output arithmetic (ADD, MUL,
         // ...) and DUP (which adds one new TOS without consuming its input).
-        // EXP's dynamic gas is only charged statically when its exponent is known: a constant
-        // output joined across call contexts does not imply a constant exponent.
         if out >= 1
-            && let Some(const_out) = self.bytecode.const_output(inst)
-            && (data.opcode != op::EXP || self.bytecode.const_operand(inst, 1).is_some())
+            && let Some(const_out) = self.bytecode.foldable_output(inst)
         {
             debug_assert!(
                 out == 1 || out == inp + 1,
