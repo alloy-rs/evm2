@@ -1145,6 +1145,34 @@ tests! {
             expected_output: Some(&U256::from(0xf0).to_be_bytes::<32>()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
+        // EXP folds to 1 in both call contexts, but its exponent differs, so its gas does too.
+        context_joined_exp_gas(@raw {
+            bytecode: &asm("
+                PUSH %ret1
+                PUSH1 0x01
+                PUSH %f
+                JUMP
+            ret1:
+                JUMPDEST
+                POP
+                PUSH %ret2
+                PUSH2 0x0100
+                PUSH %f
+                JUMP
+            ret2:
+                JUMPDEST
+                POP
+                STOP
+            f:
+                JUMPDEST        ; [ret, x]
+                PUSH1 0x01
+                EXP             ; 1 ** x
+                SWAP1
+                JUMP
+            "),
+            inspect_stack: Some(false),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
         // Recursion deeper than the tracked abstract stack.
         deep_recursive_internal_returns(@raw {
             bytecode: &asm("
