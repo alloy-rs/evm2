@@ -341,7 +341,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if self.tracked.storage.slots.capacity() == 0 {
             self.tracked.storage.slots = self.storage_pool.take();
         }
-        StorageHandle::new(self.address, &mut self.tracked.storage, self.inner)
+        StorageHandle::new(&self.address, &mut self.tracked.storage, self.inner)
     }
 
     /// Records the pre-mutation revert entry the first time a change is made through this handle.

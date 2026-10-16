@@ -553,23 +553,23 @@ impl<'a> State<'a> {
     /// Loading account metadata neither touches nor warms the account. Slot values remain lazy;
     /// loading or warming a slot records the same journal entries as [`AccountHandle::storage`].
     #[inline(always)]
-    pub fn storage(&mut self, address: &Address) -> DbResult<StorageHandle<'_, 'a>> {
+    pub fn storage<'s>(&'s mut self, address: &'s Address) -> DbResult<StorageHandle<'s, 'a>> {
         let State { accounts, storage_pool, inner, .. } = self;
         let account = Self::account_raw(inner, accounts, address)?;
         if account.storage.slots.capacity() == 0 {
             account.storage.slots = storage_pool.take();
         }
-        Ok(StorageHandle::new(*address, &mut account.storage, inner))
+        Ok(StorageHandle::new(address, &mut account.storage, inner))
     }
 
     /// Loads a single persistent storage slot and returns a journaled mutation handle.
     ///
     /// Cold slots are always loaded. See [`StorageHandle::into_slot`] for loading semantics.
-    pub fn storage_slot(
-        &mut self,
-        address: &Address,
+    pub fn storage_slot<'s>(
+        &'s mut self,
+        address: &'s Address,
         key: Word,
-    ) -> DbResult<StorageSlotHandle<'_, 'a>> {
+    ) -> DbResult<StorageSlotHandle<'s, 'a>> {
         self.storage(address)?.into_slot(key)
     }
 
