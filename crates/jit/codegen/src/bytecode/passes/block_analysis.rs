@@ -35,7 +35,7 @@
 
 use super::StackSection;
 use crate::{
-    FxHashMap,
+    FxHashMap, FxHashSet,
     bytecode::{Bytecode, Inst, InstFlags, Interner, U256Imm},
 };
 use alloy_primitives::map::FxHasher;
@@ -1123,6 +1123,9 @@ impl Bytecode<'_> {
         // Discovered dynamic-jump target edges per block.
         let mut discovered: IndexVec<Block, SmallVec<[Block; 4]>> =
             IndexVec::from_vec(vec![SmallVec::new(); num_blocks]);
+        // The same edges, to deduplicate them in constant time: a shared return block can have
+        // thousands of targets.
+        let mut discovered_set = FxHashSet::default();
 
         let mut pops = 0;
         let mut work = 0;
@@ -1174,7 +1177,7 @@ impl Bytecode<'_> {
             {
                 self.jump_target_blocks(operand, &const_sets, &mut targets);
                 for &tb in &targets {
-                    if !discovered[bid].contains(&tb) {
+                    if discovered_set.insert((bid, tb)) {
                         discovered[bid].push(tb);
                     }
                 }
@@ -1280,9 +1283,8 @@ impl Bytecode<'_> {
             if !self.is_valid_jump(target_pc) {
                 continue;
             }
-            if let Some(tb) = self.cfg.inst_to_block[self.pc_to_inst(target_pc)]
-                && !targets.contains(&tb)
-            {
+            // Set members are distinct jump targets, and each starts its own block.
+            if let Some(tb) = self.cfg.inst_to_block[self.pc_to_inst(target_pc)] {
                 targets.push(tb);
             }
         }
