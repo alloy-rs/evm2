@@ -552,6 +552,7 @@ impl<'a> State<'a> {
     ///
     /// Loading account metadata neither touches nor warms the account. Slot values remain lazy;
     /// loading or warming a slot records the same journal entries as [`AccountHandle::storage`].
+    #[inline(always)]
     pub fn storage(&mut self, address: &Address) -> DbResult<StorageHandle<'_, 'a>> {
         let State { accounts, storage_pool, inner, .. } = self;
         let account = Self::account_raw(inner, accounts, address)?;

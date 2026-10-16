@@ -207,7 +207,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         self.into_slot_inner::<true>(key, skip_cold_load)
     }
 
-    #[inline]
+    #[inline(always)]
     fn into_slot_inner<const WARM: bool>(
         self,
         key: Word,
