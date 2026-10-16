@@ -5,6 +5,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(elided_lifetimes_in_paths)]
 
+#[cfg(test)]
+extern crate alloc;
+
 #[macro_use]
 #[cfg(feature = "ir")]
 extern crate tracing;
@@ -960,6 +963,7 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use alloy_primitives::Address;
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId,
