@@ -18,8 +18,8 @@ Examples:
     # Only jump resolution for specific benchmarks:
     ./scripts/jit/bench.py /tmp/bench --jump-resolution seaport usdc_proxy
 
-    # Include mainnet .bin files:
-    ./scripts/jit/bench.py /tmp/bench --diff main --extra-dir tmp/mainnet
+    # Also benchmark the slow mainnet contracts:
+    ./scripts/jit/bench.py /tmp/bench --diff main --extra-dir data/mainnet --extra-dir data/mainnet/slow
 
     # Only compile times:
     ./scripts/jit/bench.py /tmp/bench --diff main --compile-times
@@ -69,7 +69,7 @@ def find_extra_benches(extra_dirs: list[str], root: str) -> list[str]:
 
     For directories containing ``bytecode.bin``, returns the directory path —
     the CLI accepts those directly and uses the directory name as the bench
-    name. For bare ``.bin`` files, returns the absolute path.
+    name. For bare ``.bin`` and ``.hex`` files, returns the absolute path.
     """
     paths = []
     for d in extra_dirs:
@@ -84,8 +84,8 @@ def find_extra_benches(extra_dirs: list[str], root: str) -> list[str]:
                 os.path.join(entry_path, "bytecode.bin")
             ):
                 paths.append(os.path.abspath(entry_path))
-            # Direct .bin file.
-            elif os.path.isfile(entry_path) and entry.endswith(".bin"):
+            # Direct .bin or .hex file.
+            elif os.path.isfile(entry_path) and entry.endswith((".bin", ".hex")):
                 paths.append(os.path.abspath(entry_path))
     return paths
 
@@ -261,6 +261,15 @@ def i256_load_store_counts(path: str) -> tuple[int, int]:
     except FileNotFoundError:
         pass
     return loads, stores
+
+
+def unresolved_jump_count(path: str) -> int:
+    """Count live jumps without a resolved target in a ``bytecode.txt`` dump."""
+    try:
+        with open(path) as f:
+            return sum(" %dynamic" in line for line in f)
+    except FileNotFoundError:
+        return 0
 
 
 def mresize_call_count(path: str) -> int:
@@ -491,6 +500,7 @@ CODEGEN_COLUMNS = [
     "mresize",
     "spills",
     "reloads",
+    "unresolved jumps",
 ]
 
 
@@ -506,7 +516,7 @@ class CodegenLines(Analysis):
         return None
 
     def _collect(self, benches, dump_dir) -> dict[str, dict[str, int]]:
-        """Collect line counts per file type + JIT size + i256 loads/stores + spills/reloads."""
+        """Collect line counts per file type, JIT size, and the other ``CODEGEN_COLUMNS``."""
         rows = {}
         for bench in benches:
             sub = os.path.join(dump_dir, dump_subdir(bench))
@@ -524,6 +534,7 @@ class CodegenLines(Analysis):
                 mresize_call_count(opt_ll),
                 spills,
                 reloads,
+                unresolved_jump_count(os.path.join(sub, "bytecode.txt")),
             ]
             rows[bench_name(bench)] = dict(zip(CODEGEN_COLUMNS, values))
         return rows
@@ -1164,6 +1175,7 @@ RESULT_KEYS = {
     "mresize": "mresize_calls",
     "spills": "spills",
     "reloads": "reloads",
+    "unresolved jumps": "unresolved_jumps",
     "instructions": "compile_instructions",
     "cycles": "compile_cycles",
     "time": "compile_time_seconds",
@@ -1182,6 +1194,7 @@ METRICS = {
     "i256_loads": {"title": "i256 loads", "unit": "loads"},
     "i256_stores": {"title": "i256 stores", "unit": "stores"},
     "mresize_calls": {"title": "mresize calls", "unit": "calls"},
+    "unresolved_jumps": {"title": "Unresolved jumps", "unit": "jumps"},
     "compile_instructions": {"title": "Compile instructions", "unit": "instructions"},
     "compile_cycles": {"title": "Compile cycles", "unit": "cycles"},
     "compile_time_seconds": {"title": "Compile time", "unit": "seconds"},
@@ -1194,17 +1207,20 @@ TARGET_CPU_RE = re.compile(r'"target-cpu"="([^"]+)"')
 BENCH_FIXTURE_RE = re.compile(r'Bench::\w+\(\s*"([^"]+)",[^"]*"([^"]+)"')
 
 
-def source_links(root: str, rev: str) -> dict[str, list[dict[str, str]]]:
-    """Link each built-in benchmark to its fixture in the benchmark catalog."""
+def source_links(root: str, rev: str, benches: list[str]) -> dict[str, list[dict[str, str]]]:
+    """Link built-in benchmarks to their fixtures and extra files in ``root`` to themselves."""
     try:
         with open(os.path.join(root, "crates/cli/src/evm_bench.rs")) as f:
-            catalog = f.read()
+            fixtures = dict(BENCH_FIXTURE_RE.findall(f.read()))
     except FileNotFoundError:
-        return {}
+        fixtures = {}
+    for bench in benches:
+        if os.path.isabs(bench) and os.path.commonpath([bench, root]) == root:
+            fixtures[dump_subdir(bench)] = os.path.relpath(bench, root)
     repo = os.environ.get("GITHUB_REPOSITORY", "alloy-rs/evm2")
     return {
         name: [{"label": path, "url": f"https://github.com/{repo}/blob/{rev}/{path}"}]
-        for name, path in BENCH_FIXTURE_RE.findall(catalog)
+        for name, path in fixtures.items()
     }
 
 
@@ -1223,7 +1239,7 @@ def write_results(out_dir: str, benches: list[str], side: Side, perf: bool):
     """Write ``results.json`` and normalized artifacts for the perf site and ``compare.py``."""
     codegen = CodegenLines()._collect(benches, side.dump_dir)
     times = CompileTime()._collect(benches, side)
-    links = source_links(side.root, side.rev)
+    links = source_links(side.root, side.rev, benches)
     artifacts = os.path.join(out_dir, "artifacts")
     if os.path.isdir(artifacts):
         shutil.rmtree(artifacts)
@@ -1300,8 +1316,8 @@ def main():
         "--extra-dir",
         action="append",
         default=None,
-        help="Extra directory with .bin files to benchmark (can be repeated). "
-        "Defaults to ['tmp/mainnet'] when running all benchmarks; "
+        help="Extra directory with .bin or .hex files to benchmark (can be repeated). "
+        "Defaults to ['data/mainnet'] when running all benchmarks; "
         "pass any --extra-dir to override or to include extras with explicit "
         "benchmarks.",
     )
@@ -1423,7 +1439,7 @@ def main():
     head = Side("head", head_sha, cargo_build(root), args.dump_dir, root)
     builtin = args.benches or get_benches(head.binary)
     extra_dirs = (
-        args.extra_dir if args.extra_dir is not None else ([] if args.benches else ["tmp/mainnet"])
+        args.extra_dir if args.extra_dir is not None else ([] if args.benches else ["data/mainnet"])
     )
     extra = find_extra_benches(extra_dirs, root)
     benches = builtin + extra
@@ -1441,7 +1457,8 @@ def main():
     if need_timing:
         measure(sides, benches, args.runs, perf)
     if need_runtime:
-        measure_runtime(sides, benches)
+        # Extra bytecodes run without calldata or state, so only compile cost is meaningful.
+        measure_runtime(sides, builtin)
 
     results_path = os.path.join(args.dump_dir, "results.md")
     with open(results_path, "w") as md:
