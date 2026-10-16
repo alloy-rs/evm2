@@ -308,12 +308,16 @@ impl<'a> Bytecode<'a> {
             // bytecode never rewinds. Execution cannot fall through into the rewound
             // bytes: every desynchronizing immediate is an invalid DUPN/SWAPN/EXCHANGE
             // encoding, so the opcode preceding them halts at runtime.
-            if let Some(imm) = immediate {
-                let imm_end = pc + 1 + imm.len();
-                if let Some(target) = (pc + 1..imm_end).find(|&p| jumpdests[p]) {
-                    // SAFETY: we just consumed the immediate bytes at `pc + 1..imm_end`.
-                    unsafe { iter.rewind(imm_end - target) };
-                }
+            // A truncated immediate at the end of the code consumes the remaining bytes.
+            let imm_len = if info.is_unknown() || info.is_disabled() {
+                0
+            } else {
+                min_imm_len(opcode) as usize
+            };
+            let imm_end = (pc + 1 + imm_len).min(code.len());
+            if let Some(target) = (pc + 1..imm_end).find(|&p| jumpdests[p]) {
+                // SAFETY: we just consumed the immediate bytes at `pc + 1..imm_end`.
+                unsafe { iter.rewind(imm_end - target) };
             }
         }
 
