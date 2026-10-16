@@ -1,36 +1,42 @@
 use super::i256::i256_cmp;
-use crate::{interpreter::Word, utils::word_to_usize_saturated};
+use crate::{
+    interpreter::{
+        Word,
+        stack::{write_u64, write_word},
+    },
+    utils::word_to_usize_saturated,
+};
 use core::cmp::Ordering;
 use evm2_macros::instruction;
 
 #[instruction]
 pub fn lt([a, b]: [Word]) -> out {
-    *out = Word::from(a < b);
+    write_u64(out, (a < b) as u64);
 }
 
 #[instruction]
 pub fn gt([a, b]: [Word]) -> out {
-    *out = Word::from(a > b);
+    write_u64(out, (a > b) as u64);
 }
 
 #[instruction]
 pub fn slt([a, b]: [Word]) -> out {
-    *out = Word::from(i256_cmp(a, b) == Ordering::Less);
+    write_u64(out, (i256_cmp(a, b) == Ordering::Less) as u64);
 }
 
 #[instruction]
 pub fn sgt([a, b]: [Word]) -> out {
-    *out = Word::from(i256_cmp(a, b) == Ordering::Greater);
+    write_u64(out, (i256_cmp(a, b) == Ordering::Greater) as u64);
 }
 
 #[instruction]
 pub fn eq([a, b]: [Word]) -> out {
-    *out = Word::from(a == b);
+    write_u64(out, (a == b) as u64);
 }
 
 #[instruction]
 pub fn iszero([value]: [Word]) -> out {
-    *out = Word::from(value.is_zero());
+    write_u64(out, value.is_zero() as u64);
 }
 
 #[instruction]
@@ -62,25 +68,26 @@ pub fn byte([index, value]: [Word]) -> out {
 #[instruction]
 pub fn shl([shift, value]: [Word]) -> out {
     let shift = word_to_usize_saturated(*shift);
-    *out = if shift < 256 { *value << shift } else { Word::ZERO };
+    write_word(out, if shift < 256 { *value << shift } else { Word::ZERO });
 }
 
 #[instruction]
 pub fn shr([shift, value]: [Word]) -> out {
     let shift = word_to_usize_saturated(*shift);
-    *out = if shift < 256 { *value >> shift } else { Word::ZERO };
+    write_word(out, if shift < 256 { *value >> shift } else { Word::ZERO });
 }
 
 #[instruction]
 pub fn sar([shift, value]: [Word]) -> out {
     let shift = word_to_usize_saturated(*shift);
-    *out = if shift < 256 {
+    let value = if shift < 256 {
         value.arithmetic_shr(shift)
     } else if value.bit(255) {
         Word::MAX
     } else {
         Word::ZERO
     };
+    write_word(out, value);
 }
 
 #[instruction]

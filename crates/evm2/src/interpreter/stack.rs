@@ -358,6 +358,22 @@ impl<'a> StackMut<'a> {
         Ok(())
     }
 
+    /// Pushes a `u64` as a word onto the stack.
+    #[inline]
+    pub fn push_u64(&mut self, value: u64) -> Result {
+        let len = self.len();
+        if len == Self::CAPACITY {
+            cold_path();
+            return Err(InstrStop::StackOverflow);
+        }
+        unsafe {
+            write_u64(&mut *self.as_word_mut_ptr().add(len), value);
+            *self.len = len + 1;
+            debug_assert!(*self.len <= Self::CAPACITY);
+        }
+        Ok(())
+    }
+
     /// Pops one word from the stack.
     #[inline]
     pub fn pop(&mut self) -> Result<Word> {
@@ -489,6 +505,12 @@ impl<'a> StackMut<'a> {
             return Ok(());
         }
 
+        if slice.len() <= 8 {
+            let mut buf = [0; 8];
+            buf[8 - slice.len()..].copy_from_slice(slice);
+            return self.push_u64(u64::from_be_bytes(buf));
+        }
+
         let n_words = slice.len().div_ceil(32);
         let len = self.len();
         let new_len = len + n_words;
@@ -541,6 +563,64 @@ impl<'a> StackMut<'a> {
     }
 }
 
+/// Writes `value` to `dst` as a word.
+///
+/// LLVM otherwise writes the low limb and the zero limbs with separate stores. A later 32-byte load
+/// of the word cannot take its data from several stores, so it waits for them to reach the cache.
+#[inline(always)]
+#[allow(clippy::missing_const_for_fn)] // Inline assembly cannot be const.
+pub(crate) fn write_u64(dst: &mut Word, value: u64) {
+    core::cfg_select! {
+        // LLVM splits a 32-byte store of a zero-extended value, so use inline assembly.
+        all(target_arch = "x86_64", target_feature = "avx", not(miri)) => unsafe {
+            // A typed 256-bit operand lets LLVM see the dirty upper state and emit `vzeroupper`.
+            let _tmp: core::arch::x86_64::__m256i;
+            core::arch::asm!(
+                "vmovq {tmp:x}, {value}",
+                "vmovdqu ymmword ptr [{dst}], {tmp:y}",
+                dst = in(reg) core::ptr::from_mut(dst),
+                value = in(reg) value,
+                tmp = out(ymm_reg) _tmp,
+                options(nostack, preserves_flags),
+            );
+        },
+        _ => *dst = Word::from(value),
+    }
+}
+
+/// Writes `value` to `dst` with a single 32-byte store.
+///
+/// Use this for words computed in general-purpose registers, which LLVM otherwise writes with
+/// several narrower stores. See [`write_u64`].
+#[inline(always)]
+#[allow(clippy::missing_const_for_fn)] // Inline assembly cannot be const.
+pub(crate) fn write_word(dst: &mut Word, value: Word) {
+    core::cfg_select! {
+        all(target_arch = "x86_64", target_feature = "avx", not(miri)) => unsafe {
+            let [l0, l1, l2, l3] = value.into_limbs();
+            let _lo: core::arch::x86_64::__m256i;
+            let _hi: core::arch::x86_64::__m128i;
+            core::arch::asm!(
+                "vmovq {lo:x}, {l0}",
+                "vpinsrq {lo:x}, {lo:x}, {l1}, 1",
+                "vmovq {hi:x}, {l2}",
+                "vpinsrq {hi:x}, {hi:x}, {l3}, 1",
+                "vinsertf128 {lo:y}, {lo:y}, {hi:x}, 1",
+                "vmovdqu ymmword ptr [{dst}], {lo:y}",
+                dst = in(reg) core::ptr::from_mut(dst),
+                l0 = in(reg) l0,
+                l1 = in(reg) l1,
+                l2 = in(reg) l2,
+                l3 = in(reg) l3,
+                lo = out(ymm_reg) _lo,
+                hi = out(xmm_reg) _hi,
+                options(nostack, preserves_flags),
+            );
+        },
+        _ => *dst = value,
+    }
+}
+
 /// Swaps two distinct stack words.
 ///
 /// When LLVM prefers 512-bit vectors, it merges a swap of adjacent words into one 64-byte load.
@@ -549,17 +629,15 @@ impl<'a> StackMut<'a> {
 #[inline(always)]
 #[allow(clippy::missing_const_for_fn)] // The intrinsics are not const.
 unsafe fn swap_words(a: *mut Word, b: *mut Word) {
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    unsafe {
-        use core::arch::x86_64::{_mm256_loadu_si256, _mm256_storeu_si256};
-        let x = _mm256_loadu_si256(a.cast());
-        let y = _mm256_loadu_si256(b.cast());
-        _mm256_storeu_si256(a.cast(), y);
-        _mm256_storeu_si256(b.cast(), x);
-    }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
-    unsafe {
-        core::ptr::swap_nonoverlapping(a, b, 1);
+    core::cfg_select! {
+        all(target_arch = "x86_64", target_feature = "avx512f") => unsafe {
+            use core::arch::x86_64::{_mm256_loadu_si256, _mm256_storeu_si256};
+            let x = _mm256_loadu_si256(a.cast());
+            let y = _mm256_loadu_si256(b.cast());
+            _mm256_storeu_si256(a.cast(), y);
+            _mm256_storeu_si256(b.cast(), x);
+        },
+        _ => unsafe { core::ptr::swap_nonoverlapping(a, b, 1) },
     }
 }
 

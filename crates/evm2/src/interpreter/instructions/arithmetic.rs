@@ -1,25 +1,25 @@
 use super::i256::{i256_div, i256_mod};
-use crate::interpreter::Word;
+use crate::interpreter::{Word, stack::write_word};
 use evm2_macros::instruction;
 
 #[instruction]
 pub fn add([a, b]: [Word]) -> out {
-    *out = a.wrapping_add(*b);
+    write_word(out, a.wrapping_add(*b));
 }
 
 #[instruction]
 pub fn mul([a, b]: [Word]) -> out {
-    *out = a.wrapping_mul(*b);
+    write_word(out, a.wrapping_mul(*b));
 }
 
 #[instruction]
 pub fn sub([a, b]: [Word]) -> out {
-    *out = a.wrapping_sub(*b);
+    write_word(out, a.wrapping_sub(*b));
 }
 
 #[instruction]
 pub fn div([a, b]: [Word]) -> out {
-    *out = if b.is_zero() { Word::ZERO } else { a.wrapping_div(*b) };
+    write_word(out, if b.is_zero() { Word::ZERO } else { a.wrapping_div(*b) });
 }
 
 #[instruction]
@@ -29,7 +29,7 @@ pub fn sdiv([a, b]: [Word]) -> out {
 
 #[instruction]
 pub fn rem([a, b]: [Word]) -> out {
-    *out = if b.is_zero() { Word::ZERO } else { a.wrapping_rem(*b) };
+    write_word(out, if b.is_zero() { Word::ZERO } else { a.wrapping_rem(*b) });
 }
 
 #[instruction]
