@@ -42,8 +42,11 @@ impl Bn254Ops for MclOps {
 
     #[inline]
     fn read_g1(input: &[u8]) -> Result<Self::G1, PrecompileHalt> {
-        let px = read_fp(&input[..FQ_LEN])?;
-        let py = read_fp(&input[FQ_LEN..G1_LEN])?;
+        let [px, py, ..] = input.as_chunks::<FQ_LEN>().0 else {
+            panic!("input must be at least G1_LEN bytes");
+        };
+        let px = read_fp(px)?;
+        let py = read_fp(py)?;
 
         if px.is_zero() && py.is_zero() {
             return Ok(G1::zero());
@@ -79,8 +82,11 @@ impl Bn254Ops for MclOps {
 
     #[inline]
     fn read_g2(input: &[u8]) -> Result<Self::G2, PrecompileHalt> {
-        let x = read_fp2(&input[..FQ2_LEN])?;
-        let y = read_fp2(&input[FQ2_LEN..2 * FQ2_LEN])?;
+        let [x, y, ..] = input.as_chunks::<FQ2_LEN>().0 else {
+            panic!("input must be at least G2_LEN bytes");
+        };
+        let x = read_fp2(x)?;
+        let y = read_fp2(y)?;
 
         if x.is_zero() && y.is_zero() {
             return Ok(G2::zero());
@@ -100,15 +106,7 @@ impl Bn254Ops for MclOps {
 
     #[inline]
     fn read_scalar(input: &[u8]) -> Self::Scalar {
-        assert_eq!(
-            input.len(),
-            SCALAR_LEN,
-            "unexpected scalar length. got {}, expected {SCALAR_LEN}",
-            input.len()
-        );
-
-        let mut le_bytes = [0u8; SCALAR_LEN];
-        le_bytes.copy_from_slice(input);
+        let mut le_bytes = *input.as_array::<SCALAR_LEN>().expect("input must be SCALAR_LEN bytes");
         le_bytes.reverse();
 
         let mut fr = Fr::zero();
@@ -154,16 +152,15 @@ impl Bn254Ops for MclOps {
 }
 
 #[inline]
-fn read_fp(input: &[u8]) -> Result<Fp, PrecompileHalt> {
-    let mut le_bytes = [0u8; FQ_LEN];
-    le_bytes.copy_from_slice(&input[..FQ_LEN]);
+fn read_fp(input: &[u8; FQ_LEN]) -> Result<Fp, PrecompileHalt> {
+    let mut le_bytes = *input;
     le_bytes.reverse();
 
     let mut fp = Fp::zero();
     if !fp.set_little_endian(&le_bytes) {
         return Err(PrecompileHalt::Bn254FieldPointNotAMember);
     }
-    if encode_fp(&fp).as_slice() != input {
+    if encode_fp(&fp) != *input {
         return Err(PrecompileHalt::Bn254FieldPointNotAMember);
     }
     Ok(fp)
@@ -181,8 +178,11 @@ fn encode_fp(fp: &Fp) -> [u8; FQ_LEN] {
 
 #[inline]
 fn read_fp2(input: &[u8]) -> Result<Fp2, PrecompileHalt> {
-    let imag = read_fp(&input[..FQ_LEN])?;
-    let real = read_fp(&input[FQ_LEN..2 * FQ_LEN])?;
+    let [imag, real, ..] = input.as_chunks::<FQ_LEN>().0 else {
+        panic!("input must be at least FQ2_LEN bytes");
+    };
+    let imag = read_fp(imag)?;
+    let real = read_fp(real)?;
     let mut fp2 = Fp2::zero();
     fp2.d[0] = real;
     fp2.d[1] = imag;

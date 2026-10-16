@@ -1,6 +1,6 @@
 //! BN128 precompile using Arkworks BLS12-381 implementation.
 
-use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN, G2_LEN, SCALAR_LEN};
+use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
 use crate::precompiles::PrecompileHalt;
 
 use ark_bn254::{Bn254, Fq, Fq2, Fr, G1Affine, G1Projective, G2Affine};
@@ -95,11 +95,11 @@ fn read_fq(input_be: &[u8; FQ_LEN]) -> Result<Fq, PrecompileHalt> {
 /// Panics if the input is not at least 64 bytes long.
 #[inline]
 fn read_fq2(input: &[u8]) -> Result<Fq2, PrecompileHalt> {
-    let input: &[u8; FQ2_LEN] =
-        input[..FQ2_LEN].try_into().expect("input must be at least FQ2_LEN bytes");
-    let (y, x) = input.split_at(FQ_LEN);
-    let y = read_fq(y.try_into().expect("split must yield FQ_LEN bytes"))?;
-    let x = read_fq(x.try_into().expect("split must yield FQ_LEN bytes"))?;
+    let [y, x, ..] = input.as_chunks::<FQ_LEN>().0 else {
+        panic!("input must be at least FQ2_LEN bytes");
+    };
+    let y = read_fq(y)?;
+    let x = read_fq(x)?;
 
     Ok(Fq2::new(x, y))
 }
@@ -166,11 +166,11 @@ fn new_g2_point(x: Fq2, y: Fq2) -> Result<G2Affine, PrecompileHalt> {
 /// Panics if the input is not at least 64 bytes long.
 #[inline]
 pub(super) fn read_g1_point(input: &[u8]) -> Result<G1Affine, PrecompileHalt> {
-    let input: &[u8; G1_LEN] =
-        input[..G1_LEN].try_into().expect("input must be at least G1_LEN bytes");
-    let (px, py) = input.split_at(FQ_LEN);
-    let px = read_fq(px.try_into().expect("split must yield FQ_LEN bytes"))?;
-    let py = read_fq(py.try_into().expect("split must yield FQ_LEN bytes"))?;
+    let [px, py, ..] = input.as_chunks::<FQ_LEN>().0 else {
+        panic!("input must be at least G1_LEN bytes");
+    };
+    let px = read_fq(px)?;
+    let py = read_fq(py)?;
     new_g1_point(px, py)
 }
 
@@ -215,9 +215,9 @@ pub(super) fn encode_g1_point(point: G1Affine) -> [u8; G1_LEN] {
 /// Panics if the input is not at least 128 bytes long.
 #[inline]
 pub(super) fn read_g2_point(input: &[u8]) -> Result<G2Affine, PrecompileHalt> {
-    let input: &[u8; G2_LEN] =
-        input[..G2_LEN].try_into().expect("input must be at least G2_LEN bytes");
-    let (x, y) = input.split_at(FQ2_LEN);
+    let [x, y, ..] = input.as_chunks::<FQ2_LEN>().0 else {
+        panic!("input must be at least G2_LEN bytes");
+    };
     let x = read_fq2(x)?;
     let y = read_fq2(y)?;
     new_g2_point(x, y)
@@ -232,6 +232,6 @@ pub(super) fn read_g2_point(input: &[u8]) -> Result<G2Affine, PrecompileHalt> {
 /// If `input.len()` is not equal to [`SCALAR_LEN`].
 #[inline]
 pub(super) fn read_scalar(input: &[u8]) -> Fr {
-    let input: &[u8; SCALAR_LEN] = input.try_into().expect("input must be SCALAR_LEN bytes");
+    let input = input.as_array::<SCALAR_LEN>().expect("input must be SCALAR_LEN bytes");
     Fr::from_be_bytes_mod_order(input)
 }

@@ -2067,13 +2067,12 @@ fn init_() -> Result<()> {
     let mut args = vec![
         c"evm2-jit-llvm".as_ptr(),
         c"-x86-asm-syntax=intel".as_ptr(),
-        // CodeGenPrepare's memory optimization has a pathological interaction with our IR shape:
-        // repeated stores to the same `gas_remaining` pointer in a huge function cause
-        // MemoryDependenceResults::getNonLocalPointerDependency to do superlinear work.
-        // Mark functions with ≥1000 BBs as "huge" to skip the expensive CGP memory opts,
-        // which produce identical codegen at that scale. Small functions still benefit from
-        // CGP's address sinking and branch optimizations.
-        c"--cgpp-huge-func=1000".as_ptr(),
+        // CodeGenPrepare restarts from the first block whenever it changes the dominator tree;
+        // in "huge" functions it revisits only the changed blocks. Our functions hit this often,
+        // so the restarts are superlinear: CGP took 40% of codegen time in a 973-block function
+        // (the default threshold is 10000 blocks). Treat every function as huge; codegen barely
+        // changes.
+        c"--cgpp-huge-func=0".as_ptr(),
         // Greedy register allocation's global live range splitting is superlinear on large
         // functions with many long-lived values. Treat smaller live ranges as huge so LLVM uses
         // the cheaper splitting path; this preserves code size on snailtracer while cutting llc

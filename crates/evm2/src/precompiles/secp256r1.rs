@@ -11,7 +11,7 @@ use crate::{
     precompiles::{PrecompileOutput, PrecompileResult},
     utils::bool_to_bytes32,
 };
-use alloy_primitives::{B256, B512, Bytes};
+use alloy_primitives::Bytes;
 
 /// Base gas fee for secp256r1 p256verify operation.
 #[allow(dead_code)]
@@ -67,13 +67,13 @@ pub(crate) fn verify_impl_with_crypto(
     }
 
     // msg signed (msg is already the hash of the original message)
-    let msg = <&B256>::try_from(&input[..32]).unwrap();
+    let msg = input.first_chunk().unwrap();
     // r, s: signature
-    let sig = <&B512>::try_from(&input[32..96]).unwrap();
+    let sig = input[32..].first_chunk().unwrap();
     // x, y: public key
-    let pk = <&B512>::try_from(&input[96..160]).unwrap();
+    let pk = input.last_chunk().unwrap();
 
-    crypto.secp256r1_verify_signature(&msg.0, &sig.0, &pk.0)
+    crypto.secp256r1_verify_signature(msg, sig, pk)
 }
 
 pub(crate) fn verify_signature(msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) -> Option<()> {
@@ -119,7 +119,7 @@ pub(crate) fn verify_signature(msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) ->
 mod test {
     use super::*;
     use crate::precompiles::PrecompileHalt;
-    use alloy_primitives::hex::FromHex;
+    use alloy_primitives::{B256, hex::FromHex};
     use rstest::rstest;
 
     #[rstest]

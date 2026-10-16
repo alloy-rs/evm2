@@ -6,8 +6,7 @@ use crate::{
     precompiles::{
         PrecompileHalt, PrecompileOutput, PrecompileResult,
         bls12_381_const::{
-            DISCOUNT_TABLE_G2_MSM, G2_MSM_BASE_GAS_FEE, G2_MSM_INPUT_LENGTH, PADDED_G2_LENGTH,
-            SCALAR_LENGTH,
+            DISCOUNT_TABLE_G2_MSM, G2_MSM_BASE_GAS_FEE, G2_MSM_INPUT_LENGTH, SCALAR_LENGTH,
         },
         bls12_381_utils::msm_required_gas,
     },
@@ -33,13 +32,12 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     gas.spend(required_gas)?;
 
     let mut valid_pairs_iter = input_chunks.iter().map(|pair| {
-        let (padded_g2, scalar_bytes) = pair.split_at(PADDED_G2_LENGTH);
+        let (padded_g2, scalar_array) = pair.split_last_chunk::<SCALAR_LENGTH>().unwrap();
 
         // Remove padding from G2 point - this validates padding format
         let [x_0, x_1, y_0, y_1] = remove_g2_padding(padded_g2)?;
-        let scalar_array: [u8; SCALAR_LENGTH] = scalar_bytes.try_into().unwrap();
 
-        Ok(((*x_0, *x_1, *y_0, *y_1), scalar_array))
+        Ok(((*x_0, *x_1, *y_0, *y_1), *scalar_array))
     });
 
     let unpadded_result = crate::precompiles::crypto().bls12_381_g2_msm(&mut valid_pairs_iter)?;

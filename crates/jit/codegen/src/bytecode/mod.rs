@@ -308,12 +308,16 @@ impl<'a> Bytecode<'a> {
             // bytecode never rewinds. Execution cannot fall through into the rewound
             // bytes: every desynchronizing immediate is an invalid DUPN/SWAPN/EXCHANGE
             // encoding, so the opcode preceding them halts at runtime.
-            if let Some(imm) = immediate {
-                let imm_end = pc + 1 + imm.len();
-                if let Some(target) = (pc + 1..imm_end).find(|&p| jumpdests[p]) {
-                    // SAFETY: we just consumed the immediate bytes at `pc + 1..imm_end`.
-                    unsafe { iter.rewind(imm_end - target) };
-                }
+            // A truncated immediate at the end of the code consumes the remaining bytes.
+            let imm_len = if info.is_unknown() || info.is_disabled() {
+                0
+            } else {
+                min_imm_len(opcode) as usize
+            };
+            let imm_end = (pc + 1 + imm_len).min(code.len());
+            if let Some(target) = (pc + 1..imm_end).find(|&p| jumpdests[p]) {
+                // SAFETY: we just consumed the immediate bytes at `pc + 1..imm_end`.
+                unsafe { iter.rewind(imm_end - target) };
             }
         }
 
@@ -621,7 +625,10 @@ impl<'a> Bytecode<'a> {
 
     /// Returns `true` if the given program counter is a valid jump destination.
     pub(crate) fn is_valid_jump(&self, pc: usize) -> bool {
-        self.jumpdests.get(pc).as_deref().copied() == Some(true)
+        // Reads the raw words: `BitVec::get` costs several times more in the jump analyses.
+        let bits = usize::BITS as usize;
+        pc < self.jumpdests.len()
+            && self.jumpdests.as_raw_slice()[pc / bits] >> (pc % bits) & 1 != 0
     }
 
     /// Returns `true` if the bytecode has dynamic jumps.
@@ -670,6 +677,18 @@ impl<'a> Bytecode<'a> {
     pub(crate) fn const_output(&self, inst: Inst) -> Option<U256> {
         let imm = self.snapshots.outputs[inst]?.as_const()?;
         Some(imm.get(&self.u256_interner.borrow()))
+    }
+
+    /// Returns the known output of the given instruction if translation can store it instead of
+    /// executing the instruction.
+    ///
+    /// EXP's dynamic gas is only charged statically when its exponent is known, and a constant
+    /// output joined across call contexts does not imply a constant exponent.
+    pub(crate) fn foldable_output(&self, inst: Inst) -> Option<U256> {
+        if self.insts[inst].opcode == op::EXP && self.const_operand(inst, 1).is_none() {
+            return None;
+        }
+        self.const_output(inst)
     }
 
     /// Returns the first constant EVM memory access `(offset, len)` for the given instruction.
@@ -936,6 +955,7 @@ pub(crate) struct InstData {
     /// - `JUMPDEST`: program counter in low 31 bits, reachable flag in high bit
     ///   ([`InstData::JUMPDEST_REACHABLE`]).
     /// - `JUMP | JUMPI` with [`InstFlags::STATIC_JUMP`]: target instruction index.
+    /// - `GAS`: static gas of the rest of its gas section, which the section head already charged.
     /// - otherwise: unused.
     pub(crate) data: u32,
     /// The gas section this instruction belongs to.
@@ -1043,6 +1063,20 @@ impl InstData {
     /// High bit of `data` set when a `JUMPDEST` is a reachable static jump target.
     pub(crate) const JUMPDEST_REACHABLE: u32 = 1 << 31;
 
+    /// Returns the static gas that the section head charged for instructions after this `GAS`.
+    #[inline]
+    pub(crate) fn gas_owed(&self) -> u32 {
+        debug_assert_eq!(self.opcode, op::GAS);
+        self.data
+    }
+
+    /// Sets the static gas charged ahead of this `GAS` instruction.
+    #[inline]
+    pub(crate) fn set_gas_owed(&mut self, gas: u32) {
+        debug_assert_eq!(self.opcode, op::GAS);
+        self.data = gas;
+    }
+
     /// Returns the program counter of a `JUMPDEST`.
     #[inline]
     pub(crate) fn jumpdest_pc(&self) -> u32 {
@@ -1095,13 +1129,17 @@ impl InstData {
         self.flags.contains(InstFlags::DEAD_CODE)
     }
 
-    /// Returns `true` if this instruction requires to know `gasleft()`.
+    /// Returns `true` if this instruction has host effects that depend on `gasleft()`.
+    ///
+    /// These end the gas and stack sections: charging the static gas of later instructions, or
+    /// failing their stack checks, ahead of the instruction would change its gas checks and skip
+    /// host reads that survive a revert, such as EIP-7928 block access list entries. `GAS` also
+    /// reads `gasleft()`, but it is pure, so it adds back the gas charged ahead of it instead.
     #[inline]
-    pub(crate) const fn requires_gasleft(&self, spec_id: SpecId) -> bool {
+    pub(crate) const fn ends_sections(&self, spec_id: SpecId) -> bool {
         match self.opcode {
-            // GAS pushes the remaining gas after paying its own base cost.
-            op::GAS => true,
-            // Calls and contract creation cap the gas forwarded based on the remaining gas.
+            // Calls and contract creation cap the gas forwarded based on the remaining gas, and
+            // the callee can return a value transfer's stipend, leaving more gas than before.
             op::CREATE
             | op::CALL
             | op::CALLCODE

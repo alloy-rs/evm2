@@ -1102,7 +1102,9 @@ mod default_attrs {
     }
 
     pub(crate) fn for_ref() -> impl Iterator<Item = Attribute> {
-        for_ptr().chain([Attribute::NonNull, Attribute::NoAlias])
+        // `NoFree` keeps `dereferenceable` valid past control flow, which LICM needs to promote
+        // stack slots in loops.
+        for_ptr().chain([Attribute::NonNull, Attribute::NoAlias, Attribute::NoFree])
     }
 
     pub(crate) fn for_sized_ref((size, align): (usize, usize)) -> impl Iterator<Item = Attribute> {

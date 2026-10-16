@@ -722,7 +722,7 @@ class JumpResolution(Analysis):
         fixpt_res = cls._last_match(r"ba:.*newly_resolved=(\d+)", output)
 
         ba_unres_matches = re.findall(
-            r"analyze:ba: .*unresolved dynamic jumps remain n=(\d+)", output
+            r"analyze:ba:.*unresolved dynamic jumps remain n=(\d+)", output
         )
         ba_ran = "analyze:ba:" in output
 
@@ -1189,7 +1189,7 @@ METRICS = {
     "runtime_instructions": {"title": "Runtime instructions", "unit": "instructions"},
     "runtime_cycles": {"title": "Runtime cycles", "unit": "cycles"},
 }
-ARTIFACT_FILES = ["bytecode.txt", "unopt.ll", "opt.ll", "opt.s"]
+ARTIFACT_FILES = ["bytecode.txt", "bytecode.dot", "unopt.ll", "opt.ll", "opt.s"]
 TARGET_CPU_RE = re.compile(r'"target-cpu"="([^"]+)"')
 BENCH_FIXTURE_RE = re.compile(r'Bench::\w+\(\s*"([^"]+)",[^"]*"([^"]+)"')
 
