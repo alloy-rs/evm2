@@ -355,8 +355,7 @@ impl<'a> StackMut<'a> {
             return Err(InstrStop::StackOverflow);
         }
         unsafe {
-            let end = self.as_word_mut_ptr().add(len);
-            *end = value;
+            write_word(&mut *self.as_word_mut_ptr().add(len), value);
             *self.len = len + 1;
             debug_assert!(*self.len <= Self::CAPACITY);
         }
@@ -525,42 +524,27 @@ impl<'a> StackMut<'a> {
         }
 
         unsafe {
-            let dst = self.as_word_mut_ptr().add(len).cast::<u64>();
+            let dst = self.as_word_mut_ptr().add(len);
             *self.len = new_len;
             debug_assert!(*self.len <= Self::CAPACITY);
 
-            let mut i = 0;
-
             let (words, partial_last_word) = slice.as_chunks::<32>();
-            for word in words {
-                for l in word.as_chunks::<8>().0.iter().rev() {
-                    dst.add(i).write(u64::from_be_bytes(*l));
-                    i += 1;
+            for (i, word) in words.iter().enumerate() {
+                write_word(&mut *dst.add(i), Word::from_be_bytes(*word));
+            }
+
+            if !partial_last_word.is_empty() {
+                let (partial_last_limb, full_limbs) = partial_last_word.as_rchunks::<8>();
+                let mut limbs = [0; 4];
+                for (limb, l) in limbs.iter_mut().zip(full_limbs.iter().rev()) {
+                    *limb = u64::from_be_bytes(*l);
                 }
-            }
-
-            if partial_last_word.is_empty() {
-                return Ok(());
-            }
-
-            let (partial_last_limb, limbs) = partial_last_word.as_rchunks::<8>();
-            for l in limbs.iter().rev() {
-                dst.add(i).write(u64::from_be_bytes(*l));
-                i += 1;
-            }
-
-            if !partial_last_limb.is_empty() {
-                let mut tmp = [0u8; 8];
-                tmp[8 - partial_last_limb.len()..].copy_from_slice(partial_last_limb);
-                dst.add(i).write(u64::from_be_bytes(tmp));
-                i += 1;
-            }
-
-            debug_assert_eq!(i.div_ceil(4), n_words, "wrote too much");
-
-            let m = i % 4;
-            if m != 0 {
-                dst.add(i).write_bytes(0, 4 - m);
+                if !partial_last_limb.is_empty() {
+                    let mut tmp = [0u8; 8];
+                    tmp[8 - partial_last_limb.len()..].copy_from_slice(partial_last_limb);
+                    limbs[full_limbs.len()] = u64::from_be_bytes(tmp);
+                }
+                write_word(&mut *dst.add(words.len()), Word::from_limbs(limbs));
             }
         }
 
@@ -596,7 +580,8 @@ pub(crate) fn write_u64(dst: &mut Word, value: u64) {
 /// Writes `value` to `dst` with a single 32-byte store.
 ///
 /// Use this for words computed in general-purpose registers, which LLVM otherwise writes with
-/// several narrower stores. See [`write_u64`].
+/// several narrower stores. See [`write_u64`]. Words copied from memory already move with one
+/// 32-byte load and store, and this would route them through general-purpose registers instead.
 #[inline(always)]
 #[allow(clippy::missing_const_for_fn)] // Inline assembly cannot be const.
 pub(crate) fn write_word(dst: &mut Word, value: Word) {

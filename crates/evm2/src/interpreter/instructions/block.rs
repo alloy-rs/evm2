@@ -8,7 +8,7 @@ use evm2_macros::instruction;
 
 #[instruction]
 pub fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
-    *out = if let Some(diff) = cx.state.host().block_env().number.checked_sub(*number) {
+    let hash = if let Some(diff) = cx.state.host().block_env().number.checked_sub(*number) {
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
         } else {
@@ -17,6 +17,7 @@ pub fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
     } else {
         Word::ZERO
     };
+    write_word(out, hash);
 }
 
 #[instruction]
