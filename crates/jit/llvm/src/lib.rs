@@ -29,8 +29,8 @@ use inkwell::{
         StringRadix, VoidType,
     },
     values::{
-        AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue,
-        FunctionValue, InstructionValue, PointerValue,
+        BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue, FunctionValue,
+        InstructionValue, PointerValue,
     },
 };
 use object::{Object, ObjectSymbol};
