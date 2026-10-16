@@ -38,6 +38,7 @@ use crate::{
     FxHashMap,
     bytecode::{Bytecode, Inst, InstFlags, Interner, U256Imm},
 };
+use alloy_primitives::map::FxHasher;
 use bitvec::vec::BitVec;
 use either::Either;
 use evm2::interpreter::op;
@@ -46,6 +47,7 @@ use smallvec::SmallVec;
 use std::{
     cmp::{Ordering, Reverse},
     collections::{BinaryHeap, VecDeque},
+    hash::{Hash, Hasher},
     ops::Range,
 };
 
@@ -256,6 +258,9 @@ impl BlockState {
                 let pad = join_len - incoming_top.len();
                 for i in 0..join_len {
                     let inc = if i < pad { AbsValue::Top } else { incoming_top[i - pad] };
+                    if existing[i] == inc {
+                        continue;
+                    }
                     let joined = sets.join(existing[i], inc);
                     if joined != existing[i] {
                         existing[i] = joined;
@@ -319,15 +324,6 @@ struct Budget {
     /// Interpreted instructions, propagated edges, joined stack entries, and merged set
     /// constants.
     work: u64,
-}
-
-/// Context of a block state in [`Bytecode::run_fixpoint`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-struct ContextKey {
-    /// Tracked stack length and truncation, in [`ContextMode::Coarse`].
-    shape: Option<(u8, bool)>,
-    /// Depth from TOS and value of the keyed constants that are valid jump targets.
-    targets: SmallVec<[(u8, U256Imm); 4]>,
 }
 
 oxc_index::define_nonmax_u32_index_type! {
@@ -1081,8 +1077,8 @@ impl Bytecode<'_> {
 
     /// Run a worklist-based fixpoint to compute abstract block states.
     ///
-    /// Each block keeps one state per [`ContextKey`] of the states reaching it, as chosen by
-    /// `mode`. Snapshots join the values of all contexts.
+    /// Each block keeps one state per [context](Self::context_key) of the states reaching it, as
+    /// chosen by `mode`. Snapshots join the values of all contexts.
     ///
     /// Snapshots are only recorded once the fixpoint converges, so on non-convergence they keep
     /// the safe block-local values computed by `block_analysis_local`.
@@ -1092,7 +1088,7 @@ impl Bytecode<'_> {
         let budget = mode.budget(num_blocks, self.insts.len());
 
         let mut states = IndexVec::<Part, (Block, BlockState)>::new();
-        let mut parts = IndexVec::<Block, FxHashMap<ContextKey, Part>>::from_vec(vec![
+        let mut parts = IndexVec::<Block, FxHashMap<u64, Part>>::from_vec(vec![
             FxHashMap::default();
             num_blocks
         ]);
@@ -1101,7 +1097,7 @@ impl Bytecode<'_> {
         let entry = Block::from_usize(0);
         let entry_part =
             states.push((entry, BlockState::Known { stack: Vec::new(), truncated: false }));
-        parts[entry].insert(ContextKey::default(), entry_part);
+        parts[entry].insert(0, entry_part);
         // Visit blocks in code order, which mostly follows the CFG, so that a state is complete
         // before it propagates.
         let mut worklist = BinaryHeap::new();
@@ -1184,16 +1180,16 @@ impl Bytecode<'_> {
                         }
                         let part = states.push((succ, BlockState::Bottom));
                         queued.push(false);
-                        parts[succ].insert(key.clone(), part);
+                        parts[succ].insert(key, part);
                         part
                     }
                 };
                 work += 1 + stack_buf.len().min(MAX_ABS_STACK_DEPTH) as u64;
-                if states[part].1.join(&stack_buf, truncated, &mut const_sets) {
-                    if !queued[part.index()] {
-                        queued.set(part.index(), true);
-                        worklist.push(Reverse((succ, part)));
-                    }
+                if states[part].1.join(&stack_buf, truncated, &mut const_sets)
+                    && !queued[part.index()]
+                {
+                    queued.set(part.index(), true);
+                    worklist.push(Reverse((succ, part)));
                 }
             }
         }
@@ -1230,22 +1226,25 @@ impl Bytecode<'_> {
         Fixpoint { reached, discovered, const_sets, converged }
     }
 
-    /// Returns the [`ContextKey`] of an abstract stack.
-    fn context_key(&self, mode: ContextMode, stack: &[AbsValue], truncated: bool) -> ContextKey {
+    /// Returns the context of an abstract stack: a hash of the constants `mode` keys on.
+    ///
+    /// Keys that collide share a state, which only costs precision.
+    fn context_key(&self, mode: ContextMode, stack: &[AbsValue], truncated: bool) -> u64 {
         let tracked = stack.len().min(MAX_ABS_STACK_DEPTH);
         let targets = stack.iter().rev().take(tracked).enumerate().filter_map(|(depth, value)| {
-            let imm = value.as_const()?;
-            let pc = imm.get_inline()?;
-            self.is_valid_jump(pc as usize).then_some((depth as u8, imm))
+            let pc = value.as_const()?.get_inline()?;
+            self.is_valid_jump(pc as usize).then_some((depth as u8, pc))
         });
+        let mut hasher = FxHasher::default();
         match mode {
-            ContextMode::Full => ContextKey { shape: None, targets: targets.collect() },
-            ContextMode::Coarse => ContextKey {
-                shape: Some((tracked as u8, truncated || stack.len() > tracked)),
-                targets: targets.take(1).collect(),
-            },
-            ContextMode::Insensitive => ContextKey::default(),
+            ContextMode::Full => targets.for_each(|target| target.hash(&mut hasher)),
+            ContextMode::Coarse => {
+                (tracked as u8, truncated || stack.len() > tracked).hash(&mut hasher);
+                targets.take(1).for_each(|target| target.hash(&mut hasher));
+            }
+            ContextMode::Insensitive => return 0,
         }
+        hasher.finish()
     }
 
     /// Collects the blocks of the valid jump targets in `operand`.

@@ -621,7 +621,10 @@ impl<'a> Bytecode<'a> {
 
     /// Returns `true` if the given program counter is a valid jump destination.
     pub(crate) fn is_valid_jump(&self, pc: usize) -> bool {
-        self.jumpdests.get(pc).as_deref().copied() == Some(true)
+        // Reads the raw words: `BitVec::get` costs several times more in the jump analyses.
+        let bits = usize::BITS as usize;
+        pc < self.jumpdests.len()
+            && self.jumpdests.as_raw_slice()[pc / bits] >> (pc % bits) & 1 != 0
     }
 
     /// Returns `true` if the bytecode has dynamic jumps.
