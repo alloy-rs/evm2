@@ -42,7 +42,7 @@ use alloy_primitives::map::FxHasher;
 use bitvec::vec::BitVec;
 use either::Either;
 use evm2::interpreter::op;
-use oxc_index::{Idx, IndexVec};
+use oxc_index::IndexVec;
 use smallvec::SmallVec;
 use std::{
     cmp::{Ordering, Reverse},
@@ -371,28 +371,25 @@ oxc_index::define_nonmax_u32_index_type! {
 crate::bytecode::impl_index_display!(Block, "bb{}");
 
 /// FIFO worklist with deduplication.
-struct Worklist<I> {
-    queue: VecDeque<I>,
+struct Worklist {
+    queue: VecDeque<Block>,
     in_queue: BitVec,
 }
 
-impl<I: Idx> Worklist<I> {
+impl Worklist {
     fn new(size: usize) -> Self {
         Self { queue: VecDeque::new(), in_queue: BitVec::repeat(false, size) }
     }
 
-    fn push(&mut self, id: I) {
+    fn push(&mut self, id: Block) {
         let idx = id.index();
-        if idx >= self.in_queue.len() {
-            self.in_queue.resize(idx + 1, false);
-        }
         if !self.in_queue[idx] {
             self.in_queue.set(idx, true);
             self.queue.push_back(id);
         }
     }
 
-    fn pop(&mut self) -> Option<I> {
+    fn pop(&mut self) -> Option<Block> {
         let id = self.queue.pop_front()?;
         self.in_queue.set(id.index(), false);
         Some(id)
