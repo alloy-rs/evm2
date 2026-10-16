@@ -585,15 +585,9 @@ impl Bytecode<'_> {
     #[inline(never)]
     pub(crate) fn block_analysis(&mut self, local_snapshots: &Snapshots) {
         self.init_snapshots();
-        let (resolved, count) = self.run_abstract_interp(local_snapshots);
-
-        let has_const_condition =
-            resolved.iter().any(|(_, target)| target.condition != JumpCondition::Unknown);
-        if count > 0 || has_const_condition {
-            let newly_resolved = self.commit_resolved_jumps(&resolved);
-            debug!(newly_resolved, "resolved jumps");
-        }
-
+        let resolved = self.run_abstract_interp(local_snapshots);
+        let newly_resolved = self.commit_resolved_jumps(&resolved);
+        debug!(newly_resolved, "resolved jumps");
         self.recompute_has_dynamic_jumps();
     }
 
@@ -831,12 +825,9 @@ impl Bytecode<'_> {
 
     /// Run worklist-based abstract interpretation over the CFG.
     ///
-    /// Returns a list of (jump_inst, resolved_target) pairs and the count of resolvable jumps.
-    /// Stack snapshots are recorded into `self.snapshots` during the fixpoint.
-    fn run_abstract_interp(
-        &mut self,
-        local_snapshots: &Snapshots,
-    ) -> (Vec<(Inst, JumpResolution)>, usize) {
+    /// Returns a list of (jump_inst, resolved_target) pairs.
+    /// Stack snapshots are recorded into `self.snapshots` once the fixpoint converges.
+    fn run_abstract_interp(&mut self, local_snapshots: &Snapshots) -> Vec<(Inst, JumpResolution)> {
         // Collect unresolved jumps, plus static JUMPI instructions whose condition
         // may become constant only after CFG fixpoint.
         let mut jump_insts: Vec<Inst> = Vec::new();
@@ -890,17 +881,7 @@ impl Bytecode<'_> {
             );
         }
 
-        // Without unresolved jumps, the jumps the fixpoint never reached are unreachable too.
-        let has_top_jump = jump_targets.iter().any(|(_, target)| target.is_top());
-        let count = jump_targets
-            .iter()
-            .filter(|(_, target)| {
-                target.is_resolved()
-                    || (!has_top_jump && matches!(target.target, JumpTarget::Bottom))
-            })
-            .count();
-
-        (jump_targets, count)
+        jump_targets
     }
 
     fn resolve_jump(&self, jump_inst: Inst, const_sets: &ConstSetInterner) -> JumpResolution {
@@ -946,27 +927,16 @@ impl Bytecode<'_> {
                 }
             }
             AbsValue::ConstSet(set_idx) => {
-                let consts = const_sets.get(set_idx);
+                // Sets only hold valid jump targets, but stay unresolved if one ever doesn't: the
+                // value might be any member of the set.
                 let interner = self.u256_interner.borrow();
-                let mut targets = SmallVec::new();
-                for &imm in consts {
-                    let val = imm.get(&interner);
-                    match usize::try_from(val) {
-                        Ok(pc) if self.is_valid_jump(pc) => {
-                            targets.push(self.pc_to_inst(pc));
-                        }
-                        _ => {
-                            // Mixed valid + invalid: can't resolve since at runtime
-                            // the value might be any member of the set.
-                            return JumpResolution::top();
-                        }
-                    }
-                }
-                if !targets.is_empty() {
-                    JumpResolution::resolved(targets)
-                } else {
-                    JumpResolution::invalid()
-                }
+                let targets = const_sets.get(set_idx).iter().map(|imm| {
+                    let pc = usize::try_from(imm.get(&interner)).ok()?;
+                    self.is_valid_jump(pc).then(|| self.pc_to_inst(pc))
+                });
+                targets
+                    .collect::<Option<_>>()
+                    .map_or_else(JumpResolution::top, JumpResolution::resolved)
             }
             AbsValue::Top => JumpResolution::top(),
         }
