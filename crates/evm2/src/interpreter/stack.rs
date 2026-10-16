@@ -8,7 +8,12 @@ use core::{
 /// EVM stack word.
 pub type Word = U256;
 
-pub(crate) type StackBacking = [MaybeUninit<Word>; STACK_LIMIT];
+/// Operand stack storage.
+///
+/// Aligned to the word size so that no word crosses a cache line. Loads and stores that cross a
+/// line are slower and cannot use store-to-load forwarding.
+#[repr(C, align(32))]
+pub(crate) struct StackBacking(pub(crate) [MaybeUninit<Word>; STACK_LIMIT]);
 
 /// Immutable EVM operand stack.
 #[derive(Clone, Copy)]
@@ -66,7 +71,7 @@ impl<'a> StackRef<'a> {
 
     #[inline]
     const fn as_word_ptr(&self) -> *const Word {
-        self.stack.as_ptr().cast()
+        self.stack.0.as_ptr().cast()
     }
 
     /// Returns the stack length.
@@ -165,7 +170,7 @@ impl<'a> Stack<'a> {
 
     #[inline]
     const fn as_word_ptr(&self) -> *const Word {
-        self.stack.as_ptr().cast()
+        self.stack.0.as_ptr().cast()
     }
 
     /// Returns the stack length.
@@ -244,17 +249,17 @@ impl<'a> StackMut<'a> {
     /// words are initialized before creating another stack view.
     #[inline]
     pub const unsafe fn into_raw_parts(self) -> (*mut Word, &'a mut usize) {
-        (self.stack.as_mut_ptr().cast(), self.len)
+        (self.stack.0.as_mut_ptr().cast(), self.len)
     }
 
     #[inline]
     const fn as_word_ptr(&self) -> *const Word {
-        self.stack.as_ptr().cast()
+        self.stack.0.as_ptr().cast()
     }
 
     #[inline]
     const fn as_word_mut_ptr(&mut self) -> *mut Word {
-        self.stack.as_mut_ptr().cast()
+        self.stack.0.as_mut_ptr().cast()
     }
 
     /// Returns the stack length.
@@ -647,15 +652,15 @@ mod tests {
     use core::assert_matches;
 
     fn run(f: impl FnOnce(&mut StackMut<'_>)) {
-        let mut backing = [MaybeUninit::new(Word::MAX); StackMut::CAPACITY];
+        let mut backing = StackBacking([MaybeUninit::new(Word::MAX); StackMut::CAPACITY]);
         let mut len = 0;
         let mut stack = StackMut::new(&mut backing, &mut len);
         f(&mut stack);
     }
 
     fn run_with_len(len: usize, f: impl FnOnce(&mut StackMut<'_>)) {
-        let mut backing = [MaybeUninit::new(Word::MAX); StackMut::CAPACITY];
-        for (i, word) in backing.iter_mut().take(len).enumerate() {
+        let mut backing = StackBacking([MaybeUninit::new(Word::MAX); StackMut::CAPACITY]);
+        for (i, word) in backing.0.iter_mut().take(len).enumerate() {
             word.write(Word::from(i));
         }
         let mut len = len;
@@ -759,8 +764,8 @@ mod tests {
             assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1), Word::from(2)]);
         });
 
-        let mut backing = [MaybeUninit::new(Word::ZERO); StackRef::CAPACITY];
-        for (i, word) in backing.iter_mut().take(3).enumerate() {
+        let mut backing = StackBacking([MaybeUninit::new(Word::ZERO); StackRef::CAPACITY]);
+        for (i, word) in backing.0.iter_mut().take(3).enumerate() {
             word.write(Word::from(i));
         }
         let stack = StackRef::new(&backing, 3);
@@ -776,8 +781,8 @@ mod tests {
             assert_eq!(stack.peek(usize::MAX), None);
         });
 
-        let mut backing = [MaybeUninit::new(Word::ZERO); StackRef::CAPACITY];
-        for (i, word) in backing.iter_mut().take(3).enumerate() {
+        let mut backing = StackBacking([MaybeUninit::new(Word::ZERO); StackRef::CAPACITY]);
+        for (i, word) in backing.0.iter_mut().take(3).enumerate() {
             word.write(Word::from(i));
         }
         let stack = StackRef::new(&backing, 3);
