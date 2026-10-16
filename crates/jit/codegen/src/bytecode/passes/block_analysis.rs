@@ -43,7 +43,11 @@ use either::Either;
 use evm2::interpreter::op;
 use oxc_index::{Idx, IndexVec};
 use smallvec::SmallVec;
-use std::{cmp::Ordering, collections::VecDeque, ops::Range};
+use std::{
+    cmp::{Ordering, Reverse},
+    collections::{BinaryHeap, VecDeque},
+    ops::Range,
+};
 
 oxc_index::define_nonmax_u32_index_type! {
     /// Index into the interned constant-set pool.
@@ -329,6 +333,14 @@ struct ContextKey {
 oxc_index::define_nonmax_u32_index_type! {
     /// A block state in one context.
     struct Part;
+}
+
+/// How [`Bytecode::interpret_inst`] records snapshots.
+enum Record<'a> {
+    Skip,
+    Overwrite,
+    /// Join with the recorded values.
+    Join(&'a mut ConstSetInterner),
 }
 
 /// Result of [`Bytecode::run_fixpoint`].
@@ -829,12 +841,12 @@ impl Bytecode<'_> {
 
         // Try the most precise contexts first, falling back to coarser ones when an attempt
         // exceeds its budget.
-        let mut fixpoint = self.run_fixpoint(ContextMode::Full, local_snapshots);
+        let mut fixpoint = self.run_fixpoint(ContextMode::Full);
         for mode in [ContextMode::Coarse, ContextMode::Insensitive] {
             if fixpoint.converged {
                 break;
             }
-            fixpoint = self.run_fixpoint(mode, local_snapshots);
+            fixpoint = self.run_fixpoint(mode);
         }
         let Fixpoint { reached, discovered: discovered_edges, const_sets, converged } = fixpoint;
 
@@ -1072,9 +1084,9 @@ impl Bytecode<'_> {
     /// Each block keeps one state per [`ContextKey`] of the states reaching it, as chosen by
     /// `mode`. Snapshots join the values of all contexts.
     ///
-    /// On non-convergence, all fixpoint-derived snapshots are potentially stale, so the safe
-    /// block-local snapshots computed by `block_analysis_local` are restored.
-    fn run_fixpoint(&mut self, mode: ContextMode, local_snapshots: &Snapshots) -> Fixpoint {
+    /// Snapshots are only recorded once the fixpoint converges, so on non-convergence they keep
+    /// the safe block-local values computed by `block_analysis_local`.
+    fn run_fixpoint(&mut self, mode: ContextMode) -> Fixpoint {
         let num_blocks = self.cfg.blocks.len();
         let mut const_sets = ConstSetInterner::new();
         let budget = mode.budget(num_blocks, self.insts.len());
@@ -1090,8 +1102,12 @@ impl Bytecode<'_> {
         let entry_part =
             states.push((entry, BlockState::Known { stack: Vec::new(), truncated: false }));
         parts[entry].insert(ContextKey::default(), entry_part);
-        let mut worklist = Worklist::new(num_blocks);
-        worklist.push(entry_part);
+        // Visit blocks in code order, which mostly follows the CFG, so that a state is complete
+        // before it propagates.
+        let mut worklist = BinaryHeap::new();
+        let mut queued: BitVec = BitVec::new();
+        queued.push(true);
+        worklist.push(Reverse((entry, entry_part)));
 
         // Discovered dynamic-jump target edges per block.
         let mut discovered: IndexVec<Block, SmallVec<[Block; 4]>> =
@@ -1104,9 +1120,9 @@ impl Bytecode<'_> {
         // Reusable buffers to avoid per-iteration allocations.
         let mut stack_buf: Vec<AbsValue> = Vec::with_capacity(MAX_ABS_STACK_DEPTH);
         let mut targets = SmallVec::<[Block; 4]>::new();
-        let mut visited: BitVec = BitVec::repeat(false, self.insts.len());
 
-        'fixpoint: while let Some(pid) = worklist.pop() {
+        'fixpoint: while let Some(Reverse((_, pid))) = worklist.pop() {
+            queued.set(pid.index(), false);
             pops += 1;
             if pops > budget.pops || work + const_sets.merged > budget.work {
                 converged = false;
@@ -1133,11 +1149,9 @@ impl Bytecode<'_> {
                 if i == term_inst {
                     operand = stack_buf.last().copied();
                 }
-                let join = visited[i.index()].then_some(&mut const_sets);
-                if !self.interpret_inst(i, &mut stack_buf, truncated, join) {
+                if !self.interpret_inst(i, &mut stack_buf, truncated, Record::Skip) {
                     continue 'fixpoint;
                 }
-                visited.set(i.index(), true);
             }
 
             // Discover dynamic-jump target edges from this context's jump operand.
@@ -1169,13 +1183,17 @@ impl Bytecode<'_> {
                             break 'fixpoint;
                         }
                         let part = states.push((succ, BlockState::Bottom));
+                        queued.push(false);
                         parts[succ].insert(key.clone(), part);
                         part
                     }
                 };
                 work += 1 + stack_buf.len().min(MAX_ABS_STACK_DEPTH) as u64;
                 if states[part].1.join(&stack_buf, truncated, &mut const_sets) {
-                    worklist.push(part);
+                    if !queued[part.index()] {
+                        queued.set(part.index(), true);
+                        worklist.push(Reverse((succ, part)));
+                    }
                 }
             }
         }
@@ -1189,8 +1207,24 @@ impl Bytecode<'_> {
             max = budget.pops,
         );
 
-        if !converged {
-            self.snapshots.restore_from(self.insts.indices(), local_snapshots);
+        // Record the snapshots of the final states, joined across contexts.
+        if converged {
+            let mut visited: BitVec = BitVec::repeat(false, self.insts.len());
+            for (bid, state) in &states {
+                let BlockState::Known { stack, truncated } = state else { continue };
+                stack_buf.clone_from(stack);
+                for i in self.cfg.blocks[*bid].insts() {
+                    let record = if visited[i.index()] {
+                        Record::Join(&mut const_sets)
+                    } else {
+                        Record::Overwrite
+                    };
+                    if !self.interpret_inst(i, &mut stack_buf, *truncated, record) {
+                        break;
+                    }
+                    visited.set(i.index(), true);
+                }
+            }
         }
         let reached = parts.iter().map(|p| !p.is_empty()).collect();
         Fixpoint { reached, discovered, const_sets, converged }
@@ -1252,24 +1286,34 @@ impl Bytecode<'_> {
         stack: &mut Vec<AbsValue>,
         truncated: bool,
     ) -> bool {
-        insts.into_iter().all(|i| self.interpret_inst(i, stack, truncated, None))
+        insts.into_iter().all(|i| self.interpret_inst(i, stack, truncated, Record::Overwrite))
     }
 
-    /// Interpret a single instruction on the abstract stack, like [`Self::interpret_block`].
-    ///
-    /// With `join`, the instruction's snapshots are joined with the new values instead of
-    /// overwritten.
+    /// Interpret a single instruction on the abstract stack, like [`Self::interpret_block`],
+    /// recording its snapshots as `record` says.
     fn interpret_inst(
         &mut self,
         i: Inst,
         stack: &mut Vec<AbsValue>,
         truncated: bool,
-        mut join: Option<&mut ConstSetInterner>,
+        mut record: Record<'_>,
     ) -> bool {
         let inst = &self.insts[i];
         if inst.is_dead_code() {
             return true;
         }
+
+        // Only jump operands need the constant sets; elsewhere only single constants are used.
+        let is_jump = inst.is_jump();
+        let join = |sets: &mut ConstSetInterner, a: AbsValue, b: AbsValue| {
+            if is_jump {
+                sets.join(a, b)
+            } else if a == b {
+                a
+            } else {
+                AbsValue::Top
+            }
+        };
 
         let (inp, out) = inst.stack_io();
         let inp = inp as usize;
@@ -1284,17 +1328,21 @@ impl Bytecode<'_> {
             let start = stack.len().saturating_sub(inp);
             let pad = inp.saturating_sub(stack.len());
             let snap = &mut self.snapshots.inputs[i];
-            if let Some(sets) = &mut join {
-                for (k, slot) in snap.iter_mut().enumerate() {
-                    let value = if k < pad { AbsValue::Top } else { stack[start + k - pad] };
-                    *slot = sets.join(*slot, value);
+            match &mut record {
+                Record::Skip => {}
+                Record::Overwrite => {
+                    snap.clear();
+                    snap.resize(pad, AbsValue::Top);
+                    snap.extend_from_slice(&stack[start..]);
                 }
-            } else {
-                snap.clear();
-                snap.resize(pad, AbsValue::Top);
-                snap.extend_from_slice(&stack[start..]);
+                Record::Join(sets) => {
+                    for (k, slot) in snap.iter_mut().enumerate() {
+                        let value = if k < pad { AbsValue::Top } else { stack[start + k - pad] };
+                        *slot = join(sets, *slot, value);
+                    }
+                }
             }
-            debug_assert_eq!(snap.len(), inp);
+            debug_assert!(matches!(record, Record::Skip) || snap.len() == inp);
         }
 
         match inst.opcode {
@@ -1427,10 +1475,11 @@ impl Bytecode<'_> {
         if out > 0 && !matches!(inst.opcode, op::SWAP1..=op::SWAP16 | op::SWAPN | op::EXCHANGE) {
             let value = stack.last().copied();
             let slot = &mut self.snapshots.outputs[i];
-            *slot = match (&mut join, *slot, value) {
-                (Some(sets), Some(old), Some(new)) => Some(sets.join(old, new)),
-                _ => value,
-            };
+            match (&mut record, *slot, value) {
+                (Record::Skip, ..) => {}
+                (Record::Join(sets), Some(old), Some(new)) => *slot = Some(join(sets, old, new)),
+                _ => *slot = value,
+            }
         }
 
         true
