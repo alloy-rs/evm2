@@ -27,6 +27,7 @@
 //! When the fixpoint does not converge (iteration cap reached) or unresolved `Top` jumps remain,
 //! a transitive predecessor analysis invalidates suspect resolutions that may be based on
 //! incomplete information, ensuring that only sound jump targets are reported as resolved.
+//! When it converges with no unresolved `Top` jumps, blocks it never reached are unreachable.
 
 use super::StackSection;
 use crate::bytecode::{Bytecode, Inst, InstFlags, Interner, U256Imm};
@@ -757,7 +758,15 @@ impl Bytecode<'_> {
         let mut jump_targets: Vec<(Inst, JumpResolution)> = Vec::new();
         let mut has_top_jump = false;
         for &jump_inst in &jump_insts {
-            let target = self.resolve_jump(jump_inst, &const_sets);
+            // Blocks the fixpoint never reached keep their block-local snapshots.
+            let target = if converged
+                && self.cfg.inst_to_block[jump_inst]
+                    .is_some_and(|bid| matches!(block_states[bid], BlockState::Bottom))
+            {
+                JumpResolution::bottom()
+            } else {
+                self.resolve_jump(jump_inst, &const_sets)
+            };
             if target.is_top() {
                 has_top_jump = true;
             }
@@ -776,7 +785,15 @@ impl Bytecode<'_> {
             );
         }
 
-        let count = jump_targets.iter().filter(|(_, target)| target.is_resolved()).count();
+        // Without unresolved jumps, the jumps the fixpoint never reached are unreachable too.
+        let has_top_jump = jump_targets.iter().any(|(_, target)| target.is_top());
+        let count = jump_targets
+            .iter()
+            .filter(|(_, target)| {
+                target.is_resolved()
+                    || (!has_top_jump && matches!(target.target, JumpTarget::Bottom))
+            })
+            .count();
 
         (jump_targets, count)
     }
@@ -1322,7 +1339,7 @@ pub(crate) mod tests {
         let bytecode = analyze_hex(
             "608060405234801561001057600080fd5b506004361061002b5760003560e01c806373027f6d14610030575b600080fd5b61004a600480360381019061004591906101a9565b61004c565b005b6000808273ffffffffffffffffffffffffffffffffffffffff166040516024016040516020818303038152906040527fb28175c4000000000000000000000000000000000000000000000000000000007bffffffffffffffffffffffffffffffffffffffffffffffffffffffff19166020820180517bffffffffffffffffffffffffffffffffffffffffffffffffffffff83818316178352505050506040516100f69190610247565b6000604051808303816000865af19150503d8060008114610133576040519150601f19603f3d011682016040523d82523d6000602084013e610138565b606091505b509150915081600155505050565b600080fd5b600073ffffffffffffffffffffffffffffffffffffffff82169050919050565b60006101768261014b565b9050919050565b6101868161016b565b811461019157600080fd5b50565b6000813590506101a38161017d565b92915050565b6000602082840312156101bf576101be610146565b5b60006101cd84828501610194565b91505092915050565b600081519050919050565b600081905092915050565b60005b8381101561020a5780820151818401526020810190506101ef565b60008484015250505050565b6000610221826101d6565b61022b81856101e1565b935061023b8185602086016101ec565b80840191505092915050565b60006102538284610216565b91508190509291505056fea2646970667358221220b4673c55c7b0268d7d118059e6509196d2185bb7fe040a7d3900f902c8542ea464736f6c63430008180033",
         );
-        assert!(bytecode.has_dynamic_jumps());
+        assert!(!bytecode.has_dynamic_jumps());
     }
 
     #[test]
@@ -2809,7 +2826,7 @@ mod tests_edge_cases {
             MLOAD               ; inst 9: cross-block via single predecessor
             PUSH1 0x01          ; inst 10
             MSTORE              ; inst 11
-            STOP                ; inst 12
+            JUMPDEST            ; inst 12: falls through into the opaque jump
             ; Opaque dynamic jump — triggers suspect invalidation.
             JUMPDEST            ; inst 13
             PUSH0               ; inst 14
@@ -2846,36 +2863,41 @@ mod tests_edge_cases {
             "
             ; Jump into the suspect JUMPDEST block with a value on the stack.
             PUSH1 0xAA          ; inst 0: will be on stack at entry to target
-            PUSH %target        ; inst 1
-            JUMP                ; inst 2: static jump
+            PUSH0               ; inst 1
+            CALLDATALOAD        ; inst 2: unknown condition
+            PUSH %opaque        ; inst 3
+            JUMPI               ; inst 4
+            PUSH %target        ; inst 5
+            JUMP                ; inst 6: static jump
             ; Opaque dynamic jump — triggers suspect invalidation.
-            JUMPDEST            ; inst 3
-            PUSH0               ; inst 4
-            CALLDATALOAD        ; inst 5: Top
-            JUMP                ; inst 6: unresolvable
+        opaque:
+            JUMPDEST            ; inst 7
+            PUSH0               ; inst 8
+            CALLDATALOAD        ; inst 9: Top
+            JUMP                ; inst 10: unresolvable
         target:
             ; Suspect JUMPDEST block with JUMPI.
             ; Entry stack: [0xAA] (from pred, but unknown to block-local pass).
-            JUMPDEST            ; inst 7: suspect seed
-            PUSH1 0x01          ; inst 8: condition
-            PUSH %after         ; inst 9
-            JUMPI               ; inst 10: pops condition+target, [0xAA] remains
-            STOP                ; inst 11
+            JUMPDEST            ; inst 11: suspect seed
+            PUSH1 0x01          ; inst 12: condition
+            PUSH %after         ; inst 13
+            JUMPI               ; inst 14: pops condition+target, [0xAA] remains
+            STOP                ; inst 15
         after:
             ; Fallthrough/target of JUMPI — suspect via propagation.
             ; Entry stack: [0xAA] (inherited, but Top in block-local pass).
-            JUMPDEST            ; inst 12
-            PUSH1 0xBB          ; inst 13: block-local
-            ADD                 ; inst 14: 0xAA + 0xBB — depth 1 is incoming
-            STOP                ; inst 15
+            JUMPDEST            ; inst 16
+            PUSH1 0xBB          ; inst 17: block-local
+            ADD                 ; inst 18: 0xAA + 0xBB — depth 1 is incoming
+            STOP                ; inst 19
         ",
         );
         assert!(bytecode.has_dynamic_jumps);
-        // ADD at inst 14: TOS (depth 0) = 0xBB (block-local), depth 1 = Top
+        // ADD at inst 18: TOS (depth 0) = 0xBB (block-local), depth 1 = Top
         // (incoming from suspect predecessor, block-local pass saw it as Top).
-        assert_eq!(bytecode.const_operand(Inst::from_usize(14), 0), Some(U256::from(0xBB)));
-        assert_eq!(bytecode.const_operand(Inst::from_usize(14), 1), None);
-        assert_eq!(bytecode.const_output(Inst::from_usize(14)), None);
+        assert_eq!(bytecode.const_operand(Inst::from_usize(18), 0), Some(U256::from(0xBB)));
+        assert_eq!(bytecode.const_operand(Inst::from_usize(18), 1), None);
+        assert_eq!(bytecode.const_output(Inst::from_usize(18)), None);
     }
 
     /// Bytecode that is just STOP — minimal edge case.
@@ -2897,6 +2919,70 @@ mod tests_edge_cases {
         ",
         );
         assert!(!bytecode.has_dynamic_jumps);
+    }
+
+    /// A dynamic jump that only the jump itself could reach, behind a `JUMPDEST`, as in data
+    /// contracts whose code starts with `STOP`.
+    #[test]
+    fn unreached_jumpdest_dynamic_jump() {
+        let bytecode = analyze_asm(
+            "
+            STOP
+            JUMPDEST
+            PUSH0
+            CALLDATALOAD
+            JUMP
+        ",
+        );
+        assert!(!bytecode.has_dynamic_jumps);
+    }
+
+    /// The return trampoline of a function that never returns is unreachable once every
+    /// other jump is resolved, even though its block-local operand is unknown.
+    #[test]
+    fn unreached_return_trampoline() {
+        let src = |opaque: &str| {
+            format!(
+                "
+                {opaque}
+                PUSH %tramp
+                PUSH %ret
+                PUSH %func
+                JUMP
+            ret:
+                JUMPDEST
+                PUSH %exit
+                JUMP
+            tramp:
+                JUMPDEST
+                JUMP            ; reached only if `exit` returned
+            func:
+                JUMPDEST
+                JUMP            ; returns to `ret`
+            exit:
+                JUMPDEST
+                STOP
+            opaque:
+                JUMPDEST
+                PUSH0
+                MLOAD
+                JUMP
+            "
+            )
+        };
+        let bytecode = analyze_asm(&src(""));
+        assert!(!bytecode.has_dynamic_jumps);
+
+        // An unresolved jump could reach the trampoline, so it must stay dynamic.
+        let bytecode = analyze_asm(&src("PUSH0 CALLDATALOAD PUSH %opaque JUMPI"));
+        assert!(bytecode.has_dynamic_jumps);
+        let tramp_jump = bytecode
+            .iter_insts()
+            .filter(|(_, d)| d.is_jump() && !d.is_dead_code())
+            // `tramp` is the first `JUMPDEST JUMP` block.
+            .find(|&(i, _)| bytecode.inst(i - 1).opcode == op::JUMPDEST)
+            .unwrap();
+        assert!(!tramp_jump.1.flags.contains(InstFlags::STATIC_JUMP));
     }
 
     /// Many callers to a shared internal function through relay blocks.
