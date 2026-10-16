@@ -35,8 +35,9 @@ pub use blockchaintest::{
     TransactionFailed as BlockchainTestTransactionFailed,
     TransactionFinished as BlockchainTestTransactionFinished,
     TransactionStarted as BlockchainTestTransactionStarted,
+    execute_case_on as execute_blockchain_test_case_on,
     execute_str as execute_blockchain_tests_str, execute_suite as execute_blockchain_tests_suite,
-    run as run_blockchaintests,
+    pre_state as blockchain_test_pre_state, run as run_blockchaintests,
 };
 pub use error::TestError as StateTestError;
 pub use execute::{

@@ -15,6 +15,8 @@ updates:
           - '*'
   - package-ecosystem: cargo
     directory: /
+    allow:
+      - dependency-type: all
     schedule:
       interval: weekly
       day: monday
@@ -22,10 +24,11 @@ updates:
       timezone: UTC
     cooldown:
       default-days: 7
-    open-pull-requests-limit: 5
-    allow:
-      - dependency-type: all
+    commit-message:
+      prefix: "chore(deps)"
+    open-pull-requests-limit: 1
     groups:
       cargo-weekly:
-        patterns:
-          - '*'
+        applies-to: "version-updates"
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
