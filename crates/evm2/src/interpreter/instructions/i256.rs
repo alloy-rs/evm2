@@ -67,12 +67,22 @@ pub(super) const fn two_compl(op: Word) -> Word {
 /// Compares two EVM words as signed 256-bit integers.
 #[inline]
 pub fn i256_cmp(first: &Word, second: &Word) -> Ordering {
-    let first_sign = i256_sign(first);
-    let second_sign = i256_sign(second);
-    match first_sign.cmp(&second_sign) {
-        Ordering::Equal => first.cmp(second),
-        o => o,
-    }
+    flip_sign(first).cmp(&flip_sign(second))
+}
+
+/// Returns whether `first < second` as signed 256-bit integers.
+#[inline]
+pub(super) fn i256_lt(first: &Word, second: &Word) -> bool {
+    flip_sign(first) < flip_sign(second)
+}
+
+/// Flips the sign bit, which maps two's complement order onto unsigned order. Unsigned comparisons
+/// compile to a branchless subtraction chain.
+#[inline]
+const fn flip_sign(value: &Word) -> Word {
+    let mut limbs = *value.as_limbs();
+    limbs[3] ^= 1 << 63;
+    Word::from_limbs(limbs)
 }
 
 /// Divides two EVM words as signed 256-bit integers.

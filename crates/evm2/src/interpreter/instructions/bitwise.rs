@@ -1,4 +1,4 @@
-use super::i256::i256_cmp;
+use super::i256::i256_lt;
 use crate::{
     interpreter::{
         Word,
@@ -6,7 +6,6 @@ use crate::{
     },
     utils::word_to_usize_saturated,
 };
-use core::cmp::Ordering;
 use evm2_macros::instruction;
 
 #[instruction]
@@ -21,12 +20,12 @@ pub fn gt([a, b]: [Word]) -> out {
 
 #[instruction]
 pub fn slt([a, b]: [Word]) -> out {
-    write_u64(out, (i256_cmp(a, b) == Ordering::Less) as u64);
+    write_u64(out, i256_lt(a, b) as u64);
 }
 
 #[instruction]
 pub fn sgt([a, b]: [Word]) -> out {
-    write_u64(out, (i256_cmp(a, b) == Ordering::Greater) as u64);
+    write_u64(out, i256_lt(b, a) as u64);
 }
 
 #[instruction]
@@ -121,6 +120,8 @@ mod tests {
         assert_stack!(SLT(neg(1), 0), 1);
         assert_stack!(SLT(0, neg(1)), 0);
         assert_stack!(SLT(neg(2), neg(1)), 1);
+        assert_stack!(SLT(neg(1), neg(1)), 0);
+        assert_stack!(SLT(!(Word::MAX >> 1), Word::MAX >> 1), 1);
     }
 
     #[test]
@@ -128,6 +129,8 @@ mod tests {
         assert_stack!(SGT(0, neg(1)), 1);
         assert_stack!(SGT(neg(1), 0), 0);
         assert_stack!(SGT(neg(1), neg(2)), 1);
+        assert_stack!(SGT(neg(1), neg(1)), 0);
+        assert_stack!(SGT(Word::MAX >> 1, !(Word::MAX >> 1)), 1);
     }
 
     #[test]
