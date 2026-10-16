@@ -1173,6 +1173,38 @@ tests! {
             inspect_stack: Some(false),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
+        // Like `context_joined_exp_gas`, but the exponent is produced inside the EXP block, so dead
+        // store elimination must keep it.
+        context_joined_exp_dup_exponent(@raw {
+            bytecode: &asm("
+                PUSH %ret1
+                PUSH1 0x01
+                PUSH %f
+                JUMP
+            ret1:
+                JUMPDEST
+                POP
+                PUSH %ret2
+                PUSH2 0x0100
+                PUSH %f
+                JUMP
+            ret2:
+                JUMPDEST
+                POP
+                STOP
+            f:
+                JUMPDEST        ; [ret, x]
+                DUP1
+                PUSH1 0x01
+                EXP             ; [ret, x, 1 ** x]
+                SWAP1
+                POP
+                SWAP1
+                JUMP
+            "),
+            inspect_stack: Some(false),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
         // Recursion deeper than the tracked abstract stack.
         deep_recursive_internal_returns(@raw {
             bytecode: &asm("
