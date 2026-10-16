@@ -166,6 +166,24 @@ pub struct StateInner<'a> {
     prewarm_set: PrewarmSet,
 }
 
+impl StateInner<'_> {
+    /// Appends a journal entry, building it straight in the journal's buffer.
+    ///
+    /// `Vec::push` builds the entry on the stack, because it must survive a possible reallocation,
+    /// and then copies it with wide loads. Those loads cannot take their data from the narrower
+    /// stores that built the entry and stall until the stores reach the cache.
+    #[inline(always)]
+    fn push_journal(&mut self, entry: impl FnOnce() -> JournalEntry) {
+        self.journal.reserve(1);
+        let len = self.journal.len();
+        // SAFETY: `reserve` made room for one more entry.
+        unsafe {
+            self.journal.as_mut_ptr().add(len).write(entry());
+            self.journal.set_len(len + 1);
+        }
+    }
+}
+
 impl<'a> State<'a> {
     /// Creates a new state over an initial database.
     pub fn new(initial: impl DynDatabase + 'a) -> Self {
@@ -684,7 +702,7 @@ impl<'a> State<'a> {
                 if previous == *value {
                     return;
                 }
-                self.inner.journal.push(JournalEntry::TransientStorageChange {
+                self.inner.push_journal(|| JournalEntry::TransientStorageChange {
                     address: *address,
                     key: *key,
                     previous: Some(previous),
@@ -699,7 +717,7 @@ impl<'a> State<'a> {
                 if value.is_zero() {
                     return;
                 }
-                self.inner.journal.push(JournalEntry::TransientStorageChange {
+                self.inner.push_journal(|| JournalEntry::TransientStorageChange {
                     address: *address,
                     key: *key,
                     previous: None,

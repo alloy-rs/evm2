@@ -246,7 +246,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         };
         if WARM && is_cold {
             slot.is_warm = true;
-            inner.journal.push(JournalEntry::StorageWarmed { address, key });
+            inner.push_journal(|| JournalEntry::StorageWarmed { address, key });
         }
         Ok((StorageSlotHandle { address, key, slot, inner }, is_cold))
     }
@@ -343,8 +343,7 @@ impl StorageSlotHandle<'_, '_> {
         }
         self.slot.is_warm = true;
         self.inner
-            .journal
-            .push(JournalEntry::StorageWarmed { address: self.address, key: self.key });
+            .push_journal(|| JournalEntry::StorageWarmed { address: self.address, key: self.key });
         true
     }
 
@@ -357,7 +356,7 @@ impl StorageSlotHandle<'_, '_> {
             return;
         }
         self.slot.value.current = value;
-        self.inner.journal.push(JournalEntry::StorageChange {
+        self.inner.push_journal(|| JournalEntry::StorageChange {
             address: self.address,
             key: self.key,
             previous,
