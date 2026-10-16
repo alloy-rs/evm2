@@ -175,6 +175,23 @@ pub(crate) const fn bool_to_b256(value: bool) -> &'static B256 {
     if value { TRUE } else { FALSE }
 }
 
+/// Reads the 32 bytes of `data` starting at `offset`, zero-padding past the end.
+#[inline]
+pub fn read_word_padded(data: &[u8], offset: usize) -> B256 {
+    match data.get(offset..) {
+        // A fixed-size read for the common in-bounds case avoids a `memcpy` call.
+        Some(rest) => match rest.first_chunk() {
+            Some(chunk) => B256::new(*chunk),
+            None => {
+                let mut word = B256::ZERO;
+                word[..rest.len()].copy_from_slice(rest);
+                word
+            }
+        },
+        None => B256::ZERO,
+    }
+}
+
 /// Fixed-size bit array stored inline in `WORDS` 64-bit words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct BitArray<const WORDS: usize>([u64; WORDS]);

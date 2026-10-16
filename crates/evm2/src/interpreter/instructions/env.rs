@@ -3,11 +3,11 @@ use crate::{
     evm::AccountLoad,
     interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{
-        address_to_word, b256_to_word, word_to_address, word_to_usize, word_to_usize_saturated,
+        address_to_word, b256_to_word, read_word_padded, word_to_address, word_to_usize,
+        word_to_usize_saturated,
     },
     version::GasParams,
 };
-use alloy_primitives::B256;
 use evm2_macros::instruction;
 
 fn load_account<T: EvmTypesHost>(
@@ -75,18 +75,7 @@ pub fn callvalue(cx: _) -> out {
 #[instruction]
 pub fn calldataload(cx: _, [offset]: [Word]) -> out {
     let offset = word_to_usize_saturated(*offset);
-    let input = cx.state.message().input.as_ref();
-    // A fixed-size read for the common in-bounds case avoids a `memcpy` call.
-    let word = if let Some(chunk) = input.get(offset..).and_then(<[u8]>::first_chunk::<32>) {
-        B256::new(*chunk)
-    } else {
-        let mut word = B256::ZERO;
-        if let Some(rest) = input.get(offset..) {
-            word[..rest.len()].copy_from_slice(rest);
-        }
-        word
-    };
-    *out = b256_to_word(word);
+    *out = b256_to_word(read_word_padded(&cx.state.message().input, offset));
 }
 
 #[instruction]

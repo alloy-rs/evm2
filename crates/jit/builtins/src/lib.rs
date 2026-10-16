@@ -18,7 +18,7 @@ use evm2::{
     bytecode::Bytecode,
     constants::{BLOCK_HASH_HISTORY, CALL_DEPTH_LIMIT},
     interpreter::{Host, MessageExt, MessageKind, Word, derive_create_destination, i256},
-    utils::{word_to_usize, word_to_usize_saturated},
+    utils::{read_word_padded, word_to_usize, word_to_usize_saturated},
     version::{EvmFeatures, GasId},
 };
 use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
@@ -249,18 +249,7 @@ pub unsafe extern "C" fn __revmc_builtin_calldataload_c(
 }
 
 fn do_calldataload(ecx: &EvmContext, out: &mut EvmWord, offset: usize) {
-    let input = ecx.input().as_ref();
-    // A fixed-size read for the common in-bounds case avoids a `memcpy` call.
-    let word = if let Some(chunk) = input.get(offset..).and_then(<[u8]>::first_chunk::<32>) {
-        B256::new(*chunk)
-    } else {
-        let mut word = B256::ZERO;
-        if let Some(rest) = input.get(offset..) {
-            word[..rest.len()].copy_from_slice(rest);
-        }
-        word
-    };
-    *out = EvmWord::from_be_bytes(word);
+    *out = EvmWord::from_be_bytes(read_word_padded(ecx.input(), offset));
 }
 
 #[unsafe(no_mangle)]
