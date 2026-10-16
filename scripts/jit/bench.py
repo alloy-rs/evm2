@@ -19,7 +19,7 @@ Examples:
     ./scripts/jit/bench.py /tmp/bench --jump-resolution seaport usdc_proxy
 
     # Also benchmark the slow mainnet contracts:
-    ./scripts/jit/bench.py /tmp/bench --diff main --extra-dir data/mainnet --extra-dir data/mainnet/slow
+    ./scripts/jit/bench.py /tmp/bench --extra-dir data/mainnet --extra-dir data/mainnet/slow
 
     # Only compile times:
     ./scripts/jit/bench.py /tmp/bench --diff main --compile-times
