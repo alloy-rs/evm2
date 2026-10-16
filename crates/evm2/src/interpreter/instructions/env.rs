@@ -1,7 +1,11 @@
 use crate::{
     EvmTypesHost,
     evm::AccountLoad,
-    interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
+    interpreter::{
+        Gas, Host, InstrStop, Memory, Result, Word,
+        private::GasInstructionCx,
+        stack::{write_u64, write_word},
+    },
     utils::{
         address_to_word, b256_to_word, read_word_padded, word_to_address, word_to_usize,
         word_to_usize_saturated,
@@ -49,7 +53,7 @@ fn copy_data(
 
 #[instruction]
 pub fn address(cx: _) -> out {
-    *out = address_to_word(&cx.state.message().destination);
+    write_word(out, address_to_word(&cx.state.message().destination));
 }
 
 #[instruction(dynamic_gas)]
@@ -59,12 +63,12 @@ pub fn balance(cx: _, [addr]: [Word]) -> Result<out> {
 
 #[instruction]
 pub fn origin(cx: _) -> out {
-    *out = address_to_word(&cx.state.tx().origin);
+    write_word(out, address_to_word(&cx.state.tx().origin));
 }
 
 #[instruction]
 pub fn caller(cx: _) -> out {
-    *out = address_to_word(&cx.state.message().caller);
+    write_word(out, address_to_word(&cx.state.message().caller));
 }
 
 #[instruction]
@@ -80,7 +84,7 @@ pub fn calldataload(cx: _, [offset]: [Word]) -> out {
 
 #[instruction]
 pub fn calldatasize(cx: _) -> out {
-    *out = Word::from(cx.state.message().input.len());
+    write_u64(out, cx.state.message().input.len() as u64);
 }
 
 #[instruction(dynamic_gas)]
@@ -95,7 +99,7 @@ pub fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result 
 
 #[instruction]
 pub fn codesize(cx: _) -> out {
-    *out = Word::from(cx.state.0.bytecode.len());
+    write_u64(out, cx.state.0.bytecode.len() as u64);
 }
 
 #[instruction(dynamic_gas)]
@@ -115,7 +119,7 @@ pub fn gasprice(cx: _) -> out {
 
 #[instruction(dynamic_gas)]
 pub fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
-    *out = Word::from(load_account(&mut cx, *addr, true)?.code.len());
+    write_u64(out, load_account(&mut cx, *addr, true)?.code.len() as u64);
 }
 
 #[instruction(dynamic_gas)]
@@ -147,7 +151,7 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
 
 #[instruction]
 pub fn returndatasize(cx: _) -> Result<out> {
-    *out = Word::from(cx.state.return_data().len());
+    write_u64(out, cx.state.return_data().len() as u64);
 }
 
 #[instruction(dynamic_gas)]

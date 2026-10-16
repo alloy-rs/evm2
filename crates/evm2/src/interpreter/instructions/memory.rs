@@ -1,4 +1,4 @@
-use crate::{interpreter::Word, utils::word_to_usize};
+use crate::{interpreter::stack::write_u64, utils::word_to_usize};
 use evm2_macros::instruction;
 
 #[instruction(dynamic_gas)]
@@ -24,7 +24,7 @@ pub fn mstore8(cx: _, [offset, value]: [Word]) -> Result {
 
 #[instruction]
 pub fn msize(cx: _) -> out {
-    *out = Word::from(cx.state.memory().len());
+    write_u64(out, cx.state.memory().len() as u64);
 }
 
 #[instruction(dynamic_gas)]

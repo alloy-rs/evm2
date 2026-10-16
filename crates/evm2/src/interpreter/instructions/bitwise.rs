@@ -62,7 +62,7 @@ pub fn not([value]: [Word]) -> out {
 #[instruction]
 pub fn byte([index, value]: [Word]) -> out {
     let index = word_to_usize_saturated(*index);
-    *out = if index < 32 { Word::from(value.byte(31 - index)) } else { Word::ZERO };
+    write_u64(out, if index < 32 { value.byte(31 - index).into() } else { 0 });
 }
 
 #[instruction]
@@ -92,7 +92,7 @@ pub fn sar([shift, value]: [Word]) -> out {
 
 #[instruction]
 pub fn clz([value]: [Word]) -> out {
-    *out = Word::from(value.leading_zeros());
+    write_u64(out, value.leading_zeros() as u64);
 }
 
 #[cfg(test)]
