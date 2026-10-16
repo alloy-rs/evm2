@@ -171,15 +171,6 @@ pub unsafe extern "C" fn __revmc_builtin_exp(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_exp_gas(
-    ecx: &mut EvmContext,
-    exponent: &EvmWord,
-) -> BuiltinResult {
-    ecx.gas.spend(ecx.gas_params().exp_cost(exponent.to_u256()))?;
-    Ok(())
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_keccak256(
     ecx: &mut EvmContext,
     sp: &mut [EvmWord; 2],
@@ -224,11 +215,6 @@ pub unsafe extern "C" fn __revmc_builtin_balance(
     let account = load_account(ecx, &address.to_address(), false)?;
     *address = account.balance.into();
     Ok(())
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_origin(ecx: &EvmContext, slot: &mut EvmWord) {
-    *slot = EvmWord::from_be_bytes(ecx.tx_env().origin.into_word());
 }
 
 #[unsafe(no_mangle)]
@@ -278,11 +264,6 @@ pub unsafe extern "C" fn __revmc_builtin_codecopy(
 ) -> BuiltinResult {
     let bytecode = ecx.bytecode();
     unsafe { copy_operation(ecx, sp, bytecode.as_ref()) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_gas_price(ecx: &EvmContext, slot: &mut EvmWord) {
-    *slot = ecx.tx_env().gas_price.into();
 }
 
 #[unsafe(no_mangle)]
@@ -390,40 +371,6 @@ pub unsafe extern "C" fn __revmc_builtin_blockhash(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_coinbase(ecx: &mut EvmContext, slot: &mut EvmWord) {
-    *slot = EvmWord::from_be_bytes(ecx.block_env().beneficiary.into_word());
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_timestamp(ecx: &mut EvmContext, slot: &mut EvmWord) {
-    *slot = ecx.block_env().timestamp.into();
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_number(ecx: &mut EvmContext, slot: &mut EvmWord) {
-    *slot = ecx.block_env().number.into();
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_difficulty(ecx: &mut EvmContext, slot: &mut EvmWord) {
-    *slot = if ecx.enables(EvmFeatures::EIP4399) {
-        ecx.block_env().prevrandao.into()
-    } else {
-        ecx.block_env().difficulty.into()
-    };
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_gaslimit(ecx: &mut EvmContext, slot: &mut EvmWord) {
-    *slot = ecx.block_env().gas_limit.into();
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_chainid(ecx: &EvmContext, slot: &mut EvmWord) {
-    *slot = ecx.tx_env().chain_id.into();
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_self_balance(
     ecx: &mut EvmContext,
     slot: &mut EvmWord,
@@ -439,11 +386,6 @@ pub unsafe extern "C" fn __revmc_builtin_self_balance(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_basefee(ecx: &mut EvmContext, slot: &mut EvmWord) {
-    *slot = ecx.block_env().basefee.into();
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_blob_hash(ecx: &EvmContext, index_ptr: &mut EvmWord) {
     let index = index_ptr.to_u256();
     let index_usize = word_to_usize_saturated(index);
@@ -451,21 +393,8 @@ pub unsafe extern "C" fn __revmc_builtin_blob_hash(ecx: &EvmContext, index_ptr: 
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_blob_base_fee(
-    ecx: &mut EvmContext,
-    slot: &mut EvmWord,
-) {
-    *slot = ecx.block_env().blob_basefee.into();
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_mresize(ecx: &mut EvmContext, min_size: u64) -> BuiltinResult {
     ensure_memory(ecx, min_size as usize, 0)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_slot_num(ecx: &mut EvmContext, slot: &mut EvmWord) {
-    *slot = ecx.block_env().slot_num.into();
 }
 
 #[unsafe(no_mangle)]

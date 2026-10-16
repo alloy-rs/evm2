@@ -61,6 +61,11 @@ pub struct EvmContext<'ctx, 'frame, 'host> {
     /// Refreshed after any memory resize.
     pub mem_len: usize,
 
+    /// The host's block environment, cached for block opcodes.
+    pub block_env: NonNull<BlockEnv<BaseEvmTypes>>,
+    /// The transaction environment, cached for transaction opcodes.
+    pub tx_env: &'frame TxEnv<BaseEvmTypes>,
+
     _marker: PhantomData<&'ctx mut Interpreter<'frame, 'host, BaseEvmTypes>>,
 }
 
@@ -91,6 +96,8 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
     ) -> (Self, &'ctx mut EvmStack, &'ctx mut usize) {
         let interpreter_ptr = ptr::from_mut(&mut *interpreter);
         let interpreter_ptr = unsafe { NonNull::new_unchecked(interpreter_ptr) };
+        let block_env = NonNull::from(interpreter.host().block_env());
+        let tx_env = interpreter.tx_env();
         let message = interpreter.message();
         let gas = interpreter.gas();
         let calldatasize = message.input.len();
@@ -106,6 +113,8 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
             exit_sp: ptr::null_mut(),
             mem_base: ptr::null_mut(),
             mem_len: 0,
+            block_env,
+            tx_env,
             _marker: PhantomData,
         };
         this.refresh_memory_cache();
@@ -168,14 +177,14 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
 
     /// Returns the current block environment.
     #[inline]
-    pub fn block_env(&mut self) -> &BlockEnv<BaseEvmTypes> {
-        self.host().block_env()
+    pub const fn block_env(&self) -> &BlockEnv<BaseEvmTypes> {
+        unsafe { self.block_env.as_ref() }
     }
 
     /// Returns the transaction-global environment.
     #[inline]
     pub const fn tx_env(&self) -> &'frame TxEnv<BaseEvmTypes> {
-        self.interpreter().tx_env()
+        self.tx_env
     }
 
     /// Returns active runtime version data.
