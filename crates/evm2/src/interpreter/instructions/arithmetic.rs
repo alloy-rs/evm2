@@ -105,6 +105,9 @@ mod tests {
         assert_stack!(SDIV(neg(4), 2), neg(2));
         assert_stack!(SDIV(7, neg(2)), neg(3));
         assert_stack!(SDIV(7, 0), 0);
+        let min = !(Word::MAX >> 1);
+        assert_stack!(SDIV(min, neg(1)), min);
+        assert_stack!(SDIV(min, 1), min);
     }
 
     #[test]
@@ -119,6 +122,7 @@ mod tests {
         assert_stack!(SMOD(neg(4), 3), neg(1));
         assert_stack!(SMOD(4, neg(3)), 1);
         assert_stack!(SMOD(4, 0), 0);
+        assert_stack!(SMOD(!(Word::MAX >> 1), neg(1)), 0);
     }
 
     #[test]
