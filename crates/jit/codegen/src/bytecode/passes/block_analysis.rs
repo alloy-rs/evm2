@@ -26,6 +26,9 @@
 //! constants on the stack, so that internal functions are analyzed separately for each call chain
 //! (see [`ContextMode`]).
 //!
+//! A `JUMPI` propagates only along the edges that its condition allows in each context, and the
+//! values that its condition shows to be zero on an edge become `0` there.
+//!
 //! ## Soundness
 //!
 //! When the fixpoint does not converge (iteration cap reached) or unresolved `Top` jumps remain,
@@ -38,7 +41,7 @@ use crate::{
     FxHashMap, FxHashSet,
     bytecode::{Bytecode, Inst, InstFlags, Interner, U256Imm},
 };
-use alloy_primitives::map::FxHasher;
+use alloy_primitives::{U256, map::FxHasher};
 use bitvec::vec::BitVec;
 use either::Either;
 use evm2::{constants::STACK_LIMIT, interpreter::op};
@@ -517,6 +520,17 @@ enum JumpCondition {
     Unknown,
     AlwaysTrue,
     AlwaysFalse,
+}
+
+/// What the condition of a block's terminating `JUMPI` shows about its successors.
+struct Branch {
+    /// The fall-through block.
+    fallthrough: Option<Block>,
+    /// Whether the jump may also target the fall-through block.
+    fallthrough_is_target: bool,
+    /// Depths in the exit stack, with zero at the top, of the values that the condition shows
+    /// to be zero, on the fall-through and on the jump.
+    zero: [SmallVec<[usize; 2]>; 2],
 }
 
 impl JumpResolution {
@@ -1177,6 +1191,11 @@ impl Bytecode<'_> {
         let mut stack_buf: Vec<AbsValue> = Vec::with_capacity(MAX_ABS_STACK_DEPTH);
         let mut targets = SmallVec::<[Block; 4]>::new();
         let mut mem_buf = MemWords::default();
+        let mut refined_bufs = [Vec::new(), Vec::new()];
+
+        let branches: IndexVec<Block, Option<Branch>> =
+            self.cfg.blocks.indices().map(|bid| self.branch(bid)).collect();
+        let zero = AbsValue::Const(U256Imm::new(U256::ZERO, &mut self.u256_interner.borrow_mut()));
 
         'fixpoint: while let Some(Reverse((_, pid))) = worklist.pop() {
             queued.set(pid.index(), false);
@@ -1203,20 +1222,28 @@ impl Bytecode<'_> {
             work += insts.len() as u64;
             let term_inst = self.cfg.blocks[bid].terminator();
             let mut operand = None;
+            let mut condition = AbsValue::Top;
             for i in insts {
                 if i == term_inst {
                     operand = stack_buf.last().copied();
+                    condition = stack_buf.iter().rev().nth(1).copied().unwrap_or_default();
                 }
                 if !self.interpret_inst(i, &mut stack_buf, truncated, &mut mem_buf, Record::Skip) {
                     continue 'fixpoint;
                 }
             }
+            let branch = branches[bid].as_ref();
+            let condition = match branch {
+                Some(_) => self.resolve_jump_condition(condition, &const_sets),
+                None => JumpCondition::Unknown,
+            };
 
             // Discover dynamic-jump target edges from this context's jump operand.
             targets.clear();
             let term = &self.insts[term_inst];
             if term.is_jump()
                 && !term.flags.contains(InstFlags::STATIC_JUMP)
+                && condition != JumpCondition::AlwaysFalse
                 && let Some(operand) = operand
             {
                 self.jump_target_blocks(operand, &const_sets, &mut targets);
@@ -1232,7 +1259,43 @@ impl Bytecode<'_> {
                 continue;
             }
             let key = self.context_key(mode, &stack_buf, truncated);
+            let mut refined_key = [None; 2];
             for &succ in self.cfg.blocks[bid].succs.iter().chain(&targets) {
+                let (mut stack, mut key) = (&stack_buf, key);
+                if let Some(branch) = branch {
+                    // Whether this edge is the jump rather than the fall-through. Both may reach
+                    // the fall-through block.
+                    let taken = if Some(succ) != branch.fallthrough {
+                        Some(true)
+                    } else if branch.fallthrough_is_target || targets.contains(&succ) {
+                        None
+                    } else {
+                        Some(false)
+                    };
+                    match (taken, condition) {
+                        (Some(true), JumpCondition::AlwaysFalse)
+                        | (Some(false), JumpCondition::AlwaysTrue) => continue,
+                        _ => {}
+                    }
+                    // Values that the branch condition shows to be zero on this edge.
+                    if let Some(taken) = taken
+                        && let slots = &branch.zero[taken as usize]
+                        && !slots.is_empty()
+                    {
+                        let buf = &mut refined_bufs[taken as usize];
+                        let refined = *refined_key[taken as usize].get_or_insert_with(|| {
+                            buf.clone_from(&stack_buf);
+                            let len = buf.len();
+                            for &depth in slots {
+                                if depth < len {
+                                    buf[len - 1 - depth] = zero;
+                                }
+                            }
+                            self.context_key(mode, buf, truncated)
+                        });
+                        (stack, key) = (&*buf, refined);
+                    }
+                }
                 let part = match parts[succ].get(&key) {
                     Some(&part) => part,
                     None => {
@@ -1246,8 +1309,8 @@ impl Bytecode<'_> {
                         part
                     }
                 };
-                work += 1 + stack_buf.len().min(MAX_ABS_STACK_DEPTH) as u64;
-                if states[part].1.join(&stack_buf, truncated, &mem_buf, &mut const_sets)
+                work += 1 + stack.len().min(MAX_ABS_STACK_DEPTH) as u64;
+                if states[part].1.join(stack, truncated, &mem_buf, &mut const_sets)
                     && !queued[part.index()]
                 {
                     queued.set(part.index(), true);
@@ -1287,6 +1350,95 @@ impl Bytecode<'_> {
         }
         let reached = parts.iter().map(|p| !p.is_empty()).collect();
         Fixpoint { reached, discovered, const_sets, converged }
+    }
+
+    /// Returns what the condition of the `JUMPI` that ends `bid` shows about its successors.
+    ///
+    /// The condition is `ISZERO` applied some number of times to a value, so every value in
+    /// that chain is zero on one of the edges. Copies of these values left on the stack take
+    /// that zero on that edge.
+    fn branch(&self, bid: Block) -> Option<Branch> {
+        let block = &self.cfg.blocks[bid];
+        let term = block.terminator();
+        let data = &self.insts[term];
+        if data.opcode != op::JUMPI {
+            return None;
+        }
+
+        let resolve = |inst: Inst| {
+            let inst = self.redirects.get(&inst).copied().unwrap_or(inst);
+            self.cfg.inst_to_block.get(inst).copied().flatten()
+        };
+        let fallthrough = resolve(term + 1);
+        let fallthrough_is_target = if data.flags.contains(InstFlags::MULTI_JUMP) {
+            self.multi_jump_targets
+                .get(&term)
+                .is_some_and(|targets| targets.iter().any(|&target| resolve(target) == fallthrough))
+        } else {
+            data.is_static_jump()
+                && !data.flags.contains(InstFlags::INVALID_JUMP)
+                && resolve(data.static_jump_target()) == fallthrough
+        };
+        let mut branch = Branch { fallthrough, fallthrough_is_target, zero: Default::default() };
+
+        // Interpret the block symbolically: each value is named by the instruction that
+        // computed it, or by a counter below `u32::MAX` for the values on entry.
+        let mut stack = SmallVec::<[u32; 16]>::new();
+        let mut entries = 0;
+        let mut iszero = SmallVec::<[(u32, u32); 2]>::new();
+        let mut condition = None;
+        for i in block.insts() {
+            let data = &self.insts[i];
+            if data.is_dead_code() {
+                continue;
+            }
+            if data.flags.contains(InstFlags::DISABLED) {
+                return Some(branch);
+            }
+            let (inp, out) = data.stack_io();
+            let (inp, out) = (inp as usize, out as usize);
+            if stack.len() < inp {
+                let missing = inp - stack.len();
+                stack.insert_many(0, (0..missing as u32).map(|k| u32::MAX - entries - k));
+                entries += missing as u32;
+            }
+            let len = stack.len();
+            let id = i.index() as u32;
+            match data.opcode {
+                op::DUP1..=op::DUP16 => stack.push(stack[len - inp]),
+                op::SWAP1..=op::SWAP16 => stack.swap(len - 1, len - inp),
+                op::DUPN | op::SWAPN | op::EXCHANGE => return Some(branch),
+                op::ISZERO => {
+                    iszero.push((id, stack[len - 1]));
+                    stack[len - 1] = id;
+                }
+                op::JUMPI => {
+                    condition = Some(stack[len - 2]);
+                    stack.truncate(len - 2);
+                }
+                _ if out > 1 => return Some(branch),
+                _ => {
+                    stack.truncate(len - inp);
+                    stack.extend((out == 1).then_some(id));
+                }
+            }
+        }
+
+        // The condition is zero on the fall-through, its operand on the jump, and so on.
+        let mut value = condition?;
+        let mut taken = false;
+        loop {
+            let slots = &mut branch.zero[taken as usize];
+            for (depth, &v) in stack.iter().rev().enumerate() {
+                if v == value {
+                    slots.push(depth);
+                }
+            }
+            let Some(&(_, operand)) = iszero.iter().find(|&&(out, _)| out == value) else { break };
+            value = operand;
+            taken = !taken;
+        }
+        Some(branch)
     }
 
     /// Returns the context of an abstract stack: a hash of the constants `mode` keys on.
@@ -2879,7 +3031,7 @@ mod tests_edge_cases {
             JUMPDEST            ; inst 1
             DUP1                ; inst 2
             PUSH1 0x0a          ; inst 3
-            LT                  ; inst 4
+            GT                  ; inst 4: i < 10
             ISZERO              ; inst 5
             PUSH %exit          ; inst 6
             JUMPI               ; inst 7
@@ -2911,7 +3063,7 @@ mod tests_edge_cases {
             JUMPDEST            ; inst 1
             DUP1                ; inst 2
             PUSH1 0x0a
-            LT
+            GT
             ISZERO
             PUSH %exit
             JUMPI
@@ -2982,7 +3134,7 @@ mod tests_edge_cases {
             JUMPDEST            ; inst 10
             DUP1                ; inst 11
             PUSH1 0x0a
-            LT
+            GT
             ISZERO
             PUSH %exit
             JUMPI
@@ -3476,6 +3628,68 @@ mod tests_edge_cases {
         let (_, data) = bytecode.iter_insts().rfind(|(_, d)| d.is_jump()).unwrap();
         assert!(!data.flags.contains(InstFlags::STATIC_JUMP));
         assert!(bytecode.has_dynamic_jumps);
+    }
+
+    /// A `try`/`catch` shape: the failed call jumps to the block that checks the decoded
+    /// result with one entry fewer. That jump is only taken when the call result is zero, so
+    /// the check never jumps on, and `ok` keeps only the success path's stack.
+    #[test]
+    fn failed_call_does_not_take_success_jump() {
+        let bytecode = analyze_asm(
+            "
+            PUSH1 0x42
+            PUSH %ret
+            PUSH %func
+            JUMP
+        ret:
+            JUMPDEST
+            STOP
+        func:
+            JUMPDEST            ; [0x42, ret]
+            CALLDATASIZE        ; [0x42, ret, success]
+            DUP1
+            ISZERO
+            PUSH %check
+            JUMPI
+            PUSH1 0x80          ; [0x42, ret, success, value]
+            SWAP1               ; [0x42, ret, value, success]
+        check:
+            JUMPDEST
+            PUSH %ok
+            JUMPI
+            PUSH0
+            DUP1
+            REVERT
+        ok:
+            JUMPDEST            ; [0x42, ret, value]
+            POP
+            JUMP
+        ",
+        );
+        assert!(!bytecode.has_dynamic_jumps);
+    }
+
+    /// The fall-through of a `JUMPI` knows that its condition is zero.
+    #[test]
+    fn jumpi_fallthrough_knows_zero_condition() {
+        let bytecode = analyze_asm(
+            "
+            CALLDATASIZE
+            DUP1
+            PUSH %nonzero
+            JUMPI
+            PUSH1 0x01
+            ADD
+            PUSH0
+            SSTORE
+            STOP
+        nonzero:
+            JUMPDEST
+            STOP
+        ",
+        );
+        let (add, _) = bytecode.iter_insts().find(|(_, d)| d.opcode == op::ADD).unwrap();
+        assert_eq!(bytecode.const_operand(add, 1), Some(U256::ZERO));
     }
 
     /// A return address below 64 other stack entries, as in deep call chains.
