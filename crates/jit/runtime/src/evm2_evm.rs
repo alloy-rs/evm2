@@ -245,7 +245,9 @@ mod tests {
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
         let tx_env = TxEnvExt::default();
-        let mut code = vec![op::PUSH1, 0x20, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0];
+        // The call output overwrites the word stored before it.
+        let mut code = vec![op::PUSH1, 0x69, op::PUSH0, op::MSTORE];
+        code.extend([op::PUSH1, 0x20, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0]);
         push20(&mut code, target);
         code.extend([
             op::PUSH2,

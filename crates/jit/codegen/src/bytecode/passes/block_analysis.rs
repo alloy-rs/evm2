@@ -205,6 +205,82 @@ impl ConstSetInterner {
 /// treat the out-of-range slot as `Top` rather than aborting block interpretation.
 const MAX_ABS_STACK_DEPTH: usize = 64;
 
+/// Maximum number of memory words tracked by [`MemWords`].
+const MAX_MEM_WORDS: usize = 16;
+
+/// Memory words at constant offsets whose values are known, sorted by offset and disjoint.
+///
+/// Only words written by `MSTORE` are tracked, so memory already covers a word that `MLOAD`
+/// folds and the load needs no memory expansion. Every instruction that writes memory clears
+/// the words it may overlap, and joins keep only the words known on every path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct MemWords(SmallVec<[(u32, AbsValue); 4]>);
+
+impl MemWords {
+    /// Applies the memory effect of `opcode` with the given `inputs` (TOS last).
+    ///
+    /// Returns the known value loaded by an `MLOAD`.
+    fn transfer(&mut self, opcode: u8, inputs: &[AbsValue]) -> Option<AbsValue> {
+        // Offsets and lengths that fit in an inline immediate; larger ones are unknown.
+        let imm = |depth: usize| inputs[inputs.len() - 1 - depth].as_const()?.get_inline();
+        match opcode {
+            op::MLOAD => {
+                let offset = imm(0)?;
+                let i = self.0.binary_search_by_key(&offset, |&(o, _)| o).ok()?;
+                return Some(self.0[i].1);
+            }
+            op::MSTORE => {
+                let (offset, value) = (imm(0), inputs[inputs.len() - 2]);
+                self.clobber(offset, Some(32));
+                if let Some(offset) = offset
+                    && value != AbsValue::Top
+                {
+                    let i = self.0.partition_point(|&(o, _)| o < offset);
+                    self.0.insert(i, (offset, value));
+                    self.0.truncate(MAX_MEM_WORDS);
+                }
+            }
+            op::MSTORE8 => self.clobber(imm(0), Some(1)),
+            op::CALLDATACOPY | op::CODECOPY | op::RETURNDATACOPY | op::MCOPY => {
+                self.clobber(imm(0), imm(2))
+            }
+            op::EXTCODECOPY => self.clobber(imm(1), imm(3)),
+            op::CALL | op::CALLCODE => self.clobber(imm(5), imm(6)),
+            op::DELEGATECALL | op::STATICCALL => self.clobber(imm(4), imm(5)),
+            _ => {}
+        }
+        None
+    }
+
+    /// Forgets every word that a write of `len` bytes at `offset` may overlap.
+    fn clobber(&mut self, offset: Option<u32>, len: Option<u32>) {
+        match (offset, len) {
+            (_, Some(0)) => {}
+            (Some(offset), len) => {
+                // Inline immediates are below 2^31, so these sums cannot overflow.
+                let end = len.map_or(u32::MAX, |len| offset + len);
+                self.0.retain(|&mut (o, _)| o + 32 <= offset || end <= o);
+            }
+            (None, _) => self.0.clear(),
+        }
+    }
+
+    /// Keeps the words known in both states, joining their values. Returns `true` if `self`
+    /// changed.
+    fn join(&mut self, other: &Self, sets: &mut ConstSetInterner) -> bool {
+        let len = self.0.len();
+        let mut changed = false;
+        self.0.retain(|(offset, value)| {
+            let Ok(i) = other.0.binary_search_by_key(offset, |&(o, _)| o) else { return false };
+            let joined = sets.join(*value, other.0[i].1);
+            changed |= joined != *value;
+            *value = joined;
+            joined != AbsValue::Top
+        });
+        changed || self.0.len() != len
+    }
+}
+
 /// Abstract state at the entry of a block.
 #[derive(Clone, Debug)]
 enum BlockState {
@@ -216,6 +292,8 @@ enum BlockState {
         /// Whether entries below `stack` were dropped by [`MAX_ABS_STACK_DEPTH`] clamping, so
         /// that running out of tracked entries is not a stack underflow.
         truncated: bool,
+        /// Known memory words.
+        mem: MemWords,
     },
 }
 
@@ -230,6 +308,7 @@ impl BlockState {
         &mut self,
         incoming: &[AbsValue],
         incoming_truncated: bool,
+        incoming_mem: &MemWords,
         sets: &mut ConstSetInterner,
     ) -> bool {
         let incoming_truncated = incoming_truncated || incoming.len() > MAX_ABS_STACK_DEPTH;
@@ -239,12 +318,13 @@ impl BlockState {
                 *self = Self::Known {
                     stack: incoming[start..].to_vec(),
                     truncated: incoming_truncated,
+                    mem: incoming_mem.clone(),
                 };
                 true
             }
-            Self::Known { stack: existing, truncated } => {
+            Self::Known { stack: existing, truncated, mem } => {
                 let new_len = existing.len().max(incoming.len());
-                let mut changed = false;
+                let mut changed = mem.join(incoming_mem, sets);
                 if incoming_truncated && !*truncated {
                     *truncated = true;
                     changed = true;
@@ -540,7 +620,7 @@ impl Bytecode<'_> {
             // Interpret the block with `Top` as inputs.
             stack.clear();
             stack.resize(section.inputs as usize, AbsValue::Top);
-            if !self.interpret_block(block.insts(), &mut stack, false) {
+            if !self.interpret_block(block.insts(), &mut stack, false, &mut MemWords::default()) {
                 continue;
             }
 
@@ -1110,7 +1190,11 @@ impl Bytecode<'_> {
         // Entry block starts with an empty stack, or with unknown entries when the caller may
         // pass a stack.
         let entry = Block::from_usize(0);
-        let entry_state = BlockState::Known { stack: Vec::new(), truncated: self.stack_observed() };
+        let entry_state = BlockState::Known {
+            stack: Vec::new(),
+            truncated: self.stack_observed(),
+            mem: MemWords::default(),
+        };
         let entry_part = states.push((entry, entry_state));
         parts[entry].insert(0, entry_part);
         // Visit blocks in code order, which mostly follows the CFG, so that a state is complete
@@ -1131,6 +1215,7 @@ impl Bytecode<'_> {
         // Reusable buffers to avoid per-iteration allocations.
         let mut stack_buf: Vec<AbsValue> = Vec::with_capacity(MAX_ABS_STACK_DEPTH);
         let mut targets = SmallVec::<[Block; 4]>::new();
+        let mut mem_buf = MemWords::default();
 
         'fixpoint: while let Some(Reverse((_, pid))) = worklist.pop() {
             queued.set(pid.index(), false);
@@ -1145,8 +1230,9 @@ impl Bytecode<'_> {
             let bid = *bid;
             stack_buf.clear();
             let truncated = match state {
-                BlockState::Known { stack, truncated } => {
+                BlockState::Known { stack, truncated, mem } => {
                     stack_buf.extend_from_slice(stack);
+                    mem_buf.clone_from(mem);
                     *truncated
                 }
                 BlockState::Bottom => continue,
@@ -1160,7 +1246,7 @@ impl Bytecode<'_> {
                 if i == term_inst {
                     operand = stack_buf.last().copied();
                 }
-                if !self.interpret_inst(i, &mut stack_buf, truncated, Record::Skip) {
+                if !self.interpret_inst(i, &mut stack_buf, truncated, &mut mem_buf, Record::Skip) {
                     continue 'fixpoint;
                 }
             }
@@ -1200,7 +1286,7 @@ impl Bytecode<'_> {
                     }
                 };
                 work += 1 + stack_buf.len().min(MAX_ABS_STACK_DEPTH) as u64;
-                if states[part].1.join(&stack_buf, truncated, &mut const_sets)
+                if states[part].1.join(&stack_buf, truncated, &mem_buf, &mut const_sets)
                     && !queued[part.index()]
                 {
                     queued.set(part.index(), true);
@@ -1222,15 +1308,16 @@ impl Bytecode<'_> {
         if converged {
             let mut visited: BitVec = BitVec::repeat(false, self.insts.len());
             for (bid, state) in &states {
-                let BlockState::Known { stack, truncated } = state else { continue };
+                let BlockState::Known { stack, truncated, mem } = state else { continue };
                 stack_buf.clone_from(stack);
+                mem_buf.clone_from(mem);
                 for i in self.cfg.blocks[*bid].insts() {
                     let record = if visited[i.index()] {
                         Record::Join(&mut const_sets)
                     } else {
                         Record::Overwrite
                     };
-                    if !self.interpret_inst(i, &mut stack_buf, *truncated, record) {
+                    if !self.interpret_inst(i, &mut stack_buf, *truncated, &mut mem_buf, record) {
                         break;
                     }
                     visited.set(i.index(), true);
@@ -1293,14 +1380,16 @@ impl Bytecode<'_> {
     ///
     /// The caller must pre-fill `stack` with the input state; on return it contains the output.
     /// When `truncated` is set, missing entries below `stack` are `Top` instead of an underflow.
+    /// `mem` holds the known memory words in the same way as `stack`.
     /// Records per-instruction operand snapshots into `self.snapshots`.
     fn interpret_block(
         &mut self,
         insts: impl IntoIterator<Item = Inst>,
         stack: &mut Vec<AbsValue>,
         truncated: bool,
+        mem: &mut MemWords,
     ) -> bool {
-        insts.into_iter().all(|i| self.interpret_inst(i, stack, truncated, Record::Overwrite))
+        insts.into_iter().all(|i| self.interpret_inst(i, stack, truncated, mem, Record::Overwrite))
     }
 
     /// Interpret a single instruction on the abstract stack, like [`Self::interpret_block`],
@@ -1310,6 +1399,7 @@ impl Bytecode<'_> {
         i: Inst,
         stack: &mut Vec<AbsValue>,
         truncated: bool,
+        mem: &mut MemWords,
         mut record: Record<'_>,
     ) -> bool {
         let inst = &self.insts[i];
@@ -1443,8 +1533,17 @@ impl Bytecode<'_> {
                     return false;
                 }
 
+                // Disabled opcodes halt and have no stack inputs.
+                let loaded = if inst.flags.contains(InstFlags::DISABLED) {
+                    None
+                } else {
+                    mem.transfer(inst.opcode, &stack[stack.len() - inp..])
+                };
+
                 // Try constant folding for common arithmetic, respecting the gas budget.
-                let result = if out > 0 && self.compiler_gas_used < self.compiler_gas_limit {
+                let result = if loaded.is_some() {
+                    loaded
+                } else if out > 0 && self.compiler_gas_used < self.compiler_gas_limit {
                     let inputs_slice = &stack[stack.len() - inp..];
                     let mut interner = self.u256_interner.borrow_mut();
 
@@ -3363,5 +3462,125 @@ mod tests_edge_cases {
         let (_, data) = bytecode.iter_insts().rfind(|(_, d)| d.is_jump()).unwrap();
         assert!(!data.flags.contains(InstFlags::STATIC_JUMP));
         assert!(bytecode.has_dynamic_jumps);
+    }
+
+    /// Stores `0x80` at `0x40`, runs `src`, and returns the folded value of `mload(0x40)`.
+    fn mload_0x40_after(src: &str) -> Option<U256> {
+        let bytecode = analyze_asm(&format!(
+            "PUSH 0x80 PUSH 0x40 MSTORE\n{src}\nPUSH 0x40 MLOAD PUSH0 MSTORE STOP"
+        ));
+        let (mload, _) = bytecode.iter_insts().rfind(|(_, data)| data.opcode == op::MLOAD).unwrap();
+        bytecode.const_output(mload)
+    }
+
+    #[test]
+    fn mload_known_word() {
+        let known = Some(U256::from(0x80));
+        assert_eq!(mload_0x40_after(""), known);
+        assert_eq!(mload_0x40_after("PUSH %next\nJUMP\nnext:\nJUMPDEST"), known);
+        // Memory that was never written is not assumed to be zero.
+        assert_eq!(mload_0x40_after("PUSH 0x60 MLOAD POP"), known);
+        let bytecode = analyze_asm("PUSH 0x60 MLOAD PUSH0 MSTORE STOP");
+        assert_eq!(bytecode.const_output(Inst::from_usize(1)), None);
+    }
+
+    #[test]
+    fn mload_known_word_after_mstore() {
+        let known = Some(U256::from(0x80));
+        assert_eq!(mload_0x40_after("PUSH 1 PUSH0 CALLDATALOAD MSTORE"), None);
+        assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x40 MSTORE"), Some(U256::from(1)));
+        assert_eq!(mload_0x40_after("PUSH0 CALLDATALOAD PUSH 0x40 MSTORE"), None);
+        assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x21 MSTORE"), None);
+        assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x5f MSTORE"), None);
+        assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x20 MSTORE"), known);
+        assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x60 MSTORE"), known);
+    }
+
+    #[test]
+    fn mload_known_word_after_mstore8() {
+        let known = Some(U256::from(0x80));
+        assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x40 MSTORE8"), None);
+        assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x5f MSTORE8"), None);
+        assert_eq!(mload_0x40_after("PUSH 1 PUSH0 CALLDATALOAD MSTORE8"), None);
+        assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x3f MSTORE8"), known);
+        assert_eq!(mload_0x40_after("PUSH 1 PUSH 0x60 MSTORE8"), known);
+    }
+
+    #[test]
+    fn mload_known_word_after_copy() {
+        let known = Some(U256::from(0x80));
+        // Operands: length, source offset, destination offset (, address).
+        let cases = [
+            ("PUSH 1 PUSH0 PUSH 0x5f", None),
+            ("PUSH 0x21 PUSH0 PUSH 0x20", None),
+            ("PUSH 1 PUSH0 PUSH0 CALLDATALOAD", None),
+            ("PUSH0 CALLDATALOAD PUSH0 PUSH 0x5f", None),
+            ("PUSH0 CALLDATALOAD PUSH0 PUSH 0x60", known),
+            ("PUSH 0x20 PUSH0 PUSH 0x20", known),
+            ("PUSH0 PUSH0 PUSH0 CALLDATALOAD", known),
+        ];
+        for op in ["CALLDATACOPY", "CODECOPY", "RETURNDATACOPY", "MCOPY", "PUSH0 EXTCODECOPY"] {
+            for (operands, expected) in cases {
+                assert_eq!(
+                    mload_0x40_after(&format!("{operands} {op}")),
+                    expected,
+                    "{operands} {op}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mload_known_word_after_call() {
+        let known = Some(U256::from(0x80));
+        // Operands: return length and offset, then arguments that cover the word, which calls
+        // only read.
+        let cases = [
+            ("PUSH 1 PUSH 0x5f", None),
+            ("PUSH 1 PUSH0 CALLDATALOAD", None),
+            ("PUSH0 CALLDATALOAD PUSH 0x20", None),
+            ("PUSH 0x20 PUSH 0x60", known),
+            ("PUSH0 CALLDATALOAD PUSH 0x60", known),
+            ("PUSH0 PUSH0 CALLDATALOAD", known),
+        ];
+        for op in [
+            "PUSH0 PUSH 4 GAS CALL",
+            "PUSH0 PUSH 4 GAS CALLCODE",
+            "PUSH 4 GAS STATICCALL",
+            "PUSH 4 GAS DELEGATECALL",
+        ] {
+            for (ret, expected) in cases {
+                let src = format!("{ret} PUSH 0x40 PUSH0 {op} POP");
+                assert_eq!(mload_0x40_after(&src), expected, "{src}");
+            }
+        }
+    }
+
+    #[test]
+    fn mload_known_word_join() {
+        let join = |a: &str, b: &str| {
+            mload_0x40_after(&format!(
+                "PUSH0 CALLDATALOAD PUSH %b JUMPI\n{a}\nPUSH %join JUMP\nb:\nJUMPDEST\n{b}\njoin:\nJUMPDEST"
+            ))
+        };
+        assert_eq!(join("", ""), Some(U256::from(0x80)));
+        assert_eq!(
+            join("PUSH 0xa0 PUSH 0x40 MSTORE", "PUSH 0xa0 PUSH 0x40 MSTORE"),
+            Some(U256::from(0xa0))
+        );
+        assert_eq!(join("PUSH 0xa0 PUSH 0x40 MSTORE", ""), None);
+        assert_eq!(join("", "PUSH 1 PUSH 0x5f MSTORE8"), None);
+        // A word written on one path only is unknown after the join.
+        let bytecode = analyze_asm(
+            "
+            PUSH0 CALLDATALOAD PUSH %b JUMPI
+            PUSH 1 PUSH 0x60 MSTORE
+        b:
+            JUMPDEST
+            PUSH 0x60 MLOAD PUSH0 MSTORE STOP
+            ",
+        );
+        let (mload, _) = bytecode.iter_insts().find(|(_, data)| data.opcode == op::MLOAD).unwrap();
+        assert_eq!(bytecode.const_output(mload), None);
     }
 }

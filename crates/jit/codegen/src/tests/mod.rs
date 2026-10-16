@@ -260,35 +260,35 @@ tests! {
             expected_gas: 6 + 10 + 100,
         }),
         // Dynamic exponent at the pre-SPURIOUS_DRAGON rate (the default spec's rate is covered by
-        // the `_const_dyn` arith tests): storing and loading it costs 21 gas, pushing the base 3,
+        // the `_const_dyn` arith tests): storing and loading it costs 32 gas, pushing the base 3,
         // and EXP 10.
         exp_dyn_zero_frontier(@raw {
             bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, 0_U256, true, false),
             spec_id: SpecId::FRONTIER,
             expected_stack: &[1_U256],
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: 34,
+            expected_gas: 45,
         }),
         exp_dyn_ff_frontier(@raw {
             bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, 0xff_U256, true, false),
             spec_id: SpecId::FRONTIER,
             expected_stack: &[1_U256 << 255],
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: 34 + 10,
+            expected_gas: 45 + 10,
         }),
         exp_dyn_100_frontier(@raw {
             bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, 0x100_U256, true, false),
             spec_id: SpecId::FRONTIER,
             expected_stack: &[0_U256],
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: 34 + 20,
+            expected_gas: 45 + 20,
         }),
         exp_dyn_max_frontier(@raw {
             bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, U256::MAX, true, false),
             spec_id: SpecId::FRONTIER,
             expected_stack: &[0_U256],
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: 34 + 320,
+            expected_gas: 45 + 320,
         }),
     }
 
@@ -1406,6 +1406,143 @@ tests! {
             },
             expected_gas: 3 + 2 + (3 + memory_gas_cost(1)) +
                           3 + 3 + 3 + verylowcopy_cost(2).unwrap(),
+        }),
+        mload_known_word(@raw {
+            bytecode: &asm("
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                PUSH %next
+                JUMP
+            next:
+                JUMPDEST
+                PUSH 0x40
+                MLOAD
+            "),
+            expected_stack: &[0x80_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        mload_known_word_join(@raw {
+            bytecode: &asm("
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                CALLDATASIZE
+                PUSH %a
+                JUMPI
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                PUSH %join
+                JUMP
+            a:
+                JUMPDEST
+                PUSH 0xa0
+                PUSH 0x40
+                MSTORE
+            join:
+                JUMPDEST
+                PUSH 0x40
+                MLOAD
+            "),
+            expected_stack: &[0xa0_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        mload_known_word_after_dyn_mstore(@raw {
+            bytecode: &asm("
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                PUSH 0x42
+                CALLVALUE
+                DUP1
+                PUSH 0x40
+                ADD
+                SUB
+                MSTORE
+                PUSH 0x40
+                MLOAD
+            "),
+            expected_stack: &[0x42_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        mload_known_word_after_unaligned_mstore(@raw {
+            bytecode: &asm("
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                PUSH 0x42
+                PUSH 0x30
+                MSTORE
+                PUSH 0x40
+                MLOAD
+            "),
+            expected_stack: &[0x42_U256 << 128 | 0x80_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        mload_known_word_after_mstore8(@raw {
+            bytecode: &asm("
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                PUSH 0x11
+                PUSH 0x5f
+                MSTORE8
+                PUSH 0x40
+                MLOAD
+                PUSH 0x22
+                PUSH 0x40
+                MSTORE8
+                PUSH 0x40
+                MLOAD
+            "),
+            expected_stack: &[0x11_U256, 0x22_U256 << 248 | 0x11_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        mload_known_word_after_copy(@raw {
+            bytecode: &asm("
+                PUSH 0x80
+                PUSH 0x40
+                MSTORE
+                PUSH 1
+                PUSH0
+                PUSH 0x5f
+                CALLDATACOPY
+                PUSH 0x40
+                MLOAD
+                PUSH 1
+                PUSH0
+                PUSH 0x40
+                CODECOPY
+                PUSH 0x40
+                MLOAD
+                PUSH 1
+                PUSH 0x5f
+                PUSH 0x41
+                MCOPY
+                PUSH 0x40
+                MLOAD
+                PUSH 1
+                PUSH0
+                PUSH 0x5f
+                PUSH0
+                EXTCODECOPY
+                PUSH 0x40
+                MLOAD
+            "),
+            expected_stack: &[
+                0xaa_U256,
+                0x60_U256 << 248 | 0xaa_U256,
+                0x60aa_U256 << 240 | 0xaa_U256,
+                0x60aa_U256 << 240,
+            ],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
     }
 
@@ -2617,14 +2754,8 @@ fn bytecode_ternop(op: u8, a: U256, b: U256, c: U256) -> [u8; 100] {
 /// Build opaque unop bytecode: MSTORE(a, 0), MLOAD(0), `<op>`.
 fn bytecode_unop_opaque(opcode: u8, a: U256) -> Vec<u8> {
     let mut code = Vec::with_capacity(64);
-    code.push(op::PUSH32);
-    code.extend_from_slice(&a.to_be_bytes::<32>());
-    code.push(op::PUSH1);
-    code.push(0x00);
-    code.push(op::MSTORE);
-    code.push(op::PUSH1);
-    code.push(0x00);
-    code.push(op::MLOAD);
+    store_dynamic_operands(&mut code, &[(a, false, 0x00)]);
+    push_const_or_load(&mut code, a, false, 0x00);
     code.push(opcode);
     code
 }
@@ -2643,11 +2774,19 @@ fn push_const_or_load(code: &mut Vec<u8>, value: U256, is_const: bool, offset: u
 fn store_dynamic_operands(code: &mut Vec<u8>, operands: &[(U256, bool, u8)]) {
     for &(value, is_const, offset) in operands {
         if !is_const {
+            // Store through `offset + CALLVALUE - CALLVALUE`, which the compiler cannot fold,
+            // so that loading the value back stays dynamic.
             code.push(op::PUSH32);
             code.extend_from_slice(&value.to_be_bytes::<32>());
-            code.push(op::PUSH1);
-            code.push(offset);
-            code.push(op::MSTORE);
+            code.extend_from_slice(&[
+                op::CALLVALUE,
+                op::DUP1,
+                op::PUSH1,
+                offset,
+                op::ADD,
+                op::SUB,
+                op::MSTORE,
+            ]);
         }
     }
 }
