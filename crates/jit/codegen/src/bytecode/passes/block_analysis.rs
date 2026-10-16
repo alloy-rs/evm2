@@ -1107,10 +1107,11 @@ impl Bytecode<'_> {
             num_blocks
         ]);
 
-        // Entry block starts with an empty stack.
+        // Entry block starts with an empty stack, or with unknown entries when the caller may
+        // pass a stack.
         let entry = Block::from_usize(0);
-        let entry_part =
-            states.push((entry, BlockState::Known { stack: Vec::new(), truncated: false }));
+        let entry_state = BlockState::Known { stack: Vec::new(), truncated: self.stack_observed() };
+        let entry_part = states.push((entry, entry_state));
         parts[entry].insert(0, entry_part);
         // Visit blocks in code order, which mostly follows the CFG, so that a state is complete
         // before it propagates.

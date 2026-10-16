@@ -52,6 +52,8 @@ mod meta;
 
 mod fibonacci;
 
+mod entry_stack;
+
 mod runner;
 pub use runner::*;
 
