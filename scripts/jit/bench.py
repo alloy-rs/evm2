@@ -722,7 +722,7 @@ class JumpResolution(Analysis):
         fixpt_res = cls._last_match(r"ba:.*newly_resolved=(\d+)", output)
 
         ba_unres_matches = re.findall(
-            r"analyze:ba:.*unresolved dynamic jumps remain n=(\d+)", output
+            r"analyze:ba: .*unresolved dynamic jumps remain n=(\d+)", output
         )
         ba_ran = "analyze:ba:" in output
 
