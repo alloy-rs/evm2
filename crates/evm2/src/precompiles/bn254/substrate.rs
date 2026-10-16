@@ -59,16 +59,10 @@ impl Bn254Ops for SubstrateOps {
 
 /// Reads a single `Fq` field element from the input slice.
 ///
-/// Takes a byte slice and attempts to interpret the first 32 bytes as an
-/// elliptic curve field element. Returns an error if the bytes do not form
-/// a valid field element.
-///
-/// # Panics
-///
-/// Panics if the input is not at least 32 bytes long.
+/// Returns an error if the bytes do not form a valid field element.
 #[inline]
-fn read_fq(input: &[u8]) -> Result<Fq, PrecompileHalt> {
-    Fq::from_slice(&input[..FQ_LEN]).map_err(|_| PrecompileHalt::Bn254FieldPointNotAMember)
+fn read_fq(input: &[u8; FQ_LEN]) -> Result<Fq, PrecompileHalt> {
+    Fq::from_slice(input).map_err(|_| PrecompileHalt::Bn254FieldPointNotAMember)
 }
 
 /// Reads a Fq2 (quadratic extension field element) from the input slice.
@@ -83,8 +77,11 @@ fn read_fq(input: &[u8]) -> Result<Fq, PrecompileHalt> {
 /// Panics if the input is not at least 64 bytes long.
 #[inline]
 fn read_fq2(input: &[u8]) -> Result<Fq2, PrecompileHalt> {
-    let y = read_fq(&input[..FQ_LEN])?;
-    let x = read_fq(&input[FQ_LEN..2 * FQ_LEN])?;
+    let [y, x, ..] = input.as_chunks::<FQ_LEN>().0 else {
+        panic!("input must be at least FQ2_LEN bytes");
+    };
+    let y = read_fq(y)?;
+    let x = read_fq(x)?;
     Ok(Fq2::new(x, y))
 }
 
@@ -140,8 +137,11 @@ fn new_g2_point(x: Fq2, y: Fq2) -> Result<G2, PrecompileHalt> {
 /// Panics if the input is not at least 64 bytes long.
 #[inline]
 pub(super) fn read_g1_point(input: &[u8]) -> Result<G1, PrecompileHalt> {
-    let px = read_fq(&input[0..FQ_LEN])?;
-    let py = read_fq(&input[FQ_LEN..2 * FQ_LEN])?;
+    let [px, py, ..] = input.as_chunks::<FQ_LEN>().0 else {
+        panic!("input must be at least G1_LEN bytes");
+    };
+    let px = read_fq(px)?;
+    let py = read_fq(py)?;
     new_g1_point(px, py)
 }
 
@@ -174,8 +174,11 @@ pub(super) fn encode_g1_point(point: G1) -> [u8; G1_LEN] {
 /// Panics if the input is not at least 128 bytes long.
 #[inline]
 pub(super) fn read_g2_point(input: &[u8]) -> Result<G2, PrecompileHalt> {
-    let x = read_fq2(&input[0..FQ2_LEN])?;
-    let y = read_fq2(&input[FQ2_LEN..2 * FQ2_LEN])?;
+    let [x, y, ..] = input.as_chunks::<FQ2_LEN>().0 else {
+        panic!("input must be at least G2_LEN bytes");
+    };
+    let x = read_fq2(x)?;
+    let y = read_fq2(y)?;
     new_g2_point(x, y)
 }
 

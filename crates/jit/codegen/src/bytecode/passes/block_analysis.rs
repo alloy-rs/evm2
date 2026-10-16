@@ -42,7 +42,7 @@ use alloy_primitives::map::FxHasher;
 use bitvec::vec::BitVec;
 use either::Either;
 use evm2::interpreter::op;
-use oxc_index::{Idx, IndexVec};
+use oxc_index::IndexVec;
 use smallvec::SmallVec;
 use std::{
     cmp::{Ordering, Reverse},
@@ -371,28 +371,25 @@ oxc_index::define_nonmax_u32_index_type! {
 crate::bytecode::impl_index_display!(Block, "bb{}");
 
 /// FIFO worklist with deduplication.
-struct Worklist<I> {
-    queue: VecDeque<I>,
+struct Worklist {
+    queue: VecDeque<Block>,
     in_queue: BitVec,
 }
 
-impl<I: Idx> Worklist<I> {
+impl Worklist {
     fn new(size: usize) -> Self {
         Self { queue: VecDeque::new(), in_queue: BitVec::repeat(false, size) }
     }
 
-    fn push(&mut self, id: I) {
+    fn push(&mut self, id: Block) {
         let idx = id.index();
-        if idx >= self.in_queue.len() {
-            self.in_queue.resize(idx + 1, false);
-        }
         if !self.in_queue[idx] {
             self.in_queue.set(idx, true);
             self.queue.push_back(id);
         }
     }
 
-    fn pop(&mut self) -> Option<I> {
+    fn pop(&mut self) -> Option<Block> {
         let id = self.queue.pop_front()?;
         self.in_queue.set(id.index(), false);
         Some(id)
@@ -585,15 +582,9 @@ impl Bytecode<'_> {
     #[inline(never)]
     pub(crate) fn block_analysis(&mut self, local_snapshots: &Snapshots) {
         self.init_snapshots();
-        let (resolved, count) = self.run_abstract_interp(local_snapshots);
-
-        let has_const_condition =
-            resolved.iter().any(|(_, target)| target.condition != JumpCondition::Unknown);
-        if count > 0 || has_const_condition {
-            let newly_resolved = self.commit_resolved_jumps(&resolved);
-            debug!(newly_resolved, "resolved jumps");
-        }
-
+        let resolved = self.run_abstract_interp(local_snapshots);
+        let newly_resolved = self.commit_resolved_jumps(&resolved);
+        debug!(newly_resolved, "resolved jumps");
         self.recompute_has_dynamic_jumps();
     }
 
@@ -831,17 +822,15 @@ impl Bytecode<'_> {
 
     /// Run worklist-based abstract interpretation over the CFG.
     ///
-    /// Returns a list of (jump_inst, resolved_target) pairs and the count of resolvable jumps.
-    /// Stack snapshots are recorded into `self.snapshots` during the fixpoint.
-    fn run_abstract_interp(
-        &mut self,
-        local_snapshots: &Snapshots,
-    ) -> (Vec<(Inst, JumpResolution)>, usize) {
+    /// Returns a list of (jump_inst, resolved_target) pairs.
+    /// Stack snapshots are recorded into `self.snapshots` once the fixpoint converges.
+    fn run_abstract_interp(&mut self, local_snapshots: &Snapshots) -> Vec<(Inst, JumpResolution)> {
         // Collect unresolved jumps, plus static JUMPI instructions whose condition
         // may become constant only after CFG fixpoint.
         let mut jump_insts: Vec<Inst> = Vec::new();
         for (i, inst) in self.insts.iter_enumerated() {
             if inst.is_jump()
+                && !inst.is_dead_code()
                 && (!inst.flags.contains(InstFlags::STATIC_JUMP)
                     || (inst.opcode == op::JUMPI && !inst.has_const_jumpi_condition()))
             {
@@ -890,17 +879,7 @@ impl Bytecode<'_> {
             );
         }
 
-        // Without unresolved jumps, the jumps the fixpoint never reached are unreachable too.
-        let has_top_jump = jump_targets.iter().any(|(_, target)| target.is_top());
-        let count = jump_targets
-            .iter()
-            .filter(|(_, target)| {
-                target.is_resolved()
-                    || (!has_top_jump && matches!(target.target, JumpTarget::Bottom))
-            })
-            .count();
-
-        (jump_targets, count)
+        jump_targets
     }
 
     fn resolve_jump(&self, jump_inst: Inst, const_sets: &ConstSetInterner) -> JumpResolution {
@@ -946,27 +925,16 @@ impl Bytecode<'_> {
                 }
             }
             AbsValue::ConstSet(set_idx) => {
-                let consts = const_sets.get(set_idx);
+                // Sets only hold valid jump targets, but stay unresolved if one ever doesn't: the
+                // value might be any member of the set.
                 let interner = self.u256_interner.borrow();
-                let mut targets = SmallVec::new();
-                for &imm in consts {
-                    let val = imm.get(&interner);
-                    match usize::try_from(val) {
-                        Ok(pc) if self.is_valid_jump(pc) => {
-                            targets.push(self.pc_to_inst(pc));
-                        }
-                        _ => {
-                            // Mixed valid + invalid: can't resolve since at runtime
-                            // the value might be any member of the set.
-                            return JumpResolution::top();
-                        }
-                    }
-                }
-                if !targets.is_empty() {
-                    JumpResolution::resolved(targets)
-                } else {
-                    JumpResolution::invalid()
-                }
+                let targets = const_sets.get(set_idx).iter().map(|imm| {
+                    let pc = usize::try_from(imm.get(&interner)).ok()?;
+                    self.is_valid_jump(pc).then(|| self.pc_to_inst(pc))
+                });
+                targets
+                    .collect::<Option<_>>()
+                    .map_or_else(JumpResolution::top, JumpResolution::resolved)
             }
             AbsValue::Top => JumpResolution::top(),
         }
@@ -2054,6 +2022,37 @@ mod tests_edge_cases {
         let (rj_inst, _) = return_jump.unwrap();
         let targets = bytecode.multi_jump_targets(rj_inst).unwrap();
         assert_eq!(targets.len(), 3, "expected 3 targets, got {}", targets.len());
+        assert!(!bytecode.has_dynamic_jumps, "expected no dynamic jumps");
+    }
+
+    /// A dead jump with an unknown target must not block the resolution of
+    /// live jumps.
+    #[test]
+    fn dead_unknown_jump_ignored() {
+        let bytecode = analyze_asm(
+            "
+            PUSH %ret
+            PUSH %func
+            JUMP
+        ret:
+            JUMPDEST
+            PUSH1 1
+            PUSH %t
+            JUMPI
+            PUSH0
+            CALLDATALOAD
+            JUMP
+        t:
+            JUMPDEST
+            STOP
+        func:
+            JUMPDEST
+            JUMP
+        ",
+        );
+
+        let (_, ret) = bytecode.iter_insts().last().unwrap();
+        assert!(ret.flags.contains(InstFlags::STATIC_JUMP), "{:?}", ret.flags);
         assert!(!bytecode.has_dynamic_jumps, "expected no dynamic jumps");
     }
 
