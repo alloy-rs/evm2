@@ -7,8 +7,8 @@ extern crate tracing;
 
 use alloy_primitives::map::{FxBuildHasher, HashSet};
 use evm2_jit_backend::{
-    Backend, BackendConfig, BackendTypes, Builder, CallConv, IntCC, OptimizationLevel, Result,
-    TailCallKind, TypeMethods, U256, eyre, format_bytes,
+    Backend, BackendConfig, BackendTypes, Builder, IntCC, OptimizationLevel, Result, TailCallKind,
+    TypeMethods, U256, eyre, format_bytes,
 };
 use inkwell::{
     AddressSpace, IntPredicate,
@@ -1810,14 +1810,6 @@ impl Builder for EvmLlvmBuilder<'_> {
     ) -> Option<Self::Value> {
         let args = args.iter().copied().map(Into::into).collect::<Vec<_>>();
         let callsite = self.bcx.build_call(function, &args, "").unwrap();
-        if let Some(call_conv) = function_call_conv(function) {
-            unsafe {
-                inkwell::llvm_sys::core::LLVMSetInstructionCallConv(
-                    callsite.as_value_ref(),
-                    call_conv as _,
-                );
-            }
-        }
         if tail_call != TailCallKind::None {
             callsite.set_tail_call_kind(convert_tail_call_kind(tail_call));
         }
@@ -1900,11 +1892,9 @@ impl Builder for EvmLlvmBuilder<'_> {
         ret: Option<Self::Type>,
         address: Option<usize>,
         linkage: evm2_jit_backend::Linkage,
-        call_conv: CallConv,
     ) -> Self::Function {
         let func_ty = self.fn_type(ret, params);
         let function = self.module().add_function(name, func_ty, Some(convert_linkage(linkage)));
-        set_function_call_conv(function, call_conv);
         cpp::set_dso_local(function);
         if let Some(address) = address
             && let Some(orc) = &mut self.orc
@@ -1912,55 +1902,6 @@ impl Builder for EvmLlvmBuilder<'_> {
             orc.pending_symbols.push((CString::new(name).unwrap(), address));
         }
         function
-    }
-
-    fn add_function_stub(
-        &mut self,
-        function: Self::Function,
-        call_conv: CallConv,
-    ) -> Self::Function {
-        let name = function.get_name().to_string_lossy();
-        let stub_name = format!("{name}.stub");
-        if let Some(stub) = self.module().get_function(&stub_name) {
-            return stub;
-        }
-
-        let func_ty = function.get_type();
-        let stub = self.module().add_function(
-            &stub_name,
-            func_ty,
-            Some(inkwell::module::Linkage::Internal),
-        );
-        set_function_call_conv(stub, call_conv);
-        cpp::set_dso_local(stub);
-        self.add_function_attribute(
-            Some(stub),
-            evm2_jit_backend::Attribute::NoInline,
-            evm2_jit_backend::FunctionAttributeLocation::Function,
-        );
-
-        let before = self.bcx.get_insert_block();
-        let debug_location = self.debug_scope.and_then(|_| self.bcx.get_current_debug_location());
-        self.bcx.unset_current_debug_location();
-
-        let entry = self.cx.append_basic_block(stub, self.name("stub"));
-        self.bcx.position_at_end(entry);
-        let args =
-            (0..stub.count_params()).map(|i| stub.get_nth_param(i).unwrap()).collect::<Vec<_>>();
-        if let Some(value) = self.call(function, &args) {
-            self.bcx.build_return(Some(&value)).unwrap();
-        } else {
-            self.bcx.build_return(None).unwrap();
-        }
-
-        if let Some(before) = before {
-            self.bcx.position_at_end(before);
-        }
-        if let Some(debug_location) = debug_location {
-            self.bcx.set_current_debug_location(debug_location);
-        }
-
-        stub
     }
 
     fn add_function_attribute(
@@ -2213,26 +2154,6 @@ const fn convert_attribute_loc(loc: evm2_jit_backend::FunctionAttributeLocation)
         evm2_jit_backend::FunctionAttributeLocation::Return => AttributeLoc::Return,
         evm2_jit_backend::FunctionAttributeLocation::Param(i) => AttributeLoc::Param(i),
         evm2_jit_backend::FunctionAttributeLocation::Function => AttributeLoc::Function,
-    }
-}
-
-fn function_call_conv(function: FunctionValue<'_>) -> Option<u32> {
-    let call_conv =
-        unsafe { inkwell::llvm_sys::core::LLVMGetFunctionCallConv(function.as_value_ref()) };
-    (call_conv != inkwell::llvm_sys::LLVMCallConv::LLVMCCallConv as u32).then_some(call_conv)
-}
-
-fn set_function_call_conv(function: FunctionValue<'_>, call_conv: CallConv) {
-    let Some(call_conv) = convert_call_conv(call_conv) else { return };
-    unsafe {
-        inkwell::llvm_sys::core::LLVMSetFunctionCallConv(function.as_value_ref(), call_conv as _);
-    }
-}
-
-const fn convert_call_conv(call_conv: CallConv) -> Option<inkwell::llvm_sys::LLVMCallConv> {
-    match call_conv {
-        CallConv::Default => None,
-        CallConv::Cold => Some(inkwell::llvm_sys::LLVMCallConv::LLVMPreserveMostCallConv),
     }
 }
 

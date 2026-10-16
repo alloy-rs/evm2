@@ -186,8 +186,33 @@ Experiments that did not pay off, so you don't repeat them blindly:
 - `-jump-table-density=1` for the dynamic jump switch: about 5% less code, but
   the tables grow by about 1 MB across the benchmarks because the switch is on
   sparse PCs. It needs a dense index first.
-- `preserve_most` stubs for host builtins (`SLOAD`, `CALL`, ...): fewer spills
-  in some contracts, many more reloads in others, about neutral overall.
+- `preserve_most` stubs for builtins. Each call through a stub runs 9 pushes,
+  9 pops and a second call, about 20 instructions, which costs more than the
+  reloads it saves at hot call sites. Runtime instructions (total/geomean) on
+  `main`, then on top of pinned `ecx` and stack registers (#626): host builtins
+  (`SLOAD`, `SSTORE`, `CALL`, `LOG`, `EXT*`, ...) -0.1%/+0.1% and +0.3%/+0.3%,
+  erc20_transfer +2.3% on both; all builtins -5.2%/+0.4% and +0.6%/+1.0%,
+  snailtracer +3.2%/+4.1%, curve_stableswap +4.1%/+4.0%; `DIV`, `MOD`, `EXP`
+  and the like -4.6%/+0.2% on `main`, snailtracer +3.0%. On `main` any of these
+  moves onchain_lm_v2 by 6-9%: its hot loop reloads the spilled stack pointer
+  23 times per iteration, and the count follows unrelated register allocation
+  choices.
+- `preserve_all` stub for `MRESIZE`: it also saves the vector registers;
+  +0.9% total, +0.8% geomean, hash_10k +4.5%, snailtracer +3.2%.
+- A `preserve_most` stub for `MRESIZE` only at checked resizes, calling it
+  directly where analysis proved memory grows: there are about two such sites
+  per contract and each runs once, so nothing changed.
+- Returning builtin results in registers: a Rust `extern "C"` function returns
+  a 32-byte word through memory unless it is compiled with AVX and returns
+  `__m256i`, and the saving is one store and one load per call, under 0.5% of
+  snailtracer, which makes the most calls (about 450K per run that return a
+  word).
+- Builtins compiled with a preserving convention instead of a stub: Rust's
+  `extern "rust-cold"` is nightly-only, and CI and CodSpeed build on stable.
+- Tighter memory-effect attributes on builtins: almost all reloads after calls
+  are of the spilled `ecx` and stack pointers (699 of 755 in fiat_token, 377 of
+  540 in onchain_lm_v2), which attributes cannot keep in registers. Only 7 EVM
+  words in snailtracer and 6 in erc20_transfer spill across calls.
 - Folding the memory offset range check into the resize branch: LLVM merges
   the conditions back into the same compare chain and the cold path grows.
 - `early-cse<memssa>`: forwards stack loads across blocks but raises register

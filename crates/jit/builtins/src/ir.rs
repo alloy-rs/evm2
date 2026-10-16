@@ -1,6 +1,4 @@
-use evm2_jit_backend::{
-    Attribute, Backend, Builder, CallConv, FunctionAttributeLocation, TypeMethods,
-};
+use evm2_jit_backend::{Attribute, Backend, Builder, FunctionAttributeLocation, TypeMethods};
 
 // Must be kept in sync with `evm2-jit-build`.
 const MANGLE_PREFIX: &str = "__revmc_builtin_";
@@ -37,9 +35,7 @@ impl<B: Backend> Builtins<B> {
     fn init(builtin: Builtin, bcx: &mut B::Builder<'_>) -> B::Function {
         let name = builtin.name();
         debug_assert!(name.starts_with(MANGLE_PREFIX), "{name:?}");
-        if builtin.call_conv() == CallConv::Default
-            && let Some(r) = bcx.get_function(name)
-        {
+        if let Some(r) = bcx.get_function(name) {
             trace!(name, ?r, "pre-existing");
             return r;
         }
@@ -54,16 +50,9 @@ impl<B: Backend> Builtins<B> {
         let params = builtin.params(bcx);
         let address = builtin.addr();
         let linkage = evm2_jit_backend::Linkage::Import;
-        let f = bcx.add_function(name, &params, ret, Some(address), linkage, CallConv::Default);
+        let f = bcx.add_function(name, &params, ret, Some(address), linkage);
         Self::add_attrs(builtin, f, bcx);
-        match builtin.call_conv() {
-            CallConv::Default => f,
-            call_conv => {
-                let f = bcx.add_function_stub(f, call_conv);
-                Self::add_attrs(builtin, f, bcx);
-                f
-            }
-        }
+        f
     }
 
     fn add_attrs(builtin: Builtin, f: B::Function, bcx: &mut B::Builder<'_>) {
@@ -303,13 +292,4 @@ builtins! {
     DoReturn       = #[NoReturn] __revmc_builtin_do_return(@[ecx] ptr, @[sp] ptr, u8) None,
     DoReturnCC     = #[NoReturn] __revmc_builtin_do_return_cc(@[ecx] ptr, usize, usize, u8) None,
     SelfDestruct   = #[NoReturn] __revmc_builtin_selfdestruct(@[ecx] ptr, @[sp] ptr) None,
-}
-
-impl Builtin {
-    pub const fn call_conv(self) -> CallConv {
-        match self {
-            Self::Mresize => CallConv::Cold,
-            _ => CallConv::Default,
-        }
-    }
 }
