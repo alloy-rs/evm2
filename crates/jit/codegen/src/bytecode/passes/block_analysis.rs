@@ -20,7 +20,7 @@
 //! Per-block lattice:
 //! - `Bottom` — block not yet reached.
 //! - `Known(Vec<AbsValue>)` — reached with a known stack state (top-aligned; when predecessors have
-//!   different stack heights, the shorter stack is bottom-padded with `Top`).
+//!   different stack heights, only the entries of the shorter stack are kept).
 //!
 //! Each block keeps one such state per context: the return addresses and other valid jump target
 //! constants on the stack, so that internal functions are analyzed separately for each call chain
@@ -41,7 +41,7 @@ use crate::{
 use alloy_primitives::map::FxHasher;
 use bitvec::vec::BitVec;
 use either::Either;
-use evm2::interpreter::op;
+use evm2::{constants::STACK_LIMIT, interpreter::op};
 use oxc_index::IndexVec;
 use smallvec::SmallVec;
 use std::{
@@ -196,14 +196,16 @@ impl ConstSetInterner {
     }
 }
 
-/// Maximum abstract stack depth tracked by the analysis. Top-aligned joins across paths with
-/// differing stack heights pad the shorter stack with `Top` at the bottom; on CFG cycles this
-/// padding can grow without bound. Clamping loses precision for deeper entries, which operand
-/// snapshots represent as `Top`.
+/// Maximum abstract stack depth tracked by the analysis: the EVM stack limit, so that the return
+/// addresses of deep call chains stay known. A deeper stack overflows at runtime.
+const MAX_ABS_STACK_DEPTH: usize = STACK_LIMIT;
+
+/// Stack depth down to which [`Bytecode::context_key`] keys on the positions of jump targets.
 ///
-/// Instructions that access deeper than this (e.g. Amsterdam DUPN/SWAPN up to depth 236)
-/// treat the out-of-range slot as `Top` rather than aborting block interpretation.
-const MAX_ABS_STACK_DEPTH: usize = 64;
+/// Below it only their order counts, without repeats, so that a loop that pushes a
+/// runtime-dependent number of values, or a recursive call that pushes the same return address
+/// at every level, reaches a fixed context instead of a new one per iteration.
+const MAX_CONTEXT_DEPTH: usize = 64;
 
 /// Maximum number of memory words tracked by [`MemWords`].
 const MAX_MEM_WORDS: usize = 16;
@@ -289,8 +291,8 @@ enum BlockState {
     /// Block has been reached with a known stack state (top-aligned).
     Known {
         stack: Vec<AbsValue>,
-        /// Whether entries below `stack` were dropped by [`MAX_ABS_STACK_DEPTH`] clamping, so
-        /// that running out of tracked entries is not a stack underflow.
+        /// Whether entries below `stack` were dropped by a join or by [`MAX_ABS_STACK_DEPTH`]
+        /// clamping, so that running out of tracked entries is not a stack underflow.
         truncated: bool,
         /// Known memory words.
         mem: MemWords,
@@ -300,10 +302,10 @@ enum BlockState {
 impl BlockState {
     /// Join another incoming state into this one. Returns `true` if the state changed.
     ///
-    /// When stack heights differ, the stacks are top-aligned and the shorter one is
-    /// bottom-padded with `Top`. This handles the common Solidity dispatch pattern where
-    /// the "no selector match" fallthrough leaves an extra item on the stack that the
-    /// fallback ignores.
+    /// When stack heights differ, the stacks are top-aligned and the entries below the shorter
+    /// one are dropped, marking the state truncated. This handles the common Solidity dispatch
+    /// pattern where the "no selector match" fallthrough leaves an extra item on the stack that
+    /// the fallback ignores.
     fn join(
         &mut self,
         incoming: &[AbsValue],
@@ -323,41 +325,29 @@ impl BlockState {
                 true
             }
             Self::Known { stack: existing, truncated, mem } => {
-                let new_len = existing.len().max(incoming.len());
                 let mut changed = mem.join(incoming_mem, sets);
-                if incoming_truncated && !*truncated {
+
+                // Keep only the entries that both stacks have, so that joins never grow the
+                // stack.
+                let join_len = existing.len().min(incoming.len());
+                if (incoming_truncated || incoming.len() != existing.len()) && !*truncated {
                     *truncated = true;
                     changed = true;
                 }
-
-                // Clamp to MAX_ABS_STACK_DEPTH by only joining the top portion.
-                let join_len = new_len.min(MAX_ABS_STACK_DEPTH);
-
-                // Resize existing to join_len: pad at bottom with Top or truncate.
-                if existing.len() < join_len {
-                    let pad = join_len - existing.len();
-                    existing.splice(0..0, std::iter::repeat_n(AbsValue::Top, pad));
-                    changed = true;
-                } else if existing.len() > join_len {
+                if existing.len() > join_len {
                     existing.drain(..existing.len() - join_len);
-                    *truncated = true;
                     changed = true;
                 }
 
                 // Join element-wise, top-aligned. Both stacks have their top at the end.
-                // `incoming` may be longer than join_len — we only look at its top portion.
-                let incoming_start = incoming.len().saturating_sub(join_len);
-                let incoming_top = &incoming[incoming_start..];
-                // incoming_top.len() <= join_len. If shorter, bottom positions get Top.
-                let pad = join_len - incoming_top.len();
-                for i in 0..join_len {
-                    let inc = if i < pad { AbsValue::Top } else { incoming_top[i - pad] };
-                    if existing[i] == inc {
+                let incoming_top = &incoming[incoming.len() - join_len..];
+                for (value, &inc) in existing.iter_mut().zip(incoming_top) {
+                    if *value == inc {
                         continue;
                     }
-                    let joined = sets.join(existing[i], inc);
-                    if joined != existing[i] {
-                        existing[i] = joined;
+                    let joined = sets.join(*value, inc);
+                    if joined != *value {
+                        *value = joined;
                         changed = true;
                     }
                 }
@@ -376,7 +366,7 @@ impl BlockState {
 #[derive(Clone, Copy, Debug)]
 enum ContextMode {
     /// Key on every constant on the tracked stack that is a valid jump target, such as the
-    /// return addresses of the whole call chain.
+    /// return addresses of the whole call chain, as described at [`MAX_CONTEXT_DEPTH`].
     Full,
     /// Key on the tracked stack shape and the topmost valid jump target constant.
     Coarse,
@@ -1303,17 +1293,29 @@ impl Bytecode<'_> {
     ///
     /// Keys that collide share a state, which only costs precision.
     fn context_key(&self, mode: ContextMode, stack: &[AbsValue], truncated: bool) -> u64 {
-        let tracked = stack.len().min(MAX_ABS_STACK_DEPTH);
-        let targets = stack.iter().rev().take(tracked).enumerate().filter_map(|(depth, value)| {
+        let targets = stack.iter().rev().enumerate().filter_map(|(depth, value)| {
             let pc = value.as_const()?.get_inline()?;
-            self.is_valid_jump(pc as usize).then_some((depth as u8, pc))
+            self.is_valid_jump(pc as usize).then_some((depth, pc))
         });
         let mut hasher = FxHasher::default();
         match mode {
-            ContextMode::Full => targets.for_each(|target| target.hash(&mut hasher)),
+            ContextMode::Full => {
+                let mut prev_deep = None;
+                for (depth, pc) in targets {
+                    if depth < MAX_CONTEXT_DEPTH {
+                        (depth as u8, pc).hash(&mut hasher);
+                    } else if prev_deep.replace(pc) != Some(pc) {
+                        pc.hash(&mut hasher);
+                    }
+                }
+            }
             ContextMode::Coarse => {
+                let tracked = stack.len().min(MAX_CONTEXT_DEPTH);
                 (tracked as u8, truncated || stack.len() > tracked).hash(&mut hasher);
-                targets.take(1).for_each(|target| target.hash(&mut hasher));
+                targets
+                    .take(1)
+                    .filter(|&(depth, _)| depth < MAX_CONTEXT_DEPTH)
+                    .for_each(|(depth, pc)| (depth as u8, pc).hash(&mut hasher));
             }
             ContextMode::Insensitive => return 0,
         }
@@ -1449,8 +1451,8 @@ impl Bytecode<'_> {
                     Some(n) => {
                         let n = n as usize;
                         if stack.len() < n {
-                            // Depth exceeds the tracked abstract stack (truncated by
-                            // MAX_ABS_STACK_DEPTH). The slot is reachable at runtime
+                            // Depth exceeds the tracked abstract stack (truncated by a
+                            // join or MAX_ABS_STACK_DEPTH). The slot is reachable at runtime
                             // but unknown abstractly.
                             stack.push(AbsValue::Top);
                         } else {
@@ -2206,7 +2208,7 @@ mod tests_edge_cases {
         assert!(!bytecode.has_dynamic_jumps);
     }
 
-    /// A loop where the stack grows each iteration until clamped.
+    /// A loop where the stack grows each iteration.
     /// Verifies the analysis converges without losing precision at the top.
     #[test]
     fn loop_stack_growth_clamping() {
@@ -2214,7 +2216,8 @@ mod tests_edge_cases {
         // bb1: JUMPDEST, PUSH1 0x01, PUSH1 bb1_pc, JUMP  (loop back, growing stack).
         //
         // The stack grows by 1 each iteration (net +1 from PUSH before the loop jump).
-        // The abstract stack should clamp to MAX_ABS_STACK_DEPTH without conflict.
+        // Joining the back edge keeps the shorter stack, so the analysis converges without
+        // conflict.
         let bytecode = analyze_asm(
             "
             PUSH1 0x42              ; pc=0: initial value
@@ -2764,17 +2767,27 @@ mod tests_edge_cases {
 
     #[test]
     fn truncated_stack_does_not_make_jumpi_unconditional() {
+        // Both paths reach `body` in one context. The join keeps the shorter stack, which
+        // does not hold the JUMPI condition.
         let src = format!(
             "
-            {}
+            CALLDATASIZE
+            PUSH %short
+            JUMPI
             PUSH0
             PUSH %taken
-            {}
+            {0}
+            PUSH %body
+            JUMP
+        short:
+            JUMPDEST
+            PUSH %taken
+            {0}
             PUSH %body
             JUMP
         body:
             JUMPDEST
-            {}
+            {1}
             JUMPI
             PUSH1 0x01
             PUSH1 0x01
@@ -2787,14 +2800,13 @@ mod tests_edge_cases {
             SSTORE
             STOP
             ",
-            "PUSH1 0x11\n".repeat(5),
             "PUSH1 0x11\n".repeat(63),
             "POP\n".repeat(63),
         );
         let bytecode = analyze_asm(&src);
 
         let (jump_inst, jumpi) =
-            bytecode.iter_insts().find(|(_, data)| data.opcode == op::JUMPI).unwrap();
+            bytecode.iter_insts().filter(|(_, data)| data.opcode == op::JUMPI).nth(1).unwrap();
         assert_eq!(bytecode.snapshots.inputs[jump_inst].len(), 2);
         assert!(jumpi.flags.contains(InstFlags::STATIC_JUMP));
         assert!(!jumpi.has_const_jumpi_condition());
@@ -3458,11 +3470,36 @@ mod tests_edge_cases {
             JUMP                ; return
         ",
         );
-        // Each recursion level keys a new context until the tracked stack is clamped, and
-        // the clamped frames lose `done`, so the return must stay dynamic.
+        // Each recursion level keys a new context until the return addresses sink below
+        // `MAX_CONTEXT_DEPTH`, where the levels share a context whose join loses `done`, so the
+        // return must stay dynamic.
         let (_, data) = bytecode.iter_insts().rfind(|(_, d)| d.is_jump()).unwrap();
         assert!(!data.flags.contains(InstFlags::STATIC_JUMP));
         assert!(bytecode.has_dynamic_jumps);
+    }
+
+    /// A return address below 64 other stack entries, as in deep call chains.
+    #[test]
+    fn deep_return_address() {
+        let src = format!(
+            "
+            PUSH %ret
+            {}
+            PUSH %func
+            JUMP
+        ret:
+            JUMPDEST
+            STOP
+        func:
+            JUMPDEST
+            {}
+            JUMP
+            ",
+            "PUSH1 0x11\n".repeat(70),
+            "POP\n".repeat(70),
+        );
+        let bytecode = analyze_asm(&src);
+        assert!(!bytecode.has_dynamic_jumps);
     }
 
     /// Stores `0x80` at `0x40`, runs `src`, and returns the folded value of `mload(0x40)`.
