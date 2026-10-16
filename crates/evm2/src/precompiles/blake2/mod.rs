@@ -90,7 +90,7 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     }
 
     // Parse number of rounds (4 bytes)
-    let rounds = u32::from_be_bytes(input[..4].try_into().unwrap());
+    let rounds = u32::from_be_bytes(*input.first_chunk().unwrap());
     let gas_used = rounds as u64 * F_ROUND;
     gas.spend(gas_used)?;
 
@@ -114,8 +114,8 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     });
 
     // Parse offset counters
-    let t_0 = u64::from_le_bytes(input[196..204].try_into().unwrap());
-    let t_1 = u64::from_le_bytes(input[204..212].try_into().unwrap());
+    let t_0 = u64::from_le_bytes(*input[196..].first_chunk().unwrap());
+    let t_1 = u64::from_le_bytes(*input[204..].first_chunk().unwrap());
 
     crate::precompiles::crypto().blake2_compress(rounds, &mut h, &m, &[t_0, t_1], f);
 
