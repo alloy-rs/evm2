@@ -476,7 +476,7 @@ impl<'a> StackMut<'a> {
         }
         unsafe {
             let top = self.as_word_mut_ptr().add(len - 1);
-            core::ptr::swap_nonoverlapping(top.sub(n), top.sub(m), 1);
+            swap_words(top.sub(n), top.sub(m));
         }
         Ok(())
     }
@@ -538,6 +538,28 @@ impl<'a> StackMut<'a> {
         }
 
         Ok(())
+    }
+}
+
+/// Swaps two distinct stack words.
+///
+/// When LLVM prefers 512-bit vectors, it merges a swap of adjacent words into one 64-byte load.
+/// That load cannot take its data from the two 32-byte stores that usually wrote the words just
+/// before, so it waits for them to reach the cache. Two explicit 32-byte loads avoid the stall.
+#[inline(always)]
+#[allow(clippy::missing_const_for_fn)] // The intrinsics are not const.
+unsafe fn swap_words(a: *mut Word, b: *mut Word) {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    unsafe {
+        use core::arch::x86_64::{_mm256_loadu_si256, _mm256_storeu_si256};
+        let x = _mm256_loadu_si256(a.cast());
+        let y = _mm256_loadu_si256(b.cast());
+        _mm256_storeu_si256(a.cast(), y);
+        _mm256_storeu_si256(b.cast(), x);
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
+    unsafe {
+        core::ptr::swap_nonoverlapping(a, b, 1);
     }
 }
 
