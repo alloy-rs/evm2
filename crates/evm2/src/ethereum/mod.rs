@@ -24,8 +24,7 @@ use crate::{
     },
     interpreter::{
         GasTracker, Host, InstrStop, Message, MessageExt, MessageKind, MessageResult,
-        MessageResultExt,
-        gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS, WARM_STORAGE_READ_COST},
+        MessageResultExt, gas::WARM_STORAGE_READ_COST,
     },
     registry::{HandlerError, HandlerResult, TxRegistry, handler},
     utils::num_words,
@@ -923,12 +922,13 @@ fn eip2780_base_to_value_gas(
     value: U256,
 ) -> u64 {
     let params = &version.gas_params;
-    let mut gas = u64::from(EIP2780_TX_BASE_COST);
+    let mut gas = u64::from(params.get(GasId::TxBaseStipend));
     if is_create {
         // Since glamsterdam devnet-8, creates pay no value-based charge.
         gas += u64::from(params.get(GasId::TxCreateAccessCost));
     } else if !is_self_transfer {
-        gas += u64::from(EIP8038_COLD_ACCOUNT_ACCESS);
+        gas += u64::from(params.get(GasId::WarmStorageReadCost))
+            + params.cold_account_additional_cost();
         if !value.is_zero() {
             gas += u64::from(params.get(GasId::TxValueCost));
         }
@@ -1391,5 +1391,53 @@ mod tests {
                 cap: amsterdam_without_eip8037.tx_gas_limit_cap,
             })
         );
+    }
+
+    #[rstest::rstest]
+    #[case::call_zero_value(TxKind::Call(Address::ZERO), U256::ZERO, 15_000, 12_700)]
+    #[case::call_with_value(TxKind::Call(Address::ZERO), U256::from(1), 21_000, 18_700)]
+    #[case::self_transfer_zero_value(
+        TxKind::Call(Address::with_last_byte(0xaa)),
+        U256::ZERO,
+        12_000,
+        10_000
+    )]
+    #[case::self_transfer_with_value(
+        TxKind::Call(Address::with_last_byte(0xaa)),
+        U256::from(1),
+        12_000,
+        10_000
+    )]
+    #[case::create_zero_value(TxKind::Create, U256::ZERO, 24_000, 22_000)]
+    #[case::create_with_value(TxKind::Create, U256::from(1), 24_000, 22_000)]
+    fn eip2780_intrinsic_and_floor_gas_read_base_costs_from_gas_params(
+        #[case] to: TxKind,
+        #[case] value: U256,
+        #[case] default_base: u64,
+        #[case] custom_base: u64,
+        #[values(false, true)] custom_params: bool,
+    ) {
+        let sender = Address::with_last_byte(0xaa);
+        let mut version = Version::new(SpecId::AMSTERDAM);
+        if custom_params {
+            version.gas_params.set(GasId::TxBaseStipend, 10_000);
+            version.gas_params.set(GasId::WarmStorageReadCost, 200);
+            version.gas_params.set(GasId::ColdAccountAdditionalCost, 2500);
+        }
+        let base = if custom_params { custom_base } else { default_base };
+
+        for input in [Bytes::new(), Bytes::from_static(&[0, 1])] {
+            let calldata_gas = if input.is_empty() { 0 } else { 20 };
+            let floor_calldata_gas = if input.is_empty() { 0 } else { 128 };
+            let initcode_gas = if to.is_create() && !input.is_empty() { 2 } else { 0 };
+            assert_eq!(
+                intrinsic_gas(&version, sender, to, &input, 0, 0, value),
+                base + calldata_gas + initcode_gas
+            );
+            assert_eq!(
+                floor_gas(&version, sender, to, &input, 0, 0, value),
+                base + floor_calldata_gas
+            );
+        }
     }
 }
