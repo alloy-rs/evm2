@@ -382,10 +382,10 @@ impl ContextMode {
     fn budget(self, num_blocks: usize, num_insts: usize) -> Budget {
         match self {
             Self::Full => Budget {
-                block_parts: 1024,
-                parts: (num_blocks * 16).min(1 << 16),
-                pops: num_blocks * 64,
-                work: num_insts as u64 * 160,
+                block_parts: 2048,
+                parts: (num_blocks * 32).min(1 << 17),
+                pops: num_blocks * 128,
+                work: num_insts as u64 * 320,
             },
             Self::Coarse => Budget {
                 block_parts: 128,
