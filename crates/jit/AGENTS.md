@@ -201,7 +201,8 @@ The `jit` job in `.github/workflows/bench.yml` runs `bench.py --output
 cycles per execution from `--runtime`. Cycles vary with the runner and its
 load; compare instructions first. `--output DIR` (and `--base-output DIR` with
 `--diff`) writes `results.json` and `artifacts/<bench>/evm2/` (`bytecode.hex`,
-`bytecode.txt`, `unopt.ll`, `opt.ll`, `opt.s`, with dump paths removed). PRs
+`bytecode.txt`, `bytecode.dot`, `unopt.ll`, `opt.ll`, `opt.s`, with dump paths
+removed); the perf site renders `bytecode.dot` as an SVG graph. PRs
 reuse the `jit-bench-results` artifact of the exact base commit's run when it
 targets the same host CPU, and otherwise benchmark the base in the same job.
 `compare.py` writes the job summary. The benchmark job has a read-only token;
