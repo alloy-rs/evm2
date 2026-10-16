@@ -5,14 +5,11 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(elided_lifetimes_in_paths)]
 
-extern crate alloc;
-
 #[macro_use]
 #[cfg(feature = "ir")]
 extern crate tracing;
 
-use alloc::vec::Vec;
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, keccak256};
 use core::cmp::min;
 use evm2::{
     bytecode::Bytecode,
@@ -520,25 +517,22 @@ pub unsafe extern "C" fn __revmc_builtin_log(
     let rev![offset, len] = unsafe { read_words_rev(sp) };
     let len = word_to_usize(len.to_u256())?;
     ecx.gas.spend(ecx.gas_params().log_cost(n, len))?;
-    let data = if len != 0 {
+    let offset = if len != 0 {
         let offset = word_to_usize(offset.to_u256())?;
         ensure_memory(ecx, offset, len)?;
-        Bytes::copy_from_slice(ecx.memory().slice(offset, len))
+        offset
     } else {
-        Bytes::new()
+        0
     };
 
-    let mut topics = Vec::with_capacity(n as usize);
-    for i in 1..=n {
-        topics.push(unsafe { sp.sub(i as usize).read() }.to_be_bytes());
+    let mut topics = [B256::ZERO; 4];
+    for (i, topic) in topics[..n as usize].iter_mut().enumerate() {
+        *topic = unsafe { sp.sub(i + 1).read() }.to_be_bytes();
     }
 
-    let address = ecx.message().destination;
-    let log = Log {
-        address,
-        data: LogData::new(topics, data).expect("too many topics"),
-    };
-    ecx.host().log(log);
+    let address = &ecx.message().destination;
+    let (memory, host) = ecx.interpreter_mut().memory_host();
+    Host::log(host, address, &topics[..n as usize], memory.slice(offset, len));
     Ok(())
 }
 

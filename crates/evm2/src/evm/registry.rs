@@ -411,7 +411,7 @@ mod tests {
         interpreter::{Host, Message, MessageResult, Word},
     };
     use alloc::{rc::Rc, string::ToString, vec::Vec};
-    use alloy_primitives::{Address, B256, Log};
+    use alloy_primitives::{Address, B256};
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug, thiserror::Error)]
@@ -520,7 +520,7 @@ mod tests {
             unimplemented!()
         }
 
-        fn log(&mut self, _log: Log) {
+        fn log(&mut self, _address: &Address, _topics: &[B256], _data: &[u8]) {
             unimplemented!()
         }
 

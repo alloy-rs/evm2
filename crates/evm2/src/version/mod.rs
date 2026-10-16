@@ -281,6 +281,7 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::BASE_FEE_CHECK));
         assert!(osaka.feature(EvmFeatures::PRIORITY_FEE_CHECK));
         assert!(osaka.feature(EvmFeatures::FEE_CHARGE));
+        assert!(osaka.feature(EvmFeatures::LOG_COLLECTION));
         assert!(!osaka.feature(EvmFeatures::EIP7708));
         assert!(!osaka.feature(EvmFeatures::EIP8246));
         assert!(!osaka.feature(EvmFeatures::EIP8037));
@@ -389,6 +390,7 @@ evm_versions! {
             EIP3607,
             PRIORITY_FEE_CHECK,
             FEE_CHARGE,
+            LOG_COLLECTION,
         ],
         ops: [
             STOP: ZERO,

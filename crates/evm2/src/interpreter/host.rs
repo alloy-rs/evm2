@@ -5,7 +5,7 @@ use crate::{
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
 };
-use alloy_primitives::{Address, B256, Bytes, Log};
+use alloy_primitives::{Address, B256, Bytes};
 
 /// Result of executing a call/create message for an EVM type family.
 pub type MessageResult<T = BaseEvmTypes> = MessageResultExt<<T as EvmTypesHost>::MessageResultExt>;
@@ -164,8 +164,11 @@ pub trait Host<T: EvmTypesHost> {
     /// Stores a transient storage slot.
     fn tstore(&mut self, address: &Address, key: &Word, value: &Word);
 
-    /// Records an emitted log.
-    fn log(&mut self, log: Log);
+    /// Records a log emitted by `LOG0`-`LOG4` from `address`.
+    ///
+    /// `topics` and `data` borrow interpreter buffers. The host copies them only if it keeps the
+    /// log.
+    fn log(&mut self, address: &Address, topics: &[B256], data: &[u8]);
 
     /// Executes a message inside this host.
     fn execute_message(

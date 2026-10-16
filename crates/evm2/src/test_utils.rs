@@ -198,8 +198,8 @@ impl Host<TestTypes> for TestHost {
         self.transient_storage.insert(StorageKey::new(*address, *key), *value);
     }
 
-    fn log(&mut self, log: Log) {
-        self.logs.push(log);
+    fn log(&mut self, address: &Address, topics: &[B256], data: &[u8]) {
+        self.logs.push(Log::new_unchecked(*address, topics.to_vec(), Bytes::copy_from_slice(data)));
     }
 
     fn execute_message(
