@@ -833,6 +833,7 @@ impl Bytecode<'_> {
         let mut jump_insts: Vec<Inst> = Vec::new();
         for (i, inst) in self.insts.iter_enumerated() {
             if inst.is_jump()
+                && !inst.is_dead_code()
                 && (!inst.flags.contains(InstFlags::STATIC_JUMP)
                     || (inst.opcode == op::JUMPI && !inst.has_const_jumpi_condition()))
             {
@@ -2022,6 +2023,37 @@ mod tests_edge_cases {
         let (rj_inst, _) = return_jump.unwrap();
         let targets = bytecode.multi_jump_targets(rj_inst).unwrap();
         assert_eq!(targets.len(), 3, "expected 3 targets, got {}", targets.len());
+        assert!(!bytecode.has_dynamic_jumps, "expected no dynamic jumps");
+    }
+
+    /// A dead jump with an unknown target must not block the resolution of
+    /// live jumps.
+    #[test]
+    fn dead_unknown_jump_ignored() {
+        let bytecode = analyze_asm(
+            "
+            PUSH %ret
+            PUSH %func
+            JUMP
+        ret:
+            JUMPDEST
+            PUSH1 1
+            PUSH %t
+            JUMPI
+            PUSH0
+            CALLDATALOAD
+            JUMP
+        t:
+            JUMPDEST
+            STOP
+        func:
+            JUMPDEST
+            JUMP
+        ",
+        );
+
+        let (_, ret) = bytecode.iter_insts().last().unwrap();
+        assert!(ret.flags.contains(InstFlags::STATIC_JUMP), "{:?}", ret.flags);
         assert!(!bytecode.has_dynamic_jumps, "expected no dynamic jumps");
     }
 

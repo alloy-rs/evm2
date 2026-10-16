@@ -21,27 +21,24 @@ pub(super) fn remove_fp_padding(input: &[u8]) -> Result<&[u8; FP_LENGTH], Precom
 /// remove_g1_padding removes the padding applied to the Fp elements that constitute the
 /// encoded G1 element.
 pub(super) fn remove_g1_padding(input: &[u8]) -> Result<[&[u8; FP_LENGTH]; 2], PrecompileHalt> {
-    if input.len() != PADDED_G1_LENGTH {
+    let ([x, y], []) = input.as_chunks::<PADDED_FP_LENGTH>() else {
         return Err(PrecompileHalt::Bls12381G1PaddingLength);
-    }
-
-    let x = remove_fp_padding(&input[..PADDED_FP_LENGTH])?;
-    let y = remove_fp_padding(&input[PADDED_FP_LENGTH..PADDED_G1_LENGTH])?;
-    Ok([x, y])
+    };
+    Ok([remove_fp_padding(x)?, remove_fp_padding(y)?])
 }
 
 /// remove_g2_padding removes the padding applied to the Fp elements that constitute the
 /// encoded G2 element.
 pub(super) fn remove_g2_padding(input: &[u8]) -> Result<[&[u8; FP_LENGTH]; 4], PrecompileHalt> {
-    if input.len() != PADDED_G2_LENGTH {
+    let ([x_0, x_1, y_0, y_1], []) = input.as_chunks::<PADDED_FP_LENGTH>() else {
         return Err(PrecompileHalt::Bls12381G2PaddingLength);
-    }
-
-    let mut input_fps = [&[0; FP_LENGTH]; 4];
-    for i in 0..4 {
-        input_fps[i] = remove_fp_padding(&input[i * PADDED_FP_LENGTH..(i + 1) * PADDED_FP_LENGTH])?;
-    }
-    Ok(input_fps)
+    };
+    Ok([
+        remove_fp_padding(x_0)?,
+        remove_fp_padding(x_1)?,
+        remove_fp_padding(y_0)?,
+        remove_fp_padding(y_1)?,
+    ])
 }
 
 /// Pads an unpadded G1 point (96 bytes) to the EVM-compatible format (128 bytes).
