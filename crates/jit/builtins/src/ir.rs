@@ -183,12 +183,10 @@ macro_rules! builtins {
                 // _in_out
                 const _0_0: u8 = STOP;
                 const _0_1: u8 = PUSH0;
-                const _1_0: u8 = POP;
 
                 const PANIC: u8 = _0_0;
                 const ASSERTSPECID: u8 = _0_0;
 
-                const EXPGAS: u8 = _1_0;
                 const KECCAK256CC: u8 = _0_1;
 
                 const CALLDATALOADC: u8 = _0_1;
@@ -277,32 +275,20 @@ builtins! {
     AddMod         = __revmc_builtin_addmod(@[sp] ptr) None,
     MulMod         = __revmc_builtin_mulmod(@[sp] ptr) None,
     Exp            = __revmc_builtin_exp(@[ecx] ptr, @[sp] ptr) None,
-    ExpGas         = __revmc_builtin_exp_gas(@[ecx] ptr, @[sp] ptr) None,
     Keccak256      = __revmc_builtin_keccak256(@[ecx] ptr, @[sp] ptr) None,
     Keccak256CC    = __revmc_builtin_keccak256_cc(@[ecx] ptr, @[sp] ptr, usize, usize) None,
     Balance        = __revmc_builtin_balance(@[ecx] ptr, @[sp] ptr) None,
-    Origin         = __revmc_builtin_origin(@[ecx_ro] ptr, @[sp] ptr) None,
     CallDataLoad   = __revmc_builtin_calldataload(@[ecx_ro] ptr, @[sp] ptr) None,
     CallDataLoadC  = __revmc_builtin_calldataload_c(@[ecx_ro] ptr, @[sp] ptr, usize) None,
     CallDataCopy   = __revmc_builtin_calldatacopy(@[ecx] ptr, @[sp] ptr) None,
     CodeCopy       = __revmc_builtin_codecopy(@[ecx] ptr, @[sp] ptr) None,
-    GasPrice       = __revmc_builtin_gas_price(@[ecx_ro] ptr, @[sp] ptr) None,
     ExtCodeSize    = __revmc_builtin_extcodesize(@[ecx] ptr, @[sp] ptr) None,
     ExtCodeCopy    = __revmc_builtin_extcodecopy(@[ecx] ptr, @[sp] ptr) None,
     ReturnDataCopy = __revmc_builtin_returndatacopy(@[ecx] ptr, @[sp] ptr) None,
     ExtCodeHash    = __revmc_builtin_extcodehash(@[ecx] ptr, @[sp] ptr) None,
     BlockHash      = __revmc_builtin_blockhash(@[ecx] ptr, @[sp] ptr) None,
-    Coinbase       = __revmc_builtin_coinbase(@[ecx] ptr, @[sp] ptr) None,
-    Timestamp      = __revmc_builtin_timestamp(@[ecx] ptr, @[sp] ptr) None,
-    Number         = __revmc_builtin_number(@[ecx] ptr, @[sp] ptr) None,
-    Difficulty     = __revmc_builtin_difficulty(@[ecx] ptr, @[sp] ptr) None,
-    GasLimit       = __revmc_builtin_gaslimit(@[ecx] ptr, @[sp] ptr) None,
-    ChainId        = __revmc_builtin_chainid(@[ecx_ro] ptr, @[sp] ptr) None,
     SelfBalance    = __revmc_builtin_self_balance(@[ecx] ptr, @[sp] ptr) None,
-    Basefee        = __revmc_builtin_basefee(@[ecx] ptr, @[sp] ptr) None,
     BlobHash       = __revmc_builtin_blob_hash(@[ecx_ro] ptr, @[sp] ptr) None,
-    BlobBaseFee    = __revmc_builtin_blob_base_fee(@[ecx] ptr, @[sp] ptr) None,
-    SlotNum        = __revmc_builtin_slot_num(@[ecx] ptr, @[sp] ptr) None,
     Mresize        = __revmc_builtin_mresize(@[ecx] ptr, usize) None,
     Sload          = __revmc_builtin_sload(@[ecx] ptr, @[sp] ptr) None,
     SloadC         = __revmc_builtin_sload_c(@[ecx] ptr, @[sp] ptr, usize) None,

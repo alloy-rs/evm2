@@ -12,11 +12,11 @@ pub(super) fn remove_fp_padding(input: &[u8]) -> Result<&[u8; FP_LENGTH], Precom
     if input.len() != PADDED_FP_LENGTH {
         return Err(PrecompileHalt::Bls12381FpPaddingLength);
     }
-    let (padding, unpadded) = input.split_at(FP_PAD_BY);
+    let (padding, unpadded) = input.split_last_chunk().unwrap();
     if !padding.iter().all(|&x| x == 0) {
         return Err(PrecompileHalt::Bls12381FpPaddingInvalid);
     }
-    Ok(unpadded.try_into().unwrap())
+    Ok(unpadded)
 }
 /// remove_g1_padding removes the padding applied to the Fp elements that constitute the
 /// encoded G1 element.

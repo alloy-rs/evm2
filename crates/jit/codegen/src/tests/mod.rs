@@ -257,6 +257,37 @@ tests! {
             expected_stack: &[0_U256],
             expected_gas: 6 + 10 + 100,
         }),
+        // Dynamic exponent at the pre-SPURIOUS_DRAGON rate (the default spec's rate is covered by
+        // the `_const_dyn` arith tests): storing and loading it costs 21 gas, pushing the base 3,
+        // and EXP 10.
+        exp_dyn_zero_frontier(@raw {
+            bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, 0_U256, true, false),
+            spec_id: SpecId::FRONTIER,
+            expected_stack: &[1_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: 34,
+        }),
+        exp_dyn_ff_frontier(@raw {
+            bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, 0xff_U256, true, false),
+            spec_id: SpecId::FRONTIER,
+            expected_stack: &[1_U256 << 255],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: 34 + 10,
+        }),
+        exp_dyn_100_frontier(@raw {
+            bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, 0x100_U256, true, false),
+            spec_id: SpecId::FRONTIER,
+            expected_stack: &[0_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: 34 + 20,
+        }),
+        exp_dyn_max_frontier(@raw {
+            bytecode: &bytecode_binop_mixed(op::EXP, 2_U256, U256::MAX, true, false),
+            spec_id: SpecId::FRONTIER,
+            expected_stack: &[0_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: 34 + 320,
+        }),
     }
 
     stack {
@@ -354,7 +385,7 @@ tests! {
         slotnum(@raw {
             bytecode: &[op::SLOTNUM],
             spec_id: SpecId::AMSTERDAM,
-            expected_stack: &[U256::ZERO],
+            expected_stack: &[def_env().block.slot_num],
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
 
@@ -815,6 +846,18 @@ tests! {
         sdiv_by_int_min(op::SDIV, I256_MIN, I256_MIN => 1_U256),
         sdiv_nonmin_by_int_min(op::SDIV, 42_U256, I256_MIN => 0_U256),
         sdiv_zero_dividend(op::SDIV, 0_U256, 42_U256 => 0_U256),
+        sdiv_neg_by_2(op::SDIV, -3_U256, 2_U256 => -1_U256),
+        sdiv_neg_by_4_exact(op::SDIV, -8_U256, 4_U256 => -2_U256),
+        sdiv_neg_by_4(op::SDIV, -5_U256, 4_U256 => -1_U256),
+        sdiv_by_minus_2(op::SDIV, 7_U256, -2_U256 => -3_U256),
+        sdiv_neg_by_minus_2(op::SDIV, -7_U256, -2_U256 => 3_U256),
+        sdiv_min_by_2(op::SDIV, I256_MIN, 2_U256 => -(I256_MIN >> 1usize)),
+        sdiv_min_by_minus_2(op::SDIV, I256_MIN, -2_U256 => I256_MIN >> 1usize),
+        sdiv_max_by_2_254(op::SDIV, I256_MAX, I256_MIN >> 1usize => 1_U256),
+        sdiv_min_by_2_254(op::SDIV, I256_MIN, I256_MIN >> 1usize => -2_U256),
+        sdiv_min_by_minus_2_254(op::SDIV, I256_MIN, -(I256_MIN >> 1usize) => 2_U256),
+        sdiv_neg_by_minus_2_255(op::SDIV, -1_U256, -I256_MIN => 0_U256),
+        sdiv_max_by_minus_2_255(op::SDIV, I256_MAX, -I256_MIN => 0_U256),
 
         srem1(op::SMOD, 32_U256, 32_U256 => 0_U256),
         srem2(op::SMOD, 1_U256, 2_U256 => 1_U256),
@@ -826,6 +869,15 @@ tests! {
         srem_zero_dividend(op::SMOD, 0_U256, 42_U256 => 0_U256),
         srem_by_zero1(op::SMOD, 0_U256, 0_U256 => 0_U256),
         srem_by_zero2(op::SMOD, 32_U256, 0_U256 => 0_U256),
+        srem_neg_by_2(op::SMOD, -3_U256, 2_U256 => -1_U256),
+        srem_neg_by_minus_4(op::SMOD, -7_U256, -4_U256 => -3_U256),
+        srem_by_minus_4(op::SMOD, 7_U256, -4_U256 => 3_U256),
+        srem_min_by_2(op::SMOD, I256_MIN, 2_U256 => 0_U256),
+        srem_min_by_2_254(op::SMOD, I256_MIN, I256_MIN >> 1usize => 0_U256),
+        srem_min_plus_1_by_minus_2_254(op::SMOD, I256_MIN + 1_U256, -(I256_MIN >> 1usize) => -((I256_MIN >> 1usize) - 1_U256)),
+        srem_min_by_2_255(op::SMOD, I256_MIN, I256_MIN => 0_U256),
+        srem_neg_by_2_255(op::SMOD, -1_U256, I256_MIN => -1_U256),
+        srem_max_by_minus_2_255(op::SMOD, I256_MAX, -I256_MIN => I256_MAX),
 
         addmod_mod_zero(op::ADDMOD, 1_U256, 2_U256, 0_U256 => 0_U256),
         addmod_mod_one(op::ADDMOD, 5_U256, 3_U256, 1_U256 => 0_U256),
@@ -834,6 +886,9 @@ tests! {
         addmod2(op::ADDMOD, 1_U256, 2_U256, 4_U256 => 3_U256),
         addmod3(op::ADDMOD, 1_U256, 2_U256, 2_U256 => 1_U256),
         addmod4(op::ADDMOD, 32_U256, 32_U256, 69_U256 => 64_U256),
+        addmod_pow2(op::ADDMOD, 7_U256, 6_U256, 8_U256 => 5_U256),
+        addmod_pow2_carry(op::ADDMOD, U256::MAX, 3_U256, 4_U256 => 2_U256),
+        addmod_pow2_255_carry(op::ADDMOD, U256::MAX, U256::MAX, I256_MIN => I256_MAX - 1_U256),
 
         mulmod_mod_zero(op::MULMOD, 3_U256, 4_U256, 0_U256 => 0_U256),
         mulmod1(op::MULMOD, 0_U256, 0_U256, 1_U256 => 0_U256),
@@ -844,6 +899,9 @@ tests! {
         mulmod4(op::MULMOD, 69_U256, 1_U256, 2_U256 => 1_U256),
         mulmod5(op::MULMOD, 69_U256, 1_U256, 30_U256 => 9_U256),
         mulmod6(op::MULMOD, 69_U256, 2_U256, 100_U256 => 38_U256),
+        mulmod_pow2(op::MULMOD, 7_U256, 6_U256, 8_U256 => 2_U256),
+        mulmod_pow2_wrap(op::MULMOD, U256::MAX, 3_U256, 16_U256 => 13_U256),
+        mulmod_pow2_255_wrap(op::MULMOD, U256::MAX, U256::MAX, I256_MIN => 1_U256),
 
         exp1(op::EXP, 0_U256, 0_U256 => 1_U256; op_gas(10)),
         exp2(op::EXP, 2_U256, 0_U256 => 1_U256; op_gas(10)),
@@ -864,6 +922,10 @@ tests! {
         exp_large(op::EXP, 2_U256, 0xFFFF_U256 => 2_U256.pow(0xFFFF_U256); op_gas(110)),
         // Max exponent (32 bytes), dynamic = 50 * 32 = 1600, total = 10 + 1600 = 1610.
         exp_max_exponent(op::EXP, 2_U256, U256::MAX => 0_U256; op_gas(1610)),
+        exp_byte_boundary_ff(op::EXP, 2_U256, 0xff_U256 => 1_U256 << 255; op_gas(60)),
+        exp_byte_boundary_100(op::EXP, 1_U256, 0x100_U256 => 1_U256; op_gas(110)),
+        exp_zero_base_max_exp(op::EXP, 0_U256, U256::MAX => 0_U256; op_gas(1610)),
+        exp_minus_one_base_max_exp(op::EXP, -1_U256, U256::MAX => -1_U256; op_gas(1610)),
 
         signextend1(op::SIGNEXTEND, 0_U256, 0_U256 => 0_U256),
         signextend2(op::SIGNEXTEND, 1_U256, 0_U256 => 0_U256),
@@ -969,6 +1031,24 @@ tests! {
             bytecode: &[op::GAS, op::GAS, op::JUMPDEST, op::GAS],
             expected_stack: &[DEF_GAS_LIMIT_U256 - 2_U256, DEF_GAS_LIMIT_U256 - 4_U256, DEF_GAS_LIMIT_U256 - 7_U256],
             expected_gas: 2 + 2 + 1 + 2,
+        }),
+        // The section head charges the gas after each `GAS` up front.
+        gas_mid_section(@raw {
+            bytecode: &[op::PUSH0, op::GAS, op::PUSH1, 1, op::GAS, op::SWAP1, op::POP],
+            expected_stack: &[0_U256, DEF_GAS_LIMIT_U256 - 4_U256, DEF_GAS_LIMIT_U256 - 9_U256],
+            expected_gas: 2 + 2 + 3 + 2 + 3 + 2,
+        }),
+        // Folded `EXP` gas (10 + 50 * 2) after `GAS` is charged up front too.
+        gas_before_folded_exp(@raw {
+            bytecode: &[op::GAS, op::PUSH2, 1, 0, op::PUSH1, 2, op::EXP, op::POP, op::GAS],
+            expected_stack: &[DEF_GAS_LIMIT_U256 - 2_U256, DEF_GAS_LIMIT_U256 - 122_U256],
+            expected_gas: 2 + 3 + 3 + 110 + 2 + 2,
+        }),
+        // `SLOAD` ends the gas section, so only its base gas is owed by the first `GAS`.
+        gas_around_sload(@raw {
+            bytecode: &[op::GAS, op::PUSH1, 69, op::SLOAD, op::GAS],
+            expected_stack: &[DEF_GAS_LIMIT_U256 - 2_U256, 42_U256, DEF_GAS_LIMIT_U256 - 107_U256],
+            expected_gas: 2 + 3 + 100 + 2,
         }),
         keccak256_empty1(@raw {
             bytecode: &[op::PUSH0, op::PUSH0, op::KECCAK256],
@@ -1177,8 +1257,14 @@ tests! {
         }),
         blobbasefee(@raw {
             bytecode: &[op::BLOBBASEFEE, op::BLOBBASEFEE],
-            expected_stack: &[U256::from(def_env().block.get_blob_gasprice().unwrap()), U256::from(def_env().block.get_blob_gasprice().unwrap())],
+            expected_stack: &[def_env().block.blob_basefee, def_env().block.blob_basefee],
             expected_gas: 4,
+        }),
+        // Inlined environment values stay correct across a builtin call and feed arithmetic.
+        env_across_builtin(@raw {
+            bytecode: &[op::ORIGIN, op::TIMESTAMP, op::PUSH0, op::BLOBHASH, op::GASPRICE, op::ADD, op::COINBASE, op::XOR],
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
     }
 
@@ -1345,6 +1431,18 @@ tests! {
             assert_host: Some(|host| {
                 assert_eq!(host.storage.get(&200_U256), Some(&100_U256));
             }),
+        }),
+        // EIP-2200: `SSTORE` needs more than the call stipend left. The gas of the
+        // instructions after it does not count.
+        sstore_stipend_boundary_ok(@raw {
+            bytecode: &[op::PUSH1, 1, op::PUSH0, op::SSTORE, op::PUSH0, op::POP],
+            gas_limit: 3 + 2 + 2301,
+            expected_gas: 3 + 2 + 100 + 2 + 2,
+        }),
+        sstore_stipend_boundary_fail(@raw {
+            bytecode: &[op::PUSH1, 1, op::PUSH0, op::SSTORE, op::PUSH0, op::POP],
+            gas_limit: 3 + 2 + 2300,
+            expected_return: InstrStop::ReentrancySentryOOG,
         }),
         sstore_const_inputs(@raw {
             bytecode: &[op::PUSH1, 42, op::PUSH0, op::SSTORE],
@@ -1859,6 +1957,25 @@ tests! {
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // The callee returns its remaining gas: 63/64 of the gas left after the call's own
+        // costs (16 before it, 100 static, 3 memory, 2500 cold), not counting the gas after it.
+        call_forwards_gas(@raw {
+            bytecode: &[
+                op::PUSH1, 32,   // ret length
+                op::PUSH0,       // ret offset
+                op::PUSH0,       // args length
+                op::PUSH0,       // args offset
+                op::PUSH0,       // value
+                op::PUSH1, 0x67, // address
+                op::GAS,         // gas
+                op::CALL,
+                op::PUSH0,
+                op::MLOAD,
+            ],
+            expected_stack: &[1_U256, 95858_U256],
+            expected_memory: &95858_U256.to_be_bytes::<32>(),
+            expected_gas: 16 + 100 + 3 + 2500 + 15 + 2 + 3,
         }),
         call_gas_after_dynamic_target(@raw {
             bytecode: &[
@@ -2440,6 +2557,7 @@ tests! {
             expected_memory: &[0; 32],
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
+
         // `tramp` is never reached: `exit` does not return.
         unreached_return_trampoline(@raw {
             bytecode: &asm("

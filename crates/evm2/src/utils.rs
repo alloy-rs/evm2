@@ -68,8 +68,8 @@ pub const fn u64_to_address(x: u64) -> Address {
 /// Returns the first `LEN` bytes if it does not need padding.
 #[inline]
 pub fn right_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
-    if let Some(data) = data.get(..LEN) {
-        Cow::Borrowed(data.try_into().unwrap())
+    if let Some(data) = data.first_chunk() {
+        Cow::Borrowed(data)
     } else {
         let mut padded = [0; LEN];
         padded[..data.len()].copy_from_slice(data);
@@ -96,8 +96,8 @@ pub fn right_pad_vec(data: &[u8], len: usize) -> Cow<'_, [u8]> {
 /// Returns the first `LEN` bytes if it does not need padding.
 #[inline]
 pub fn left_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
-    if let Some(data) = data.get(..LEN) {
-        Cow::Borrowed(data.try_into().unwrap())
+    if let Some(data) = data.first_chunk() {
+        Cow::Borrowed(data)
     } else {
         let mut padded = [0; LEN];
         padded[LEN - data.len()..].copy_from_slice(data);
