@@ -133,6 +133,180 @@ pub trait DynDatabase: NonStaticAny {
     fn get_block_hash(&mut self, number: &Word) -> DbResult<B256>;
 }
 
+/// Shared backing database implementation with a concrete error type.
+///
+/// The counterpart of [`Database`] whose reads take `&self`.
+#[auto_impl(&, &mut, Box, Rc, Arc)]
+pub trait DatabaseRef: NonStaticAny {
+    /// Database error type.
+    type Error: Error + Send + Sync + 'static;
+
+    /// Whether a concrete database error is an internal failure rather than invalid input.
+    fn is_fatal(error: &Self::Error) -> bool {
+        let _ = error;
+        true
+    }
+
+    /// Loads account information.
+    fn get_account(&self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
+
+    /// Loads bytecode by code hash.
+    fn get_code_by_hash(&self, code_hash: &B256) -> Result<Bytecode, Self::Error>;
+
+    /// Loads a persistent storage slot.
+    fn get_storage(&self, address: &Address, key: &Word) -> Result<Word, Self::Error>;
+
+    /// Loads a historical block hash.
+    ///
+    /// Callers only request numbers inside the `BLOCKHASH` window, so a hash the database cannot
+    /// provide is a database failure reported through the error, never a benign miss.
+    fn get_block_hash(&self, number: &Word) -> Result<B256, Self::Error>;
+}
+
+/// Object-safe database adapter for typed shared database implementations.
+#[derive(Clone, Debug)]
+pub struct DbRef<T: DatabaseRef> {
+    db: T,
+}
+
+impl<T: DatabaseRef + Default> Default for DbRef<T> {
+    #[inline]
+    fn default() -> Self {
+        Self::new(T::default())
+    }
+}
+
+impl<T: DatabaseRef> DbRef<T> {
+    /// Creates a new database adapter.
+    #[inline]
+    pub const fn new(db: T) -> Self {
+        Self { db }
+    }
+
+    /// Returns the wrapped database.
+    #[inline]
+    pub const fn inner(&self) -> &T {
+        &self.db
+    }
+
+    /// Returns the wrapped database mutably.
+    #[inline]
+    pub const fn inner_mut(&mut self) -> &mut T {
+        &mut self.db
+    }
+
+    /// Consumes the adapter and returns the wrapped database.
+    #[inline]
+    pub fn into_inner(self) -> T {
+        self.db
+    }
+}
+
+impl<T: DatabaseRef> DynDatabaseRef for DbRef<T> {
+    #[inline]
+    fn get_account(&self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        self.db.get_account(address).map_err(|err| {
+            let fatal = T::is_fatal(&err);
+            DatabaseError::new(err, fatal)
+        })
+    }
+
+    #[inline]
+    fn get_code_by_hash(&self, code_hash: &B256) -> DbResult<Bytecode> {
+        self.db.get_code_by_hash(code_hash).map_err(|err| {
+            let fatal = T::is_fatal(&err);
+            DatabaseError::new(err, fatal)
+        })
+    }
+
+    #[inline]
+    fn get_storage(&self, address: &Address, key: &Word) -> DbResult<Word> {
+        self.db.get_storage(address, key).map_err(|err| {
+            let fatal = T::is_fatal(&err);
+            DatabaseError::new(err, fatal)
+        })
+    }
+
+    #[inline]
+    fn get_block_hash(&self, number: &Word) -> DbResult<B256> {
+        self.db.get_block_hash(number).map_err(|err| {
+            let fatal = T::is_fatal(&err);
+            DatabaseError::new(err, fatal)
+        })
+    }
+}
+
+impl<T: DatabaseRef> DynDatabase for DbRef<T> {
+    #[inline]
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        DynDatabaseRef::get_account(self, address)
+    }
+
+    #[inline]
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+        DynDatabaseRef::get_code_by_hash(self, code_hash)
+    }
+
+    #[inline]
+    fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        DynDatabaseRef::get_storage(self, address, key)
+    }
+
+    #[inline]
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<B256> {
+        DynDatabaseRef::get_block_hash(self, number)
+    }
+}
+
+/// Shared backing database view used to initialize mutable [`super::State`].
+///
+/// The counterpart of [`DynDatabase`] whose reads take `&self`.
+#[auto_impl(&, &mut, Box, Rc, Arc)]
+pub trait DynDatabaseRef: NonStaticAny {
+    /// Loads account information.
+    fn get_account(&self, address: &Address) -> DbResult<Option<AccountInfo>>;
+
+    /// Loads bytecode by code hash.
+    fn get_code_by_hash(&self, code_hash: &B256) -> DbResult<Bytecode>;
+
+    /// Loads a persistent storage slot.
+    fn get_storage(&self, address: &Address, key: &Word) -> DbResult<Word>;
+
+    /// Loads a historical block hash.
+    ///
+    /// Callers only request numbers inside the `BLOCKHASH` window, so a hash the database cannot
+    /// provide is a database failure reported through the error, never a benign miss.
+    fn get_block_hash(&self, number: &Word) -> DbResult<B256>;
+}
+
+impl<T: Database + DatabaseRef> DatabaseRef for Db<T> {
+    type Error = <T as DatabaseRef>::Error;
+
+    fn is_fatal(error: &Self::Error) -> bool {
+        <T as DatabaseRef>::is_fatal(error)
+    }
+
+    #[inline]
+    fn get_account(&self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+        self.inner().get_account(address)
+    }
+
+    #[inline]
+    fn get_code_by_hash(&self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
+        self.inner().get_code_by_hash(code_hash)
+    }
+
+    #[inline]
+    fn get_storage(&self, address: &Address, key: &Word) -> Result<Word, Self::Error> {
+        self.inner().get_storage(address, key)
+    }
+
+    #[inline]
+    fn get_block_hash(&self, number: &Word) -> Result<B256, Self::Error> {
+        self.inner().get_block_hash(number)
+    }
+}
+
 /// Counts calls made through a [`DynDatabase`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DbStatsCounts {
@@ -273,6 +447,22 @@ impl<'a> core::ops::DerefMut for dyn DynDatabase + 'a {
     }
 }
 
+impl<'a> core::ops::Deref for dyn DynDatabaseRef + 'a {
+    type Target = dyn NonStaticAny + 'a;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self
+    }
+}
+
+impl<'a> core::ops::DerefMut for dyn DynDatabaseRef + 'a {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self
+    }
+}
+
 #[inline]
 pub(crate) fn boxed_dyn_database<'a>(database: impl DynDatabase + 'a) -> Box<dyn DynDatabase + 'a> {
     Box::new(database)
@@ -331,6 +521,13 @@ impl DynDatabase for EmptyDB {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interpreter::op;
+    use alloy_primitives::Bytes;
+
+    #[cfg(feature = "std")]
+    use alloc::{sync::Arc, vec, vec::Vec};
+    #[cfg(feature = "std")]
+    use std::thread;
 
     struct BorrowingDb<'a> {
         value: &'a u8,
@@ -367,5 +564,161 @@ mod tests {
         let erased: Box<dyn DynDatabase + 'static> = boxed_dyn_database(EmptyDB::default());
 
         assert!(erased.downcast_ref::<EmptyDB>().is_some());
+    }
+
+    const REF_ACCOUNT: Address = Address::with_last_byte(0xaa);
+    const REF_SLOT: Word = Word::from_limbs([7, 0, 0, 0]);
+
+    /// Read-only fixture: one account with code, one slot, one block hash.
+    struct RefDb {
+        balance: Word,
+        code: Bytecode,
+        block_hash: B256,
+    }
+
+    impl Default for RefDb {
+        fn default() -> Self {
+            Self {
+                balance: Word::from(5),
+                code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+                block_hash: keccak256([0x02]),
+            }
+        }
+    }
+
+    impl DatabaseRef for RefDb {
+        type Error = core::convert::Infallible;
+
+        fn get_account(&self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+            Ok((*address == REF_ACCOUNT).then(|| {
+                AccountInfo::default().with_balance(self.balance).with_code(self.code.clone())
+            }))
+        }
+
+        fn get_code_by_hash(&self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            Ok(if *code_hash == self.code.hash_slow() {
+                self.code.clone()
+            } else {
+                Bytecode::default()
+            })
+        }
+
+        fn get_storage(&self, address: &Address, key: &Word) -> Result<Word, Self::Error> {
+            Ok(if *address == REF_ACCOUNT && *key == REF_SLOT { self.balance } else { Word::ZERO })
+        }
+
+        fn get_block_hash(&self, number: &Word) -> Result<B256, Self::Error> {
+            Ok(if *number == Word::from(9) { self.block_hash } else { B256::ZERO })
+        }
+    }
+
+    #[test]
+    fn db_ref_reads_through_a_borrowed_view() {
+        let db = RefDb::default();
+        let mut cache = CacheDB::new(DbRef::new(&db));
+
+        let account =
+            DynDatabase::get_account(&mut cache, &REF_ACCOUNT).unwrap().expect("account exists");
+        assert_eq!(account.balance, Word::from(5));
+        assert_eq!(account.code_hash, db.code.hash_slow());
+        assert_eq!(
+            DynDatabase::get_storage(&mut cache, &REF_ACCOUNT, &REF_SLOT).unwrap(),
+            Word::from(5)
+        );
+        cache.cache.contracts.clear();
+        assert_eq!(
+            DynDatabase::get_code_by_hash(&mut cache, &db.code.hash_slow()).unwrap().len(),
+            1
+        );
+        assert_eq!(DynDatabase::get_block_hash(&mut cache, &Word::from(9)).unwrap(), db.block_hash);
+
+        // The borrow is released with the adapter, so the same database serves later reads.
+        assert_eq!(db.balance, Word::from(5));
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn db_ref_shares_one_database_across_workers() {
+        let db = Arc::new(RefDb::default());
+        let balances = thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    let db = Arc::clone(&db);
+                    scope.spawn(move || {
+                        let mut cache = CacheDB::new(DbRef::new(db));
+                        DynDatabase::get_account(&mut cache, &REF_ACCOUNT)
+                            .unwrap()
+                            .expect("account exists")
+                            .balance
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("worker panicked"))
+                .collect::<Vec<_>>()
+        });
+
+        assert_eq!(balances, vec![Word::from(5); 4]);
+        // Every worker dropped its handle when it finished.
+        assert_eq!(Arc::strong_count(&db), 1);
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+    #[error("test database error (fatal: {0})")]
+    struct RefDbError(bool);
+
+    struct FailingRefDb(bool);
+
+    impl DatabaseRef for FailingRefDb {
+        type Error = RefDbError;
+
+        fn is_fatal(error: &Self::Error) -> bool {
+            error.0
+        }
+
+        fn get_account(&self, _: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+            Err(RefDbError(self.0))
+        }
+
+        fn get_code_by_hash(&self, _: &B256) -> Result<Bytecode, Self::Error> {
+            Err(RefDbError(self.0))
+        }
+
+        fn get_storage(&self, _: &Address, _: &Word) -> Result<Word, Self::Error> {
+            Err(RefDbError(self.0))
+        }
+
+        fn get_block_hash(&self, _: &Word) -> Result<B256, Self::Error> {
+            Err(RefDbError(self.0))
+        }
+    }
+
+    #[test]
+    fn db_ref_preserves_error_type_and_classification() {
+        for fatal in [false, true] {
+            let db = FailingRefDb(fatal);
+            assert_eq!(db.get_account(&REF_ACCOUNT).unwrap_err(), RefDbError(fatal));
+
+            let mut adapter = DbRef::new(&db);
+            let shared: &dyn DynDatabaseRef = &adapter;
+            let errors = [
+                shared.get_account(&REF_ACCOUNT).unwrap_err(),
+                shared.get_code_by_hash(&B256::ZERO).unwrap_err(),
+                shared.get_storage(&REF_ACCOUNT, &REF_SLOT).unwrap_err(),
+                shared.get_block_hash(&Word::ZERO).unwrap_err(),
+            ];
+            let mutable: &mut dyn DynDatabase = &mut adapter;
+            let mutable_errors = [
+                mutable.get_account(&REF_ACCOUNT).unwrap_err(),
+                mutable.get_code_by_hash(&B256::ZERO).unwrap_err(),
+                mutable.get_storage(&REF_ACCOUNT, &REF_SLOT).unwrap_err(),
+                mutable.get_block_hash(&Word::ZERO).unwrap_err(),
+            ];
+            for error in errors.into_iter().chain(mutable_errors) {
+                assert_eq!(error.is_fatal(), fatal);
+                assert_eq!(error.downcast_ref::<RefDbError>(), Some(&RefDbError(fatal)));
+            }
+        }
     }
 }

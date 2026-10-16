@@ -4,7 +4,7 @@
 use crate::{
     interpreter::GasTracker,
     precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult, eip7823},
-    utils::{left_pad, left_pad_vec_be, right_pad_vec, right_pad_with_offset},
+    utils::{left_pad, left_pad_vec_be, read_word_padded, right_pad_vec},
 };
 #[cfg(feature = "gmp")]
 use alloc::vec;
@@ -164,9 +164,9 @@ pub fn run_inner(
     const HEADER_LENGTH: usize = 96;
 
     // Extract the header
-    let base_len = U256::from_be_bytes(right_pad_with_offset::<32>(input, 0).into_owned());
-    let exp_len = U256::from_be_bytes(right_pad_with_offset::<32>(input, 32).into_owned());
-    let mod_len = U256::from_be_bytes(right_pad_with_offset::<32>(input, 64).into_owned());
+    let base_len = U256::from_be_bytes(read_word_padded(input, 0).0);
+    let exp_len = U256::from_be_bytes(read_word_padded(input, 32).0);
+    let mod_len = U256::from_be_bytes(read_word_padded(input, 64).0);
 
     // Cast base and modulus to usize, it does not make sense to handle larger values
     let base_len = usize::try_from(base_len).map_err(|_| PrecompileHalt::ModexpEip7823LimitSize)?;
@@ -192,7 +192,7 @@ pub fn run_inner(
     let exp_highp = {
         // Get right padded bytes so if data.len is less then exp_len we will get right padded
         // zeroes.
-        let right_padded_highp = right_pad_with_offset::<32>(input, base_len);
+        let right_padded_highp = read_word_padded(input, base_len);
         // If exp_len is less then 32 bytes get only exp_len bytes and do left padding.
         let out = left_pad::<32>(&right_padded_highp[..exp_highp_len]);
         U256::from_be_bytes(out.into_owned())

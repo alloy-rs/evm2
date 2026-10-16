@@ -49,10 +49,10 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     }
 
     // Verify KZG proof with z and y in big endian format
-    let commitment: &[u8; 48] = commitment.try_into().unwrap();
-    let z = input[32..64].try_into().unwrap();
-    let y = input[64..96].try_into().unwrap();
-    let proof = input[144..192].try_into().unwrap();
+    let commitment = commitment.as_array().unwrap();
+    let z = input[32..].first_chunk().unwrap();
+    let y = input[64..].first_chunk().unwrap();
+    let proof = input.last_chunk().unwrap();
     crate::precompiles::crypto().verify_kzg_proof(z, y, commitment, proof)?;
 
     // Return FIELD_ELEMENTS_PER_BLOB and BLS_MODULUS as padded 32 byte big endian values
