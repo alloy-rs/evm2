@@ -46,7 +46,7 @@ pub fn word_to_usize_saturated(value: Word) -> usize {
 
 /// Calculate the linear cost of a precompile.
 #[inline]
-pub(crate) const fn calc_linear_cost(len: usize, base: u64, word: u64) -> u64 {
+pub const fn calc_linear_cost(len: usize, base: u64, word: u64) -> u64 {
     (len as u64).div_ceil(32) * word + base
 }
 
@@ -56,7 +56,7 @@ pub(crate) const fn calc_linear_cost(len: usize, base: u64, word: u64) -> u64 {
 ///
 /// This function is used as a convenience for specifying the addresses of the various precompiles.
 #[inline]
-pub(crate) const fn u64_to_address(x: u64) -> Address {
+pub const fn u64_to_address(x: u64) -> Address {
     let x = x.to_be_bytes();
     Address::new([
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7],
@@ -67,10 +67,7 @@ pub(crate) const fn u64_to_address(x: u64) -> Address {
 ///
 /// Returns the first `LEN` bytes if it does not need padding.
 #[inline]
-pub(crate) fn right_pad_with_offset<const LEN: usize>(
-    data: &[u8],
-    offset: usize,
-) -> Cow<'_, [u8; LEN]> {
+pub fn right_pad_with_offset<const LEN: usize>(data: &[u8], offset: usize) -> Cow<'_, [u8; LEN]> {
     right_pad(data.get(offset..).unwrap_or_default())
 }
 
@@ -79,7 +76,7 @@ pub(crate) fn right_pad_with_offset<const LEN: usize>(
 /// Returns the first `len` bytes if it does not need padding.
 #[inline]
 #[allow(dead_code)]
-pub(crate) fn right_pad_with_offset_vec(data: &[u8], offset: usize, len: usize) -> Cow<'_, [u8]> {
+pub fn right_pad_with_offset_vec(data: &[u8], offset: usize, len: usize) -> Cow<'_, [u8]> {
     right_pad_vec(data.get(offset..).unwrap_or_default(), len)
 }
 
@@ -87,7 +84,7 @@ pub(crate) fn right_pad_with_offset_vec(data: &[u8], offset: usize, len: usize) 
 ///
 /// Returns the first `LEN` bytes if it does not need padding.
 #[inline]
-pub(crate) fn right_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
+pub fn right_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
     if let Some(data) = data.get(..LEN) {
         Cow::Borrowed(data.try_into().unwrap())
     } else {
@@ -101,7 +98,7 @@ pub(crate) fn right_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
 ///
 /// Returns the first `len` bytes if it does not need padding.
 #[inline]
-pub(crate) fn right_pad_vec(data: &[u8], len: usize) -> Cow<'_, [u8]> {
+pub fn right_pad_vec(data: &[u8], len: usize) -> Cow<'_, [u8]> {
     if let Some(data) = data.get(..len) {
         Cow::Borrowed(data)
     } else {
@@ -115,7 +112,7 @@ pub(crate) fn right_pad_vec(data: &[u8], len: usize) -> Cow<'_, [u8]> {
 ///
 /// Returns the first `LEN` bytes if it does not need padding.
 #[inline]
-pub(crate) fn left_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
+pub fn left_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
     if let Some(data) = data.get(..LEN) {
         Cow::Borrowed(data.try_into().unwrap())
     } else {
@@ -130,7 +127,7 @@ pub(crate) fn left_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
 /// Returns the first `len` bytes if it does not need padding.
 #[inline]
 #[allow(dead_code)]
-pub(crate) fn left_pad_vec(data: &[u8], len: usize) -> Cow<'_, [u8]> {
+pub fn left_pad_vec(data: &[u8], len: usize) -> Cow<'_, [u8]> {
     if let Some(data) = data.get(..len) {
         Cow::Borrowed(data)
     } else {
@@ -145,7 +142,7 @@ pub(crate) fn left_pad_vec(data: &[u8], len: usize) -> Cow<'_, [u8]> {
 /// Unlike [`left_pad_vec`], when `data` is longer than `len` this correctly
 /// truncates leading (most-significant) bytes instead of trailing ones.
 #[inline]
-pub(crate) fn left_pad_vec_be(data: &[u8], len: usize) -> Cow<'_, [u8]> {
+pub fn left_pad_vec_be(data: &[u8], len: usize) -> Cow<'_, [u8]> {
     if data.len() < len {
         let mut padded = vec![0; len];
         padded[len - data.len()..].copy_from_slice(data);
@@ -159,7 +156,7 @@ pub(crate) fn left_pad_vec_be(data: &[u8], len: usize) -> Cow<'_, [u8]> {
 ///
 /// This is optimized to not allocate at runtime by using 2 static arrays.
 #[inline]
-pub(crate) const fn bool_to_bytes32(value: bool) -> Bytes {
+pub const fn bool_to_bytes32(value: bool) -> Bytes {
     Bytes::from_static(&bool_to_b256(value).0)
 }
 
@@ -167,7 +164,7 @@ pub(crate) const fn bool_to_bytes32(value: bool) -> Bytes {
 ///
 /// This is optimized to not allocate at runtime by using 2 static arrays.
 #[inline]
-pub(crate) const fn bool_to_b256(value: bool) -> &'static B256 {
+pub const fn bool_to_b256(value: bool) -> &'static B256 {
     const TRUE: &B256 =
         &b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
     const FALSE: &B256 =
@@ -194,30 +191,37 @@ pub fn read_word_padded(data: &[u8], offset: usize) -> B256 {
 
 /// Fixed-size bit array stored inline in `WORDS` 64-bit words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct BitArray<const WORDS: usize>([u64; WORDS]);
+pub struct BitArray<const WORDS: usize>([u64; WORDS]);
+
+impl<const WORDS: usize> Default for BitArray<WORDS> {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl<const WORDS: usize> BitArray<WORDS> {
     /// Creates a bit array with every bit unset.
     #[inline]
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self([0; WORDS])
     }
 
     /// Returns whether bit `index` is set.
     #[inline]
-    pub(crate) const fn get(&self, index: usize) -> bool {
+    pub const fn get(&self, index: usize) -> bool {
         self.0[index / 64] & (1 << (index % 64)) != 0
     }
 
     /// Sets bit `index`.
     #[inline]
-    pub(crate) const fn set(&mut self, index: usize) {
+    pub const fn set(&mut self, index: usize) {
         self.0[index / 64] |= 1 << (index % 64);
     }
 
     /// Unsets every bit.
     #[inline]
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.0.fill(0);
     }
 }
