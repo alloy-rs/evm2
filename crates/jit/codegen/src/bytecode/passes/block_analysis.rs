@@ -727,11 +727,12 @@ impl Bytecode<'_> {
     ) -> (Vec<(Inst, JumpResolution)>, usize) {
         let num_blocks = self.cfg.blocks.len();
 
-        // Initialize block states. Entry block starts with an empty stack.
+        // Initialize block states. Entry block starts with an empty stack, or with unknown
+        // entries when the caller may pass a stack.
         let mut block_states: IndexVec<Block, BlockState> =
             index_vec![BlockState::Bottom; num_blocks];
         block_states[Block::from_usize(0)] =
-            BlockState::Known { stack: Vec::new(), truncated: false };
+            BlockState::Known { stack: Vec::new(), truncated: self.stack_observed() };
 
         // Collect unresolved jumps, plus static JUMPI instructions whose condition
         // may become constant only after CFG fixpoint.
