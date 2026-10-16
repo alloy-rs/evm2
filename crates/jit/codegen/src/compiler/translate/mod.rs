@@ -888,11 +888,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                         self.pop_ignore(1);
                         self.add_invalid_jump()
                     } else if data.flags.contains(InstFlags::MULTI_JUMP) {
-                        // The analysis proved the target is one of `targets`, all of which fit in
-                        // 64 bits, so switch on the low bits instead of the whole word.
                         let target_value = self.pop();
-                        let i64_type = self.bcx.type_int(64);
-                        let target_value = self.bcx.ireduce(i64_type, target_value);
                         let targets = self.bytecode.multi_jump_targets(inst).unwrap();
 
                         if opcode == op::JUMPI && !has_const_jumpi_condition {
