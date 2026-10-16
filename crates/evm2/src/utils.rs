@@ -63,15 +63,6 @@ pub const fn u64_to_address(x: u64) -> Address {
     ])
 }
 
-/// Right-pads the given slice at `offset` with zeroes until `len`.
-///
-/// Returns the first `len` bytes if it does not need padding.
-#[inline]
-#[allow(dead_code)]
-pub fn right_pad_with_offset_vec(data: &[u8], offset: usize, len: usize) -> Cow<'_, [u8]> {
-    right_pad_vec(data.get(offset..).unwrap_or_default(), len)
-}
-
 /// Right-pads the given slice with zeroes until `LEN`.
 ///
 /// Returns the first `LEN` bytes if it does not need padding.
@@ -114,25 +105,9 @@ pub fn left_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
     }
 }
 
-/// Left-pads the given slice with zeroes until `len`.
-///
-/// Returns the first `len` bytes if it does not need padding.
-#[inline]
-#[allow(dead_code)]
-pub fn left_pad_vec(data: &[u8], len: usize) -> Cow<'_, [u8]> {
-    if let Some(data) = data.get(..len) {
-        Cow::Borrowed(data)
-    } else {
-        let mut padded = vec![0; len];
-        padded[len - data.len()..].copy_from_slice(data);
-        Cow::Owned(padded)
-    }
-}
-
 /// Left-pads the given big-endian slice with zeroes until `len`.
 ///
-/// Unlike [`left_pad_vec`], when `data` is longer than `len` this correctly
-/// truncates leading (most-significant) bytes instead of trailing ones.
+/// When `data` is longer than `len`, this truncates the leading (most-significant) bytes.
 #[inline]
 pub fn left_pad_vec_be(data: &[u8], len: usize) -> Cow<'_, [u8]> {
     if data.len() < len {
@@ -156,7 +131,7 @@ pub const fn bool_to_bytes32(value: bool) -> Bytes {
 ///
 /// This is optimized to not allocate at runtime by using 2 static arrays.
 #[inline]
-pub const fn bool_to_b256(value: bool) -> &'static B256 {
+const fn bool_to_b256(value: bool) -> &'static B256 {
     const TRUE: &B256 =
         &b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
     const FALSE: &B256 =
@@ -183,37 +158,30 @@ pub fn read_word_padded(data: &[u8], offset: usize) -> B256 {
 
 /// Fixed-size bit array stored inline in `WORDS` 64-bit words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BitArray<const WORDS: usize>([u64; WORDS]);
-
-impl<const WORDS: usize> Default for BitArray<WORDS> {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub(crate) struct BitArray<const WORDS: usize>([u64; WORDS]);
 
 impl<const WORDS: usize> BitArray<WORDS> {
     /// Creates a bit array with every bit unset.
     #[inline]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self([0; WORDS])
     }
 
     /// Returns whether bit `index` is set.
     #[inline]
-    pub const fn get(&self, index: usize) -> bool {
+    pub(crate) const fn get(&self, index: usize) -> bool {
         self.0[index / 64] & (1 << (index % 64)) != 0
     }
 
     /// Sets bit `index`.
     #[inline]
-    pub const fn set(&mut self, index: usize) {
+    pub(crate) const fn set(&mut self, index: usize) {
         self.0[index / 64] |= 1 << (index % 64);
     }
 
     /// Unsets every bit.
     #[inline]
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.0.fill(0);
     }
 }
@@ -224,22 +192,7 @@ mod tests {
     use core::assert_matches;
 
     #[test]
-    fn get_with_right_padding() {
-        let data = [1, 2, 3, 4];
-        let padded = right_pad_with_offset_vec(&data, 4, 8);
-        assert_matches!(padded, Cow::Owned(_));
-        assert_eq!(padded[..], [0, 0, 0, 0, 0, 0, 0, 0]);
-
-        let data = [1, 2, 3, 4, 5, 6, 7, 8];
-        let padded = right_pad_with_offset_vec(&data, 0, 8);
-        assert_matches!(padded, Cow::Borrowed(_));
-        assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
-
-        let data = [1, 2, 3, 4, 5, 6, 7, 8];
-        let padded = right_pad_with_offset_vec(&data, 4, 8);
-        assert_matches!(padded, Cow::Owned(_));
-        assert_eq!(padded[..], [5, 6, 7, 8, 0, 0, 0, 0]);
-
+    fn read_word_with_padding() {
         let data: [u8; 40] = core::array::from_fn(|i| i as u8 + 1);
         assert_eq!(read_word_padded(&data, 8).0, core::array::from_fn(|i| i as u8 + 9));
         let mut tail = [0; 32];
@@ -274,15 +227,9 @@ mod tests {
         let padded = left_pad::<8>(&data);
         assert_matches!(padded, Cow::Owned(_));
         assert_eq!(padded[..], [0, 0, 0, 0, 1, 2, 3, 4]);
-        let padded = left_pad_vec(&data, 8);
-        assert_matches!(padded, Cow::Owned(_));
-        assert_eq!(padded[..], [0, 0, 0, 0, 1, 2, 3, 4]);
 
         let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
         let padded = left_pad::<8>(&data);
-        assert_matches!(padded, Cow::Borrowed(_));
-        assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
-        let padded = left_pad_vec(&data, 8);
         assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
     }
