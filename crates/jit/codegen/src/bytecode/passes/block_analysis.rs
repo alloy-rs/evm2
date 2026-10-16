@@ -857,7 +857,15 @@ impl Bytecode<'_> {
             );
         }
 
-        let count = jump_targets.iter().filter(|(_, target)| target.is_resolved()).count();
+        // Without unresolved jumps, the jumps the fixpoint never reached are unreachable too.
+        let has_top_jump = jump_targets.iter().any(|(_, target)| target.is_top());
+        let count = jump_targets
+            .iter()
+            .filter(|(_, target)| {
+                target.is_resolved()
+                    || (!has_top_jump && matches!(target.target, JumpTarget::Bottom))
+            })
+            .count();
 
         (jump_targets, count)
     }
@@ -3069,6 +3077,22 @@ mod tests_edge_cases {
         let bytecode = analyze_asm(
             "
             STOP
+            PUSH0
+            CALLDATALOAD
+            JUMP
+        ",
+        );
+        assert!(!bytecode.has_dynamic_jumps);
+    }
+
+    /// A dynamic jump that only the jump itself could reach, behind a `JUMPDEST`, as in data
+    /// contracts whose code starts with `STOP`.
+    #[test]
+    fn unreached_jumpdest_dynamic_jump() {
+        let bytecode = analyze_asm(
+            "
+            STOP
+            JUMPDEST
             PUSH0
             CALLDATALOAD
             JUMP
