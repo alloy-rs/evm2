@@ -353,7 +353,7 @@ jobs:
         with:
           tool: zepter
       - name: Eagerly pull dependencies
-        run: cargo generate-lockfile
+        run: cargo metadata --format-version=1 --locked > /dev/null
       - run: zepter run check
 
   examples:
