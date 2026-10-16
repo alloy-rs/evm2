@@ -283,15 +283,23 @@ enum ContextMode {
 
 impl ContextMode {
     /// Returns the budget of a fixpoint attempt in this mode.
-    const fn budget(self, num_blocks: usize, num_insts: usize) -> Budget {
+    fn budget(self, num_blocks: usize, num_insts: usize) -> Budget {
         match self {
-            Self::Full => {
-                Budget { block_parts: 1024, pops: num_blocks * 64, work: num_insts as u64 * 160 }
+            Self::Full => Budget {
+                block_parts: 1024,
+                parts: (num_blocks * 16).min(1 << 16),
+                pops: num_blocks * 64,
+                work: num_insts as u64 * 160,
+            },
+            Self::Coarse => Budget {
+                block_parts: 128,
+                parts: (num_blocks * 8).min(1 << 15),
+                pops: num_blocks * 32,
+                work: num_insts as u64 * 64,
+            },
+            Self::Insensitive => {
+                Budget { block_parts: 1, parts: num_blocks, pops: num_blocks * 8, work: u64::MAX }
             }
-            Self::Coarse => {
-                Budget { block_parts: 128, pops: num_blocks * 32, work: num_insts as u64 * 64 }
-            }
-            Self::Insensitive => Budget { block_parts: 1, pops: num_blocks * 8, work: u64::MAX },
         }
     }
 }
@@ -300,9 +308,12 @@ impl ContextMode {
 struct Budget {
     /// Partitions per block.
     block_parts: usize,
+    /// Partitions in total.
+    parts: usize,
     /// Worklist pops.
     pops: usize,
-    /// Interpreted instructions, joined stack entries, and merged set constants.
+    /// Interpreted instructions, propagated edges, joined stack entries, and merged set
+    /// constants.
     work: u64,
 }
 
@@ -1153,7 +1164,7 @@ impl Bytecode<'_> {
                 let part = match parts[succ].get(&key) {
                     Some(&part) => part,
                     None => {
-                        if parts[succ].len() == budget.block_parts {
+                        if parts[succ].len() == budget.block_parts || states.len() == budget.parts {
                             converged = false;
                             break 'fixpoint;
                         }
@@ -1162,7 +1173,7 @@ impl Bytecode<'_> {
                         part
                     }
                 };
-                work += stack_buf.len().min(MAX_ABS_STACK_DEPTH) as u64;
+                work += 1 + stack_buf.len().min(MAX_ABS_STACK_DEPTH) as u64;
                 if states[part].1.join(&stack_buf, truncated, &mut const_sets) {
                     worklist.push(part);
                 }
