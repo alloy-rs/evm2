@@ -52,6 +52,8 @@ mod meta;
 
 mod fibonacci;
 
+mod entry_stack;
+
 mod runner;
 pub use runner::*;
 
@@ -561,6 +563,29 @@ tests! {
                 op::PUSH1, 6, op::JUMP,
                 op::DUPN, op::PUSH1, op::PUSH1, op::JUMPDEST, // decoded: DUPN(PUSH1), PUSH1(0x5b)
                 op::STOP,
+            ],
+            spec_id: SpecId::AMSTERDAM,
+            expected_return: InstrStop::Stop,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // Same, but the target sits in the truncated immediate of a PUSH2 at the end of
+        // the code.
+        jump_into_desynced_truncated_push_immediate(@raw {
+            bytecode: &[
+                op::PUSH1, 6, op::JUMP,
+                op::DUPN, op::PUSH1, op::PUSH2, op::JUMPDEST, // decoded: DUPN(PUSH1), PUSH2(0x5b)
+            ],
+            spec_id: SpecId::AMSTERDAM,
+            expected_return: InstrStop::Stop,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // Same target, reached through an unresolved dynamic jump (CALLDATASIZE).
+        dynamic_jump_into_desynced_truncated_push_immediate(@raw {
+            bytecode: &[
+                op::PUSH1, 56, op::CALLDATASIZE, op::SUB, op::JUMP, // 64 - 56 = pc 8
+                op::DUPN, op::PUSH1, op::PUSH2, op::JUMPDEST,
             ],
             spec_id: SpecId::AMSTERDAM,
             expected_return: InstrStop::Stop,
