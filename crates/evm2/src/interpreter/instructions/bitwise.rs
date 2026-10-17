@@ -118,7 +118,7 @@ mod tests {
         assert_stack!(SLT(0, neg(1)), 0);
         assert_stack!(SLT(neg(2), neg(1)), 1);
         assert_stack!(SLT(neg(1), neg(1)), 0);
-        assert_stack!(SLT(!(Word::MAX >> 1), Word::MAX >> 1), 1);
+        assert_stack!(SLT(!(Word::MAX >> 1usize), Word::MAX >> 1usize), 1);
     }
 
     #[test]
@@ -127,7 +127,7 @@ mod tests {
         assert_stack!(SGT(neg(1), 0), 0);
         assert_stack!(SGT(neg(1), neg(2)), 1);
         assert_stack!(SGT(neg(1), neg(1)), 0);
-        assert_stack!(SGT(Word::MAX >> 1, !(Word::MAX >> 1)), 1);
+        assert_stack!(SGT(Word::MAX >> 1usize, !(Word::MAX >> 1usize)), 1);
     }
 
     #[test]
