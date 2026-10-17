@@ -1162,7 +1162,7 @@ mod tests {
         }
 
         fn execute(
-            &mut self,
+            &self,
             _evm: &mut Evm<'_, BaseEvmTypes>,
             _message: &Message<BaseEvmTypes>,
             _gas: &mut GasTracker,
