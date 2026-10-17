@@ -79,6 +79,10 @@ ones here with the numbers that rejected them.
   +8% and runtime +3.9%. On the function-wide loops LSR mostly adds
   loop-simplify blocks and LCSSA phis. `-lsr-drop-solution`,
   `-lsr-insns-cost=false`, `-lsr-exp-narrow`, and the LSR limits change little.
+- `-disable-constant-hoisting`: ConstantHoisting keeps the saturated memory
+  offset 2^63-1, which needs `movabs`, in a register across much of the
+  function. Turning it off saves 0.8% of llc instructions and 0.1% of JIT
+  size, but reloads move both ways: seaport +25%, hot47 +103%, hot12 -69%.
 - `-jump-is-expensive` merges the gas and stack checks into one branch through
   `setcc`/`or`: reloads -18% and spills -10% on the corpus, but burntpix and
   curve_stableswap runtime +1.6–1.7% in every run.
