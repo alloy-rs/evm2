@@ -95,7 +95,6 @@ pub static BENCHES: &[Bench] = &[
     Bench::transaction("curve_stableswap", SpecId::CANCUN, "data/curve-stableswap-2pool.json"),
     Bench::transaction("onchain_lm_v2", SpecId::CANCUN, "data/onchain-lm-v2.json"),
     Bench::transaction("usdt", SpecId::OSAKA, "data/usdt.json"),
-    Bench::transaction("seaport_1_6", SpecId::OSAKA, "data/seaport_1_6.json"),
     Bench::transaction("universal_router", SpecId::OSAKA, "data/universal_router.json"),
     Bench::transaction("aggregation_router_v6", SpecId::OSAKA, "data/aggregation_router_v6.json"),
     Bench::transaction("entry_point_v0_7", SpecId::OSAKA, "data/entry_point_v0_7.json"),

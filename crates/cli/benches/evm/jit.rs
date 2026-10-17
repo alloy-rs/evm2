@@ -26,7 +26,6 @@ const SKIP_COMPILE_JIT: &[&str] = &[
     "airdrop",
     "usdc_proxy",
     "usdt",
-    "seaport_1_6",
     "universal_router",
     "aggregation_router_v6",
     "entry_point_v0_7",
