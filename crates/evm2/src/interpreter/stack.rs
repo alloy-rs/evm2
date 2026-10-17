@@ -355,7 +355,7 @@ impl<'a> StackMut<'a> {
             return Err(InstrStop::StackOverflow);
         }
         unsafe {
-            (*self.as_word_mut_ptr().add(len)).write(value);
+            write_word(self.as_word_mut_ptr().add(len), value);
             *self.len = len + 1;
             debug_assert!(*self.len <= Self::CAPACITY);
         }
@@ -371,7 +371,7 @@ impl<'a> StackMut<'a> {
             return Err(InstrStop::StackOverflow);
         }
         unsafe {
-            (*self.as_word_mut_ptr().add(len)).write_u64(value);
+            write_u64(self.as_word_mut_ptr().add(len), value);
             *self.len = len + 1;
             debug_assert!(*self.len <= Self::CAPACITY);
         }
@@ -530,7 +530,7 @@ impl<'a> StackMut<'a> {
 
             let (words, partial_last_word) = slice.as_chunks::<32>();
             for (i, word) in words.iter().enumerate() {
-                (*dst.add(i)).write(Word::from_be_bytes(*word));
+                write_word(dst.add(i), Word::from_be_bytes(*word));
             }
 
             if !partial_last_word.is_empty() {
@@ -544,7 +544,7 @@ impl<'a> StackMut<'a> {
                     tmp[8 - partial_last_limb.len()..].copy_from_slice(partial_last_limb);
                     limbs[full_limbs.len()] = u64::from_be_bytes(tmp);
                 }
-                (*dst.add(words.len())).write(Word::from_limbs(limbs));
+                write_word(dst.add(words.len()), Word::from_limbs(limbs));
             }
         }
 
@@ -571,55 +571,76 @@ pub(crate) trait WordExt {
 
 impl WordExt for Word {
     #[inline(always)]
-    #[allow(clippy::missing_const_for_fn)] // Inline assembly cannot be const.
     fn write(&mut self, value: Word) {
-        core::cfg_select! {
-            // LLVM splits a 32-byte store of a rebuilt vector, so use inline assembly.
-            all(target_arch = "x86_64", target_feature = "avx", not(miri)) => unsafe {
-                let [l0, l1, l2, l3] = value.into_limbs();
-                let _lo: core::arch::x86_64::__m256i;
-                let _hi: core::arch::x86_64::__m128i;
-                core::arch::asm!(
-                    "vmovq {lo:x}, {l0}",
-                    "vpinsrq {lo:x}, {lo:x}, {l1}, 1",
-                    "vmovq {hi:x}, {l2}",
-                    "vpinsrq {hi:x}, {hi:x}, {l3}, 1",
-                    "vinsertf128 {lo:y}, {lo:y}, {hi:x}, 1",
-                    "vmovdqu ymmword ptr [{dst}], {lo:y}",
-                    dst = in(reg) core::ptr::from_mut(self),
-                    l0 = in(reg) l0,
-                    l1 = in(reg) l1,
-                    l2 = in(reg) l2,
-                    l3 = in(reg) l3,
-                    lo = out(ymm_reg) _lo,
-                    hi = out(xmm_reg) _hi,
-                    options(nostack, preserves_flags),
-                );
-            },
-            _ => *self = value,
-        }
+        // SAFETY: `self` is valid for writes.
+        unsafe { write_word(self, value) }
     }
 
     #[inline(always)]
-    #[allow(clippy::missing_const_for_fn)] // Inline assembly cannot be const.
     fn write_u64(&mut self, value: u64) {
-        core::cfg_select! {
-            // LLVM splits a 32-byte store of a zero-extended value, so use inline assembly.
-            all(target_arch = "x86_64", target_feature = "avx", not(miri)) => unsafe {
-                // A typed 256-bit operand lets LLVM see the dirty upper state and emit
-                // `vzeroupper`.
-                let _tmp: core::arch::x86_64::__m256i;
-                core::arch::asm!(
-                    "vmovq {tmp:x}, {value}",
-                    "vmovdqu ymmword ptr [{dst}], {tmp:y}",
-                    dst = in(reg) core::ptr::from_mut(self),
-                    value = in(reg) value,
-                    tmp = out(ymm_reg) _tmp,
-                    options(nostack, preserves_flags),
-                );
-            },
-            _ => *self = Word::from(value),
-        }
+        // SAFETY: `self` is valid for writes.
+        unsafe { write_u64(self, value) }
+    }
+}
+
+/// Raw-pointer form of [`WordExt::write`], for stack slots that may be uninitialized.
+///
+/// # Safety
+///
+/// `dst` must be valid for writes of a word.
+#[inline(always)]
+#[allow(clippy::missing_const_for_fn)] // Inline assembly cannot be const.
+unsafe fn write_word(dst: *mut Word, value: Word) {
+    core::cfg_select! {
+        // LLVM splits a 32-byte store of a rebuilt vector, so use inline assembly.
+        all(target_arch = "x86_64", target_feature = "avx", not(miri)) => unsafe {
+            let [l0, l1, l2, l3] = value.into_limbs();
+            let _lo: core::arch::x86_64::__m256i;
+            let _hi: core::arch::x86_64::__m128i;
+            core::arch::asm!(
+                "vmovq {lo:x}, {l0}",
+                "vpinsrq {lo:x}, {lo:x}, {l1}, 1",
+                "vmovq {hi:x}, {l2}",
+                "vpinsrq {hi:x}, {hi:x}, {l3}, 1",
+                "vinsertf128 {lo:y}, {lo:y}, {hi:x}, 1",
+                "vmovdqu ymmword ptr [{dst}], {lo:y}",
+                dst = in(reg) dst,
+                l0 = in(reg) l0,
+                l1 = in(reg) l1,
+                l2 = in(reg) l2,
+                l3 = in(reg) l3,
+                lo = out(ymm_reg) _lo,
+                hi = out(xmm_reg) _hi,
+                options(nostack, preserves_flags),
+            );
+        },
+        _ => unsafe { dst.write(value) },
+    }
+}
+
+/// Raw-pointer form of [`WordExt::write_u64`], for stack slots that may be uninitialized.
+///
+/// # Safety
+///
+/// `dst` must be valid for writes of a word.
+#[inline(always)]
+#[allow(clippy::missing_const_for_fn)] // Inline assembly cannot be const.
+unsafe fn write_u64(dst: *mut Word, value: u64) {
+    core::cfg_select! {
+        // LLVM splits a 32-byte store of a zero-extended value, so use inline assembly.
+        all(target_arch = "x86_64", target_feature = "avx", not(miri)) => unsafe {
+            // A typed 256-bit operand lets LLVM see the dirty upper state and emit `vzeroupper`.
+            let _tmp: core::arch::x86_64::__m256i;
+            core::arch::asm!(
+                "vmovq {tmp:x}, {value}",
+                "vmovdqu ymmword ptr [{dst}], {tmp:y}",
+                dst = in(reg) dst,
+                value = in(reg) value,
+                tmp = out(ymm_reg) _tmp,
+                options(nostack, preserves_flags),
+            );
+        },
+        _ => unsafe { dst.write(Word::from(value)) },
     }
 }
 
