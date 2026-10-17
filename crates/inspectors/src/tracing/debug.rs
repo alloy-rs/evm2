@@ -205,6 +205,20 @@ impl DebugInspector {
         Ok(())
     }
 
+    /// Sets the index the next recorded log receives, see
+    /// [`TracingInspector::set_next_log_index`].
+    pub const fn set_next_log_index(&mut self, index: usize) {
+        match self {
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector)
+            | Self::Erc7562Tracer(inspector, _)
+            | Self::Default(inspector, _) => inspector.set_next_log_index(index),
+            Self::Mux(inspector, _) => inspector.set_next_log_index(index),
+            _ => {}
+        }
+    }
+
     /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
     pub fn get_result<T: EvmTypesHost<Tx: Transaction>>(
         &mut self,
