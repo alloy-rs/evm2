@@ -622,10 +622,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             op::ADD => binop!(iadd),
             op::MUL => binop!(imul),
             op::SUB => binop!(isub),
-            op::DIV => self.build_div_rem(Builtin::Div, false, false),
-            op::SDIV => self.build_div_rem(Builtin::SDiv, true, false),
-            op::MOD => self.build_div_rem(Builtin::Mod, false, true),
-            op::SMOD => self.build_div_rem(Builtin::SMod, true, true),
+            op::DIV | op::SDIV | op::MOD | op::SMOD => self.build_div_rem(opcode),
             op::ADDMOD => {
                 let sp = self.sp_after_inputs();
                 let _ = self.call_builtin(Builtin::AddMod, &[sp]);
@@ -1291,15 +1288,27 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     /// Everything else calls the builtin on a cold path. `INT64_MIN / -1` takes the slow
     /// path too, since its quotient doesn't fit.
     ///
-    /// Constant divisors always call the builtin: LLVM expands the 64-bit division into a
-    /// multiply sequence, which grows small contracts by up to a half for a small runtime gain.
-    fn build_div_rem(&mut self, builtin: Builtin, signed: bool, rem: bool) {
+    /// Checks that a constant operand already satisfies are not emitted, so a constant
+    /// divisor only checks the dividend.
+    fn build_div_rem(&mut self, op: u8) {
+        let signed = matches!(op, op::SDIV | op::SMOD);
+        let builtin = match op {
+            op::DIV => Builtin::Div,
+            op::SDIV => Builtin::SDiv,
+            op::MOD => Builtin::Mod,
+            _ => Builtin::SMod,
+        };
         let fits = |c: U256| {
             let magnitude = if signed && c.bit(255) { !c } else { c };
             magnitude.bit_len() < 64 + usize::from(!signed)
         };
+        // Peephole already handled divisors 0, 1, -1 and powers of two. Both operands are
+        // constant only when the fold budget ran out.
         let [a_const, b_const] = self.const_operands::<2>();
-        if b_const.is_some() || a_const.is_some_and(|c| !fits(c)) {
+        if a_const.is_some_and(|c| !fits(c))
+            || b_const.is_some_and(|c| !fits(c))
+            || a_const.is_some() && b_const.is_some()
+        {
             let sp = self.sp_after_inputs();
             let _ = self.call_builtin(builtin, &[sp]);
             return;
@@ -1320,19 +1329,30 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 this.bcx.zext(this.word_type, value)
             }
         };
-        let a_ext = extend(self, a64);
-        let b_ext = extend(self, b64);
-        let a_fits = self.bcx.icmp(IntCC::Equal, a, a_ext);
-        let b_fits = self.bcx.icmp(IntCC::Equal, b, b_ext);
-        let b_nonzero = self.bcx.icmp_imm(IntCC::NotEqual, b64, 0);
-        let mut fast = self.bcx.bitand(a_fits, b_fits);
-        fast = self.bcx.bitand(fast, b_nonzero);
-        if signed {
-            let a_not_min = self.bcx.icmp_imm(IntCC::NotEqual, a64, i64::MIN);
-            let b_not_neg_one = self.bcx.icmp_imm(IntCC::NotEqual, b64, -1);
-            let no_overflow = self.bcx.bitor(a_not_min, b_not_neg_one);
-            fast = self.bcx.bitand(fast, no_overflow);
-        }
+        let check_fits = |this: &mut Self, value, value64| {
+            let ext = extend(this, value64);
+            this.bcx.icmp(IntCC::Equal, value, ext)
+        };
+        let fast = if b_const.is_some() {
+            check_fits(self, a, a64)
+        } else {
+            let b_fits = check_fits(self, b, b64);
+            let b_nonzero = self.bcx.icmp_imm(IntCC::NotEqual, b64, 0);
+            let mut fast = self.bcx.bitand(b_fits, b_nonzero);
+            if a_const.is_none() {
+                let a_fits = check_fits(self, a, a64);
+                fast = self.bcx.bitand(a_fits, fast);
+            }
+            if signed && a_const.is_none_or(|c| c.as_limbs()[0] == 1 << 63) {
+                let mut no_overflow = self.bcx.icmp_imm(IntCC::NotEqual, b64, -1);
+                if a_const.is_none() {
+                    let a_not_min = self.bcx.icmp_imm(IntCC::NotEqual, a64, i64::MIN);
+                    no_overflow = self.bcx.bitor(a_not_min, no_overflow);
+                }
+                fast = self.bcx.bitand(fast, no_overflow);
+            }
+            fast
+        };
 
         let current = self.current_block();
         let fast_block = self.create_block_after(current, "fast");
@@ -1342,11 +1362,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.brif(fast, fast_block, slow_block);
 
         self.bcx.switch_to_block(fast_block);
-        let r64 = match (signed, rem) {
-            (false, false) => self.bcx.udiv(a64, b64),
-            (true, false) => self.bcx.sdiv(a64, b64),
-            (false, true) => self.bcx.urem(a64, b64),
-            (true, true) => self.bcx.srem(a64, b64),
+        let r64 = match op {
+            op::DIV => self.bcx.udiv(a64, b64),
+            op::SDIV => self.bcx.sdiv(a64, b64),
+            op::MOD => self.bcx.urem(a64, b64),
+            _ => self.bcx.srem(a64, b64),
         };
         let fast_result = extend(self, r64);
         self.bcx.br(done_block);

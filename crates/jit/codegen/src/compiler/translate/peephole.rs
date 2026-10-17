@@ -47,6 +47,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     /// General constant divisors could use native LLVM `udiv`, but i256 division
     /// generates very bloated code (~100+ instructions for the reciprocal multiply),
     /// so we only emit native ops for powers of two where LLVM lowers to `lshr`.
+    /// `build_div_rem` divides other 64-bit divisors natively when the dividend fits.
     fn peephole_div(&mut self) -> bool {
         let [dividend, divisor] = self.const_operands();
         match divisor {
