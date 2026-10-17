@@ -57,25 +57,25 @@ pub fn not([value]: [Word]) -> out {
 
 #[instruction]
 pub fn byte([index, value]: [Word]) -> out {
-    let index = word_to_usize_saturated(*index);
+    let index = word_to_usize_saturated(index);
     out.write_u64(if index < 32 { value.byte(31 - index).into() } else { 0 });
 }
 
 #[instruction]
 pub fn shl([shift, value]: [Word]) -> out {
-    let shift = word_to_usize_saturated(*shift);
+    let shift = word_to_usize_saturated(shift);
     out.write(if shift < 256 { *value << shift } else { Word::ZERO });
 }
 
 #[instruction]
 pub fn shr([shift, value]: [Word]) -> out {
-    let shift = word_to_usize_saturated(*shift);
+    let shift = word_to_usize_saturated(shift);
     out.write(if shift < 256 { *value >> shift } else { Word::ZERO });
 }
 
 #[instruction]
 pub fn sar([shift, value]: [Word]) -> out {
-    let shift = word_to_usize_saturated(*shift);
+    let shift = word_to_usize_saturated(shift);
     let value = if shift < 256 {
         value.arithmetic_shr(shift)
     } else if value.bit(255) {

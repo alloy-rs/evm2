@@ -38,9 +38,9 @@ fn resize_memory_range<T: EvmTypesHost>(
     offset: Word,
     len: Word,
 ) -> Result<Range<usize>> {
-    let len = word_to_usize(len)?;
+    let len = word_to_usize(&len)?;
     let offset = if len != 0 {
-        let offset = word_to_usize(offset)?;
+        let offset = word_to_usize(&offset)?;
         state.resize_memory(gas, offset, len)?;
         offset
     } else {
@@ -300,7 +300,7 @@ fn create_inner<T: EvmTypesHost>(
     let [value, offset, len] = stack.popn::<3>()?;
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
 
-    let len = word_to_usize(len)?;
+    let len = word_to_usize(&len)?;
     if state.feature(EvmFeatures::EIP3860) {
         if len > state.version().max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);

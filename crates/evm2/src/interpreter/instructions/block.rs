@@ -72,7 +72,7 @@ pub fn basefee(cx: _) -> Result<out> {
 
 #[instruction]
 pub fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
-    let index = word_to_usize_saturated(*index);
+    let index = word_to_usize_saturated(index);
     *out = cx.state.tx().blob_hashes.get(index).copied().unwrap_or_default();
 }
 

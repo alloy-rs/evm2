@@ -116,13 +116,13 @@ fn log_common<T: EvmTypesHost>(
 ) -> Result {
     require_non_staticcall(cx.state)?;
     let [offset, len] = stack.popn()?;
-    let len = word_to_usize(len)?;
+    let len = word_to_usize(&len)?;
     cx.gas.spend(cx.state.gas_params().log_cost(n as u8, len))?;
 
     let offset = if len == 0 {
         0
     } else {
-        let offset = word_to_usize(offset)?;
+        let offset = word_to_usize(&offset)?;
         cx.state.resize_memory(cx.gas, offset, len)?;
         offset
     };

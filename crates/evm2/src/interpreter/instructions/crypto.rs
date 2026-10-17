@@ -4,12 +4,12 @@ use evm2_macros::instruction;
 
 #[instruction(dynamic_gas)]
 pub fn keccak256(cx: _, [offset, len]: [Word]) -> Result<out> {
-    let len = word_to_usize(*len)?;
+    let len = word_to_usize(len)?;
     cx.gas.spend(cx.state.gas_params().keccak256_word_cost(len))?;
     let hash = if len == 0 {
         KECCAK256_EMPTY
     } else {
-        let offset = word_to_usize(*offset)?;
+        let offset = word_to_usize(offset)?;
         cx.state.resize_memory(cx.gas, offset, len)?;
         keccak256_hash(cx.state.memory().slice(offset, len))
     };

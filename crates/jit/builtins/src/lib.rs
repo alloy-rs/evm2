@@ -176,7 +176,7 @@ pub unsafe extern "C" fn __revmc_builtin_keccak256(
     sp: &mut [EvmWord; 2],
 ) -> BuiltinResult {
     let rev![offset, len_ptr] = sp;
-    let len = word_to_usize(len_ptr.to_u256())?;
+    let len = word_to_usize(&len_ptr.to_u256())?;
     do_keccak256(ecx, len_ptr, *offset, len)
 }
 
@@ -200,7 +200,7 @@ fn do_keccak256(
         KECCAK256_EMPTY
     } else {
         ecx.gas.spend(ecx.gas_params().keccak256_word_cost(len))?;
-        let offset = word_to_usize(offset.to_u256())?;
+        let offset = word_to_usize(&offset.to_u256())?;
         ensure_memory(ecx, offset, len)?;
         keccak256(ecx.memory().slice(offset, len))
     });
@@ -222,7 +222,7 @@ pub unsafe extern "C" fn __revmc_builtin_calldataload(
     ecx: &EvmContext,
     offset_ptr: &mut EvmWord,
 ) {
-    do_calldataload(ecx, offset_ptr, word_to_usize_saturated(offset_ptr.to_u256()));
+    do_calldataload(ecx, offset_ptr, word_to_usize_saturated(&offset_ptr.to_u256()));
 }
 
 #[unsafe(no_mangle)]
@@ -244,12 +244,12 @@ pub unsafe extern "C" fn __revmc_builtin_calldatacopy(
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
     let rev![memory_offset, data_offset, len] = sp;
-    let len = word_to_usize(len.to_u256())?;
+    let len = word_to_usize(&len.to_u256())?;
     if len != 0 {
         ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
-        let memory_offset = word_to_usize(memory_offset.to_u256())?;
+        let memory_offset = word_to_usize(&memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
-        let data_offset = word_to_usize_saturated(data_offset.to_u256());
+        let data_offset = word_to_usize_saturated(&data_offset.to_u256());
         let input = ecx.input().as_ref();
         let input = unsafe { core::slice::from_raw_parts(input.as_ptr(), input.len()) };
         ecx.memory_mut().set_data(memory_offset, data_offset, len, input);
@@ -282,19 +282,19 @@ pub unsafe extern "C" fn __revmc_builtin_extcodecopy(
     sp: &mut [EvmWord; 4],
 ) -> BuiltinResult {
     let rev![address, memory_offset, code_offset, len] = sp;
-    let len = word_to_usize(len.to_u256())?;
+    let len = word_to_usize(&len.to_u256())?;
     ecx.gas.spend(ecx.gas_params().extcodecopy_cost(len))?;
 
     let mut memory_offset_usize = 0;
     if len != 0 {
-        memory_offset_usize = word_to_usize(memory_offset.to_u256())?;
+        memory_offset_usize = word_to_usize(&memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset_usize, len)?;
     }
 
     let account = load_account(ecx, &address.to_address(), true)?;
     let code = account.code.original_bytes();
 
-    let code_offset_usize = core::cmp::min(word_to_usize_saturated(code_offset.to_u256()), code.len());
+    let code_offset_usize = core::cmp::min(word_to_usize_saturated(&code_offset.to_u256()), code.len());
     ecx.memory_mut().set_data(memory_offset_usize, code_offset_usize, len, &code);
     Ok(())
 }
@@ -305,8 +305,8 @@ pub unsafe extern "C" fn __revmc_builtin_returndatacopy(
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
     let rev![memory_offset, offset, len] = sp;
-    let len = word_to_usize(len.to_u256())?;
-    let data_offset = word_to_usize_saturated(offset.to_u256());
+    let len = word_to_usize(&len.to_u256())?;
+    let data_offset = word_to_usize_saturated(&offset.to_u256());
 
     // Bounds check before charging gas.
     let data_end = data_offset.saturating_add(len);
@@ -316,7 +316,7 @@ pub unsafe extern "C" fn __revmc_builtin_returndatacopy(
 
     ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
     if len != 0 {
-        let memory_offset = word_to_usize(memory_offset.to_u256())?;
+        let memory_offset = word_to_usize(&memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
         let return_data = ecx.return_data();
         let data =
@@ -388,7 +388,7 @@ pub unsafe extern "C" fn __revmc_builtin_self_balance(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_blob_hash(ecx: &EvmContext, index_ptr: &mut EvmWord) {
     let index = index_ptr.to_u256();
-    let index_usize = word_to_usize_saturated(index);
+    let index_usize = word_to_usize_saturated(&index);
     *index_ptr = ecx.tx_env().blob_hashes.get(index_usize).copied().unwrap_or_default().into();
 }
 
@@ -497,11 +497,11 @@ pub unsafe extern "C" fn __revmc_builtin_mcopy(
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
     let rev![dst, src, len] = sp;
-    let len = word_to_usize(len.to_u256())?;
+    let len = word_to_usize(&len.to_u256())?;
     ecx.gas.spend(ecx.gas_params().mcopy_cost(len))?;
     if len != 0 {
-        let dst = word_to_usize(dst.to_u256())?;
-        let src = word_to_usize(src.to_u256())?;
+        let dst = word_to_usize(&dst.to_u256())?;
+        let src = word_to_usize(&src.to_u256())?;
         ensure_memory(ecx, dst.max(src), len)?;
         ecx.memory_mut().copy(dst, src, len);
     }
@@ -518,10 +518,10 @@ pub unsafe extern "C" fn __revmc_builtin_log(
     assume!(n <= 4, "invalid log topic count: {n}");
     let sp = unsafe { sp.add(n as usize) };
     let rev![offset, len] = unsafe { read_words_rev(sp) };
-    let len = word_to_usize(len.to_u256())?;
+    let len = word_to_usize(&len.to_u256())?;
     ecx.gas.spend(ecx.gas_params().log_cost(n, len))?;
     let offset = if len != 0 {
-        let offset = word_to_usize(offset.to_u256())?;
+        let offset = word_to_usize(&offset.to_u256())?;
         ensure_memory(ecx, offset, len)?;
         offset
     } else {
@@ -554,7 +554,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     let mut sp = unsafe { sp.add(len) };
     pop!(sp; value, code_offset, len);
 
-    let len = word_to_usize(len.to_u256())?;
+    let len = word_to_usize(&len.to_u256())?;
     let version = *ecx.version();
     let code = if len != 0 {
         if ecx.enables(EvmFeatures::EIP3860) {
@@ -564,7 +564,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
             ecx.gas.spend(version.gas_params.initcode_cost(len))?;
         }
 
-        let code_offset = word_to_usize(code_offset.to_u256())?;
+        let code_offset = word_to_usize(&code_offset.to_u256())?;
         ensure_memory(ecx, code_offset, len)?;
         Bytes::copy_from_slice(ecx.memory().slice(code_offset, len))
     } else {
@@ -715,18 +715,18 @@ pub unsafe extern "C" fn __revmc_builtin_call(
 
     pop!(sp; in_offset, in_len, out_offset, out_len);
 
-    let in_len = word_to_usize(in_len.to_u256())?;
+    let in_len = word_to_usize(&in_len.to_u256())?;
     let input = if in_len != 0 {
-        let in_offset = word_to_usize(in_offset.to_u256())?;
+        let in_offset = word_to_usize(&in_offset.to_u256())?;
         ensure_memory(ecx, in_offset, in_len)?;
         Bytes::copy_from_slice(ecx.memory().slice(in_offset, in_len))
     } else {
         Bytes::new()
     };
 
-    let out_len = word_to_usize(out_len.to_u256())?;
+    let out_len = word_to_usize(&out_len.to_u256())?;
     let out_offset = if out_len != 0 {
-        let out_offset = word_to_usize(out_offset.to_u256())?;
+        let out_offset = word_to_usize(&out_offset.to_u256())?;
         ensure_memory(ecx, out_offset, out_len)?;
         out_offset
     } else {
@@ -881,9 +881,9 @@ pub unsafe extern "C" fn __revmc_builtin_do_return(
     result: InstrStop,
 ) -> BuiltinResult {
     let rev![offset, len] = sp;
-    let len = word_to_usize(len.to_u256())?;
+    let len = word_to_usize(&len.to_u256())?;
     let output = if len != 0 {
-        let offset = word_to_usize(offset.to_u256())?;
+        let offset = word_to_usize(&offset.to_u256())?;
         let Some(end) = offset.checked_add(len) else {
             return Err(InstrStop::MemoryOOG.into());
         };

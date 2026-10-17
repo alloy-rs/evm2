@@ -42,9 +42,9 @@ fn copy_data(
     data: &[u8],
 ) -> Result {
     if len != 0 {
-        let memory_offset = word_to_usize(*memory_offset)?;
+        let memory_offset = word_to_usize(memory_offset)?;
         memory.resize_evm(gas, gas_params, memory_offset, len)?;
-        memory.set_data(memory_offset, word_to_usize_saturated(*data_offset), len, data);
+        memory.set_data(memory_offset, word_to_usize_saturated(data_offset), len, data);
     }
     Ok(())
 }
@@ -76,7 +76,7 @@ pub fn callvalue(cx: _) -> out {
 
 #[instruction]
 pub fn calldataload(cx: _, [offset]: [Word]) -> out {
-    let offset = word_to_usize_saturated(*offset);
+    let offset = word_to_usize_saturated(offset);
     *out = b256_to_word(read_word_padded(&cx.state.message().input, offset));
 }
 
@@ -87,7 +87,7 @@ pub fn calldatasize(cx: _) -> out {
 
 #[instruction(dynamic_gas)]
 pub fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
-    let len = word_to_usize(*len)?;
+    let len = word_to_usize(len)?;
     // SAFETY: Charging and copying data make no host calls.
     let gas_params = unsafe { cx.state.gas_params_detached() };
     cx.gas.spend(gas_params.copy_cost(len))?;
@@ -102,7 +102,7 @@ pub fn codesize(cx: _) -> out {
 
 #[instruction(dynamic_gas)]
 pub fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
-    let len = word_to_usize(*len)?;
+    let len = word_to_usize(len)?;
     // SAFETY: Charging and copying data make no host calls.
     let gas_params = unsafe { cx.state.gas_params_detached() };
     cx.gas.spend(gas_params.copy_cost(len))?;
@@ -128,10 +128,10 @@ pub fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
 
 #[instruction(dynamic_gas)]
 pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Result {
-    let len = word_to_usize(*len)?;
+    let len = word_to_usize(len)?;
     cx.gas.spend(cx.state.gas_params().extcodecopy_cost(len))?;
     let memory_offset = if len != 0 {
-        let memory_offset = word_to_usize(*memory_offset)?;
+        let memory_offset = word_to_usize(memory_offset)?;
         cx.state.resize_memory(cx.gas, memory_offset, len)?;
         memory_offset
     } else {
@@ -140,7 +140,7 @@ pub fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Re
     let code = load_account(&mut cx, *addr, true)?.code;
     cx.state.0.memory.set_data(
         memory_offset,
-        word_to_usize_saturated(*code_offset),
+        word_to_usize_saturated(code_offset),
         len,
         code.original_byte_slice(),
     );
@@ -154,8 +154,8 @@ pub fn returndatasize(cx: _) -> Result<out> {
 
 #[instruction(dynamic_gas)]
 pub fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
-    let len = word_to_usize(*len)?;
-    let data_offset = word_to_usize_saturated(*data_offset);
+    let len = word_to_usize(len)?;
+    let data_offset = word_to_usize_saturated(data_offset);
     if data_offset.saturating_add(len) > cx.state.return_data().len() {
         return Err(InstrStop::OutOfOffset);
     }
