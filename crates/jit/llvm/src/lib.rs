@@ -1978,7 +1978,7 @@ impl Builder for EvmLlvmBuilder<'_> {
 
 /// Builds the LLVM pass pipeline string. See [`EvmLlvmBackend::optimize_module`].
 fn build_pass_pipeline(with_licm: bool) -> String {
-    let mut passes = String::from("module(globalopt,cgscc(inline),globalopt,function(");
+    let mut passes = String::from("module(function(");
     let function_passes: &[&str] = &[
         "simplifycfg",
         "sroa",
@@ -1990,15 +1990,8 @@ fn build_pass_pipeline(with_licm: bool) -> String {
     ];
     let licm_passes: &[&str] =
         &["loop-mssa(licm,loop-rotate,licm)", "simplifycfg", "instcombine<no-verify-fixpoint>"];
-    let post_passes: &[&str] = &[
-        "sroa",
-        "early-cse",
-        "sccp",
-        "instcombine<no-verify-fixpoint>",
-        "adce",
-        "dse",
-        "simplifycfg",
-    ];
+    let post_passes: &[&str] =
+        &["early-cse", "sccp", "instcombine<no-verify-fixpoint>", "dse", "simplifycfg"];
 
     let iter =
         function_passes.iter().chain(if with_licm { licm_passes } else { &[] }).chain(post_passes);
