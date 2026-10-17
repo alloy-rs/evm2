@@ -89,17 +89,29 @@ impl TransferInspector {
         let to = message.destination;
         self.transfers.push(TransferOperation { kind, from, to, value });
 
-        if self.insert_logs {
-            let from = B256::from_slice(&from.abi_encode());
-            let to = B256::from_slice(&to.abi_encode());
-            let data = value.abi_encode();
+        self.insert_log::<T>(from, to, value, host);
+    }
 
-            let log = Log {
-                address: TRANSFER_LOG_EMITTER,
-                data: LogData::new_unchecked(vec![TRANSFER_EVENT_TOPIC, from, to], data.into()),
-            };
-            host.log(log);
+    fn insert_log<T: EvmTypesHost>(
+        &self,
+        from: Address,
+        to: Address,
+        value: U256,
+        host: &mut T::Host<'_>,
+    ) {
+        if !self.insert_logs {
+            return;
         }
+
+        let from = B256::from_slice(&from.abi_encode());
+        let to = B256::from_slice(&to.abi_encode());
+        let data = value.abi_encode();
+
+        let log = Log {
+            address: TRANSFER_LOG_EMITTER,
+            data: LogData::new_unchecked(vec![TRANSFER_EVENT_TOPIC, from, to], data.into()),
+        };
+        host.log(log);
     }
 }
 
@@ -127,7 +139,7 @@ impl<T: EvmTypesHost> Inspector<T> for TransferInspector {
         contract: &Address,
         target: &Address,
         value: &U256,
-        _host: &mut T::Host<'_>,
+        host: &mut T::Host<'_>,
     ) {
         self.transfers.push(TransferOperation {
             kind: TransferKind::SelfDestruct,
@@ -135,6 +147,10 @@ impl<T: EvmTypesHost> Inspector<T> for TransferInspector {
             to: *target,
             value: *value,
         });
+
+        if !value.is_zero() {
+            self.insert_log::<T>(*contract, *target, *value, host);
+        }
     }
 }
 
