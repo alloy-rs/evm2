@@ -2,7 +2,7 @@ use crate::{
     EvmFeatures, EvmTypesHost,
     interpreter::{
         Host, InstrStop, InterpreterState, Result, StackMut, private::GasInstructionCx,
-        stack::write_word,
+        stack::WordExt,
     },
     utils::word_to_usize,
     version::GasId,
@@ -35,7 +35,7 @@ pub fn sload(cx: _, [key]: [Word]) -> Result<out> {
     if load.is_cold {
         cx.gas.spend(additional_cold_cost)?;
     }
-    write_word(out, load.value);
+    out.write(load.value);
 }
 
 #[instruction(dynamic_gas)]

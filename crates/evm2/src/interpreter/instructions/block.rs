@@ -1,7 +1,7 @@
 use crate::{
     EvmFeatures,
     constants::BLOCK_HASH_HISTORY,
-    interpreter::{Host, Word, stack::write_word},
+    interpreter::{Host, Word, stack::WordExt},
     utils::{address_to_word, b256_to_word, word_to_usize_saturated},
 };
 use evm2_macros::instruction;
@@ -17,12 +17,12 @@ pub fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
     } else {
         Word::ZERO
     };
-    write_word(out, hash);
+    out.write(hash);
 }
 
 #[instruction]
 pub fn coinbase(cx: _) -> out {
-    write_word(out, address_to_word(&cx.state.host().block_env().beneficiary));
+    out.write(address_to_word(&cx.state.host().block_env().beneficiary));
 }
 
 #[instruction]

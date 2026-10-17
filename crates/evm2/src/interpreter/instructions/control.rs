@@ -4,7 +4,7 @@ use crate::{
         InstrStop, Result, Word, op,
         opcode::OpCode,
         private::{GasInstructionCx, InstructionCx},
-        stack::write_u64,
+        stack::WordExt,
     },
     utils::{word_to_usize, word_to_usize_saturated},
 };
@@ -44,12 +44,12 @@ fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut InstructionCx<'_, '_, '_, 
 
 #[instruction]
 pub fn pc(cx: _) -> out {
-    write_u64(out, cx.state.bytecode().pc_offset(*cx.pc) as u64);
+    out.write_u64(cx.state.bytecode().pc_offset(*cx.pc) as u64);
 }
 
 #[instruction(dynamic_gas)]
 pub fn gas(cx: _) -> out {
-    write_u64(out, cx.gas.remaining());
+    out.write_u64(cx.gas.remaining());
 }
 
 #[instruction]

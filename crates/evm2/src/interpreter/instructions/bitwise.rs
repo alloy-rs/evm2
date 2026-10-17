@@ -1,41 +1,38 @@
 use super::i256::i256_lt;
 use crate::{
-    interpreter::{
-        Word,
-        stack::{write_u64, write_word},
-    },
+    interpreter::{Word, stack::WordExt},
     utils::word_to_usize_saturated,
 };
 use evm2_macros::instruction;
 
 #[instruction]
 pub fn lt([a, b]: [Word]) -> out {
-    write_u64(out, (a < b) as u64);
+    out.write_u64((a < b) as u64);
 }
 
 #[instruction]
 pub fn gt([a, b]: [Word]) -> out {
-    write_u64(out, (a > b) as u64);
+    out.write_u64((a > b) as u64);
 }
 
 #[instruction]
 pub fn slt([a, b]: [Word]) -> out {
-    write_u64(out, i256_lt(a, b) as u64);
+    out.write_u64(i256_lt(a, b) as u64);
 }
 
 #[instruction]
 pub fn sgt([a, b]: [Word]) -> out {
-    write_u64(out, i256_lt(b, a) as u64);
+    out.write_u64(i256_lt(b, a) as u64);
 }
 
 #[instruction]
 pub fn eq([a, b]: [Word]) -> out {
-    write_u64(out, (a == b) as u64);
+    out.write_u64((a == b) as u64);
 }
 
 #[instruction]
 pub fn iszero([value]: [Word]) -> out {
-    write_u64(out, value.is_zero() as u64);
+    out.write_u64(value.is_zero() as u64);
 }
 
 #[instruction]
@@ -61,19 +58,19 @@ pub fn not([value]: [Word]) -> out {
 #[instruction]
 pub fn byte([index, value]: [Word]) -> out {
     let index = word_to_usize_saturated(*index);
-    write_u64(out, if index < 32 { value.byte(31 - index).into() } else { 0 });
+    out.write_u64(if index < 32 { value.byte(31 - index).into() } else { 0 });
 }
 
 #[instruction]
 pub fn shl([shift, value]: [Word]) -> out {
     let shift = word_to_usize_saturated(*shift);
-    write_word(out, if shift < 256 { *value << shift } else { Word::ZERO });
+    out.write(if shift < 256 { *value << shift } else { Word::ZERO });
 }
 
 #[instruction]
 pub fn shr([shift, value]: [Word]) -> out {
     let shift = word_to_usize_saturated(*shift);
-    write_word(out, if shift < 256 { *value >> shift } else { Word::ZERO });
+    out.write(if shift < 256 { *value >> shift } else { Word::ZERO });
 }
 
 #[instruction]
@@ -86,12 +83,12 @@ pub fn sar([shift, value]: [Word]) -> out {
     } else {
         Word::ZERO
     };
-    write_word(out, value);
+    out.write(value);
 }
 
 #[instruction]
 pub fn clz([value]: [Word]) -> out {
-    write_u64(out, value.leading_zeros() as u64);
+    out.write_u64(value.leading_zeros() as u64);
 }
 
 #[cfg(test)]
