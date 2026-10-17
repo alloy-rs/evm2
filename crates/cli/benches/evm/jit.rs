@@ -25,6 +25,14 @@ const SKIP_COMPILE_JIT: &[&str] = &[
     "univ2_router",
     "airdrop",
     "usdc_proxy",
+    "universal_router",
+    "aggregation_router_v6",
+    "uniswap_v3_pool",
+    "uniswap_v4_pool_manager",
+    "curve_3pool",
+    "curve_tricrypto2",
+    "balancer_vault",
+    "succinct_staking",
 ];
 const SKIP_ALL: &[&str] = &["seaport", "snailtracer"];
 
