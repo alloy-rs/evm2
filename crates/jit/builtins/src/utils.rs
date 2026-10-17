@@ -92,12 +92,12 @@ pub(crate) unsafe fn copy_operation(
     rev![memory_offset, data_offset, len]: &mut [EvmWord; 3],
     data: &[u8],
 ) -> BuiltinResult {
-    let len = word_to_usize(len.to_u256())?;
+    let len = word_to_usize(&len.to_u256())?;
     if len != 0 {
         ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
-        let memory_offset = word_to_usize(memory_offset.to_u256())?;
+        let memory_offset = word_to_usize(&memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
-        let data_offset = word_to_usize_saturated(data_offset.to_u256());
+        let data_offset = word_to_usize_saturated(&data_offset.to_u256());
         ecx.memory_mut().set_data(memory_offset, data_offset, len, data);
     }
     Ok(())

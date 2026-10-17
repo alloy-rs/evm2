@@ -19,20 +19,20 @@ pub fn stop() -> Result {
 
 #[instruction]
 pub fn jump(cx: _, [target]: [Word]) -> Result {
-    jump_inner(*target, &mut cx)
+    jump_inner(target, &mut cx)
 }
 
 #[instruction]
 pub fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
-        jump_inner(*target, &mut cx)?;
+        jump_inner(target, &mut cx)?;
     } else {
         unsafe { cx.pc.advance_unchecked(1) };
     };
 }
 
 #[inline(always)]
-fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut InstructionCx<'_, '_, '_, T>) -> Result {
+fn jump_inner<T: EvmTypesHost>(target: &Word, cx: &mut InstructionCx<'_, '_, '_, T>) -> Result {
     let target = word_to_usize_saturated(target);
     if !cx.state.bytecode().is_valid_jumpdest(target) {
         cold_path();
@@ -72,9 +72,9 @@ fn return_inner<T: EvmTypesHost>(
     len: &Word,
     result: InstrStop,
 ) -> Result {
-    let len = word_to_usize(*len)?;
+    let len = word_to_usize(len)?;
     let output = if len != 0 {
-        let offset = word_to_usize(*offset)?;
+        let offset = word_to_usize(offset)?;
         let Some(end) = offset.checked_add(len) else {
             return Err(InstrStop::MemoryOOG);
         };

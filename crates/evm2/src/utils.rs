@@ -31,8 +31,8 @@ pub fn word_to_address(value: Word) -> Address {
 
 /// Converts an EVM word to `usize`, returning an invalid-operand OOG stop on overflow.
 #[inline]
-pub fn word_to_usize(value: Word) -> Result<usize> {
-    value.try_into().map_err(|_| {
+pub fn word_to_usize(value: &Word) -> Result<usize> {
+    word_to_usize_opt(value).ok_or_else(|| {
         cold_path();
         InstrStop::InvalidOperandOOG
     })
@@ -40,8 +40,24 @@ pub fn word_to_usize(value: Word) -> Result<usize> {
 
 /// Converts an EVM word to `usize`, saturating on overflow.
 #[inline]
-pub fn word_to_usize_saturated(value: Word) -> usize {
-    value.try_into().unwrap_or(usize::MAX)
+pub fn word_to_usize_saturated(value: &Word) -> usize {
+    word_to_usize_opt(value).unwrap_or(usize::MAX)
+}
+
+#[inline(always)]
+fn word_to_usize_opt(value: &Word) -> Option<usize> {
+    core::cfg_select! {
+        // Stack words are written with one 32-byte store, which can't forward to separate loads
+        // of the high limbs, so test them with one full-width load instead.
+        all(target_arch = "x86_64", target_feature = "avx", not(miri)) => unsafe {
+            use core::arch::x86_64::*;
+            let v = _mm256_loadu_si256(core::ptr::from_ref(value).cast());
+            let high = _mm256_set_epi64x(-1, -1, -1, 0);
+            (_mm256_testz_si256(v, high) != 0)
+                .then(|| _mm_cvtsi128_si64(_mm256_castsi256_si128(v)) as usize)
+        },
+        _ => (*value).try_into().ok(),
+    }
 }
 
 /// Calculate the linear cost of a precompile.
