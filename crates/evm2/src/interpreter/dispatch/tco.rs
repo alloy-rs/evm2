@@ -2,7 +2,7 @@ use super::{InspectMode, run_state};
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{
-        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, gas::RemainingGas, op,
+        InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, gas::RemainingGas,
         private::InstructionImplFn,
     },
 };
@@ -107,25 +107,6 @@ extern_table! {
         // SAFETY: `instructions` is a pointer to a `TailInstrTable`.
         let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };
         let instr = instructions_t[pc.op() as usize];
-        // Dispatch common successors with a compare and a direct jump. The indirect jump is shared
-        // by every successor of this opcode and mispredicts often; a conditional branch on one
-        // likely successor predicts better. Comparing the table entry keeps the target exact; an
-        // address merged with identical code would run the same code anyway.
-        if !M::INSPECT {
-            macro_rules! direct {
-                ($($next:ident),*) => {{$(
-                    let next = dispatch::<T, C, M, { op::$next }> as TailInstrFn<T>;
-                    if core::ptr::fn_addr_eq(instr, next) {
-                        tail_return!(dispatch::<T, C, M, { op::$next }>(
-                            pc, stack, remaining_gas, state, instructions
-                        ));
-                    }
-                )*}};
-            }
-            if OP == op::PUSH2 {
-                direct!(JUMPI, JUMP);
-            }
-        }
         tail_return!(instr(pc, stack, remaining_gas, state, instructions));
     }
 }
