@@ -250,7 +250,7 @@ pub(crate) struct TestInterpreter {
 
 impl TestInterpreter {
     pub(crate) fn stack(&self) -> &[Word] {
-        unsafe { core::slice::from_raw_parts(self.stack.as_ptr().cast(), self.stack_len) }
+        unsafe { core::slice::from_raw_parts(self.stack.0.as_ptr().cast(), self.stack_len) }
     }
 
     pub(crate) fn memory(&mut self, offset: usize, len: usize) -> &[u8] {

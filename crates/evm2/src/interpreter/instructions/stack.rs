@@ -1,4 +1,4 @@
-use crate::interpreter::{InstrStop, Word};
+use crate::interpreter::InstrStop;
 use evm2_macros::instruction;
 
 #[instruction]
@@ -7,7 +7,7 @@ pub fn pop([_value]: [Word]) -> Result {}
 #[instruction(no_stack_preamble)]
 pub fn push<const N: usize>(cx: _) -> Result {
     if N == 0 {
-        return stack.push(Word::ZERO);
+        return stack.push_u64(0);
     }
     let slice = unsafe { cx.pc.read_bytes_offset_unchecked(1, N) };
     stack.push_slice(slice)

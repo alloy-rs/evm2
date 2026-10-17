@@ -1,36 +1,38 @@
-use super::i256::i256_cmp;
-use crate::{interpreter::Word, utils::word_to_usize_saturated};
-use core::cmp::Ordering;
+use super::i256::i256_lt;
+use crate::{
+    interpreter::{Word, stack::WordExt},
+    utils::word_to_usize_saturated,
+};
 use evm2_macros::instruction;
 
 #[instruction]
 pub fn lt([a, b]: [Word]) -> out {
-    *out = Word::from(a < b);
+    out.write_u64((a < b) as u64);
 }
 
 #[instruction]
 pub fn gt([a, b]: [Word]) -> out {
-    *out = Word::from(a > b);
+    out.write_u64((a > b) as u64);
 }
 
 #[instruction]
 pub fn slt([a, b]: [Word]) -> out {
-    *out = Word::from(i256_cmp(a, b) == Ordering::Less);
+    out.write_u64(i256_lt(a, b) as u64);
 }
 
 #[instruction]
 pub fn sgt([a, b]: [Word]) -> out {
-    *out = Word::from(i256_cmp(a, b) == Ordering::Greater);
+    out.write_u64(i256_lt(b, a) as u64);
 }
 
 #[instruction]
 pub fn eq([a, b]: [Word]) -> out {
-    *out = Word::from(a == b);
+    out.write_u64((a == b) as u64);
 }
 
 #[instruction]
 pub fn iszero([value]: [Word]) -> out {
-    *out = Word::from(value.is_zero());
+    out.write_u64(value.is_zero() as u64);
 }
 
 #[instruction]
@@ -56,36 +58,37 @@ pub fn not([value]: [Word]) -> out {
 #[instruction]
 pub fn byte([index, value]: [Word]) -> out {
     let index = word_to_usize_saturated(*index);
-    *out = if index < 32 { Word::from(value.byte(31 - index)) } else { Word::ZERO };
+    out.write_u64(if index < 32 { value.byte(31 - index).into() } else { 0 });
 }
 
 #[instruction]
 pub fn shl([shift, value]: [Word]) -> out {
     let shift = word_to_usize_saturated(*shift);
-    *out = if shift < 256 { *value << shift } else { Word::ZERO };
+    out.write(if shift < 256 { *value << shift } else { Word::ZERO });
 }
 
 #[instruction]
 pub fn shr([shift, value]: [Word]) -> out {
     let shift = word_to_usize_saturated(*shift);
-    *out = if shift < 256 { *value >> shift } else { Word::ZERO };
+    out.write(if shift < 256 { *value >> shift } else { Word::ZERO });
 }
 
 #[instruction]
 pub fn sar([shift, value]: [Word]) -> out {
     let shift = word_to_usize_saturated(*shift);
-    *out = if shift < 256 {
+    let value = if shift < 256 {
         value.arithmetic_shr(shift)
     } else if value.bit(255) {
         Word::MAX
     } else {
         Word::ZERO
     };
+    out.write(value);
 }
 
 #[instruction]
 pub fn clz([value]: [Word]) -> out {
-    *out = Word::from(value.leading_zeros());
+    out.write_u64(value.leading_zeros() as u64);
 }
 
 #[cfg(test)]
@@ -114,6 +117,8 @@ mod tests {
         assert_stack!(SLT(neg(1), 0), 1);
         assert_stack!(SLT(0, neg(1)), 0);
         assert_stack!(SLT(neg(2), neg(1)), 1);
+        assert_stack!(SLT(neg(1), neg(1)), 0);
+        assert_stack!(SLT(!(Word::MAX >> 1usize), Word::MAX >> 1usize), 1);
     }
 
     #[test]
@@ -121,6 +126,8 @@ mod tests {
         assert_stack!(SGT(0, neg(1)), 1);
         assert_stack!(SGT(neg(1), 0), 0);
         assert_stack!(SGT(neg(1), neg(2)), 1);
+        assert_stack!(SGT(neg(1), neg(1)), 0);
+        assert_stack!(SGT(Word::MAX >> 1usize, !(Word::MAX >> 1usize)), 1);
     }
 
     #[test]

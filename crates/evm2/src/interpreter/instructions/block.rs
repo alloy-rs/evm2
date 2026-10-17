@@ -1,14 +1,14 @@
 use crate::{
     EvmFeatures,
     constants::BLOCK_HASH_HISTORY,
-    interpreter::{Host, Word},
+    interpreter::{Host, Word, stack::WordExt},
     utils::{address_to_word, b256_to_word, word_to_usize_saturated},
 };
 use evm2_macros::instruction;
 
 #[instruction]
 pub fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
-    *out = if let Some(diff) = cx.state.host().block_env().number.checked_sub(*number) {
+    let hash = if let Some(diff) = cx.state.host().block_env().number.checked_sub(*number) {
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
         } else {
@@ -17,11 +17,12 @@ pub fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
     } else {
         Word::ZERO
     };
+    out.write(hash);
 }
 
 #[instruction]
 pub fn coinbase(cx: _) -> out {
-    *out = address_to_word(&cx.state.host().block_env().beneficiary);
+    out.write(address_to_word(&cx.state.host().block_env().beneficiary));
 }
 
 #[instruction]
