@@ -2065,6 +2065,10 @@ fn init_() -> Result<()> {
         // conditional branches instead. The flag applies to every `select`, but the IR has few
         // others.
         c"-disable-cgp-select2branch".as_ptr(),
+        // The Zen scheduling models turn on the post-RA list scheduler, which took 6-7% of codegen
+        // instructions. Intel models leave it off, and an out-of-order core gains little from
+        // reordering after register allocation.
+        c"-post-RA-scheduler=false".as_ptr(),
         // A JUMPDEST that dominates the rest of the code and is reached again through the
         // dynamic jump table or an internal function's return switch heads a loop that spans
         // most of the function. MachineLICM hoists every constant materialization in it, often
