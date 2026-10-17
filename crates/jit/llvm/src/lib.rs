@@ -2073,6 +2073,15 @@ fn init_() -> Result<()> {
         // into their users when the preheader's register pressure exceeds the limit: this cut
         // codegen by up to 15x on large mainnet contracts.
         c"-sink-insts-to-avoid-spills".as_ptr(),
+        // ConstantHoisting materializes each 64-bit immediate that needs `movabs`, mostly the
+        // saturated memory offset 2^63-1, once in a common dominator and keeps it in a register
+        // across much of the function. Rematerializing it at each use is cheaper and shrinks
+        // the code.
+        c"-disable-constant-hoisting".as_ptr(),
+        // These change little or no code on the benchmarks and the mainnet corpus but still walk
+        // every machine instruction.
+        c"-disable-x86-domain-reassignment".as_ptr(),
+        c"-disable-postra-machine-licm".as_ptr(),
     ];
     args.extend(extra.iter().map(|s| s.as_ptr()));
     unsafe {
