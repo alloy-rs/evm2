@@ -166,6 +166,24 @@ pub struct StateInner<'a> {
     prewarm_set: PrewarmSet,
 }
 
+impl StateInner<'_> {
+    /// Appends a journal entry, building it straight in the journal's buffer.
+    ///
+    /// `Vec::push` builds the entry on the stack, because it must survive a possible reallocation,
+    /// and then copies it with wide loads. Those loads cannot take their data from the narrower
+    /// stores that built the entry and stall until the stores reach the cache.
+    #[inline(always)]
+    fn push_journal(&mut self, entry: impl FnOnce() -> JournalEntry) {
+        self.journal.reserve(1);
+        let len = self.journal.len();
+        // SAFETY: `reserve` made room for one more entry.
+        unsafe {
+            self.journal.as_mut_ptr().add(len).write(entry());
+            self.journal.set_len(len + 1);
+        }
+    }
+}
+
 impl<'a> State<'a> {
     /// Creates a new state over an initial database.
     pub fn new(initial: impl DynDatabase + 'a) -> Self {
@@ -534,23 +552,24 @@ impl<'a> State<'a> {
     ///
     /// Loading account metadata neither touches nor warms the account. Slot values remain lazy;
     /// loading or warming a slot records the same journal entries as [`AccountHandle::storage`].
-    pub fn storage(&mut self, address: &Address) -> DbResult<StorageHandle<'_, 'a>> {
+    #[inline(always)]
+    pub fn storage<'s>(&'s mut self, address: &'s Address) -> DbResult<StorageHandle<'s, 'a>> {
         let State { accounts, storage_pool, inner, .. } = self;
         let account = Self::account_raw(inner, accounts, address)?;
         if account.storage.slots.capacity() == 0 {
             account.storage.slots = storage_pool.take();
         }
-        Ok(StorageHandle::new(*address, &mut account.storage, inner))
+        Ok(StorageHandle::new(address, &mut account.storage, inner))
     }
 
     /// Loads a single persistent storage slot and returns a journaled mutation handle.
     ///
     /// Cold slots are always loaded. See [`StorageHandle::into_slot`] for loading semantics.
-    pub fn storage_slot(
-        &mut self,
-        address: &Address,
+    pub fn storage_slot<'s>(
+        &'s mut self,
+        address: &'s Address,
         key: Word,
-    ) -> DbResult<StorageSlotHandle<'_, 'a>> {
+    ) -> DbResult<StorageSlotHandle<'s, 'a>> {
         self.storage(address)?.into_slot(key)
     }
 
@@ -684,7 +703,7 @@ impl<'a> State<'a> {
                 if previous == *value {
                     return;
                 }
-                self.inner.journal.push(JournalEntry::TransientStorageChange {
+                self.inner.push_journal(|| JournalEntry::TransientStorageChange {
                     address: *address,
                     key: *key,
                     previous: Some(previous),
@@ -699,7 +718,7 @@ impl<'a> State<'a> {
                 if value.is_zero() {
                     return;
                 }
-                self.inner.journal.push(JournalEntry::TransientStorageChange {
+                self.inner.push_journal(|| JournalEntry::TransientStorageChange {
                     address: *address,
                     key: *key,
                     previous: None,

@@ -2084,6 +2084,14 @@ fn init_() -> Result<()> {
         // conditional branches instead. The flag applies to every `select`, but the IR has few
         // others.
         c"-disable-cgp-select2branch".as_ptr(),
+        // A JUMPDEST that dominates the rest of the code and is reached again through the
+        // dynamic jump table or an internal function's return switch heads a loop that spans
+        // most of the function. MachineLICM hoists every constant materialization in it, often
+        // hundreds of constant pool loads, into the preheader, and greedy register allocation
+        // then spends most of codegen splitting those function-wide live ranges. Sink them back
+        // into their users when the preheader's register pressure exceeds the limit: this cut
+        // codegen by up to 15x on large mainnet contracts.
+        c"-sink-insts-to-avoid-spills".as_ptr(),
     ];
     args.extend(extra.iter().map(|s| s.as_ptr()));
     unsafe {
