@@ -195,6 +195,10 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
         interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
+        // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
+        if interpreter.gas().remaining() > i64::MAX as u64 {
+            return None;
+        }
         let func = *self.functions.get(&interpreter.original_bytecode_hash())?;
         interpreter.prepare_run(host);
         Some(unsafe { func.call_with_interpreter(interpreter) })

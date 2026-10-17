@@ -48,15 +48,26 @@ impl<T: Copy> VStack<T> {
     /// All input slots start as [`VSlot::Materialized`] because they were written by
     /// the previous section (or the function entry) and are already in memory.
     pub(super) fn reset(&mut self, inputs: usize, max_growth: usize) {
-        self.base_offset = -(inputs as i32);
+        self.base_offset = 0;
         self.top_offset = 0;
-        let capacity = inputs + max_growth;
         self.slots.clear();
-        self.slots.resize(capacity, None);
+        self.extend(-(inputs as i32), max_growth as i32);
+    }
 
-        // Section inputs are already in memory.
-        for slot in self.slots.iter_mut().take(inputs) {
-            *slot = Some(VSlot::Materialized);
+    /// Extends the tracked range to cover `low..high` for a section that continues the
+    /// current one.
+    ///
+    /// New slots below the range are inputs that no earlier part of the section touched, so
+    /// they are already in memory.
+    pub(super) fn extend(&mut self, low: i32, high: i32) {
+        if low < self.base_offset {
+            let n = (self.base_offset - low) as usize;
+            self.slots.splice(0..0, core::iter::repeat_n(Some(VSlot::Materialized), n));
+            self.base_offset = low;
+        }
+        let end = self.base_offset + self.slots.len() as i32;
+        if high > end {
+            self.slots.resize(self.slots.len() + (high - end) as usize, None);
         }
     }
 
