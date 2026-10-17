@@ -788,6 +788,11 @@ impl<B: Backend> EvmCompiler<B> {
             }
         }
 
+        // The caller owns the whole stack buffer, so the function may write any slot even on paths
+        // that don't. This lets LICM promote stack slots whose stores only some paths through a
+        // loop execute, and store them once on loop exit.
+        bcx.add_function_attribute(None, Attribute::Writable, FunctionAttributeLocation::Param(1));
+
         // The stack argument's contents are dead after return when the stack is not observed,
         // so the caller can elide any stores to the buffer.
         if !bytecode.stack_observed() {
