@@ -535,7 +535,7 @@ pub unsafe extern "C" fn __revmc_builtin_log(
 
     let address = &ecx.message().destination;
     let (memory, host) = ecx.interpreter_mut().memory_host();
-    Host::log(host, address, &topics[..n as usize], memory.slice(offset, len));
+    Host::log(host, address, topics[..n as usize].into(), memory.slice(offset, len).into());
     Ok(())
 }
 

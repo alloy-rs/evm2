@@ -130,7 +130,7 @@ use crate::{
     trustme,
     version::{EvmFeatures, GasId},
 };
-use alloc::{boxed::Box, sync::Arc, vec};
+use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
@@ -1640,9 +1640,9 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     }
 
     #[inline]
-    fn log(&mut self, address: &Address, topics: &[B256], data: &[u8]) {
+    fn log(&mut self, address: &Address, topics: Cow<'_, [B256]>, data: Cow<'_, [u8]>) {
         if self.logs_observed() {
-            self.log(Log::new_unchecked(*address, topics.to_vec(), Bytes::copy_from_slice(data)));
+            self.log(Log::new_unchecked(*address, topics.into_owned(), data.into_owned().into()));
         }
     }
 
@@ -2083,7 +2083,7 @@ mod tests {
             }),
             test_precompile(INNER_TEST_PRECOMPILE, |evm, message, _| {
                 let log = Log { address: INNER_TEST_PRECOMPILE, data: LogData::default() };
-                Host::log(evm, &INNER_TEST_PRECOMPILE, &[], &[]);
+                Host::log(evm, &INNER_TEST_PRECOMPILE, Cow::Borrowed(&[]), Cow::Borrowed(&[]));
                 evm.log(log);
                 if message.input.is_empty() {
                     Ok(PrecompileOutput::new(Bytes::new()))
@@ -2811,7 +2811,9 @@ mod tests {
         evm.set_inspector(ClearingInspector);
 
         match hook {
-            TopLevelInspectorHook::Log => Host::log(&mut evm, &Address::ZERO, &[], &[]),
+            TopLevelInspectorHook::Log => {
+                Host::log(&mut evm, &Address::ZERO, Cow::Borrowed(&[]), Cow::Borrowed(&[]))
+            }
             TopLevelInspectorHook::Call => {
                 let mut message = MessageExt { kind: MessageKind::Call, ..Default::default() };
                 let _ = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message);

@@ -1,6 +1,6 @@
 //! Internal transfer inspector.
 
-use alloc::vec::Vec;
+use alloc::{borrow::Cow, vec, vec::Vec};
 use alloy_primitives::{Address, B256, U256, address, b256};
 use alloy_sol_types::SolValue;
 use evm2::{
@@ -94,7 +94,11 @@ impl TransferInspector {
             let to = B256::from_slice(&to.abi_encode());
             let data = value.abi_encode();
 
-            host.log(&TRANSFER_LOG_EMITTER, &[TRANSFER_EVENT_TOPIC, from, to], &data);
+            host.log(
+                &TRANSFER_LOG_EMITTER,
+                Cow::Owned(vec![TRANSFER_EVENT_TOPIC, from, to]),
+                Cow::Owned(data),
+            );
         }
     }
 }

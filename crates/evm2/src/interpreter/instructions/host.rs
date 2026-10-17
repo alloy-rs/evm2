@@ -134,7 +134,11 @@ fn log_common<T: EvmTypesHost>(
     let destination = &cx.state.message().destination;
     let (memory, host) = cx.state.0.memory_host();
     // SAFETY: `log` is only dispatched for LOG0 through LOG4.
-    host.log(destination, unsafe { topics.get_unchecked(..n) }, memory.slice(offset, len));
+    host.log(
+        destination,
+        unsafe { topics.get_unchecked(..n) }.into(),
+        memory.slice(offset, len).into(),
+    );
     Ok(())
 }
 
