@@ -260,7 +260,7 @@ fn call_inner<T: EvmTypesHost>(
         state.memory().set_unchecked(return_memory_range.start, output);
     }
     state.swap_return_data(&mut result.output);
-    stack.push(Word::from(result.stop.is_success()))
+    stack.push_u64(result.stop.is_success() as u64)
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]
@@ -354,7 +354,7 @@ fn create_inner<T: EvmTypesHost>(
                 || depth > CALL_DEPTH_LIMIT)
         {
             state.clear_return_data();
-            stack.push(Word::ZERO)?;
+            stack.push_u64(0)?;
             return Ok(());
         }
 
