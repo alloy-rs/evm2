@@ -240,6 +240,19 @@ evm_features! {
     ///
     /// Default: on since Amsterdam
     EIP2780,
+    /// Checks [EIP-4844](https://eips.ethereum.org/EIPS/eip-4844) blob fee caps against the block
+    /// blob base fee, independently of [`Self::BASE_FEE_CHECK`].
+    ///
+    /// With the check off, the caller balance check still uses the transaction's
+    /// `max_fee_per_blob_gas`, but the blob fee is charged at the actual block blob base fee, as in
+    /// geth's simulate path. The upfront charge saturates, so a cap below the block blob base fee
+    /// can be exceeded by the charge. Blob-list validation is unchanged.
+    ///
+    /// Disabling the flag skips the comparison for every cap, while geth skips it only for a zero
+    /// cap; embedders choose that policy by disabling the flag only for the calls they relax.
+    ///
+    /// Default: on
+    BLOB_BASE_FEE_CHECK,
 }
 
 #[cfg(test)]

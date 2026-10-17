@@ -279,6 +279,7 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::EIP7623));
         assert!(osaka.feature(EvmFeatures::EIP7702));
         assert!(osaka.feature(EvmFeatures::BASE_FEE_CHECK));
+        assert!(osaka.feature(EvmFeatures::BLOB_BASE_FEE_CHECK));
         assert!(osaka.feature(EvmFeatures::PRIORITY_FEE_CHECK));
         assert!(osaka.feature(EvmFeatures::FEE_CHARGE));
         assert!(osaka.feature(EvmFeatures::LOG_COLLECTION));
@@ -389,6 +390,7 @@ evm_versions! {
             BLOCK_GAS_LIMIT_CHECK,
             EIP3607,
             BASE_FEE_CHECK,
+            BLOB_BASE_FEE_CHECK,
             PRIORITY_FEE_CHECK,
             FEE_CHARGE,
             LOG_COLLECTION,
