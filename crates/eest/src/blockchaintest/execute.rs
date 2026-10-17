@@ -269,6 +269,10 @@ fn execute_case(
         block_env_from_header(&test_case.genesis_block_header, parent_excess_blob_gas, spec);
     let total_blocks = test_case.blocks.len();
     let mut db_stats_counts = DbStatsCounts::default();
+    // `evm2 capture` keeps only the accounts the blocks touch and zeroes the genesis state
+    // root, so its blocks' state roots can't be reproduced. Receipt roots still check them.
+    let compare_state_root =
+        config.compare_state_root && !test_case.genesis_block_header.state_root.is_zero();
 
     hook.case_started(CaseStarted { name, total_blocks, network: test_case.network });
 
@@ -299,7 +303,7 @@ fn execute_case(
             hook,
             resources,
             config.trace,
-            config.compare_state_root,
+            compare_state_root,
             config.compare_receipt_root,
             if config.db_stats { Some(&mut db_stats_counts) } else { None },
         ) {
