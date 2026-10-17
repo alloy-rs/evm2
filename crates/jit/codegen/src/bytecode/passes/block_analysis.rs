@@ -528,9 +528,9 @@ struct Branch {
     fallthrough: Option<Block>,
     /// Whether the jump may also target the fall-through block.
     fallthrough_is_target: bool,
-    /// Depths in the exit stack, with zero at the top, of the values that the condition shows
-    /// to be zero, on the fall-through and on the jump.
-    zero: [SmallVec<[usize; 2]>; 2],
+    /// The edge, `true` for the jump, on which the condition shows a value to be zero, and the
+    /// depth of that value in the exit stack, with zero at the top.
+    zero: Option<(bool, usize)>,
 }
 
 impl JumpResolution {
@@ -1191,7 +1191,7 @@ impl Bytecode<'_> {
         let mut stack_buf: Vec<AbsValue> = Vec::with_capacity(MAX_ABS_STACK_DEPTH);
         let mut targets = SmallVec::<[Block; 4]>::new();
         let mut mem_buf = MemWords::default();
-        let mut refined_bufs = [Vec::new(), Vec::new()];
+        let mut refined_buf = Vec::new();
 
         let branches: IndexVec<Block, Option<Branch>> =
             self.cfg.blocks.indices().map(|bid| self.branch(bid)).collect();
@@ -1259,7 +1259,7 @@ impl Bytecode<'_> {
                 continue;
             }
             let key = self.context_key(mode, &stack_buf, truncated);
-            let mut refined_key = [None; 2];
+            let mut refined_key = None;
             for &succ in self.cfg.blocks[bid].succs.iter().chain(&targets) {
                 let (mut stack, mut key) = (&stack_buf, key);
                 if let Some(branch) = branch {
@@ -1277,23 +1277,18 @@ impl Bytecode<'_> {
                         | (Some(false), JumpCondition::AlwaysTrue) => continue,
                         _ => {}
                     }
-                    // Values that the branch condition shows to be zero on this edge.
-                    if let Some(taken) = taken
-                        && let slots = &branch.zero[taken as usize]
-                        && !slots.is_empty()
+                    // The value that the branch condition shows to be zero on this edge.
+                    if let Some((zero_taken, depth)) = branch.zero
+                        && taken == Some(zero_taken)
+                        && depth < stack_buf.len()
                     {
-                        let buf = &mut refined_bufs[taken as usize];
-                        let refined = *refined_key[taken as usize].get_or_insert_with(|| {
-                            buf.clone_from(&stack_buf);
-                            let len = buf.len();
-                            for &depth in slots {
-                                if depth < len {
-                                    buf[len - 1 - depth] = zero;
-                                }
-                            }
-                            self.context_key(mode, buf, truncated)
+                        let refined = *refined_key.get_or_insert_with(|| {
+                            refined_buf.clone_from(&stack_buf);
+                            let len = refined_buf.len();
+                            refined_buf[len - 1 - depth] = zero;
+                            self.context_key(mode, &refined_buf, truncated)
                         });
-                        (stack, key) = (&*buf, refined);
+                        (stack, key) = (&refined_buf, refined);
                     }
                 }
                 let part = match parts[succ].get(&key) {
@@ -1354,9 +1349,9 @@ impl Bytecode<'_> {
 
     /// Returns what the condition of the `JUMPI` that ends `bid` shows about its successors.
     ///
-    /// The condition is `ISZERO` applied some number of times to a value, so every value in
-    /// that chain is zero on one of the edges. Copies of these values left on the stack take
-    /// that zero on that edge.
+    /// A block that ends in `DUPn ISZERO* PUSH JUMPI` leaves the copied value at depth `n - 1`,
+    /// and that value is zero on the fall-through after an even number of `ISZERO`s and on the
+    /// jump after an odd number.
     fn branch(&self, bid: Block) -> Option<Branch> {
         let block = &self.cfg.blocks[bid];
         let term = block.terminator();
@@ -1379,66 +1374,24 @@ impl Bytecode<'_> {
                 && !data.flags.contains(InstFlags::INVALID_JUMP)
                 && resolve(data.static_jump_target()) == fallthrough
         };
-        let mut branch = Branch { fallthrough, fallthrough_is_target, zero: Default::default() };
-
-        // Interpret the block symbolically: each value is named by the instruction that
-        // computed it, or by a counter below `u32::MAX` for the values on entry.
-        let mut stack = SmallVec::<[u32; 16]>::new();
-        let mut entries = 0;
-        let mut iszero = SmallVec::<[(u32, u32); 2]>::new();
-        let mut condition = None;
-        for i in block.insts() {
-            let data = &self.insts[i];
-            if data.is_dead_code() {
-                continue;
-            }
-            if data.flags.contains(InstFlags::DISABLED) {
-                return Some(branch);
-            }
-            let (inp, out) = data.stack_io();
-            let (inp, out) = (inp as usize, out as usize);
-            if stack.len() < inp {
-                let missing = inp - stack.len();
-                stack.insert_many(0, (0..missing as u32).map(|k| u32::MAX - entries - k));
-                entries += missing as u32;
-            }
-            let len = stack.len();
-            let id = i.index() as u32;
-            match data.opcode {
-                op::DUP1..=op::DUP16 => stack.push(stack[len - inp]),
-                op::SWAP1..=op::SWAP16 => stack.swap(len - 1, len - inp),
-                op::DUPN | op::SWAPN | op::EXCHANGE => return Some(branch),
-                op::ISZERO => {
-                    iszero.push((id, stack[len - 1]));
-                    stack[len - 1] = id;
-                }
-                op::JUMPI => {
-                    condition = Some(stack[len - 2]);
-                    stack.truncate(len - 2);
-                }
-                _ if out > 1 => return Some(branch),
-                _ => {
-                    stack.truncate(len - inp);
-                    stack.extend((out == 1).then_some(id));
+        let mut zero = None;
+        let mut tail = (block.insts().rev().skip(1).map(|i| &self.insts[i]))
+            .filter(|data| !data.is_dead_code())
+            .take_while(|data| !data.flags.contains(InstFlags::DISABLED));
+        if tail.next().is_some_and(|data| matches!(data.opcode, op::PUSH0..=op::PUSH32)) {
+            let mut taken = false;
+            for data in tail {
+                match data.opcode {
+                    op::ISZERO => taken = !taken,
+                    op::DUP1..=op::DUP16 => {
+                        zero = Some((taken, (data.opcode - op::DUP1) as usize));
+                        break;
+                    }
+                    _ => break,
                 }
             }
         }
-
-        // The condition is zero on the fall-through, its operand on the jump, and so on.
-        let mut value = condition?;
-        let mut taken = false;
-        loop {
-            let slots = &mut branch.zero[taken as usize];
-            for (depth, &v) in stack.iter().rev().enumerate() {
-                if v == value {
-                    slots.push(depth);
-                }
-            }
-            let Some(&(_, operand)) = iszero.iter().find(|&&(out, _)| out == value) else { break };
-            value = operand;
-            taken = !taken;
-        }
-        Some(branch)
+        Some(Branch { fallthrough, fallthrough_is_target, zero })
     }
 
     /// Returns the context of an abstract stack: a hash of the constants `mode` keys on.
