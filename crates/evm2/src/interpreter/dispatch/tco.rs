@@ -122,8 +122,15 @@ extern_table! {
                     }
                 )*}};
             }
-            if OP == op::PUSH2 {
-                direct!(JUMPI, JUMP);
+            match OP {
+                op::PUSH2 => direct!(JUMPI, JUMP),
+                op::ISZERO => direct!(PUSH2),
+                op::MSTORE => direct!(PUSH1),
+                op::POP => direct!(JUMP),
+                op::JUMPDEST => direct!(PUSH1),
+                op::LT | op::GT => direct!(ISZERO, PUSH2),
+                op::SWAP2 => direct!(SWAP1),
+                _ => {}
             }
         }
         tail_return!(instr(pc, stack, remaining_gas, state, instructions));
