@@ -104,15 +104,10 @@ threshold (1% for codegen and instructions, 5% for time) and end with a
 show every value. Benchmarks that fail on either side go in a `Failures`
 table instead of aborting the run.
 
-Without explicit benchmarks, the script also compiles the mainnet contracts in
-`data/mainnet/` (see its `README.md`). They have no calldata or state, so
-`--runtime` skips them. The codegen table's `unresolved jumps` column counts
-the `%dynamic` jumps in `bytecode.txt`.
-
 ```bash
 ./scripts/jit/bench.py /tmp/bench --diff <base-rev>                    # codegen + compile time vs base
 ./scripts/jit/bench.py /tmp/bench --diff <base-rev> usdc_proxy seaport # specific benchmarks
-./scripts/jit/bench.py /tmp/bench --diff <base-rev> --extra-dir data/mainnet --extra-dir data/mainnet/slow # add slow mainnet contracts
+./scripts/jit/bench.py /tmp/bench --diff <base-rev> --extra-dir tmp/mainnet # include mainnet .bin files
 ./scripts/jit/bench.py /tmp/bench                                      # current branch only (no diff)
 ./scripts/jit/bench.py /tmp/bench --diff <base-rev> --compile-times    # compile times only
 ./scripts/jit/bench.py /tmp/bench --diff <base-rev> --codegen-lines    # codegen lines only
