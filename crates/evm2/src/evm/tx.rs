@@ -40,6 +40,8 @@ pub struct TxResultExt<E = ()> {
     /// Created contract address for successful create transactions.
     pub created_address: Option<Address>,
     /// Logs emitted by the transaction.
+    ///
+    /// Empty when [`EvmFeatures::LOG_COLLECTION`](crate::EvmFeatures::LOG_COLLECTION) is disabled.
     pub logs: Vec<Log>,
     /// EVM type-specific extension data.
     pub ext: E,

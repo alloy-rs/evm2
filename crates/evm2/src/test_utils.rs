@@ -10,7 +10,7 @@ use crate::{
     },
     storage_key::{StorageKey, StorageKeyMap},
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log};
 use core::{assert_matches, ops::Range};
 
@@ -198,8 +198,8 @@ impl Host<TestTypes> for TestHost {
         self.transient_storage.insert(StorageKey::new(*address, *key), *value);
     }
 
-    fn log(&mut self, log: Log) {
-        self.logs.push(log);
+    fn log(&mut self, address: &Address, topics: Cow<'_, [B256]>, data: Cow<'_, [u8]>) {
+        self.logs.push(Log::new_unchecked(*address, topics.into_owned(), data.into_owned().into()));
     }
 
     fn execute_message(
@@ -250,7 +250,7 @@ pub(crate) struct TestInterpreter {
 
 impl TestInterpreter {
     pub(crate) fn stack(&self) -> &[Word] {
-        unsafe { core::slice::from_raw_parts(self.stack.as_ptr().cast(), self.stack_len) }
+        unsafe { core::slice::from_raw_parts(self.stack.0.as_ptr().cast(), self.stack_len) }
     }
 
     pub(crate) fn memory(&mut self, offset: usize, len: usize) -> &[u8] {

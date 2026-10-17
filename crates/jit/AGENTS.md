@@ -192,6 +192,12 @@ Experiments that did not pay off, so you don't repeat them blindly:
   the conditions back into the same compare chain and the cold path grows.
 - `early-cse<memssa>`: forwards stack loads across blocks but raises register
   pressure; erc20_transfer spills went from 12 to 87.
+- Other fixes for the function-wide loops that `-sink-insts-to-avoid-spills`
+  handles: `-grow-region-complexity-budget=1000` raised snailtracer reloads
+  2.2×; `-disable-machine-licm` changed 12 of 21 benchmarks, seaport JIT size
+  +1.6%; a never-taken entry edge into the dynamic jump table, which makes
+  those loops irreducible, misses loops closed by internal-function return
+  switches and raised compile cost by up to 50% on some contracts.
 
 ### CI
 

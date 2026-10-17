@@ -8,7 +8,12 @@ use core::{
 /// EVM stack word.
 pub type Word = U256;
 
-pub(crate) type StackBacking = [MaybeUninit<Word>; STACK_LIMIT];
+/// Operand stack storage.
+///
+/// Aligned to the word size so that no word crosses a cache line. Loads and stores that cross a
+/// line are slower and cannot use store-to-load forwarding.
+#[repr(C, align(32))]
+pub(crate) struct StackBacking(pub(crate) [MaybeUninit<Word>; STACK_LIMIT]);
 
 /// Immutable EVM operand stack.
 #[derive(Clone, Copy)]
@@ -66,7 +71,7 @@ impl<'a> StackRef<'a> {
 
     #[inline]
     const fn as_word_ptr(&self) -> *const Word {
-        self.stack.as_ptr().cast()
+        self.stack.0.as_ptr().cast()
     }
 
     /// Returns the stack length.
@@ -165,7 +170,7 @@ impl<'a> Stack<'a> {
 
     #[inline]
     const fn as_word_ptr(&self) -> *const Word {
-        self.stack.as_ptr().cast()
+        self.stack.0.as_ptr().cast()
     }
 
     /// Returns the stack length.
@@ -244,17 +249,17 @@ impl<'a> StackMut<'a> {
     /// words are initialized before creating another stack view.
     #[inline]
     pub const unsafe fn into_raw_parts(self) -> (*mut Word, &'a mut usize) {
-        (self.stack.as_mut_ptr().cast(), self.len)
+        (self.stack.0.as_mut_ptr().cast(), self.len)
     }
 
     #[inline]
     const fn as_word_ptr(&self) -> *const Word {
-        self.stack.as_ptr().cast()
+        self.stack.0.as_ptr().cast()
     }
 
     #[inline]
     const fn as_word_mut_ptr(&mut self) -> *mut Word {
-        self.stack.as_mut_ptr().cast()
+        self.stack.0.as_mut_ptr().cast()
     }
 
     /// Returns the stack length.
@@ -350,8 +355,23 @@ impl<'a> StackMut<'a> {
             return Err(InstrStop::StackOverflow);
         }
         unsafe {
-            let end = self.as_word_mut_ptr().add(len);
-            *end = value;
+            write_word(self.as_word_mut_ptr().add(len), value);
+            *self.len = len + 1;
+            debug_assert!(*self.len <= Self::CAPACITY);
+        }
+        Ok(())
+    }
+
+    /// Pushes a `u64` as a word onto the stack.
+    #[inline]
+    pub fn push_u64(&mut self, value: u64) -> Result {
+        let len = self.len();
+        if len == Self::CAPACITY {
+            cold_path();
+            return Err(InstrStop::StackOverflow);
+        }
+        unsafe {
+            write_u64(self.as_word_mut_ptr().add(len), value);
             *self.len = len + 1;
             debug_assert!(*self.len <= Self::CAPACITY);
         }
@@ -476,7 +496,7 @@ impl<'a> StackMut<'a> {
         }
         unsafe {
             let top = self.as_word_mut_ptr().add(len - 1);
-            core::ptr::swap_nonoverlapping(top.sub(n), top.sub(m), 1);
+            swap_words(top.sub(n), top.sub(m));
         }
         Ok(())
     }
@@ -489,6 +509,12 @@ impl<'a> StackMut<'a> {
             return Ok(());
         }
 
+        if slice.len() <= 8 {
+            let mut buf = [0; 8];
+            buf[8 - slice.len()..].copy_from_slice(slice);
+            return self.push_u64(u64::from_be_bytes(buf));
+        }
+
         let n_words = slice.len().div_ceil(32);
         let len = self.len();
         let new_len = len + n_words;
@@ -498,46 +524,143 @@ impl<'a> StackMut<'a> {
         }
 
         unsafe {
-            let dst = self.as_word_mut_ptr().add(len).cast::<u64>();
+            let dst = self.as_word_mut_ptr().add(len);
             *self.len = new_len;
             debug_assert!(*self.len <= Self::CAPACITY);
 
-            let mut i = 0;
-
             let (words, partial_last_word) = slice.as_chunks::<32>();
-            for word in words {
-                for l in word.as_chunks::<8>().0.iter().rev() {
-                    dst.add(i).write(u64::from_be_bytes(*l));
-                    i += 1;
+            for (i, word) in words.iter().enumerate() {
+                write_word(dst.add(i), Word::from_be_bytes(*word));
+            }
+
+            if !partial_last_word.is_empty() {
+                let (partial_last_limb, full_limbs) = partial_last_word.as_rchunks::<8>();
+                let mut limbs = [0; 4];
+                for (limb, l) in limbs.iter_mut().zip(full_limbs.iter().rev()) {
+                    *limb = u64::from_be_bytes(*l);
                 }
-            }
-
-            if partial_last_word.is_empty() {
-                return Ok(());
-            }
-
-            let (partial_last_limb, limbs) = partial_last_word.as_rchunks::<8>();
-            for l in limbs.iter().rev() {
-                dst.add(i).write(u64::from_be_bytes(*l));
-                i += 1;
-            }
-
-            if !partial_last_limb.is_empty() {
-                let mut tmp = [0u8; 8];
-                tmp[8 - partial_last_limb.len()..].copy_from_slice(partial_last_limb);
-                dst.add(i).write(u64::from_be_bytes(tmp));
-                i += 1;
-            }
-
-            debug_assert_eq!(i.div_ceil(4), n_words, "wrote too much");
-
-            let m = i % 4;
-            if m != 0 {
-                dst.add(i).write_bytes(0, 4 - m);
+                if !partial_last_limb.is_empty() {
+                    let mut tmp = [0u8; 8];
+                    tmp[8 - partial_last_limb.len()..].copy_from_slice(partial_last_limb);
+                    limbs[full_limbs.len()] = u64::from_be_bytes(tmp);
+                }
+                write_word(dst.add(words.len()), Word::from_limbs(limbs));
             }
         }
 
         Ok(())
+    }
+}
+
+/// Single-store writes of stack words.
+///
+/// A 32-byte load can only take its data from one earlier store that covers it. LLVM writes words
+/// built in general-purpose registers, including zero-extended `u64`s, with several narrower
+/// stores, so a later 32-byte load of the word waits for them to reach the cache.
+pub(crate) trait WordExt {
+    /// Writes `value` with a single 32-byte store.
+    ///
+    /// Use this for words computed in general-purpose registers. Words copied from memory already
+    /// move with one 32-byte load and store, and this would route them through general-purpose
+    /// registers instead.
+    fn write(&mut self, value: Word);
+
+    /// Writes `value` as a word with a single 32-byte store.
+    fn write_u64(&mut self, value: u64);
+}
+
+impl WordExt for Word {
+    #[inline(always)]
+    fn write(&mut self, value: Word) {
+        // SAFETY: `self` is valid for writes.
+        unsafe { write_word(self, value) }
+    }
+
+    #[inline(always)]
+    fn write_u64(&mut self, value: u64) {
+        // SAFETY: `self` is valid for writes.
+        unsafe { write_u64(self, value) }
+    }
+}
+
+/// Raw-pointer form of [`WordExt::write`], for stack slots that may be uninitialized.
+///
+/// # Safety
+///
+/// `dst` must be valid for writes of a word.
+#[inline(always)]
+#[allow(clippy::missing_const_for_fn)] // Inline assembly cannot be const.
+unsafe fn write_word(dst: *mut Word, value: Word) {
+    core::cfg_select! {
+        // LLVM splits a 32-byte store of a rebuilt vector, so use inline assembly.
+        all(target_arch = "x86_64", target_feature = "avx", not(miri)) => unsafe {
+            let [l0, l1, l2, l3] = value.into_limbs();
+            let _lo: core::arch::x86_64::__m256i;
+            let _hi: core::arch::x86_64::__m128i;
+            core::arch::asm!(
+                "vmovq {lo:x}, {l0}",
+                "vpinsrq {lo:x}, {lo:x}, {l1}, 1",
+                "vmovq {hi:x}, {l2}",
+                "vpinsrq {hi:x}, {hi:x}, {l3}, 1",
+                "vinsertf128 {lo:y}, {lo:y}, {hi:x}, 1",
+                "vmovdqu ymmword ptr [{dst}], {lo:y}",
+                dst = in(reg) dst,
+                l0 = in(reg) l0,
+                l1 = in(reg) l1,
+                l2 = in(reg) l2,
+                l3 = in(reg) l3,
+                lo = out(ymm_reg) _lo,
+                hi = out(xmm_reg) _hi,
+                options(nostack, preserves_flags),
+            );
+        },
+        _ => unsafe { dst.write(value) },
+    }
+}
+
+/// Raw-pointer form of [`WordExt::write_u64`], for stack slots that may be uninitialized.
+///
+/// # Safety
+///
+/// `dst` must be valid for writes of a word.
+#[inline(always)]
+#[allow(clippy::missing_const_for_fn)] // Inline assembly cannot be const.
+unsafe fn write_u64(dst: *mut Word, value: u64) {
+    core::cfg_select! {
+        // LLVM splits a 32-byte store of a zero-extended value, so use inline assembly.
+        all(target_arch = "x86_64", target_feature = "avx", not(miri)) => unsafe {
+            // A typed 256-bit operand lets LLVM see the dirty upper state and emit `vzeroupper`.
+            let _tmp: core::arch::x86_64::__m256i;
+            core::arch::asm!(
+                "vmovq {tmp:x}, {value}",
+                "vmovdqu ymmword ptr [{dst}], {tmp:y}",
+                dst = in(reg) dst,
+                value = in(reg) value,
+                tmp = out(ymm_reg) _tmp,
+                options(nostack, preserves_flags),
+            );
+        },
+        _ => unsafe { dst.write(Word::from(value)) },
+    }
+}
+
+/// Swaps two distinct stack words.
+///
+/// When LLVM prefers 512-bit vectors, it merges a swap of adjacent words into one 64-byte load.
+/// That load cannot take its data from the two 32-byte stores that usually wrote the words just
+/// before, so it waits for them to reach the cache. Two explicit 32-byte loads avoid the stall.
+#[inline(always)]
+#[allow(clippy::missing_const_for_fn)] // The intrinsics are not const.
+unsafe fn swap_words(a: *mut Word, b: *mut Word) {
+    core::cfg_select! {
+        all(target_arch = "x86_64", target_feature = "avx512f") => unsafe {
+            use core::arch::x86_64::{_mm256_loadu_si256, _mm256_storeu_si256};
+            let x = _mm256_loadu_si256(a.cast());
+            let y = _mm256_loadu_si256(b.cast());
+            _mm256_storeu_si256(a.cast(), y);
+            _mm256_storeu_si256(b.cast(), x);
+        },
+        _ => unsafe { core::ptr::swap_nonoverlapping(a, b, 1) },
     }
 }
 
@@ -547,15 +670,15 @@ mod tests {
     use core::assert_matches;
 
     fn run(f: impl FnOnce(&mut StackMut<'_>)) {
-        let mut backing = [MaybeUninit::new(Word::MAX); StackMut::CAPACITY];
+        let mut backing = StackBacking([MaybeUninit::new(Word::MAX); StackMut::CAPACITY]);
         let mut len = 0;
         let mut stack = StackMut::new(&mut backing, &mut len);
         f(&mut stack);
     }
 
     fn run_with_len(len: usize, f: impl FnOnce(&mut StackMut<'_>)) {
-        let mut backing = [MaybeUninit::new(Word::MAX); StackMut::CAPACITY];
-        for (i, word) in backing.iter_mut().take(len).enumerate() {
+        let mut backing = StackBacking([MaybeUninit::new(Word::MAX); StackMut::CAPACITY]);
+        for (i, word) in backing.0.iter_mut().take(len).enumerate() {
             word.write(Word::from(i));
         }
         let mut len = len;
@@ -659,8 +782,8 @@ mod tests {
             assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1), Word::from(2)]);
         });
 
-        let mut backing = [MaybeUninit::new(Word::ZERO); StackRef::CAPACITY];
-        for (i, word) in backing.iter_mut().take(3).enumerate() {
+        let mut backing = StackBacking([MaybeUninit::new(Word::ZERO); StackRef::CAPACITY]);
+        for (i, word) in backing.0.iter_mut().take(3).enumerate() {
             word.write(Word::from(i));
         }
         let stack = StackRef::new(&backing, 3);
@@ -676,8 +799,8 @@ mod tests {
             assert_eq!(stack.peek(usize::MAX), None);
         });
 
-        let mut backing = [MaybeUninit::new(Word::ZERO); StackRef::CAPACITY];
-        for (i, word) in backing.iter_mut().take(3).enumerate() {
+        let mut backing = StackBacking([MaybeUninit::new(Word::ZERO); StackRef::CAPACITY]);
+        for (i, word) in backing.0.iter_mut().take(3).enumerate() {
             word.write(Word::from(i));
         }
         let stack = StackRef::new(&backing, 3);

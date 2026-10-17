@@ -1,17 +1,17 @@
 use crate::{
-    BaseEvmTypes, Evm, EvmFeatures, ExecutionConfig, Precompiles, SpecId, Version,
+    BaseEvmTypes, Evm, EvmFeatures, ExecutionConfig, Inspector, Precompiles, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnvExt, TxEnvExt},
-    ethereum::{LazyTxEip7702, TxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo, InMemoryDB},
+    ethereum::{LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+    evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
     interpreter::{Host, InstrStop, MessageExt, Word, op},
     registry::TxRegistry,
-    test_utils::{legacy_bytecode, push},
+    test_utils::{legacy_bytecode, push, push_address, push_all},
 };
 use alloc::{vec, vec::Vec};
-use alloy_consensus::{TxEip7702, transaction::Recovered};
+use alloy_consensus::{TxEip7702, TxLegacy, transaction::Recovered};
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, Log, TxKind, U256};
 
 type TestEvm = Evm<'static, BaseEvmTypes>;
 
@@ -284,4 +284,135 @@ fn eip2780_authorization_charges_no_state_gas_without_eip8037() {
     let authority = result.pending_state.account_info(&authority).unwrap();
     assert_eq!(authority.nonce, 1);
     assert_eq!(authority.code_hash, Bytecode::new_eip7702(delegate).hash_slow());
+}
+
+const LOG_CALLER: Address = Address::with_last_byte(0xa0);
+const LOG_CONTRACT: Address = Address::with_last_byte(0xa1);
+const LOG_EMITTER: Address = Address::with_last_byte(0xa2);
+
+/// Builds an Amsterdam EVM where `LOG_CONTRACT` runs `code` and `LOG_EMITTER` emits one `LOG0`.
+fn log_collection_evm(log_collection: bool, code: Vec<u8>) -> TestEvm {
+    let mut database = InMemoryDB::default();
+    database.insert_account_info(
+        &LOG_CALLER,
+        AccountInfo { balance: U256::from(u64::MAX), ..Default::default() },
+    );
+    for (address, code) in
+        [(LOG_CONTRACT, code), (LOG_EMITTER, vec![op::PUSH0, op::PUSH0, op::LOG0])]
+    {
+        database.insert_account_info(
+            &address,
+            AccountInfo::default().with_nonce(1).with_code(legacy_bytecode(code)),
+        );
+    }
+    let mut version = Version::new(SpecId::AMSTERDAM);
+    version.features.set(EvmFeatures::LOG_COLLECTION, log_collection);
+    TestEvm::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(SpecId::AMSTERDAM, version),
+        SpecId::AMSTERDAM,
+        BlockEnvExt::default(),
+        ethereum_tx_registry(SpecId::AMSTERDAM),
+        database,
+        Precompiles::base(SpecId::AMSTERDAM),
+    )
+}
+
+/// Calls `LOG_CONTRACT` with value, so EIP-7708 adds a transfer log.
+fn log_collection_tx() -> RecoveredTxEnvelope {
+    Recovered::new_unchecked(
+        TxEnvelope::Legacy(TxLegacy {
+            gas_limit: 1_000_000,
+            to: TxKind::Call(LOG_CONTRACT),
+            value: U256::from(7),
+            ..Default::default()
+        }),
+        LOG_CALLER,
+    )
+}
+
+/// Appends code that returns the word at the top of the stack.
+fn return_top_word(code: &mut Vec<u8>) {
+    code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
+}
+
+#[test]
+fn log_collection_off_keeps_log_semantics() {
+    // LOG4 over memory that is already allocated, then LOG0 past it, which grows memory to four
+    // words. Returns MSIZE.
+    let mut logs = Vec::new();
+    push_all(&mut logs, [0xbeef, 0]);
+    logs.push(op::MSTORE);
+    push_all(&mut logs, [4, 3, 2, 1, 2, 30]);
+    logs.push(op::LOG4);
+    push_all(&mut logs, [33, 64]);
+    logs.extend([op::LOG0, op::MSIZE]);
+    return_top_word(&mut logs);
+
+    let mut memory_oog = Vec::new();
+    push_all(&mut memory_oog, [Word::from(1), Word::MAX]);
+    memory_oog.push(op::LOG0);
+
+    let mut underflow = Vec::new();
+    push_all(&mut underflow, [0, 0]);
+    underflow.push(op::LOG2);
+
+    // A static call into a logging contract fails; the call's success flag is returned.
+    let mut static_call = Vec::new();
+    push_all(&mut static_call, [0, 0, 0, 0]);
+    push_address(&mut static_call, &LOG_EMITTER);
+    static_call.extend([op::GAS, op::STATICCALL]);
+    return_top_word(&mut static_call);
+
+    for (name, code, status, output, logs) in [
+        ("logs", logs, true, Some(Word::from(128)), 3),
+        ("memory_oog", memory_oog, false, None, 0),
+        ("underflow", underflow, false, None, 0),
+        ("static_call", static_call, true, Some(Word::ZERO), 1),
+    ] {
+        let run = |log_collection| {
+            log_collection_evm(log_collection, code.clone())
+                .transact(&log_collection_tx())
+                .unwrap()
+                .discard()
+        };
+        let mut on = run(true);
+        let off = run(false);
+
+        assert_eq!(on.status, status, "{name}");
+        if let Some(output) = output {
+            assert_eq!(on.output[..], output.to_be_bytes::<32>(), "{name}");
+        }
+        assert_eq!(on.logs.len(), logs, "{name}");
+        assert!(off.logs.is_empty(), "{name}");
+        on.logs.clear();
+        assert_eq!(on, off, "{name}");
+    }
+}
+
+#[test]
+fn log_collection_off_still_inspects_logs() {
+    #[derive(Default)]
+    struct LogInspector(Vec<Log>);
+
+    impl Inspector<BaseEvmTypes> for LogInspector {
+        fn log(&mut self, log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
+            self.0.push(log.clone());
+        }
+    }
+
+    let code = vec![op::PUSH0, op::PUSH0, op::LOG0];
+    let collected =
+        log_collection_evm(true, code.clone()).transact(&log_collection_tx()).unwrap().discard();
+    let mut evm = log_collection_evm(false, code);
+    evm.set_inspector(LogInspector::default());
+    let inspected = evm.transact(&log_collection_tx()).unwrap().discard();
+    let inspector = evm.clear_inspector_as::<LogInspector>().unwrap();
+
+    assert!(inspected.status);
+    assert!(inspected.logs.is_empty());
+    assert_eq!(
+        inspector.0.iter().map(|log| log.address).collect::<Vec<_>>(),
+        [SYSTEM_ADDRESS, LOG_CONTRACT]
+    );
+    assert_eq!(inspector.0, collected.logs);
 }
