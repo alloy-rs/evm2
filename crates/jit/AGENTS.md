@@ -86,7 +86,6 @@ RUST_LOG=evm2_jit_codegen::bytecode=trace ./scripts/jit/bench.py /tmp/bench --ju
 
 - `local_jumps.*newly_resolved=N` - jumps resolved locally.
 - `resolved non-adjacent jump` - jump target resolved outside adjacent layout.
-- `resolved via PCR hint` - jump target resolved through a pushed-code-region hint.
 - `unresolved dynamic jumps remain n=N` — jumps that couldn't be resolved.
 - `JUMP bb<N>` / `JUMP bb<N>, bb<M>` — resolved (single/multi-target).
 - `JUMP ; pc=<N>` — unresolved dynamic jump.
