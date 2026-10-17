@@ -147,6 +147,14 @@ evm_features! {
     ///
     /// Default: on
     FEE_CHARGE,
+    /// Records emitted logs in the transaction result.
+    ///
+    /// When disabled, `LOG0`-`LOG4` still apply static-call, stack, gas, and memory rules, but log
+    /// data is not copied, journaled, or returned in `TxResult::logs`, and EIP-7708 transfer logs
+    /// are not built. An installed inspector still receives every log through `Inspector::log`.
+    ///
+    /// Default: on
+    LOG_COLLECTION,
     /// Applies [EIP-2](https://eips.ethereum.org/EIPS/eip-2) create transaction intrinsic gas.
     ///
     /// Default: on since Homestead

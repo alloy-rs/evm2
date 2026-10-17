@@ -38,28 +38,19 @@ fn evm(c: &mut Criterion) {
 
     let shard = env::var("EVM2_BENCH_SHARD").ok();
     assert!(
-        matches!(shard.as_deref(), None | Some("interpreter" | "jit-burntpix" | "jit-rest")),
+        matches!(shard.as_deref(), None | Some("interpreter" | "jit")),
         "unknown EVM2_BENCH_SHARD: {shard:?}"
     );
     let bench_interpreter = matches!(shard.as_deref(), None | Some("interpreter"));
     assert!(
         bench_interpreter || cfg!(feature = "jit"),
-        "JIT benchmark shards require the jit feature"
+        "the JIT benchmark shard requires the jit feature"
     );
 
-    // burntpix takes roughly half the JIT runtime. Filter before fixture loading and JIT setup.
-    let benches = evm_bench::BENCHES
-        .iter()
-        .copied()
-        .filter(|bench| match shard.as_deref() {
-            Some("jit-burntpix") => bench.name == "burntpix",
-            Some("jit-rest") => bench.name != "burntpix",
-            _ => true,
-        })
-        .collect::<Vec<_>>();
+    let benches = evm_bench::BENCHES;
     let suites =
         fixture::Suites::load(benches.iter().filter_map(|bench| bench.transaction_fixture_path()));
-    let cases = expand_cases(&benches, &suites);
+    let cases = expand_cases(benches, &suites);
 
     let bench_revm = bench_interpreter && env::var_os("EVM2_BENCH_REVM").is_some();
 

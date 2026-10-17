@@ -10,7 +10,7 @@ use crate::{
     },
     storage_key::{StorageKey, StorageKeyMap},
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log};
 use core::{assert_matches, ops::Range};
 
@@ -198,8 +198,8 @@ impl Host<TestTypes> for TestHost {
         self.transient_storage.insert(StorageKey::new(*address, *key), *value);
     }
 
-    fn log(&mut self, log: Log) {
-        self.logs.push(log);
+    fn log(&mut self, address: &Address, topics: Cow<'_, [B256]>, data: Cow<'_, [u8]>) {
+        self.logs.push(Log::new_unchecked(*address, topics.into_owned(), data.into_owned().into()));
     }
 
     fn execute_message(
