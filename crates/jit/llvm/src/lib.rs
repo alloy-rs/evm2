@@ -2073,6 +2073,7 @@ fn init_() -> Result<()> {
         // into their users when the preheader's register pressure exceeds the limit: this cut
         // codegen by up to 15x on large mainnet contracts.
         c"-sink-insts-to-avoid-spills".as_ptr(),
+        c"-disable-phi-elim-edge-splitting".as_ptr(),
     ];
     args.extend(extra.iter().map(|s| s.as_ptr()));
     unsafe {
