@@ -1978,6 +1978,11 @@ impl Builder for EvmLlvmBuilder<'_> {
 
 /// Builds the LLVM pass pipeline string. See [`EvmLlvmBackend::optimize_module`].
 fn build_pass_pipeline(with_licm: bool) -> String {
+    // `globalopt`, `cgscc(inline)`, a second `sroa`, and `adce` change no benchmark's
+    // assembly, so they are left out: the module has no global data, its only internal
+    // function (the `mresize` stub) is `noinline`, the first `sroa` promotes the one
+    // `alloca`, and `dse`/`simplifycfg` remove what `adce` would. Revisit them when
+    // codegen emits inlinable helper functions or global data.
     let mut passes = String::from("module(function(");
     let function_passes: &[&str] = &[
         "simplifycfg",
