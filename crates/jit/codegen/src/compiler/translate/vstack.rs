@@ -10,7 +10,10 @@ use core::ops::Range;
 #[derive(Clone, Copy, Debug)]
 pub(super) enum VSlot<T> {
     /// Physical memory already contains the canonical value.
-    Materialized,
+    ///
+    /// Holds the SSA value the translator last stored there, if no builtin may have written
+    /// the slot since. It only identifies reloads of that value; codegen still reloads.
+    Materialized(Option<T>),
     /// The canonical value exists only as an SSA value; memory may be stale.
     Virtual(T),
 }
@@ -56,7 +59,7 @@ impl<T: Copy> VStack<T> {
 
         // Section inputs are already in memory.
         for slot in self.slots.iter_mut().take(inputs) {
-            *slot = Some(VSlot::Materialized);
+            *slot = Some(VSlot::Materialized(None));
         }
     }
 
@@ -96,9 +99,9 @@ impl<T: Copy> VStack<T> {
     pub(super) fn get_at_offset(&self, offset: i32) -> VSlot<T> {
         let idx = offset - self.base_offset;
         if idx < 0 || idx as usize >= self.slots.len() {
-            return VSlot::Materialized;
+            return VSlot::Materialized(None);
         }
-        self.slots[idx as usize].unwrap_or(VSlot::Materialized)
+        self.slots[idx as usize].unwrap_or(VSlot::Materialized(None))
     }
 
     /// Sets a slot to virtual at the given operand depth.
@@ -124,7 +127,7 @@ impl<T: Copy> VStack<T> {
     /// Used when a builtin writes directly to the physical stack slot.
     pub(super) fn push_mem(&mut self) {
         let idx = self.idx(self.top_offset);
-        self.slots[idx] = Some(VSlot::Materialized);
+        self.slots[idx] = Some(VSlot::Materialized(None));
         self.top_offset += 1;
     }
 
@@ -162,24 +165,46 @@ impl<T: Copy> VStack<T> {
             }
             match self.slots.get(idx as usize)?.as_ref()? {
                 VSlot::Virtual(v) => Some((off, *v)),
-                VSlot::Materialized => None,
+                VSlot::Materialized(_) => None,
             }
         })
     }
 
-    /// Marks all slots in the given range as materialized.
+    /// Marks all slots in the given range as materialized with unknown contents.
     ///
     /// Offsets outside the tracked range are silently skipped.
     pub(super) fn mark_materialized_range(&mut self, range: Range<i32>) {
+        self.map_range(range, |_| VSlot::Materialized(None));
+    }
+
+    /// Marks all slots in the given range as materialized after their pending values have been
+    /// stored.
+    ///
+    /// Offsets outside the tracked range are silently skipped.
+    pub(super) fn mark_stored_range(&mut self, range: Range<i32>) {
+        self.map_range(range, |slot| match slot {
+            VSlot::Virtual(value) => VSlot::Materialized(Some(value)),
+            slot => slot,
+        });
+    }
+
+    /// Forgets the stored values of all slots from the given offset up, for when the physical
+    /// stack there may have been overwritten.
+    pub(super) fn forget_stored_from(&mut self, offset: i32) {
+        self.map_range(offset..self.base_offset + self.slots.len() as i32, |slot| match slot {
+            VSlot::Materialized(_) => VSlot::Materialized(None),
+            slot => slot,
+        });
+    }
+
+    fn map_range(&mut self, range: Range<i32>, f: impl Fn(VSlot<T>) -> VSlot<T>) {
         for off in range {
             let idx = off - self.base_offset;
             if idx < 0 || idx as usize >= self.slots.len() {
                 continue;
             }
-            if let Some(slot) = self.slots.get_mut(idx as usize)
-                && slot.is_some()
-            {
-                *slot = Some(VSlot::Materialized);
+            if let Some(slot) = &mut self.slots[idx as usize] {
+                *slot = f(*slot);
             }
         }
     }
