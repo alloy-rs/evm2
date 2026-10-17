@@ -410,8 +410,8 @@ mod tests {
         evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
         interpreter::{Host, Message, MessageResult, Word},
     };
-    use alloc::{rc::Rc, string::ToString, vec::Vec};
-    use alloy_primitives::{Address, B256, Log};
+    use alloc::{borrow::Cow, rc::Rc, string::ToString, vec::Vec};
+    use alloy_primitives::{Address, B256};
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug, thiserror::Error)]
@@ -520,7 +520,7 @@ mod tests {
             unimplemented!()
         }
 
-        fn log(&mut self, _log: Log) {
+        fn log(&mut self, _address: &Address, _topics: Cow<'_, [B256]>, _data: Cow<'_, [u8]>) {
             unimplemented!()
         }
 
