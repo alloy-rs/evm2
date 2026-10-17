@@ -281,6 +281,7 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::BASE_FEE_CHECK));
         assert!(osaka.feature(EvmFeatures::PRIORITY_FEE_CHECK));
         assert!(osaka.feature(EvmFeatures::FEE_CHARGE));
+        assert!(osaka.feature(EvmFeatures::LOG_COLLECTION));
         assert!(!osaka.feature(EvmFeatures::EIP7708));
         assert!(!osaka.feature(EvmFeatures::EIP8246));
         assert!(!osaka.feature(EvmFeatures::EIP8037));
@@ -389,6 +390,7 @@ evm_versions! {
             EIP3607,
             PRIORITY_FEE_CHECK,
             FEE_CHARGE,
+            LOG_COLLECTION,
         ],
         ops: [
             STOP: ZERO,
@@ -864,9 +866,10 @@ evm_versions! {
             // gas phase per authority.
             TxEip7702PerEmptyAccountCost: EIP8038_EIP7702_PER_AUTH_BASE_REGULAR,
 
-            // EIP-2780: Reduce intrinsic transaction gas. The `to`- and
+            // EIP-2780: Reduce intrinsic transaction gas. The base, `to`- and
             // `value`-based intrinsic charges. ACCOUNT_WRITE / CREATE_ACCESS
             // source from EIP-8038 so a single change propagates everywhere.
+            TxBaseStipend: EIP2780_TX_BASE_COST,
             TxValueCost: EIP2780_TX_VALUE_COST,
             TxCreateAccessCost: EIP8038_CREATE_ACCESS,
         ],

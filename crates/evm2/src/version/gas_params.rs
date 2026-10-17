@@ -520,7 +520,11 @@ mod tests {
         // EIP-7623: zero calldata bytes weigh one floor token each.
         assert_eq!(prague.get(GasId::TxFloorZeroByteMultiplier), 1);
 
+        let osaka = gas_params(SpecId::OSAKA);
+        assert_eq!(osaka.get(GasId::TxBaseStipend), 21_000);
+
         let amsterdam = gas_params(SpecId::AMSTERDAM);
+        assert_eq!(amsterdam.get(GasId::TxBaseStipend), 12_000);
         // EIP-8038 state-access cost values (glamsterdam devnet-8).
         assert_eq!(amsterdam.get(GasId::Create), 12_000);
         assert_eq!(amsterdam.get(GasId::WarmStorageReadCost), 100); // unchanged

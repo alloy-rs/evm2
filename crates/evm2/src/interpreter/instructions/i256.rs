@@ -3,118 +3,60 @@
 use crate::interpreter::Word;
 use core::cmp::Ordering;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[allow(dead_code)]
-#[repr(i8)]
-pub(super) enum Sign {
-    Minus = -1,
-    Zero = 0,
-    Plus = 1,
-}
-
-#[allow(dead_code)]
-pub(super) const MAX_POSITIVE_VALUE: Word = Word::from_limbs([
-    0xffffffffffffffff,
-    0xffffffffffffffff,
-    0xffffffffffffffff,
-    0x7fffffffffffffff,
-]);
-
-pub(super) const MIN_NEGATIVE_VALUE: Word = Word::from_limbs([
-    0x0000000000000000,
-    0x0000000000000000,
-    0x0000000000000000,
-    0x8000000000000000,
-]);
-
-const FLIPH_BITMASK_U64: u64 = 0x7FFF_FFFF_FFFF_FFFF;
-
-#[inline]
-pub(super) fn i256_sign(val: &Word) -> Sign {
-    if val.bit(Word::BITS - 1) {
-        Sign::Minus
-    } else {
-        unsafe { core::mem::transmute::<bool, Sign>(!val.is_zero()) }
-    }
-}
-
-#[inline]
-pub(super) fn i256_sign_compl(val: &mut Word) -> Sign {
-    let sign = i256_sign(val);
-    if sign == Sign::Minus {
-        two_compl_mut(val);
-    }
-    sign
-}
-
-#[inline]
-const fn u256_remove_sign(val: &mut Word) {
-    unsafe {
-        val.as_limbs_mut()[3] &= FLIPH_BITMASK_U64;
-    }
-}
-
-#[inline]
-pub(super) const fn two_compl_mut(op: &mut Word) {
-    *op = two_compl(*op);
-}
-
-#[inline]
-pub(super) const fn two_compl(op: Word) -> Word {
-    op.wrapping_neg()
-}
-
 /// Compares two EVM words as signed 256-bit integers.
 #[inline]
 pub fn i256_cmp(first: &Word, second: &Word) -> Ordering {
-    let first_sign = i256_sign(first);
-    let second_sign = i256_sign(second);
-    match first_sign.cmp(&second_sign) {
-        Ordering::Equal => first.cmp(second),
-        o => o,
-    }
+    flip_sign(first).cmp(&flip_sign(second))
+}
+
+/// Returns whether `first < second` as signed 256-bit integers.
+#[inline]
+pub(super) fn i256_lt(first: &Word, second: &Word) -> bool {
+    flip_sign(first) < flip_sign(second)
+}
+
+/// Flips the sign bit, which maps two's complement order onto unsigned order. Unsigned comparisons
+/// compile to a branchless subtraction chain.
+#[inline]
+const fn flip_sign(value: &Word) -> Word {
+    let mut limbs = *value.as_limbs();
+    limbs[3] ^= 1 << 63;
+    Word::from_limbs(limbs)
 }
 
 /// Divides two EVM words as signed 256-bit integers.
 #[inline]
-pub fn i256_div(mut first: Word, mut second: Word) -> Word {
-    let second_sign = i256_sign_compl(&mut second);
-    if second_sign == Sign::Zero {
+pub fn i256_div(first: Word, second: Word) -> Word {
+    if second.is_zero() {
         return Word::ZERO;
     }
-
-    let first_sign = i256_sign_compl(&mut first);
-    if first == MIN_NEGATIVE_VALUE && second == Word::from(1) {
-        return two_compl(MIN_NEGATIVE_VALUE);
-    }
-
-    let mut d = first / second;
-    u256_remove_sign(&mut d);
-
-    if (first_sign == Sign::Minus && second_sign != Sign::Minus)
-        || (second_sign == Sign::Minus && first_sign != Sign::Minus)
-    {
-        two_compl(d)
-    } else {
-        d
-    }
+    let (first_sign, second_sign) = (sign_mask(&first), sign_mask(&second));
+    // `MIN / -1` and `MIN / 1` need no special case: the unsigned quotient `2^255` is `MIN`.
+    let quotient = negate_if(first, first_sign) / negate_if(second, second_sign);
+    negate_if(quotient, first_sign ^ second_sign)
 }
 
 /// Computes signed 256-bit remainder.
 #[inline]
-pub fn i256_mod(mut first: Word, mut second: Word) -> Word {
-    let first_sign = i256_sign_compl(&mut first);
-    if first_sign == Sign::Zero {
+pub fn i256_mod(first: Word, second: Word) -> Word {
+    if second.is_zero() {
         return Word::ZERO;
     }
+    let (first_sign, second_sign) = (sign_mask(&first), sign_mask(&second));
+    let remainder = negate_if(first, first_sign) % negate_if(second, second_sign);
+    negate_if(remainder, first_sign)
+}
 
-    let second_sign = i256_sign_compl(&mut second);
-    if second_sign == Sign::Zero {
-        return Word::ZERO;
-    }
+/// Returns all ones if `value` is negative and zero otherwise.
+#[inline]
+const fn sign_mask(value: &Word) -> u64 {
+    ((value.as_limbs()[3] as i64) >> 63) as u64
+}
 
-    let mut r = first % second;
-    u256_remove_sign(&mut r);
-
-    if first_sign == Sign::Minus { two_compl(r) } else { r }
+/// Negates `value` if `mask` is all ones, without branching: `(value ^ mask) - mask`.
+#[inline]
+const fn negate_if(value: Word, mask: u64) -> Word {
+    let [l0, l1, l2, l3] = value.into_limbs();
+    Word::from_limbs([l0 ^ mask, l1 ^ mask, l2 ^ mask, l3 ^ mask])
+        .wrapping_sub(Word::from_limbs([mask; 4]))
 }
