@@ -1349,9 +1349,9 @@ impl Bytecode<'_> {
 
     /// Returns what the condition of the `JUMPI` that ends `bid` shows about its successors.
     ///
-    /// A block that ends in `DUPn ISZERO* PUSH JUMPI` leaves the copied value at depth `n - 1`,
-    /// and that value is zero on the fall-through after an even number of `ISZERO`s and on the
-    /// jump after an odd number.
+    /// A block that ends in a `DUP`, any number of `ISZERO`s, a `PUSH` and the `JUMPI` leaves the
+    /// copied value on the stack, and that value is zero on the fall-through after an even number
+    /// of `ISZERO`s and on the jump after an odd number.
     fn branch(&self, bid: Block) -> Option<Branch> {
         let block = &self.cfg.blocks[bid];
         let term = block.terminator();
