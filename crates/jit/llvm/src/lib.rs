@@ -30,7 +30,7 @@ use inkwell::{
     },
     values::{
         AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue,
-        FunctionValue, InstructionValue, PointerValue,
+        FunctionValue, InstructionValue, PointerValue, UnnamedAddress,
     },
 };
 use object::{Object, ObjectSymbol};
@@ -1442,6 +1442,18 @@ impl Builder for EvmLlvmBuilder<'_> {
         self.bcx.build_global_string_ptr(value, "").unwrap().as_pointer_value().into()
     }
 
+    fn const_array(&mut self, ty: Self::Type, values: &[u64]) -> Self::Value {
+        let ty = ty.into_int_type();
+        let values = values.iter().map(|&v| ty.const_int(v, false)).collect::<Vec<_>>();
+        let init = ty.const_array(&values);
+        let global = self.module().add_global(init.get_type(), None, "");
+        global.set_initializer(&init);
+        global.set_constant(true);
+        global.set_linkage(convert_linkage(evm2_jit_backend::Linkage::Private));
+        global.set_unnamed_address(UnnamedAddress::Global);
+        global.as_pointer_value().into()
+    }
+
     fn nullptr(&mut self) -> Self::Value {
         self.ty_ptr.const_null().into()
     }
@@ -1728,6 +1740,13 @@ impl Builder for EvmLlvmBuilder<'_> {
         let ctlz = self.get_or_add_function(&name, |this| this.fn_type(Some(ty), &[ty, i1_ty]));
         let is_poison_on_zero = self.bool_const(false);
         self.call(ctlz, &[value, is_poison_on_zero]).unwrap()
+    }
+
+    fn popcnt(&mut self, value: Self::Value) -> Self::Value {
+        let ty = value.get_type();
+        let name = format!("llvm.ctpop.{}", fmt_ty(ty));
+        let ctpop = self.get_or_add_function(&name, |this| this.fn_type(Some(ty), &[ty]));
+        self.call(ctpop, &[value]).unwrap()
     }
 
     fn bitor_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value {
