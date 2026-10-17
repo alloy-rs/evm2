@@ -69,7 +69,7 @@ impl TransferInspector {
 
     fn on_transfer<T: EvmTypesHost>(&mut self, message: &Message<T>, host: &mut T::Host<'_>) {
         let kind = match message.kind {
-            MessageKind::Call | MessageKind::CallCode => TransferKind::Call,
+            MessageKind::Call => TransferKind::Call,
             MessageKind::Create => TransferKind::Create,
             MessageKind::Create2 => TransferKind::Create2,
             _ => return,
