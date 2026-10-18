@@ -189,15 +189,15 @@ fn read_fp2(input: &[u8]) -> Result<Fp2, PrecompileHalt> {
     Ok(fp2)
 }
 
-/// `6x^2`, where `x` is the BN254 curve parameter.
-const SIX_X_SQUARED: u128 = 147946756881789318990833708069417712966;
+/// The BN254 curve parameter `x`.
+const BN_X: u64 = 4965661367192848881;
 
-/// Checks that an on-curve G2 point is in the r-torsion subgroup by testing `[6x^2]P == psi(P)`,
-/// from section 4.3 of <https://eprint.iacr.org/2022/352.pdf>. This is the same check arkworks
-/// uses.
+/// Checks that an on-curve G2 point is in the r-torsion subgroup by testing
+/// `[x + 1]P + psi([x]P) + psi^2([x]P) == psi^3([2x]P)`, from sections 3 and 5.1 of
+/// <https://eprint.iacr.org/2022/348.pdf>. gnark-crypto uses the same check.
 ///
-/// mcl's own check multiplies by the 254-bit group order, while this needs a 127-bit
-/// multiplication and one endomorphism.
+/// mcl's own check multiplies by the 254-bit group order, while this needs a 63-bit
+/// multiplication and four endomorphisms.
 #[inline]
 fn g2_in_subgroup(p: &G2) -> bool {
     static PSI_COEFFS: OnceLock<(Fp2, Fp2)> = OnceLock::new();
@@ -223,27 +223,40 @@ fn g2_in_subgroup(p: &G2) -> bool {
 
     // psi is the untwist-Frobenius-twist endomorphism. For affine P it maps
     // (x, y) to (conj(x) * psi_x, conj(y) * psi_y), where conj negates the imaginary part.
+    // conj is a field automorphism, so conjugating z as well maps Jacobian coordinates.
     let conj = |a: &Fp2| {
         let mut r = a.clone();
         Fp::neg(&mut r.d[1], &a.d[1]);
         r
     };
-    let mut psi = G2::zero();
-    psi.x = &conj(&p.x) * psi_x;
-    psi.y = &conj(&p.y) * psi_y;
-    psi.z.d[0] = Fp::from_int(1);
+    let psi = |a: &G2| {
+        let mut r = G2::zero();
+        r.x = &conj(&a.x) * psi_x;
+        r.y = &conj(&a.y) * psi_y;
+        r.z = conj(&a.z);
+        r
+    };
 
-    // Compute [6x^2]P with plain double-and-add. `G2::mul` splits the scalar with the GLV
+    // Compute [x]P with plain double-and-add. `G2::mul` splits the scalar with the GLV
     // endomorphism, which only gives the right product for points that are already in the
     // subgroup, so it cannot be used to test membership.
-    let mut q = p.clone();
-    for i in (0..SIX_X_SQUARED.ilog2()).rev() {
+    let mut xp = p.clone();
+    for i in (0..BN_X.ilog2()).rev() {
         let mut doubled = G2::zero();
-        G2::dbl(&mut doubled, &q);
-        q = doubled;
-        if (SIX_X_SQUARED >> i) & 1 == 1 {
-            q += p;
+        G2::dbl(&mut doubled, &xp);
+        xp = doubled;
+        if (BN_X >> i) & 1 == 1 {
+            xp += p;
         }
     }
-    q == psi
+
+    let psi_xp = psi(&xp);
+    let psi2_xp = psi(&psi_xp);
+    let mut lhs = psi2_xp.clone();
+    lhs += &psi_xp;
+    lhs += &xp;
+    lhs += p;
+    let mut rhs = G2::zero();
+    G2::dbl(&mut rhs, &psi(&psi2_xp));
+    lhs == rhs
 }
