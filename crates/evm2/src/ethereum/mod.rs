@@ -890,8 +890,16 @@ pub fn intrinsic_and_floor_gas(
 /// registers of byte lanes and widen once per chunk; a `usize` count would widen every flag
 /// to a full lane. 192 is a multiple of every power-of-two vector width up to 64 bytes, so only
 /// the last chunk runs a scalar remainder.
+///
+/// With the aarch64 dot-product extension, LLVM turns a sum of 0/1 flags into a `udot` per
+/// vector whose result the next iteration waits on. Counting 2 per zero byte keeps plain byte
+/// adds there, at the cost of a mask per vector and half-size chunks.
 fn count_zero_bytes(data: &[u8]) -> u64 {
-    data.chunks(192).map(|c| c.iter().map(|&b| (b == 0) as u8).sum::<u8>() as u64).sum()
+    const STEP: u8 = if cfg!(target_feature = "dotprod") { 2 } else { 1 };
+    data.chunks(192 / STEP as usize)
+        .map(|c| c.iter().map(|&b| if b == 0 { STEP } else { 0 }).sum::<u8>() as u64)
+        .sum::<u64>()
+        / STEP as u64
 }
 
 /// EIP-2780: sum of the sender base, `tx.to`-based, and `tx.value`-based
