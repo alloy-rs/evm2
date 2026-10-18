@@ -20,11 +20,14 @@
 //! Per-block lattice:
 //! - `Bottom` — block not yet reached.
 //! - `Known(Vec<AbsValue>)` — reached with a known stack state (top-aligned; when predecessors have
-//!   different stack heights, the shorter stack is bottom-padded with `Top`).
+//!   different stack heights, only the entries of the shorter stack are kept).
 //!
 //! Each block keeps one such state per context: the return addresses and other valid jump target
 //! constants on the stack, so that internal functions are analyzed separately for each call chain
 //! (see [`ContextMode`]).
+//!
+//! A `JUMPI` propagates only along the edges that its condition allows in each context, and the
+//! values that its condition shows to be zero on an edge become `0` there.
 //!
 //! ## Soundness
 //!
@@ -38,10 +41,10 @@ use crate::{
     FxHashMap, FxHashSet,
     bytecode::{Bytecode, Inst, InstFlags, Interner, U256Imm},
 };
-use alloy_primitives::map::FxHasher;
+use alloy_primitives::{U256, map::FxHasher};
 use bitvec::vec::BitVec;
 use either::Either;
-use evm2::interpreter::op;
+use evm2::{constants::STACK_LIMIT, interpreter::op};
 use oxc_index::IndexVec;
 use smallvec::SmallVec;
 use std::{
@@ -196,14 +199,16 @@ impl ConstSetInterner {
     }
 }
 
-/// Maximum abstract stack depth tracked by the analysis. Top-aligned joins across paths with
-/// differing stack heights pad the shorter stack with `Top` at the bottom; on CFG cycles this
-/// padding can grow without bound. Clamping loses precision for deeper entries, which operand
-/// snapshots represent as `Top`.
+/// Maximum abstract stack depth tracked by the analysis: the EVM stack limit, so that the return
+/// addresses of deep call chains stay known. A deeper stack overflows at runtime.
+const MAX_ABS_STACK_DEPTH: usize = STACK_LIMIT;
+
+/// Stack depth down to which [`Bytecode::context_key`] keys on the positions of jump targets.
 ///
-/// Instructions that access deeper than this (e.g. Amsterdam DUPN/SWAPN up to depth 236)
-/// treat the out-of-range slot as `Top` rather than aborting block interpretation.
-const MAX_ABS_STACK_DEPTH: usize = 64;
+/// Below it only their order counts, without repeats, so that a loop that pushes a
+/// runtime-dependent number of values, or a recursive call that pushes the same return address
+/// at every level, reaches a fixed context instead of a new one per iteration.
+const MAX_CONTEXT_DEPTH: usize = 64;
 
 /// Maximum number of memory words tracked by [`MemWords`].
 const MAX_MEM_WORDS: usize = 16;
@@ -289,8 +294,8 @@ enum BlockState {
     /// Block has been reached with a known stack state (top-aligned).
     Known {
         stack: Vec<AbsValue>,
-        /// Whether entries below `stack` were dropped by [`MAX_ABS_STACK_DEPTH`] clamping, so
-        /// that running out of tracked entries is not a stack underflow.
+        /// Whether entries below `stack` were dropped by a join or by [`MAX_ABS_STACK_DEPTH`]
+        /// clamping, so that running out of tracked entries is not a stack underflow.
         truncated: bool,
         /// Known memory words.
         mem: MemWords,
@@ -300,10 +305,10 @@ enum BlockState {
 impl BlockState {
     /// Join another incoming state into this one. Returns `true` if the state changed.
     ///
-    /// When stack heights differ, the stacks are top-aligned and the shorter one is
-    /// bottom-padded with `Top`. This handles the common Solidity dispatch pattern where
-    /// the "no selector match" fallthrough leaves an extra item on the stack that the
-    /// fallback ignores.
+    /// When stack heights differ, the stacks are top-aligned and the entries below the shorter
+    /// one are dropped, marking the state truncated. This handles the common Solidity dispatch
+    /// pattern where the "no selector match" fallthrough leaves an extra item on the stack that
+    /// the fallback ignores.
     fn join(
         &mut self,
         incoming: &[AbsValue],
@@ -323,41 +328,29 @@ impl BlockState {
                 true
             }
             Self::Known { stack: existing, truncated, mem } => {
-                let new_len = existing.len().max(incoming.len());
                 let mut changed = mem.join(incoming_mem, sets);
-                if incoming_truncated && !*truncated {
+
+                // Keep only the entries that both stacks have, so that joins never grow the
+                // stack.
+                let join_len = existing.len().min(incoming.len());
+                if (incoming_truncated || incoming.len() != existing.len()) && !*truncated {
                     *truncated = true;
                     changed = true;
                 }
-
-                // Clamp to MAX_ABS_STACK_DEPTH by only joining the top portion.
-                let join_len = new_len.min(MAX_ABS_STACK_DEPTH);
-
-                // Resize existing to join_len: pad at bottom with Top or truncate.
-                if existing.len() < join_len {
-                    let pad = join_len - existing.len();
-                    existing.splice(0..0, std::iter::repeat_n(AbsValue::Top, pad));
-                    changed = true;
-                } else if existing.len() > join_len {
+                if existing.len() > join_len {
                     existing.drain(..existing.len() - join_len);
-                    *truncated = true;
                     changed = true;
                 }
 
                 // Join element-wise, top-aligned. Both stacks have their top at the end.
-                // `incoming` may be longer than join_len — we only look at its top portion.
-                let incoming_start = incoming.len().saturating_sub(join_len);
-                let incoming_top = &incoming[incoming_start..];
-                // incoming_top.len() <= join_len. If shorter, bottom positions get Top.
-                let pad = join_len - incoming_top.len();
-                for i in 0..join_len {
-                    let inc = if i < pad { AbsValue::Top } else { incoming_top[i - pad] };
-                    if existing[i] == inc {
+                let incoming_top = &incoming[incoming.len() - join_len..];
+                for (value, &inc) in existing.iter_mut().zip(incoming_top) {
+                    if *value == inc {
                         continue;
                     }
-                    let joined = sets.join(existing[i], inc);
-                    if joined != existing[i] {
-                        existing[i] = joined;
+                    let joined = sets.join(*value, inc);
+                    if joined != *value {
+                        *value = joined;
                         changed = true;
                     }
                 }
@@ -376,7 +369,7 @@ impl BlockState {
 #[derive(Clone, Copy, Debug)]
 enum ContextMode {
     /// Key on every constant on the tracked stack that is a valid jump target, such as the
-    /// return addresses of the whole call chain.
+    /// return addresses of the whole call chain, as described at [`MAX_CONTEXT_DEPTH`].
     Full,
     /// Key on the tracked stack shape and the topmost valid jump target constant.
     Coarse,
@@ -389,10 +382,10 @@ impl ContextMode {
     fn budget(self, num_blocks: usize, num_insts: usize) -> Budget {
         match self {
             Self::Full => Budget {
-                block_parts: 1024,
-                parts: (num_blocks * 16).min(1 << 16),
-                pops: num_blocks * 64,
-                work: num_insts as u64 * 160,
+                block_parts: 2048,
+                parts: (num_blocks * 32).min(1 << 17),
+                pops: num_blocks * 128,
+                work: num_insts as u64 * 320,
             },
             Self::Coarse => Budget {
                 block_parts: 128,
@@ -527,6 +520,17 @@ enum JumpCondition {
     Unknown,
     AlwaysTrue,
     AlwaysFalse,
+}
+
+/// What the condition of a block's terminating `JUMPI` shows about its successors.
+struct Branch {
+    /// The fall-through block.
+    fallthrough: Option<Block>,
+    /// Whether the jump may also target the fall-through block.
+    fallthrough_is_target: bool,
+    /// The edge, `true` for the jump, on which the condition shows a value to be zero, and the
+    /// depth of that value in the exit stack, with zero at the top.
+    zero: Option<(bool, usize)>,
 }
 
 impl JumpResolution {
@@ -1187,6 +1191,11 @@ impl Bytecode<'_> {
         let mut stack_buf: Vec<AbsValue> = Vec::with_capacity(MAX_ABS_STACK_DEPTH);
         let mut targets = SmallVec::<[Block; 4]>::new();
         let mut mem_buf = MemWords::default();
+        let mut refined_buf = Vec::new();
+
+        let branches: IndexVec<Block, Option<Branch>> =
+            self.cfg.blocks.indices().map(|bid| self.branch(bid)).collect();
+        let zero = AbsValue::Const(U256Imm::new(U256::ZERO, &mut self.u256_interner.borrow_mut()));
 
         'fixpoint: while let Some(Reverse((_, pid))) = worklist.pop() {
             queued.set(pid.index(), false);
@@ -1213,20 +1222,28 @@ impl Bytecode<'_> {
             work += insts.len() as u64;
             let term_inst = self.cfg.blocks[bid].terminator();
             let mut operand = None;
+            let mut condition = AbsValue::Top;
             for i in insts {
                 if i == term_inst {
                     operand = stack_buf.last().copied();
+                    condition = stack_buf.iter().rev().nth(1).copied().unwrap_or_default();
                 }
                 if !self.interpret_inst(i, &mut stack_buf, truncated, &mut mem_buf, Record::Skip) {
                     continue 'fixpoint;
                 }
             }
+            let branch = branches[bid].as_ref();
+            let condition = match branch {
+                Some(_) => self.resolve_jump_condition(condition, &const_sets),
+                None => JumpCondition::Unknown,
+            };
 
             // Discover dynamic-jump target edges from this context's jump operand.
             targets.clear();
             let term = &self.insts[term_inst];
             if term.is_jump()
                 && !term.flags.contains(InstFlags::STATIC_JUMP)
+                && condition != JumpCondition::AlwaysFalse
                 && let Some(operand) = operand
             {
                 self.jump_target_blocks(operand, &const_sets, &mut targets);
@@ -1242,7 +1259,38 @@ impl Bytecode<'_> {
                 continue;
             }
             let key = self.context_key(mode, &stack_buf, truncated);
+            let mut refined_key = None;
             for &succ in self.cfg.blocks[bid].succs.iter().chain(&targets) {
+                let (mut stack, mut key) = (&stack_buf, key);
+                if let Some(branch) = branch {
+                    // Whether this edge is the jump rather than the fall-through. Both may reach
+                    // the fall-through block.
+                    let taken = if Some(succ) != branch.fallthrough {
+                        Some(true)
+                    } else if branch.fallthrough_is_target || targets.contains(&succ) {
+                        None
+                    } else {
+                        Some(false)
+                    };
+                    match (taken, condition) {
+                        (Some(true), JumpCondition::AlwaysFalse)
+                        | (Some(false), JumpCondition::AlwaysTrue) => continue,
+                        _ => {}
+                    }
+                    // The value that the branch condition shows to be zero on this edge.
+                    if let Some((zero_taken, depth)) = branch.zero
+                        && taken == Some(zero_taken)
+                        && depth < stack_buf.len()
+                    {
+                        let refined = *refined_key.get_or_insert_with(|| {
+                            refined_buf.clone_from(&stack_buf);
+                            let len = refined_buf.len();
+                            refined_buf[len - 1 - depth] = zero;
+                            self.context_key(mode, &refined_buf, truncated)
+                        });
+                        (stack, key) = (&refined_buf, refined);
+                    }
+                }
                 let part = match parts[succ].get(&key) {
                     Some(&part) => part,
                     None => {
@@ -1256,8 +1304,8 @@ impl Bytecode<'_> {
                         part
                     }
                 };
-                work += 1 + stack_buf.len().min(MAX_ABS_STACK_DEPTH) as u64;
-                if states[part].1.join(&stack_buf, truncated, &mem_buf, &mut const_sets)
+                work += 1 + stack.len().min(MAX_ABS_STACK_DEPTH) as u64;
+                if states[part].1.join(stack, truncated, &mem_buf, &mut const_sets)
                     && !queued[part.index()]
                 {
                     queued.set(part.index(), true);
@@ -1299,21 +1347,80 @@ impl Bytecode<'_> {
         Fixpoint { reached, discovered, const_sets, converged }
     }
 
+    /// Returns what the condition of the `JUMPI` that ends `bid` shows about its successors.
+    ///
+    /// A block that ends in a `DUP`, any number of `ISZERO`s, a `PUSH` and the `JUMPI` leaves the
+    /// copied value on the stack, and that value is zero on the fall-through after an even number
+    /// of `ISZERO`s and on the jump after an odd number.
+    fn branch(&self, bid: Block) -> Option<Branch> {
+        let block = &self.cfg.blocks[bid];
+        let term = block.terminator();
+        let data = &self.insts[term];
+        if data.opcode != op::JUMPI {
+            return None;
+        }
+
+        let resolve = |inst: Inst| {
+            let inst = self.redirects.get(&inst).copied().unwrap_or(inst);
+            self.cfg.inst_to_block.get(inst).copied().flatten()
+        };
+        let fallthrough = resolve(term + 1);
+        let fallthrough_is_target = if data.flags.contains(InstFlags::MULTI_JUMP) {
+            self.multi_jump_targets
+                .get(&term)
+                .is_some_and(|targets| targets.iter().any(|&target| resolve(target) == fallthrough))
+        } else {
+            data.is_static_jump()
+                && !data.flags.contains(InstFlags::INVALID_JUMP)
+                && resolve(data.static_jump_target()) == fallthrough
+        };
+        let mut zero = None;
+        let mut tail = (block.insts().rev().skip(1).map(|i| &self.insts[i]))
+            .filter(|data| !data.is_dead_code())
+            .take_while(|data| !data.flags.contains(InstFlags::DISABLED));
+        if tail.next().is_some_and(|data| matches!(data.opcode, op::PUSH0..=op::PUSH32)) {
+            let mut taken = false;
+            for data in tail {
+                match data.opcode {
+                    op::ISZERO => taken = !taken,
+                    op::DUP1..=op::DUP16 => {
+                        zero = Some((taken, (data.opcode - op::DUP1) as usize));
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+        }
+        Some(Branch { fallthrough, fallthrough_is_target, zero })
+    }
+
     /// Returns the context of an abstract stack: a hash of the constants `mode` keys on.
     ///
     /// Keys that collide share a state, which only costs precision.
     fn context_key(&self, mode: ContextMode, stack: &[AbsValue], truncated: bool) -> u64 {
-        let tracked = stack.len().min(MAX_ABS_STACK_DEPTH);
-        let targets = stack.iter().rev().take(tracked).enumerate().filter_map(|(depth, value)| {
+        let targets = stack.iter().rev().enumerate().filter_map(|(depth, value)| {
             let pc = value.as_const()?.get_inline()?;
-            self.is_valid_jump(pc as usize).then_some((depth as u8, pc))
+            self.is_valid_jump(pc as usize).then_some((depth, pc))
         });
         let mut hasher = FxHasher::default();
         match mode {
-            ContextMode::Full => targets.for_each(|target| target.hash(&mut hasher)),
+            ContextMode::Full => {
+                let mut prev_deep = None;
+                for (depth, pc) in targets {
+                    if depth < MAX_CONTEXT_DEPTH {
+                        (depth as u8, pc).hash(&mut hasher);
+                    } else if prev_deep.replace(pc) != Some(pc) {
+                        pc.hash(&mut hasher);
+                    }
+                }
+            }
             ContextMode::Coarse => {
+                let tracked = stack.len().min(MAX_CONTEXT_DEPTH);
                 (tracked as u8, truncated || stack.len() > tracked).hash(&mut hasher);
-                targets.take(1).for_each(|target| target.hash(&mut hasher));
+                targets
+                    .take(1)
+                    .filter(|&(depth, _)| depth < MAX_CONTEXT_DEPTH)
+                    .for_each(|(depth, pc)| (depth as u8, pc).hash(&mut hasher));
             }
             ContextMode::Insensitive => return 0,
         }
@@ -1449,8 +1556,8 @@ impl Bytecode<'_> {
                     Some(n) => {
                         let n = n as usize;
                         if stack.len() < n {
-                            // Depth exceeds the tracked abstract stack (truncated by
-                            // MAX_ABS_STACK_DEPTH). The slot is reachable at runtime
+                            // Depth exceeds the tracked abstract stack (truncated by a
+                            // join or MAX_ABS_STACK_DEPTH). The slot is reachable at runtime
                             // but unknown abstractly.
                             stack.push(AbsValue::Top);
                         } else {
@@ -2206,7 +2313,7 @@ mod tests_edge_cases {
         assert!(!bytecode.has_dynamic_jumps);
     }
 
-    /// A loop where the stack grows each iteration until clamped.
+    /// A loop where the stack grows each iteration.
     /// Verifies the analysis converges without losing precision at the top.
     #[test]
     fn loop_stack_growth_clamping() {
@@ -2214,7 +2321,8 @@ mod tests_edge_cases {
         // bb1: JUMPDEST, PUSH1 0x01, PUSH1 bb1_pc, JUMP  (loop back, growing stack).
         //
         // The stack grows by 1 each iteration (net +1 from PUSH before the loop jump).
-        // The abstract stack should clamp to MAX_ABS_STACK_DEPTH without conflict.
+        // Joining the back edge keeps the shorter stack, so the analysis converges without
+        // conflict.
         let bytecode = analyze_asm(
             "
             PUSH1 0x42              ; pc=0: initial value
@@ -2764,17 +2872,27 @@ mod tests_edge_cases {
 
     #[test]
     fn truncated_stack_does_not_make_jumpi_unconditional() {
+        // Both paths reach `body` in one context. The join keeps the shorter stack, which
+        // does not hold the JUMPI condition.
         let src = format!(
             "
-            {}
+            CALLDATASIZE
+            PUSH %short
+            JUMPI
             PUSH0
             PUSH %taken
-            {}
+            {0}
+            PUSH %body
+            JUMP
+        short:
+            JUMPDEST
+            PUSH %taken
+            {0}
             PUSH %body
             JUMP
         body:
             JUMPDEST
-            {}
+            {1}
             JUMPI
             PUSH1 0x01
             PUSH1 0x01
@@ -2787,14 +2905,13 @@ mod tests_edge_cases {
             SSTORE
             STOP
             ",
-            "PUSH1 0x11\n".repeat(5),
             "PUSH1 0x11\n".repeat(63),
             "POP\n".repeat(63),
         );
         let bytecode = analyze_asm(&src);
 
         let (jump_inst, jumpi) =
-            bytecode.iter_insts().find(|(_, data)| data.opcode == op::JUMPI).unwrap();
+            bytecode.iter_insts().filter(|(_, data)| data.opcode == op::JUMPI).nth(1).unwrap();
         assert_eq!(bytecode.snapshots.inputs[jump_inst].len(), 2);
         assert!(jumpi.flags.contains(InstFlags::STATIC_JUMP));
         assert!(!jumpi.has_const_jumpi_condition());
@@ -2867,7 +2984,7 @@ mod tests_edge_cases {
             JUMPDEST            ; inst 1
             DUP1                ; inst 2
             PUSH1 0x0a          ; inst 3
-            LT                  ; inst 4
+            GT                  ; inst 4: i < 10
             ISZERO              ; inst 5
             PUSH %exit          ; inst 6
             JUMPI               ; inst 7
@@ -2899,7 +3016,7 @@ mod tests_edge_cases {
             JUMPDEST            ; inst 1
             DUP1                ; inst 2
             PUSH1 0x0a
-            LT
+            GT
             ISZERO
             PUSH %exit
             JUMPI
@@ -2970,7 +3087,7 @@ mod tests_edge_cases {
             JUMPDEST            ; inst 10
             DUP1                ; inst 11
             PUSH1 0x0a
-            LT
+            GT
             ISZERO
             PUSH %exit
             JUMPI
@@ -3458,11 +3575,98 @@ mod tests_edge_cases {
             JUMP                ; return
         ",
         );
-        // Each recursion level keys a new context until the tracked stack is clamped, and
-        // the clamped frames lose `done`, so the return must stay dynamic.
+        // Each recursion level keys a new context until the return addresses sink below
+        // `MAX_CONTEXT_DEPTH`, where the levels share a context whose join loses `done`, so the
+        // return must stay dynamic.
         let (_, data) = bytecode.iter_insts().rfind(|(_, d)| d.is_jump()).unwrap();
         assert!(!data.flags.contains(InstFlags::STATIC_JUMP));
         assert!(bytecode.has_dynamic_jumps);
+    }
+
+    /// A `try`/`catch` shape: the failed call jumps to the block that checks the decoded
+    /// result with one entry fewer. That jump is only taken when the call result is zero, so
+    /// the check never jumps on, and `ok` keeps only the success path's stack.
+    #[test]
+    fn failed_call_does_not_take_success_jump() {
+        let bytecode = analyze_asm(
+            "
+            PUSH1 0x42
+            PUSH %ret
+            PUSH %func
+            JUMP
+        ret:
+            JUMPDEST
+            STOP
+        func:
+            JUMPDEST            ; [0x42, ret]
+            CALLDATASIZE        ; [0x42, ret, success]
+            DUP1
+            ISZERO
+            PUSH %check
+            JUMPI
+            PUSH1 0x80          ; [0x42, ret, success, value]
+            SWAP1               ; [0x42, ret, value, success]
+        check:
+            JUMPDEST
+            PUSH %ok
+            JUMPI
+            PUSH0
+            DUP1
+            REVERT
+        ok:
+            JUMPDEST            ; [0x42, ret, value]
+            POP
+            JUMP
+        ",
+        );
+        assert!(!bytecode.has_dynamic_jumps);
+    }
+
+    /// The fall-through of a `JUMPI` knows that its condition is zero.
+    #[test]
+    fn jumpi_fallthrough_knows_zero_condition() {
+        let bytecode = analyze_asm(
+            "
+            CALLDATASIZE
+            DUP1
+            PUSH %nonzero
+            JUMPI
+            PUSH1 0x01
+            ADD
+            PUSH0
+            SSTORE
+            STOP
+        nonzero:
+            JUMPDEST
+            STOP
+        ",
+        );
+        let (add, _) = bytecode.iter_insts().find(|(_, d)| d.opcode == op::ADD).unwrap();
+        assert_eq!(bytecode.const_operand(add, 1), Some(U256::ZERO));
+    }
+
+    /// A return address below 64 other stack entries, as in deep call chains.
+    #[test]
+    fn deep_return_address() {
+        let src = format!(
+            "
+            PUSH %ret
+            {}
+            PUSH %func
+            JUMP
+        ret:
+            JUMPDEST
+            STOP
+        func:
+            JUMPDEST
+            {}
+            JUMP
+            ",
+            "PUSH1 0x11\n".repeat(70),
+            "POP\n".repeat(70),
+        );
+        let bytecode = analyze_asm(&src);
+        assert!(!bytecode.has_dynamic_jumps);
     }
 
     /// Stores `0x80` at `0x40`, runs `src`, and returns the folded value of `mload(0x40)`.
