@@ -183,7 +183,7 @@ pub use state::{
     StorageSlot, StorageSlotHandle, Tee, Tracked,
 };
 
-mod prewarm_set;
+pub(crate) mod prewarm_set;
 pub use prewarm_set::PrewarmSet;
 
 /// Optional external interpreter runner.
@@ -747,8 +747,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// cannot express through [`Self::precompiles`] (it borrows all of `self`).
     #[inline]
     pub fn warm_precompiles(&mut self) {
-        let state = &mut self.state;
-        self.precompiles.for_each_address(&mut |address| state.prewarm(&address));
+        self.precompiles.warm_addresses(self.state.prewarm_set_mut());
     }
 
     /// Returns the precompile provider mutably.
