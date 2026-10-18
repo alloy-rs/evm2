@@ -352,6 +352,11 @@ mod tests {
         let res = run_add(&[0x40], BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)),);
 
+        // A coordinate equal to the field modulus is non-canonical.
+        let input = hex!("30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47");
+        let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
+        assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)),);
+
         let input = hex::decode(
             "\
             0000000000000000000000000000000000000000000000000000000000000001\

@@ -818,60 +818,16 @@ pub fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
     (access_list.len() as u64, access_list.storage_keys_count() as u64)
 }
 
-/// Calculates transaction calldata floor gas.
-///
-/// `caller`/`to`/`value` feed the EIP-2780 floor base (ethereum/EIPs#11836):
-/// under EIP-2780 the floor is anchored on the decomposed execution-gas intrinsic
-/// base (`TX_BASE` + `to`-based + `value`-based, the same sum
-/// [`intrinsic_gas`] charges) instead of the flat `TxFloorCostBase`, so the
-/// floor never undercuts the transaction's own intrinsic base.
-pub fn floor_gas(
-    version: &Version,
-    caller: Address,
-    to: TxKind,
-    input: &Bytes,
-    access_list_accounts: u64,
-    access_list_storage_keys: u64,
-    value: U256,
-) -> u64 {
-    if !version.feature(EvmFeatures::EIP7623) {
-        return 0;
-    }
-    let params = &version.gas_params;
-    let floor_cost_per_token = u64::from(params.get(GasId::TxFloorCostPerToken));
-    if floor_cost_per_token == 0 {
-        return 0;
-    }
-
-    // tokens for access list
-    let al_multiplier = version.gas_params.get(GasId::TxAccessListFloorByteMultiplier) as u64;
-    let mut tokens = (access_list_accounts * 20 + access_list_storage_keys * 32) * al_multiplier;
-
-    // tokens for input. EIP-7623 weights zero bytes at `TxFloorZeroByteMultiplier`
-    // (1) and non-zero bytes at `TxTokenNonZeroByteMultiplier` (4); EIP-7976
-    // raises the zero-byte weight to 4 so every byte counts uniformly.
-    let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
-    let zero_multiplier = u64::from(params.get(GasId::TxFloorZeroByteMultiplier));
-    let zero_data_len = input.iter().filter(|v| **v == 0).count() as u64;
-    let non_zero_data_len = input.len() as u64 - zero_data_len;
-    tokens += zero_data_len * zero_multiplier + non_zero_data_len * non_zero_multiplier;
-
-    // EIP-2780 (ethereum/EIPs#11836): anchor the floor on the decomposed
-    // intrinsic base instead of the flat `TxFloorCostBase`.
-    let base = if version.feature(EvmFeatures::EIP2780) {
-        let is_self_transfer = matches!(to, TxKind::Call(t) if t == caller);
-        eip2780_base_to_value_gas(version, to.is_create(), is_self_transfer, value)
-    } else {
-        params.get(GasId::TxFloorCostBase) as u64
-    };
-    base + tokens * floor_cost_per_token
-}
-
-/// Calculates intrinsic transaction gas.
+/// Calculates intrinsic transaction gas and the calldata floor gas, returned as
+/// `(intrinsic_gas, floor_gas)`. The floor is zero without EIP-7623.
 ///
 /// `caller`/`value` feed the EIP-2780 decomposed model (which branches on
 /// self-transfer and whether `tx.value` is zero); the legacy model ignores them.
-pub fn intrinsic_gas(
+/// Under EIP-2780 the floor is also anchored on that decomposed base
+/// (`TX_BASE` + `to`-based + `value`-based, ethereum/EIPs#11836) instead of the
+/// flat `TxFloorCostBase`, so it never undercuts the transaction's own
+/// intrinsic base.
+pub fn intrinsic_and_floor_gas(
     version: &Version,
     caller: Address,
     to: TxKind,
@@ -879,10 +835,10 @@ pub fn intrinsic_gas(
     access_list_accounts: u64,
     access_list_storage_keys: u64,
     value: U256,
-) -> u64 {
+) -> (u64, u64) {
     let params = &version.gas_params;
     let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
-    let zero_data_len = input.iter().filter(|v| **v == 0).count() as u64;
+    let zero_data_len = count_zero_bytes(input);
     let non_zero_data_len = input.len() as u64 - zero_data_len;
     let tokens = zero_data_len + non_zero_data_len * non_zero_multiplier;
     let mut gas = tokens * u64::from(params.get(GasId::TxTokenCost));
@@ -891,10 +847,13 @@ pub fn intrinsic_gas(
 
     // Base + `to`-based + `value`-based charges.
     let is_create = to.is_create();
-    if version.feature(EvmFeatures::EIP2780) {
+    let eip2780_base = version.feature(EvmFeatures::EIP2780).then(|| {
         // EIP-2780: decomposed model replacing the legacy 21,000 base.
         let is_self_transfer = matches!(to, TxKind::Call(to) if to == caller);
-        gas += eip2780_base_to_value_gas(version, is_create, is_self_transfer, value);
+        eip2780_base_to_value_gas(version, is_create, is_self_transfer, value)
+    });
+    if let Some(base) = eip2780_base {
+        gas += base;
     } else {
         gas += u64::from(params.get(GasId::TxBaseStipend));
         if is_create && version.feature(EvmFeatures::EIP2) {
@@ -904,7 +863,35 @@ pub fn intrinsic_gas(
     if is_create && version.feature(EvmFeatures::EIP3860) {
         gas += u64::from(params.get(GasId::TxInitcodeCost)) * num_words(input.len()) as u64;
     }
-    gas
+
+    let floor_cost_per_token = u64::from(params.get(GasId::TxFloorCostPerToken));
+    if !version.feature(EvmFeatures::EIP7623) || floor_cost_per_token == 0 {
+        return (gas, 0);
+    }
+
+    // tokens for access list
+    let al_multiplier = params.get(GasId::TxAccessListFloorByteMultiplier) as u64;
+    let mut floor_tokens =
+        (access_list_accounts * 20 + access_list_storage_keys * 32) * al_multiplier;
+
+    // tokens for input. EIP-7623 weights zero bytes at `TxFloorZeroByteMultiplier`
+    // (1) and non-zero bytes at `TxTokenNonZeroByteMultiplier` (4); EIP-7976
+    // raises the zero-byte weight to 4 so every byte counts uniformly.
+    let zero_multiplier = u64::from(params.get(GasId::TxFloorZeroByteMultiplier));
+    floor_tokens += zero_data_len * zero_multiplier + non_zero_data_len * non_zero_multiplier;
+
+    let floor_base = eip2780_base.unwrap_or_else(|| params.get(GasId::TxFloorCostBase) as u64);
+    (gas, floor_base + floor_tokens * floor_cost_per_token)
+}
+
+/// Counts the zero bytes in `data`.
+///
+/// Each chunk's count fits in a `u8`, so the compiler can compare and sum whole vector
+/// registers of byte lanes and widen once per chunk; a `usize` count would widen every flag
+/// to a full lane. 192 is a multiple of every power-of-two vector width up to 64 bytes, so only
+/// the last chunk runs a scalar remainder.
+fn count_zero_bytes(data: &[u8]) -> u64 {
+    data.chunks(192).map(|c| c.iter().map(|&b| (b == 0) as u8).sum::<u8>() as u64).sum()
 }
 
 /// EIP-2780: sum of the sender base, `tx.to`-based, and `tx.value`-based
@@ -1023,59 +1010,25 @@ mod tests {
         let input = Bytes::from(vec![1; 74]);
 
         let sender = Address::with_last_byte(0xaa);
-        assert_eq!(
-            intrinsic_gas(
-                Version::base(SpecId::LONDON),
-                sender,
-                TxKind::Create,
-                &input,
-                0,
-                0,
-                U256::ZERO
-            ),
-            21_000 + 32_000 + 74 * 16
-        );
-        assert_eq!(
-            intrinsic_gas(
-                Version::base(SpecId::SHANGHAI),
-                sender,
-                TxKind::Create,
-                &input,
-                0,
-                0,
-                U256::ZERO
-            ),
-            21_000 + 32_000 + 74 * 16 + 3 * 2
-        );
+        let intrinsic = |version: &Version| {
+            intrinsic_and_floor_gas(version, sender, TxKind::Create, &input, 0, 0, U256::ZERO).0
+        };
+        assert_eq!(intrinsic(Version::base(SpecId::LONDON)), 21_000 + 32_000 + 74 * 16);
+        assert_eq!(intrinsic(Version::base(SpecId::SHANGHAI)), 21_000 + 32_000 + 74 * 16 + 3 * 2);
     }
 
     #[test]
     fn intrinsic_gas_charges_access_list_items() {
         let input = Bytes::new();
         let sender = Address::with_last_byte(0xaa);
+        let to = TxKind::Call(Address::ZERO);
+        let intrinsic = |version: &Version, accounts, keys| {
+            intrinsic_and_floor_gas(version, sender, to, &input, accounts, keys, U256::ZERO).0
+        };
 
+        assert_eq!(intrinsic(Version::base(SpecId::BERLIN), 2, 3), 21_000 + 2 * 2400 + 3 * 1900);
         assert_eq!(
-            intrinsic_gas(
-                Version::base(SpecId::BERLIN),
-                sender,
-                TxKind::Call(Address::ZERO),
-                &input,
-                2,
-                3,
-                U256::ZERO
-            ),
-            21_000 + 2 * 2400 + 3 * 1900
-        );
-        assert_eq!(
-            intrinsic_gas(
-                Version::base(SpecId::AMSTERDAM),
-                sender,
-                TxKind::Call(Address::ZERO),
-                &input,
-                1,
-                1,
-                U256::ZERO
-            ),
+            intrinsic(Version::base(SpecId::AMSTERDAM), 1, 1),
             // EIP-2780 replaces the 21,000 base with TX_BASE (12,000) +
             // COLD_ACCOUNT_ACCESS (3,000) for the zero-value call recipient.
             // EIP-8038 sets the per-item access-list base to the cold-minus-warm
@@ -1093,10 +1046,16 @@ mod tests {
         version.gas_params.set(GasId::TxTokenNonZeroByteMultiplier, 5);
         version.gas_params.set(GasId::TxBaseStipend, 10_000);
 
-        assert_eq!(
-            intrinsic_gas(&version, sender, TxKind::Call(Address::ZERO), &input, 0, 0, U256::ZERO),
-            10_000 + (1 + 2 * 5) * 3
+        let (intrinsic, _) = intrinsic_and_floor_gas(
+            &version,
+            sender,
+            TxKind::Call(Address::ZERO),
+            &input,
+            0,
+            0,
+            U256::ZERO,
         );
+        assert_eq!(intrinsic, 10_000 + (1 + 2 * 5) * 3);
     }
 
     #[test]
@@ -1141,16 +1100,13 @@ mod tests {
         let to = TxKind::Call(Address::ZERO);
         let mut prague_without_eip7623 = Version::new(SpecId::PRAGUE);
         prague_without_eip7623.features.remove(EvmFeatures::EIP7623);
+        let floor = |version: &Version| {
+            intrinsic_and_floor_gas(version, sender, to, &input, 0, 0, U256::ZERO).1
+        };
 
-        assert_eq!(
-            floor_gas(Version::base(SpecId::SHANGHAI), sender, to, &input, 0, 0, U256::ZERO),
-            0
-        );
-        assert_eq!(
-            floor_gas(Version::base(SpecId::PRAGUE), sender, to, &input, 0, 0, U256::ZERO),
-            21_000 + 9 * 10
-        );
-        assert_eq!(floor_gas(&prague_without_eip7623, sender, to, &input, 0, 0, U256::ZERO), 0);
+        assert_eq!(floor(Version::base(SpecId::SHANGHAI)), 0);
+        assert_eq!(floor(Version::base(SpecId::PRAGUE)), 21_000 + 9 * 10);
+        assert_eq!(floor(&prague_without_eip7623), 0);
     }
 
     #[test]
@@ -1162,9 +1118,12 @@ mod tests {
         // intrinsic base `TX_BASE + COLD_ACCOUNT_ACCESS` (12,000 + 3,000)
         // instead of the flat `TxFloorCostBase`.
         let to = TxKind::Call(Address::ZERO);
+        let floor = |version: &Version, input: &Bytes, accounts, keys| {
+            intrinsic_and_floor_gas(version, sender, to, input, accounts, keys, U256::ZERO).1
+        };
 
         assert_eq!(
-            floor_gas(Version::base(SpecId::AMSTERDAM), sender, to, &input, 1, 1, U256::ZERO),
+            floor(Version::base(SpecId::AMSTERDAM), &input, 1, 1),
             15_000 + (1000 * 4 + 80 + 128) * 16
         );
 
@@ -1172,14 +1131,11 @@ mod tests {
         // bytes in the floor (4 tokens each), unlike EIP-7623 (zero = 1 token).
         let zero_input = Bytes::from(vec![0; 1000]);
         assert_eq!(
-            floor_gas(Version::base(SpecId::AMSTERDAM), sender, to, &zero_input, 1, 1, U256::ZERO),
+            floor(Version::base(SpecId::AMSTERDAM), &zero_input, 1, 1),
             15_000 + (1000 * 4 + 80 + 128) * 16
         );
         // Prague keeps the EIP-7623 split: zero bytes count as one token each.
-        assert_eq!(
-            floor_gas(Version::base(SpecId::PRAGUE), sender, to, &zero_input, 0, 0, U256::ZERO),
-            21_000 + 1000 * 10
-        );
+        assert_eq!(floor(Version::base(SpecId::PRAGUE), &zero_input, 0, 0), 21_000 + 1000 * 10);
     }
 
     #[test]
@@ -1430,14 +1386,10 @@ mod tests {
             let calldata_gas = if input.is_empty() { 0 } else { 20 };
             let floor_calldata_gas = if input.is_empty() { 0 } else { 128 };
             let initcode_gas = if to.is_create() && !input.is_empty() { 2 } else { 0 };
-            assert_eq!(
-                intrinsic_gas(&version, sender, to, &input, 0, 0, value),
-                base + calldata_gas + initcode_gas
-            );
-            assert_eq!(
-                floor_gas(&version, sender, to, &input, 0, 0, value),
-                base + floor_calldata_gas
-            );
+            let (intrinsic, floor) =
+                intrinsic_and_floor_gas(&version, sender, to, &input, 0, 0, value);
+            assert_eq!(intrinsic, base + calldata_gas + initcode_gas);
+            assert_eq!(floor, base + floor_calldata_gas);
         }
     }
 }
