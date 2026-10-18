@@ -1539,8 +1539,10 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         };
         let is_cold = account.warm();
 
-        let exists = account.exists();
-        let info = account.get().cloned().unwrap_or_default();
+        let (balance, nonce, code_hash, exists, is_empty) = match account.get() {
+            Some(info) => (info.balance, info.nonce, info.code_hash, true, info.is_empty()),
+            None => (Word::ZERO, 0, B256::ZERO, false, true),
+        };
 
         // load code
         let code = if load_code {
@@ -1549,12 +1551,12 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             Bytecode::default()
         };
         Ok(AccountLoad {
-            balance: info.balance,
-            nonce: info.nonce,
-            code_hash: if exists { info.code_hash } else { B256::ZERO },
+            balance,
+            nonce,
+            code_hash,
             code,
             exists,
-            is_empty: info.is_empty(),
+            is_empty,
             is_cold,
             _non_exhaustive: (),
         })
