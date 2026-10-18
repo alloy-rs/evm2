@@ -15,7 +15,10 @@
 //! Per-value lattice (ascending order):
 //! - `Const(U256Imm)` — a single known constant.
 //! - `ConstSet(ConstSetIdx)` — multiple known constants (interned, sorted, deduplicated).
+//! - `Range(lo, hi)` — a value in a small inclusive range.
 //! - `Top` — reachable but unknown.
+//!
+//! Sets only hold jump targets, and ranges only absorb the constants and ranges they contain.
 //!
 //! Per-block lattice:
 //! - `Bottom` — block not yet reached.
@@ -27,7 +30,8 @@
 //! (see [`ContextMode`]).
 //!
 //! A `JUMPI` propagates only along the edges that its condition allows in each context, and the
-//! values that its condition shows to be zero on an edge become `0` there.
+//! values that its condition bounds on an edge, such as an index below an array length, get that
+//! bound there. Memory writes at ranged offsets only forget the words in their range.
 //!
 //! ## Soundness
 //!
@@ -38,8 +42,8 @@
 
 use super::StackSection;
 use crate::{
-    FxHashMap, FxHashSet,
-    bytecode::{Bytecode, Inst, InstFlags, Interner, U256Imm},
+    FxHashMap, FxHashSet, InstData,
+    bytecode::{Bytecode, Inst, InstFlags, Interner, U256Imm, U256Interner},
 };
 use alloy_primitives::{U256, map::FxHasher};
 use bitvec::vec::BitVec;
@@ -98,6 +102,9 @@ pub(crate) enum AbsValue {
     Const(U256Imm),
     /// Multiple known constant values (interned, sorted, deduplicated).
     ConstSet(ConstSetIdx),
+    /// A value in the inclusive range `lo..=hi` of inline immediates, with `lo < hi`, such as an
+    /// index that a bounds check limits.
+    Range(u32, u32),
     /// Top value (unknown concrete value).
     #[default]
     Top,
@@ -109,6 +116,28 @@ impl AbsValue {
         match self {
             Self::Const(v) => Some(v),
             _ => None,
+        }
+    }
+
+    /// Returns the value in the inclusive range `lo..=hi`, or `None` if `hi` is not an inline
+    /// immediate.
+    pub(crate) fn range(lo: u64, hi: u64, interner: &mut U256Interner) -> Option<Self> {
+        debug_assert!(lo <= hi);
+        // Inline immediates are below 2^31.
+        let hi = u32::try_from(hi).ok().filter(|&hi| hi < 1 << 31)?;
+        Some(if lo == hi as u64 {
+            Self::Const(U256Imm::new(U256::from(hi), interner))
+        } else {
+            Self::Range(lo as u32, hi)
+        })
+    }
+
+    /// Returns the inclusive bounds of an inline constant or a range.
+    pub(crate) fn bounds(self) -> Option<(u32, u32)> {
+        match self {
+            Self::Const(v) => v.get_inline().map(|v| (v, v)),
+            Self::Range(lo, hi) => Some((lo, hi)),
+            Self::ConstSet(_) | Self::Top => None,
         }
     }
 }
@@ -134,7 +163,7 @@ impl ConstSetInterner {
                 .get_inline()
                 .is_some_and(|pc| self.jumpdests.get(pc as usize).is_some_and(|bit| *bit)),
             AbsValue::ConstSet(_) => true,
-            AbsValue::Top => false,
+            AbsValue::Range(..) | AbsValue::Top => false,
         }
     }
 
@@ -143,10 +172,10 @@ impl ConstSetInterner {
         self.interner.get(idx)
     }
 
-    /// Returns the set of known constants for an abstract value, or `None` if `Top`.
+    /// Returns the set of known constants for an abstract value, or `None` if `Range` or `Top`.
     fn abs_const_set<'a>(&'a self, val: &'a AbsValue) -> Option<&'a [U256Imm]> {
         match val {
-            AbsValue::Top => None,
+            AbsValue::Range(..) | AbsValue::Top => None,
             AbsValue::Const(v) => Some(std::slice::from_ref(v)),
             AbsValue::ConstSet(idx) => Some(self.get(*idx)),
         }
@@ -162,9 +191,18 @@ impl ConstSetInterner {
     }
 
     /// Lattice join: two values merge to their least upper bound.
+    ///
+    /// A range only absorbs the values it contains, and `a` only grows from a constant to a range,
+    /// so that repeated joins cannot widen a range step by step.
     fn join(&mut self, a: AbsValue, b: AbsValue) -> AbsValue {
         match (a, b) {
             _ if a == b => a,
+            (AbsValue::Range(lo, hi), other) | (other, AbsValue::Range(lo, hi)) => {
+                match other.bounds() {
+                    Some((olo, ohi)) if lo <= olo && ohi <= hi => AbsValue::Range(lo, hi),
+                    _ => AbsValue::Top,
+                }
+            }
             // Sets only matter as jump targets, and any other member makes a jump unresolvable.
             _ if !self.is_set_member(a) || !self.is_set_member(b) => AbsValue::Top,
             _ => {
@@ -226,18 +264,21 @@ impl MemWords {
     ///
     /// Returns the known value loaded by an `MLOAD`.
     fn transfer(&mut self, opcode: u8, inputs: &[AbsValue]) -> Option<AbsValue> {
-        // Offsets and lengths that fit in an inline immediate; larger ones are unknown.
-        let imm = |depth: usize| inputs[inputs.len() - 1 - depth].as_const()?.get_inline();
+        // The bounds of offsets and lengths that fit in an inline immediate; larger ones are
+        // unknown.
+        let bounds = |depth: usize| inputs[inputs.len() - 1 - depth].bounds();
+        let len = |depth: usize| bounds(depth).map(|(_, hi)| hi);
         match opcode {
             op::MLOAD => {
-                let offset = imm(0)?;
+                let offset = inputs[inputs.len() - 1].as_const()?.get_inline()?;
                 let i = self.0.binary_search_by_key(&offset, |&(o, _)| o).ok()?;
                 return Some(self.0[i].1);
             }
             op::MSTORE => {
-                let (offset, value) = (imm(0), inputs[inputs.len() - 2]);
+                let (offset, value) = (bounds(0), inputs[inputs.len() - 2]);
                 self.clobber(offset, Some(32));
-                if let Some(offset) = offset
+                if let Some((offset, hi)) = offset
+                    && offset == hi
                     && value != AbsValue::Top
                 {
                     let i = self.0.partition_point(|&(o, _)| o < offset);
@@ -245,26 +286,27 @@ impl MemWords {
                     self.0.truncate(MAX_MEM_WORDS);
                 }
             }
-            op::MSTORE8 => self.clobber(imm(0), Some(1)),
+            op::MSTORE8 => self.clobber(bounds(0), Some(1)),
             op::CALLDATACOPY | op::CODECOPY | op::RETURNDATACOPY | op::MCOPY => {
-                self.clobber(imm(0), imm(2))
+                self.clobber(bounds(0), len(2))
             }
-            op::EXTCODECOPY => self.clobber(imm(1), imm(3)),
-            op::CALL | op::CALLCODE => self.clobber(imm(5), imm(6)),
-            op::DELEGATECALL | op::STATICCALL => self.clobber(imm(4), imm(5)),
+            op::EXTCODECOPY => self.clobber(bounds(1), len(3)),
+            op::CALL | op::CALLCODE => self.clobber(bounds(5), len(6)),
+            op::DELEGATECALL | op::STATICCALL => self.clobber(bounds(4), len(5)),
             _ => {}
         }
         None
     }
 
-    /// Forgets every word that a write of `len` bytes at `offset` may overlap.
-    fn clobber(&mut self, offset: Option<u32>, len: Option<u32>) {
+    /// Forgets every word that a write of at most `len` bytes at an offset in the inclusive
+    /// range `offset` may overlap.
+    fn clobber(&mut self, offset: Option<(u32, u32)>, len: Option<u32>) {
         match (offset, len) {
             (_, Some(0)) => {}
-            (Some(offset), len) => {
+            (Some((lo, hi)), len) => {
                 // Inline immediates are below 2^31, so these sums cannot overflow.
-                let end = len.map_or(u32::MAX, |len| offset + len);
-                self.0.retain(|&mut (o, _)| o + 32 <= offset || end <= o);
+                let end = len.map_or(u32::MAX, |len| hi + len);
+                self.0.retain(|&mut (o, _)| o + 32 <= lo || end <= o);
             }
             (None, _) => self.0.clear(),
         }
@@ -528,9 +570,9 @@ struct Branch {
     fallthrough: Option<Block>,
     /// Whether the jump may also target the fall-through block.
     fallthrough_is_target: bool,
-    /// The edge, `true` for the jump, on which the condition shows a value to be zero, and the
-    /// depth of that value in the exit stack, with zero at the top.
-    zero: Option<(bool, usize)>,
+    /// The edge, `true` for the jump, on which the condition shows a value to be at most a bound,
+    /// the depth of that value in the exit stack, with zero at the top, and the bound.
+    bound: Option<(bool, usize, u32)>,
 }
 
 impl JumpResolution {
@@ -961,6 +1003,14 @@ impl Bytecode<'_> {
                 &discovered_edges,
                 local_snapshots,
             );
+        } else {
+            // Blocks the fixpoint never reached are unreachable, even when the static jumps of
+            // other such blocks, such as a loop's back edge, target them.
+            for bid in self.cfg.blocks.indices().filter(|bid| !reached[bid.index()]) {
+                for i in self.cfg.blocks[bid].insts() {
+                    self.insts[i].flags |= InstFlags::DEAD_CODE;
+                }
+            }
         }
 
         jump_targets
@@ -1020,7 +1070,7 @@ impl Bytecode<'_> {
                     .collect::<Option<_>>()
                     .map_or_else(JumpResolution::top, JumpResolution::resolved)
             }
-            AbsValue::Top => JumpResolution::top(),
+            AbsValue::Range(..) | AbsValue::Top => JumpResolution::top(),
         }
     }
 
@@ -1032,7 +1082,8 @@ impl Bytecode<'_> {
         let consts = match condition {
             AbsValue::Const(imm) => Either::Left(std::iter::once(imm)),
             AbsValue::ConstSet(set_idx) => Either::Right(const_sets.get(set_idx).iter().copied()),
-            AbsValue::Top => return JumpCondition::Unknown,
+            AbsValue::Range(lo, _) if lo > 0 => return JumpCondition::AlwaysTrue,
+            AbsValue::Range(..) | AbsValue::Top => return JumpCondition::Unknown,
         };
         let interner = self.u256_interner.borrow();
         let mut saw_zero = false;
@@ -1277,15 +1328,24 @@ impl Bytecode<'_> {
                         | (Some(false), JumpCondition::AlwaysTrue) => continue,
                         _ => {}
                     }
-                    // The value that the branch condition shows to be zero on this edge.
-                    if let Some((zero_taken, depth)) = branch.zero
-                        && taken == Some(zero_taken)
+                    // The value that the branch condition bounds on this edge.
+                    if let Some((bound_taken, depth, bound)) = branch.bound
+                        && taken == Some(bound_taken)
                         && depth < stack_buf.len()
                     {
                         let refined = *refined_key.get_or_insert_with(|| {
                             refined_buf.clone_from(&stack_buf);
-                            let len = refined_buf.len();
-                            refined_buf[len - 1 - depth] = zero;
+                            let value = &mut refined_buf[stack_buf.len() - 1 - depth];
+                            *value = match *value {
+                                _ if bound == 0 => zero,
+                                AbsValue::Range(lo, hi) if lo <= bound => {
+                                    let mut interner = self.u256_interner.borrow_mut();
+                                    let hi = hi.min(bound).into();
+                                    AbsValue::range(lo.into(), hi, &mut interner).unwrap()
+                                }
+                                AbsValue::Top => AbsValue::Range(0, bound),
+                                value => value,
+                            };
                             self.context_key(mode, &refined_buf, truncated)
                         });
                         (stack, key) = (&refined_buf, refined);
@@ -1349,9 +1409,10 @@ impl Bytecode<'_> {
 
     /// Returns what the condition of the `JUMPI` that ends `bid` shows about its successors.
     ///
-    /// A block that ends in a `DUP`, any number of `ISZERO`s, a `PUSH` and the `JUMPI` leaves the
-    /// copied value on the stack, and that value is zero on the fall-through after an even number
-    /// of `ISZERO`s and on the jump after an odd number.
+    /// A block that ends in a test, any number of `ISZERO`s, a `PUSH` and the `JUMPI` leaves the
+    /// tested value on the stack, and the test bounds it on one edge. The test is a `DUP` of the
+    /// value, which is then zero where the condition is, or an `LT` or `GT` of a `DUP` of the
+    /// value and a `PUSH`ed constant in either order. `ISZERO`s swap the edges.
     fn branch(&self, bid: Block) -> Option<Branch> {
         let block = &self.cfg.blocks[bid];
         let term = block.terminator();
@@ -1374,24 +1435,54 @@ impl Bytecode<'_> {
                 && !data.flags.contains(InstFlags::INVALID_JUMP)
                 && resolve(data.static_jump_target()) == fallthrough
         };
-        let mut zero = None;
-        let mut tail = (block.insts().rev().skip(1).map(|i| &self.insts[i]))
-            .filter(|data| !data.is_dead_code())
-            .take_while(|data| !data.flags.contains(InstFlags::DISABLED));
-        if tail.next().is_some_and(|data| matches!(data.opcode, op::PUSH0..=op::PUSH32)) {
-            let mut taken = false;
-            for data in tail {
-                match data.opcode {
-                    op::ISZERO => taken = !taken,
-                    op::DUP1..=op::DUP16 => {
-                        zero = Some((taken, (data.opcode - op::DUP1) as usize));
-                        break;
-                    }
-                    _ => break,
-                }
+        /// Returns [`Branch::bound`] from the live instructions before the `JUMPI`, last first.
+        fn bound<'a>(mut tail: impl Iterator<Item = &'a InstData>) -> Option<(bool, usize, u32)> {
+            // The depth of the value that a `DUP` copies, before the `DUP`.
+            let dup = |data: Option<&InstData>| match data?.opcode {
+                op @ op::DUP1..=op::DUP16 => Some((op - op::DUP1) as usize),
+                _ => None,
+            };
+            let is_push = |data: &InstData| matches!(data.opcode, op::PUSH0..=op::PUSH32);
+            let push = |data: Option<&InstData>| data.filter(|d| is_push(d))?.imm().get_inline();
+
+            if !is_push(tail.next()?) {
+                return None;
+            }
+            // The edge on which the test is zero.
+            let mut zero_taken = false;
+            let mut test = tail.next()?;
+            while test.opcode == op::ISZERO {
+                zero_taken = !zero_taken;
+                test = tail.next()?;
+            }
+            if let Some(depth) = dup(Some(test)) {
+                return Some((zero_taken, depth, 0));
+            }
+            if !matches!(test.opcode, op::LT | op::GT) {
+                return None;
+            }
+            // `x < c` or `x > c`, where the `DUP` copies `x` from `depth`.
+            let (a, b) = (tail.next(), tail.next());
+            let (less, depth, c) = if let Some(depth) = dup(a)
+                && let Some(c) = push(b)
+            {
+                // The `DUP` counts `c` above `x`.
+                (test.opcode == op::LT, depth.checked_sub(1)?, c)
+            } else {
+                (test.opcode == op::GT, dup(b)?, push(a)?)
+            };
+            // `x < c` holds where the test is nonzero, and `x > c` fails where it is zero.
+            if less {
+                Some((!zero_taken, depth, c.checked_sub(1)?))
+            } else {
+                Some((zero_taken, depth, c))
             }
         }
-        Some(Branch { fallthrough, fallthrough_is_target, zero })
+
+        let tail = (block.insts().rev().skip(1).map(|i| &self.insts[i]))
+            .filter(|data| !data.is_dead_code())
+            .take_while(|data| !data.flags.contains(InstFlags::DISABLED));
+        Some(Branch { fallthrough, fallthrough_is_target, bound: bound(tail) })
     }
 
     /// Returns the context of an abstract stack: a hash of the constants `mode` keys on.
@@ -1437,7 +1528,7 @@ impl Bytecode<'_> {
         let consts = match operand {
             AbsValue::Const(imm) => Either::Left(std::iter::once(imm)),
             AbsValue::ConstSet(set_idx) => Either::Right(const_sets.get(set_idx).iter().copied()),
-            AbsValue::Top => return,
+            AbsValue::Range(..) | AbsValue::Top => return,
         };
         let interner = self.u256_interner.borrow();
         for imm in consts {
@@ -3787,5 +3878,114 @@ mod tests_edge_cases {
         );
         let (mload, _) = bytecode.iter_insts().find(|(_, data)| data.opcode == op::MLOAD).unwrap();
         assert_eq!(bytecode.const_output(mload), None);
+    }
+
+    /// A loop that only its own back edge reaches, behind a `JUMPI` whose condition the fixpoint
+    /// knows, as in the `checked_exp_helper` that Solidity skips for constant exponents.
+    #[test]
+    fn unreached_loop_is_dead() {
+        let bytecode = analyze_asm(
+            "
+            PUSH1 0x01
+            PUSH0
+            MSTORE
+            PUSH0
+            MLOAD
+            PUSH %done
+            JUMPI
+            PUSH %ret
+        loop:
+            JUMPDEST
+            CALLDATASIZE
+            PUSH %loop
+            JUMPI
+            JUMP
+        ret:
+            JUMPDEST
+            STOP
+        done:
+            JUMPDEST
+            STOP
+        ",
+        );
+        assert!(!bytecode.has_dynamic_jumps);
+        for (_, data) in bytecode.iter_all_insts() {
+            if data.opcode == op::CALLDATASIZE {
+                assert!(data.is_dead_code());
+            }
+        }
+    }
+
+    /// Old Vyper saves the return address of a private function in memory, and a loop with a
+    /// bounds check stores to an array next to it at an unknown index.
+    #[test]
+    fn bounded_store_keeps_memory_return_address() {
+        let src = |array: u32, check: &str| {
+            format!(
+                "
+                PUSH %ret
+                PUSH2 0x0140
+                MSTORE              ; return address
+                PUSH0
+                PUSH2 0x0200
+                MSTORE              ; i = 0
+            loop:
+                JUMPDEST
+                CALLDATASIZE
+                PUSH2 {array:#x}
+                PUSH2 0x0200
+                MLOAD               ; [value, array, i]
+                {check}
+            body:
+                JUMPDEST
+                PUSH1 0x20
+                MUL
+                ADD
+                MSTORE              ; array[i] = value
+                PUSH2 0x0200
+                MLOAD
+                PUSH1 0x01
+                ADD
+                DUP1
+                PUSH2 0x0200
+                MSTORE
+                PUSH1 0x03
+                EQ
+                ISZERO
+                PUSH %loop
+                JUMPI
+                PUSH2 0x0140
+                MLOAD
+                JUMP                ; return
+            ret:
+                JUMPDEST
+                STOP
+            oob:
+                JUMPDEST
+                PUSH0
+                DUP1
+                REVERT
+                "
+            )
+        };
+        // `i < 3`, as each form of the bounds check shows on the edge to `body`.
+        let checks = [
+            "PUSH1 0x03 DUP2 LT PUSH %body JUMPI PUSH %oob JUMP",
+            "DUP1 PUSH1 0x03 GT PUSH %body JUMPI PUSH %oob JUMP",
+            "PUSH1 0x02 DUP2 GT ISZERO PUSH %body JUMPI PUSH %oob JUMP",
+            "DUP1 PUSH1 0x02 LT ISZERO PUSH %body JUMPI PUSH %oob JUMP",
+            "PUSH1 0x03 DUP2 LT ISZERO PUSH %oob JUMPI",
+        ];
+        for check in checks {
+            // The array ends where the return address starts.
+            let bytecode = analyze_asm(&src(0xe0, check));
+            assert!(!bytecode.has_dynamic_jumps, "{check}");
+            let bytecode = analyze_asm(&src(0x160, check));
+            assert!(!bytecode.has_dynamic_jumps, "{check}");
+        }
+        // With `i < 4`, `array[3]` overwrites the return address.
+        let bytecode =
+            analyze_asm(&src(0xe0, "PUSH1 0x04 DUP2 LT PUSH %body JUMPI PUSH %oob JUMP"));
+        assert!(bytecode.has_dynamic_jumps);
     }
 }

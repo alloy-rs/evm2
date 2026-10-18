@@ -103,7 +103,7 @@ pub(crate) fn try_const_fold(
         | op::SHR
         | op::SAR => {
             let &[AbsValue::Const(bi), AbsValue::Const(ai)] = inputs else {
-                return None;
+                return try_range_fold(opcode, inputs, interner);
             };
             let a = ai.get(interner);
             let b = bi.get(interner);
@@ -196,6 +196,26 @@ pub(crate) fn try_const_fold(
         inst.opcode,
     );
     Some(AbsValue::Const(U256Imm::new(result, interner)))
+}
+
+/// Folds `ADD`, `MUL` and `SHL` on the [bounds](AbsValue::bounds) of their inputs, of which at
+/// least one is a range.
+fn try_range_fold(
+    opcode: u8,
+    inputs: &[AbsValue],
+    interner: &mut U256Interner,
+) -> Option<AbsValue> {
+    let &[b, a] = inputs else { return None };
+    let ((alo, ahi), (blo, bhi)) = (a.bounds()?, b.bounds()?);
+    let (alo, ahi, blo, bhi) = (alo as u64, ahi as u64, blo as u64, bhi as u64);
+    // Bounds are below 2^31, so these cannot overflow.
+    let (lo, hi) = match opcode {
+        op::ADD => (alo + blo, ahi + bhi),
+        op::MUL => (alo * blo, ahi * bhi),
+        op::SHL if ahi < 32 => (blo << alo, bhi << ahi),
+        _ => return None,
+    };
+    AbsValue::range(lo, hi, interner)
 }
 
 #[cfg(test)]
