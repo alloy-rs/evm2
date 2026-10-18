@@ -891,9 +891,10 @@ pub fn intrinsic_and_floor_gas(
 /// to a full lane. 192 is a multiple of every power-of-two vector width up to 64 bytes, so only
 /// the last chunk runs a scalar remainder.
 ///
-/// With the aarch64 dot-product extension, LLVM turns a sum of 0/1 flags into a `udot` per
-/// vector whose result the next iteration waits on. Counting 2 per zero byte keeps plain byte
-/// adds there, at the cost of a mask per vector and half-size chunks.
+/// With the aarch64 dot-product extension, LLVM turns a sum of 0/1 flags into a `udot` and
+/// `addp` per vector, which ran slower than byte adds on an Apple M4. Counting 2 per zero byte
+/// in 96-byte chunks keeps byte adds, at the cost of a mask per vector; a chunk still sums to at
+/// most 192.
 fn count_zero_bytes(data: &[u8]) -> u64 {
     const STEP: u8 = if cfg!(target_feature = "dotprod") { 2 } else { 1 };
     data.chunks(192 / STEP as usize)
