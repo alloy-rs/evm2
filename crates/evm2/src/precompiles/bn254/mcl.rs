@@ -197,7 +197,7 @@ const BN_X: u64 = 4965661367192848881;
 /// <https://eprint.iacr.org/2022/348.pdf>. gnark-crypto uses the same check.
 ///
 /// mcl's own check multiplies by the 254-bit group order, while this needs a 63-bit
-/// multiplication and four endomorphisms.
+/// multiplication and three endomorphisms.
 #[inline]
 fn g2_in_subgroup(p: &G2) -> bool {
     static PSI_COEFFS: OnceLock<(Fp2, Fp2)> = OnceLock::new();
@@ -252,11 +252,11 @@ fn g2_in_subgroup(p: &G2) -> bool {
 
     let psi_xp = psi(&xp);
     let psi2_xp = psi(&psi_xp);
-    let mut lhs = psi2_xp.clone();
+    let mut rhs = G2::zero();
+    G2::dbl(&mut rhs, &psi(&psi2_xp));
+    let mut lhs = psi2_xp;
     lhs += &psi_xp;
     lhs += &xp;
     lhs += p;
-    let mut rhs = G2::zero();
-    G2::dbl(&mut rhs, &psi(&psi2_xp));
     lhs == rhs
 }
