@@ -28,11 +28,14 @@ use alloy_primitives::{
 /// words, so 300 bits take five words anyway; 320 uses all of them at no extra cost.
 const SHORT_ADDRESS_CAP: usize = 320;
 
+/// Bit vector indexed by short address. See [`short_address`].
+pub(crate) type ShortAddresses = BitArray<{ SHORT_ADDRESS_CAP.div_ceil(64) }>;
+
 /// Returns the short-address index for an address, if it qualifies.
 ///
 /// A short address has 18 leading zero bytes and a last-two-byte value below [`SHORT_ADDRESS_CAP`].
 #[inline]
-fn short_address(address: &Address) -> Option<usize> {
+pub(crate) fn short_address(address: &Address) -> Option<usize> {
     let (zeros, value) = address.split_at(18);
     if zeros.iter().all(|b| *b == 0) {
         let short_address = u16::from_be_bytes([value[0], value[1]]) as usize;
@@ -60,7 +63,7 @@ pub struct PrewarmSet {
     access_list: AddressMap<HashSet<Word>>,
     /// Bit vector of warm short addresses. An address shorter than [`SHORT_ADDRESS_CAP`] sets
     /// its bit here for faster access; precompiles and other low-numbered addresses land here.
-    short_addresses: BitArray<{ SHORT_ADDRESS_CAP.div_ceil(64) }>,
+    short_addresses: ShortAddresses,
     /// Whether any address in `access_list` carries warm storage slots. Most transactions have
     /// none, so storage warmth checks can skip the address lookup.
     has_storage: bool,
@@ -119,6 +122,12 @@ impl PrewarmSet {
         }
         self.access_list.entry(*address).or_default().extend(slots);
         self.has_storage |= has_slots;
+    }
+
+    /// Marks every address in a short-address bit vector as warm.
+    #[inline]
+    pub(crate) fn warm_short_addresses(&mut self, addresses: &ShortAddresses) {
+        self.short_addresses.union(addresses);
     }
 
     /// Marks a short address as warm.
