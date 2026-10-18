@@ -2071,6 +2071,16 @@ fn init_() -> Result<()> {
         // into their users when the preheader's register pressure exceeds the limit: this cut
         // codegen by up to 15x on large mainnet contracts.
         c"-sink-insts-to-avoid-spills".as_ptr(),
+        // PHI elimination splits critical edges to put each phi copy on its own edge. The dynamic
+        // jump table and internal-function return switches have many critical edges into blocks
+        // with phis, and the new blocks and jumps give greedy register allocation more places to
+        // split live ranges and reload. Keeping the copies in the predecessors cut reloads by 12%
+        // on the mainnet corpus.
+        c"-disable-phi-elim-edge-splitting".as_ptr(),
+        // These change little or no code on the benchmarks and the mainnet corpus but still walk
+        // every machine instruction.
+        c"-disable-x86-domain-reassignment".as_ptr(),
+        c"-disable-postra-machine-licm".as_ptr(),
     ];
     args.extend(extra.iter().map(|s| s.as_ptr()));
     unsafe {

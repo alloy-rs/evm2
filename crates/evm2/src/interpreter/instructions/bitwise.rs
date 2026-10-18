@@ -1,8 +1,5 @@
 use super::i256::i256_lt;
-use crate::{
-    interpreter::{Word, stack::WordExt},
-    utils::word_to_usize_saturated,
-};
+use crate::{interpreter::Word, utils::WordExt};
 use evm2_macros::instruction;
 
 #[instruction]
@@ -57,25 +54,25 @@ pub fn not([value]: [Word]) -> out {
 
 #[instruction]
 pub fn byte([index, value]: [Word]) -> out {
-    let index = word_to_usize_saturated(*index);
+    let index = index.to_usize_saturated();
     out.write_u64(if index < 32 { value.byte(31 - index).into() } else { 0 });
 }
 
 #[instruction]
 pub fn shl([shift, value]: [Word]) -> out {
-    let shift = word_to_usize_saturated(*shift);
+    let shift = shift.to_usize_saturated();
     out.write(if shift < 256 { *value << shift } else { Word::ZERO });
 }
 
 #[instruction]
 pub fn shr([shift, value]: [Word]) -> out {
-    let shift = word_to_usize_saturated(*shift);
+    let shift = shift.to_usize_saturated();
     out.write(if shift < 256 { *value >> shift } else { Word::ZERO });
 }
 
 #[instruction]
 pub fn sar([shift, value]: [Word]) -> out {
-    let shift = word_to_usize_saturated(*shift);
+    let shift = shift.to_usize_saturated();
     let value = if shift < 256 {
         value.arithmetic_shr(shift)
     } else if value.bit(255) {

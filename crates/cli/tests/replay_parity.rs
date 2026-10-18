@@ -112,7 +112,8 @@ fn mainnet_replay_matches_revm() {
     assert!(mismatches.is_empty(), "evm2 and revm disagree on {} entries", mismatches.len());
 }
 
-/// Receipt validation must leave transaction outcomes available to hooks.
+/// Replaying with the root checks of `evm2 replay` must pass and leave transaction
+/// outcomes available to hooks.
 #[test]
 fn mainnet_replay_receipt_validation_preserves_hook_outcomes() {
     let path = workspace_path(FIXTURE);
@@ -122,7 +123,11 @@ fn mainnet_replay_receipt_validation_preserves_hook_outcomes() {
     let summary = execute_blockchain_tests_suite(
         &path,
         &suite,
-        BlockchainTestExecuteConfig { compare_receipt_root: true, ..Default::default() },
+        BlockchainTestExecuteConfig {
+            compare_state_root: true,
+            compare_receipt_root: true,
+            ..Default::default()
+        },
         &NameFilter::default(),
         &mut hook,
     )

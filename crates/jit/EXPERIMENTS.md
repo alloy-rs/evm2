@@ -46,6 +46,21 @@ ones here with the numbers that rejected them.
 - DSE takes a quarter of opt time, but dropping it grows JIT size by 1%;
   `-dse-memoryssa-walklimit=30` saves 6% of opt instructions for +0.05% size.
 
+- `separate-const-offset-from-gep` at the end: spills -12% and reloads -6% on
+  the corpus, but JIT size grows on 33 of 132 contracts and runtime is flat.
+  `memcpyopt`, which merges adjacent zero stack stores into a `memset`: JIT
+  size -0.2% for +0.3% opt instructions, runtime flat.
+- `gvn-sink`: JIT size -0.8% but spills +9%. `gvn-hoist` costs 85% more opt
+  time, `load-store-vectorizer` grows JIT size by 6%, `loop(indvars)` raises
+  reloads by 13%, and `-jump-threading-across-loop-headers` by 3%.
+- `div-rem-pairs`, `speculative-execution`, `infer-alignment`,
+  `vector-combine`, `callsite-splitting`, `dce`, `lower-constant-intrinsics`,
+  `sroa<preserve-cfg>`, `simplifycfg<switch-to-lookup>`, the SimplifyCFG phi
+  folding thresholds, and the DSE partial-store options change nothing;
+  `slp-vectorizer`, `slsr`, and `nary-reassociate` change at most 8 contracts
+  for 3–16% more opt time. `mem2reg` in place of `sroa` produces the same code
+  for 1% fewer opt instructions.
+
 ## `llc` flags
 
 - `-jump-table-density=1` for the dynamic jump switch: about 5% less code, but
@@ -60,3 +75,43 @@ ones here with the numbers that rejected them.
   `-enable-tail-merge=false` grows code by 3.4% and
   `-combiner-store-merging=false` by 1%; `-pre-RA-sched=source` changes
   nothing.
+- `-disable-lsr`: reloads -10% on the corpus, but fibonacci-calldata JIT size
+  +8% and runtime +3.9%. On the function-wide loops LSR mostly adds
+  loop-simplify blocks and LCSSA phis. `-lsr-drop-solution`,
+  `-lsr-insns-cost=false`, `-lsr-exp-narrow`, and the LSR limits change little.
+- `-disable-constant-hoisting`: ConstantHoisting keeps the saturated memory
+  offset 2^63-1, which needs `movabs`, in a register across much of the
+  function. Turning it off saves 0.8% of llc instructions and 0.1% of JIT
+  size, but reloads move both ways: seaport +25%, hot47 +103%, hot12 -69%.
+- `-jump-is-expensive` merges the gas and stack checks into one branch through
+  `setcc`/`or`: reloads -18% and spills -10% on the corpus, but burntpix and
+  curve_stableswap runtime +1.6–1.7% in every run.
+- `-enable-machine-outliner`: JIT size -11.5%, runtime +1.2% geomean and
+  onchain_lm_v2 +8.4%.
+- `-fast-isel` grows JIT size by 4.5%, `-global-isel` falls back to
+  SelectionDAG, and `-regalloc=basic` grows JIT size by 19%. Codegen `-O1`
+  gives the same code as turning off the post-RA scheduler, which we keep;
+  `-O3` grows code by 0.2%.
+- `-enable-ext-tsp-block-placement`: JIT size -0.3% for 56% more llc time.
+  `-combiner-global-alias-analysis`: llc +3.4% for no smaller code.
+- Turning off `machine-cse`, `branch-fold`, block placement, `machine-cp`, the
+  scheduling model, or post-RA machine sinking saves up to 1.7% of llc
+  instructions but grows code by up to 0.6%; turning off `machine-sink`,
+  `peephole`, stack slot coloring, or early tail duplication costs both, and
+  turning off CodeGenPrepare nearly doubles spills.
+  `-x86-machine-combiner=false` raises reloads by 8%.
+- Flags that move spills and reloads both ways across contracts with little
+  change in JIT size: `-split-spill-mode=size`,
+  `-twoaddr-reschedule=false`, `-misched-prera-direction=bidirectional`,
+  `-combiner-topological-sorting`, `-min-jump-table-entries=8` (JIT size
+  -1.4% from fewer jump tables, reloads +0.9%), `-tail-dup-size`,
+  `-tail-merge-size=1`, `-tail-dup-placement=false`,
+  `-machine-sink-split=false`, `-x86-br-merging-base-cost`, and the greedy
+  eviction and hint-split limits.
+- No change on any contract: `-disable-early-ifcvt`, `-x86-early-ifcvt`,
+  `-disable-select-optimize`, `-disable-complex-addr-modes`,
+  `-disable-cgp-branch-opts`, `-enable-local-reassign`,
+  `-enable-split-loopiv-heuristic`, `-terminal-rule`, `-join-splitedges`,
+  `-join-globalcopies`, `-enable-shrink-wrap=false`, `-enable-post-misched`,
+  `-misched-cluster=false`, and the CodeGenPrepare type-promotion and
+  address-sinking options.
