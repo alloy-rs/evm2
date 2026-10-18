@@ -9,12 +9,49 @@ use crate::{
 #[cfg(feature = "gmp")]
 use alloc::vec;
 use alloc::vec::Vec;
-use alloy_primitives::{Bytes, U256};
+use alloy_primitives::{Bytes, U256, uint};
 use core::cmp::{max, min};
+
+/// Well-known prime moduli for [`fermat_inverse`].
+const PRIMES: [U256; 6] = uint!([
+    // BN254 scalar field.
+    0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001_U256,
+    // BN254 base field.
+    0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47_U256,
+    // secp256k1 base field and group order.
+    0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f_U256,
+    0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141_U256,
+    // secp256r1 base field and group order.
+    0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff_U256,
+    0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551_U256,
+]);
+
+/// Modular exponentiation.
+pub(crate) fn modexp(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
+    fermat_inverse(base, exponent, modulus).unwrap_or_else(|| modexp_big(base, exponent, modulus))
+}
+
+/// Computes `base^(p - 2) mod p` for a prime `p` in [`PRIMES`] as the modular inverse of `base`,
+/// which is the same value by Fermat's little theorem. Contracts invert field elements this way,
+/// and the extended Euclidean algorithm is about 20 times cheaper than the exponentiation.
+///
+/// Returns `None` if the inputs do not have this form.
+fn fermat_inverse(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Option<Vec<u8>> {
+    if base.len() > 32 || exponent.len() > 32 || modulus.len() > 32 {
+        return None;
+    }
+    let p = U256::from_be_slice(modulus);
+    if !PRIMES.contains(&p) || U256::from_be_slice(exponent) != p - U256::from(2) {
+        return None;
+    }
+    // `base` has no inverse only if it is a multiple of `p`, and then the result is 0.
+    let inverse = U256::from_be_slice(base).inv_mod(p).unwrap_or_default();
+    Some(inverse.to_be_bytes::<32>()[32 - modulus.len()..].to_vec())
+}
 
 /// GMP-based modular exponentiation implementation
 #[cfg(feature = "gmp")]
-pub(crate) fn modexp(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
+fn modexp_big(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
     use core::{ffi::c_void, mem::MaybeUninit};
     use gmp_mpfr_sys::gmp;
 
@@ -109,7 +146,7 @@ pub(crate) fn modexp(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(not(feature = "gmp"))]
-pub(crate) fn modexp(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
+fn modexp_big(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
     aurora_engine_modexp::modexp(base, exponent, modulus)
 }
 
@@ -326,6 +363,7 @@ mod tests {
     use alloc::{vec, vec::Vec};
     use alloy_primitives::hex;
     use core::assert_matches;
+    use rand::{RngExt, SeedableRng, rngs::StdRng};
 
     struct Test {
         input: &'static str,
@@ -890,5 +928,32 @@ mod tests {
             Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)),
             "Should return OutOfGas error with insufficient gas"
         );
+    }
+
+    #[test]
+    fn test_fermat_inverse() {
+        let mut rng = StdRng::seed_from_u64(0);
+        for p in PRIMES {
+            let modulus = p.to_be_bytes::<32>();
+            let exponent = (p - U256::from(2)).to_be_bytes_trimmed_vec();
+            let mut bases =
+                [U256::ZERO, U256::ONE, p - U256::ONE, p, p.saturating_add(U256::ONE), U256::MAX]
+                    .map(|b| b.to_be_bytes::<32>().to_vec())
+                    .to_vec();
+            bases.extend([vec![], vec![7]]);
+            bases.extend((0..100).map(|_| rng.random::<[u8; 32]>().to_vec()));
+            for base in bases {
+                let expected =
+                    left_pad_vec_be(&modexp_big(&base, &exponent, &modulus), 32).into_owned();
+                assert_eq!(
+                    fermat_inverse(&base, &exponent, &modulus),
+                    Some(expected),
+                    "{p:x} {base:x?}"
+                );
+            }
+
+            let wrong_exponent = (p - U256::from(3)).to_be_bytes::<32>();
+            assert_eq!(fermat_inverse(&[2], &wrong_exponent, &modulus), None);
+        }
     }
 }
