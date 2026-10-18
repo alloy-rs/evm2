@@ -3,15 +3,11 @@
 use super::{
     AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange, Tracked,
 };
-use crate::{
-    bytecode::Bytecode,
-    interpreter::Word,
-    storage_key::{StorageKey, StorageKeyMap},
-};
+use crate::{bytecode::Bytecode, interpreter::Word, storage_key::StorageKey};
 use alloc::vec::Vec;
 use alloy_primitives::{
     Address, B256,
-    map::{AddressMap, AddressSet, B256Map, hash_map},
+    map::{AddressMap, AddressSet, B256Map, U256Map, hash_map},
 };
 use core::convert::Infallible;
 
@@ -21,7 +17,9 @@ use core::convert::Infallible;
 pub struct BlockStateAccumulator {
     accounts: AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: AddressSet,
-    storage: StorageKeyMap<Tracked<Word>>,
+    /// Storage deltas keyed by account, then slot. Accounts have no empty slot maps, so wiping or
+    /// recreating an account touches only its own slots.
+    storage: AddressMap<U256Map<Tracked<Word>>>,
     code: B256Map<Bytecode>,
 }
 
@@ -59,7 +57,9 @@ impl BlockStateAccumulator {
     /// before this slot and treat [`Tracked::current`] as the value to write after the wipe.
     #[inline]
     pub fn storage(&self) -> impl Iterator<Item = (StorageKey, &Tracked<Word>)> {
-        self.storage.iter().map(|(&key, delta)| (key, delta))
+        self.storage.iter().flat_map(|(&address, slots)| {
+            slots.iter().map(move |(&key, delta)| (StorageKey::new(address, key), delta))
+        })
     }
 
     /// Returns bytecode entries in arbitrary map order.
@@ -142,17 +142,19 @@ impl StateChangeSink for BlockStateAccumulator {
 
         if deletes_account {
             self.storage_wipes.remove(&change.address);
-            self.storage.retain(|key, _| key.address() != change.address);
+            self.storage.remove(&change.address);
         } else if created {
             // Only a newly created delta can have slots recorded against pre-block storage: while
             // the delta exists, `storage` and `storage_wipe` already treat the account as created.
-            self.storage.retain(|key, delta| {
-                if key.address() != change.address {
-                    return true;
+            if let hash_map::Entry::Occupied(mut entry) = self.storage.entry(change.address) {
+                entry.get_mut().retain(|_, delta| {
+                    delta.original = Word::ZERO;
+                    !delta.current.is_zero()
+                });
+                if entry.get().is_empty() {
+                    entry.remove();
                 }
-                delta.original = Word::ZERO;
-                !delta.current.is_zero()
-            });
+            }
             self.storage_wipes.remove(&change.address);
         }
         Ok(())
@@ -163,33 +165,49 @@ impl StateChangeSink for BlockStateAccumulator {
         if record_wipe {
             self.storage_wipes.insert(address);
         }
-        self.storage.retain(|key, _| key.address() != address);
+        self.storage.remove(&address);
         Ok(())
     }
 
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
-        let storage_key = StorageKey::new(change.address, change.key);
         let account_created =
             self.accounts.get(&change.address).is_some_and(|account| account.original.is_none());
         let storage_replaced = self.storage_wipes.contains(&change.address) || account_created;
-        match self.storage.entry(storage_key) {
-            hash_map::Entry::Occupied(mut entry) => {
-                let delta = entry.get_mut();
-                delta.set_current(change.current);
-                if (storage_replaced && delta.current.is_zero())
-                    || (!storage_replaced && !delta.is_changed())
-                {
-                    entry.remove();
+        // A slot without a delta records one only when the change survives the account's storage
+        // replacement or differs from its block-original value.
+        let records_new = if storage_replaced {
+            !change.current.is_zero()
+        } else {
+            change.original != change.current
+        };
+        let new_delta = || {
+            let original = if account_created { Word::ZERO } else { change.original };
+            Tracked::from_parts(original, change.current)
+        };
+        match self.storage.entry(change.address) {
+            hash_map::Entry::Occupied(mut slots) => match slots.get_mut().entry(change.key) {
+                hash_map::Entry::Occupied(mut entry) => {
+                    let delta = entry.get_mut();
+                    delta.set_current(change.current);
+                    if (storage_replaced && delta.current.is_zero())
+                        || (!storage_replaced && !delta.is_changed())
+                    {
+                        entry.remove();
+                        if slots.get().is_empty() {
+                            slots.remove();
+                        }
+                    }
                 }
-            }
+                hash_map::Entry::Vacant(entry) => {
+                    if records_new {
+                        entry.insert(new_delta());
+                    }
+                }
+            },
             hash_map::Entry::Vacant(entry) => {
-                if (storage_replaced && change.current.is_zero())
-                    || (!storage_replaced && change.original == change.current)
-                {
-                    return Ok(());
+                if records_new {
+                    entry.insert(U256Map::from_iter([(change.key, new_delta())]));
                 }
-                let original = if account_created { Word::ZERO } else { change.original };
-                entry.insert(Tracked::from_parts(original, change.current));
             }
         }
         Ok(())
@@ -206,7 +224,7 @@ impl StateChangeSource for BlockStateAccumulator {
 fn visit_block_changes<S: StateChangeSink>(
     accounts: &AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: &AddressSet,
-    storage: &StorageKeyMap<Tracked<Word>>,
+    storage: &AddressMap<U256Map<Tracked<Word>>>,
     code: &B256Map<Bytecode>,
     sink: &mut S,
 ) -> Result<(), S::Error> {
@@ -222,15 +240,20 @@ fn visit_block_changes<S: StateChangeSink>(
         sink.storage_wipe(*address)?;
     }
 
-    let mut storage_deltas = storage.iter().collect::<Vec<_>>();
-    storage_deltas.sort_unstable_by_key(|entry| *entry.0);
-    for (key, delta) in storage_deltas {
-        sink.storage(StorageChange {
-            address: key.address(),
-            key: key.key(),
-            original: delta.original,
-            current: delta.current,
-        })?;
+    let mut storage_accounts = storage.iter().collect::<Vec<_>>();
+    storage_accounts.sort_unstable_by_key(|entry| *entry.0);
+    let mut storage_deltas = Vec::new();
+    for (&address, slots) in storage_accounts {
+        storage_deltas.extend(slots.iter());
+        storage_deltas.sort_unstable_by_key(|entry| *entry.0);
+        for (&key, delta) in storage_deltas.drain(..) {
+            sink.storage(StorageChange {
+                address,
+                key,
+                original: delta.original,
+                current: delta.current,
+            })?;
+        }
     }
 
     let mut account_deltas = accounts.iter().collect::<Vec<_>>();
