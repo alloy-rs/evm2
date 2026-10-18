@@ -1,6 +1,6 @@
 //! Precompile dispatch interface.
 
-use super::{Evm, NonStaticAny};
+use super::{Evm, NonStaticAny, PrewarmSet};
 use crate::{
     EvmTypesHost, PrecompileError,
     interpreter::{GasTracker, Message},
@@ -45,12 +45,14 @@ pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
         Vec::new()
     }
 
-    /// Calls `f` with each precompile address.
+    /// Marks every precompile address as warm.
     ///
-    /// Defaults to iterating [`Self::addresses`]; providers should override it to avoid the
+    /// Defaults to warming each of [`Self::addresses`]; providers should override it to avoid the
     /// allocation, since it runs once per transaction.
-    fn for_each_address(&self, f: &mut dyn FnMut(Address)) {
-        self.addresses().into_iter().for_each(f);
+    fn warm_addresses(&self, warm: &mut PrewarmSet) {
+        for address in self.addresses() {
+            warm.warm(&address);
+        }
     }
 
     /// Returns precompile addresses and identifiers.
