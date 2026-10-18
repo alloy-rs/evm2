@@ -718,7 +718,6 @@ class JumpResolution(Analysis):
     def _analyze(cls, output: str) -> dict[str, int]:
         local_res = cls._last_match(r"local_jumps.*newly_resolved=(\d+)", output)
         non_adj = cls._count_matches(r"resolved non-adjacent jump", output)
-        pcr_res = cls._count_matches(r"resolved via PCR hint", output)
         fixpt_res = cls._last_match(r"ba:.*newly_resolved=(\d+)", output)
 
         ba_unres_matches = re.findall(
@@ -739,7 +738,6 @@ class JumpResolution(Analysis):
         return {
             "local": local_res,
             "non_adj": non_adj,
-            "pcr": pcr_res,
             "fixpt": fixpt_res,
             "unresolved": unresolved,
             "total": total,
@@ -747,7 +745,7 @@ class JumpResolution(Analysis):
 
     def report(self, benches, side):
         print("### Jump resolution\n")
-        headers = ["benchmark", "local", "nonadj", "pcr", "fixpt", "unres", "total"]
+        headers = ["benchmark", "local", "nonadj", "fixpt", "unres", "total"]
         table = []
         for bench in benches:
             s = self._analyze(side.outputs.get(bench, ""))
@@ -756,7 +754,6 @@ class JumpResolution(Analysis):
                     bench_name(bench),
                     s["local"],
                     s["non_adj"],
-                    s["pcr"],
                     s["fixpt"],
                     s["unresolved"],
                     s["total"],
