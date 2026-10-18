@@ -1899,11 +1899,12 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let pair_index = self.bcx.ushr(pc, five);
         let table = self.bcx.const_array(i32_type, table.as_flattened());
         let pair_type = self.bcx.type_array(i32_type, 2);
-        let zero = self.bcx.iconst(i32_type, 0);
-        let one = self.bcx.iconst(i32_type, 1);
-        let base_ptr = self.bcx.gep(pair_type, table, &[pair_index, zero], "jump_table.base");
+        // The base is the pair's first field, so the pair's address is also the base's.
+        let base_ptr = self.bcx.gep(pair_type, table, &[pair_index], "jump_table.base.addr");
         let base = self.bcx.load(i32_type, base_ptr, "jump_table.base");
-        let bitmap_ptr = self.bcx.gep(pair_type, table, &[pair_index, one], "jump_table.bitmap");
+        let one = self.bcx.iconst(i32_type, 1);
+        let bitmap_ptr =
+            self.bcx.gep(pair_type, table, &[pair_index, one], "jump_table.bitmap.addr");
         let bitmap = self.bcx.load(i32_type, bitmap_ptr, "jump_table.bitmap");
         // Shift the target's bit into the sign bit, dropping the bits of earlier PCs.
         let shift = self.bcx.ireduce(i32_type, pc);
