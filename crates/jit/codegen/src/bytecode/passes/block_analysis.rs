@@ -15,7 +15,7 @@
 //! Per-value lattice (ascending order):
 //! - `Const(U256Imm)` — a single known constant.
 //! - `ConstSet(ConstSetIdx)` — multiple known constants (interned, sorted, deduplicated).
-//! - `Range(lo, hi)` — a value in a small inclusive range.
+//! - `Range(RangeInclusive<u32>)` — a value in a small range.
 //! - `Top` — reachable but unknown.
 //!
 //! Sets only hold jump targets, and ranges only absorb the constants and ranges they contain.
@@ -56,6 +56,7 @@ use std::{
     collections::{BinaryHeap, VecDeque},
     hash::{Hash, Hasher},
     ops::Range,
+    range::RangeInclusive,
 };
 
 oxc_index::define_nonmax_u32_index_type! {
@@ -102,9 +103,9 @@ pub(crate) enum AbsValue {
     Const(U256Imm),
     /// Multiple known constant values (interned, sorted, deduplicated).
     ConstSet(ConstSetIdx),
-    /// A value in the inclusive range `lo..=hi` of inline immediates, with `lo < hi`, such as an
-    /// index that a bounds check limits.
-    Range(u32, u32),
+    /// A value in a range of inline immediates with more than one value, such as an index that a
+    /// bounds check limits.
+    Range(RangeInclusive<u32>),
     /// Top value (unknown concrete value).
     #[default]
     Top,
@@ -119,24 +120,24 @@ impl AbsValue {
         }
     }
 
-    /// Returns the value in the inclusive range `lo..=hi`, or `None` if `hi` is not an inline
-    /// immediate.
-    pub(crate) fn range(lo: u64, hi: u64, interner: &mut U256Interner) -> Option<Self> {
-        debug_assert!(lo <= hi);
+    /// Returns the value in `range`, or `None` if its last value is not an inline immediate.
+    pub(crate) fn range(range: RangeInclusive<u64>, interner: &mut U256Interner) -> Option<Self> {
+        debug_assert!(range.start <= range.last);
         // Inline immediates are below 2^31.
-        let hi = u32::try_from(hi).ok().filter(|&hi| hi < 1 << 31)?;
-        Some(if lo == hi as u64 {
-            Self::Const(U256Imm::new(U256::from(hi), interner))
+        let last = u32::try_from(range.last).ok().filter(|&last| last < 1 << 31)?;
+        let start = range.start as u32;
+        Some(if start == last {
+            Self::Const(U256Imm::new(U256::from(last), interner))
         } else {
-            Self::Range(lo as u32, hi)
+            Self::Range((start..=last).into())
         })
     }
 
-    /// Returns the inclusive bounds of an inline constant or a range.
-    pub(crate) fn bounds(self) -> Option<(u32, u32)> {
+    /// Returns the range of an inline constant or a range.
+    pub(crate) fn bounds(self) -> Option<RangeInclusive<u32>> {
         match self {
-            Self::Const(v) => v.get_inline().map(|v| (v, v)),
-            Self::Range(lo, hi) => Some((lo, hi)),
+            Self::Const(v) => v.get_inline().map(|v| (v..=v).into()),
+            Self::Range(range) => Some(range),
             Self::ConstSet(_) | Self::Top => None,
         }
     }
@@ -197,9 +198,11 @@ impl ConstSetInterner {
     fn join(&mut self, a: AbsValue, b: AbsValue) -> AbsValue {
         match (a, b) {
             _ if a == b => a,
-            (AbsValue::Range(lo, hi), other) | (other, AbsValue::Range(lo, hi)) => {
+            (AbsValue::Range(range), other) | (other, AbsValue::Range(range)) => {
                 match other.bounds() {
-                    Some((olo, ohi)) if lo <= olo && ohi <= hi => AbsValue::Range(lo, hi),
+                    Some(o) if range.contains(&o.start) && range.contains(&o.last) => {
+                        AbsValue::Range(range)
+                    }
                     _ => AbsValue::Top,
                 }
             }
@@ -267,7 +270,7 @@ impl MemWords {
         // The bounds of offsets and lengths that fit in an inline immediate; larger ones are
         // unknown.
         let bounds = |depth: usize| inputs[inputs.len() - 1 - depth].bounds();
-        let len = |depth: usize| bounds(depth).map(|(_, hi)| hi);
+        let len = |depth: usize| bounds(depth).map(|len| len.last);
         match opcode {
             op::MLOAD => {
                 let offset = inputs[inputs.len() - 1].as_const()?.get_inline()?;
@@ -277,8 +280,8 @@ impl MemWords {
             op::MSTORE => {
                 let (offset, value) = (bounds(0), inputs[inputs.len() - 2]);
                 self.clobber(offset, Some(32));
-                if let Some((offset, hi)) = offset
-                    && offset == hi
+                if let Some(RangeInclusive { start: offset, last }) = offset
+                    && offset == last
                     && value != AbsValue::Top
                 {
                     let i = self.0.partition_point(|&(o, _)| o < offset);
@@ -298,15 +301,15 @@ impl MemWords {
         None
     }
 
-    /// Forgets every word that a write of at most `len` bytes at an offset in the inclusive
-    /// range `offset` may overlap.
-    fn clobber(&mut self, offset: Option<(u32, u32)>, len: Option<u32>) {
+    /// Forgets every word that a write of at most `len` bytes at an offset in `offset` may
+    /// overlap.
+    fn clobber(&mut self, offset: Option<RangeInclusive<u32>>, len: Option<u32>) {
         match (offset, len) {
             (_, Some(0)) => {}
-            (Some((lo, hi)), len) => {
+            (Some(offset), len) => {
                 // Inline immediates are below 2^31, so these sums cannot overflow.
-                let end = len.map_or(u32::MAX, |len| hi + len);
-                self.0.retain(|&mut (o, _)| o + 32 <= lo || end <= o);
+                let end = len.map_or(u32::MAX, |len| offset.last + len);
+                self.0.retain(|&mut (o, _)| o + 32 <= offset.start || end <= o);
             }
             (None, _) => self.0.clear(),
         }
@@ -1082,7 +1085,7 @@ impl Bytecode<'_> {
         let consts = match condition {
             AbsValue::Const(imm) => Either::Left(std::iter::once(imm)),
             AbsValue::ConstSet(set_idx) => Either::Right(const_sets.get(set_idx).iter().copied()),
-            AbsValue::Range(lo, _) if lo > 0 => return JumpCondition::AlwaysTrue,
+            AbsValue::Range(range) if range.start > 0 => return JumpCondition::AlwaysTrue,
             AbsValue::Range(..) | AbsValue::Top => return JumpCondition::Unknown,
         };
         let interner = self.u256_interner.borrow();
@@ -1338,12 +1341,12 @@ impl Bytecode<'_> {
                             let value = &mut refined_buf[stack_buf.len() - 1 - depth];
                             *value = match *value {
                                 _ if bound == 0 => zero,
-                                AbsValue::Range(lo, hi) if lo <= bound => {
+                                AbsValue::Range(range) if range.start <= bound => {
+                                    let range = range.start.into()..=range.last.min(bound).into();
                                     let mut interner = self.u256_interner.borrow_mut();
-                                    let hi = hi.min(bound).into();
-                                    AbsValue::range(lo.into(), hi, &mut interner).unwrap()
+                                    AbsValue::range(range.into(), &mut interner).unwrap()
                                 }
-                                AbsValue::Top => AbsValue::Range(0, bound),
+                                AbsValue::Top => AbsValue::Range((0..=bound).into()),
                                 value => value,
                             };
                             self.context_key(mode, &refined_buf, truncated)

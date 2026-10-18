@@ -206,16 +206,16 @@ fn try_range_fold(
     interner: &mut U256Interner,
 ) -> Option<AbsValue> {
     let &[b, a] = inputs else { return None };
-    let ((a_lo, a_hi), (b_lo, b_hi)) = (a.bounds()?, b.bounds()?);
-    let [a_lo, a_hi, b_lo, b_hi] = [a_lo, a_hi, b_lo, b_hi].map(u64::from);
+    let (a, b) = (a.bounds()?, b.bounds()?);
+    let [a_start, a_last, b_start, b_last] = [a.start, a.last, b.start, b.last].map(u64::from);
     // Bounds are below 2^31, so these cannot overflow.
-    let (lo, hi) = match opcode {
-        op::ADD => (a_lo + b_lo, a_hi + b_hi),
-        op::MUL => (a_lo * b_lo, a_hi * b_hi),
-        op::SHL if a_hi < 32 => (b_lo << a_lo, b_hi << a_hi),
+    let range = match opcode {
+        op::ADD => a_start + b_start..=a_last + b_last,
+        op::MUL => a_start * b_start..=a_last * b_last,
+        op::SHL if a_last < 32 => b_start << a_start..=b_last << a_last,
         _ => return None,
     };
-    AbsValue::range(lo, hi, interner)
+    AbsValue::range(range.into(), interner)
 }
 
 #[cfg(test)]
