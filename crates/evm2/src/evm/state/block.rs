@@ -549,6 +549,22 @@ mod tests {
     }
 
     #[test]
+    fn block_accumulator_drops_storage_reverted_to_original() {
+        let address = Address::from([0x57; 20]);
+        let key = Word::from(1);
+        let mut accumulator = BlockStateAccumulator::new();
+
+        changes(address, None, None, false, slot(key, Word::from(3), Word::from(4)))
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+        changes(address, None, None, false, slot(key, Word::from(4), Word::from(3)))
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+
+        assert!(accumulator.is_empty());
+    }
+
+    #[test]
     fn block_accumulator_keeps_account_only_and_storage_only_changes_separate() {
         let account_address = Address::from([0x53; 20]);
         let storage_address = Address::from([0x54; 20]);
