@@ -37,7 +37,8 @@ pub(crate) fn modexp(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
 ///
 /// Returns `None` if the inputs do not have this form.
 fn fermat_inverse(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Option<Vec<u8>> {
-    if base.len() > 32 || exponent.len() > 32 || modulus.len() > 32 {
+    // Every prime in `PRIMES` has a nonzero top byte, so it needs exactly 32 bytes.
+    if base.len() > 32 || exponent.len() > 32 || modulus.len() != 32 {
         return None;
     }
     let p = U256::from_be_slice(modulus);
@@ -46,7 +47,7 @@ fn fermat_inverse(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Option<Vec<u8
     }
     // `base` has no inverse only if it is a multiple of `p`, and then the result is 0.
     let inverse = U256::from_be_slice(base).inv_mod(p).unwrap_or_default();
-    Some(inverse.to_be_bytes::<32>()[32 - modulus.len()..].to_vec())
+    Some(inverse.to_be_bytes_vec())
 }
 
 /// GMP-based modular exponentiation implementation
