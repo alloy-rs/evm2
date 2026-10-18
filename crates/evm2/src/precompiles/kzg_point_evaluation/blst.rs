@@ -2,20 +2,29 @@
 
 #![allow(dead_code)]
 
-use crate::precompiles::{
-    OnceLock, PrecompileHalt,
-    bls12_381::blst::{
-        p1_add_or_double, p1_from_affine, p1_scalar_mul, p1_to_affine, p2_add_or_double,
-        p2_from_affine, p2_scalar_mul, p2_to_affine, pairing_check,
-    },
-    bls12_381_const::TRUSTED_SETUP_TAU_G2_BYTES,
-};
+use crate::precompiles::{OnceLock, PrecompileHalt, bls12_381_const::TRUSTED_SETUP_TAU_G2_BYTES};
 use ::blst::{
-    blst_p1_affine, blst_p1_affine_in_g1, blst_p1_affine_is_inf, blst_p1_affine_on_curve,
-    blst_p2_affine, blst_p2_affine_is_inf, blst_scalar, blst_scalar_fr_check,
-    blst_scalar_from_bendian,
+    BLS12_381_G1, BLS12_381_NEG_G2, blst_final_exp, blst_fp, blst_fp_add, blst_fp_cneg,
+    blst_fp_mul, blst_fp6, blst_fp12, blst_fp12_conjugate, blst_fp12_is_one,
+    blst_fp12_mul_by_xy00z0, blst_fp12_one, blst_fp12_sqr, blst_p1, blst_p1_add_or_double,
+    blst_p1_add_or_double_affine, blst_p1_affine, blst_p1_affine_in_g1, blst_p1_affine_is_inf,
+    blst_p1_affine_on_curve, blst_p1_cneg, blst_p1_double, blst_p1_from_affine, blst_p1_mult,
+    blst_p1_to_affine, blst_p1s_mult_wbits, blst_p1s_mult_wbits_precompute, blst_p2_affine,
+    blst_precompute_lines, blst_scalar, blst_scalar_fr_check, blst_scalar_from_bendian,
 };
-use alloc::vec::Vec;
+use core::ptr;
+
+/// Precomputed Miller loop lines of a G2 point, see `blst_precompute_lines`.
+type Lines = [blst_fp6; 68];
+
+/// Number of chunks `[y]G₁` is split into, see [`g1_table`].
+const G1_CHUNKS: usize = 8;
+
+/// Window size of the fixed-base `[y]G₁` multiplication.
+const G1_WBITS: usize = 6;
+
+/// Number of points in [`g1_table`].
+const G1_TABLE_LEN: usize = G1_CHUNKS << (G1_WBITS - 1);
 
 /// Verify KZG proof using BLST BLS12-381 implementation.
 ///
@@ -46,66 +55,165 @@ pub(crate) fn verify_kzg_proof(
         return false;
     };
 
-    // Get the trusted setup G2 point [τ]₂
-    let tau_g2 = get_trusted_setup_g2();
-
-    // Get generators
-    let g1 = get_g1_generator();
-    let g2 = get_g2_generator();
-
-    // Compute P_minus_y = commitment - [y]G₁
-    let y_g1 = p1_scalar_mul(&g1, &y_scalar);
-    let p_minus_y = p1_sub_affine(&commitment_point, &y_g1);
-
-    // Compute X_minus_z = [τ]G₂ - [z]G₂
-    let z_g2 = p2_scalar_mul(&g2, &z_scalar);
-    let x_minus_z = p2_sub_affine(tau_g2, &z_g2);
-
-    // Verify: P - y = Q * (X - z)
-    // Using pairing check: e(P - y, -G₂) * e(proof, X - z) == 1
-    let neg_g2 = p2_neg(&g2);
-
-    // Skip pairs containing a point at infinity: their pairing is the identity,
-    // and `pairing_check` requires infinity-free inputs (`blst_miller_loop_n`,
-    // unlike the per-pair `blst_miller_loop`, does not special-case infinity).
-    // E.g. the proof of a constant polynomial is the point at infinity.
-    let pairs: Vec<_> = [(p_minus_y, neg_g2), (proof_point, x_minus_z)]
-        .into_iter()
-        // SAFETY: both arguments are valid blst types.
-        .filter(|(g1, g2)| unsafe { !blst_p1_affine_is_inf(g1) && !blst_p2_affine_is_inf(g2) })
-        .collect();
-
-    pairing_check(&pairs)
+    // The spec checks e(P - [y]G₁, -G₂) * e(proof, [τ]G₂ - [z]G₂) == 1. By bilinearity,
+    // e(proof, -[z]G₂) == e([z]proof, -G₂), so this is equivalent to
+    // e(P - [y]G₁ + [z]proof, -G₂) * e(proof, [τ]G₂) == 1, where both G₂ points are fixed.
+    let lhs = p1_lhs(&commitment_point, &proof_point, &z_scalar, &y_scalar);
+    let [neg_g2_lines, tau_g2_lines] = g2_lines();
+    multi_pairing_is_one(&[(&lhs, neg_g2_lines), (&proof_point, tau_g2_lines)])
 }
 
-/// Get the trusted setup G2 point `[τ]₂` from the Ethereum KZG ceremony.
-/// This is g2_monomial_1 from trusted_setup_4096.json
-fn get_trusted_setup_g2() -> &'static blst_p2_affine {
-    static TAU_G2: OnceLock<blst_p2_affine> = OnceLock::new();
-    TAU_G2.get_or_init(|| {
-        // For compressed G2, we need to decompress
-        let mut g2_affine = blst_p2_affine::default();
+/// Computes `commitment - [y]G₁ + [z]proof`.
+fn p1_lhs(
+    commitment: &blst_p1_affine,
+    proof: &blst_p1_affine,
+    z: &blst_scalar,
+    y: &blst_scalar,
+) -> blst_p1_affine {
+    let mut acc = blst_p1::default();
+    let mut proof_jacobian = blst_p1::default();
+    let mut z_proof = blst_p1::default();
+    let mut out = blst_p1_affine::default();
+    // `[y]G₁` is the sum of `[y_i][2^(32i)]G₁` over the 32-bit little-endian chunks `y_i`.
+    let y_chunks = [y.b.as_ptr(), ptr::null()];
+    // SAFETY: all arguments are valid blst types, `y_chunks` is a null-terminated array pointing
+    // to `G1_CHUNKS` contiguous chunks of `256 / G1_CHUNKS` bits, and a null scratch buffer is
+    // allocated by blst.
+    unsafe {
+        blst_p1s_mult_wbits(
+            &mut acc,
+            g1_table().as_ptr(),
+            G1_WBITS,
+            G1_CHUNKS,
+            y_chunks.as_ptr(),
+            256 / G1_CHUNKS,
+            ptr::null_mut(),
+        );
+        blst_p1_cneg(&mut acc, true);
+        let acc_ptr = &raw mut acc;
+        blst_p1_add_or_double_affine(acc_ptr, acc_ptr, commitment);
+        blst_p1_from_affine(&mut proof_jacobian, proof);
+        blst_p1_mult(&mut z_proof, &proof_jacobian, z.b.as_ptr(), 256);
+        blst_p1_add_or_double(acc_ptr, acc_ptr, &z_proof);
+        blst_p1_to_affine(&mut out, &acc);
+    }
+    out
+}
+
+/// Returns the `blst_p1s_mult_wbits` table of `[2^(32i)]G₁` for `i` in `0..G1_CHUNKS`.
+fn g1_table() -> &'static [blst_p1_affine; G1_TABLE_LEN] {
+    static TABLE: OnceLock<[blst_p1_affine; G1_TABLE_LEN]> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut points = [blst_p1_affine::default(); G1_CHUNKS];
+        let mut p = blst_p1::default();
+        let p_ptr = &raw mut p;
+        let mut table = [blst_p1_affine::default(); G1_TABLE_LEN];
+        // SAFETY: all arguments are valid blst types and `table` has the size given by
+        // `blst_p1s_mult_wbits_precompute_sizeof`.
         unsafe {
-            // The compressed format has x coordinate and a flag bit for y
-            // We use uncompress which handles this automatically
-            let result =
-                blst::blst_p2_uncompress(&mut g2_affine, TRUSTED_SETUP_TAU_G2_BYTES.as_ptr());
+            blst_p1_from_affine(p_ptr, &BLS12_381_G1);
+            for point in &mut points {
+                blst_p1_to_affine(point, p_ptr);
+                for _ in 0..256 / G1_CHUNKS {
+                    blst_p1_double(p_ptr, p_ptr);
+                }
+            }
+            let points = points.each_ref().map(ptr::from_ref);
+            blst_p1s_mult_wbits_precompute(
+                table.as_mut_ptr(),
+                G1_WBITS,
+                points.as_ptr(),
+                G1_CHUNKS,
+            );
+        }
+        table
+    })
+}
+
+/// Checks that the product of the pairings of each G1 point with the G2 point of its precomputed
+/// lines is the identity.
+///
+/// G1 points at infinity are skipped: their pairing is the identity, but the line evaluations
+/// do not special-case infinity. E.g. the proof of a constant polynomial is the point at infinity.
+///
+/// The Miller loop follows `blst_miller_loop_lines`, but shares the squarings between the pairs.
+fn multi_pairing_is_one(pairs: &[(&blst_p1_affine, &Lines); 2]) -> bool {
+    // Move the common expression from the line evaluation: (-2 * P.x, 2 * P.y).
+    let mut px2 = [(blst_fp::default(), blst_fp::default()); 2];
+    let mut lines = [&pairs[0].1; 2];
+    let mut n = 0;
+    for (p, l) in pairs {
+        // SAFETY: all arguments are valid blst types.
+        unsafe {
+            if blst_p1_affine_is_inf(*p) {
+                continue;
+            }
+            let (x, y) = &mut px2[n];
+            blst_fp_add(x, &p.x, &p.x);
+            blst_fp_cneg(x, x, true);
+            blst_fp_add(y, &p.y, &p.y);
+        }
+        lines[n] = l;
+        n += 1;
+    }
+    if n == 0 {
+        return true;
+    }
+
+    // SAFETY: `blst_fp12_one` returns a valid pointer to a static.
+    let mut f = unsafe { *blst_fp12_one() };
+    let f_ptr = &raw mut f;
+    for i in 0..68 {
+        // Lines 1, 4, 8, 18 and 51 are additions, the rest are doublings that follow a squaring,
+        // except for the first doubling that starts from one.
+        if !matches!(i, 0 | 1 | 4 | 8 | 18 | 51) {
+            // SAFETY: `f` is a valid blst type; blst allows aliasing the output and input.
+            unsafe { blst_fp12_sqr(f_ptr, f_ptr) };
+        }
+        for ((x, y), lines) in px2.iter().zip(&lines).take(n) {
+            let l = &lines[i];
+            let mut line = *l;
+            // SAFETY: all arguments are valid blst types.
+            unsafe {
+                blst_fp_mul(&mut line.fp2[1].fp[0], &l.fp2[1].fp[0], x);
+                blst_fp_mul(&mut line.fp2[1].fp[1], &l.fp2[1].fp[1], x);
+                blst_fp_mul(&mut line.fp2[2].fp[0], &l.fp2[2].fp[0], y);
+                blst_fp_mul(&mut line.fp2[2].fp[1], &l.fp2[2].fp[1], y);
+                blst_fp12_mul_by_xy00z0(f_ptr, f_ptr, &line);
+            }
+        }
+    }
+
+    let mut out = blst_fp12::default();
+    // SAFETY: all arguments are valid blst types.
+    unsafe {
+        // Account for the BLS parameter being negative.
+        blst_fp12_conjugate(f_ptr);
+        blst_final_exp(&mut out, &f);
+        blst_fp12_is_one(&out)
+    }
+}
+
+/// Returns the precomputed Miller loop lines of `-G₂` and of the trusted setup point `[τ]G₂`.
+fn g2_lines() -> &'static [Lines; 2] {
+    static LINES: OnceLock<[Lines; 2]> = OnceLock::new();
+    LINES.get_or_init(|| {
+        let mut tau_g2 = blst_p2_affine::default();
+        // SAFETY: all arguments are valid blst types.
+        unsafe {
+            let result = blst::blst_p2_uncompress(&mut tau_g2, TRUSTED_SETUP_TAU_G2_BYTES.as_ptr());
             if result != blst::BLST_ERROR::BLST_SUCCESS {
                 panic!("Failed to deserialize trusted setup G2 point");
             }
         }
-        g2_affine
+        let mut lines = [[blst_fp6::default(); 68]; 2];
+        // SAFETY: all arguments are valid blst types and `lines` has 68 entries each.
+        unsafe {
+            blst_precompute_lines(lines[0].as_mut_ptr(), &BLS12_381_NEG_G2);
+            blst_precompute_lines(lines[1].as_mut_ptr(), &tau_g2);
+        }
+        lines
     })
-}
-
-/// Get G1 generator point
-fn get_g1_generator() -> blst_p1_affine {
-    unsafe { ::blst::BLS12_381_G1 }
-}
-
-/// Get G2 generator point
-fn get_g2_generator() -> blst_p2_affine {
-    unsafe { ::blst::BLS12_381_G2 }
 }
 
 /// Parse a G1 point from compressed format (48 bytes)
@@ -144,52 +252,4 @@ fn read_scalar_canonical(bytes: &[u8; 32]) -> Result<blst_scalar, PrecompileHalt
     }
 
     Ok(scalar)
-}
-
-/// Subtract two G1 points in affine form
-fn p1_sub_affine(a: &blst_p1_affine, b: &blst_p1_affine) -> blst_p1_affine {
-    // Convert first point to Jacobian
-    let a_jacobian = p1_from_affine(a);
-
-    // Negate second point
-    let neg_b = p1_neg(b);
-
-    // Add a + (-b)
-    let result = p1_add_or_double(&a_jacobian, &neg_b);
-
-    p1_to_affine(&result)
-}
-
-/// Subtract two G2 points in affine form
-fn p2_sub_affine(a: &blst_p2_affine, b: &blst_p2_affine) -> blst_p2_affine {
-    // Convert first point to Jacobian
-    let a_jacobian = p2_from_affine(a);
-
-    // Negate second point
-    let neg_b = p2_neg(b);
-
-    // Add a + (-b)
-    let result = p2_add_or_double(&a_jacobian, &neg_b);
-
-    p2_to_affine(&result)
-}
-
-/// Negate a G1 point
-fn p1_neg(p: &blst_p1_affine) -> blst_p1_affine {
-    // Convert to Jacobian, negate, convert back
-    let mut p_jacobian = p1_from_affine(p);
-    unsafe {
-        ::blst::blst_p1_cneg(&mut p_jacobian, true);
-    }
-    p1_to_affine(&p_jacobian)
-}
-
-/// Negate a G2 point
-fn p2_neg(p: &blst_p2_affine) -> blst_p2_affine {
-    // Convert to Jacobian, negate, convert back
-    let mut p_jacobian = p2_from_affine(p);
-    unsafe {
-        ::blst::blst_p2_cneg(&mut p_jacobian, true);
-    }
-    p2_to_affine(&p_jacobian)
 }
