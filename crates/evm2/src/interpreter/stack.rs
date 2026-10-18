@@ -1,6 +1,6 @@
 use super::{InstrStop, Result};
 use crate::constants::STACK_LIMIT;
-use alloy_primitives::U256;
+use alloy_primitives::{Address, B256, U256};
 use core::{
     debug_assert_matches, fmt, hint::cold_path, marker::PhantomData, mem::MaybeUninit, ops::Deref,
 };
@@ -552,12 +552,13 @@ impl<'a> StackMut<'a> {
     }
 }
 
-/// Single-store writes of stack words.
+/// Extension methods for stack words.
 ///
-/// A 32-byte load can only take its data from one earlier store that covers it. LLVM writes words
-/// built in general-purpose registers, including zero-extended `u64`s, with several narrower
-/// stores, so a later 32-byte load of the word waits for them to reach the cache.
-pub(crate) trait WordExt {
+/// The writes use a single 32-byte store. A 32-byte load can only take its data from one earlier
+/// store that covers it. LLVM writes words built in general-purpose registers, including
+/// zero-extended `u64`s, with several narrower stores, so a later 32-byte load of the word waits
+/// for them to reach the cache.
+pub trait WordExt {
     /// Writes `value` with a single 32-byte store.
     ///
     /// Use this for words computed in general-purpose registers. Words copied from memory already
@@ -567,6 +568,15 @@ pub(crate) trait WordExt {
 
     /// Writes `value` as a word with a single 32-byte store.
     fn write_u64(&mut self, value: u64);
+
+    /// Converts the word to an address, keeping its low 20 bytes.
+    fn to_address(&self) -> Address;
+
+    /// Converts the word to `usize`, returning an invalid-operand OOG stop on overflow.
+    fn to_usize(&self) -> Result<usize>;
+
+    /// Converts the word to `usize`, saturating on overflow.
+    fn to_usize_saturated(&self) -> usize;
 }
 
 impl WordExt for Word {
@@ -580,6 +590,24 @@ impl WordExt for Word {
     fn write_u64(&mut self, value: u64) {
         // SAFETY: `self` is valid for writes.
         unsafe { write_u64(self, value) }
+    }
+
+    #[inline]
+    fn to_address(&self) -> Address {
+        Address::from_word(B256::from(self.to_be_bytes::<32>()))
+    }
+
+    #[inline]
+    fn to_usize(&self) -> Result<usize> {
+        to_usize_opt(self).ok_or_else(|| {
+            cold_path();
+            InstrStop::InvalidOperandOOG
+        })
+    }
+
+    #[inline]
+    fn to_usize_saturated(&self) -> usize {
+        to_usize_opt(self).unwrap_or(usize::MAX)
     }
 }
 
@@ -661,6 +689,23 @@ unsafe fn swap_words(a: *mut Word, b: *mut Word) {
             _mm256_storeu_si256(b.cast(), x);
         },
         _ => unsafe { core::ptr::swap_nonoverlapping(a, b, 1) },
+    }
+}
+
+#[inline(always)]
+fn to_usize_opt(value: &Word) -> Option<usize> {
+    core::cfg_select! {
+        // Stack words are written with one 32-byte store, which can't forward to separate loads
+        // of the high limbs, so test them with one full-width load instead. Zeroing the low limb
+        // with a blend keeps this a `vptest`; a masked test becomes a lane compare on AVX2.
+        all(target_arch = "x86_64", target_feature = "avx2", not(miri)) => unsafe {
+            use core::arch::x86_64::*;
+            let v = _mm256_loadu_si256(core::ptr::from_ref(value).cast());
+            let high = _mm256_blend_epi32::<0b11>(v, _mm256_setzero_si256());
+            (_mm256_testz_si256(high, high) != 0)
+                .then(|| _mm_cvtsi128_si64(_mm256_castsi256_si128(v)) as usize)
+        },
+        _ => (*value).try_into().ok(),
     }
 }
 

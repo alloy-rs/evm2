@@ -1,9 +1,8 @@
 //! Shared utility helpers.
 
-use crate::interpreter::{InstrStop, Result, Word};
+use crate::interpreter::Word;
 use alloc::{borrow::Cow, vec};
 use alloy_primitives::{Address, B256, Bytes, b256};
-use core::hint::cold_path;
 
 /// Returns the number of EVM words needed for `len` bytes.
 #[inline]
@@ -21,44 +20,6 @@ pub fn address_to_word(address: &Address) -> Word {
 #[inline]
 pub const fn b256_to_word(value: B256) -> Word {
     Word::from_be_bytes(value.0)
-}
-
-/// Converts an EVM word to an address.
-#[inline]
-pub fn word_to_address(value: Word) -> Address {
-    Address::from_word(B256::from(value.to_be_bytes::<32>()))
-}
-
-/// Converts an EVM word to `usize`, returning an invalid-operand OOG stop on overflow.
-#[inline]
-pub fn word_to_usize(value: &Word) -> Result<usize> {
-    word_to_usize_opt(value).ok_or_else(|| {
-        cold_path();
-        InstrStop::InvalidOperandOOG
-    })
-}
-
-/// Converts an EVM word to `usize`, saturating on overflow.
-#[inline]
-pub fn word_to_usize_saturated(value: &Word) -> usize {
-    word_to_usize_opt(value).unwrap_or(usize::MAX)
-}
-
-#[inline(always)]
-fn word_to_usize_opt(value: &Word) -> Option<usize> {
-    core::cfg_select! {
-        // Stack words are written with one 32-byte store, which can't forward to separate loads
-        // of the high limbs, so test them with one full-width load instead. Zeroing the low limb
-        // with a blend keeps this a `vptest`; a masked test becomes a lane compare on AVX2.
-        all(target_arch = "x86_64", target_feature = "avx2", not(miri)) => unsafe {
-            use core::arch::x86_64::*;
-            let v = _mm256_loadu_si256(core::ptr::from_ref(value).cast());
-            let high = _mm256_blend_epi32::<0b11>(v, _mm256_setzero_si256());
-            (_mm256_testz_si256(high, high) != 0)
-                .then(|| _mm_cvtsi128_si64(_mm256_castsi256_si128(v)) as usize)
-        },
-        _ => (*value).try_into().ok(),
-    }
 }
 
 /// Calculate the linear cost of a precompile.

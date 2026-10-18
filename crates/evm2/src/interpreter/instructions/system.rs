@@ -6,9 +6,8 @@ use crate::{
     constants::CALL_DEPTH_LIMIT,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Result, StackMut,
-        Word, derive_create_destination,
+        Word, WordExt, derive_create_destination,
     },
-    utils::{word_to_address, word_to_usize},
     version::GasId,
 };
 use alloy_primitives::{Address, B256, Bytes};
@@ -38,9 +37,9 @@ fn resize_memory_range<T: EvmTypesHost>(
     offset: Word,
     len: Word,
 ) -> Result<Range<usize>> {
-    let len = word_to_usize(&len)?;
+    let len = len.to_usize()?;
     let offset = if len != 0 {
-        let offset = word_to_usize(&offset)?;
+        let offset = offset.to_usize()?;
         state.resize_memory(gas, offset, len)?;
         offset
     } else {
@@ -167,7 +166,7 @@ fn prepare_call<T: EvmTypesHost>(
     let [local_gas_limit, to] = stack.popn::<2>()?;
     let value = if has_value { stack.pop()? } else { Word::ZERO };
     let [input_offset, input_len, return_offset, return_len] = stack.popn::<4>()?;
-    let to = word_to_address(to);
+    let to = to.to_address();
     let has_transfer = !value.is_zero();
     if state.is_static() && kind == MessageKind::Call && has_transfer {
         return Err(InstrStop::CallNotAllowedInsideStatic);
@@ -300,7 +299,7 @@ fn create_inner<T: EvmTypesHost>(
     let [value, offset, len] = stack.popn::<3>()?;
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
 
-    let len = word_to_usize(&len)?;
+    let len = len.to_usize()?;
     if state.feature(EvmFeatures::EIP3860) {
         if len > state.version().max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
@@ -425,7 +424,7 @@ fn create_inner<T: EvmTypesHost>(
 #[instruction(dynamic_gas)]
 pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     require_non_staticcall(cx.state)?;
-    let target = word_to_address(*target);
+    let target = target.to_address();
     let cold_load_gas = cx.state.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let destination = &cx.state.message().destination;
