@@ -2044,6 +2044,117 @@ tests! {
             expected_gas: 3 + 2 + (3 + memory_gas_cost(1)) +
                           3 + 3 + 3 + verylowcopy_cost(2).unwrap(),
         }),
+        // Repeated accesses through one dynamic offset `p = 64`, growing and shrinking.
+        dyn_offset_repeated(@raw {
+            bytecode: &asm("
+                CALLDATASIZE
+                PUSH 0x11
+                DUP2
+                MSTORE          ; [p, p+32)
+                PUSH 0x22
+                DUP2
+                MSTORE8         ; [p, p+1)
+                DUP1
+                PUSH 0x20
+                ADD
+                MLOAD           ; [p+32, p+64)
+                POP
+                DUP1
+                PUSH 0x1f
+                ADD
+                MLOAD           ; [p+31, p+63)
+                SWAP1
+                MLOAD           ; [p, p+32)
+            "),
+            expected_stack: &[0x11_U256 << 248, (0x22_U256 << 248) | 0x11_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // Accesses through `p = 64` that straddle the ensured range and the memory size.
+        dyn_offset_straddle(@raw {
+            bytecode: &asm("
+                CALLDATASIZE
+                DUP1
+                MLOAD           ; [p, p+32), memory 96
+                PUSH 0x33
+                PUSH 0x10
+                DUP4
+                ADD
+                MSTORE          ; [p+16, p+48), memory 128
+                DUP2
+                PUSH 0x11
+                ADD
+                MLOAD           ; [p+17, p+49), no resize
+                MSIZE
+                DUP4
+                PUSH 0x28
+                ADD
+                MLOAD           ; [p+40, p+72), memory 160
+                MSIZE
+            "),
+            expected_stack: &[64_U256, 0_U256, 0x3300_U256, 128_U256, 0x33_U256 << 192, 160_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // `q + 65` wraps to 0, which proves that `q + 97` wraps to 32 but not that `q` itself
+        // is in bounds.
+        dyn_offset_wrapping_add(@raw {
+            bytecode: &asm("
+                CALLDATASIZE
+                NOT
+                DUP1
+                PUSH 0x41
+                ADD
+                MLOAD
+                POP
+                DUP1
+                PUSH 0x61
+                ADD
+                MLOAD
+                POP
+                MLOAD
+            "),
+            expected_return: InstrStop::InvalidOperandOOG,
+            expected_stack: &[!64_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // `TLOAD` overwrites the stack slot holding `p = 64` with `0x1000`.
+        dyn_offset_overwritten_by_builtin(@raw {
+            bytecode: &asm("
+                CALLDATASIZE
+                DUP1
+                MLOAD
+                POP
+                PUSH 0x1000
+                DUP2
+                TSTORE
+                TLOAD
+                MLOAD
+                MSIZE
+            "),
+            expected_stack: &[0_U256, 0x1020_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // The store on the skipped path must not cover the load after the join.
+        const_offset_after_join(@raw {
+            bytecode: &asm("
+                CALLDATASIZE
+                PUSH %skip
+                JUMPI
+                PUSH 0x69
+                PUSH 0x1000
+                MSTORE
+            skip:
+                JUMPDEST
+                PUSH 0x1000
+                MLOAD
+            "),
+            expected_stack: &[0_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
         mload_known_word(@raw {
             bytecode: &asm("
                 PUSH 0x80

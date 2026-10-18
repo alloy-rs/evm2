@@ -18,7 +18,7 @@ use evm2::{
     bytecode::Bytecode,
     constants::{BLOCK_HASH_HISTORY, CALL_DEPTH_LIMIT},
     interpreter::{Host, MessageExt, MessageKind, Word, derive_create_destination, i256},
-    utils::{read_word_padded, word_to_usize, word_to_usize_saturated},
+    utils::read_word_padded,
     version::{EvmFeatures, GasId},
 };
 use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
