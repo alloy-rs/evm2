@@ -1,10 +1,7 @@
 use crate::{
     EvmFeatures, EvmTypesHost,
-    interpreter::{
-        Host, InstrStop, InterpreterState, Result, StackMut, private::GasInstructionCx,
-        stack::WordExt,
-    },
-    utils::word_to_usize,
+    interpreter::{Host, InstrStop, InterpreterState, Result, StackMut, private::GasInstructionCx},
+    utils::WordExt,
     version::GasId,
 };
 use alloy_primitives::B256;
@@ -116,13 +113,13 @@ fn log_common<T: EvmTypesHost>(
 ) -> Result {
     require_non_staticcall(cx.state)?;
     let [offset, len] = stack.popn()?;
-    let len = word_to_usize(len)?;
+    let len = len.to_usize()?;
     cx.gas.spend(cx.state.gas_params().log_cost(n as u8, len))?;
 
     let offset = if len == 0 {
         0
     } else {
-        let offset = word_to_usize(offset)?;
+        let offset = offset.to_usize()?;
         cx.state.resize_memory(cx.gas, offset, len)?;
         offset
     };

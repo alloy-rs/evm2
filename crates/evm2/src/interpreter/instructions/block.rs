@@ -1,8 +1,8 @@
 use crate::{
     EvmFeatures,
     constants::BLOCK_HASH_HISTORY,
-    interpreter::{Host, Word, stack::WordExt},
-    utils::{address_to_word, b256_to_word, word_to_usize_saturated},
+    interpreter::{Host, Word},
+    utils::{WordExt, address_to_word, b256_to_word},
 };
 use evm2_macros::instruction;
 
@@ -72,7 +72,7 @@ pub fn basefee(cx: _) -> Result<out> {
 
 #[instruction]
 pub fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
-    let index = word_to_usize_saturated(*index);
+    let index = index.to_usize_saturated();
     *out = cx.state.tx().blob_hashes.get(index).copied().unwrap_or_default();
 }
 

@@ -114,6 +114,13 @@ pub(super) struct FunctionCx<'a, B: Backend> {
     /// `section_len_offset + diff`. Stores are skipped when the new offset matches this value.
     stored_len_offset: i32,
     cached_mem_base: Option<B::Value>,
+    /// Memory ranges already ensured in the current stack section, as `(base, lo, hi)`: memory
+    /// covers every access at `base + c` with `lo <= c` and `c + len <= hi`. Memory never
+    /// shrinks within a frame, so these hold until the next section head.
+    ensured_memory: Vec<(B::Value, u64, u64)>,
+    /// Values in the current stack section known to equal another value plus a small constant,
+    /// as `(value, base, addend)`: `ADD` results and reloads of materialized stack slots.
+    value_offsets: Vec<(B::Value, B::Value, u64)>,
 
     /// The bytecode being translated.
     bytecode: &'a Bytecode<'a>,
@@ -250,6 +257,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             section_len_offset: 0,
             stored_len_offset: 0,
             cached_mem_base: None,
+            ensured_memory: Vec::new(),
+            value_offsets: Vec::new(),
             bcx,
 
             bytecode,
@@ -469,6 +478,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             self.section_len_offset = 0;
             self.stored_len_offset = 0;
             self.cached_mem_base = None;
+            self.ensured_memory.clear();
+            self.value_offsets.clear();
 
             let section = data.stack_section;
             self.vstack.reset(section.inputs as usize, section.max_growth.max(0) as usize);
@@ -605,7 +616,24 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         match data.opcode {
             op::STOP => goto_return!(build InstrStop::Stop),
 
-            op::ADD => binop!(iadd),
+            op::ADD => {
+                let [a, b] = self.popn();
+                let sum = self.bcx.iadd(a, b);
+                self.push(sum);
+                let operand = match self.const_operands() {
+                    [None, Some(c)] => Some((a, c)),
+                    [Some(c), None] => Some((b, c)),
+                    _ => None,
+                };
+                if let Some((operand, c)) = operand
+                    && let Ok(c) = u32::try_from(c)
+                {
+                    let (base, addend) = self.memory_offset_parts(operand);
+                    if let Ok(addend) = u32::try_from(addend + u64::from(c)) {
+                        self.value_offsets.push((sum, base, addend.into()));
+                    }
+                }
+            }
             op::MUL => binop!(imul),
             op::SUB => binop!(isub),
             op::DIV => {
@@ -1434,7 +1462,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let top = self.section_len_offset;
         for depth in 0..inputs {
             let off = top - inputs as i32 + (inputs - 1 - depth) as i32;
-            if let VSlot::Materialized = self.vstack.get_at_offset(off)
+            if let VSlot::Materialized(_) = self.vstack.get_at_offset(off)
                 && let Some(c) = self.bytecode.const_operand(inst, depth)
             {
                 let value = self.bcx.iconst_256(c);
@@ -1483,10 +1511,14 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         }
         match self.vstack.get(live_depth) {
             VSlot::Virtual(v) => v,
-            VSlot::Materialized => {
+            VSlot::Materialized(stored) => {
                 let off = self.vstack.offset_at_depth(live_depth);
                 let sp = self.sp_from_section(off as i64);
                 let value = self.load_word(sp, name);
+                if let Some(stored) = stored {
+                    let (base, addend) = self.memory_offset_parts(stored);
+                    self.value_offsets.push((value, base, addend));
+                }
                 self.vstack.set(live_depth, value);
                 value
             }
@@ -1531,7 +1563,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             let sp = self.sp_from_section(off as i64);
             self.bcx.store(value, sp);
         }
-        self.vstack.mark_materialized_range(start..end);
+        self.vstack.mark_stored_range(start..end);
     }
 
     /// Builds a gas cost deduction for an immediate value.
@@ -1562,8 +1594,31 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     /// Ensures the memory is large enough for `offset + len` bytes, calling the `mresize`
     /// builtin on the cold path if needed. Returns the pointer to `mem_base + offset`.
     fn build_ensure_memory(&mut self, offset: B::Value, len: u64) -> B::Value {
-        // 63 bits lets us avoid overflow in the addition below.
-        let offset = self.u256_to_u64_saturating(offset, 63);
+        let (base, addend) = self.memory_offset_parts(offset);
+        let end = addend + len;
+        let ensured =
+            self.ensured_memory.iter().find(|&&(b, ..)| b == base).map(|&(_, lo, hi)| (lo, hi));
+        // An earlier access at `base + lo` passed its check, so that offset fits in 63 bits, and
+        // `base + addend` for `addend >= lo` fits in 64 bits.
+        let fits = ensured.is_some_and(|(lo, _)| lo <= addend);
+        let offset = if fits {
+            self.bcx.ireduce(self.isize_type, offset)
+        } else {
+            // 63 bits lets us avoid overflow in the addition below.
+            self.u256_to_u64_saturating(offset, 63)
+        };
+        // An earlier access in this section already ensured this range.
+        if fits && ensured.is_some_and(|(_, hi)| end <= hi) {
+            return self.build_memory_addr(offset);
+        }
+        // Every path below either fails or leaves memory covering this access.
+        if let Some((_, lo, hi)) = self.ensured_memory.iter_mut().find(|(b, ..)| *b == base) {
+            *lo = (*lo).min(addend);
+            *hi = (*hi).max(end);
+        } else {
+            self.ensured_memory.push((base, addend, end));
+        }
+
         // Analysis proved this access is already covered on every path.
         if self.current_inst.is_some_and(|inst| self.can_skip_ensure_memory(inst)) {
             return self.build_memory_addr(offset);
@@ -1600,6 +1655,15 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             this.call_fallible_builtin(Builtin::Mresize, &[this.ecx, min_size]);
         });
         self.build_memory_addr(offset)
+    }
+
+    /// Splits a value into a base value and a constant addend.
+    fn memory_offset_parts(&self, offset: B::Value) -> (B::Value, u64) {
+        self.value_offsets
+            .iter()
+            .rev()
+            .find(|&&(sum, ..)| sum == offset)
+            .map_or((offset, 0), |&(_, base, addend)| (base, addend))
     }
 
     fn can_skip_ensure_memory(&self, inst: Inst) -> bool {
@@ -1894,6 +1958,12 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let value = self.bcx.call(function, args);
         if invalidate_mem_base {
             self.cached_mem_base = None;
+        }
+        // Builtins may write the current instruction's operands and outputs on the physical
+        // stack.
+        if let Some(inst) = self.current_inst {
+            let inputs = self.bytecode.inst(inst).stack_io().0 as i32;
+            self.vstack.forget_stored_from(self.section_len_offset - inputs);
         }
         value
     }
