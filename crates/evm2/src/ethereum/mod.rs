@@ -1010,63 +1010,25 @@ mod tests {
         let input = Bytes::from(vec![1; 74]);
 
         let sender = Address::with_last_byte(0xaa);
-        assert_eq!(
-            intrinsic_and_floor_gas(
-                Version::base(SpecId::LONDON),
-                sender,
-                TxKind::Create,
-                &input,
-                0,
-                0,
-                U256::ZERO
-            )
-            .0,
-            21_000 + 32_000 + 74 * 16
-        );
-        assert_eq!(
-            intrinsic_and_floor_gas(
-                Version::base(SpecId::SHANGHAI),
-                sender,
-                TxKind::Create,
-                &input,
-                0,
-                0,
-                U256::ZERO
-            )
-            .0,
-            21_000 + 32_000 + 74 * 16 + 3 * 2
-        );
+        let intrinsic = |version: &Version| {
+            intrinsic_and_floor_gas(version, sender, TxKind::Create, &input, 0, 0, U256::ZERO).0
+        };
+        assert_eq!(intrinsic(Version::base(SpecId::LONDON)), 21_000 + 32_000 + 74 * 16);
+        assert_eq!(intrinsic(Version::base(SpecId::SHANGHAI)), 21_000 + 32_000 + 74 * 16 + 3 * 2);
     }
 
     #[test]
     fn intrinsic_gas_charges_access_list_items() {
         let input = Bytes::new();
         let sender = Address::with_last_byte(0xaa);
+        let to = TxKind::Call(Address::ZERO);
+        let intrinsic = |version: &Version, accounts, keys| {
+            intrinsic_and_floor_gas(version, sender, to, &input, accounts, keys, U256::ZERO).0
+        };
 
+        assert_eq!(intrinsic(Version::base(SpecId::BERLIN), 2, 3), 21_000 + 2 * 2400 + 3 * 1900);
         assert_eq!(
-            intrinsic_and_floor_gas(
-                Version::base(SpecId::BERLIN),
-                sender,
-                TxKind::Call(Address::ZERO),
-                &input,
-                2,
-                3,
-                U256::ZERO
-            )
-            .0,
-            21_000 + 2 * 2400 + 3 * 1900
-        );
-        assert_eq!(
-            intrinsic_and_floor_gas(
-                Version::base(SpecId::AMSTERDAM),
-                sender,
-                TxKind::Call(Address::ZERO),
-                &input,
-                1,
-                1,
-                U256::ZERO
-            )
-            .0,
+            intrinsic(Version::base(SpecId::AMSTERDAM), 1, 1),
             // EIP-2780 replaces the 21,000 base with TX_BASE (12,000) +
             // COLD_ACCOUNT_ACCESS (3,000) for the zero-value call recipient.
             // EIP-8038 sets the per-item access-list base to the cold-minus-warm
@@ -1084,19 +1046,16 @@ mod tests {
         version.gas_params.set(GasId::TxTokenNonZeroByteMultiplier, 5);
         version.gas_params.set(GasId::TxBaseStipend, 10_000);
 
-        assert_eq!(
-            intrinsic_and_floor_gas(
-                &version,
-                sender,
-                TxKind::Call(Address::ZERO),
-                &input,
-                0,
-                0,
-                U256::ZERO
-            )
-            .0,
-            10_000 + (1 + 2 * 5) * 3
+        let (intrinsic, _) = intrinsic_and_floor_gas(
+            &version,
+            sender,
+            TxKind::Call(Address::ZERO),
+            &input,
+            0,
+            0,
+            U256::ZERO,
         );
+        assert_eq!(intrinsic, 10_000 + (1 + 2 * 5) * 3);
     }
 
     #[test]
@@ -1141,38 +1100,13 @@ mod tests {
         let to = TxKind::Call(Address::ZERO);
         let mut prague_without_eip7623 = Version::new(SpecId::PRAGUE);
         prague_without_eip7623.features.remove(EvmFeatures::EIP7623);
+        let floor = |version: &Version| {
+            intrinsic_and_floor_gas(version, sender, to, &input, 0, 0, U256::ZERO).1
+        };
 
-        assert_eq!(
-            intrinsic_and_floor_gas(
-                Version::base(SpecId::SHANGHAI),
-                sender,
-                to,
-                &input,
-                0,
-                0,
-                U256::ZERO
-            )
-            .1,
-            0
-        );
-        assert_eq!(
-            intrinsic_and_floor_gas(
-                Version::base(SpecId::PRAGUE),
-                sender,
-                to,
-                &input,
-                0,
-                0,
-                U256::ZERO
-            )
-            .1,
-            21_000 + 9 * 10
-        );
-        assert_eq!(
-            intrinsic_and_floor_gas(&prague_without_eip7623, sender, to, &input, 0, 0, U256::ZERO)
-                .1,
-            0
-        );
+        assert_eq!(floor(Version::base(SpecId::SHANGHAI)), 0);
+        assert_eq!(floor(Version::base(SpecId::PRAGUE)), 21_000 + 9 * 10);
+        assert_eq!(floor(&prague_without_eip7623), 0);
     }
 
     #[test]
@@ -1184,18 +1118,12 @@ mod tests {
         // intrinsic base `TX_BASE + COLD_ACCOUNT_ACCESS` (12,000 + 3,000)
         // instead of the flat `TxFloorCostBase`.
         let to = TxKind::Call(Address::ZERO);
+        let floor = |version: &Version, input: &Bytes, accounts, keys| {
+            intrinsic_and_floor_gas(version, sender, to, input, accounts, keys, U256::ZERO).1
+        };
 
         assert_eq!(
-            intrinsic_and_floor_gas(
-                Version::base(SpecId::AMSTERDAM),
-                sender,
-                to,
-                &input,
-                1,
-                1,
-                U256::ZERO
-            )
-            .1,
+            floor(Version::base(SpecId::AMSTERDAM), &input, 1, 1),
             15_000 + (1000 * 4 + 80 + 128) * 16
         );
 
@@ -1203,32 +1131,11 @@ mod tests {
         // bytes in the floor (4 tokens each), unlike EIP-7623 (zero = 1 token).
         let zero_input = Bytes::from(vec![0; 1000]);
         assert_eq!(
-            intrinsic_and_floor_gas(
-                Version::base(SpecId::AMSTERDAM),
-                sender,
-                to,
-                &zero_input,
-                1,
-                1,
-                U256::ZERO
-            )
-            .1,
+            floor(Version::base(SpecId::AMSTERDAM), &zero_input, 1, 1),
             15_000 + (1000 * 4 + 80 + 128) * 16
         );
         // Prague keeps the EIP-7623 split: zero bytes count as one token each.
-        assert_eq!(
-            intrinsic_and_floor_gas(
-                Version::base(SpecId::PRAGUE),
-                sender,
-                to,
-                &zero_input,
-                0,
-                0,
-                U256::ZERO
-            )
-            .1,
-            21_000 + 1000 * 10
-        );
+        assert_eq!(floor(Version::base(SpecId::PRAGUE), &zero_input, 0, 0), 21_000 + 1000 * 10);
     }
 
     #[test]
@@ -1479,14 +1386,10 @@ mod tests {
             let calldata_gas = if input.is_empty() { 0 } else { 20 };
             let floor_calldata_gas = if input.is_empty() { 0 } else { 128 };
             let initcode_gas = if to.is_create() && !input.is_empty() { 2 } else { 0 };
-            assert_eq!(
-                intrinsic_and_floor_gas(&version, sender, to, &input, 0, 0, value).0,
-                base + calldata_gas + initcode_gas
-            );
-            assert_eq!(
-                intrinsic_and_floor_gas(&version, sender, to, &input, 0, 0, value).1,
-                base + floor_calldata_gas
-            );
+            let (intrinsic, floor) =
+                intrinsic_and_floor_gas(&version, sender, to, &input, 0, 0, value);
+            assert_eq!(intrinsic, base + calldata_gas + initcode_gas);
+            assert_eq!(floor, base + floor_calldata_gas);
         }
     }
 }
