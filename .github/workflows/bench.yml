@@ -233,7 +233,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [interpreter, jit]
+        shard: [interpreter, jit, jit-mainnet]
     env:
       EVM2_BENCH_SHARD: ${{ matrix.shard }}
     permissions:
