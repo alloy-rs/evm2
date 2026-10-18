@@ -1,10 +1,10 @@
 use super::{
-    PreparedTx, access_list_counts, effective_gas_price, execute_initial_frame, floor_gas,
-    initial_gas_and_reservoir, intrinsic_gas, prepare_initial_frame, validate_block_gas_limit,
-    validate_chain_id, validate_create_initcode, validate_execution_gas_limit_cap,
-    validate_floor_gas, validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
-    validate_priority_fee, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
-    warm_base_accounts,
+    PreparedTx, access_list_counts, effective_gas_price, execute_initial_frame,
+    initial_gas_and_reservoir, intrinsic_and_floor_gas, prepare_initial_frame,
+    validate_block_gas_limit, validate_chain_id, validate_create_initcode,
+    validate_execution_gas_limit_cap, validate_floor_gas, validate_gas_price,
+    validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee, validate_sender,
+    validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
     EvmTypes, TxResult,
@@ -48,7 +48,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     validate_create_initcode(req.host.version(), tx.to, &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
     let (access_list_accounts, access_list_storage_keys) = access_list_counts(&tx.access_list);
-    let mut intrinsic = intrinsic_gas(
+    let (mut intrinsic, mut floor_gas) = intrinsic_and_floor_gas(
         req.host.version(),
         caller,
         tx.to,
@@ -59,15 +59,6 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     );
     // EIP-2780: state-dependent gas is charged at the runtime gas phase, not the intrinsic phase.
     let mut initial_state_gas = 0;
-    let mut floor_gas = floor_gas(
-        req.host.version(),
-        caller,
-        tx.to,
-        &tx.input,
-        access_list_accounts,
-        access_list_storage_keys,
-        tx.value,
-    );
     H::adjust_intrinsic_gas(
         req.host,
         req.envelope,
