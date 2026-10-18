@@ -139,21 +139,20 @@ fn g1_table() -> &'static [blst_p1_affine; G1_TABLE_LEN] {
 /// The Miller loop follows `blst_miller_loop_lines`, but shares the squarings between the pairs.
 fn multi_pairing_is_one(pairs: &[(&blst_p1_affine, &Lines); 2]) -> bool {
     // Move the common expression from the line evaluation: (-2 * P.x, 2 * P.y).
-    let mut px2 = [(blst_fp::default(), blst_fp::default()); 2];
-    let mut lines = [&pairs[0].1; 2];
+    let mut terms = [(blst_fp::default(), blst_fp::default(), pairs[0].1); 2];
     let mut n = 0;
-    for (p, l) in pairs {
+    for &(p, lines) in pairs {
         // SAFETY: all arguments are valid blst types.
         unsafe {
-            if blst_p1_affine_is_inf(*p) {
+            if blst_p1_affine_is_inf(p) {
                 continue;
             }
-            let (x, y) = &mut px2[n];
+            let (x, y, _) = &mut terms[n];
             blst_fp_add(x, &p.x, &p.x);
             blst_fp_cneg(x, x, true);
             blst_fp_add(y, &p.y, &p.y);
         }
-        lines[n] = l;
+        terms[n].2 = lines;
         n += 1;
     }
     if n == 0 {
@@ -170,7 +169,7 @@ fn multi_pairing_is_one(pairs: &[(&blst_p1_affine, &Lines); 2]) -> bool {
             // SAFETY: `f` is a valid blst type; blst allows aliasing the output and input.
             unsafe { blst_fp12_sqr(f_ptr, f_ptr) };
         }
-        for ((x, y), lines) in px2.iter().zip(&lines).take(n) {
+        for (x, y, lines) in &terms[..n] {
             let l = &lines[i];
             let mut line = *l;
             // SAFETY: all arguments are valid blst types.
