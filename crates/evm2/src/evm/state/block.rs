@@ -173,42 +173,28 @@ impl StateChangeSink for BlockStateAccumulator {
         let account_created =
             self.accounts.get(&change.address).is_some_and(|account| account.original.is_none());
         let storage_replaced = self.storage_wipes.contains(&change.address) || account_created;
-        // A slot without a delta records one only when the change survives the account's storage
-        // replacement or differs from its block-original value.
-        let records_new = if storage_replaced {
-            !change.current.is_zero()
-        } else {
-            change.original != change.current
-        };
-        let new_delta = || {
-            let original = if account_created { Word::ZERO } else { change.original };
-            Tracked::from_parts(original, change.current)
-        };
-        match self.storage.entry(change.address) {
-            hash_map::Entry::Occupied(mut slots) => match slots.get_mut().entry(change.key) {
-                hash_map::Entry::Occupied(mut entry) => {
-                    let delta = entry.get_mut();
-                    delta.set_current(change.current);
-                    if (storage_replaced && delta.current.is_zero())
-                        || (!storage_replaced && !delta.is_changed())
-                    {
-                        entry.remove();
-                        if slots.get().is_empty() {
-                            slots.remove();
-                        }
-                    }
-                }
-                hash_map::Entry::Vacant(entry) => {
-                    if records_new {
-                        entry.insert(new_delta());
-                    }
-                }
-            },
-            hash_map::Entry::Vacant(entry) => {
-                if records_new {
-                    entry.insert(U256Map::from_iter([(change.key, new_delta())]));
+        let slots = self.storage.entry(change.address).or_default();
+        match slots.entry(change.key) {
+            hash_map::Entry::Occupied(mut entry) => {
+                let delta = entry.get_mut();
+                delta.set_current(change.current);
+                if (storage_replaced && delta.current.is_zero())
+                    || (!storage_replaced && !delta.is_changed())
+                {
+                    entry.remove();
                 }
             }
+            hash_map::Entry::Vacant(entry) => {
+                if (storage_replaced && !change.current.is_zero())
+                    || (!storage_replaced && change.original != change.current)
+                {
+                    let original = if account_created { Word::ZERO } else { change.original };
+                    entry.insert(Tracked::from_parts(original, change.current));
+                }
+            }
+        }
+        if slots.is_empty() {
+            self.storage.remove(&change.address);
         }
         Ok(())
     }
