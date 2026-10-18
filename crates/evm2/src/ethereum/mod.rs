@@ -852,7 +852,7 @@ pub fn floor_gas(
     // raises the zero-byte weight to 4 so every byte counts uniformly.
     let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
     let zero_multiplier = u64::from(params.get(GasId::TxFloorZeroByteMultiplier));
-    let zero_data_len = input.iter().filter(|v| **v == 0).count() as u64;
+    let zero_data_len = count_zero_bytes(input);
     let non_zero_data_len = input.len() as u64 - zero_data_len;
     tokens += zero_data_len * zero_multiplier + non_zero_data_len * non_zero_multiplier;
 
@@ -882,7 +882,7 @@ pub fn intrinsic_gas(
 ) -> u64 {
     let params = &version.gas_params;
     let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
-    let zero_data_len = input.iter().filter(|v| **v == 0).count() as u64;
+    let zero_data_len = count_zero_bytes(input);
     let non_zero_data_len = input.len() as u64 - zero_data_len;
     let tokens = zero_data_len + non_zero_data_len * non_zero_multiplier;
     let mut gas = tokens * u64::from(params.get(GasId::TxTokenCost));
@@ -905,6 +905,15 @@ pub fn intrinsic_gas(
         gas += u64::from(params.get(GasId::TxInitcodeCost)) * num_words(input.len()) as u64;
     }
     gas
+}
+
+/// Counts the zero bytes in `data`.
+///
+/// Sums byte-sized flags over chunks that cannot overflow a `u8` so LLVM compiles each chunk to
+/// byte-lane compares and one horizontal sum. 192 bytes is a multiple of both the 32-byte SSE2
+/// and the 64-byte AVX-512 unrolled step, so only the last chunk takes the remainder loop.
+fn count_zero_bytes(data: &[u8]) -> u64 {
+    data.chunks(192).map(|c| c.iter().map(|&b| (b == 0) as u8).sum::<u8>() as u64).sum()
 }
 
 /// EIP-2780: sum of the sender base, `tx.to`-based, and `tx.value`-based
