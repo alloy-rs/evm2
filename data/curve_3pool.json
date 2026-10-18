@@ -5,8 +5,8 @@
     },
     "env": {
       "currentBaseFee": "0x0",
+      "currentChainID": "0x1",
       "currentCoinbase": "0x4838b106fce9647bdf1e7877bf73ce8b0bad5f97",
-      "currentDifficulty": "0x0",
       "currentGasLimit": "0x3938700",
       "currentNumber": "0x18fde67",
       "currentRandom": "0xa651b0dea64a89820694651413bda95cc1ee26417a928e5ec3b9a2657625139c",
