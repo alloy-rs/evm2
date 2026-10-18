@@ -2,7 +2,7 @@
 
 use crate::{
     Evm, EvmTypesHost, SpecId,
-    evm::precompile::PrecompileProvider,
+    evm::{PrewarmSet, precompile::PrecompileProvider},
     interpreter::{GasTracker, Message},
 };
 #[cfg(feature = "std")]
@@ -136,8 +136,8 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
     }
 
     #[inline]
-    fn for_each_address(&self, f: &mut dyn FnMut(Address)) {
-        self.map.as_ref().addresses().for_each(f);
+    fn warm_addresses(&self, warm: &mut PrewarmSet) {
+        self.map.as_ref().warm_addresses(warm);
     }
 
     #[inline]

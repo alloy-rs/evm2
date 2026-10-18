@@ -7,6 +7,7 @@
 
 use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
 use crate::precompiles::PrecompileHalt;
+use alloy_primitives::hex;
 use mcl_rust::{CurveType, Fp, Fp2, Fr, G1, G2, GT};
 use std::sync::{Once, OnceLock};
 
@@ -15,7 +16,12 @@ unsafe extern "C" {
     fn mclBn_getCurveType() -> i32;
     fn mclBn_millerLoopVec(z: *mut GT, x: *const G1, y: *const G2, n: usize);
     fn mclBn_verifyOrderG2(do_verify: i32);
+    fn mclBnFp_serialize(buf: *mut u8, max_buf_size: usize, x: *const Fp) -> usize;
 }
+
+/// The BN254 base field modulus, big-endian.
+const FQ_MODULUS: [u8; FQ_LEN] =
+    hex!("30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47");
 
 pub(crate) struct MclOps;
 
@@ -153,6 +159,10 @@ impl Bn254Ops for MclOps {
 
 #[inline]
 fn read_fp(input: &[u8; FQ_LEN]) -> Result<Fp, PrecompileHalt> {
+    if *input >= FQ_MODULUS {
+        return Err(PrecompileHalt::Bn254FieldPointNotAMember);
+    }
+
     let mut le_bytes = *input;
     le_bytes.reverse();
 
@@ -160,19 +170,16 @@ fn read_fp(input: &[u8; FQ_LEN]) -> Result<Fp, PrecompileHalt> {
     if !fp.set_little_endian(&le_bytes) {
         return Err(PrecompileHalt::Bn254FieldPointNotAMember);
     }
-    if encode_fp(&fp) != *input {
-        return Err(PrecompileHalt::Bn254FieldPointNotAMember);
-    }
     Ok(fp)
 }
 
 #[inline]
 fn encode_fp(fp: &Fp) -> [u8; FQ_LEN] {
-    let serialized = fp.serialize();
+    // `Fp::serialize` returns a heap-allocated `Vec`.
     let mut result = [0u8; FQ_LEN];
-    let len = serialized.len().min(FQ_LEN);
-    result[..len].copy_from_slice(&serialized[..len]);
-    result[..FQ_LEN].reverse();
+    let len = unsafe { mclBnFp_serialize(result.as_mut_ptr(), FQ_LEN, fp) };
+    assert_eq!(len, FQ_LEN, "mcl Fp serialization failed");
+    result.reverse();
     result
 }
 

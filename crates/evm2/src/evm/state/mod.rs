@@ -422,6 +422,12 @@ impl<'a> State<'a> {
         &self.inner.prewarm_set
     }
 
+    /// Returns the pre-warmed set mutably.
+    #[inline]
+    pub(crate) const fn prewarm_set_mut(&mut self) -> &mut PrewarmSet {
+        &mut self.inner.prewarm_set
+    }
+
     /// Marks an address as warm in the pre-warmed set. See [`PrewarmSet::warm`].
     #[inline]
     pub fn prewarm(&mut self, address: &Address) {
