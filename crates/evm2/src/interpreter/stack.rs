@@ -212,6 +212,7 @@ impl<'a> RawStack<'a> {
     }
 
     #[inline(always)]
+    #[cfg(tco)]
     pub(crate) const fn set_len(&mut self, len: usize) {
         debug_assert!(len <= Stack::CAPACITY);
         self.len = len;
