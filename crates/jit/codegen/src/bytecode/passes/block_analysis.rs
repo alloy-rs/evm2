@@ -244,12 +244,13 @@ impl ConstSetInterner {
 /// addresses of deep call chains stay known. A deeper stack overflows at runtime.
 const MAX_ABS_STACK_DEPTH: usize = STACK_LIMIT;
 
-/// Stack depth down to which [`Bytecode::context_key`] keys on the positions of jump targets.
+/// Stack depth down to which [`Bytecode::context_key`] keys on the stack height and the positions
+/// of jump targets.
 ///
-/// Below it only their order counts, without repeats, so that a loop that pushes a
+/// Below it only the order of jump targets counts, without repeats, so that a loop that pushes a
 /// runtime-dependent number of values, or a recursive call that pushes the same return address
 /// at every level, reaches a fixed context instead of a new one per iteration.
-const MAX_CONTEXT_DEPTH: usize = 64;
+const MAX_CONTEXT_DEPTH: usize = 128;
 
 /// Maximum number of memory words tracked by [`MemWords`].
 const MAX_MEM_WORDS: usize = 16;
@@ -413,8 +414,14 @@ impl BlockState {
 /// callers, losing the return addresses deeper in the stack.
 #[derive(Clone, Copy, Debug)]
 enum ContextMode {
-    /// Key on every constant on the tracked stack that is a valid jump target, such as the
-    /// return addresses of the whole call chain, as described at [`MAX_CONTEXT_DEPTH`].
+    /// Key on the tracked stack shape, every constant on the tracked stack that is a valid jump
+    /// target, such as the return addresses of the whole call chain, as described at
+    /// [`MAX_CONTEXT_DEPTH`], and the known memory words that are valid jump targets.
+    ///
+    /// Old Vyper saves return addresses in memory, and saves and restores the memory frame of a
+    /// caller on the stack in loops around a call. The memory words keep the callers of a
+    /// function apart, and the stack shape keeps the iterations of these loops apart, so that
+    /// their memory offsets stay constant.
     Full,
     /// Key on the tracked stack shape and the topmost valid jump target constant.
     Coarse,
@@ -1312,7 +1319,7 @@ impl Bytecode<'_> {
             if self.cfg.blocks[bid].succs.is_empty() && targets.is_empty() {
                 continue;
             }
-            let key = self.context_key(mode, &stack_buf, truncated);
+            let key = self.context_key(mode, &stack_buf, truncated, &mem_buf);
             let mut refined_key = None;
             for &succ in self.cfg.blocks[bid].succs.iter().chain(&targets) {
                 let (mut stack, mut key) = (&stack_buf, key);
@@ -1349,7 +1356,7 @@ impl Bytecode<'_> {
                                 AbsValue::Top => AbsValue::Range((0..=bound).into()),
                                 value => value,
                             };
-                            self.context_key(mode, &refined_buf, truncated)
+                            self.context_key(mode, &refined_buf, truncated, &mem_buf)
                         });
                         (stack, key) = (&refined_buf, refined);
                     }
@@ -1491,14 +1498,29 @@ impl Bytecode<'_> {
     /// Returns the context of an abstract stack: a hash of the constants `mode` keys on.
     ///
     /// Keys that collide share a state, which only costs precision.
-    fn context_key(&self, mode: ContextMode, stack: &[AbsValue], truncated: bool) -> u64 {
-        let targets = stack.iter().rev().enumerate().filter_map(|(depth, value)| {
+    fn context_key(
+        &self,
+        mode: ContextMode,
+        stack: &[AbsValue],
+        truncated: bool,
+        mem: &MemWords,
+    ) -> u64 {
+        let jump_target = |value: AbsValue| {
             let pc = value.as_const()?.get_inline()?;
-            self.is_valid_jump(pc as usize).then_some((depth, pc))
-        });
+            self.is_valid_jump(pc as usize).then_some(pc)
+        };
+        let targets = (stack.iter().rev().enumerate())
+            .filter_map(|(depth, &value)| Some((depth, jump_target(value)?)));
         let mut hasher = FxHasher::default();
+        let tracked = stack.len().min(MAX_CONTEXT_DEPTH);
+        (tracked as u8, truncated || stack.len() > tracked).hash(&mut hasher);
         match mode {
             ContextMode::Full => {
+                for &(offset, value) in &mem.0 {
+                    if let Some(pc) = jump_target(value) {
+                        (offset, pc).hash(&mut hasher);
+                    }
+                }
                 let mut prev_deep = None;
                 for (depth, pc) in targets {
                     if depth < MAX_CONTEXT_DEPTH {
@@ -1509,8 +1531,6 @@ impl Bytecode<'_> {
                 }
             }
             ContextMode::Coarse => {
-                let tracked = stack.len().min(MAX_CONTEXT_DEPTH);
-                (tracked as u8, truncated || stack.len() > tracked).hash(&mut hasher);
                 targets
                     .take(1)
                     .filter(|&(depth, _)| depth < MAX_CONTEXT_DEPTH)
@@ -3990,5 +4010,95 @@ mod tests_edge_cases {
         let bytecode =
             analyze_asm(&src(0xe0, "PUSH1 0x04 DUP2 LT PUSH %body JUMPI PUSH %oob JUMP"));
         assert!(bytecode.has_dynamic_jumps);
+    }
+
+    /// Old Vyper keeps return addresses in memory. Around a call, the caller pushes its memory
+    /// frame onto the stack in a loop and pops it back in another, with the loop pointer in
+    /// memory, so each iteration needs its own context to keep the frame's offsets constant.
+    #[test]
+    fn memory_frame_saved_on_stack() {
+        let bytecode = analyze_asm(
+            "
+            PUSH1 0x11          ; the call sites differ in stack height
+            PUSH %r1
+            PUSH %f
+            JUMP
+        r1:
+            JUMPDEST
+            PUSH %r2
+            PUSH %f
+            JUMP
+        r2:
+            JUMPDEST
+            STOP
+        f:
+            JUMPDEST
+            PUSH2 0x0140
+            MSTORE              ; return address
+            CALLDATASIZE
+            PUSH2 0x0160
+            MSTORE
+            PUSH2 0x0140
+            PUSH2 0x0200
+            MSTORE              ; p = 0x140
+        push:
+            JUMPDEST            ; push mload(p) while p < 0x180
+            PUSH2 0x0200
+            MLOAD
+            MLOAD
+            PUSH2 0x0200
+            MLOAD
+            PUSH1 0x20
+            ADD
+            DUP1
+            PUSH2 0x0200
+            MSTORE
+            PUSH2 0x0180
+            SWAP1
+            LT
+            PUSH %push
+            JUMPI
+            PUSH %fret
+            PUSH %g
+            JUMP
+        g:
+            JUMPDEST            ; overwrites the frame of `f`
+            PUSH2 0x0140
+            MSTORE
+            CALLDATASIZE
+            PUSH2 0x0160
+            MSTORE
+            PUSH2 0x0140
+            MLOAD
+            JUMP
+        fret:
+            JUMPDEST
+            PUSH2 0x0160
+            PUSH2 0x0200
+            MSTORE              ; p = 0x160
+        pop:
+            JUMPDEST            ; pop into mload(p) while p >= 0x140
+            PUSH2 0x0200
+            MLOAD
+            MSTORE
+            PUSH2 0x0200
+            MLOAD
+            PUSH1 0x20
+            SWAP1
+            SUB
+            DUP1
+            PUSH2 0x0200
+            MSTORE
+            PUSH2 0x0140
+            GT
+            ISZERO
+            PUSH %pop
+            JUMPI
+            PUSH2 0x0140
+            MLOAD
+            JUMP                ; return
+        ",
+        );
+        assert!(!bytecode.has_dynamic_jumps);
     }
 }
