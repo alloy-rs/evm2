@@ -6,8 +6,9 @@ use crate::{
     constants::CALL_DEPTH_LIMIT,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Result, StackMut,
-        Word, WordExt, derive_create_destination,
+        Word, derive_create_destination,
     },
+    utils::WordExt,
     version::GasId,
 };
 use alloy_primitives::{Address, B256, Bytes};

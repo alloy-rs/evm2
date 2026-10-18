@@ -1,8 +1,8 @@
 use crate::{
     EvmTypesHost,
     evm::AccountLoad,
-    interpreter::{Gas, Host, InstrStop, Memory, Result, Word, WordExt, private::GasInstructionCx},
-    utils::{address_to_word, b256_to_word, read_word_padded},
+    interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
+    utils::{WordExt, address_to_word, b256_to_word, read_word_padded},
     version::GasParams,
 };
 use evm2_macros::instruction;

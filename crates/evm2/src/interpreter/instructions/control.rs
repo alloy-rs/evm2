@@ -1,10 +1,11 @@
 use crate::{
     EvmTypesHost,
     interpreter::{
-        InstrStop, Result, Word, WordExt, op,
+        InstrStop, Result, Word, op,
         opcode::OpCode,
         private::{GasInstructionCx, InstructionCx},
     },
+    utils::WordExt,
 };
 use core::hint::cold_path;
 use evm2_macros::instruction;

@@ -1,4 +1,4 @@
-use crate::{interpreter::WordExt, utils::b256_to_word};
+use crate::utils::{WordExt, b256_to_word};
 use alloy_primitives::{KECCAK256_EMPTY, keccak256 as keccak256_hash};
 use evm2_macros::instruction;
 

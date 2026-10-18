@@ -1,8 +1,8 @@
 use crate::{
     EvmFeatures,
     constants::BLOCK_HASH_HISTORY,
-    interpreter::{Host, Word, WordExt},
-    utils::{address_to_word, b256_to_word},
+    interpreter::{Host, Word},
+    utils::{WordExt, address_to_word, b256_to_word},
 };
 use evm2_macros::instruction;
 

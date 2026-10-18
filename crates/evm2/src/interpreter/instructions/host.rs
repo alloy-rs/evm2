@@ -1,8 +1,7 @@
 use crate::{
     EvmFeatures, EvmTypesHost,
-    interpreter::{
-        Host, InstrStop, InterpreterState, Result, StackMut, WordExt, private::GasInstructionCx,
-    },
+    interpreter::{Host, InstrStop, InterpreterState, Result, StackMut, private::GasInstructionCx},
+    utils::WordExt,
     version::GasId,
 };
 use alloy_primitives::B256;

@@ -1,5 +1,5 @@
 use super::i256::i256_lt;
-use crate::interpreter::{Word, WordExt};
+use crate::{interpreter::Word, utils::WordExt};
 use evm2_macros::instruction;
 
 #[instruction]

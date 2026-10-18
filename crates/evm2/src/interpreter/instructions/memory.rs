@@ -1,4 +1,4 @@
-use crate::interpreter::WordExt;
+use crate::utils::WordExt;
 use evm2_macros::instruction;
 
 #[instruction(dynamic_gas)]
