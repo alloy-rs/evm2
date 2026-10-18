@@ -29,7 +29,9 @@ pub const fn b256_to_word(value: B256) -> Word {
 /// store that covers it. LLVM writes words built in general-purpose registers, including
 /// zero-extended `u64`s, with several narrower stores, so a later 32-byte load of the word waits
 /// for them to reach the cache.
-pub trait WordExt {
+///
+/// This trait is sealed and only implemented for [`Word`].
+pub trait WordExt: sealed::Sealed {
     /// Writes `value` with a single 32-byte store.
     ///
     /// Use this for words computed in general-purpose registers. Words copied from memory already
@@ -80,6 +82,13 @@ impl WordExt for Word {
     fn to_usize_saturated(&self) -> usize {
         to_usize_opt(self).unwrap_or(usize::MAX)
     }
+}
+
+mod sealed {
+    #[allow(unnameable_types)]
+    pub trait Sealed {}
+
+    impl Sealed for super::Word {}
 }
 
 /// Raw-pointer form of [`WordExt::write`], for stack slots that may be uninitialized.
