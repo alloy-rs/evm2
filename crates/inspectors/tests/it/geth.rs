@@ -2000,8 +2000,12 @@ fn test_debug_call_log_index_seed_and_reset() {
                 GethTrace::CallTracer(frame) => frame.logs,
                 GethTrace::Erc7562Tracer(frame) => frame.logs,
                 GethTrace::MuxTracer(mut frame) => {
-                    let GethTrace::CallTracer(frame) =
-                        frame.0.remove(&GethDebugBuiltInTracerType::CallTracer.into()).unwrap()
+                    let GethTrace::CallTracer(frame) = frame
+                        .0
+                        .remove(&GethDebugTracerType::BuiltInTracer(
+                            GethDebugBuiltInTracerType::CallTracer,
+                        ))
+                        .unwrap()
                     else {
                         panic!("expected mux call trace")
                     };
