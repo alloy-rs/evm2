@@ -25,21 +25,31 @@ pub const fn b256_to_word(value: B256) -> Word {
 
 /// Extension methods for stack words.
 ///
-/// The writes use a single 32-byte store. A 32-byte load can only take its data from one earlier
-/// store that covers it. LLVM writes words built in general-purpose registers, including
-/// zero-extended `u64`s, with several narrower stores, so a later 32-byte load of the word waits
-/// for them to reach the cache.
-///
 /// This trait is sealed and only implemented for [`Word`].
 pub trait WordExt: sealed::Sealed {
     /// Writes `value` with a single 32-byte store.
     ///
-    /// Use this for words computed in general-purpose registers. Words copied from memory already
-    /// move with one 32-byte load and store, and this would route them through general-purpose
-    /// registers instead.
+    /// With `*self = value`, LLVM writes a word held in general-purpose registers as four 8-byte
+    /// stores. The next instruction often reads the word back with one 32-byte load, for example
+    /// when DUP, SWAP or MSTORE copies it. A load can only take its data straight from one earlier
+    /// store that covers all of it, so after split stores it waits until they reach the cache.
+    /// One 32-byte store lets that load forward its data at once.
+    ///
+    /// Use this for words computed in general-purpose registers, such as arithmetic results. Words
+    /// copied from memory already move with one 32-byte load and store, so plain assignment is
+    /// better for them; this method would route them through general-purpose registers.
+    ///
+    /// Without AVX this is the same as `*self = value`.
     fn write(&mut self, value: Word);
 
-    /// Writes `value` as a word with a single 32-byte store.
+    /// Writes `value`, zero-extended to a word, with a single 32-byte store.
+    ///
+    /// With `*self = Word::from(value)`, LLVM stores the value and the three zero limbs separately,
+    /// so a later 32-byte load of the word waits for those stores to reach the cache, as described
+    /// in [`write`](Self::write). Use this for results that fit in a `u64`, such as comparison
+    /// flags, sizes and offsets.
+    ///
+    /// Without AVX this is the same as `*self = Word::from(value)`.
     fn write_u64(&mut self, value: u64);
 
     /// Converts the word to an address, keeping its low 20 bytes.
