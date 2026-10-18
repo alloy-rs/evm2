@@ -141,6 +141,18 @@ impl AbsValue {
             Self::ConstSet(_) | Self::Top => None,
         }
     }
+
+    /// Returns the value on an edge where it is at most `bound`, which must be an inline
+    /// immediate.
+    fn at_most(self, bound: u32, interner: &mut U256Interner) -> Self {
+        let (start, last) = match self.bounds() {
+            _ if bound == 0 => (0, 0),
+            Some(range) if range.start <= bound => (range.start, range.last.min(bound)),
+            None if self == Self::Top => (0, bound),
+            _ => return self,
+        };
+        Self::range((u64::from(start)..=u64::from(last)).into(), interner).unwrap()
+    }
 }
 
 /// Constant-set interner used by the abstract interpreter.
@@ -268,21 +280,21 @@ impl MemWords {
     ///
     /// Returns the known value loaded by an `MLOAD`.
     fn transfer(&mut self, opcode: u8, inputs: &[AbsValue]) -> Option<AbsValue> {
-        // The bounds of offsets and lengths that fit in an inline immediate; larger ones are
+        // Offsets and lengths that fit in an inline immediate, and their bounds; larger ones are
         // unknown.
+        let imm = |depth: usize| inputs[inputs.len() - 1 - depth].as_const()?.get_inline();
         let bounds = |depth: usize| inputs[inputs.len() - 1 - depth].bounds();
         let len = |depth: usize| bounds(depth).map(|len| len.last);
         match opcode {
             op::MLOAD => {
-                let offset = inputs[inputs.len() - 1].as_const()?.get_inline()?;
+                let offset = imm(0)?;
                 let i = self.0.binary_search_by_key(&offset, |&(o, _)| o).ok()?;
                 return Some(self.0[i].1);
             }
             op::MSTORE => {
-                let (offset, value) = (bounds(0), inputs[inputs.len() - 2]);
-                self.clobber(offset, Some(32));
-                if let Some(RangeInclusive { start: offset, last }) = offset
-                    && offset == last
+                let value = inputs[inputs.len() - 2];
+                self.clobber(bounds(0), Some(32));
+                if let Some(offset) = imm(0)
                     && value != AbsValue::Top
                 {
                     let i = self.0.partition_point(|&(o, _)| o < offset);
@@ -1016,7 +1028,7 @@ impl Bytecode<'_> {
         } else {
             // Blocks the fixpoint never reached are unreachable, even when the static jumps of
             // other such blocks, such as a loop's back edge, target them.
-            for bid in self.cfg.blocks.indices().filter(|bid| !reached[bid.index()]) {
+            for bid in reached.iter_zeros().map(Block::from_usize) {
                 for i in self.cfg.blocks[bid].insts() {
                     self.insts[i].flags |= InstFlags::DEAD_CODE;
                 }
@@ -1256,7 +1268,6 @@ impl Bytecode<'_> {
 
         let branches: IndexVec<Block, Option<Branch>> =
             self.cfg.blocks.indices().map(|bid| self.branch(bid)).collect();
-        let zero = AbsValue::Const(U256Imm::new(U256::ZERO, &mut self.u256_interner.borrow_mut()));
 
         'fixpoint: while let Some(Reverse((_, pid))) = worklist.pop() {
             queued.set(pid.index(), false);
@@ -1346,16 +1357,7 @@ impl Bytecode<'_> {
                         let refined = *refined_key.get_or_insert_with(|| {
                             refined_buf.clone_from(&stack_buf);
                             let value = &mut refined_buf[stack_buf.len() - 1 - depth];
-                            *value = match *value {
-                                _ if bound == 0 => zero,
-                                AbsValue::Range(range) if range.start <= bound => {
-                                    let range = range.start.into()..=range.last.min(bound).into();
-                                    let mut interner = self.u256_interner.borrow_mut();
-                                    AbsValue::range(range.into(), &mut interner).unwrap()
-                                }
-                                AbsValue::Top => AbsValue::Range((0..=bound).into()),
-                                value => value,
-                            };
+                            *value = value.at_most(bound, &mut self.u256_interner.borrow_mut());
                             self.context_key(mode, &refined_buf, truncated, &mem_buf)
                         });
                         (stack, key) = (&refined_buf, refined);
@@ -1448,12 +1450,12 @@ impl Bytecode<'_> {
         /// Returns [`Branch::bound`] from the live instructions before the `JUMPI`, last first.
         fn bound<'a>(mut tail: impl Iterator<Item = &'a InstData>) -> Option<(bool, usize, u32)> {
             // The depth of the value that a `DUP` copies, before the `DUP`.
-            let dup = |data: Option<&InstData>| match data?.opcode {
+            let dup = |data: &InstData| match data.opcode {
                 op @ op::DUP1..=op::DUP16 => Some((op - op::DUP1) as usize),
                 _ => None,
             };
             let is_push = |data: &InstData| matches!(data.opcode, op::PUSH0..=op::PUSH32);
-            let push = |data: Option<&InstData>| data.filter(|d| is_push(d))?.imm().get_inline();
+            let push = |data: &InstData| if is_push(data) { data.imm().get_inline() } else { None };
 
             if !is_push(tail.next()?) {
                 return None;
@@ -1465,14 +1467,14 @@ impl Bytecode<'_> {
                 zero_taken = !zero_taken;
                 test = tail.next()?;
             }
-            if let Some(depth) = dup(Some(test)) {
+            if let Some(depth) = dup(test) {
                 return Some((zero_taken, depth, 0));
             }
             if !matches!(test.opcode, op::LT | op::GT) {
                 return None;
             }
             // `x < c` or `x > c`, where the `DUP` copies `x` from `depth`.
-            let (a, b) = (tail.next(), tail.next());
+            let (a, b) = (tail.next()?, tail.next()?);
             let (less, depth, c) = if let Some(depth) = dup(a)
                 && let Some(c) = push(b)
             {
@@ -3932,11 +3934,8 @@ mod tests_edge_cases {
         ",
         );
         assert!(!bytecode.has_dynamic_jumps);
-        for (_, data) in bytecode.iter_all_insts() {
-            if data.opcode == op::CALLDATASIZE {
-                assert!(data.is_dead_code());
-            }
-        }
+        let insts = bytecode.iter_all_insts();
+        assert!(insts.filter(|(_, d)| d.opcode == op::CALLDATASIZE).all(|(_, d)| d.is_dead_code()));
     }
 
     /// Old Vyper saves the return address of a private function in memory, and a loop with a
