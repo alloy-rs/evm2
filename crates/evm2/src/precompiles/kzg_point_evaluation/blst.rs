@@ -20,6 +20,9 @@ type Lines = [blst_fp6; 68];
 /// Number of chunks `[y]G₁` is split into, see [`g1_table`].
 const G1_CHUNKS: usize = 8;
 
+/// Number of bits in each chunk of `y`.
+const G1_CHUNK_BITS: usize = 256 / G1_CHUNKS;
+
 /// Window size of the fixed-base `[y]G₁` multiplication.
 const G1_WBITS: usize = 6;
 
@@ -60,7 +63,7 @@ pub(crate) fn verify_kzg_proof(
     // e(P - [y]G₁ + [z]proof, -G₂) * e(proof, [τ]G₂) == 1, where both G₂ points are fixed.
     let lhs = p1_lhs(&commitment_point, &proof_point, &z_scalar, &y_scalar);
     let [neg_g2_lines, tau_g2_lines] = g2_lines();
-    multi_pairing_is_one(&[(&lhs, neg_g2_lines), (&proof_point, tau_g2_lines)])
+    multi_pairing_is_one([(&lhs, neg_g2_lines), (&proof_point, tau_g2_lines)])
 }
 
 /// Computes `commitment - [y]G₁ + [z]proof`.
@@ -77,7 +80,7 @@ fn p1_lhs(
     // `[y]G₁` is the sum of `[y_i][2^(32i)]G₁` over the 32-bit little-endian chunks `y_i`.
     let y_chunks = [y.b.as_ptr(), ptr::null()];
     // SAFETY: all arguments are valid blst types, `y_chunks` is a null-terminated array pointing
-    // to `G1_CHUNKS` contiguous chunks of `256 / G1_CHUNKS` bits, and a null scratch buffer is
+    // to `G1_CHUNKS` contiguous chunks of `G1_CHUNK_BITS` bits, and a null scratch buffer is
     // allocated by blst.
     unsafe {
         blst_p1s_mult_wbits(
@@ -86,7 +89,7 @@ fn p1_lhs(
             G1_WBITS,
             G1_CHUNKS,
             y_chunks.as_ptr(),
-            256 / G1_CHUNKS,
+            G1_CHUNK_BITS,
             ptr::null_mut(),
         );
         blst_p1_cneg(&mut acc, true);
@@ -100,7 +103,8 @@ fn p1_lhs(
     out
 }
 
-/// Returns the `blst_p1s_mult_wbits` table of `[2^(32i)]G₁` for `i` in `0..G1_CHUNKS`.
+/// Returns the `blst_p1s_mult_wbits` table of `[2^(G1_CHUNK_BITS * i)]G₁` for `i` in
+/// `0..G1_CHUNKS`.
 fn g1_table() -> &'static [blst_p1_affine; G1_TABLE_LEN] {
     static TABLE: OnceLock<[blst_p1_affine; G1_TABLE_LEN]> = OnceLock::new();
     TABLE.get_or_init(|| {
@@ -114,7 +118,7 @@ fn g1_table() -> &'static [blst_p1_affine; G1_TABLE_LEN] {
             blst_p1_from_affine(p_ptr, &BLS12_381_G1);
             for point in &mut points {
                 blst_p1_to_affine(point, p_ptr);
-                for _ in 0..256 / G1_CHUNKS {
+                for _ in 0..G1_CHUNK_BITS {
                     blst_p1_double(p_ptr, p_ptr);
                 }
             }
@@ -137,27 +141,22 @@ fn g1_table() -> &'static [blst_p1_affine; G1_TABLE_LEN] {
 /// do not special-case infinity. E.g. the proof of a constant polynomial is the point at infinity.
 ///
 /// The Miller loop follows `blst_miller_loop_lines`, but shares the squarings between the pairs.
-fn multi_pairing_is_one(pairs: &[(&blst_p1_affine, &Lines); 2]) -> bool {
+fn multi_pairing_is_one(pairs: [(&blst_p1_affine, &Lines); 2]) -> bool {
     // Move the common expression from the line evaluation: (-2 * P.x, 2 * P.y).
-    let mut terms = [(blst_fp::default(), blst_fp::default(), pairs[0].1); 2];
-    let mut n = 0;
-    for &(p, lines) in pairs {
+    let terms = pairs.map(|(p, lines)| {
         // SAFETY: all arguments are valid blst types.
         unsafe {
             if blst_p1_affine_is_inf(p) {
-                continue;
+                return None;
             }
-            let (x, y, _) = &mut terms[n];
-            blst_fp_add(x, &p.x, &p.x);
-            blst_fp_cneg(x, x, true);
-            blst_fp_add(y, &p.y, &p.y);
+            let (mut x, mut y) = (blst_fp::default(), blst_fp::default());
+            blst_fp_add(&mut x, &p.x, &p.x);
+            let x_ptr = &raw mut x;
+            blst_fp_cneg(x_ptr, x_ptr, true);
+            blst_fp_add(&mut y, &p.y, &p.y);
+            Some((x, y, lines))
         }
-        terms[n].2 = lines;
-        n += 1;
-    }
-    if n == 0 {
-        return true;
-    }
+    });
 
     // SAFETY: `blst_fp12_one` returns a valid pointer to a static.
     let mut f = unsafe { *blst_fp12_one() };
@@ -169,7 +168,7 @@ fn multi_pairing_is_one(pairs: &[(&blst_p1_affine, &Lines); 2]) -> bool {
             // SAFETY: `f` is a valid blst type; blst allows aliasing the output and input.
             unsafe { blst_fp12_sqr(f_ptr, f_ptr) };
         }
-        for (x, y, lines) in &terms[..n] {
+        for (x, y, lines) in terms.iter().flatten() {
             let l = &lines[i];
             let mut line = *l;
             // SAFETY: all arguments are valid blst types.

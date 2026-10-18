@@ -7,7 +7,6 @@ use ark_bls12_381::{Bls12_381, Config, Fr, G1Affine, G2Affine};
 use ark_ec::{AffineRepr, CurveGroup, bls12::G2Prepared, pairing::Pairing};
 use ark_ff::{BigInteger, One, PrimeField};
 use ark_serialize::CanonicalDeserialize;
-use core::ops::Neg;
 
 /// Verify KZG proof using BLS12-381 implementation.
 ///
@@ -46,23 +45,19 @@ pub(crate) fn verify_kzg_proof(
         - G1Affine::generator().mul_bigint(y_fr.into_bigint())
         + proof_point.mul_bigint(z_fr.into_bigint()))
     .into_affine();
-    let [neg_g2, tau_g2] = g2_prepared().clone();
-    Bls12_381::multi_pairing([lhs, proof_point], [neg_g2, tau_g2]).0.is_one()
+    Bls12_381::multi_pairing([lhs, proof_point], g2_prepared().clone()).0.is_one()
 }
 
 /// Returns the prepared `-G₂` and trusted setup point `[τ]G₂`.
 fn g2_prepared() -> &'static [G2Prepared<Config>; 2] {
     static G2: OnceLock<[G2Prepared<Config>; 2]> = OnceLock::new();
-    G2.get_or_init(|| [G2Affine::generator().neg().into(), get_trusted_setup_g2().into()])
-}
-
-/// Get the trusted setup G2 point `[τ]₂` from the Ethereum KZG ceremony.
-/// This is g2_monomial_1 from trusted_setup_4096.json
-fn get_trusted_setup_g2() -> G2Affine {
-    // Parse the compressed G2 point using unchecked deserialization since we trust this point
-    // This should never fail since we're using a known valid point from the trusted setup
-    G2Affine::deserialize_compressed_unchecked(&TRUSTED_SETUP_TAU_G2_BYTES[..])
-        .expect("Failed to parse trusted setup G2 point")
+    G2.get_or_init(|| {
+        // Parse g2_monomial_1 from trusted_setup_4096.json using unchecked deserialization since
+        // we trust this point.
+        let tau_g2 = G2Affine::deserialize_compressed_unchecked(&TRUSTED_SETUP_TAU_G2_BYTES[..])
+            .expect("Failed to parse trusted setup G2 point");
+        [(-G2Affine::generator()).into(), tau_g2.into()]
+    })
 }
 
 /// Parse a G1 point from compressed format (48 bytes)
