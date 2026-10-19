@@ -13,7 +13,7 @@ use blst::{
     blst_p1_add_or_double_affine, blst_p1_affine, blst_p1_affine_in_g1, blst_p1_affine_on_curve,
     blst_p1_from_affine, blst_p1_mult, blst_p1_to_affine, blst_p2, blst_p2_add_or_double_affine,
     blst_p2_affine, blst_p2_affine_in_g2, blst_p2_affine_on_curve, blst_p2_from_affine,
-    blst_p2_mult, blst_p2_to_affine, blst_scalar, blst_scalar_from_bendian,
+    blst_p2_mult, blst_p2_to_affine, blst_scalar, blst_scalar_from_be_bytes,
 };
 
 // Big-endian non-Montgomery form.
@@ -546,31 +546,26 @@ fn read_fp(input: &[u8; FP_LENGTH]) -> Result<blst_fp, PrecompileHalt> {
 }
 
 /// Extracts a scalar from a 32 byte slice representation, decoding the input as a Big Endian
-/// unsigned integer. If the input is not exactly 32 bytes long, an error is returned.
+/// unsigned integer reduced modulo the subgroup order `r`. Returns `None` if the reduced scalar is
+/// zero. If the input is not exactly 32 bytes long, an error is returned.
 ///
 /// From [EIP-2537](https://eips.ethereum.org/EIPS/eip-2537):
 /// * A scalar for the multiplication operation is encoded as 32 bytes by performing BigEndian
 ///   encoding of the corresponding (unsigned) integer.
 ///
-/// We do not check that the scalar is a canonical Fr element, because the EIP specifies:
-/// * The corresponding integer is not required to be less than or equal than main subgroup order
-///   `q`.
-fn read_scalar(input: &[u8]) -> Result<blst_scalar, PrecompileHalt> {
+/// The EIP does not require the integer to be less than `r`. Reducing it is sound because every
+/// MSM point passes the subgroup check, so `k * P == (k mod r) * P`. It also keeps blst on its
+/// fast GLV/GLS multiplication, which it only uses for scalars below `r`.
+fn read_scalar(input: &[u8]) -> Result<Option<blst_scalar>, PrecompileHalt> {
     if input.len() != SCALAR_LENGTH {
         return Err(PrecompileHalt::Bls12381ScalarInputLength);
     }
 
     let mut out = blst_scalar::default();
     // SAFETY: `input` length is checked previously, out is a blst value.
-    unsafe {
-        // Note: We do not use `blst_scalar_fr_check` here because, from EIP-2537:
-        //
-        // * The corresponding integer is not required to be less than or equal than main subgroup
-        // order `q`.
-        blst_scalar_from_bendian(&mut out, input.as_ptr())
-    };
+    let nonzero = unsafe { blst_scalar_from_be_bytes(&mut out, input.as_ptr(), SCALAR_LENGTH) };
 
-    Ok(out)
+    Ok(nonzero.then_some(out))
 }
 
 /// Checks if the input is a valid big-endian representation of a field element.
@@ -659,12 +654,10 @@ pub(crate) fn p1_msm_bytes(
         // NB: MSM requires subgroup check
         let point = read_g1(&x, &y)?;
 
-        // Skip zero scalars after validating the point
-        if scalar_bytes.iter().all(|&b| b == 0) {
+        // Skip scalars that reduce to zero, after validating the point
+        let Some(scalar) = read_scalar(&scalar_bytes)? else {
             continue;
-        }
-
-        let scalar = read_scalar(&scalar_bytes)?;
+        };
         g1_points.push(point);
         scalars.push(scalar);
     }
@@ -697,12 +690,10 @@ pub(crate) fn p2_msm_bytes(
         // NB: MSM requires subgroup check
         let point = read_g2(&x_0, &x_1, &y_0, &y_1)?;
 
-        // Skip zero scalars after validating the point
-        if scalar_bytes.iter().all(|&b| b == 0) {
+        // Skip scalars that reduce to zero, after validating the point
+        let Some(scalar) = read_scalar(&scalar_bytes)? else {
             continue;
-        }
-
-        let scalar = read_scalar(&scalar_bytes)?;
+        };
         g2_points.push(point);
         scalars.push(scalar);
     }
