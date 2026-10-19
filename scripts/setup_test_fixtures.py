@@ -34,7 +34,10 @@ from rich.progress import (
 from rich.text import Text
 
 MAIN_VERSION = os.environ.get("MAIN_VERSION", "v5.3.0")
-LEGACY_VERSION = os.environ.get("LEGACY_VERSION", "v17.2")
+# ethereum/legacytests commit pinned by the `LegacyTests` submodule of ethereum/tests v17.2. The
+# ethereum/tests archives do not include submodules, so the tests are fetched from the submodule's
+# own repository.
+LEGACY_VERSION = os.environ.get("LEGACY_VERSION", "1f581b8ccdc4c63acf5f2c5c1b155c690c32a8eb")
 BASE_URL = "https://github.com/ethereum/execution-spec-tests/releases/download"
 # Fork-specific devnet fixtures are published from the execution-specs repo.
 DEVNET_BASE_URL = os.environ.get(
@@ -46,9 +49,7 @@ DEVNET_BASE_URL = os.environ.get(
 # different devnet release. The version is a URL path component, so the `@` is percent-encoded.
 DEFAULT_DEVNET_VERSION = "tests-glamsterdam-devnet%40v8.1.4"
 DEFAULT_DEVNET_TAR = "fixtures_glamsterdam-devnet.tar.gz"
-LEGACY_URL = (
-    f"https://github.com/ethereum/tests/archive/refs/tags/{LEGACY_VERSION}.tar.gz"
-)
+LEGACY_URL = f"https://github.com/ethereum/legacytests/archive/{LEGACY_VERSION}.tar.gz"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -116,7 +117,10 @@ def legacy_fixture() -> Fixture:
         label="legacy",
         url=LEGACY_URL,
         dest=LEGACY_DIR,
-        exists_paths=(LEGACY_DIR / "Cancun" / "GeneralStateTests",),
+        exists_paths=(
+            LEGACY_DIR / "Cancun" / "GeneralStateTests",
+            LEGACY_DIR / "Constantinople" / "GeneralStateTests",
+        ),
     )
 
 
@@ -256,7 +260,8 @@ async def download_and_extract(
         return
     if fixture.dest.exists():
         raise RuntimeError(
-            f"exists but does not contain the expected test fixtures: {fixture.dest}"
+            f"exists but does not contain the expected test fixtures: {fixture.dest} "
+            "(remove or rename it and rerun)"
         )
 
     fixture.dest.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,6 @@
 //! Ethereum blockchain test execution.
 
-mod env;
+pub(crate) mod env;
 mod error;
 mod execute;
 mod hook;

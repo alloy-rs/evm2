@@ -1186,7 +1186,7 @@ METRICS = {
     "runtime_instructions": {"title": "Runtime instructions", "unit": "instructions"},
     "runtime_cycles": {"title": "Runtime cycles", "unit": "cycles"},
 }
-ARTIFACT_FILES = ["bytecode.txt", "bytecode.dot", "unopt.ll", "opt.ll", "opt.s"]
+ARTIFACT_FILES = ["bytecode.txt", "bytecode.dot", "opt.ll", "opt.s"]
 TARGET_CPU_RE = re.compile(r'"target-cpu"="([^"]+)"')
 BENCH_FIXTURE_RE = re.compile(r'Bench::\w+\(\s*"([^"]+)",[^"]*"([^"]+)"')
 

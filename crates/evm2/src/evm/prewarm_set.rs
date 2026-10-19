@@ -28,11 +28,14 @@ use alloy_primitives::{
 /// words, so 300 bits take five words anyway; 320 uses all of them at no extra cost.
 const SHORT_ADDRESS_CAP: usize = 320;
 
+/// Bit vector indexed by short address. See [`short_address`].
+pub(crate) type ShortAddresses = BitArray<{ SHORT_ADDRESS_CAP.div_ceil(64) }>;
+
 /// Returns the short-address index for an address, if it qualifies.
 ///
 /// A short address has 18 leading zero bytes and a last-two-byte value below [`SHORT_ADDRESS_CAP`].
 #[inline]
-fn short_address(address: &Address) -> Option<usize> {
+pub(crate) fn short_address(address: &Address) -> Option<usize> {
     let (zeros, value) = address.split_at(18);
     if zeros.iter().all(|b| *b == 0) {
         let short_address = u16::from_be_bytes([value[0], value[1]]) as usize;
@@ -60,7 +63,10 @@ pub struct PrewarmSet {
     access_list: AddressMap<HashSet<Word>>,
     /// Bit vector of warm short addresses. An address shorter than [`SHORT_ADDRESS_CAP`] sets
     /// its bit here for faster access; precompiles and other low-numbered addresses land here.
-    short_addresses: BitArray<{ SHORT_ADDRESS_CAP.div_ceil(64) }>,
+    short_addresses: ShortAddresses,
+    /// Whether any address in `access_list` carries warm storage slots. Most transactions have
+    /// none, so storage warmth checks can skip the address lookup.
+    has_storage: bool,
 }
 
 impl Default for PrewarmSet {
@@ -73,7 +79,11 @@ impl PrewarmSet {
     /// Creates a new, empty warm-address set.
     #[inline]
     pub fn new() -> Self {
-        Self { access_list: AddressMap::default(), short_addresses: BitArray::new() }
+        Self {
+            access_list: AddressMap::default(),
+            short_addresses: BitArray::new(),
+            has_storage: false,
+        }
     }
 
     /// Returns the access list (non-short warm addresses and all warm storage slots).
@@ -105,13 +115,19 @@ impl PrewarmSet {
     #[inline]
     pub fn warm_storage(&mut self, address: &Address, slots: impl IntoIterator<Item = Word>) {
         let mut slots = slots.into_iter().peekable();
-        if self.warm_short_address(address) {
-            // A short address only needs a map entry once it carries storage slots.
-            if slots.peek().is_none() {
-                return;
-            }
+        let has_slots = slots.peek().is_some();
+        // A short address only needs a map entry once it carries storage slots.
+        if self.warm_short_address(address) && !has_slots {
+            return;
         }
         self.access_list.entry(*address).or_default().extend(slots);
+        self.has_storage |= has_slots;
+    }
+
+    /// Marks every address in a short-address bit vector as warm.
+    #[inline]
+    pub(crate) fn warm_short_addresses(&mut self, addresses: &ShortAddresses) {
+        self.short_addresses.union(addresses);
     }
 
     /// Marks a short address as warm.
@@ -132,6 +148,7 @@ impl PrewarmSet {
     pub fn clear(&mut self) {
         self.short_addresses.clear();
         self.access_list.clear();
+        self.has_storage = false;
     }
 
     /// Returns whether the address is warm-loaded.
@@ -150,7 +167,7 @@ impl PrewarmSet {
     /// Returns whether the storage slot is warm-loaded.
     #[inline]
     pub fn is_storage_warm(&self, address: &Address, key: &Word) -> bool {
-        self.access_list.get(address).is_some_and(|slots| slots.contains(key))
+        self.has_storage && self.access_list.get(address).is_some_and(|slots| slots.contains(key))
     }
 
     /// Returns whether the address is cold-loaded.

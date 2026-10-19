@@ -32,25 +32,49 @@ const REPLAY_WARM_UP: Duration = Duration::from_secs(3);
 const REPLAY_MEASUREMENT_SECS: u64 = 15;
 const REPLAY_SAMPLE_SIZE: usize = 20;
 
+/// Mainnet contract fixtures, which the `jit-mainnet` CodSpeed shard runs apart from the rest.
+const MAINNET_CONTRACTS: &[&str] = &[
+    "usdt",
+    "universal_router",
+    "aggregation_router_v6",
+    "entry_point_v0_7",
+    "uniswap_v3_pool",
+    "uniswap_v4_pool_manager",
+    "curve_3pool",
+    "curve_tricrypto2",
+    "balancer_vault",
+    "succinct_staking",
+];
+
 fn evm(c: &mut Criterion) {
     let mut group = c.benchmark_group("evm");
     apply_default_budget(&mut group);
 
     let shard = env::var("EVM2_BENCH_SHARD").ok();
     assert!(
-        matches!(shard.as_deref(), None | Some("interpreter" | "jit")),
+        matches!(shard.as_deref(), None | Some("interpreter" | "jit" | "jit-mainnet")),
         "unknown EVM2_BENCH_SHARD: {shard:?}"
     );
     let bench_interpreter = matches!(shard.as_deref(), None | Some("interpreter"));
     assert!(
         bench_interpreter || cfg!(feature = "jit"),
-        "the JIT benchmark shard requires the jit feature"
+        "JIT benchmark shards require the jit feature"
     );
 
-    let benches = evm_bench::BENCHES;
+    // The mainnet contracts take roughly half the JIT time. Filter before fixture loading and JIT
+    // setup.
+    let benches = evm_bench::BENCHES
+        .iter()
+        .copied()
+        .filter(|bench| match shard.as_deref() {
+            Some("jit") => !MAINNET_CONTRACTS.contains(&bench.name),
+            Some("jit-mainnet") => MAINNET_CONTRACTS.contains(&bench.name),
+            _ => true,
+        })
+        .collect::<Vec<_>>();
     let suites =
         fixture::Suites::load(benches.iter().filter_map(|bench| bench.transaction_fixture_path()));
-    let cases = expand_cases(benches, &suites);
+    let cases = expand_cases(&benches, &suites);
 
     let bench_revm = bench_interpreter && env::var_os("EVM2_BENCH_REVM").is_some();
 
