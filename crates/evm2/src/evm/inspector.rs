@@ -856,6 +856,70 @@ mod tests {
     }
 
     #[test]
+    fn call_hook_shrinking_caller_memory_truncates_call_output() {
+        struct ShrinkInspector {
+            keep: usize,
+            final_memory: Vec<u8>,
+        }
+
+        impl Inspector<BaseEvmTypes> for ShrinkInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if interp.message().depth == 0 {
+                    self.final_memory = interp.memory().as_slice().to_vec();
+                }
+            }
+
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth == 0 {
+                    return None;
+                }
+                interp.memory_mut().clear();
+                interp.memory_mut().resize(0, self.keep).unwrap();
+                Some(MessageResultExt {
+                    stop: InstrStop::Return,
+                    output: Bytes::from_static(&[0xaa; 32]),
+                    ..Default::default()
+                })
+            }
+        }
+
+        // The call asks for 32 output bytes at offset 0, which sizes the caller's memory to 32
+        // bytes before the call hook shrinks it.
+        let mut code = Vec::new();
+        push_all(
+            &mut code,
+            [
+                Word::from(32),
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+            ],
+        );
+        code.extend([op::CALL, op::STOP]);
+
+        for keep in [16, 0] {
+            let (result, inspector, _) = run_evm_with_inspector(
+                code.clone(),
+                &MessageExt::default(),
+                100_000,
+                ShrinkInspector { keep, final_memory: Vec::new() },
+            );
+
+            assert_eq!(result.stop, InstrStop::Stop);
+            // Only the part of the output inside the shrunk memory is written, and memory does
+            // not grow back.
+            assert_eq!(inspector.final_memory, vec![0xaa; keep]);
+        }
+    }
+
+    #[test]
     fn call_end_can_mutate_result_before_caller_observes_it() {
         struct CallEndInspector;
 

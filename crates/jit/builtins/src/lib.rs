@@ -778,7 +778,8 @@ pub unsafe extern "C" fn __revmc_builtin_call(
 
     let copy_len = min(out_len, result.output.len());
     if copy_len != 0 {
-        ecx.memory_mut().set(out_offset, &result.output[..copy_len]);
+        // A call hook can shrink this frame's memory after `ensure_memory` sized the range.
+        ecx.memory_mut().set_truncated(out_offset, &result.output[..copy_len]);
     }
     let success = EvmWord::from(Word::from(u8::from(result.stop.is_success())));
     unsafe {

@@ -203,6 +203,17 @@ impl Memory {
         }
     }
 
+    /// Writes the part of `value` that fits in memory at `offset`, and drops the rest.
+    ///
+    /// Memory does not grow. Unlike [`Memory::set`], this accepts a range that memory no longer
+    /// covers, which happens when a hook shrinks the memory after the range was sized.
+    #[inline]
+    pub fn set_truncated(&mut self, offset: usize, value: &[u8]) {
+        let len = value.len().min(self.data.len().saturating_sub(offset));
+        // SAFETY: `len <= data.len() - offset`, so `offset..offset + len` is in bounds.
+        unsafe { self.set_unchecked(offset, &value[..len]) };
+    }
+
     /// Writes a data slice into memory with zero padding.
     ///
     /// # Panics

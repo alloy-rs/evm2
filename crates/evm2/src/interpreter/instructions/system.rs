@@ -255,10 +255,8 @@ fn call_inner<T: EvmTypesHost>(
         gas.refill_reservoir(new_account_state_gas);
     }
     let copy_len = min(return_memory_range.len(), result.output.len());
-    unsafe {
-        let output = result.output.get_unchecked(..copy_len);
-        state.memory().set_unchecked(return_memory_range.start, output);
-    }
+    // A call hook can shrink this frame's memory after `prepare_call` sized the return range.
+    state.memory().set_truncated(return_memory_range.start, &result.output[..copy_len]);
     state.swap_return_data(&mut result.output);
     stack.push_u64(result.stop.is_success() as u64)
 }
