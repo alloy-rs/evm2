@@ -605,8 +605,8 @@ mod tests {
             "210d66db18237e0ed086b30bac4680d53aef0c7b498d13394e9e2634ff416e001b5a0355ed264f23681e9331e8fb8a30db3680b21f8004c8cee74d8af678830505e35b4630eeaafa6571a02ff3355debdeea12a2acc0528c4039fd1acdf0024d14d28ee448cc68a1dcd77e367cbebce4cfb18bec0849c489497efe4ce95ec69f",
         ];
         let pair_infinity_with = |g2: &str| {
-            let mut input = vec![0u8; 64];
-            input.extend(hex::decode(g2).unwrap());
+            let mut input = [0u8; PAIR_ELEMENT_LEN];
+            hex::decode_to_slice(g2, &mut input[G1_LEN..]).unwrap();
             run_pair(
                 &input,
                 BYZANTIUM_PAIR_PER_POINT,
