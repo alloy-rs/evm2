@@ -175,3 +175,47 @@ pub fn install_crypto<C: Crypto + 'static>(crypto: C) -> bool {
 pub fn crypto() -> &'static dyn Crypto {
     CRYPTO.get_or_init(|| Box::new(DefaultCrypto::new())).as_ref()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::hex;
+    use sha2::Digest;
+
+    #[test]
+    fn sha256_nist_vectors() {
+        let cases: [(&[u8], &str); 3] = [
+            (b"", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+            (b"abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
+            (
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+                "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(hex::encode(DefaultCrypto::new().sha256(input)), expected);
+        }
+
+        let million_a = vec![b'a'; 1_000_000];
+        assert_eq!(
+            hex::encode(DefaultCrypto::new().sha256(&million_a)),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
+    }
+
+    #[test]
+    fn sha256_matches_sha2_around_block_boundaries() {
+        let data = (0..70_000usize).map(|i| (i * 31 + 7) as u8).collect::<Vec<_>>();
+        let lens = (0..=300)
+            .chain((1..=64).flat_map(|k| (k * 64 - 9)..=(k * 64 + 9)))
+            .chain([65_535, 65_536, 65_537, 69_999]);
+        for len in lens {
+            let input = &data[..len];
+            assert_eq!(
+                DefaultCrypto::new().sha256(input),
+                <[u8; 32]>::from(sha2::Sha256::digest(input)),
+                "length {len}"
+            );
+        }
+    }
+}
