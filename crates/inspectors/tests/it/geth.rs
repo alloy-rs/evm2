@@ -1,4 +1,7 @@
 //! Geth tests
+
+mod runtime_oog;
+
 use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
     TxEnv, deploy_contract, op,
