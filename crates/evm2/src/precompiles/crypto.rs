@@ -196,7 +196,7 @@ mod tests {
             assert_eq!(hex::encode(DefaultCrypto::new().sha256(input)), expected);
         }
 
-        let million_a = vec![b'a'; 1_000_000];
+        let million_a = alloc::vec![b'a'; 1_000_000];
         assert_eq!(
             hex::encode(DefaultCrypto::new().sha256(&million_a)),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
