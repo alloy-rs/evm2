@@ -270,8 +270,7 @@ mod tests {
     #[test]
     fn test_warm_regular_addresses_beyond_inline_list() {
         let mut prewarm_set = PrewarmSet::new();
-        let addresses =
-            (0..=INLINE_CAP as u8 + 1).map(|i| Address::repeat_byte(0x10 + i)).collect::<Vec<_>>();
+        let addresses = [0x10, 0x11, 0x12, 0x13, 0x14].map(Address::repeat_byte);
 
         for address in &addresses {
             prewarm_set.warm(address);
