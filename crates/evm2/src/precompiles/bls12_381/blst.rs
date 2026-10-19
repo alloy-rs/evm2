@@ -14,6 +14,7 @@ use blst::{
     blst_p1_from_affine, blst_p1_mult, blst_p1_to_affine, blst_p2, blst_p2_add_or_double_affine,
     blst_p2_affine, blst_p2_affine_in_g2, blst_p2_affine_on_curve, blst_p2_from_affine,
     blst_p2_mult, blst_p2_to_affine, blst_scalar, blst_scalar_from_be_bytes,
+    blst_scalar_from_bendian,
 };
 
 // Big-endian non-Montgomery form.
@@ -21,6 +22,12 @@ const MODULUS_REPR: [u8; 48] = [
     0x1a, 0x01, 0x11, 0xea, 0x39, 0x7f, 0xe6, 0x9a, 0x4b, 0x1b, 0xa7, 0xb6, 0x43, 0x4b, 0xac, 0xd7,
     0x64, 0x77, 0x4b, 0x84, 0xf3, 0x85, 0x12, 0xbf, 0x67, 0x30, 0xd2, 0xa0, 0xf6, 0xb0, 0xf6, 0x24,
     0x1e, 0xab, 0xff, 0xfe, 0xb1, 0x53, 0xff, 0xff, 0xb9, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xaa, 0xab,
+];
+
+// Big-endian subgroup order `r`.
+const SCALAR_MODULUS_REPR: [u8; 32] = [
+    0x73, 0xed, 0xa7, 0x53, 0x29, 0x9d, 0x7d, 0x48, 0x33, 0x39, 0xd8, 0x08, 0x09, 0xa1, 0xd8, 0x05,
+    0x53, 0xbd, 0xa4, 0x02, 0xff, 0xfe, 0x5b, 0xfe, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
 ];
 
 #[inline]
@@ -555,13 +562,20 @@ fn read_fp(input: &[u8; FP_LENGTH]) -> Result<blst_fp, PrecompileHalt> {
 ///
 /// The EIP does not require the integer to be less than `r`. Reducing it is sound because every
 /// MSM point passes the subgroup check, so `k * P == (k mod r) * P`. It also keeps blst on its
-/// fast GLV/GLS multiplication, which it only uses for scalars below `r`.
+/// fast GLV/GLS multiplication, which it only uses for scalars below `r`. Scalars already below `r`
+/// skip the reduction.
 fn read_scalar(input: &[u8]) -> Result<Option<blst_scalar>, PrecompileHalt> {
     if input.len() != SCALAR_LENGTH {
         return Err(PrecompileHalt::Bls12381ScalarInputLength);
     }
 
     let mut out = blst_scalar::default();
+    if input < SCALAR_MODULUS_REPR.as_slice() {
+        // SAFETY: `input` length is checked previously, out is a blst value.
+        unsafe { blst_scalar_from_bendian(&mut out, input.as_ptr()) };
+        return Ok((out.b != [0; SCALAR_LENGTH]).then_some(out));
+    }
+
     // SAFETY: `input` length is checked previously, out is a blst value.
     let nonzero = unsafe { blst_scalar_from_be_bytes(&mut out, input.as_ptr(), SCALAR_LENGTH) };
 
