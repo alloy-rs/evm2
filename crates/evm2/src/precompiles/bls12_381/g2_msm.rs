@@ -125,5 +125,9 @@ mod test {
             msm(&[(&point, r - U256::from(1)), (&point, U256::from(2))]),
             Ok(point.to_vec())
         );
+
+        // Many pairs with scalars just below `r` (bit 254 set) sum to `-n(n+1)/2 * P`.
+        let pairs = (0..64u64).map(|i| (&point, r - U256::from(1 + i))).collect::<Vec<_>>();
+        assert_eq!(msm(&pairs), msm(&[(&point, r - U256::from(64 * 65 / 2))]));
     }
 }
