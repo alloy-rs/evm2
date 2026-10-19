@@ -101,12 +101,6 @@ impl PrewarmSet {
         }
     }
 
-    /// Returns the access list (warm addresses beyond the inline list and all warm storage slots).
-    #[inline]
-    pub const fn access_list(&self) -> &AddressMap<HashSet<Word>> {
-        &self.access_list
-    }
-
     /// Marks an address as warm.
     ///
     /// Short addresses set a bit in `short_addresses`, the first few others fill the inline list,
@@ -285,7 +279,7 @@ mod tests {
         }
 
         assert_eq!(prewarm_set.inline().len(), INLINE_CAP);
-        assert_eq!(prewarm_set.access_list().len(), addresses.len() - INLINE_CAP);
+        assert_eq!(prewarm_set.access_list.len(), addresses.len() - INLINE_CAP);
         assert!(addresses.iter().all(|address| prewarm_set.is_warm(address)));
 
         prewarm_set.clear();
