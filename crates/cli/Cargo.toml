@@ -35,7 +35,6 @@ anstyle.workspace = true
 bitflags = { workspace = true, features = ["serde"] }
 clap.workspace = true
 futures-util.workspace = true
-mimalloc.workspace = true
 rand.workspace = true
 revm.workspace = true
 secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
@@ -53,11 +52,18 @@ evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
 libloading = { version = "0.9", optional = true }
 open = { version = "5", optional = true }
 
+# mimalloc
+mimalloc = { workspace = true, optional = true }
+
+# jemalloc
+[target.'cfg(unix)'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
+
 [build-dependencies]
 evm2-jit-build = { workspace = true, optional = true }
 
 [features]
-default = []
+default = ["mimalloc"]
 jit = [
     "evm2-eest/jit",
     "dep:evm2-jit-context",
@@ -67,6 +73,9 @@ jit = [
     "dep:libloading",
     "dep:open",
 ]
+# Faster but possibly less portable allocators. `mimalloc` takes precedence over `jemalloc`.
+jemalloc = ["dep:tikv-jemallocator"]
+mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
 criterion.workspace = true

@@ -123,6 +123,7 @@ typeid = { version = "1.0.3", default-features = false }
 tokio = { version = "1", default-features = false }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+tikv-jemallocator = { version = "0.7", default-features = false }
 tracing-tracy = "0.11"
 triomphe = { version = "0.1.16", default-features = false }
 walkdir = { version = "2.5", default-features = false }
