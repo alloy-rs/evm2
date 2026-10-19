@@ -55,8 +55,8 @@ open = { version = "5", optional = true }
 # mimalloc
 mimalloc = { workspace = true, optional = true }
 
-# jemalloc
 [target.'cfg(unix)'.dependencies]
+# jemalloc
 tikv-jemallocator = { workspace = true, optional = true }
 
 [build-dependencies]

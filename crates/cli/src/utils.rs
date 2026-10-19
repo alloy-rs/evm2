@@ -1,12 +1,6 @@
 //! Utility functions used by the `evm2` CLI.
 
-#[cfg(feature = "mimalloc")]
-use mimalloc as _;
-#[cfg(all(feature = "jemalloc", unix))]
-use tikv_jemallocator as _;
-
-// Keep the system allocator in tests, where we spawn a ton of processes and any extra startup cost
-// slows down tests massively.
+// Debug-assertion builds keep the system allocator, as solar-cli does.
 std::cfg_select! {
     debug_assertions => {
         type AllocatorInner = std::alloc::System;
