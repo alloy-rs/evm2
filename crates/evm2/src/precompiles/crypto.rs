@@ -13,9 +13,19 @@ pub trait Crypto: Send + Sync + Debug {
     /// Compute SHA-256 hash
     #[inline]
     fn sha256(&self, input: &[u8]) -> [u8; 32] {
-        use sha2::Digest;
-        let output = sha2::Sha256::digest(input);
-        output.into()
+        core::cfg_select! {
+            feature = "p256-aws-lc-rs" => {
+                use sha2 as _;
+
+                let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, input);
+                digest.as_ref().try_into().unwrap()
+            }
+            _ => {
+                use sha2::Digest;
+
+                sha2::Sha256::digest(input).into()
+            }
+        }
     }
 
     /// Compute RIPEMD-160 hash
