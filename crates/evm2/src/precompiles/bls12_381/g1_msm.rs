@@ -69,7 +69,8 @@ mod test {
         );
     }
 
-    /// Scalars are reduced modulo the subgroup order, so `m * r + k` acts like `k`.
+    /// Scalars are reduced modulo the subgroup order `r`: `s` and `s mod r` give the same result,
+    /// and invalid points are rejected whatever their scalar.
     #[test]
     fn g1_msm_scalars_reduced_mod_r() {
         let r = U256::from_be_bytes(hex!(
@@ -78,26 +79,67 @@ mod test {
         let point = hex!(
             "0000000000000000000000000000000017f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb0000000000000000000000000000000008b3f481e3aaa0f1a09e30ed741d8ae4fcf5e095d5d00af600db18cb2c04b3edd03cc744a2888ae40caa232946c5e7e1"
         );
-        let msm = |pairs: &[(u64, u64)]| {
+        let non_subgroup = hex!(
+            "0000000000000000000000000000000000a1ecb07124951270576b9b2638d20f4aedd5932106b682ddc5f84701ed844edb57bcc0499a6c02e9abbf2e12b066380000000000000000000000000000000019c9baf3c9d0f00fbb9126e9039f177ff780fc5810f96558beb0c77e32d7b07c27c712c9a71e6f6417861e6ec0ba0778"
+        );
+        let infinity = [0u8; 128];
+        let mut off_curve = [0u8; 128];
+        off_curve[127] = 1;
+
+        let msm = |pairs: &[(&[u8; 128], U256)]| {
             let input = pairs
                 .iter()
-                .flat_map(|&(multiple, k)| {
-                    let scalar = r * U256::from(multiple) + U256::from(k);
+                .flat_map(|(point, scalar)| {
                     [point.as_slice(), scalar.to_be_bytes::<32>().as_slice()].concat()
                 })
                 .collect::<Vec<_>>();
-            run(&input, &mut GasTracker::new(u64::MAX)).unwrap().bytes().to_vec()
+            run(&input, &mut GasTracker::new(u64::MAX))
+                .map(|output| output.bytes().to_vec())
+                .map_err(|err| err.as_halt().cloned())
         };
 
-        let infinity = vec![0u8; 128];
-        assert_eq!(msm(&[(1, 0)]), infinity);
-        assert_eq!(msm(&[(2, 0), (1, 0)]), infinity);
-        for multiple in 1..=2 {
-            assert_eq!(msm(&[(multiple, 5)]), msm(&[(0, 5)]));
-            assert_eq!(msm(&[(multiple, 5), (0, 3)]), msm(&[(0, 5), (0, 3)]));
-            assert_eq!(msm(&[(multiple, 0), (0, 3)]), msm(&[(0, 3)]));
+        let scalars = [
+            U256::ZERO,
+            U256::from(1),
+            U256::from(2),
+            r - U256::from(1),
+            r,
+            r + U256::from(1),
+            r * U256::from(2),
+            r * U256::from(2) + U256::from(1),
+            U256::from(1) << 255,
+            U256::MAX,
+        ];
+        for scalar in scalars {
+            let reduced = scalar % r;
+            assert_eq!(msm(&[(&point, scalar)]), msm(&[(&point, reduced)]));
+            assert_eq!(
+                msm(&[(&point, scalar), (&point, U256::from(3))]),
+                msm(&[(&point, reduced), (&point, U256::from(3))]),
+            );
+            assert_eq!(msm(&[(&infinity, scalar)]), Ok(infinity.to_vec()));
+            assert_eq!(
+                msm(&[(&point, scalar), (&infinity, U256::MAX), (&point, r - reduced)]),
+                Ok(infinity.to_vec()),
+            );
+            for (bad, err) in [
+                (&off_curve, PrecompileHalt::Bls12381G1NotOnCurve),
+                (&non_subgroup, PrecompileHalt::Bls12381G1NotInSubgroup),
+            ] {
+                assert_eq!(msm(&[(bad, scalar)]), Err(Some(err.clone())));
+                assert_eq!(msm(&[(&point, U256::from(1)), (bad, scalar)]), Err(Some(err)));
+            }
         }
-        assert_ne!(msm(&[(0, 5)]), infinity);
-        assert_ne!(msm(&[(0, 5)]), msm(&[(0, 6)]));
+
+        assert_eq!(msm(&[(&point, U256::from(1))]), Ok(point.to_vec()));
+        assert_eq!(msm(&[(&point, r), (&point, r * U256::from(2))]), Ok(infinity.to_vec()));
+        assert_eq!(
+            msm(&[(&point, r - U256::from(1)), (&point, U256::from(1))]),
+            Ok(infinity.to_vec())
+        );
+        assert_eq!(
+            msm(&[(&point, r - U256::from(1)), (&point, U256::from(2))]),
+            Ok(point.to_vec())
+        );
     }
 }

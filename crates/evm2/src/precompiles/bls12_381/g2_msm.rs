@@ -53,7 +53,8 @@ mod test {
     use super::*;
     use alloy_primitives::{U256, hex};
 
-    /// Scalars are reduced modulo the subgroup order, so `m * r + k` acts like `k`.
+    /// Scalars are reduced modulo the subgroup order `r`: `s` and `s mod r` give the same result,
+    /// and invalid points are rejected whatever their scalar.
     #[test]
     fn g2_msm_scalars_reduced_mod_r() {
         let r = U256::from_be_bytes(hex!(
@@ -62,26 +63,67 @@ mod test {
         let point = hex!(
             "00000000000000000000000000000000024aa2b2f08f0a91260805272dc51051c6e47ad4fa403b02b4510b647ae3d1770bac0326a805bbefd48056c8c121bdb80000000000000000000000000000000013e02b6052719f607dacd3a088274f65596bd0d09920b61ab5da61bbdc7f5049334cf11213945d57e5ac7d055d042b7e000000000000000000000000000000000ce5d527727d6e118cc9cdc6da2e351aadfd9baa8cbdd3a76d429a695160d12c923ac9cc3baca289e193548608b82801000000000000000000000000000000000606c4a02ea734cc32acd2b02bc28b99cb3e287e85a763af267492ab572e99ab3f370d275cec1da1aaa9075ff05f79be"
         );
-        let msm = |pairs: &[(u64, u64)]| {
+        let non_subgroup = hex!(
+            "0000000000000000000000000000000000ffce78f4a649e224c7cfce1239c01c4333e1189a5ce291644e04c25e3ffb75478453b018dd5bccd5ace87581cc5fff0000000000000000000000000000000000a03d0d736533784843fe492a4eedfa7a0e44fe99775726e8e2a0edfa2ef4eee106d84f5f8bcfd8a397af86032ff20b0000000000000000000000000000000018fcaf35ae50aa9e61720833502a8f8bcfe044ffeaf0d77a3ed38ccf90d7d2c59d420df502701214c47d72256c451de9000000000000000000000000000000001833aee80e1ebf865ec2464f66ce2610489af66a2a936144f092de84f33c0a6d892d6958531efdfe39c79f8c9bc460a6"
+        );
+        let infinity = [0u8; 256];
+        let mut off_curve = [0u8; 256];
+        off_curve[255] = 1;
+
+        let msm = |pairs: &[(&[u8; 256], U256)]| {
             let input = pairs
                 .iter()
-                .flat_map(|&(multiple, k)| {
-                    let scalar = r * U256::from(multiple) + U256::from(k);
+                .flat_map(|(point, scalar)| {
                     [point.as_slice(), scalar.to_be_bytes::<32>().as_slice()].concat()
                 })
                 .collect::<Vec<_>>();
-            run(&input, &mut GasTracker::new(u64::MAX)).unwrap().bytes().to_vec()
+            run(&input, &mut GasTracker::new(u64::MAX))
+                .map(|output| output.bytes().to_vec())
+                .map_err(|err| err.as_halt().cloned())
         };
 
-        let infinity = vec![0u8; 256];
-        assert_eq!(msm(&[(1, 0)]), infinity);
-        assert_eq!(msm(&[(2, 0), (1, 0)]), infinity);
-        for multiple in 1..=2 {
-            assert_eq!(msm(&[(multiple, 5)]), msm(&[(0, 5)]));
-            assert_eq!(msm(&[(multiple, 5), (0, 3)]), msm(&[(0, 5), (0, 3)]));
-            assert_eq!(msm(&[(multiple, 0), (0, 3)]), msm(&[(0, 3)]));
+        let scalars = [
+            U256::ZERO,
+            U256::from(1),
+            U256::from(2),
+            r - U256::from(1),
+            r,
+            r + U256::from(1),
+            r * U256::from(2),
+            r * U256::from(2) + U256::from(1),
+            U256::from(1) << 255,
+            U256::MAX,
+        ];
+        for scalar in scalars {
+            let reduced = scalar % r;
+            assert_eq!(msm(&[(&point, scalar)]), msm(&[(&point, reduced)]));
+            assert_eq!(
+                msm(&[(&point, scalar), (&point, U256::from(3))]),
+                msm(&[(&point, reduced), (&point, U256::from(3))]),
+            );
+            assert_eq!(msm(&[(&infinity, scalar)]), Ok(infinity.to_vec()));
+            assert_eq!(
+                msm(&[(&point, scalar), (&infinity, U256::MAX), (&point, r - reduced)]),
+                Ok(infinity.to_vec()),
+            );
+            for (bad, err) in [
+                (&off_curve, PrecompileHalt::Bls12381G2NotOnCurve),
+                (&non_subgroup, PrecompileHalt::Bls12381G2NotInSubgroup),
+            ] {
+                assert_eq!(msm(&[(bad, scalar)]), Err(Some(err.clone())));
+                assert_eq!(msm(&[(&point, U256::from(1)), (bad, scalar)]), Err(Some(err)));
+            }
         }
-        assert_ne!(msm(&[(0, 5)]), infinity);
-        assert_ne!(msm(&[(0, 5)]), msm(&[(0, 6)]));
+
+        assert_eq!(msm(&[(&point, U256::from(1))]), Ok(point.to_vec()));
+        assert_eq!(msm(&[(&point, r), (&point, r * U256::from(2))]), Ok(infinity.to_vec()));
+        assert_eq!(
+            msm(&[(&point, r - U256::from(1)), (&point, U256::from(1))]),
+            Ok(infinity.to_vec())
+        );
+        assert_eq!(
+            msm(&[(&point, r - U256::from(1)), (&point, U256::from(2))]),
+            Ok(point.to_vec())
+        );
     }
 }
