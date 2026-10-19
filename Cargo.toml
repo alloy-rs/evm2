@@ -103,6 +103,7 @@ color-eyre = "0.6"
 eyre = "0.6"
 libc = "0.2"
 libtest-mimic = "0.8"
+mimalloc = { version = "0.1", default-features = false }
 once_cell = { version = "1.21", default-features = false }
 paste = { version = "1.0", default-features = false }
 phf = { version = "0.14", default-features = false }

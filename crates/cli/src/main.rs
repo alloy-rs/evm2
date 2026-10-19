@@ -17,6 +17,10 @@ use clap::Parser;
 use std::{error::Error as _, process::ExitCode};
 use tracing_subscriber::EnvFilter;
 
+/// The binary uses mimalloc; the library and its benches keep the system allocator.
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> ExitCode {
     init_tracing();
     if let Err(error) = run() {
