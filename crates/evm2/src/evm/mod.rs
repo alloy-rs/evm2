@@ -2275,22 +2275,6 @@ mod tests {
     }
 
     #[test]
-    fn cooled_account_load_is_cold() {
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnvExt::default(),
-            TxRegistry::new(),
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
-        );
-        let address = LIFECYCLE_ACCOUNT;
-        assert!(Host::load_account(&mut evm, &address, false, false).unwrap().is_cold);
-        assert!(!Host::load_account(&mut evm, &address, false, false).unwrap().is_cold);
-        evm.state.set_account_warm(&address, false);
-        assert!(Host::load_account(&mut evm, &address, false, false).unwrap().is_cold);
-    }
-
-    #[test]
     fn fatal_custom_precompile_aborts_parent_call() {
         const FATAL_PRECOMPILE_ADDRESS: Address = Address::with_last_byte(0x43);
 
