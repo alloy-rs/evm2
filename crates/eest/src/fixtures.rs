@@ -1,3 +1,4 @@
+use crate::harness::TestRoot;
 use std::{
     env,
     path::{Path, PathBuf},
@@ -8,6 +9,12 @@ pub(crate) const TEST_FIXTURES_ENV: &str = "EVM2_TEST_FIXTURES";
 
 /// Generic EEST stable selector.
 pub(crate) const EEST_STABLE_ENV: &str = "EVM2_EEST_STABLE";
+
+/// Selector for the EEST `main` suite, which the setup script downloads only when it is set.
+pub(crate) const EEST_MAIN_ENV: &str = "EVM2_STATETEST_MAIN";
+
+/// Selector for devnet-only runs, where the setup script skips the legacy fixtures.
+pub(crate) const DEVNET_ONLY_ENV: &str = "EVM2_STATETEST_DEVNET_ONLY";
 
 /// Repo-relative fixture root used by the setup script and CI.
 pub(crate) const DEFAULT_FIXTURES_PATH: &str = "test-fixtures";
@@ -53,6 +60,16 @@ pub(crate) fn apply_subdir(root: &mut PathBuf, name: &str) {
         && !subdir.is_empty()
     {
         root.push(subdir);
+    }
+}
+
+/// Appends a `SUBDIR`-style filter to every root, dropping roots without that subdirectory.
+pub(crate) fn apply_subdir_to_roots(roots: &mut Vec<TestRoot>, name: &str) {
+    for root in roots.iter_mut() {
+        apply_subdir(&mut root.path, name);
+    }
+    if env::var_os(name).is_some_and(|subdir| !subdir.is_empty()) {
+        roots.retain(|root| root.path.is_dir());
     }
 }
 

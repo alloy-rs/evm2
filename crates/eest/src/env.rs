@@ -1,6 +1,7 @@
 use crate::{
     fixtures::{
-        EEST_STABLE_ENV, apply_subdir, env_flag, fixtures_root, workspace_relative, workspace_root,
+        DEVNET_ONLY_ENV, EEST_MAIN_ENV, EEST_STABLE_ENV, apply_subdir, apply_subdir_to_roots,
+        env_flag, fixtures_root, workspace_relative, workspace_root,
     },
     harness::TestRoot,
 };
@@ -33,6 +34,8 @@ pub(crate) fn explicit_state_test_root_from_env() -> Option<PathBuf> {
 }
 
 /// Returns the state-test roots to run by default.
+///
+/// A missing root that the setup script downloads by default is an error, not a skip.
 pub(crate) fn state_test_roots() -> Vec<StateTestRoot> {
     if let Some(path) = explicit_state_test_root_from_env() {
         return vec![StateTestRoot {
@@ -42,10 +45,11 @@ pub(crate) fn state_test_roots() -> Vec<StateTestRoot> {
         }];
     }
 
-    default_state_test_roots().into_iter().filter(|root| root.path.is_dir()).collect()
+    default_state_test_roots()
 }
 
-/// Returns the default repo-relative state-test roots, whether or not they exist.
+/// Returns the default repo-relative state-test roots. Optional roots are included only if they
+/// exist.
 pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
     let fixtures = fixtures_root();
     let ethereum_tests = workspace_root().join(DEFAULT_ETHEREUM_TESTS_PATH);
@@ -54,28 +58,32 @@ pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
     } else {
         fixtures.join("main/develop/state_tests")
     };
-    let mut roots = vec![
-        StateTestRoot {
+    let mut roots = vec![StateTestRoot {
+        name: "statetests::devnet".to_string(),
+        label: "execution-spec-tests devnet",
+        path: fixtures.join("devnet/state_tests"),
+    }];
+
+    if env_flag(EEST_MAIN_ENV) || eest_path.is_dir() {
+        roots.push(StateTestRoot {
             name: "statetests".to_string(),
             label: "execution-spec-tests",
             path: eest_path,
-        },
-        StateTestRoot {
-            name: "statetests::devnet".to_string(),
-            label: "execution-spec-tests devnet",
-            path: fixtures.join("devnet/state_tests"),
-        },
-        StateTestRoot {
+        });
+    }
+
+    if !env_flag(DEVNET_ONLY_ENV) {
+        roots.push(StateTestRoot {
             name: "legacy::cancun".to_string(),
             label: "legacy Cancun",
             path: fixtures.join("legacytests/Cancun/GeneralStateTests"),
-        },
-        StateTestRoot {
+        });
+        roots.push(StateTestRoot {
             name: "legacy::constantinople".to_string(),
             label: "legacy Constantinople",
             path: fixtures.join("legacytests/Constantinople/GeneralStateTests"),
-        },
-    ];
+        });
+    }
 
     if let Some(path) = general_state_tests_path(&ethereum_tests) {
         roots.push(StateTestRoot {
@@ -85,9 +93,7 @@ pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
         });
     }
 
-    for root in &mut roots {
-        apply_subdir(&mut root.path, STATE_TEST_SUBDIR_ENV);
-    }
+    apply_subdir_to_roots(&mut roots, STATE_TEST_SUBDIR_ENV);
     roots
 }
 
