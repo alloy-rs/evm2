@@ -942,6 +942,11 @@ mod tests {
                     .map(|b| b.to_be_bytes::<32>().to_vec())
                     .to_vec();
             bases.extend([vec![], vec![7]]);
+            bases.extend(
+                (2u64..)
+                    .map_while(|k| p.checked_mul(U256::from(k)))
+                    .map(|b| b.to_be_bytes::<32>().to_vec()),
+            );
             bases.extend((0..100).map(|_| rng.random::<[u8; 32]>().to_vec()));
             for base in bases {
                 let expected =
@@ -955,6 +960,30 @@ mod tests {
 
             let wrong_exponent = (p - U256::from(3)).to_be_bytes::<32>();
             assert_eq!(fermat_inverse(&[2], &wrong_exponent, &modulus), None);
+
+            // Encodings the shortcut must skip, which must not panic and must match GMP.
+            let pad = |top: u8, bytes: &[u8]| [&[top], bytes].concat();
+            let [base32, exponent32] =
+                [p - U256::ONE, p - U256::from(2)].map(|v| v.to_be_bytes::<32>());
+            let cases = [
+                (pad(0, &base32), exponent32.to_vec(), modulus.to_vec()),
+                (pad(1, &modulus), exponent32.to_vec(), modulus.to_vec()),
+                (vec![7], pad(0, &exponent32), modulus.to_vec()),
+                (vec![7], pad(1, &exponent32), modulus.to_vec()),
+                (vec![7], exponent32.to_vec(), pad(0, &modulus)),
+            ];
+            for (base, exponent, modulus) in cases {
+                assert_eq!(fermat_inverse(&base, &exponent, &modulus), None, "{p:x}");
+                let [actual, expected] =
+                    [modexp(&base, &exponent, &modulus), modexp_big(&base, &exponent, &modulus)]
+                        .map(|r| left_pad_vec_be(&r, modulus.len()).into_owned());
+                assert_eq!(actual, expected, "{p:x} {base:x?} {exponent:x?} {modulus:x?}");
+            }
+
+            // A composite 32-byte modulus.
+            let composite = p + U256::ONE;
+            let exponent = (composite - U256::from(2)).to_be_bytes::<32>();
+            assert_eq!(fermat_inverse(&[7], &exponent, &composite.to_be_bytes::<32>()), None);
         }
     }
 }
