@@ -393,6 +393,20 @@ impl<'a> State<'a> {
         }
     }
 
+    /// Sets the warmth of an already-loaded account without journaling the change.
+    ///
+    /// Does nothing for unloaded accounts and leaves account values, storage, and the pre-warmed
+    /// set unchanged. Addresses in the pre-warmed set remain effectively warm even when their
+    /// runtime warmth is cleared.
+    ///
+    /// This call adds no journal entry; rolling back an existing account-change entry still
+    /// restores the account's recorded runtime warmth.
+    pub fn set_account_warm(&mut self, address: &Address, warm: bool) {
+        if let Some(account) = self.accounts.get_mut(address) {
+            account.is_warm = warm;
+        }
+    }
+
     /// Reads a storage slot from the committed state (accepted overlay and backing database),
     /// ignoring the in-flight transaction overlay.
     #[inline]
@@ -1141,6 +1155,37 @@ mod tests {
             state.set_storage_warm(&address, key, false);
             state.set_storage_warm(&address, key, true);
             assert!(!state.storage_slot(&address, key).unwrap().warm());
+        }
+    }
+
+    #[test]
+    fn set_account_warm_preserves_loaded_values() {
+        let address = Address::with_last_byte(42);
+        let key = Word::from(1);
+        for prewarmed in [false, true] {
+            let mut state = State::new(EmptyDB::default());
+            state.set_account_warm(&address, true);
+            assert!(!state.accounts.contains_key(&address));
+            if prewarmed {
+                state.prewarm(&address);
+            }
+            let mut account = state.account(&address).unwrap();
+            account.set_balance(Word::from(7));
+            account.warm();
+            drop(account);
+            state.storage_slot(&address, key).unwrap().warm();
+            let checkpoint = state.checkpoint();
+            state.set_account_warm(&address, false);
+            assert_eq!(state.account(&address).unwrap().is_warm(), prewarmed);
+            assert!(state.storage(&address).unwrap().is_warm(&key));
+            state.rollback(checkpoint, crate::EvmFeatures::empty());
+            let mut account = state.account(&address).unwrap();
+            assert_eq!(account.balance(), Word::from(7));
+            assert_eq!(account.warm(), !prewarmed);
+            drop(account);
+            state.set_account_warm(&address, false);
+            state.set_account_warm(&address, true);
+            assert!(!state.account(&address).unwrap().warm());
         }
     }
 
