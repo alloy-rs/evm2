@@ -48,7 +48,7 @@ jobs:
         with:
           cache-on-failure: true
           cache-bin: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
       - name: Enable perf counters
         run: |
@@ -257,13 +257,13 @@ jobs:
           cache-on-failure: true
           cache-bin: false
       - name: Install cargo-codspeed
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: cargo-codspeed
       - name: Build the benchmark target
         run: cargo codspeed build --profile profiling -p evm2-cli --features jit --bench evm
       - name: Run the benchmarks
-        uses: CodSpeedHQ/action@c4fd08a3a159bd0cc208da1e0edf32b8c47d75e5 # v5.4.0
+        uses: CodSpeedHQ/action@f842b9a3ffe213dbb81768fd7f7eeb4dfcf1c369 # v5.4.2
         with:
           run: cargo codspeed run -p evm2-cli --bench evm
           mode: simulation
