@@ -260,7 +260,8 @@ async def download_and_extract(
         return
     if fixture.dest.exists():
         raise RuntimeError(
-            f"exists but does not contain the expected test fixtures: {fixture.dest}"
+            f"exists but does not contain the expected test fixtures: {fixture.dest} "
+            "(remove or rename it and rerun)"
         )
 
     fixture.dest.mkdir(parents=True, exist_ok=True)

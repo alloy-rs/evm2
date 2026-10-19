@@ -1,7 +1,8 @@
 use crate::{
+    blockchaintest::env::explicit_blockchain_test_root_from_env,
     fixtures::{
-        DEVNET_ONLY_ENV, EEST_MAIN_ENV, EEST_STABLE_ENV, apply_subdir, apply_subdir_to_roots,
-        env_flag, fixtures_root, workspace_relative, workspace_root,
+        DEVNET_ONLY_ENV, EEST_STABLE_ENV, apply_subdir, apply_subdir_to_roots, env_flag,
+        fixtures_root, workspace_relative, workspace_root,
     },
     harness::TestRoot,
 };
@@ -35,7 +36,8 @@ pub(crate) fn explicit_state_test_root_from_env() -> Option<PathBuf> {
 
 /// Returns the state-test roots to run by default.
 ///
-/// A missing root that the setup script downloads by default is an error, not a skip.
+/// A missing root that the setup script downloads by default is an error, not a skip, unless the
+/// blockchain tests got an explicit root.
 pub(crate) fn state_test_roots() -> Vec<StateTestRoot> {
     if let Some(path) = explicit_state_test_root_from_env() {
         return vec![StateTestRoot {
@@ -45,7 +47,11 @@ pub(crate) fn state_test_roots() -> Vec<StateTestRoot> {
         }];
     }
 
-    default_state_test_roots()
+    let mut roots = default_state_test_roots();
+    if explicit_blockchain_test_root_from_env().is_some() {
+        roots.retain(|root| root.path.is_dir());
+    }
+    roots
 }
 
 /// Returns the default repo-relative state-test roots. Optional roots are included only if they
@@ -64,7 +70,7 @@ pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
         path: fixtures.join("devnet/state_tests"),
     }];
 
-    if env_flag(EEST_MAIN_ENV) || eest_path.is_dir() {
+    if eest_path.is_dir() {
         roots.push(StateTestRoot {
             name: "statetests".to_string(),
             label: "execution-spec-tests",

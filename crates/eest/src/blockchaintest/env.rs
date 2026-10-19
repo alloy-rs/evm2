@@ -1,7 +1,8 @@
 use crate::{
+    env::explicit_state_test_root_from_env,
     fixtures::{
-        EEST_MAIN_ENV, EEST_STABLE_ENV, apply_subdir, apply_subdir_to_roots, env_flag,
-        fixtures_root, workspace_relative,
+        EEST_STABLE_ENV, apply_subdir, apply_subdir_to_roots, env_flag, fixtures_root,
+        workspace_relative,
     },
     harness::TestRoot,
 };
@@ -31,7 +32,8 @@ pub(crate) fn explicit_blockchain_test_root_from_env() -> Option<PathBuf> {
 
 /// Returns the blockchain-test roots to run by default.
 ///
-/// A missing root that the setup script downloads by default is an error, not a skip.
+/// A missing root that the setup script downloads by default is an error, not a skip, unless the
+/// state tests got an explicit root.
 pub(crate) fn blockchain_test_roots() -> Vec<BlockchainTestRoot> {
     if let Some(path) = explicit_blockchain_test_root_from_env() {
         return vec![BlockchainTestRoot {
@@ -41,11 +43,14 @@ pub(crate) fn blockchain_test_roots() -> Vec<BlockchainTestRoot> {
         }];
     }
 
-    default_blockchain_test_roots()
+    let mut roots = default_blockchain_test_roots();
+    if explicit_state_test_root_from_env().is_some() {
+        roots.retain(|root| root.path.is_dir());
+    }
+    roots
 }
 
-/// Returns the default repo-relative blockchain-test roots. The `main` root is included only if
-/// it is selected or exists.
+/// Returns the default repo-relative blockchain-test roots. The `main` root is optional.
 pub(crate) fn default_blockchain_test_roots() -> Vec<BlockchainTestRoot> {
     let fixtures = fixtures_root();
     let main_path = if env_flag(BLOCKCHAINTEST_STABLE_ENV) || env_flag(EEST_STABLE_ENV) {
@@ -60,7 +65,7 @@ pub(crate) fn default_blockchain_test_roots() -> Vec<BlockchainTestRoot> {
         path: fixtures.join("devnet/blockchain_tests"),
     }];
 
-    if env_flag(EEST_MAIN_ENV) || main_path.is_dir() {
+    if main_path.is_dir() {
         roots.push(BlockchainTestRoot {
             name: "blockchain_tests".to_string(),
             label: "execution-spec-tests",
