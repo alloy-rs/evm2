@@ -127,7 +127,8 @@ mod test {
                 (&non_subgroup, PrecompileHalt::Bls12381G1NotInSubgroup),
             ] {
                 assert_eq!(msm(&[(bad, scalar)]), Err(Some(err.clone())));
-                assert_eq!(msm(&[(&point, U256::from(1)), (bad, scalar)]), Err(Some(err)));
+                assert_eq!(msm(&[(&point, U256::from(1)), (bad, scalar)]), Err(Some(err.clone())));
+                assert_eq!(msm(&[(&point, scalar), (bad, U256::from(1))]), Err(Some(err)));
             }
         }
 
