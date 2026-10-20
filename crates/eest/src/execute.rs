@@ -463,17 +463,6 @@ fn pre_block_system_calls<T: EvmTypes>(
         return;
     }
 
-    if spec.enables(SpecId::PRAGUE)
-        && let Some(previous_hash) = env.previous_hash
-        && system_contract_has_code(post, HISTORY_STORAGE_ADDRESS)
-    {
-        commit_system_call(
-            evm,
-            post,
-            HISTORY_STORAGE_ADDRESS,
-            Bytes::copy_from_slice(previous_hash.as_slice()),
-        );
-    }
     if spec.enables(SpecId::CANCUN)
         && let Some(beacon_root) = env.current_beacon_root
         && system_contract_has_code(post, BEACON_ROOTS_ADDRESS)
@@ -483,6 +472,17 @@ fn pre_block_system_calls<T: EvmTypes>(
             post,
             BEACON_ROOTS_ADDRESS,
             Bytes::copy_from_slice(beacon_root.as_slice()),
+        );
+    }
+    if spec.enables(SpecId::PRAGUE)
+        && let Some(previous_hash) = env.previous_hash
+        && system_contract_has_code(post, HISTORY_STORAGE_ADDRESS)
+    {
+        commit_system_call(
+            evm,
+            post,
+            HISTORY_STORAGE_ADDRESS,
+            Bytes::copy_from_slice(previous_hash.as_slice()),
         );
     }
 }
@@ -635,7 +635,6 @@ fn access_list(
 mod tests {
     use super::*;
     use alloy_primitives::LogData;
-    #[cfg(feature = "jit")]
     use evm2::interpreter::op;
 
     #[cfg(feature = "jit")]
@@ -769,6 +768,72 @@ mod tests {
             panic!("expected EIP-2930 transaction");
         };
         assert_eq!(inner.access_list[0].address, second_address);
+    }
+
+    #[test]
+    fn pre_block_system_calls_run_beacon_roots_before_history_storage() {
+        // Both system contracts call a logger that appends its caller to storage slots 1, 2, ...
+        let logger = Address::from([0x33; 20]);
+        let mut call_logger =
+            vec![op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH20];
+        call_logger.extend_from_slice(logger.as_slice());
+        call_logger.extend([op::GAS, op::CALL, op::STOP]);
+        let log_caller = [
+            op::PUSH0,
+            op::SLOAD,
+            op::PUSH1,
+            1,
+            op::ADD,
+            op::DUP1,
+            op::PUSH0,
+            op::SSTORE,
+            op::CALLER,
+            op::SWAP1,
+            op::SSTORE,
+            op::STOP,
+        ];
+        let account = |code: &[u8]| AccountInfo {
+            balance: U256::ZERO,
+            code: Bytes::copy_from_slice(code),
+            nonce: 1,
+            storage: BTreeMap::new(),
+        };
+        let pre = BTreeMap::from([
+            (BEACON_ROOTS_ADDRESS, account(&call_logger)),
+            (HISTORY_STORAGE_ADDRESS, account(&call_logger)),
+            (logger, account(&log_caller)),
+        ]);
+        let env = Env {
+            current_chain_id: Some(U256::ONE),
+            current_coinbase: Address::ZERO,
+            current_difficulty: U256::ZERO,
+            current_gas_limit: U256::from(30_000_000),
+            current_number: U256::ONE,
+            current_timestamp: U256::ZERO,
+            current_base_fee: Some(U256::ZERO),
+            previous_hash: Some(B256::with_last_byte(1)),
+            current_random: None,
+            current_beacon_root: Some(B256::with_last_byte(2)),
+            current_withdrawals_root: None,
+            current_excess_blob_gas: None,
+            slot_number: None,
+        };
+        let spec = SpecId::PRAGUE;
+        let mut post = parse_state(&pre).unwrap();
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            spec,
+            parse_block(&env, spec),
+            ethereum_tx_registry(spec),
+            post.clone(),
+            Precompiles::base(spec),
+        );
+
+        pre_block_system_calls(&mut evm, &mut post, spec, &env);
+
+        let slots = &post.cache.storage[&logger].slots;
+        assert_eq!(slots[&U256::ZERO], U256::from(2));
+        assert_eq!(slots[&U256::from(1)], U256::from_be_slice(BEACON_ROOTS_ADDRESS.as_slice()));
+        assert_eq!(slots[&U256::from(2)], U256::from_be_slice(HISTORY_STORAGE_ADDRESS.as_slice()));
     }
 
     #[cfg(feature = "jit")]
