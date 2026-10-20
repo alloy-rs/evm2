@@ -52,6 +52,7 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 mod test {
     use super::*;
     use crate::precompiles::kzg_point_evaluation::RETURN_VALUE;
+    use alloc::vec::Vec;
     use alloy_primitives::{U256, hex};
 
     /// Scalars are reduced modulo the subgroup order `r`: `s` and `s mod r` give the same result,

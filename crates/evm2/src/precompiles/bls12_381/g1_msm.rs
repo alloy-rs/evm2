@@ -56,6 +56,7 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 mod test {
     use super::*;
     use crate::precompiles::kzg_point_evaluation::RETURN_VALUE;
+    use alloc::vec::Vec;
     use alloy_primitives::{Bytes, U256, hex};
 
     #[test]
