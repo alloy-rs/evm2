@@ -330,7 +330,7 @@ fn map_fp2_to_g2(fp2: &Fq2) -> G2Affine {
 /// pairing_check performs a pairing check on a list of G1 and G2 point pairs and
 /// returns true if the result is equal to the identity element.
 #[inline]
-pub(crate) fn pairing_check(pairs: &[(G1Affine, G2Affine)]) -> bool {
+fn pairing_check(pairs: &[(G1Affine, G2Affine)]) -> bool {
     if pairs.is_empty() {
         return true;
     }
