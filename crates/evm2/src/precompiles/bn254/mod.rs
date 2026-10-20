@@ -357,6 +357,17 @@ mod tests {
         let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)),);
 
+        // The largest canonical coordinate, p - 1, is accepted: (p - 1, sqrt(2)) is on the curve.
+        let mut input = [0u8; 128];
+        input[..32].copy_from_slice(&hex!(
+            "30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd46"
+        ));
+        input[32..64].copy_from_slice(&hex!(
+            "279d7bc4e184e3a57f5fa684690c6df6b484a7f1daa1de608d266a2a4be6593f"
+        ));
+        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        assert_eq!(outcome.bytes(), &input[..64]);
+
         let input = hex::decode(
             "\
             0000000000000000000000000000000000000000000000000000000000000001\
