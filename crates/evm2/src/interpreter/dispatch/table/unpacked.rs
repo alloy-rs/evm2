@@ -1,9 +1,11 @@
 use crate::{
     EvmConfig, EvmTypesHost,
-    interpreter::{InterpreterState, Pc, Stack, gas::Gas},
+    interpreter::{InterpreterState, Pc, Stack, StackBacking, gas::Gas},
 };
 
 pub(super) type LoopState = ();
+
+pub(super) type Cursor = (Pc, usize);
 
 /// Unpacked instruction return value.
 type InstrFnRet = (Pc, usize);
@@ -16,12 +18,12 @@ pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
 #[inline(always)]
 pub(super) fn dispatch_loop_call<T: EvmTypesHost>(
     instr: RawInstrFn<T>,
-    pc: Pc,
-    stack: Stack<'_>,
+    (pc, stack_len): Cursor,
+    stack: &mut StackBacking,
     state: &mut InterpreterState<'_, '_, T>,
     _loop_state: &mut LoopState,
-) -> (Pc, usize) {
-    instr(pc, stack, state)
+) -> Cursor {
+    instr(pc, Stack::new(stack, stack_len), state)
 }
 
 #[inline(always)]

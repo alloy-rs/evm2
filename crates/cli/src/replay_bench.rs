@@ -703,15 +703,15 @@ fn revm_pre_block(
     if block_number == 0 {
         return;
     }
-    if spec.enables(SpecId::PRAGUE)
-        && let Some(hash) = parent_block_hash
-    {
-        revm_system_call(evm, HISTORY_STORAGE_ADDRESS, hash.0.into(), "eip2935");
-    }
     if spec.enables(SpecId::CANCUN)
         && let Some(root) = header.parent_beacon_block_root
     {
         revm_system_call(evm, BEACON_ROOTS_ADDRESS, root.0.into(), "eip4788");
+    }
+    if spec.enables(SpecId::PRAGUE)
+        && let Some(hash) = parent_block_hash
+    {
+        revm_system_call(evm, HISTORY_STORAGE_ADDRESS, hash.0.into(), "eip2935");
     }
 }
 

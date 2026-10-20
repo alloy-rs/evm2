@@ -463,17 +463,6 @@ fn pre_block_system_calls<T: EvmTypes>(
         return;
     }
 
-    if spec.enables(SpecId::PRAGUE)
-        && let Some(previous_hash) = env.previous_hash
-        && system_contract_has_code(post, HISTORY_STORAGE_ADDRESS)
-    {
-        commit_system_call(
-            evm,
-            post,
-            HISTORY_STORAGE_ADDRESS,
-            Bytes::copy_from_slice(previous_hash.as_slice()),
-        );
-    }
     if spec.enables(SpecId::CANCUN)
         && let Some(beacon_root) = env.current_beacon_root
         && system_contract_has_code(post, BEACON_ROOTS_ADDRESS)
@@ -483,6 +472,17 @@ fn pre_block_system_calls<T: EvmTypes>(
             post,
             BEACON_ROOTS_ADDRESS,
             Bytes::copy_from_slice(beacon_root.as_slice()),
+        );
+    }
+    if spec.enables(SpecId::PRAGUE)
+        && let Some(previous_hash) = env.previous_hash
+        && system_contract_has_code(post, HISTORY_STORAGE_ADDRESS)
+    {
+        commit_system_call(
+            evm,
+            post,
+            HISTORY_STORAGE_ADDRESS,
+            Bytes::copy_from_slice(previous_hash.as_slice()),
         );
     }
 }
@@ -635,7 +635,6 @@ fn access_list(
 mod tests {
     use super::*;
     use alloy_primitives::LogData;
-    #[cfg(feature = "jit")]
     use evm2::interpreter::op;
 
     #[cfg(feature = "jit")]

@@ -183,7 +183,7 @@ pub use state::{
     StorageSlot, StorageSlotHandle, Tee, Tracked,
 };
 
-mod prewarm_set;
+pub(crate) mod prewarm_set;
 pub use prewarm_set::PrewarmSet;
 
 /// Optional external interpreter runner.
@@ -747,8 +747,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// cannot express through [`Self::precompiles`] (it borrows all of `self`).
     #[inline]
     pub fn warm_precompiles(&mut self) {
-        let state = &mut self.state;
-        self.precompiles.for_each_address(&mut |address| state.prewarm(&address));
+        self.precompiles.warm_addresses(self.state.prewarm_set_mut());
     }
 
     /// Returns the precompile provider mutably.
@@ -1539,8 +1538,10 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         };
         let is_cold = account.warm();
 
-        let exists = account.exists();
-        let info = account.get().cloned().unwrap_or_default();
+        let (balance, nonce, code_hash, exists, is_empty) = match account.get() {
+            Some(info) => (info.balance, info.nonce, info.code_hash, true, info.is_empty()),
+            None => (Word::ZERO, 0, B256::ZERO, false, true),
+        };
 
         // load code
         let code = if load_code {
@@ -1549,12 +1550,12 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             Bytecode::default()
         };
         Ok(AccountLoad {
-            balance: info.balance,
-            nonce: info.nonce,
-            code_hash: if exists { info.code_hash } else { B256::ZERO },
+            balance,
+            nonce,
+            code_hash,
             code,
             exists,
-            is_empty: info.is_empty(),
+            is_empty,
             is_cold,
             _non_exhaustive: (),
         })
@@ -3250,6 +3251,21 @@ mod tests {
         assert_eq!(alloy[0].storage_changes[0].changes.len(), 2);
         assert_eq!(evm.state.bal_index(), BlockAccessIndex::PRE_EXECUTION);
         assert!(evm.state.bal_builder().is_none());
+    }
+
+    #[test]
+    fn same_index_commits_that_restore_a_slot_record_a_read() {
+        let mut evm = lifecycle_evm();
+        evm.state.enable_bal_builder();
+        evm.state.set_bal_index(BlockAccessIndex::new(1));
+
+        // Two commits at one index write 1 -> 7 -> 1.
+        let _ = evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").commit();
+        let _ = evm.transact(&test_tx(1)).expect("lifecycle transaction should execute").commit();
+
+        let bal = evm.state.take_bal_builder().expect("builder was enabled");
+        let slot = &bal.accounts[&LIFECYCLE_ACCOUNT].storage.storage[&LIFECYCLE_STORAGE_KEY];
+        assert!(slot.is_empty());
     }
 
     #[test]
