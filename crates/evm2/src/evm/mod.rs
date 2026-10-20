@@ -183,7 +183,7 @@ pub use state::{
     StorageSlot, StorageSlotHandle, Tee, Tracked,
 };
 
-mod prewarm_set;
+pub(crate) mod prewarm_set;
 pub use prewarm_set::PrewarmSet;
 
 /// Optional external interpreter runner.
@@ -747,8 +747,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// cannot express through [`Self::precompiles`] (it borrows all of `self`).
     #[inline]
     pub fn warm_precompiles(&mut self) {
-        let state = &mut self.state;
-        self.precompiles.for_each_address(&mut |address| state.prewarm(&address));
+        self.precompiles.warm_addresses(self.state.prewarm_set_mut());
     }
 
     /// Returns the precompile provider mutably.
@@ -1539,8 +1538,10 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         };
         let is_cold = account.warm();
 
-        let exists = account.exists();
-        let info = account.get().cloned().unwrap_or_default();
+        let (balance, nonce, code_hash, exists, is_empty) = match account.get() {
+            Some(info) => (info.balance, info.nonce, info.code_hash, true, info.is_empty()),
+            None => (Word::ZERO, 0, B256::ZERO, false, true),
+        };
 
         // load code
         let code = if load_code {
@@ -1549,12 +1550,12 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             Bytecode::default()
         };
         Ok(AccountLoad {
-            balance: info.balance,
-            nonce: info.nonce,
-            code_hash: if exists { info.code_hash } else { B256::ZERO },
+            balance,
+            nonce,
+            code_hash,
             code,
             exists,
-            is_empty: info.is_empty(),
+            is_empty,
             is_cold,
             _non_exhaustive: (),
         })

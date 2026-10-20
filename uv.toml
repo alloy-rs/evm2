@@ -1,0 +1,3 @@
+# CI's network proxy rejects packages published in the last few days, so resolve script
+# dependencies as of a week ago.
+exclude-newer = "7 days"

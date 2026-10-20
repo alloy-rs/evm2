@@ -220,6 +220,10 @@ impl DebugInspector {
     }
 
     /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
+    ///
+    /// Call traces, including those in a mux trace, recover the transaction root when runtime
+    /// gas charging halts before evm2 invokes the call/create hooks. Recovered roots report
+    /// `out of gas`; fork-specific fields remain omitted when the EVM features were not recorded.
     pub fn get_result<T: EvmTypesHost<Tx: Transaction>>(
         &mut self,
         tx_context: Option<TransactionContext>,
@@ -241,6 +245,7 @@ impl DebugInspector {
         let res = match self {
             Self::FourByte(inspector) => FourByteFrame::from(&*inspector).into(),
             Self::CallTracer(inspector, config) => {
+                inspector.recover_runtime_oog_root(tx, &res.result);
                 inspector.set_transaction_gas_limit(tx.gas_limit());
                 inspector.set_transaction_caller(tx.signer());
                 inspector
@@ -264,10 +269,13 @@ impl DebugInspector {
                 gas_refund: final_refunded(&res.result),
             }
             .into(),
-            Self::Mux(inspector, _) => inspector
-                .try_into_mux_frame(res, db, tx_info)
-                .map_err(DebugInspectorError::Database)?
-                .into(),
+            Self::Mux(inspector, _) => {
+                inspector.finalize_transaction(tx, &res.result);
+                inspector
+                    .try_into_mux_frame(res, db, tx_info)
+                    .map_err(DebugInspectorError::Database)?
+                    .into()
+            }
             Self::FlatCallTracer(inspector) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit());
                 inspector.set_transaction_caller(tx.signer());
