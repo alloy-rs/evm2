@@ -27,6 +27,13 @@ Cancun and Constantinople state tests. Set `EVM2_STATETEST_MAIN=1` to also
 download the EEST `main` develop suite (stable with `EVM2_STATETEST_STABLE=1`),
 or `EVM2_STATETEST_DEVNET_ONLY=1` to skip the legacy fixtures.
 
+The legacy fixtures come from the `ethereum/legacytests` commit that the
+`ethereum/tests` v17.2 `LegacyTests` submodule pins; override it with
+`LEGACY_VERSION`. The runner fails when a default devnet or legacy root is
+missing, unless the other suite got an explicit root. The `main` roots are
+optional. If you clear `DEVNET_VERSION`, set `EVM2_STATETEST_ROOT` and
+`EVM2_BLOCKCHAINTEST_ROOT`.
+
 Run all discovered EEST fixtures with the single `eest` test binary:
 
 ```sh

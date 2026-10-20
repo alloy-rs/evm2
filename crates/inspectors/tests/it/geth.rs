@@ -1,4 +1,7 @@
 //! Geth tests
+
+mod runtime_oog;
+
 use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
     TxEnv, deploy_contract, op,
@@ -2017,5 +2020,20 @@ fn test_debug_call_log_index_seed_and_reset() {
             assert_eq!(logs[0].index, Some(seed.unwrap_or_default() as u64));
             inspector.fuse().unwrap();
         }
+    }
+}
+
+#[test]
+fn test_geth_4byte_tracer_skips_precompiles() {
+    // STATICCALL the sha256 precompile with 36 bytes, then an empty account with 4 bytes.
+    let code = hex!("600060006024600060025afa50600060006004600061dead5afa5000").into();
+    let opts = serde_json::from_value(serde_json::json!({ "tracer": "4byteTracer" })).unwrap();
+    let (trace, _) = trace_contract(SpecId::PRAGUE, opts, code);
+
+    match trace {
+        GethTrace::FourByteTracer(frame) => {
+            assert_eq!(frame.0, std::collections::BTreeMap::from([("0x00000000-0".into(), 1)]));
+        }
+        _ => panic!("Expected FourByteTracer"),
     }
 }
