@@ -314,6 +314,8 @@ pub trait Builder: BackendTypes + TypeMethods {
         self.str_const(value.to_str().unwrap())
     }
     fn str_const(&mut self, value: &str) -> Self::Value;
+    /// Returns a pointer to a private constant global array of `ty` holding `values`.
+    fn const_array(&mut self, ty: Self::Type, values: &[u64]) -> Self::Value;
     fn nullptr(&mut self) -> Self::Value;
 
     fn new_stack_slot(&mut self, ty: Self::Type, name: &str) -> Pointer<Self> {
@@ -410,6 +412,7 @@ pub trait Builder: BackendTypes + TypeMethods {
     fn bitxor(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value;
     fn bitnot(&mut self, value: Self::Value) -> Self::Value;
     fn clz(&mut self, value: Self::Value) -> Self::Value;
+    fn popcnt(&mut self, value: Self::Value) -> Self::Value;
 
     fn bitor_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value;
     fn bitand_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value;
