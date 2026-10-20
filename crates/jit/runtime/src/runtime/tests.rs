@@ -1475,41 +1475,85 @@ fn prepare_aot_already_persisted_not_resident() {
     );
 }
 
-/// `prepare_aot()` on a key that is already resident as JIT should be skipped.
-/// This documents the current behavior (todo: JIT-resident code should still persist).
+/// AOT preparation persists JIT-resident code and allows reloading without recompilation.
 #[test]
 #[cfg(feature = "llvm")]
-fn prepare_aot_skips_jit_resident() {
+fn prepare_aot_persists_jit_resident() {
     let store = Arc::new(RuntimeArtifactStore::new().unwrap());
     let code_hash = alloy_primitives::keccak256(BYTECODE_RET42);
 
     let tb = TestBackend::new(RuntimeConfig {
         enabled: true,
         store: Some(store.clone()),
-        tuning: RuntimeTuning { jit_hot_threshold: 1, jit_worker_count: 1, ..Default::default() },
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
         ..Default::default()
     });
 
     // JIT-compile first.
-    let p = tb.trigger_jit_cancun(BYTECODE_RET42);
+    tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+    let p = tb.get_compiled(code_hash, SpecId::CANCUN).unwrap();
     assert_eq!(p.kind, ProgramKind::Jit);
     assert_eq!(tb.stats().resident_entries, 1);
+    assert!(store.is_empty());
+    let dispatched_before = tb.stats().compilations_dispatched;
 
-    // Now request AOT — should be skipped because key is already resident.
-    tb.prepare_aot(AotRequest {
+    // JIT requests still reuse the resident program.
+    tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+    assert_eq!(tb.stats().compilations_dispatched, dispatched_before);
+
+    let req = AotRequest {
         code_hash,
         code: Bytes::copy_from_slice(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
+    };
+    tb.prepare_aot_sync(req.clone()).unwrap();
+
+    assert_eq!(store.len(), 1);
+    assert_eq!(tb.get_compiled(code_hash, SpecId::CANCUN).unwrap().kind, ProgramKind::Aot);
+    let dispatched_after = tb.stats().compilations_dispatched;
+    assert_eq!(dispatched_after, dispatched_before + 1);
+
+    // Both request kinds reuse the resident AOT program.
+    tb.prepare_aot_sync(req.clone()).unwrap();
+    tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+    assert_eq!(tb.stats().compilations_dispatched, dispatched_after);
+    assert_eq!(tb.get_compiled(code_hash, SpecId::CANCUN).unwrap().kind, ProgramKind::Aot);
+
+    // Clearing memory leaves an artifact that can be loaded without recompiling.
+    tb.clear_resident();
+    tb.wait_resident_count(0);
+    tb.prepare_aot_sync(req).unwrap();
+    assert_eq!(tb.get_compiled(code_hash, SpecId::CANCUN).unwrap().kind, ProgramKind::Aot);
+    assert_eq!(tb.stats().compilations_dispatched, dispatched_after);
+}
+
+/// Failure to reload the AOT artifact leaves the original JIT program available.
+#[test]
+#[cfg(feature = "llvm")]
+fn prepare_aot_preserves_jit_resident_on_failure() {
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        store: Some(Arc::new(EmptyStore)),
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+        ..Default::default()
     });
+    let req = TestBackend::req_cancun(BYTECODE_RET42);
+    tb.compile_jit_sync(req.clone()).unwrap();
+    let jit = tb.get_compiled(req.key.code_hash, req.key.spec_id).unwrap();
+    assert_eq!(jit.kind, ProgramKind::Jit);
+    let before = tb.stats();
 
-    // Give backend time to process.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // EmptyStore accepts writes but cannot return the artifact for loading.
+    tb.prepare_aot_sync(AotRequest {
+        code_hash: req.key.code_hash,
+        code: req.code,
+        spec_id: req.key.spec_id,
+    })
+    .unwrap();
 
-    // Nothing was persisted — AOT was skipped because the key was already resident as JIT.
-    assert_eq!(store.len(), 0, "prepare_aot should skip JIT-resident keys");
-    // Still JIT, not replaced.
-    let p = tb.get_compiled(code_hash, SpecId::CANCUN).unwrap();
-    assert_eq!(p.kind, ProgramKind::Jit);
+    assert_eq!(tb.stats().compilations_dispatched, before.compilations_dispatched + 1);
+    assert_eq!(tb.stats().compilations_failed, before.compilations_failed + 1);
+    assert!(Arc::ptr_eq(&jit, &tb.get_compiled(req.key.code_hash, req.key.spec_id).unwrap()));
 }
 
 // ===========================================================================
