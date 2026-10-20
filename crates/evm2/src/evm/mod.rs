@@ -3259,8 +3259,7 @@ mod tests {
         evm.state.enable_bal_builder();
         evm.state.set_bal_index(BlockAccessIndex::new(1));
 
-        // Two commits at one index, such as two post-execution system calls: the first writes 7
-        // to the slot (was 1), the second writes 1 back.
+        // Two commits at one index write 1 -> 7 -> 1.
         let _ = evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").commit();
         let _ = evm.transact(&test_tx(1)).expect("lifecycle transaction should execute").commit();
 

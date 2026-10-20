@@ -151,8 +151,7 @@ impl From<BalCodeChange> for AlloyCodeChange {
 pub struct BalChanges<T: BalChange> {
     /// List of changes, sorted by [`BlockAccessIndex`].
     pub changes: Vec<T>,
-    /// Value before the first recorded change. If the only change is at the current index, this
-    /// is the value before that index, which a later commit at the same index can restore.
+    /// Value before the first change.
     prior: Option<T::Value>,
 }
 
@@ -244,14 +243,13 @@ impl<T: BalChange> BalChanges<T> {
     /// Insert a value into the builder.
     ///
     /// If [`BlockAccessIndex`] is same as last it will override the value.
-    pub fn update(&mut self, index: BlockAccessIndex, original: &T::Value, value: T::Value) {
-        self.update_with_key(index, original, value, |i| i);
+    pub fn update(&mut self, index: BlockAccessIndex, original_value: &T::Value, value: T::Value) {
+        self.update_with_key(index, original_value, value, |i| i);
     }
 
-    /// Insert a value into the builder, comparing values by the key that `f` returns.
+    /// Insert a value into the builder.
     ///
-    /// `original` is the value before this update. If [`BlockAccessIndex`] is same as last it
-    /// will override the value, or remove it if the value is back to the one before the index.
+    /// If [`BlockAccessIndex`] is same as last it will override the value.
     ///
     /// Assumes that index is always greater than last one and that changes are updated in proper
     /// order.
@@ -259,15 +257,14 @@ impl<T: BalChange> BalChanges<T> {
     pub fn update_with_key<K: PartialEq, F>(
         &mut self,
         index: BlockAccessIndex,
-        original: &T::Value,
+        original_value: &T::Value,
         value: T::Value,
         f: F,
     ) where
         F: Fn(&T::Value) -> &K,
     {
-        // A no-op update records nothing. It must also preserve a change recorded earlier at the
-        // same index, since `original` is then the value that change set.
-        if f(original) == f(&value) {
+        // Keep a change recorded earlier at this index.
+        if f(original_value) == f(&value) {
             return;
         }
 
@@ -282,14 +279,12 @@ impl<T: BalChange> BalChanges<T> {
             return;
         }
 
-        // extract the value before the index and the last change at the index.
+        // extract previous (value before the index) and last value.
         let (previous, last) = match self.changes.as_mut_slice() {
             [.., previous, last] => (f(previous.value()), last),
-            // `original` is the value before this update, which can be the value set by an
-            // earlier commit at this index. Compare against the value before the index instead.
-            [last] => (f(self.prior.as_ref().unwrap_or(original)), last),
+            [last] => (f(self.prior.as_ref().unwrap_or(original_value)), last),
             [] => {
-                self.prior = Some(original.clone());
+                self.prior = Some(original_value.clone());
                 self.changes.push(T::new(index, value));
                 return;
             }
@@ -384,14 +379,11 @@ mod tests {
 
     #[test]
     fn update_drops_change_reverted_at_same_index() {
-        // The first change in the block: the baseline is the value before the index, not the
-        // original of the later commit.
         let mut changes = BalChanges::<StorageChange>::default();
         changes.update(idx(1), &U256::ZERO, U256::from(1));
         changes.update(idx(1), &U256::from(1), U256::ZERO);
         assert!(changes.is_empty());
 
-        // An earlier change is the baseline.
         changes.update(idx(1), &U256::ZERO, U256::from(1));
         changes.update(idx(2), &U256::from(1), U256::from(2));
         changes.update(idx(2), &U256::from(2), U256::from(1));
