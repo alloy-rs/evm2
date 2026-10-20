@@ -14,6 +14,7 @@ use evm2::{
 const PARENT: Address = Address::with_last_byte(0xaa);
 const CUSTOM_PRECOMPILE: Address = Address::with_last_byte(0x42);
 const SUBCALL_TARGET: Address = Address::with_last_byte(0xca);
+const TRANSACTION_ORIGIN: Address = Address::with_last_byte(0x77);
 
 fn main() {
     let mut evm = evm_with_custom_precompile();
@@ -26,12 +27,13 @@ fn main() {
         ..MessageExt::default()
     };
 
-    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+    let tx_env = TxEnvExt { origin: TRANSACTION_ORIGIN, ..TxEnvExt::default() };
+    let result = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
     assert_eq!(result.stop, InstrStop::Return);
     assert_eq!(result.output.len(), 32);
 
     let returned = Word::from_be_slice(result.output.as_ref());
-    assert_eq!(returned, Word::from(42));
+    assert_eq!(returned, Word::from_be_slice(TRANSACTION_ORIGIN.as_slice()));
 
     println!(
         "custom precompile staticcalled {SUBCALL_TARGET:?} and returned {returned} \
@@ -84,7 +86,8 @@ fn staticcall_precompile(
         ..MessageExt::default()
     };
 
-    let result = Host::execute_message(evm, &TxEnvExt::default(), &mut child)?;
+    let tx_env = evm.precompile_tx_env().expect("executing inside a precompile").clone();
+    let result = Host::execute_message(evm, &tx_env, &mut child)?;
     gas.merge_child_gas(result.gas, result.stop);
 
     match result.stop {
@@ -96,9 +99,8 @@ fn staticcall_precompile(
 
 const fn subcall_target_code() -> Bytes {
     Bytes::from_static(&[
-        // Store U256(42) at memory offset 0.
-        op::PUSH1,
-        42,
+        // Return the original transaction's ORIGIN from the interpreter subcall.
+        op::ORIGIN,
         op::PUSH0,
         op::MSTORE,
         // Return memory[0..32].
