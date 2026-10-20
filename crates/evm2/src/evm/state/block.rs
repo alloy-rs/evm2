@@ -565,6 +565,62 @@ mod tests {
     }
 
     #[test]
+    fn block_accumulator_isolates_storage_between_accounts() {
+        let [a, b, c, d] = [0x61, 0x62, 0x63, 0x64].map(|byte| Address::from([byte; 20]));
+        let (k1, k2) = (Word::from(1), Word::from(2));
+        let info = AccountInfo::default().with_nonce(1);
+        let two_slots = |first: (Word, Word), second: (Word, Word)| {
+            let mut slots = slot(k1, first.0, first.1);
+            slots.extend(slot(k2, second.0, second.1));
+            slots
+        };
+        let apply = |accumulator: &mut BlockStateAccumulator, pending: PendingState| {
+            pending.visit(accumulator).expect("block accumulator is infallible");
+        };
+        let w = Word::from;
+        let mut accumulator = BlockStateAccumulator::new();
+
+        // The same two slot keys change in four accounts.
+        for address in [a, b, d] {
+            let slots = two_slots((w(3), w(4)), (w(5), w(6)));
+            apply(&mut accumulator, changes(address, None, None, false, slots));
+        }
+        // Slot 2 of `c` is written to zero, so only slot 1 survives its creation.
+        let slots = two_slots((w(3), w(4)), (w(5), Word::ZERO));
+        apply(&mut accumulator, changes(c, None, None, false, slots));
+        assert_eq!(accumulator.storage_sorted().len(), 8);
+
+        // Deleting `b`, wiping `d`, and creating `c` change only their own slots.
+        apply(&mut accumulator, changes(b, Some(info.clone()), None, true, U256Map::default()));
+        apply(
+            &mut accumulator,
+            changes(d, Some(info.clone()), Some(info.clone()), true, U256Map::default()),
+        );
+        apply(&mut accumulator, changes(c, None, Some(info), false, U256Map::default()));
+        // Slot 1 of `a` is overwritten, and slot 2 is written and reverted.
+        apply(&mut accumulator, changes(a, None, None, false, slot(k1, w(4), w(9))));
+        apply(&mut accumulator, changes(a, None, None, false, slot(k2, w(6), w(5))));
+
+        assert_eq!(accumulator.storage_wipes_sorted(), [d]);
+        let storage = accumulator.storage_sorted();
+        let storage: Vec<_> =
+            storage.iter().map(|(key, delta)| (key.address(), key.key(), **delta)).collect();
+        assert_eq!(
+            storage,
+            [
+                (a, k1, Tracked::from_parts(w(3), w(9))),
+                (c, k1, Tracked::from_parts(Word::ZERO, w(4))),
+            ]
+        );
+
+        // Merging into another accumulator keeps the same deltas.
+        let mut merged = BlockStateAccumulator::new();
+        accumulator.visit(&mut merged).expect("block accumulator is infallible");
+        assert_eq!(merged.storage_sorted(), accumulator.storage_sorted());
+        assert_eq!(merged.storage_wipes_sorted(), [d]);
+    }
+
+    #[test]
     fn block_accumulator_keeps_account_only_and_storage_only_changes_separate() {
         let account_address = Address::from([0x53; 20]);
         let storage_address = Address::from([0x54; 20]);
