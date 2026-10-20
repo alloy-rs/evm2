@@ -4,7 +4,8 @@ use super::{
     settle_initial_frame_gas, validate_block_gas_limit, validate_chain_id,
     validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
     validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
-    validate_sender, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
+    validate_sender_and_bump_nonce, validate_tx_gas_limit_cap, warm_access_list,
+    warm_base_accounts,
 };
 use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult, Version,
@@ -82,13 +83,17 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     validate_execution_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * max_fee_per_gas;
-    validate_sender(req.host, caller, tx.nonce, max_gas_cost.saturating_add(tx.value))?;
+    validate_sender_and_bump_nonce(
+        req.host,
+        caller,
+        tx.nonce,
+        max_gas_cost.saturating_add(tx.value),
+    )?;
 
-    warm_base_accounts(req.host, caller, tx.to.into());
+    warm_base_accounts(req.host, tx.to.into());
     warm_access_list(req.host, &tx.access_list);
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    req.host.state.account(&caller)?.bump_nonce();
     H::before_execution(req.host, envelope, caller, effective_gas_cost)?;
 
     Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas })
