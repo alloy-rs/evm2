@@ -581,7 +581,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 (recipient_is_empty, account.load_code()?)
             };
             let mut code_address = to;
-            let mut disable_precompiles = false;
             if host.feature(EvmFeatures::EIP2780) && !value.is_zero() && recipient_is_empty {
                 let new_account_state_gas = host.version().gas_params.new_account_state_gas();
                 if tx_gas.spend_state(new_account_state_gas).is_err() {
@@ -621,7 +620,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     code = account.load_code()?;
                 }
                 code_address = delegated_address;
-                disable_precompiles = true;
             }
             MessageExt {
                 kind: MessageKind::Call,
@@ -635,7 +633,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 value,
                 code,
                 code_address,
-                disable_precompiles,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
@@ -667,7 +664,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 value,
                 code: Bytecode::new_legacy(input.clone()),
                 code_address: destination,
-                disable_precompiles: false,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
@@ -1270,7 +1266,7 @@ mod tests {
     #[test]
     fn initial_delegated_call_uses_delegated_code_address() {
         let caller = Address::with_last_byte(0xaa);
-        let target = Address::with_last_byte(0x02);
+        let target = Address::with_last_byte(0x55);
         let delegated = Address::with_last_byte(0x33);
         let delegated_code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
@@ -1310,7 +1306,6 @@ mod tests {
         .unwrap();
         assert_eq!(message.destination, target);
         assert_eq!(message.code_address, delegated);
-        assert!(message.disable_precompiles);
         assert_eq!(charged_state_gas, 0);
 
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();

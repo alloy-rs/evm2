@@ -2,7 +2,7 @@
 
 use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, DatabaseCommit, EmptyDB, ExecutionResult, Output,
-    SpecId, TransactTo, TxEnv, deploy_contract, inspect_deploy_contract, print_traces,
+    SpecId, TransactTo, TxEnv, deploy_contract, inspect_deploy_contract, op, print_traces,
 };
 use alloy_primitives::{Address, U256, address, hex, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
@@ -1087,6 +1087,49 @@ fn create_nonce_overflow_is_a_failed_frame() {
         } else {
             assert!(parity.is_empty() && geth.is_empty());
             assert!(traces[1].result.as_ref().is_some_and(|result| result.as_create().is_some()));
+        }
+    }
+}
+
+#[test]
+fn precompile_exclusion_uses_original_callee_with_delegation() {
+    let parent = Address::from([0x11; 20]);
+    for callee in [2, 0x55] {
+        for opcode in [op::CALL, op::CALLCODE, op::DELEGATECALL, op::STATICCALL] {
+            let mut code = vec![op::PUSH0, op::PUSH0, op::PUSH1, 4, op::PUSH0];
+            if matches!(opcode, op::CALL | op::CALLCODE) {
+                code.push(op::PUSH0);
+            }
+            code.extend([op::PUSH1, callee, op::GAS, opcode, op::POP, op::STOP]);
+            let mut db = CacheDB::<EmptyDB>::default();
+            db.insert_account_info(
+                &parent,
+                AccountInfo::default().with_code(Bytecode::new_raw(code.into())),
+            );
+            db.insert_account_info(
+                &Address::with_last_byte(callee),
+                AccountInfo::default().with_code(Bytecode::new_eip7702(Address::with_last_byte(2))),
+            );
+            let mut evm = Context::mainnet()
+                .with_db(db)
+                .modify_cfg_chained(|cfg| cfg.spec = SpecId::PRAGUE)
+                .build_mainnet_with_inspector(TracingInspector::new(
+                    TracingInspectorConfig::default_parity(),
+                ));
+            let result = evm
+                .inspect_tx(TxEnv {
+                    gas_limit: 100_000,
+                    kind: TransactTo::Call(parent),
+                    ..Default::default()
+                })
+                .unwrap();
+            assert!(result.result.is_success());
+            let traces = evm.into_inspector().into_parity_builder().into_transaction_traces();
+            assert_eq!(traces.len(), if callee == 2 { 1 } else { 2 });
+            if callee != 2 {
+                let Action::Call(call) = &traces[1].action else { panic!("expected a call") };
+                assert_eq!(call.to, Address::with_last_byte(callee));
+            }
         }
     }
 }
