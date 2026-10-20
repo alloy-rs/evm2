@@ -3,13 +3,13 @@
 //! [`PrewarmSet`] holds the warm entries that come from chain/transaction configuration rather
 //! than from an executing opcode: precompiles, the coinbase/beneficiary (EIP-3651), the EIP-2930
 //! access list (addresses and their storage slots), and the non-revertible base warm accounts
-//! (sender, recipient, EIP-7702 authorities, system contracts). It is a port of revm's
+//! (recipient, EIP-7702 authorities, system contracts). It is a port of revm's
 //! `WarmAddresses`, adapted to evm2's primitive types.
 //!
 //! Warm addresses are tracked in two places. Short addresses — 18 leading zero bytes and a
 //! last-two-byte value below [`SHORT_ADDRESS_CAP`], which is where precompiles and similar
 //! low-numbered addresses fall — live in a bit vector for fast lookups. The first few other warm
-//! addresses (the sender, the coinbase and the recipient) live in a small inline list that is
+//! addresses (the coinbase and the recipient) live in a small inline list that is
 //! compared without hashing. Every remaining warm address, along with any address that carries warm
 //! storage slots, lives in `access_list`.
 //!
@@ -32,7 +32,7 @@ const SHORT_ADDRESS_CAP: usize = 320;
 
 /// Number of non-short warm addresses kept in the inline list before falling back to the map.
 ///
-/// A transaction warms at most the sender, the coinbase and the recipient through
+/// A transaction warms at most the coinbase and the recipient through
 /// [`PrewarmSet::warm`]. Scanning this many addresses is cheaper than hashing.
 const INLINE_CAP: usize = 3;
 
@@ -64,7 +64,7 @@ pub struct PrewarmSet {
     /// Warm addresses keyed by address, each holding its warm storage slots.
     ///
     /// This holds the EIP-2930 access list, non-short warm addresses, and the non-revertible base
-    /// warm entries (sender, recipient, EIP-7702 authorities, system contracts) added via
+    /// warm entries (recipient, EIP-7702 authorities, system contracts) added via
     /// [`Self::warm`] and [`Self::warm_storage`]: they are warmed
     /// before or alongside execution and survive [`crate::evm::State::rollback`]. An address
     /// present with an empty slot set is warm with no warm storage slots.
@@ -106,7 +106,7 @@ impl PrewarmSet {
     /// Short addresses set a bit in `short_addresses`, the first few others fill the inline list,
     /// and the rest are inserted into `access_list` with no warm storage slots. Used for
     /// precompiles, the coinbase/beneficiary, and the transaction-initial warmth established
-    /// before any rollback checkpoint (sender, recipient, EIP-7702 authorities, system
+    /// before any rollback checkpoint (recipient, EIP-7702 authorities, system
     /// contracts). This warmth survives [`crate::evm::State::rollback`] and is cleared per
     /// transaction by [`Self::clear`].
     #[inline]
