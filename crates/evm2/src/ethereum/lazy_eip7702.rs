@@ -333,6 +333,11 @@ mod tests {
             assert_eq!(want.is_some(), i == 0, "case {i}");
             assert_eq!(signed.authorization_list[i].authority(), want, "signed case {i}");
             assert_eq!(recovered.authorization_list[i].authority(), want, "recovered case {i}");
+            assert_eq!(
+                recovered.authorization_list[i],
+                LazyAuthorization::from(authorization.clone().into_recovered()),
+                "recovered entry {i}"
+            );
         }
     }
 }

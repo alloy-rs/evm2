@@ -3251,6 +3251,21 @@ mod tests {
     }
 
     #[test]
+    fn same_index_commits_that_restore_a_slot_record_a_read() {
+        let mut evm = lifecycle_evm();
+        evm.state.enable_bal_builder();
+        evm.state.set_bal_index(BlockAccessIndex::new(1));
+
+        // Two commits at one index write 1 -> 7 -> 1.
+        let _ = evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").commit();
+        let _ = evm.transact(&test_tx(1)).expect("lifecycle transaction should execute").commit();
+
+        let bal = evm.state.take_bal_builder().expect("builder was enabled");
+        let slot = &bal.accounts[&LIFECYCLE_ACCOUNT].storage.storage[&LIFECYCLE_STORAGE_KEY];
+        assert!(slot.is_empty());
+    }
+
+    #[test]
     fn executed_transaction_commit_with_tee_fans_out_changes() {
         let mut evm = lifecycle_evm();
         let mut left = BlockStateAccumulator::new();

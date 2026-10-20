@@ -13,7 +13,8 @@ use blst::{
     blst_p1_add_or_double_affine, blst_p1_affine, blst_p1_affine_in_g1, blst_p1_affine_on_curve,
     blst_p1_from_affine, blst_p1_mult, blst_p1_to_affine, blst_p2, blst_p2_add_or_double_affine,
     blst_p2_affine, blst_p2_affine_in_g2, blst_p2_affine_on_curve, blst_p2_from_affine,
-    blst_p2_mult, blst_p2_to_affine, blst_scalar, blst_scalar_from_bendian,
+    blst_p2_mult, blst_p2_to_affine, blst_scalar, blst_scalar_from_be_bytes,
+    blst_scalar_from_bendian,
 };
 
 // Big-endian non-Montgomery form.
@@ -23,8 +24,14 @@ const MODULUS_REPR: [u8; 48] = [
     0x1e, 0xab, 0xff, 0xfe, 0xb1, 0x53, 0xff, 0xff, 0xb9, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xaa, 0xab,
 ];
 
+// Big-endian subgroup order `r`.
+const SCALAR_MODULUS_REPR: [u8; 32] = [
+    0x73, 0xed, 0xa7, 0x53, 0x29, 0x9d, 0x7d, 0x48, 0x33, 0x39, 0xd8, 0x08, 0x09, 0xa1, 0xd8, 0x05,
+    0x53, 0xbd, 0xa4, 0x02, 0xff, 0xfe, 0x5b, 0xfe, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
+];
+
 #[inline]
-pub(crate) fn p1_to_affine(p: &blst_p1) -> blst_p1_affine {
+fn p1_to_affine(p: &blst_p1) -> blst_p1_affine {
     let mut p_affine = blst_p1_affine::default();
     // SAFETY: both inputs are valid blst types
     unsafe { blst_p1_to_affine(&mut p_affine, p) };
@@ -32,7 +39,7 @@ pub(crate) fn p1_to_affine(p: &blst_p1) -> blst_p1_affine {
 }
 
 #[inline]
-pub(crate) fn p1_from_affine(p_affine: &blst_p1_affine) -> blst_p1 {
+fn p1_from_affine(p_affine: &blst_p1_affine) -> blst_p1 {
     let mut p = blst_p1::default();
     // SAFETY: both inputs are valid blst types
     unsafe { blst_p1_from_affine(&mut p, p_affine) };
@@ -40,7 +47,7 @@ pub(crate) fn p1_from_affine(p_affine: &blst_p1_affine) -> blst_p1 {
 }
 
 #[inline]
-pub(crate) fn p1_add_or_double(p: &blst_p1, p_affine: &blst_p1_affine) -> blst_p1 {
+fn p1_add_or_double(p: &blst_p1, p_affine: &blst_p1_affine) -> blst_p1 {
     let mut result = blst_p1::default();
     // SAFETY: all inputs are valid blst types
     unsafe { blst_p1_add_or_double_affine(&mut result, p, p_affine) };
@@ -48,7 +55,7 @@ pub(crate) fn p1_add_or_double(p: &blst_p1, p_affine: &blst_p1_affine) -> blst_p
 }
 
 #[inline]
-pub(crate) fn p2_to_affine(p: &blst_p2) -> blst_p2_affine {
+fn p2_to_affine(p: &blst_p2) -> blst_p2_affine {
     let mut p_affine = blst_p2_affine::default();
     // SAFETY: both inputs are valid blst types
     unsafe { blst_p2_to_affine(&mut p_affine, p) };
@@ -56,7 +63,7 @@ pub(crate) fn p2_to_affine(p: &blst_p2) -> blst_p2_affine {
 }
 
 #[inline]
-pub(crate) fn p2_from_affine(p_affine: &blst_p2_affine) -> blst_p2 {
+fn p2_from_affine(p_affine: &blst_p2_affine) -> blst_p2 {
     let mut p = blst_p2::default();
     // SAFETY: both inputs are valid blst types
     unsafe { blst_p2_from_affine(&mut p, p_affine) };
@@ -64,7 +71,7 @@ pub(crate) fn p2_from_affine(p_affine: &blst_p2_affine) -> blst_p2 {
 }
 
 #[inline]
-pub(crate) fn p2_add_or_double(p: &blst_p2, p_affine: &blst_p2_affine) -> blst_p2 {
+fn p2_add_or_double(p: &blst_p2, p_affine: &blst_p2_affine) -> blst_p2 {
     let mut result = blst_p2::default();
     // SAFETY: all inputs are valid blst types
     unsafe { blst_p2_add_or_double_affine(&mut result, p, p_affine) };
@@ -107,7 +114,7 @@ fn p2_add_affine(a: &blst_p2_affine, b: &blst_p2_affine) -> blst_p2_affine {
 ///
 /// Note: The scalar is expected to be in Big Endian format.
 #[inline]
-pub(crate) fn p1_scalar_mul(p: &blst_p1_affine, scalar: &blst_scalar) -> blst_p1_affine {
+fn p1_scalar_mul(p: &blst_p1_affine, scalar: &blst_scalar) -> blst_p1_affine {
     // Convert point to Jacobian coordinates
     let p_jacobian = p1_from_affine(p);
 
@@ -127,7 +134,7 @@ pub(crate) fn p1_scalar_mul(p: &blst_p1_affine, scalar: &blst_scalar) -> blst_p1
 ///
 /// Note: The scalar is expected to be in Big Endian format.
 #[inline]
-pub(crate) fn p2_scalar_mul(p: &blst_p2_affine, scalar: &blst_scalar) -> blst_p2_affine {
+fn p2_scalar_mul(p: &blst_p2_affine, scalar: &blst_scalar) -> blst_p2_affine {
     // Convert point to Jacobian coordinates
     let p_jacobian = p2_from_affine(p);
 
@@ -154,7 +161,7 @@ fn p1_msm(g1_points: Vec<blst_p1_affine>, scalars: Vec<blst_scalar>) -> blst_p1_
 
     // When no inputs are given, we return the point at infinity.
     // This case can only trigger, if the initial MSM pairs
-    // all had, either a zero scalar or the point at infinity.
+    // all had, either a scalar reduced to zero or the point at infinity.
     //
     // The precompile will return an error, if the initial input
     // was empty, in accordance with EIP-2537.
@@ -194,7 +201,7 @@ fn p2_msm(g2_points: Vec<blst_p2_affine>, scalars: Vec<blst_scalar>) -> blst_p2_
 
     // When no inputs are given, we return the point at infinity.
     // This case can only trigger, if the initial MSM pairs
-    // all had, either a zero scalar or the point at infinity.
+    // all had, either a scalar reduced to zero or the point at infinity.
     //
     // The precompile will return an error, if the initial input
     // was empty, in accordance with EIP-2537.
@@ -280,7 +287,7 @@ fn is_fp12_one(f: &blst_fp12) -> bool {
 /// the per-pair `blst_miller_loop`, does not special-case infinity and would
 /// feed the all-zero point representation into the line evaluations.
 #[inline]
-pub(crate) fn pairing_check(pairs: &[(blst_p1_affine, blst_p2_affine)]) -> bool {
+fn pairing_check(pairs: &[(blst_p1_affine, blst_p2_affine)]) -> bool {
     // When no inputs are given, we return true
     // This case can only trigger, if the initial pairing components
     // all had, either the G1 element as the point at infinity
@@ -546,31 +553,32 @@ fn read_fp(input: &[u8; FP_LENGTH]) -> Result<blst_fp, PrecompileHalt> {
 }
 
 /// Extracts a scalar from a 32 byte slice representation, decoding the input as a Big Endian
-/// unsigned integer. If the input is not exactly 32 bytes long, an error is returned.
+/// unsigned integer reduced modulo the subgroup order `r`. Returns `None` if the reduced scalar is
+/// zero. If the input is not exactly 32 bytes long, an error is returned.
 ///
 /// From [EIP-2537](https://eips.ethereum.org/EIPS/eip-2537):
 /// * A scalar for the multiplication operation is encoded as 32 bytes by performing BigEndian
 ///   encoding of the corresponding (unsigned) integer.
 ///
-/// We do not check that the scalar is a canonical Fr element, because the EIP specifies:
-/// * The corresponding integer is not required to be less than or equal than main subgroup order
-///   `q`.
-fn read_scalar(input: &[u8]) -> Result<blst_scalar, PrecompileHalt> {
+/// The EIP does not require the integer to be less than `r`. Reducing it is sound because every
+/// MSM point passes the subgroup check, so `k * P == (k mod r) * P`. Reduced scalars fit in 255
+/// bits and let blst use its GLV/GLS multiplication, which it only uses for scalars below `r`.
+fn read_scalar(input: &[u8]) -> Result<Option<blst_scalar>, PrecompileHalt> {
     if input.len() != SCALAR_LENGTH {
         return Err(PrecompileHalt::Bls12381ScalarInputLength);
     }
 
     let mut out = blst_scalar::default();
-    // SAFETY: `input` length is checked previously, out is a blst value.
-    unsafe {
-        // Note: We do not use `blst_scalar_fr_check` here because, from EIP-2537:
-        //
-        // * The corresponding integer is not required to be less than or equal than main subgroup
-        // order `q`.
-        blst_scalar_from_bendian(&mut out, input.as_ptr())
-    };
+    if input < SCALAR_MODULUS_REPR.as_slice() {
+        // SAFETY: `input` length is checked previously, out is a blst value.
+        unsafe { blst_scalar_from_bendian(&mut out, input.as_ptr()) };
+        return Ok((out.b != [0; SCALAR_LENGTH]).then_some(out));
+    }
 
-    Ok(out)
+    // SAFETY: `input` length is checked previously, out is a blst value.
+    let nonzero = unsafe { blst_scalar_from_be_bytes(&mut out, input.as_ptr(), SCALAR_LENGTH) };
+
+    Ok(nonzero.then_some(out))
 }
 
 /// Checks if the input is a valid big-endian representation of a field element.
@@ -659,17 +667,15 @@ pub(crate) fn p1_msm_bytes(
         // NB: MSM requires subgroup check
         let point = read_g1(&x, &y)?;
 
-        // Skip zero scalars after validating the point
-        if scalar_bytes.iter().all(|&b| b == 0) {
+        // Skip scalars that reduce to zero, after validating the point
+        let Some(scalar) = read_scalar(&scalar_bytes)? else {
             continue;
-        }
-
-        let scalar = read_scalar(&scalar_bytes)?;
+        };
         g1_points.push(point);
         scalars.push(scalar);
     }
 
-    // Return point at infinity if no pairs were provided or all scalars were zero
+    // Return point at infinity if no pairs were provided or all scalars reduced to zero
     if g1_points.is_empty() {
         return Ok([0u8; G1_LENGTH]);
     }
@@ -697,17 +703,15 @@ pub(crate) fn p2_msm_bytes(
         // NB: MSM requires subgroup check
         let point = read_g2(&x_0, &x_1, &y_0, &y_1)?;
 
-        // Skip zero scalars after validating the point
-        if scalar_bytes.iter().all(|&b| b == 0) {
+        // Skip scalars that reduce to zero, after validating the point
+        let Some(scalar) = read_scalar(&scalar_bytes)? else {
             continue;
-        }
-
-        let scalar = read_scalar(&scalar_bytes)?;
+        };
         g2_points.push(point);
         scalars.push(scalar);
     }
 
-    // Return point at infinity if no pairs were provided or all scalars were zero
+    // Return point at infinity if no pairs were provided or all scalars reduced to zero
     if g2_points.is_empty() {
         return Ok([0u8; G2_LENGTH]);
     }

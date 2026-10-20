@@ -137,8 +137,8 @@ pub(crate) const PADDED_FP2_LENGTH: usize = 2 * PADDED_FP_LENGTH;
 /// Note: Since it is already 32 byte aligned, there is no padded version of this constant.
 pub(crate) const SCALAR_LENGTH: usize = 32;
 /// SCALAR_LENGTH_BITS specifies the number of bits needed to represent an Fr element.
-/// This is an element in the scalar field of BLS12-381.
-pub(crate) const SCALAR_LENGTH_BITS: usize = SCALAR_LENGTH * 8;
+/// This is an element in the scalar field of BLS12-381, whose modulus is below `2^255`.
+pub(crate) const SCALAR_LENGTH_BITS: usize = 255;
 
 /// G1_ADD_INPUT_LENGTH specifies the number of bytes that the input to G1ADD
 /// must use.
