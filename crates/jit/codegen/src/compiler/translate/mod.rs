@@ -306,21 +306,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         fx.bcx.switch_to_block(unreachable_block);
         fx.bcx.unreachable();
         if bytecode.has_dynamic_jumps() {
-            fx.bcx.switch_to_block(fx.dynamic_jump_table);
-            // A decoded JUMPDEST is not necessarily a valid jump target: EIP-8024
-            // immediates can desynchronize decoding from the legacy JUMPDEST analysis,
-            // so a `0x5b` masked by the analysis still decodes as an instruction. Only
-            // analysis-valid targets belong in the dispatch table.
-            let jumpdests = bytecode.iter_insts().filter(|(_, data)| {
-                data.opcode == op::JUMPDEST && bytecode.is_valid_jump(data.jumpdest_pc() as usize)
-            });
-            let targets = jumpdests
-                .map(|(inst, data)| (data.jumpdest_pc() as u64, fx.effective_entry(inst)))
-                .collect::<Vec<_>>();
-            let i64_type = fx.bcx.type_int(64);
-            let index = fx.bcx.phi(i64_type, &fx.incoming_dynamic_jumps);
-            let invalid_jump = fx.add_invalid_jump();
-            fx.bcx.switch(index, invalid_jump, &targets, true);
+            fx.build_dynamic_jump_table(unreachable_block);
         } else {
             // No dynamic jumps.
             debug_assert!(fx.incoming_dynamic_jumps.is_empty());
@@ -1859,6 +1845,80 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         } else {
             self.bcx.ret(&[ret]);
         }
+    }
+
+    /// Builds the block that dispatches unresolved dynamic jumps to their target.
+    fn build_dynamic_jump_table(&mut self, unreachable_block: B::BasicBlock) {
+        self.bcx.switch_to_block(self.dynamic_jump_table);
+        let i64_type = self.bcx.type_int(64);
+        let i32_type = self.bcx.type_int(32);
+        let pc = self.bcx.phi(i64_type, &self.incoming_dynamic_jumps);
+
+        // A decoded JUMPDEST is not necessarily a valid jump target: EIP-8024
+        // immediates can desynchronize decoding from the legacy JUMPDEST analysis,
+        // so a `0x5b` masked by the analysis still decodes as an instruction. Only
+        // analysis-valid targets belong in the dispatch table.
+        let bytecode = self.bytecode;
+        let jumpdests = bytecode
+            .iter_insts()
+            .filter(|(_, data)| {
+                data.opcode == op::JUMPDEST && bytecode.is_valid_jump(data.jumpdest_pc() as usize)
+            })
+            .map(|(inst, data)| (data.jumpdest_pc() as usize, inst))
+            .collect::<Vec<_>>();
+
+        let Some(&(max_pc, _)) = jumpdests.last() else {
+            let invalid_jump = self.add_invalid_jump();
+            self.bcx.br(invalid_jump);
+            return;
+        };
+
+        // Switch on the target's rank among the valid targets instead of its sparse PC,
+        // so that the switch lowers to a jump table. Ranks count down from the last target.
+        // Each pair in the table covers 32 PCs: the number of targets in later pairs minus
+        // one, then the bitmap of targets in this pair, with the first PC in the top bit.
+        let mut table = vec![[0u64; 2]; max_pc / 32 + 1];
+        let mut targets = Vec::with_capacity(jumpdests.len());
+        for (i, &(pc, inst)) in jumpdests.iter().rev().enumerate() {
+            table[pc / 32][1] |= 1 << (31 - pc % 32);
+            targets.push((i as u64, self.effective_entry(inst)));
+        }
+        let mut rank = 0u32;
+        for pair in table.iter_mut().rev() {
+            pair[0] = rank.wrapping_sub(1).into();
+            rank += pair[1].count_ones();
+        }
+
+        let in_range = self.bcx.icmp_imm(IntCC::UnsignedLessThanOrEqual, pc, max_pc as i64);
+        let lookup = self.bcx.create_block("jump_table.lookup");
+        let invalid_jump = self.add_invalid_jump();
+        self.bcx.brif_cold(in_range, lookup, invalid_jump, false);
+
+        self.bcx.switch_to_block(lookup);
+        let five = self.bcx.iconst(i64_type, 5);
+        let pair_index = self.bcx.ushr(pc, five);
+        let table = self.bcx.const_array(i32_type, table.as_flattened());
+        let pair_type = self.bcx.type_array(i32_type, 2);
+        // The base is the pair's first field, so the pair's address is also the base's.
+        let base_ptr = self.bcx.gep(pair_type, table, &[pair_index], "jump_table.base.addr");
+        let base = self.bcx.load(i32_type, base_ptr, "jump_table.base");
+        let one = self.bcx.iconst(i32_type, 1);
+        let bitmap_ptr =
+            self.bcx.gep(pair_type, table, &[pair_index, one], "jump_table.bitmap.addr");
+        let bitmap = self.bcx.load(i32_type, bitmap_ptr, "jump_table.bitmap");
+        // Shift the target's bit into the sign bit, dropping the bits of earlier PCs.
+        let shift = self.bcx.ireduce(i32_type, pc);
+        let shift = self.bcx.bitand_imm(shift, 31);
+        let bits = self.bcx.ishl(bitmap, shift);
+        let is_valid = self.bcx.icmp_imm(IntCC::SignedLessThan, bits, 0);
+        let dispatch = self.bcx.create_block("jump_table.dispatch");
+        let invalid_jump = self.add_invalid_jump();
+        self.bcx.brif_cold(is_valid, dispatch, invalid_jump, false);
+
+        self.bcx.switch_to_block(dispatch);
+        let at_or_after = self.bcx.popcnt(bits);
+        let index = self.bcx.iadd(base, at_or_after);
+        self.bcx.switch(index, unreachable_block, &targets, false);
     }
 
     fn add_invalid_jump(&mut self) -> B::BasicBlock {

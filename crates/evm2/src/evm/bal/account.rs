@@ -228,7 +228,7 @@ impl AccountInfoBal {
         if original.code_hash != present.code_hash {
             self.code.update_with_key(
                 index,
-                &original.code_hash,
+                &(original.code_hash, original.code.clone().unwrap_or_default()),
                 (present.code_hash, present.code.clone().unwrap_or_default()),
                 |i| &i.0,
             );
@@ -265,11 +265,11 @@ impl AccountInfoBal {
     pub fn code_update(
         &mut self,
         bal_index: BlockAccessIndex,
-        original_code_hash: &B256,
+        original_code: &(B256, Bytecode),
         code_hash: B256,
         code: Bytecode,
     ) {
-        self.code.update_with_key(bal_index, original_code_hash, (code_hash, code), |i| &i.0);
+        self.code.update_with_key(bal_index, original_code, (code_hash, code), |i| &i.0);
     }
 }
 
