@@ -930,7 +930,7 @@ mod tests {
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId, Version,
         bytecode::Bytecode,
-        ethereum::{TxEnvelope, ethereum_tx_registry, floor_gas, intrinsic_gas},
+        ethereum::{TxEnvelope, ethereum_tx_registry, intrinsic_and_floor_gas},
         evm::{AccountInfo, CacheDB, EmptyDB},
         interpreter::{Host, op},
     };
@@ -1693,8 +1693,16 @@ mod tests {
             evm.set_inspector(inspector);
             let gas_limit = if runtime_oog {
                 let version = Version::base(spec);
-                intrinsic_gas(version, caller, TxKind::Create, &initcode, 0, 0, U256::ZERO)
-                    .max(floor_gas(version, caller, TxKind::Create, &initcode, 0, 0, U256::ZERO))
+                let (intrinsic, floor) = intrinsic_and_floor_gas(
+                    version,
+                    caller,
+                    TxKind::Create,
+                    &initcode,
+                    0,
+                    0,
+                    U256::ZERO,
+                );
+                intrinsic.max(floor)
             } else {
                 100_000
             };

@@ -337,45 +337,35 @@ mod tests {
 
         let unordered_account = AccountBal {
             account_info: AccountInfoBal {
-                nonce: BalChanges {
-                    changes: vec![
-                        AlloyNonceChange::new(idx(9), 90),
-                        AlloyNonceChange::new(idx(4), 40),
-                    ],
-                },
-                balance: BalChanges {
-                    changes: vec![
-                        AlloyBalanceChange::new(idx(5), U256::from(50)),
-                        AlloyBalanceChange::new(idx(2), U256::from(20)),
-                    ],
-                },
-                code: BalChanges {
-                    changes: vec![
-                        BalCodeChange::new(idx(7), code(7)),
-                        BalCodeChange::new(idx(3), code(3)),
-                    ],
-                },
+                nonce: BalChanges::from(vec![
+                    AlloyNonceChange::new(idx(9), 90),
+                    AlloyNonceChange::new(idx(4), 40),
+                ]),
+                balance: BalChanges::from(vec![
+                    AlloyBalanceChange::new(idx(5), U256::from(50)),
+                    AlloyBalanceChange::new(idx(2), U256::from(20)),
+                ]),
+                code: BalChanges::from(vec![
+                    BalCodeChange::new(idx(7), code(7)),
+                    BalCodeChange::new(idx(3), code(3)),
+                ]),
             },
             storage: StorageBal {
                 storage: U256Map::from_iter([
                     (
                         U256::from(4),
-                        BalChanges {
-                            changes: vec![
-                                AlloyStorageChange::new(idx(8), U256::from(80)),
-                                AlloyStorageChange::new(idx(6), U256::from(60)),
-                            ],
-                        },
+                        BalChanges::from(vec![
+                            AlloyStorageChange::new(idx(8), U256::from(80)),
+                            AlloyStorageChange::new(idx(6), U256::from(60)),
+                        ]),
                     ),
                     (U256::from(1), BalChanges::default()),
                     (
                         U256::from(2),
-                        BalChanges {
-                            changes: vec![
-                                AlloyStorageChange::new(idx(3), U256::from(30)),
-                                AlloyStorageChange::new(idx(1), U256::from(10)),
-                            ],
-                        },
+                        BalChanges::from(vec![
+                            AlloyStorageChange::new(idx(3), U256::from(30)),
+                            AlloyStorageChange::new(idx(1), U256::from(10)),
+                        ]),
                     ),
                     (U256::from(3), BalChanges::default()),
                 ]),

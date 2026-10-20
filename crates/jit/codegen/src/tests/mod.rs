@@ -1429,6 +1429,68 @@ tests! {
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
 
+        // Unresolved jumps to valid targets in different table pairs, including the
+        // first and last bit of a bitmap, and to invalid and out-of-range targets.
+        dynamic_jump_to_63(@raw {
+            bytecode: &bytecode_dynamic_jump(63_U256),
+            expected_stack: &[64_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_96(@raw {
+            bytecode: &bytecode_dynamic_jump(96_U256),
+            expected_stack: &[97_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_127(@raw {
+            bytecode: &bytecode_dynamic_jump(127_U256),
+            expected_stack: &[128_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_130(@raw {
+            bytecode: &bytecode_dynamic_jump(130_U256),
+            expected_stack: &[131_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_65(@raw {
+            bytecode: &bytecode_dynamic_jump(65_U256),
+            expected_return: InstrStop::InvalidJump,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_97(@raw {
+            bytecode: &bytecode_dynamic_jump(97_U256),
+            expected_return: InstrStop::InvalidJump,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_code_end(@raw {
+            bytecode: &bytecode_dynamic_jump(133_U256),
+            expected_return: InstrStop::InvalidJump,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_table_end(@raw {
+            bytecode: &bytecode_dynamic_jump(160_U256),
+            expected_return: InstrStop::InvalidJump,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_u64_max(@raw {
+            bytecode: &bytecode_dynamic_jump(U256::from(u64::MAX)),
+            expected_return: InstrStop::InvalidJump,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_u64_overflow(@raw {
+            bytecode: &bytecode_dynamic_jump((1_U256 << 64) + 63_U256),
+            expected_return: InstrStop::InvalidJump,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
     }
 
     arith {
@@ -3537,6 +3599,17 @@ fn store_dynamic_operands(code: &mut Vec<u8>, operands: &[(U256, bool, u8)]) {
             ]);
         }
     }
+}
+
+/// Jumps to `target` through memory, so the jump stays unresolved, with `JUMPDEST PC STOP`
+/// at PCs 63, 96, 127 and 130.
+fn bytecode_dynamic_jump(target: U256) -> Vec<u8> {
+    let mut code = bytecode_unop_opaque(op::JUMP, target);
+    for pc in [63, 96, 127, 130] {
+        code.resize(pc, op::STOP);
+        code.extend([op::JUMPDEST, op::PC, op::STOP]);
+    }
+    code
 }
 
 fn bytecode_binop_mixed(opcode: u8, a: U256, b: U256, a_const: bool, b_const: bool) -> Vec<u8> {

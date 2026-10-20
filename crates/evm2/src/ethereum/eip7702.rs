@@ -1,10 +1,11 @@
 use super::{
     InitialFrame, LazyAuthorization, PreparedTx, access_list_counts, effective_gas_price,
-    floor_gas, initial_gas_and_reservoir, intrinsic_gas, prepare_initial_frame, runtime_oog_result,
+    initial_gas_and_reservoir, intrinsic_and_floor_gas, prepare_initial_frame, runtime_oog_result,
     settle_initial_frame_gas, validate_block_gas_limit, validate_chain_id,
     validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
     validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
-    validate_sender, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
+    validate_sender_and_bump_nonce, validate_tx_gas_limit_cap, warm_access_list,
+    warm_base_accounts,
 };
 use crate::{
     Evm, EvmFeatures, EvmTypes, TxResult, Version,
@@ -55,21 +56,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     validate_create_initcode(req.host.version(), tx.to.into(), &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
     let (access_list_accounts, access_list_storage_keys) = access_list_counts(&tx.access_list);
-    let mut intrinsic = intrinsic_gas(
-        req.host.version(),
-        caller,
-        tx.to.into(),
-        &tx.input,
-        access_list_accounts,
-        access_list_storage_keys,
-        tx.value,
-    ) + eip7702_authorization_gas(req.host, tx.authorization_list.len());
-    // EIP-2780 (ethereum/EIPs#11844): the per-auth state-dependent charges are applied at the
-    // runtime gas phase, so no state gas is charged at the intrinsic phase (pre-Amsterdam there is
-    // none either). A transaction that passes the intrinsic check but cannot afford the runtime
-    // charges is included as an out-of-gas halt rather than rejected.
-    let mut initial_state_gas = 0;
-    let mut floor_gas = floor_gas(
+    let (mut intrinsic, mut floor_gas) = intrinsic_and_floor_gas(
         req.host.version(),
         caller,
         tx.to.into(),
@@ -78,6 +65,12 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         access_list_storage_keys,
         tx.value,
     );
+    intrinsic += eip7702_authorization_gas(req.host, tx.authorization_list.len());
+    // EIP-2780 (ethereum/EIPs#11844): the per-auth state-dependent charges are applied at the
+    // runtime gas phase, so no state gas is charged at the intrinsic phase (pre-Amsterdam there is
+    // none either). A transaction that passes the intrinsic check but cannot afford the runtime
+    // charges is included as an out-of-gas halt rather than rejected.
+    let mut initial_state_gas = 0;
     H::adjust_intrinsic_gas(
         req.host,
         envelope,
@@ -90,13 +83,17 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     validate_execution_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * max_fee_per_gas;
-    validate_sender(req.host, caller, tx.nonce, max_gas_cost.saturating_add(tx.value))?;
+    validate_sender_and_bump_nonce(
+        req.host,
+        caller,
+        tx.nonce,
+        max_gas_cost.saturating_add(tx.value),
+    )?;
 
-    warm_base_accounts(req.host, caller, tx.to.into());
+    warm_base_accounts(req.host, tx.to.into());
     warm_access_list(req.host, &tx.access_list);
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    req.host.state.account(&caller)?.bump_nonce();
     H::before_execution(req.host, envelope, caller, effective_gas_cost)?;
 
     Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas })

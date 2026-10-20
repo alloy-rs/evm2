@@ -1,5 +1,9 @@
 use crate::{
-    fixtures::{EEST_STABLE_ENV, apply_subdir, env_flag, fixtures_root, workspace_relative},
+    env::explicit_state_test_root_from_env,
+    fixtures::{
+        EEST_STABLE_ENV, apply_subdir, apply_subdir_to_roots, env_flag, fixtures_root,
+        workspace_relative,
+    },
     harness::TestRoot,
 };
 use std::{env, path::PathBuf};
@@ -27,6 +31,9 @@ pub(crate) fn explicit_blockchain_test_root_from_env() -> Option<PathBuf> {
 }
 
 /// Returns the blockchain-test roots to run by default.
+///
+/// A missing root that the setup script downloads by default is an error, not a skip, unless the
+/// state tests got an explicit root.
 pub(crate) fn blockchain_test_roots() -> Vec<BlockchainTestRoot> {
     if let Some(path) = explicit_blockchain_test_root_from_env() {
         return vec![BlockchainTestRoot {
@@ -36,10 +43,14 @@ pub(crate) fn blockchain_test_roots() -> Vec<BlockchainTestRoot> {
         }];
     }
 
-    default_blockchain_test_roots().into_iter().filter(|root| root.path.is_dir()).collect()
+    let mut roots = default_blockchain_test_roots();
+    if explicit_state_test_root_from_env().is_some() {
+        roots.retain(|root| root.path.is_dir());
+    }
+    roots
 }
 
-/// Returns the default repo-relative blockchain-test roots, whether or not they exist.
+/// Returns the default repo-relative blockchain-test roots. The `main` root is optional.
 pub(crate) fn default_blockchain_test_roots() -> Vec<BlockchainTestRoot> {
     let fixtures = fixtures_root();
     let main_path = if env_flag(BLOCKCHAINTEST_STABLE_ENV) || env_flag(EEST_STABLE_ENV) {
@@ -48,21 +59,20 @@ pub(crate) fn default_blockchain_test_roots() -> Vec<BlockchainTestRoot> {
         fixtures.join("main/develop/blockchain_tests")
     };
 
-    let mut roots = vec![
-        BlockchainTestRoot {
+    let mut roots = vec![BlockchainTestRoot {
+        name: "blockchain_tests::devnet".to_string(),
+        label: "execution-spec-tests devnet",
+        path: fixtures.join("devnet/blockchain_tests"),
+    }];
+
+    if main_path.is_dir() {
+        roots.push(BlockchainTestRoot {
             name: "blockchain_tests".to_string(),
             label: "execution-spec-tests",
             path: main_path,
-        },
-        BlockchainTestRoot {
-            name: "blockchain_tests::devnet".to_string(),
-            label: "execution-spec-tests devnet",
-            path: fixtures.join("devnet/blockchain_tests"),
-        },
-    ];
-
-    for root in &mut roots {
-        apply_subdir(&mut root.path, BLOCKCHAIN_TEST_SUBDIR_ENV);
+        });
     }
+
+    apply_subdir_to_roots(&mut roots, BLOCKCHAIN_TEST_SUBDIR_ENV);
     roots
 }

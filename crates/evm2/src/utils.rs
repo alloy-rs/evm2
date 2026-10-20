@@ -295,6 +295,13 @@ pub fn read_word_padded(data: &[u8], offset: usize) -> B256 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct BitArray<const WORDS: usize>([u64; WORDS]);
 
+impl<const WORDS: usize> Default for BitArray<WORDS> {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const WORDS: usize> BitArray<WORDS> {
     /// Creates a bit array with every bit unset.
     #[inline]
@@ -312,6 +319,20 @@ impl<const WORDS: usize> BitArray<WORDS> {
     #[inline]
     pub(crate) const fn set(&mut self, index: usize) {
         self.0[index / 64] |= 1 << (index % 64);
+    }
+
+    /// Unsets bit `index`.
+    #[inline]
+    pub(crate) const fn unset(&mut self, index: usize) {
+        self.0[index / 64] &= !(1 << (index % 64));
+    }
+
+    /// Sets every bit that is set in `other`.
+    #[inline]
+    pub(crate) fn union(&mut self, other: &Self) {
+        for (word, other) in self.0.iter_mut().zip(other.0) {
+            *word |= other;
+        }
     }
 
     /// Unsets every bit.
