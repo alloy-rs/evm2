@@ -358,7 +358,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline]
     fn contains_precompile(&self, message: &Message<T>) -> bool {
-        !message.disable_precompiles && self.precompiles.contains(&message.code_address)
+        // Native dispatch takes precedence over code stored at the original callee.
+        self.precompiles.contains(&message.call_target)
     }
 
     #[inline]
@@ -1216,7 +1217,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             };
         }
         message.code_address = message.destination;
-        message.disable_precompiles = false;
         let input = core::mem::take(&mut message.input);
         let result = self.run_interpreter(tx_env, message);
         message.input = input;
@@ -2018,7 +2018,6 @@ mod tests {
             value: U256::ZERO,
             code: Bytecode::default(),
             code_address: address,
-            disable_precompiles: false,
             caller_is_static: false,
             salt: B256::ZERO,
             ext: (),
@@ -2856,7 +2855,6 @@ mod tests {
             assert_eq!(message.input, Bytes::from_static(b"message input"));
             assert_eq!(message.value, U256::from(99));
             assert_eq!(message.code_address, TEST_PRECOMPILE);
-            assert!(!message.disable_precompiles);
             Ok(PrecompileOutput::new(Bytes::copy_from_slice(&evm.block.number.to_be_bytes::<32>())))
         })]);
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -2878,7 +2876,6 @@ mod tests {
             value: U256::from(99),
             code: Bytecode::default(),
             code_address: address,
-            disable_precompiles: false,
             caller_is_static: false,
             salt: B256::ZERO,
             ext: (),
@@ -3251,6 +3248,21 @@ mod tests {
         assert_eq!(alloy[0].storage_changes[0].changes.len(), 2);
         assert_eq!(evm.state.bal_index(), BlockAccessIndex::PRE_EXECUTION);
         assert!(evm.state.bal_builder().is_none());
+    }
+
+    #[test]
+    fn same_index_commits_that_restore_a_slot_record_a_read() {
+        let mut evm = lifecycle_evm();
+        evm.state.enable_bal_builder();
+        evm.state.set_bal_index(BlockAccessIndex::new(1));
+
+        // Two commits at one index write 1 -> 7 -> 1.
+        let _ = evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").commit();
+        let _ = evm.transact(&test_tx(1)).expect("lifecycle transaction should execute").commit();
+
+        let bal = evm.state.take_bal_builder().expect("builder was enabled");
+        let slot = &bal.accounts[&LIFECYCLE_ACCOUNT].storage.storage[&LIFECYCLE_STORAGE_KEY];
+        assert!(slot.is_empty());
     }
 
     #[test]

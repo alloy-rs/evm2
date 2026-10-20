@@ -425,13 +425,15 @@ pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult
     Ok(())
 }
 
-/// Loads and validates the sender account.
-pub fn validate_sender<'a, T: EvmTypes>(
+/// Loads and validates the sender account, then marks it warm and bumps its nonce.
+///
+/// One account handle does all three, so the sender is looked up and journaled once.
+pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
     max_upfront: U256,
-) -> HandlerResult<AccountInfo> {
+) -> HandlerResult<()> {
     let has_nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let has_balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
     let has_balance_top_up = host.feature(EvmFeatures::BALANCE_TOP_UP);
@@ -453,12 +455,15 @@ pub fn validate_sender<'a, T: EvmTypes>(
     if !has_balance_check && has_balance_top_up && sender.balance() < max_upfront {
         sender.add_balance(max_upfront - sender.balance());
     }
-    Ok(sender.get().cloned().unwrap_or_default())
+    // The sender is warm from the start of the transaction (EIP-2929).
+    sender.warm();
+    sender.bump_nonce();
+    Ok(())
 }
 
-/// Warms the accounts required by every transaction.
-pub fn warm_base_accounts<'a, T: EvmTypes>(host: &mut Evm<'a, T>, caller: Address, to: TxKind) {
-    host.state.prewarm(&caller);
+/// Warms the accounts required by every transaction other than the sender, which
+/// [`validate_sender_and_bump_nonce`] warms.
+pub fn warm_base_accounts<'a, T: EvmTypes>(host: &mut Evm<'a, T>, to: TxKind) {
     if host.feature(EvmFeatures::EIP3651) {
         host.state.prewarm(&host.block.beneficiary);
     }
@@ -576,7 +581,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 (recipient_is_empty, account.load_code()?)
             };
             let mut code_address = to;
-            let mut disable_precompiles = false;
             if host.feature(EvmFeatures::EIP2780) && !value.is_zero() && recipient_is_empty {
                 let new_account_state_gas = host.version().gas_params.new_account_state_gas();
                 if tx_gas.spend_state(new_account_state_gas).is_err() {
@@ -616,7 +620,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     code = account.load_code()?;
                 }
                 code_address = delegated_address;
-                disable_precompiles = true;
             }
             MessageExt {
                 kind: MessageKind::Call,
@@ -630,7 +633,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 value,
                 code,
                 code_address,
-                disable_precompiles,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
@@ -662,7 +664,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 value,
                 code: Bytecode::new_legacy(input.clone()),
                 code_address: destination,
-                disable_precompiles: false,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
@@ -1203,8 +1204,9 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
-        assert!(evm.state.account_info_untracked(&caller).unwrap().is_none());
+        assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
+        let sender = evm.state.account_info_untracked(&caller).unwrap().unwrap();
+        assert_eq!((sender.balance, sender.nonce), (U256::ZERO, 1));
     }
 
     #[test]
@@ -1231,7 +1233,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
+        assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
         assert_eq!(
             evm.state.account_info_untracked(&caller).unwrap().unwrap().balance,
             U256::from(100)
@@ -1256,7 +1258,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
+        assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
         charge_upfront(&mut evm, caller, U256::from(100)).unwrap();
         assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().balance, U256::ZERO);
     }
@@ -1264,7 +1266,7 @@ mod tests {
     #[test]
     fn initial_delegated_call_uses_delegated_code_address() {
         let caller = Address::with_last_byte(0xaa);
-        let target = Address::with_last_byte(0x02);
+        let target = Address::with_last_byte(0x55);
         let delegated = Address::with_last_byte(0x33);
         let delegated_code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
@@ -1304,7 +1306,6 @@ mod tests {
         .unwrap();
         assert_eq!(message.destination, target);
         assert_eq!(message.code_address, delegated);
-        assert!(message.disable_precompiles);
         assert_eq!(charged_state_gas, 0);
 
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();

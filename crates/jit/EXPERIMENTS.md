@@ -63,9 +63,6 @@ ones here with the numbers that rejected them.
 
 ## `llc` flags
 
-- `-jump-table-density=1` for the dynamic jump switch: about 5% less code, but
-  the tables grow by about 1 MB across the benchmarks because the switch is on
-  sparse PCs. It needs a dense index first.
 - `-grow-region-complexity-budget=1000` raised snailtracer reloads 2.2×, and
   `-disable-machine-licm` changed 12 of 21 benchmarks with seaport JIT size
   +1.6%; `-sink-insts-to-avoid-spills` fixes the function-wide loops better.
