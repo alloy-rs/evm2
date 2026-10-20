@@ -15,12 +15,6 @@ pub trait BalChange {
     /// The post-state value carried by the change.
     type Value: PartialEq + Clone;
 
-    /// The part of the value that [`BalChanges::update`] compares to detect a change.
-    type Key: PartialEq + Clone;
-
-    /// The comparison key of `value`.
-    fn key(value: &Self::Value) -> &Self::Key;
-
     /// Create a new change.
     fn new(index: BlockAccessIndex, value: Self::Value) -> Self;
 
@@ -36,11 +30,6 @@ pub trait BalChange {
 
 impl BalChange for NonceChange {
     type Value = u64;
-    type Key = u64;
-
-    fn key(value: &Self::Value) -> &Self::Key {
-        value
-    }
 
     fn new(index: BlockAccessIndex, value: Self::Value) -> Self {
         Self { block_access_index: index, new_nonce: value }
@@ -61,11 +50,6 @@ impl BalChange for NonceChange {
 
 impl BalChange for BalanceChange {
     type Value = U256;
-    type Key = U256;
-
-    fn key(value: &Self::Value) -> &Self::Key {
-        value
-    }
 
     fn new(index: BlockAccessIndex, value: Self::Value) -> Self {
         Self { block_access_index: index, post_balance: value }
@@ -86,11 +70,6 @@ impl BalChange for BalanceChange {
 
 impl BalChange for StorageChange {
     type Value = U256;
-    type Key = U256;
-
-    fn key(value: &Self::Value) -> &Self::Key {
-        value
-    }
 
     fn new(index: BlockAccessIndex, value: Self::Value) -> Self {
         Self { block_access_index: index, new_value: value }
@@ -131,11 +110,6 @@ impl BalCodeChange {
 
 impl BalChange for BalCodeChange {
     type Value = (B256, Bytecode);
-    type Key = B256;
-
-    fn key(value: &Self::Value) -> &Self::Key {
-        &value.0
-    }
 
     fn new(index: BlockAccessIndex, value: Self::Value) -> Self {
         Self { block_access_index: index, code: value }
@@ -177,10 +151,9 @@ impl From<BalCodeChange> for AlloyCodeChange {
 pub struct BalChanges<T: BalChange> {
     /// List of changes, sorted by [`BlockAccessIndex`].
     pub changes: Vec<T>,
-    /// Key of the value before the first recorded change. If the only change is at the current
-    /// index, this is the value before that index, which a later commit at the same index can
-    /// restore.
-    prior: Option<T::Key>,
+    /// Value before the first recorded change. If the only change is at the current index, this
+    /// is the value before that index, which a later commit at the same index can restore.
+    prior: Option<T::Value>,
 }
 
 impl<T: BalChange> Default for BalChanges<T> {
@@ -270,17 +243,31 @@ impl<T: BalChange> BalChanges<T> {
 
     /// Insert a value into the builder.
     ///
-    /// `original` is the key of the value before this update. If [`BlockAccessIndex`] is same as
-    /// last it will override the value, or remove it if the value is back to the one before the
-    /// index.
+    /// If [`BlockAccessIndex`] is same as last it will override the value.
+    pub fn update(&mut self, index: BlockAccessIndex, original: &T::Value, value: T::Value) {
+        self.update_with_key(index, original, value, |i| i);
+    }
+
+    /// Insert a value into the builder, comparing values by the key that `f` returns.
+    ///
+    /// `original` is the value before this update. If [`BlockAccessIndex`] is same as last it
+    /// will override the value, or remove it if the value is back to the one before the index.
     ///
     /// Assumes that index is always greater than last one and that changes are updated in proper
     /// order.
     #[inline]
-    pub fn update(&mut self, index: BlockAccessIndex, original: &T::Key, value: T::Value) {
+    pub fn update_with_key<K: PartialEq, F>(
+        &mut self,
+        index: BlockAccessIndex,
+        original: &T::Value,
+        value: T::Value,
+        f: F,
+    ) where
+        F: Fn(&T::Value) -> &K,
+    {
         // A no-op update records nothing. It must also preserve a change recorded earlier at the
         // same index, since `original` is then the value that change set.
-        if original == T::key(&value) {
+        if f(original) == f(&value) {
             return;
         }
 
@@ -289,7 +276,7 @@ impl<T: BalChange> BalChanges<T> {
             && last.block_access_index() != index
         {
             // we push the new value only if it is changed.
-            if T::key(last.value()) != T::key(&value) {
+            if f(last.value()) != f(&value) {
                 self.changes.push(T::new(index, value));
             }
             return;
@@ -297,10 +284,10 @@ impl<T: BalChange> BalChanges<T> {
 
         // extract the value before the index and the last change at the index.
         let (previous, last) = match self.changes.as_mut_slice() {
-            [.., previous, last] => (T::key(previous.value()), last),
+            [.., previous, last] => (f(previous.value()), last),
             // `original` is the value before this update, which can be the value set by an
             // earlier commit at this index. Compare against the value before the index instead.
-            [last] => (self.prior.as_ref().unwrap_or(original), last),
+            [last] => (f(self.prior.as_ref().unwrap_or(original)), last),
             [] => {
                 self.prior = Some(original.clone());
                 self.changes.push(T::new(index, value));
@@ -309,7 +296,7 @@ impl<T: BalChange> BalChanges<T> {
         };
 
         // if previous value is same, we pop the last value.
-        if previous == T::key(&value) {
+        if previous == f(&value) {
             self.changes.pop();
             return;
         }
@@ -412,8 +399,10 @@ mod tests {
 
         let code = Bytecode::new_raw(bytes!("6001"));
         let mut changes = BalChanges::<BalCodeChange>::default();
-        changes.update(idx(1), &B256::ZERO, (code.hash_slow(), code.clone()));
-        changes.update(idx(1), &code.hash_slow(), (B256::ZERO, Bytecode::default()));
+        let empty = (B256::ZERO, Bytecode::default());
+        let deployed = (code.hash_slow(), code);
+        changes.update_with_key(idx(1), &empty, deployed.clone(), |i| &i.0);
+        changes.update_with_key(idx(1), &deployed, empty, |i| &i.0);
         assert!(changes.is_empty());
     }
 }
