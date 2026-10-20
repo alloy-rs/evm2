@@ -161,7 +161,7 @@ fn p1_msm(g1_points: Vec<blst_p1_affine>, scalars: Vec<blst_scalar>) -> blst_p1_
 
     // When no inputs are given, we return the point at infinity.
     // This case can only trigger, if the initial MSM pairs
-    // all had, either a zero scalar or the point at infinity.
+    // all had, either a scalar reduced to zero or the point at infinity.
     //
     // The precompile will return an error, if the initial input
     // was empty, in accordance with EIP-2537.
@@ -201,7 +201,7 @@ fn p2_msm(g2_points: Vec<blst_p2_affine>, scalars: Vec<blst_scalar>) -> blst_p2_
 
     // When no inputs are given, we return the point at infinity.
     // This case can only trigger, if the initial MSM pairs
-    // all had, either a zero scalar or the point at infinity.
+    // all had, either a scalar reduced to zero or the point at infinity.
     //
     // The precompile will return an error, if the initial input
     // was empty, in accordance with EIP-2537.
@@ -561,9 +561,8 @@ fn read_fp(input: &[u8; FP_LENGTH]) -> Result<blst_fp, PrecompileHalt> {
 ///   encoding of the corresponding (unsigned) integer.
 ///
 /// The EIP does not require the integer to be less than `r`. Reducing it is sound because every
-/// MSM point passes the subgroup check, so `k * P == (k mod r) * P`. It also keeps blst on its
-/// fast GLV/GLS multiplication, which it only uses for scalars below `r`. Scalars already below `r`
-/// skip the reduction.
+/// MSM point passes the subgroup check, so `k * P == (k mod r) * P`. Reduced scalars fit in 255
+/// bits and let blst use its GLV/GLS multiplication, which it only uses for scalars below `r`.
 fn read_scalar(input: &[u8]) -> Result<Option<blst_scalar>, PrecompileHalt> {
     if input.len() != SCALAR_LENGTH {
         return Err(PrecompileHalt::Bls12381ScalarInputLength);
@@ -676,7 +675,7 @@ pub(crate) fn p1_msm_bytes(
         scalars.push(scalar);
     }
 
-    // Return point at infinity if no pairs were provided or all scalars were zero
+    // Return point at infinity if no pairs were provided or all scalars reduced to zero
     if g1_points.is_empty() {
         return Ok([0u8; G1_LENGTH]);
     }
@@ -712,7 +711,7 @@ pub(crate) fn p2_msm_bytes(
         scalars.push(scalar);
     }
 
-    // Return point at infinity if no pairs were provided or all scalars were zero
+    // Return point at infinity if no pairs were provided or all scalars reduced to zero
     if g2_points.is_empty() {
         return Ok([0u8; G2_LENGTH]);
     }

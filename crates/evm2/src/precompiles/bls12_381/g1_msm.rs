@@ -55,6 +55,7 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::precompiles::kzg_point_evaluation::RETURN_VALUE;
     use alloy_primitives::{Bytes, U256, hex};
 
     #[test]
@@ -73,9 +74,7 @@ mod test {
     /// and invalid points are rejected whatever their scalar.
     #[test]
     fn g1_msm_scalars_reduced_mod_r() {
-        let r = U256::from_be_bytes(hex!(
-            "73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001"
-        ));
+        let r = U256::from_be_slice(&RETURN_VALUE[32..]);
         let point = hex!(
             "0000000000000000000000000000000017f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb0000000000000000000000000000000008b3f481e3aaa0f1a09e30ed741d8ae4fcf5e095d5d00af600db18cb2c04b3edd03cc744a2888ae40caa232946c5e7e1"
         );
