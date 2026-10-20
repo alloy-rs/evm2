@@ -226,11 +226,10 @@ impl AccountInfoBal {
         self.nonce.update(index, &original.nonce, present.nonce);
         self.balance.update(index, &original.balance, present.balance);
         if original.code_hash != present.code_hash {
-            self.code.update_with_key(
+            self.code.update(
                 index,
                 &original.code_hash,
                 (present.code_hash, present.code.clone().unwrap_or_default()),
-                |i| &i.0,
             );
         }
     }
@@ -269,7 +268,7 @@ impl AccountInfoBal {
         code_hash: B256,
         code: Bytecode,
     ) {
-        self.code.update_with_key(bal_index, original_code_hash, (code_hash, code), |i| &i.0);
+        self.code.update(bal_index, original_code_hash, (code_hash, code));
     }
 }
 
