@@ -313,7 +313,13 @@ impl BackendState {
         sync_notifier: SyncNotifier,
         mode: AdmitMode,
     ) {
-        if self.inner.resident.contains_key(&key) {
+        // A resident JIT program still needs an AOT artifact to be persisted.
+        if self
+            .inner
+            .resident
+            .get(&key)
+            .is_some_and(|p| p.kind == ProgramKind::Aot || kind == CompilationKind::Jit)
+        {
             sync_notifier.notify();
             return;
         }
