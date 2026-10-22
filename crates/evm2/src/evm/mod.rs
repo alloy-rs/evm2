@@ -4083,7 +4083,7 @@ mod tests {
     fn validate_tx_discards_preparation_writes_on_success_and_error() {
         let mut evm = lifecycle_evm();
         let errors = [
-            HandlerError::InsufficientFunds,
+            HandlerError::InsufficientFunds { fee: U256::from(10), balance: U256::ZERO },
             HandlerError::Database(crate::DatabaseError::new(fmt::Error, true)),
             HandlerError::Database(crate::DatabaseError::new(fmt::Error, false)),
             HandlerError::Fatal("preparation failed".into()),
@@ -4174,7 +4174,10 @@ mod tests {
                 |_| Ok(()),
                 |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| match req.tx.nonce {
                     0 => Ok(TxResultExt::default()),
-                    1 => Err(HandlerError::InsufficientFunds),
+                    1 => Err(HandlerError::InsufficientFunds {
+                        fee: U256::from(10),
+                        balance: U256::ZERO,
+                    }),
                     _ => panic!("transaction handler panicked"),
                 },
             ),
@@ -4187,7 +4190,10 @@ mod tests {
             }));
             match nonce {
                 0 => assert!(result.unwrap().is_ok()),
-                1 => assert_eq!(result.unwrap().unwrap_err(), HandlerError::InsufficientFunds),
+                1 => assert_eq!(
+                    result.unwrap().unwrap_err(),
+                    HandlerError::InsufficientFunds { fee: U256::from(10), balance: U256::ZERO }
+                ),
                 _ => assert!(result.is_err()),
             }
             assert!(evm.clear_inspector_as::<NoopInspector>().is_some());
