@@ -71,6 +71,10 @@ pub struct StorageSlot {
     pub value: Tracked<Word>,
     /// Whether the slot was warmed during execution this transaction, for EIP-2929 gas accounting.
     pub is_warm: bool,
+    /// Whether the value is an assumed zero for an account created in this transaction, loaded
+    /// without reading the database. Rolling back the creation makes the slot reload from the
+    /// database on its next access.
+    pub(crate) assumed_zero: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -86,7 +90,7 @@ impl StorageSlot {
     /// EIP-2929 warmth.
     #[inline]
     fn loaded(value: Word, is_warm: bool) -> Self {
-        Self { value: Tracked::new(value), is_warm, _non_exhaustive: () }
+        Self { value: Tracked::new(value), is_warm, assumed_zero: false, _non_exhaustive: () }
     }
 }
 
@@ -107,6 +111,8 @@ pub struct StorageHandle<'a, 'db> {
     address: &'a Address,
     /// Transaction overlay entry: the per-account storage slots plus the wipe flag.
     storage: &'a mut StorageOverlay,
+    /// Whether the account was created in this transaction, so its unloaded slots read as zero.
+    created: bool,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
     inner: &'a mut StateInner<'db>,
@@ -119,9 +125,10 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     pub(crate) const fn new(
         address: &'a Address,
         storage: &'a mut StorageOverlay,
+        created: bool,
         inner: &'a mut StateInner<'db>,
     ) -> Self {
-        Self { address, storage, inner }
+        Self { address, storage, created, inner }
     }
 
     /// Returns the account address.
@@ -213,7 +220,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         key: Word,
         skip_cold_load: bool,
     ) -> Result<(StorageSlotHandle<'a, 'db>, bool), LoadError> {
-        let Self { address, storage, inner } = self;
+        let Self { address, storage, created, inner } = self;
         let (slot, is_cold) = match storage.slots.entry(key) {
             hash_map::Entry::Occupied(entry) => {
                 // An already-loaded slot has no cold database read to skip, so the skip only
@@ -221,6 +228,12 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 // the prewarm set on load) decides coldness: a slot warmed earlier this execution
                 // is a cheap warm access and must not be forced out of gas.
                 let slot = entry.into_mut();
+                // A slot assumed zero under a creation that was rolled back holds no database
+                // value, so it reloads like a fresh slot.
+                if slot.assumed_zero && !created {
+                    slot.value = Tracked::new(inner.database.get_storage(address, &key)?);
+                    slot.assumed_zero = false;
+                }
                 let is_cold = if WARM || skip_cold_load {
                     !slot.is_warm && !inner.prewarm_set.is_storage_warm(address, &key)
                 } else {
@@ -236,12 +249,16 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 if skip_cold_load && !is_warm {
                     return Err(LoadError::ColdLoadSkipped);
                 }
-                let value = if storage.wiped {
+                // Like revm, an unloaded slot of a created account reads zero without a database
+                // read, since the creation discards the address's old storage.
+                let value = if storage.wiped || created {
                     Word::ZERO
                 } else {
                     inner.database.get_storage(address, &key)?
                 };
-                (entry.insert(StorageSlot::loaded(value, is_warm)), !is_warm)
+                let mut slot = StorageSlot::loaded(value, is_warm);
+                slot.assumed_zero = created;
+                (entry.insert(slot), !is_warm)
             }
         };
         if WARM && is_cold {

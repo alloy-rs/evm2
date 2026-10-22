@@ -323,6 +323,7 @@ mod tests {
             StorageSlot {
                 value: Tracked::from_parts(original, current),
                 is_warm: false,
+                assumed_zero: false,
                 _non_exhaustive: (),
             },
         )])
