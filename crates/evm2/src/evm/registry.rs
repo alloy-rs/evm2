@@ -639,10 +639,7 @@ mod tests {
                     move |req: &mut TxRequest<'_, '_, TestTypes, TransferTx>| {
                         prepared_count.fetch_add(1, Ordering::Relaxed);
                         if req.tx.amount == 1 {
-                            return Err(HandlerError::InsufficientFunds {
-                                fee: U256::from(10),
-                                balance: U256::ZERO,
-                            });
+                            return Err(HandlerError::NonceOverflow);
                         }
                         // Prepared values need not be Send even though the registry is Send + Sync.
                         Ok(Rc::new(req.tx.amount))
@@ -675,20 +672,8 @@ mod tests {
                     assert_eq!(executed_count.load(Ordering::Relaxed), 1);
                 }
                 1 => {
-                    assert_eq!(
-                        validation,
-                        Err(HandlerError::InsufficientFunds {
-                            fee: U256::from(10),
-                            balance: U256::ZERO
-                        })
-                    );
-                    assert_eq!(
-                        execution,
-                        Err(HandlerError::InsufficientFunds {
-                            fee: U256::from(10),
-                            balance: U256::ZERO
-                        })
-                    );
+                    assert_eq!(validation, Err(HandlerError::NonceOverflow));
+                    assert_eq!(execution, Err(HandlerError::NonceOverflow));
                 }
                 2 => {
                     assert_eq!(validation, Ok(()));
