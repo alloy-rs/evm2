@@ -108,11 +108,7 @@ impl Bal {
             account.original.as_ref().unwrap_or(&absent),
             account.present.as_ref().unwrap_or(&absent),
         );
-        bal_account.storage.update_pending(
-            bal_index,
-            &account.storage.slots,
-            account.storage.wiped,
-        );
+        bal_account.storage.update_pending(bal_index, &account.storage.slots);
     }
 
     /// Populate storage slot from BAL by account address.
@@ -493,8 +489,8 @@ mod tests {
         let address = Address::with_last_byte(1);
 
         // Transaction finalization already resolved the selfdestructed account: removed
-        // (`present: None`), storage overlay wiped with every loaded slot zeroed, so its
-        // accesses surface as reads. The BAL derives from that overlay
+        // (`present: None`), storage overlay wiped with the prior writes turned into
+        // loaded-but-unchanged slots surfacing as reads. The BAL derives from that overlay
         // without special-casing.
         let account = Account {
             original: Some(AccountInfo::default().with_balance(U256::from(100))),
@@ -502,7 +498,7 @@ mod tests {
             ..Default::default()
         };
         let mut overlay = StorageOverlay { wiped: true, ..Default::default() };
-        overlay.slots.insert(U256::from(5), slot(U256::from(42), U256::ZERO));
+        overlay.slots.insert(U256::from(5), slot(U256::from(42), U256::from(42)));
         let account = Account { storage: overlay, ..account };
         let pending = PendingState {
             accounts: AddressMap::from_iter([(address, account)]),

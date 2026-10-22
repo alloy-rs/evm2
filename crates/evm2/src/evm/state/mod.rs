@@ -705,7 +705,6 @@ impl<'a> State<'a> {
             extension,
         };
         target.mark_created();
-        target.wipe_storage_for_create();
         target.touch();
         Ok(Ok(()))
     }
@@ -820,24 +819,6 @@ impl<'a> State<'a> {
                         .and_then(|account| account.storage.slots.get_mut(&key))
                     {
                         slot.value.current = previous;
-                    }
-                }
-                JournalEntry::StorageWiped { address, previous_wiped, previous_slots } => {
-                    if let Some(account) = self.accounts.get_mut(&address) {
-                        let storage = &mut account.storage;
-                        if !previous_wiped {
-                            // Unchanged slots and slots loaded after the wipe return to the
-                            // database value in their raw `original`.
-                            for slot in storage.slots.values_mut() {
-                                slot.value.current = slot.value.original;
-                            }
-                        }
-                        for (key, current) in previous_slots {
-                            if let Some(slot) = storage.slots.get_mut(&key) {
-                                slot.value.current = current;
-                            }
-                        }
-                        storage.wiped = previous_wiped;
                     }
                 }
                 JournalEntry::TransientStorageChange { address, key, previous } => match previous {
@@ -1076,41 +1057,6 @@ mod tests {
         assert!(!account.is_warm);
         assert!(!account.is_touched);
         assert!(state.journal().is_empty());
-    }
-
-    #[test]
-    fn create_account_wipes_preexisting_storage_until_rolled_back() {
-        let caller = Address::with_last_byte(1);
-        let address = Address::with_last_byte(2);
-        let (loaded, unloaded, rewritten, zeroed) =
-            (Word::from(1), Word::from(2), Word::from(3), Word::from(4));
-        let features = EvmFeatures::empty();
-        let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        db.insert_account_storage(&address, &loaded, &Word::from(5));
-        db.insert_account_storage(&address, &unloaded, &Word::from(6));
-        db.insert_account_storage(&address, &rewritten, &Word::from(7));
-        db.insert_account_storage(&address, &zeroed, &Word::from(8));
-        let mut state = State::new(db);
-        assert_eq!(state.storage_slot(&address, loaded).unwrap().current(), Word::from(5));
-        state.storage_slot(&address, rewritten).unwrap().write(Word::from(10));
-        state.storage_slot(&address, zeroed).unwrap().write(Word::ZERO);
-
-        let checkpoint = state.checkpoint();
-        state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
-        assert!(state.storage(&address).unwrap().is_wiped());
-        assert_eq!(state.storage_slot(&address, loaded).unwrap().current(), Word::ZERO);
-        assert_eq!(state.storage_slot(&address, unloaded).unwrap().current(), Word::ZERO);
-        assert_eq!(state.storage_slot(&address, unloaded).unwrap().original(), Word::ZERO);
-        assert_eq!(state.storage_slot(&address, rewritten).unwrap().current(), Word::ZERO);
-        state.storage_slot(&address, unloaded).unwrap().write(Word::from(9));
-
-        state.rollback(checkpoint, features);
-        assert!(!state.storage(&address).unwrap().is_wiped());
-        assert_eq!(state.storage_slot(&address, loaded).unwrap().current(), Word::from(5));
-        assert_eq!(state.storage_slot(&address, unloaded).unwrap().current(), Word::from(6));
-        assert_eq!(state.storage_slot(&address, rewritten).unwrap().current(), Word::from(10));
-        assert_eq!(state.storage_slot(&address, zeroed).unwrap().current(), Word::ZERO);
     }
 
     #[test]

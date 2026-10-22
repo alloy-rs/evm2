@@ -80,7 +80,7 @@ impl<'a> AccountChanges<'a> {
                 sink.storage(StorageChange {
                     address,
                     key,
-                    original: slot.original(storage.wiped),
+                    original: value.original,
                     current: value.current,
                 })?;
             } else {
