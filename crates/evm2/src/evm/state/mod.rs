@@ -875,15 +875,20 @@ impl<'a> State<'a> {
             // EIP-8246: a self-destructed account that still holds balance is preserved as a
             // balance-only account instead of being burned. One with no balance is removed. The
             // handle is scoped so its `AccountChange` flushes on drop before the storage wipe.
-            {
+            let keeps_storage = {
                 let mut account = self.account(address)?;
                 if eip8246 && !account.balance().is_zero() {
                     account.reset_selfdestructed_for_finalization();
+                    // Like revm, a created survivor keeps its unloaded old storage, which later
+                    // transactions read as zero.
+                    account.is_created()
                 } else {
                     account.delete_for_finalization();
+                    false
                 }
-            }
-            self.storage(address)?.wipe();
+            };
+            let mut storage = self.storage(address)?;
+            if keeps_storage { storage.zero_loaded() } else { storage.wipe() }
         }
 
         // Finalization never touches accounts, so clearing touches in the same pass that selects
@@ -1112,6 +1117,31 @@ mod tests {
         let storage = &pending.accounts[&address].storage;
         assert!(!storage.wiped);
         assert_eq!(storage.changed_slots().map(|(key, _)| *key).collect::<Vec<_>>(), [written]);
+    }
+
+    #[test]
+    fn eip8246_created_survivor_keeps_old_storage() {
+        let caller = Address::with_last_byte(1);
+        let address = Address::with_last_byte(2);
+        let (written, old) = (Word::from(1), Word::from(2));
+        let version = Version::base(crate::SpecId::AMSTERDAM);
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_storage(&address, &old, &Word::from(6));
+        let mut state = State::new(db);
+
+        state.create_account(&caller, &address, &Word::ZERO, version.features).unwrap().unwrap();
+        state.storage_slot(&address, written).unwrap().write(Word::from(9));
+        state.account(&address).unwrap().mark_destructed();
+        state.finalize_transaction_(version);
+
+        let storage = &state.accounts[&address].storage;
+        assert!(!storage.wiped);
+        assert_eq!(storage.changed_slots().count(), 0);
+        state.commit_transaction();
+        for key in [written, old] {
+            assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
+        }
     }
 
     #[test]

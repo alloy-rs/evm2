@@ -267,6 +267,15 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     #[inline]
     pub fn wipe(&mut self) {
         self.storage.wiped = true;
+        self.zero_loaded();
+    }
+
+    /// Resets every loaded slot to zero, keeping the account's unloaded storage.
+    ///
+    /// Like [`Self::wipe`], this is only called during transaction finalization, so it is not
+    /// journaled.
+    #[inline]
+    pub(crate) fn zero_loaded(&mut self) {
         self.storage.slots.iter_mut().for_each(|(_, slot)| {
             slot.value.set_current(Word::ZERO);
         });

@@ -658,7 +658,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Resets a self-destructed account to a balance-only account for EIP-8246 finalization.
     ///
     /// The balance is preserved while the nonce is reset to 0 and the code is cleared. The caller
-    /// is responsible for wiping the account's storage. This is only called for accounts that
+    /// is responsible for clearing the account's storage. This is only called for accounts that
     /// still hold a balance; zero-balance self-destructed accounts are removed via
     /// [`Self::delete_for_finalization`] instead. Like [`Self::delete_for_finalization`], the
     /// mutation is not journaled because finalization runs after the last revertible scope.
