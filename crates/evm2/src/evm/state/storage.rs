@@ -71,10 +71,6 @@ pub struct StorageSlot {
     pub value: Tracked<Word>,
     /// Whether the slot was warmed during execution this transaction, for EIP-2929 gas accounting.
     pub is_warm: bool,
-    /// Whether the value is an assumed zero for an account created in this transaction, loaded
-    /// without reading the database. Rolling back the creation makes the slot reload from the
-    /// database on its next access.
-    pub(crate) assumed_zero: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -89,8 +85,8 @@ impl StorageSlot {
     /// Creates a freshly loaded slot whose original and current values are `value`, with the given
     /// EIP-2929 warmth.
     #[inline]
-    fn loaded(value: Word, is_warm: bool, assumed_zero: bool) -> Self {
-        Self { value: Tracked::new(value), is_warm, assumed_zero, _non_exhaustive: () }
+    fn loaded(value: Word, is_warm: bool) -> Self {
+        Self { value: Tracked::new(value), is_warm, _non_exhaustive: () }
     }
 }
 
@@ -236,12 +232,6 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 if skip_cold_load && is_cold {
                     return Err(LoadError::ColdLoadSkipped);
                 }
-                // A slot assumed zero under a creation that was rolled back holds no database
-                // value, so it reloads like a fresh slot.
-                if slot.assumed_zero && !created {
-                    slot.value = Tracked::new(inner.database.get_storage(address, &key)?);
-                    slot.assumed_zero = false;
-                }
                 (slot, is_cold)
             }
             hash_map::Entry::Vacant(entry) => {
@@ -256,7 +246,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 } else {
                     inner.database.get_storage(address, &key)?
                 };
-                (entry.insert(StorageSlot::loaded(value, is_warm, created)), !is_warm)
+                (entry.insert(StorageSlot::loaded(value, is_warm)), !is_warm)
             }
         };
         if WARM && is_cold {

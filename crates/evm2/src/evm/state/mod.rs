@@ -374,10 +374,7 @@ impl<'a> State<'a> {
     /// transaction. Use [`Self::storage_slot_untracked`] to read through to the database.
     #[inline]
     pub fn get_storage(&self, address: &Address, key: &Word) -> Option<Word> {
-        let account = self.accounts.get(address)?;
-        let slot = account.storage.slots.get(key)?;
-        // A slot assumed zero under a rolled-back creation holds no database value.
-        (account.just_created || !slot.assumed_zero).then_some(slot.value.current)
+        self.accounts.get(address)?.storage.slots.get(key).map(|slot| slot.value.current)
     }
 
     /// Sets the warmth of an already-loaded storage slot without journaling the change.
@@ -619,9 +616,7 @@ impl<'a> State<'a> {
     #[inline(never)]
     pub fn storage_slot_untracked(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         if let Some(account) = self.accounts.get(address) {
-            if let Some(slot) = account.storage.slots.get(key)
-                && (account.just_created || !slot.assumed_zero)
-            {
+            if let Some(slot) = account.storage.slots.get(key) {
                 return Ok(slot.value.current);
             }
             if account.storage.wiped || account.just_created {
@@ -1065,7 +1060,7 @@ mod tests {
     }
 
     #[test]
-    fn created_account_reads_old_storage_as_zero_until_rolled_back() {
+    fn created_account_reads_old_storage_as_zero() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
         let (loaded, unloaded) = (Word::from(1), Word::from(2));
@@ -1088,11 +1083,14 @@ mod tests {
         state.storage_slot(&address, unloaded).unwrap().write(Word::from(9));
 
         state.rollback(checkpoint, features);
-        assert_eq!(state.get_storage(&address, &unloaded), None);
-        assert_eq!(state.storage_slot_untracked(&address, &unloaded).unwrap(), Word::from(6));
+        // Like revm, rolling back the creation keeps the zero it loaded, so a retried creation
+        // still reads zero.
         assert_eq!(state.storage_slot(&address, loaded).unwrap().current(), Word::from(5));
-        assert_eq!(state.storage_slot(&address, unloaded).unwrap().current(), Word::from(6));
-        assert_eq!(state.storage_slot(&address, unloaded).unwrap().original(), Word::from(6));
+        assert_eq!(state.storage_slot(&address, unloaded).unwrap().current(), Word::ZERO);
+        let checkpoint = state.checkpoint();
+        state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
+        assert_eq!(state.storage_slot(&address, unloaded).unwrap().current(), Word::ZERO);
+        state.rollback(checkpoint, features);
         assert!(!state.take_pending_state().is_changed());
     }
 
