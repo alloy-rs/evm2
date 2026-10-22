@@ -897,11 +897,6 @@ impl<'a> State<'a> {
         let eip161 = version.feature(EvmFeatures::EIP161);
         let mut finalize = Vec::new();
         for (&address, entry) in &mut self.accounts {
-            // A created account replaces any storage its address held before, which a
-            // database-backed consumer must drop. A fresh address has none.
-            if entry.just_created && entry.original.is_some() {
-                entry.storage.wiped = true;
-            }
             if !mem::take(&mut entry.is_touched) {
                 continue;
             }
@@ -1102,32 +1097,23 @@ mod tests {
     }
 
     #[test]
-    fn finalization_wipes_storage_of_created_existing_account() {
+    fn finalization_keeps_storage_of_prefunded_created_account() {
         let caller = Address::with_last_byte(1);
-        let existing = Address::with_last_byte(2);
-        let fresh = Address::with_last_byte(3);
-        let (key, written) = (Word::from(1), Word::from(2));
+        let address = Address::with_last_byte(2);
+        let written = Word::from(2);
         let version = Version::base(crate::SpecId::CANCUN);
         let mut db = CacheDB::default();
-        db.insert_account_info(&existing, AccountInfo::default().with_balance(Word::from(1)));
-        db.insert_account_storage(&existing, &key, &Word::from(5));
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
         let mut state = State::new(db);
 
-        for address in [existing, fresh] {
-            state
-                .create_account(&caller, &address, &Word::ZERO, version.features)
-                .unwrap()
-                .unwrap();
-            assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
-            state.storage_slot(&address, written).unwrap().write(Word::from(9));
-        }
+        state.create_account(&caller, &address, &Word::ZERO, version.features).unwrap().unwrap();
+        state.storage_slot(&address, written).unwrap().write(Word::from(9));
         state.finalize_transaction_(version);
 
         let pending = state.take_pending_state();
-        let existing = &pending.accounts[&existing].storage;
-        assert!(existing.wiped);
-        assert_eq!(existing.changed_slots().map(|(key, _)| *key).collect::<Vec<_>>(), [written]);
-        assert!(!pending.accounts[&fresh].storage.wiped);
+        let storage = &pending.accounts[&address].storage;
+        assert!(!storage.wiped);
+        assert_eq!(storage.changed_slots().map(|(key, _)| *key).collect::<Vec<_>>(), [written]);
     }
 
     #[test]
