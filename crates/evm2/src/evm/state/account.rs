@@ -625,6 +625,21 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         self.tracked.mark_created();
     }
 
+    /// Wipes the storage the address held before its creation, with a journaled
+    /// [`JournalEntry::StorageWiped`].
+    ///
+    /// A fresh address has none, so the wipe is skipped unless the account existed in the
+    /// database or the overlay holds a nonzero slot.
+    #[inline]
+    pub(crate) fn wipe_storage_for_create(&mut self) {
+        if self.tracked.original.is_some()
+            || self.tracked.storage.slots.values().any(|slot| !slot.value.current.is_zero())
+        {
+            StorageHandle::new(&self.address, &mut self.tracked.storage, self.inner)
+                .wipe_journaled();
+        }
+    }
+
     /// Records a revert snapshot and returns the live account, materializing an empty one when it
     /// is currently absent.
     #[inline]

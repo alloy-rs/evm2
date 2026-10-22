@@ -2,6 +2,7 @@
 
 use super::AccountInfo;
 use crate::interpreter::Word;
+use alloc::vec::Vec;
 use alloy_primitives::Address;
 
 /// State checkpoint for reverting state changes.
@@ -65,6 +66,15 @@ pub enum JournalEntry {
         key: Word,
         /// Previous current storage value.
         previous: Word,
+    },
+    /// Persistent storage was wiped by an account creation.
+    StorageWiped {
+        /// Account address.
+        address: Address,
+        /// Previous wipe flag.
+        previous_wiped: bool,
+        /// Slots loaded before the wipe, with their previous current values.
+        previous_slots: Vec<(Word, Word)>,
     },
     /// Transient storage changed.
     TransientStorageChange {

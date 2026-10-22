@@ -214,6 +214,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         skip_cold_load: bool,
     ) -> Result<(StorageSlotHandle<'a, 'db>, bool), LoadError> {
         let Self { address, storage, inner } = self;
+        let wiped = storage.wiped;
         let (slot, is_cold) = match storage.slots.entry(key) {
             hash_map::Entry::Occupied(entry) => {
                 // An already-loaded slot has no cold database read to skip, so the skip only
@@ -236,19 +237,21 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 if skip_cold_load && !is_warm {
                     return Err(LoadError::ColdLoadSkipped);
                 }
-                let value = if storage.wiped {
-                    Word::ZERO
-                } else {
-                    inner.database.get_storage(address, &key)?
-                };
-                (entry.insert(StorageSlot::loaded(value, is_warm)), !is_warm)
+                let value = inner.database.get_storage(address, &key)?;
+                let slot = entry.insert(StorageSlot::loaded(value, is_warm));
+                // A wiped account reads as empty, but keeps the database value as `original` so
+                // that rolling back the wipe can restore it.
+                if wiped {
+                    slot.value.current = Word::ZERO;
+                }
+                (slot, !is_warm)
             }
         };
         if WARM && is_cold {
             slot.is_warm = true;
             inner.push_journal(|| JournalEntry::StorageWarmed { address: *address, key });
         }
-        Ok((StorageSlotHandle { address, key, slot, inner }, is_cold))
+        Ok((StorageSlotHandle { address, key, slot, wiped, inner }, is_cold))
     }
 
     /// Marks all of the account's prior persistent storage as deleted.
@@ -265,6 +268,24 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         self.storage.slots.iter_mut().for_each(|(_, slot)| {
             slot.value.set_current(Word::ZERO);
         });
+    }
+
+    /// Wipes the account's prior persistent storage and records a [`JournalEntry::StorageWiped`],
+    /// so [`State::rollback`](super::State::rollback) restores the previous view.
+    ///
+    /// Used by account creation, which can be reverted: the previous wipe flag and current slot
+    /// values come back, and slots first loaded after the wipe return to their database value.
+    pub(super) fn wipe_journaled(&mut self) {
+        let previous_wiped = self.storage.wiped;
+        let previous_slots =
+            self.storage.slots.iter().map(|(key, slot)| (*key, slot.value.current)).collect();
+        let address = *self.address;
+        self.inner.push_journal(|| JournalEntry::StorageWiped {
+            address,
+            previous_wiped,
+            previous_slots,
+        });
+        self.wipe();
     }
 }
 
@@ -287,6 +308,8 @@ pub struct StorageSlotHandle<'a, 'db> {
     key: Word,
     /// The slot's loaded overlay entry: its tracked value and runtime warmth.
     slot: &'a mut StorageSlot,
+    /// Whether the account's prior storage is wiped, which makes the slot's original value zero.
+    wiped: bool,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
     inner: &'a mut StateInner<'db>,
@@ -317,10 +340,10 @@ impl StorageSlotHandle<'_, '_> {
         self.slot.value.current
     }
 
-    /// Returns the slot's transaction-boundary original value.
+    /// Returns the slot's transaction-boundary original value, which is zero for a wiped account.
     #[inline]
     pub const fn original(&self) -> Word {
-        self.slot.value.original
+        if self.wiped { Word::ZERO } else { self.slot.value.original }
     }
 
     /// Returns whether the slot is warm for EIP-2929 gas accounting, consulting both the
@@ -369,7 +392,7 @@ impl StorageSlotHandle<'_, '_> {
     /// A revert entry is recorded only when the value actually changes, via [`Self::set`].
     #[inline]
     pub fn write(&mut self, value: Word) -> (Word, Word) {
-        let original_value = self.slot.value.original;
+        let original_value = self.original();
         let present_value = self.slot.value.current;
         self.set(value);
         (original_value, present_value)
