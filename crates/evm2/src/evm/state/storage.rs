@@ -89,8 +89,8 @@ impl StorageSlot {
     /// Creates a freshly loaded slot whose original and current values are `value`, with the given
     /// EIP-2929 warmth.
     #[inline]
-    fn loaded(value: Word, is_warm: bool) -> Self {
-        Self { value: Tracked::new(value), is_warm, assumed_zero: false, _non_exhaustive: () }
+    fn loaded(value: Word, is_warm: bool, assumed_zero: bool) -> Self {
+        Self { value: Tracked::new(value), is_warm, assumed_zero, _non_exhaustive: () }
     }
 }
 
@@ -228,12 +228,6 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 // the prewarm set on load) decides coldness: a slot warmed earlier this execution
                 // is a cheap warm access and must not be forced out of gas.
                 let slot = entry.into_mut();
-                // A slot assumed zero under a creation that was rolled back holds no database
-                // value, so it reloads like a fresh slot.
-                if slot.assumed_zero && !created {
-                    slot.value = Tracked::new(inner.database.get_storage(address, &key)?);
-                    slot.assumed_zero = false;
-                }
                 let is_cold = if WARM || skip_cold_load {
                     !slot.is_warm && !inner.prewarm_set.is_storage_warm(address, &key)
                 } else {
@@ -241,6 +235,12 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 };
                 if skip_cold_load && is_cold {
                     return Err(LoadError::ColdLoadSkipped);
+                }
+                // A slot assumed zero under a creation that was rolled back holds no database
+                // value, so it reloads like a fresh slot.
+                if slot.assumed_zero && !created {
+                    slot.value = Tracked::new(inner.database.get_storage(address, &key)?);
+                    slot.assumed_zero = false;
                 }
                 (slot, is_cold)
             }
@@ -256,9 +256,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 } else {
                     inner.database.get_storage(address, &key)?
                 };
-                let mut slot = StorageSlot::loaded(value, is_warm);
-                slot.assumed_zero = created;
-                (entry.insert(slot), !is_warm)
+                (entry.insert(StorageSlot::loaded(value, is_warm, created)), !is_warm)
             }
         };
         if WARM && is_cold {

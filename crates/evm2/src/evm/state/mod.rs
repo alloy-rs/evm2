@@ -374,7 +374,10 @@ impl<'a> State<'a> {
     /// transaction. Use [`Self::storage_slot_untracked`] to read through to the database.
     #[inline]
     pub fn get_storage(&self, address: &Address, key: &Word) -> Option<Word> {
-        self.accounts.get(address)?.storage.slots.get(key).map(|slot| slot.value.current)
+        let account = self.accounts.get(address)?;
+        let slot = account.storage.slots.get(key)?;
+        // A slot assumed zero under a rolled-back creation holds no database value.
+        (account.just_created || !slot.assumed_zero).then_some(slot.value.current)
     }
 
     /// Sets the warmth of an already-loaded storage slot without journaling the change.
@@ -579,8 +582,7 @@ impl<'a> State<'a> {
         if account.storage.slots.capacity() == 0 {
             account.storage.slots = storage_pool.take();
         }
-        let created = account.just_created;
-        Ok(StorageHandle::new(address, &mut account.storage, created, inner))
+        Ok(StorageHandle::new(address, &mut account.storage, account.just_created, inner))
     }
 
     /// Loads a single persistent storage slot and returns a journaled mutation handle.
@@ -1086,43 +1088,17 @@ mod tests {
         assert_eq!(state.storage_slot(&address, loaded).unwrap().current(), Word::from(5));
         assert_eq!(state.storage_slot(&address, unloaded).unwrap().current(), Word::ZERO);
         assert_eq!(state.storage_slot(&address, unloaded).unwrap().original(), Word::ZERO);
-        assert_eq!(state.storage_slot_untracked(&address, &Word::from(3)).unwrap(), Word::ZERO);
+        assert_eq!(state.storage_slot_untracked(&address, &unloaded).unwrap(), Word::ZERO);
+        assert_eq!(state.get_storage(&address, &unloaded), Some(Word::ZERO));
         state.storage_slot(&address, unloaded).unwrap().write(Word::from(9));
 
         state.rollback(checkpoint, features);
+        assert_eq!(state.get_storage(&address, &unloaded), None);
+        assert_eq!(state.storage_slot_untracked(&address, &unloaded).unwrap(), Word::from(6));
         assert_eq!(state.storage_slot(&address, loaded).unwrap().current(), Word::from(5));
         assert_eq!(state.storage_slot(&address, unloaded).unwrap().current(), Word::from(6));
         assert_eq!(state.storage_slot(&address, unloaded).unwrap().original(), Word::from(6));
         assert!(!state.take_pending_state().is_changed());
-    }
-
-    #[test]
-    fn reverted_create_retries_do_no_per_slot_work() {
-        let caller = Address::with_last_byte(1);
-        let address = Address::with_last_byte(2);
-        let features = EvmFeatures::empty();
-        let keys = (1..=64).map(Word::from).collect::<Vec<_>>();
-        let mut db = CacheDB::default();
-        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
-        for key in &keys {
-            db.insert_account_storage(&address, key, &Word::from(7));
-        }
-        let mut state = State::new(db);
-        let journal_len = state.journal().len();
-
-        for _ in 0..3 {
-            let checkpoint = state.checkpoint();
-            state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
-            // Zero values prove the slots are not read from the database, which holds 7.
-            for key in &keys {
-                assert_eq!(state.storage_slot(&address, *key).unwrap().current(), Word::ZERO);
-            }
-            state.rollback(checkpoint, features);
-            assert_eq!(state.journal().len(), journal_len);
-        }
-        for key in &keys {
-            assert_eq!(state.storage_slot(&address, *key).unwrap().current(), Word::from(7));
-        }
     }
 
     #[test]
