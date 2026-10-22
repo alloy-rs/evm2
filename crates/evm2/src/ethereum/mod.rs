@@ -450,7 +450,10 @@ pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
         return Err(HandlerError::InvalidNonce { expected: sender.nonce(), got: nonce });
     }
     if has_balance_check && sender.balance() < max_upfront {
-        return Err(HandlerError::InsufficientFunds);
+        return Err(HandlerError::InsufficientFunds {
+            fee: max_upfront,
+            balance: sender.balance(),
+        });
     }
     if !has_balance_check && has_balance_top_up && sender.balance() < max_upfront {
         sender.add_balance(max_upfront - sender.balance());
@@ -943,7 +946,7 @@ mod tests {
         interpreter::{Host, InstrStop, op},
         registry::TxRegistry,
     };
-    use alloc::vec;
+    use alloc::{string::ToString, vec};
     use alloy_consensus::{TxEip2930, transaction::Recovered};
     use alloy_eips::eip2930::AccessList;
 
@@ -1187,6 +1190,27 @@ mod tests {
         assert_eq!(validate_chain_id(&version, None, true), Ok(()));
         version.features.remove(EvmFeatures::TX_CHAIN_ID_CHECK);
         assert_eq!(validate_chain_id(&version, Some(1), false), Ok(()));
+    }
+
+    #[test]
+    fn insufficient_funds_reports_cost_and_balance() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(10)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let error = validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100));
+        assert_eq!(
+            error,
+            Err(HandlerError::InsufficientFunds { fee: U256::from(100), balance: U256::from(10) })
+        );
+        assert_eq!(error.unwrap_err().to_string(), "lack of funds (10) for max fee (100)");
     }
 
     #[test]

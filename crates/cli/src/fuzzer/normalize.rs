@@ -152,7 +152,7 @@ impl From<HandlerError> for FuzzError {
     fn from(error: HandlerError) -> Self {
         match error {
             HandlerError::IntrinsicGasTooLow { .. } => Self::IntrinsicGasTooLow,
-            HandlerError::InsufficientFunds => Self::InsufficientFunds,
+            HandlerError::InsufficientFunds { .. } => Self::InsufficientFunds,
             HandlerError::InvalidNonce { .. } => Self::InvalidNonce,
             HandlerError::NonceOverflow => Self::NonceOverflow,
             HandlerError::UnsupportedTransactionType(_) => Self::UnsupportedTransactionType,
@@ -356,7 +356,7 @@ mod tests {
                 },
             ),
             (
-                HandlerError::InsufficientFunds,
+                HandlerError::InsufficientFunds { fee: U256::from(10), balance: U256::ZERO },
                 InvalidTransaction::LackOfFundForMaxFee {
                     fee: Box::new(U256::from(10)),
                     balance: Box::new(U256::ZERO),

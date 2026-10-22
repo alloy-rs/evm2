@@ -66,8 +66,13 @@ pub enum HandlerError {
         got: u64,
     },
     /// Sender cannot pay value plus maximum gas cost.
-    #[error("insufficient funds")]
-    InsufficientFunds,
+    #[error("lack of funds ({balance}) for max fee ({fee})")]
+    InsufficientFunds {
+        /// Required upfront cost: value plus maximum gas cost.
+        fee: U256,
+        /// Balance of the sender.
+        balance: U256,
+    },
     /// Sender account has deployed code.
     #[error("caller has code")]
     RejectCallerWithCode,
@@ -634,7 +639,7 @@ mod tests {
                     move |req: &mut TxRequest<'_, '_, TestTypes, TransferTx>| {
                         prepared_count.fetch_add(1, Ordering::Relaxed);
                         if req.tx.amount == 1 {
-                            return Err(HandlerError::InsufficientFunds);
+                            return Err(HandlerError::NonceOverflow);
                         }
                         // Prepared values need not be Send even though the registry is Send + Sync.
                         Ok(Rc::new(req.tx.amount))
@@ -667,8 +672,8 @@ mod tests {
                     assert_eq!(executed_count.load(Ordering::Relaxed), 1);
                 }
                 1 => {
-                    assert_eq!(validation, Err(HandlerError::InsufficientFunds));
-                    assert_eq!(execution, Err(HandlerError::InsufficientFunds));
+                    assert_eq!(validation, Err(HandlerError::NonceOverflow));
+                    assert_eq!(execution, Err(HandlerError::NonceOverflow));
                 }
                 2 => {
                     assert_eq!(validation, Ok(()));
