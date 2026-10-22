@@ -122,19 +122,6 @@ impl EvmCompiler<evm2_jit_llvm::EvmLlvmBackend> {
 }
 
 impl<B: Backend> EvmCompiler<B> {
-    /// Configures the concrete host ABI before translating any programs.
-    ///
-    /// # Safety
-    /// The resolver must return C ABI functions matching each builtin's signature and layout.
-    pub unsafe fn set_host(
-        &mut self,
-        layout: HostLayout,
-        resolver: fn(evm2_jit_builtins::Builtin) -> usize,
-    ) {
-        self.config.layout = layout;
-        self.builtins.set_resolver(resolver);
-    }
-
     /// Creates a new instance of the compiler with the given backend.
     pub fn new(backend: B) -> Self {
         Self {
@@ -153,6 +140,19 @@ impl<B: Backend> EvmCompiler<B> {
             compiled_sizes: Vec::new(),
             finalized: false,
         }
+    }
+
+    /// Configures the concrete host ABI before translating any programs.
+    ///
+    /// # Safety
+    /// The resolver must return C ABI functions matching each builtin's signature and layout.
+    pub unsafe fn set_host(
+        &mut self,
+        layout: HostLayout,
+        resolver: fn(evm2_jit_builtins::Builtin) -> usize,
+    ) {
+        self.config.layout = layout;
+        self.builtins.set_resolver(resolver);
     }
 
     /// Returns the module name.

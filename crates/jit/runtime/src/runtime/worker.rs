@@ -578,7 +578,8 @@ impl CompilerState {
 struct CompilerProfile {
     host_type: std::any::TypeId,
     layout: evm2_jit_codegen::HostLayout,
-    resolver: usize,
+    resolver: Option<usize>,
+    opt_level: crate::OptimizationLevel,
     gas_params: Option<evm2::version::GasParams>,
     debug_assertions: bool,
     single_error: bool,
@@ -593,7 +594,12 @@ impl CompilerProfile {
         Self {
             host_type: config.host.type_id,
             layout: config.host.layout,
-            resolver: config.host.resolver as usize,
+            resolver: config.host.resolver.map(|resolver| resolver as usize),
+            opt_level: if target.is_aot_backend() {
+                config.tuning.aot_opt_level
+            } else {
+                config.tuning.jit_opt_level
+            },
             gas_params: config.gas_params,
             debug_assertions: config.debug_assertions,
             single_error: config.single_error,
@@ -629,9 +635,9 @@ pub(super) fn create_compiler(
     if let Some(gas_params) = &config.gas_params {
         compiler.set_gas_params(*gas_params);
     }
-    if !config.host.is_default() {
+    if let Some(resolver) = config.host.resolver {
         // SAFETY: HostConfig construction establishes the resolver and layout contract.
-        unsafe { compiler.set_host(config.host.layout, config.host.resolver) };
+        unsafe { compiler.set_host(config.host.layout, resolver) };
     }
     Ok(compiler)
 }

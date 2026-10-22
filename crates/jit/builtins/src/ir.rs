@@ -391,7 +391,13 @@ impl Builtin {
             Self::SelfDestruct => {
                 crate::generic::__revmc_builtin_selfdestruct::<T> as *const () as usize
             }
-            _ => self.addr(),
+            Self::Panic
+            | Self::Div
+            | Self::SDiv
+            | Self::Mod
+            | Self::SMod
+            | Self::AddMod
+            | Self::MulMod => self.addr(),
         }
     }
 }

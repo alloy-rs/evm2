@@ -3,7 +3,9 @@
 use crate::{CompileTimings, eyre, runtime::storage::ArtifactStore};
 use alloy_primitives::B256;
 use evm2::{BaseEvmTypes, EvmTypesHost, SpecId, version::GasParams};
-use std::{path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use evm2_jit_builtins::Builtin;
+use evm2_jit_codegen::HostLayout;
+use std::{any::TypeId, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 const JIT_MODE_ENV: &str = "EVM2_JIT_MODE";
 const JIT_HELPER_PATH_ENV: &str = "EVM2_JIT_HELPER_PATH";
@@ -415,38 +417,33 @@ fn env_path(name: &str) -> Option<PathBuf> {
 /// Immutable type identity and layout for an in-process JIT host.
 #[derive(Clone, Copy, Debug)]
 pub struct HostConfig {
-    pub(crate) type_id: std::any::TypeId,
-    pub(crate) layout: evm2_jit_codegen::HostLayout,
-    pub(crate) resolver: fn(evm2_jit_builtins::Builtin) -> usize,
+    pub(crate) type_id: TypeId,
+    pub(crate) layout: HostLayout,
+    /// `None` for the base host, whose builtins are the exported `__revmc_builtin_*` symbols.
+    pub(crate) resolver: Option<fn(Builtin) -> usize>,
 }
 
 impl HostConfig {
     /// Selects the interpreter layout and builtins for `T`.
     pub fn for_types<T: EvmTypesHost>() -> Self {
+        let type_id = TypeId::of::<T>();
         Self {
-            type_id: std::any::TypeId::of::<T>(),
-            layout: evm2_jit_codegen::HostLayout::for_types::<T>(),
-            resolver: evm2_jit_builtins::Builtin::addr_for::<T>,
+            type_id,
+            layout: HostLayout::for_types::<T>(),
+            resolver: (type_id != TypeId::of::<BaseEvmTypes>()).then_some(Builtin::addr_for::<T>),
         }
     }
 
-    pub(crate) fn is_default(self) -> bool {
-        self.type_id == std::any::TypeId::of::<BaseEvmTypes>()
-            && core::ptr::fn_addr_eq(
-                self.resolver,
-                evm2_jit_builtins::Builtin::addr_for::<BaseEvmTypes> as fn(_) -> _,
-            )
+    pub(crate) const fn is_default(self) -> bool {
+        self.resolver.is_none()
     }
 
     /// Replaces builtin addresses for a chain-specific instruction implementation.
     ///
     /// # Safety
     /// Every address must match the selected host type and the corresponding builtin's C ABI.
-    pub unsafe fn with_resolver(
-        mut self,
-        resolver: fn(evm2_jit_builtins::Builtin) -> usize,
-    ) -> Self {
-        self.resolver = resolver;
+    pub unsafe fn with_resolver(mut self, resolver: fn(Builtin) -> usize) -> Self {
+        self.resolver = Some(resolver);
         self
     }
 }

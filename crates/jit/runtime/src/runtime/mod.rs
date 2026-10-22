@@ -222,13 +222,14 @@ impl JitBackend {
     }
 
     /// Checks that generated code matches the interpreter type and gas schedule.
-    pub fn supports_host<T: evm2::EvmTypesHost>(
+    pub(crate) fn supports_host<T: evm2::EvmTypesHost>(
         &self,
         gas: &evm2::version::GasParams,
         spec: evm2::SpecId,
     ) -> bool {
         self.inner.host.type_id == std::any::TypeId::of::<T>()
-            && *gas == self.inner.gas_params.unwrap_or_else(|| evm2::Version::new(spec).gas_params)
+            && gas
+                == self.inner.gas_params.as_ref().unwrap_or(&evm2::Version::base(spec).gas_params)
     }
 
     /// Looks up a compiled function for the given request.
