@@ -286,8 +286,17 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     #[inline]
     pub(super) fn wipe_journaled(&mut self) {
         let previous_wiped = self.storage.wiped;
-        let previous_slots =
-            self.storage.slots.iter().map(|(key, slot)| (*key, slot.value.current)).collect();
+        // Only slots the rollback cannot rederive are recorded, which keeps repeated reverted
+        // creates allocation-free: see `State::rollback`.
+        let previous_slots = self
+            .storage
+            .slots
+            .iter()
+            .filter(|(_, slot)| {
+                if previous_wiped { !slot.value.current.is_zero() } else { slot.value.is_changed() }
+            })
+            .map(|(key, slot)| (*key, slot.value.current))
+            .collect();
         let address = *self.address;
         self.inner.push_journal(|| JournalEntry::StorageWiped {
             address,
