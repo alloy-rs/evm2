@@ -163,10 +163,13 @@ impl<ExtDB> CacheDB<ExtDB> {
 
         for (&address, entry) in accounts {
             let overlay = &entry.storage;
+            // Like revm's in-block cache, later transactions read the unchanged slots of a created
+            // account as zero, without a storage wipe reaching the state stream.
+            let wiped = overlay.wiped || entry.just_created;
             let mut changed_slots = overlay.changed_slots().peekable();
-            if overlay.wiped || changed_slots.peek().is_some() {
+            if wiped || changed_slots.peek().is_some() {
                 let storage = self.cache.storage.entry(address).or_default();
-                if overlay.wiped {
+                if wiped {
                     storage.wipe();
                 }
                 storage.slots.extend(changed_slots.map(|(&key, slot)| (key, slot.current)));

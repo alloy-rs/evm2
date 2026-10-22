@@ -1117,6 +1117,31 @@ mod tests {
     }
 
     #[test]
+    fn later_transactions_read_old_storage_of_created_account_as_zero() {
+        let caller = Address::with_last_byte(1);
+        let address = Address::with_last_byte(2);
+        let (cached, unloaded, written) = (Word::from(1), Word::from(2), Word::from(3));
+        let version = Version::base(crate::SpecId::CANCUN);
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_storage(&address, &cached, &Word::from(5));
+        db.insert_account_storage(&address, &unloaded, &Word::from(6));
+        let mut state = State::new(db);
+        assert_eq!(state.storage_slot(&address, cached).unwrap().current(), Word::from(5));
+        state.commit_transaction();
+
+        state.create_account(&caller, &address, &Word::ZERO, version.features).unwrap().unwrap();
+        state.storage_slot(&address, written).unwrap().write(Word::from(9));
+        state.finalize_transaction_(version);
+        state.commit_transaction();
+
+        for (key, value) in [(cached, Word::ZERO), (unloaded, Word::ZERO), (written, Word::from(9))]
+        {
+            assert_eq!(state.storage_slot(&address, key).unwrap().current(), value);
+        }
+    }
+
+    #[test]
     fn account_storage_handle_reuses_pooled_slot_map() {
         let address = Address::with_last_byte(1);
         let mut state = State::new(EmptyDB::default());
