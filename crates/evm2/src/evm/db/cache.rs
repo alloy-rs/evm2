@@ -242,6 +242,9 @@ impl<ExtDB> CacheDB<ExtDB> {
 /// Applies streamed changes to the cache and forwards every callback to [`BalContext`]'s own sink
 /// impl, so a visited source folds into the BAL builder exactly like [`CacheDB::commit_pending`]
 /// when construction is enabled.
+///
+/// Unlike [`CacheDB::commit_pending`], this keeps the old storage of a created account, as revm's
+/// bundle does: only a storage wipe or an account deletion drops cached slots.
 impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     type Error = Infallible;
 
