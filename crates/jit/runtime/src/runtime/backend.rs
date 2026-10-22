@@ -313,7 +313,13 @@ impl BackendState {
         sync_notifier: SyncNotifier,
         mode: AdmitMode,
     ) {
-        if self.inner.resident.contains_key(&key) {
+        // A resident JIT program still needs an AOT artifact to be persisted.
+        if self
+            .inner
+            .resident
+            .get(&key)
+            .is_some_and(|p| p.kind == ProgramKind::Aot || kind == CompilationKind::Jit)
+        {
             sync_notifier.notify();
             return;
         }
@@ -434,6 +440,7 @@ impl BackendState {
             runtime: *key,
             backend: BackendSelection::Llvm,
             opt_level: self.tuning.aot_opt_level,
+            abi_version: crate::ABI_VERSION,
         };
 
         match store.load(&artifact_key) {
@@ -648,6 +655,7 @@ impl BackendState {
             runtime: key,
             backend: BackendSelection::Llvm,
             opt_level: self.tuning.aot_opt_level,
+            abi_version: crate::ABI_VERSION,
         };
 
         let content_hash = keccak256(&success.dylib_bytes).0;

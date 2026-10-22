@@ -171,6 +171,34 @@ pub fn execute_suite(
     execute_suite_with_resources(path, suite, config, test_filter, hook, &resources)
 }
 
+/// Builds the pre-state database of a blockchain test case, including its seeded block hashes.
+pub fn pre_state(
+    path: &Path,
+    name: &str,
+    test_case: &BlockchainTestCase,
+) -> Result<InMemoryDB, TestError> {
+    let mut database =
+        parse_state(&test_case.pre.0).map_err(|err| TestError::case(path, name, err))?;
+    seed_block_hashes(&mut database, test_case);
+    Ok(database)
+}
+
+/// Executes a blockchain test case on `database`, which must hold the case's [`pre_state`].
+///
+/// Returns the final state root when `config` needs it.
+pub fn execute_case_on(
+    path: &Path,
+    name: &str,
+    test_case: &BlockchainTestCase,
+    database: &mut InMemoryDB,
+    config: ExecuteConfig,
+    hook: &mut dyn Hook,
+) -> Result<Option<B256>, TestError> {
+    let resources =
+        ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
+    execute_case(path, name, test_case, database, config, hook, &resources)
+}
+
 fn execute_suite_with_resources(
     path: &Path,
     suite: &BlockchainTest,
@@ -188,7 +216,9 @@ fn execute_suite_with_resources(
             summary.skipped += 1;
             continue;
         }
-        let outcome = execute_case(path, name, test_case, config, hook, resources);
+        let outcome = pre_state(path, name, test_case).and_then(|mut database| {
+            execute_case(path, name, test_case, &mut database, config, hook, resources)
+        });
         if config.print_json_outcome {
             print_json_outcome(name, test_case.network, &outcome);
         }
@@ -226,14 +256,11 @@ fn execute_case(
     path: &Path,
     name: &str,
     test_case: &BlockchainTestCase,
+    database: &mut InMemoryDB,
     config: ExecuteConfig,
     hook: &mut dyn Hook,
     resources: &ExecutionResources,
 ) -> Result<Option<B256>, TestError> {
-    let mut database =
-        parse_state(&test_case.pre.0).map_err(|err| TestError::case(path, name, err))?;
-    seed_block_hashes(&mut database, test_case);
-
     let spec = fork_to_spec_id(test_case.network);
     let mut parent_block_hash = Some(test_case.genesis_block_header.hash);
     let mut parent_excess_blob_gas =
@@ -242,6 +269,10 @@ fn execute_case(
         block_env_from_header(&test_case.genesis_block_header, parent_excess_blob_gas, spec);
     let total_blocks = test_case.blocks.len();
     let mut db_stats_counts = DbStatsCounts::default();
+    // `evm2 capture` keeps only the accounts the blocks touch and zeroes the genesis state
+    // root, so its blocks' state roots can't be reproduced. Receipt roots still check them.
+    let compare_state_root =
+        config.compare_state_root && !test_case.genesis_block_header.state_root.is_zero();
 
     hook.case_started(CaseStarted { name, total_blocks, network: test_case.network });
 
@@ -265,14 +296,14 @@ fn execute_case(
             total_transactions,
             block,
             spec,
-            &mut database,
+            database,
             &mut block_env,
             &mut parent_block_hash,
             &mut parent_excess_blob_gas,
             hook,
             resources,
             config.trace,
-            config.compare_state_root,
+            compare_state_root,
             config.compare_receipt_root,
             if config.db_stats { Some(&mut db_stats_counts) } else { None },
         ) {
@@ -310,13 +341,13 @@ fn execute_case(
     if config.validate_post_state
         && let Some(expected) = &test_case.post_state
     {
-        validate_post_state(&database, expected).map_err(|err| TestError::case(path, name, err))?;
+        validate_post_state(database, expected).map_err(|err| TestError::case(path, name, err))?;
     }
     // Recompute the final state root only when a consumer needs it.
     let state_root = (config.print_json_outcome || config.dump_state)
-        .then(|| state_root_from_database(&database));
+        .then(|| state_root_from_database(database));
     if config.dump_state {
-        dump::dump_state(&mut std::io::stdout(), &database, state_root.unwrap_or_default());
+        dump::dump_state(&mut std::io::stdout(), database, state_root.unwrap_or_default());
     }
     if config.db_stats {
         print_db_stats(db_stats_counts);
@@ -809,17 +840,6 @@ fn pre_block_system_calls(
     if block.number.is_zero() {
         return Ok(());
     }
-    if spec.enables(SpecId::PRAGUE)
-        && let Some(hash) = parent_block_hash
-    {
-        run_system_call(
-            evm,
-            block_state,
-            HISTORY_STORAGE_ADDRESS,
-            Bytes::copy_from_slice(hash.as_slice()),
-            "eip2935",
-        )?;
-    }
     if spec.enables(SpecId::CANCUN)
         && let Some(root) = parent_beacon_block_root
     {
@@ -829,6 +849,17 @@ fn pre_block_system_calls(
             BEACON_ROOTS_ADDRESS,
             Bytes::copy_from_slice(root.as_slice()),
             "eip4788",
+        )?;
+    }
+    if spec.enables(SpecId::PRAGUE)
+        && let Some(hash) = parent_block_hash
+    {
+        run_system_call(
+            evm,
+            block_state,
+            HISTORY_STORAGE_ADDRESS,
+            Bytes::copy_from_slice(hash.as_slice()),
+            "eip2935",
         )?;
     }
     Ok(())

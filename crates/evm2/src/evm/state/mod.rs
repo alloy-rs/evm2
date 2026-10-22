@@ -156,14 +156,32 @@ pub struct StateInner<'a> {
     /// Database plus accepted transaction-boundary state overlay.
     #[derive_where(skip)]
     database: CacheDB<Box<dyn DynDatabase + 'a>>,
-    /// Pre-warmed set: precompiles, coinbase, and the EIP-2930 access list.
-    prewarm_set: PrewarmSet,
     /// Revert journal.
     journal: Vec<JournalEntry>,
     /// Logs emitted by the current transaction.
     logs: Vec<Log>,
     /// Accounts self-destructed in the current transaction.
     selfdestructs: AddressSet,
+    /// Pre-warmed set: precompiles, coinbase, and the EIP-2930 access list.
+    prewarm_set: PrewarmSet,
+}
+
+impl StateInner<'_> {
+    /// Appends a journal entry, building it straight in the journal's buffer.
+    ///
+    /// `Vec::push` builds the entry on the stack, because it must survive a possible reallocation,
+    /// and then copies it with wide loads. Those loads cannot take their data from the narrower
+    /// stores that built the entry and stall until the stores reach the cache.
+    #[inline(always)]
+    fn push_journal(&mut self, entry: impl FnOnce() -> JournalEntry) {
+        self.journal.reserve(1);
+        let len = self.journal.len();
+        // SAFETY: `reserve` made room for one more entry.
+        unsafe {
+            self.journal.as_mut_ptr().add(len).write(entry());
+            self.journal.set_len(len + 1);
+        }
+    }
 }
 
 impl<'a> State<'a> {
@@ -179,10 +197,10 @@ impl<'a> State<'a> {
             transient_storage: StorageKeyMap::default(),
             inner: StateInner {
                 database: CacheDB::new(initial),
-                prewarm_set: PrewarmSet::new(),
                 journal: Vec::new(),
                 logs: Vec::new(),
                 selfdestructs: AddressSet::default(),
+                prewarm_set: PrewarmSet::new(),
             },
         }
     }
@@ -210,6 +228,19 @@ impl<'a> State<'a> {
     pub fn set_initial(&mut self, initial: impl DynDatabase + 'a) {
         self.database = CacheDB::new(boxed_dyn_database(initial));
         self.clear_transaction_state();
+    }
+
+    /// Consumes the state and returns the current backing database, dropping every in-memory
+    /// layer.
+    ///
+    /// The in-memory layers — accepted state, the journal, and transaction scratch — are never
+    /// written through to the database, so nothing the EVM executed reaches it. The database
+    /// itself is returned as-is and may differ from the one passed to [`Self::new`]: it can be
+    /// replaced through [`Self::set_initial`], mutated through [`Self::initial_mut`], or
+    /// changed by its own reads.
+    #[inline]
+    pub fn into_db(self) -> Box<dyn DynDatabase + 'a> {
+        self.inner.database.db
     }
 
     /// Returns the accepted-state overlay database.
@@ -362,6 +393,20 @@ impl<'a> State<'a> {
         }
     }
 
+    /// Sets the warmth of an already-loaded account without journaling the change.
+    ///
+    /// Does nothing for unloaded accounts and leaves account values, storage, and the pre-warmed
+    /// set unchanged. Addresses in the pre-warmed set remain effectively warm even when their
+    /// runtime warmth is cleared.
+    ///
+    /// This call adds no journal entry; rolling back an existing account-change entry still
+    /// restores the account's recorded runtime warmth.
+    pub fn set_account_warm(&mut self, address: &Address, warm: bool) {
+        if let Some(account) = self.accounts.get_mut(address) {
+            account.is_warm = warm;
+        }
+    }
+
     /// Reads a storage slot from the committed state (accepted overlay and backing database),
     /// ignoring the in-flight transaction overlay.
     #[inline]
@@ -389,6 +434,12 @@ impl<'a> State<'a> {
     #[must_use]
     pub const fn prewarm_set(&self) -> &PrewarmSet {
         &self.inner.prewarm_set
+    }
+
+    /// Returns the pre-warmed set mutably.
+    #[inline]
+    pub(crate) const fn prewarm_set_mut(&mut self) -> &mut PrewarmSet {
+        &mut self.inner.prewarm_set
     }
 
     /// Marks an address as warm in the pre-warmed set. See [`PrewarmSet::warm`].
@@ -521,23 +572,24 @@ impl<'a> State<'a> {
     ///
     /// Loading account metadata neither touches nor warms the account. Slot values remain lazy;
     /// loading or warming a slot records the same journal entries as [`AccountHandle::storage`].
-    pub fn storage(&mut self, address: &Address) -> DbResult<StorageHandle<'_, 'a>> {
+    #[inline(always)]
+    pub fn storage<'s>(&'s mut self, address: &'s Address) -> DbResult<StorageHandle<'s, 'a>> {
         let State { accounts, storage_pool, inner, .. } = self;
         let account = Self::account_raw(inner, accounts, address)?;
         if account.storage.slots.capacity() == 0 {
             account.storage.slots = storage_pool.take();
         }
-        Ok(StorageHandle::new(*address, &mut account.storage, inner))
+        Ok(StorageHandle::new(address, &mut account.storage, inner))
     }
 
     /// Loads a single persistent storage slot and returns a journaled mutation handle.
     ///
     /// Cold slots are always loaded. See [`StorageHandle::into_slot`] for loading semantics.
-    pub fn storage_slot(
-        &mut self,
-        address: &Address,
+    pub fn storage_slot<'s>(
+        &'s mut self,
+        address: &'s Address,
         key: Word,
-    ) -> DbResult<StorageSlotHandle<'_, 'a>> {
+    ) -> DbResult<StorageSlotHandle<'s, 'a>> {
         self.storage(address)?.into_slot(key)
     }
 
@@ -671,7 +723,7 @@ impl<'a> State<'a> {
                 if previous == *value {
                     return;
                 }
-                self.inner.journal.push(JournalEntry::TransientStorageChange {
+                self.inner.push_journal(|| JournalEntry::TransientStorageChange {
                     address: *address,
                     key: *key,
                     previous: Some(previous),
@@ -686,7 +738,7 @@ impl<'a> State<'a> {
                 if value.is_zero() {
                     return;
                 }
-                self.inner.journal.push(JournalEntry::TransientStorageChange {
+                self.inner.push_journal(|| JournalEntry::TransientStorageChange {
                     address: *address,
                     key: *key,
                     previous: None,
@@ -817,11 +869,6 @@ impl<'a> State<'a> {
     /// selfdestruct resets (EIP-8246), or pre-EIP-161 empty-account materialization.
     pub(crate) fn finalize_transaction(&mut self, version: &Version) -> DbResult<()> {
         let selfdestructs = mem::take(&mut self.selfdestructs);
-        let touched: Vec<_> = self
-            .accounts
-            .iter()
-            .filter_map(|(&address, entry)| entry.is_touched.then_some(address))
-            .collect();
 
         let eip8246 = version.feature(EvmFeatures::EIP8246);
         for address in &selfdestructs {
@@ -839,22 +886,32 @@ impl<'a> State<'a> {
             self.storage(address)?.wipe();
         }
 
-        if version.feature(EvmFeatures::EIP161) {
-            for address in &touched {
-                // EIP-161 deletes touched dead accounts at transaction finalization.
-                let mut account = self.account(address)?;
-                if account.is_existing_dead() {
-                    account.delete_for_finalization();
-                    drop(account);
-                    self.storage(address)?.wipe();
-                }
+        // Finalization never touches accounts, so clearing touches in the same pass that selects
+        // the touched accounts to finalize sees the same set. Only those accounts need another
+        // lookup, and they are rare.
+        let eip161 = version.feature(EvmFeatures::EIP161);
+        let mut finalize = Vec::new();
+        for (&address, entry) in &mut self.accounts {
+            if !mem::take(&mut entry.is_touched) {
+                continue;
             }
-        } else {
-            for address in &touched {
-                // Before EIP-161, touching a non-existent account materializes it as empty.
-                if !selfdestructs.contains(address) && !self.account(address)?.exists() {
-                    self.materialize_empty_account_for_finalization(address)?;
-                }
+            // EIP-161 deletes touched dead accounts at transaction finalization. Before EIP-161,
+            // touching a non-existent account materializes it as empty.
+            let needs_finalization = if eip161 {
+                entry.is_existing_dead()
+            } else {
+                entry.present.is_none() && !selfdestructs.contains(&address)
+            };
+            if needs_finalization {
+                finalize.push(address);
+            }
+        }
+        for address in &finalize {
+            if eip161 {
+                self.account(address)?.delete_for_finalization();
+                self.storage(address)?.wipe();
+            } else {
+                self.materialize_empty_account_for_finalization(address)?;
             }
         }
 
@@ -862,12 +919,6 @@ impl<'a> State<'a> {
         // detached [`PendingState`] to flag selfdestructed accounts, and `clear_transaction_state`
         // clears it at the end of the transaction lifecycle.
         self.selfdestructs = selfdestructs;
-
-        for address in touched {
-            if let Some(entry) = self.accounts.get_mut(&address) {
-                entry.is_touched = false;
-            }
-        }
         Ok(())
     }
 
@@ -1104,6 +1155,37 @@ mod tests {
             state.set_storage_warm(&address, key, false);
             state.set_storage_warm(&address, key, true);
             assert!(!state.storage_slot(&address, key).unwrap().warm());
+        }
+    }
+
+    #[test]
+    fn set_account_warm_preserves_loaded_values() {
+        let address = Address::with_last_byte(42);
+        let key = Word::from(1);
+        for prewarmed in [false, true] {
+            let mut state = State::new(EmptyDB::default());
+            state.set_account_warm(&address, true);
+            assert!(!state.accounts.contains_key(&address));
+            if prewarmed {
+                state.prewarm(&address);
+            }
+            let mut account = state.account(&address).unwrap();
+            account.set_balance(Word::from(7));
+            account.warm();
+            drop(account);
+            state.storage_slot(&address, key).unwrap().warm();
+            let checkpoint = state.checkpoint();
+            state.set_account_warm(&address, false);
+            assert_eq!(state.account(&address).unwrap().is_warm(), prewarmed);
+            assert!(state.storage(&address).unwrap().is_warm(&key));
+            state.rollback(checkpoint, crate::EvmFeatures::empty());
+            let mut account = state.account(&address).unwrap();
+            assert_eq!(account.balance(), Word::from(7));
+            assert_eq!(account.warm(), !prewarmed);
+            drop(account);
+            state.set_account_warm(&address, false);
+            state.set_account_warm(&address, true);
+            assert!(!state.account(&address).unwrap().warm());
         }
     }
 

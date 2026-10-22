@@ -1,39 +1,39 @@
-use crate::{interpreter::Word, utils::word_to_usize};
+use crate::utils::WordExt;
 use evm2_macros::instruction;
 
 #[instruction(dynamic_gas)]
 pub fn mload(cx: _, [offset]: [Word]) -> Result<out> {
-    let offset = word_to_usize(*offset)?;
+    let offset = offset.to_usize()?;
     cx.state.resize_memory(cx.gas, offset, 32)?;
     *out = cx.state.memory().get_word(offset);
 }
 
 #[instruction(dynamic_gas)]
 pub fn mstore(cx: _, [offset, value]: [Word]) -> Result {
-    let offset = word_to_usize(*offset)?;
+    let offset = offset.to_usize()?;
     cx.state.resize_memory(cx.gas, offset, 32)?;
     cx.state.memory().set(offset, &value.to_be_bytes::<32>());
 }
 
 #[instruction(dynamic_gas)]
 pub fn mstore8(cx: _, [offset, value]: [Word]) -> Result {
-    let offset = word_to_usize(*offset)?;
+    let offset = offset.to_usize()?;
     cx.state.resize_memory(cx.gas, offset, 1)?;
     cx.state.memory().set(offset, &[value.byte(0)]);
 }
 
 #[instruction]
 pub fn msize(cx: _) -> out {
-    *out = Word::from(cx.state.memory().len());
+    out.write_u64(cx.state.memory().len() as u64);
 }
 
 #[instruction(dynamic_gas)]
 pub fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
-    let len = word_to_usize(*len)?;
+    let len = len.to_usize()?;
     cx.gas.spend(cx.state.gas_params().mcopy_cost(len))?;
     if len != 0 {
-        let dst = word_to_usize(*dst)?;
-        let src = word_to_usize(*src)?;
+        let dst = dst.to_usize()?;
+        let src = src.to_usize()?;
         cx.state.resize_memory(cx.gas, dst.max(src), len)?;
         cx.state.memory().copy(dst, src, len);
     };

@@ -1,56 +1,56 @@
 use super::i256::{i256_div, i256_mod};
-use crate::interpreter::Word;
+use crate::{interpreter::Word, utils::WordExt};
 use evm2_macros::instruction;
 
 #[instruction]
 pub fn add([a, b]: [Word]) -> out {
-    *out = a.wrapping_add(*b);
+    out.write(a.wrapping_add(*b));
 }
 
 #[instruction]
 pub fn mul([a, b]: [Word]) -> out {
-    *out = a.wrapping_mul(*b);
+    out.write(a.wrapping_mul(*b));
 }
 
 #[instruction]
 pub fn sub([a, b]: [Word]) -> out {
-    *out = a.wrapping_sub(*b);
+    out.write(a.wrapping_sub(*b));
 }
 
 #[instruction]
 pub fn div([a, b]: [Word]) -> out {
-    *out = if b.is_zero() { Word::ZERO } else { a.wrapping_div(*b) };
+    out.write(if b.is_zero() { Word::ZERO } else { a.wrapping_div(*b) });
 }
 
 #[instruction]
 pub fn sdiv([a, b]: [Word]) -> out {
-    *out = i256_div(*a, *b);
+    out.write(i256_div(*a, *b));
 }
 
 #[instruction]
 pub fn rem([a, b]: [Word]) -> out {
-    *out = if b.is_zero() { Word::ZERO } else { a.wrapping_rem(*b) };
+    out.write(if b.is_zero() { Word::ZERO } else { a.wrapping_rem(*b) });
 }
 
 #[instruction]
 pub fn smod([a, b]: [Word]) -> out {
-    *out = i256_mod(*a, *b);
+    out.write(i256_mod(*a, *b));
 }
 
 #[instruction]
 pub fn addmod([a, b, n]: [Word]) -> out {
-    *out = a.add_mod(*b, *n);
+    out.write(a.add_mod(*b, *n));
 }
 
 #[instruction]
 pub fn mulmod([a, b, n]: [Word]) -> out {
-    *out = a.mul_mod(*b, *n);
+    out.write(a.mul_mod(*b, *n));
 }
 
 #[instruction(dynamic_gas)]
 pub fn exp(cx: _, [a, b]: [Word]) -> Result<out> {
     cx.gas.spend(cx.state.gas_params().exp_cost(*b))?;
-    *out = a.wrapping_pow(*b);
+    out.write(a.wrapping_pow(*b));
 }
 
 #[instruction]
@@ -58,7 +58,7 @@ pub fn signextend([ext, value]: [Word]) -> out {
     if *ext < 31 {
         let bit_index = (8 * ext.as_limbs()[0] + 7) as usize;
         let mask = (Word::ONE << bit_index) - Word::ONE;
-        *out = if value.bit(bit_index) { *value | !mask } else { *value & mask };
+        out.write(if value.bit(bit_index) { *value | !mask } else { *value & mask });
     }
 }
 
@@ -105,6 +105,9 @@ mod tests {
         assert_stack!(SDIV(neg(4), 2), neg(2));
         assert_stack!(SDIV(7, neg(2)), neg(3));
         assert_stack!(SDIV(7, 0), 0);
+        let min = !(Word::MAX >> 1usize);
+        assert_stack!(SDIV(min, neg(1)), min);
+        assert_stack!(SDIV(min, 1), min);
     }
 
     #[test]
@@ -119,6 +122,7 @@ mod tests {
         assert_stack!(SMOD(neg(4), 3), neg(1));
         assert_stack!(SMOD(4, neg(3)), 1);
         assert_stack!(SMOD(4, 0), 0);
+        assert_stack!(SMOD(!(Word::MAX >> 1usize), neg(1)), 0);
     }
 
     #[test]

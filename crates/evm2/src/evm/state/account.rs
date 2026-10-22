@@ -236,6 +236,13 @@ impl Account {
         self.original != self.present
     }
 
+    /// See [`AccountHandle::is_existing_dead`].
+    #[inline]
+    pub(crate) fn is_existing_dead(&self) -> bool {
+        self.present.as_ref().is_some_and(AccountInfo::is_empty)
+            || (self.present.is_none() && self.original.is_some())
+    }
+
     /// Returns the account's new bytecode keyed by code hash when its code changed during the
     /// transaction to non-empty code.
     #[inline]
@@ -334,7 +341,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if self.tracked.storage.slots.capacity() == 0 {
             self.tracked.storage.slots = self.storage_pool.take();
         }
-        StorageHandle::new(self.address, &mut self.tracked.storage, self.inner)
+        StorageHandle::new(&self.address, &mut self.tracked.storage, self.inner)
     }
 
     /// Records the pre-mutation revert entry the first time a change is made through this handle.
@@ -424,8 +431,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// deletes such touched accounts during transaction finalization.
     #[inline]
     pub fn is_existing_dead(&self) -> bool {
-        self.tracked.present.as_ref().is_some_and(AccountInfo::is_empty)
-            || (self.tracked.present.is_none() && self.tracked.original.is_some())
+        self.tracked.is_existing_dead()
     }
 
     /// Returns whether the account is empty for EIP-150 new-account gas checks.

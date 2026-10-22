@@ -2,7 +2,7 @@
 
 use crate::{
     Evm, EvmTypesHost, SpecId,
-    evm::precompile::PrecompileProvider,
+    evm::{PrewarmSet, precompile::PrecompileProvider},
     interpreter::{GasTracker, Message},
 };
 #[cfg(feature = "std")]
@@ -136,6 +136,11 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
     }
 
     #[inline]
+    fn warm_addresses(&self, warm: &mut PrewarmSet) {
+        self.map.as_ref().warm_addresses(warm);
+    }
+
+    #[inline]
     fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
         self.map
             .as_ref()
@@ -165,7 +170,7 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
-        let precompile = self.map.as_ref().get_data(&message.code_address)?;
+        let precompile = self.map.as_ref().get_data(&message.call_target)?;
         Some(precompile.execute(evm, message, gas))
     }
 }

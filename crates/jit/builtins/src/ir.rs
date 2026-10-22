@@ -50,7 +50,7 @@ impl<B: Backend> Builtins<B> {
         resolver: Option<fn(Builtin) -> usize>,
     ) -> B::Function {
         let address = resolver.map_or_else(|| builtin.addr(), |resolve| resolve(builtin));
-        let resolved_name = resolver.map(|_| alloc::format!("{}_{address:x}", builtin.name()));
+        let resolved_name = resolver.map(|_| format!("{}_{address:x}", builtin.name()));
         let name = resolved_name.as_deref().unwrap_or_else(|| builtin.name());
         debug_assert!(name.starts_with(MANGLE_PREFIX), "{name:?}");
         if builtin.call_conv() == CallConv::Default
@@ -203,12 +203,10 @@ macro_rules! builtins {
                 // _in_out
                 const _0_0: u8 = STOP;
                 const _0_1: u8 = PUSH0;
-                const _1_0: u8 = POP;
 
                 const PANIC: u8 = _0_0;
                 const ASSERTSPECID: u8 = _0_0;
 
-                const EXPGAS: u8 = _1_0;
                 const KECCAK256CC: u8 = _0_1;
 
                 const CALLDATALOADC: u8 = _0_1;
@@ -297,32 +295,20 @@ builtins! {
     AddMod         = __revmc_builtin_addmod(@[sp] ptr) None,
     MulMod         = __revmc_builtin_mulmod(@[sp] ptr) None,
     Exp            = __revmc_builtin_exp(@[ecx] ptr, @[sp] ptr) None,
-    ExpGas         = __revmc_builtin_exp_gas(@[ecx] ptr, @[sp] ptr) None,
     Keccak256      = __revmc_builtin_keccak256(@[ecx] ptr, @[sp] ptr) None,
     Keccak256CC    = __revmc_builtin_keccak256_cc(@[ecx] ptr, @[sp] ptr, usize, usize) None,
     Balance        = __revmc_builtin_balance(@[ecx] ptr, @[sp] ptr) None,
-    Origin         = __revmc_builtin_origin(@[ecx_ro] ptr, @[sp] ptr) None,
     CallDataLoad   = __revmc_builtin_calldataload(@[ecx_ro] ptr, @[sp] ptr) None,
     CallDataLoadC  = __revmc_builtin_calldataload_c(@[ecx_ro] ptr, @[sp] ptr, usize) None,
     CallDataCopy   = __revmc_builtin_calldatacopy(@[ecx] ptr, @[sp] ptr) None,
     CodeCopy       = __revmc_builtin_codecopy(@[ecx] ptr, @[sp] ptr) None,
-    GasPrice       = __revmc_builtin_gas_price(@[ecx_ro] ptr, @[sp] ptr) None,
     ExtCodeSize    = __revmc_builtin_extcodesize(@[ecx] ptr, @[sp] ptr) None,
     ExtCodeCopy    = __revmc_builtin_extcodecopy(@[ecx] ptr, @[sp] ptr) None,
     ReturnDataCopy = __revmc_builtin_returndatacopy(@[ecx] ptr, @[sp] ptr) None,
     ExtCodeHash    = __revmc_builtin_extcodehash(@[ecx] ptr, @[sp] ptr) None,
     BlockHash      = __revmc_builtin_blockhash(@[ecx] ptr, @[sp] ptr) None,
-    Coinbase       = __revmc_builtin_coinbase(@[ecx] ptr, @[sp] ptr) None,
-    Timestamp      = __revmc_builtin_timestamp(@[ecx] ptr, @[sp] ptr) None,
-    Number         = __revmc_builtin_number(@[ecx] ptr, @[sp] ptr) None,
-    Difficulty     = __revmc_builtin_difficulty(@[ecx] ptr, @[sp] ptr) None,
-    GasLimit       = __revmc_builtin_gaslimit(@[ecx] ptr, @[sp] ptr) None,
-    ChainId        = __revmc_builtin_chainid(@[ecx_ro] ptr, @[sp] ptr) None,
     SelfBalance    = __revmc_builtin_self_balance(@[ecx] ptr, @[sp] ptr) None,
-    Basefee        = __revmc_builtin_basefee(@[ecx] ptr, @[sp] ptr) None,
     BlobHash       = __revmc_builtin_blob_hash(@[ecx_ro] ptr, @[sp] ptr) None,
-    BlobBaseFee    = __revmc_builtin_blob_base_fee(@[ecx] ptr, @[sp] ptr) None,
-    SlotNum        = __revmc_builtin_slot_num(@[ecx] ptr, @[sp] ptr) None,
     Mresize        = __revmc_builtin_mresize(@[ecx] ptr, usize) None,
     Sload          = __revmc_builtin_sload(@[ecx] ptr, @[sp] ptr) None,
     SloadC         = __revmc_builtin_sload_c(@[ecx] ptr, @[sp] ptr, usize) None,
@@ -353,71 +339,57 @@ impl Builtin {
     pub fn addr_for<T: evm2::EvmTypesHost>(self) -> usize {
         match self {
             Self::AssertSpecId => {
-                crate::__revmc_builtin_assert_spec_id_typed::<T> as *const () as usize
+                crate::generic::__revmc_builtin_assert_spec_id::<T> as *const () as usize
             }
-            Self::Exp => crate::__revmc_builtin_exp_typed::<T> as *const () as usize,
-            Self::ExpGas => crate::__revmc_builtin_exp_gas_typed::<T> as *const () as usize,
-            Self::Keccak256 => crate::__revmc_builtin_keccak256_typed::<T> as *const () as usize,
+            Self::Exp => crate::generic::__revmc_builtin_exp::<T> as *const () as usize,
+            Self::Keccak256 => crate::generic::__revmc_builtin_keccak256::<T> as *const () as usize,
             Self::Keccak256CC => {
-                crate::__revmc_builtin_keccak256_cc_typed::<T> as *const () as usize
+                crate::generic::__revmc_builtin_keccak256_cc::<T> as *const () as usize
             }
-            Self::Balance => crate::__revmc_builtin_balance_typed::<T> as *const () as usize,
-            Self::Origin => crate::__revmc_builtin_origin_typed::<T> as *const () as usize,
+            Self::Balance => crate::generic::__revmc_builtin_balance::<T> as *const () as usize,
             Self::CallDataLoad => {
-                crate::__revmc_builtin_calldataload_typed::<T> as *const () as usize
+                crate::generic::__revmc_builtin_calldataload::<T> as *const () as usize
             }
             Self::CallDataLoadC => {
-                crate::__revmc_builtin_calldataload_c_typed::<T> as *const () as usize
+                crate::generic::__revmc_builtin_calldataload_c::<T> as *const () as usize
             }
             Self::CallDataCopy => {
-                crate::__revmc_builtin_calldatacopy_typed::<T> as *const () as usize
+                crate::generic::__revmc_builtin_calldatacopy::<T> as *const () as usize
             }
-            Self::CodeCopy => crate::__revmc_builtin_codecopy_typed::<T> as *const () as usize,
-            Self::GasPrice => crate::__revmc_builtin_gas_price_typed::<T> as *const () as usize,
+            Self::CodeCopy => crate::generic::__revmc_builtin_codecopy::<T> as *const () as usize,
             Self::ExtCodeSize => {
-                crate::__revmc_builtin_extcodesize_typed::<T> as *const () as usize
+                crate::generic::__revmc_builtin_extcodesize::<T> as *const () as usize
             }
             Self::ExtCodeCopy => {
-                crate::__revmc_builtin_extcodecopy_typed::<T> as *const () as usize
+                crate::generic::__revmc_builtin_extcodecopy::<T> as *const () as usize
             }
             Self::ReturnDataCopy => {
-                crate::__revmc_builtin_returndatacopy_typed::<T> as *const () as usize
+                crate::generic::__revmc_builtin_returndatacopy::<T> as *const () as usize
             }
             Self::ExtCodeHash => {
-                crate::__revmc_builtin_extcodehash_typed::<T> as *const () as usize
+                crate::generic::__revmc_builtin_extcodehash::<T> as *const () as usize
             }
-            Self::BlockHash => crate::__revmc_builtin_blockhash_typed::<T> as *const () as usize,
-            Self::Coinbase => crate::__revmc_builtin_coinbase_typed::<T> as *const () as usize,
-            Self::Timestamp => crate::__revmc_builtin_timestamp_typed::<T> as *const () as usize,
-            Self::Number => crate::__revmc_builtin_number_typed::<T> as *const () as usize,
-            Self::Difficulty => crate::__revmc_builtin_difficulty_typed::<T> as *const () as usize,
-            Self::GasLimit => crate::__revmc_builtin_gaslimit_typed::<T> as *const () as usize,
-            Self::ChainId => crate::__revmc_builtin_chainid_typed::<T> as *const () as usize,
+            Self::BlockHash => crate::generic::__revmc_builtin_blockhash::<T> as *const () as usize,
             Self::SelfBalance => {
-                crate::__revmc_builtin_self_balance_typed::<T> as *const () as usize
+                crate::generic::__revmc_builtin_self_balance::<T> as *const () as usize
             }
-            Self::Basefee => crate::__revmc_builtin_basefee_typed::<T> as *const () as usize,
-            Self::BlobHash => crate::__revmc_builtin_blob_hash_typed::<T> as *const () as usize,
-            Self::BlobBaseFee => {
-                crate::__revmc_builtin_blob_base_fee_typed::<T> as *const () as usize
-            }
-            Self::Mresize => crate::__revmc_builtin_mresize_typed::<T> as *const () as usize,
-            Self::SlotNum => crate::__revmc_builtin_slot_num_typed::<T> as *const () as usize,
-            Self::Sload => crate::__revmc_builtin_sload_typed::<T> as *const () as usize,
-            Self::SloadC => crate::__revmc_builtin_sload_c_typed::<T> as *const () as usize,
-            Self::Sstore => crate::__revmc_builtin_sstore_typed::<T> as *const () as usize,
-            Self::Tload => crate::__revmc_builtin_tload_typed::<T> as *const () as usize,
-            Self::Tstore => crate::__revmc_builtin_tstore_typed::<T> as *const () as usize,
-            Self::Mcopy => crate::__revmc_builtin_mcopy_typed::<T> as *const () as usize,
-            Self::Log => crate::__revmc_builtin_log_typed::<T> as *const () as usize,
-            Self::Create => crate::__revmc_builtin_create_typed::<T> as *const () as usize,
-            Self::Call => crate::__revmc_builtin_call_typed::<T> as *const () as usize,
-            Self::DoReturn => crate::__revmc_builtin_do_return_typed::<T> as *const () as usize,
+            Self::BlobHash => crate::generic::__revmc_builtin_blob_hash::<T> as *const () as usize,
+            Self::Mresize => crate::generic::__revmc_builtin_mresize::<T> as *const () as usize,
+            Self::Sload => crate::generic::__revmc_builtin_sload::<T> as *const () as usize,
+            Self::SloadC => crate::generic::__revmc_builtin_sload_c::<T> as *const () as usize,
+            Self::Sstore => crate::generic::__revmc_builtin_sstore::<T> as *const () as usize,
+            Self::Tload => crate::generic::__revmc_builtin_tload::<T> as *const () as usize,
+            Self::Tstore => crate::generic::__revmc_builtin_tstore::<T> as *const () as usize,
+            Self::Mcopy => crate::generic::__revmc_builtin_mcopy::<T> as *const () as usize,
+            Self::Log => crate::generic::__revmc_builtin_log::<T> as *const () as usize,
+            Self::Create => crate::generic::__revmc_builtin_create::<T> as *const () as usize,
+            Self::Call => crate::generic::__revmc_builtin_call::<T> as *const () as usize,
+            Self::DoReturn => crate::generic::__revmc_builtin_do_return::<T> as *const () as usize,
             Self::DoReturnCC => {
-                crate::__revmc_builtin_do_return_cc_typed::<T> as *const () as usize
+                crate::generic::__revmc_builtin_do_return_cc::<T> as *const () as usize
             }
             Self::SelfDestruct => {
-                crate::__revmc_builtin_selfdestruct_typed::<T> as *const () as usize
+                crate::generic::__revmc_builtin_selfdestruct::<T> as *const () as usize
             }
             _ => self.addr(),
         }

@@ -7,7 +7,8 @@
 //! The 4byteTracer collects the function selectors of every function executed in the lifetime of a
 //! transaction, along with the size of the supplied call data. The result is a map of
 //! SELECTOR-CALLDATASIZE to number of occurrences entries, where the keys are SELECTOR-CALLDATASIZE
-//! and the values are number of occurrences of this key. For example:
+//! and the values are number of occurrences of this key. Calls to precompiles are skipped. For
+//! example:
 //!
 //! ```json
 //! {
@@ -25,7 +26,7 @@ use alloc::format;
 use alloy_primitives::{Selector, hex, map::HashMap};
 use alloy_rpc_types_trace::geth::FourByteFrame;
 use evm2::{
-    EvmTypesHost, Inspector,
+    EvmTypes, Inspector,
     interpreter::{Interpreter, Message, MessageResult},
 };
 
@@ -43,16 +44,18 @@ impl FourByteInspector {
     }
 }
 
-impl<T: EvmTypesHost> Inspector<T> for FourByteInspector {
+impl<T: EvmTypes> Inspector<T> for FourByteInspector {
     fn call(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        if message.input.len() >= 4 {
-            let selector =
-                Selector::try_from(&message.input[..4]).expect("input is at least 4 bytes");
-            let calldata_size = message.input[4..].len();
+        // Skip precompile invocations, matching geth's 4byteTracer.
+        if let Some((selector, calldata)) = message.input.split_first_chunk()
+            && !interp.host().precompiles().contains(&message.call_target)
+        {
+            let selector = Selector::from(*selector);
+            let calldata_size = calldata.len();
             *self.inner.entry((selector, calldata_size)).or_default() += 1;
         }
         None

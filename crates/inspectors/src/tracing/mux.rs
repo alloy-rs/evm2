@@ -1,5 +1,6 @@
 use crate::tracing::{FourByteInspector, TracingInspector, TracingInspectorConfig, final_refunded};
 use alloc::vec::Vec;
+use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Log, U256, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
@@ -8,7 +9,7 @@ use alloy_rpc_types_trace::geth::{
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
-    EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
+    EvmTypes, EvmTypesHost, Inspector, TxResultExt, TxResultWithState,
     evm::{DbResult, DynDatabase},
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -109,6 +110,14 @@ impl MuxInspector {
         Ok(Self { four_byte, tracing, configs })
     }
 
+    /// Sets the index the next recorded log receives, see
+    /// [`TracingInspector::set_next_log_index`].
+    pub const fn set_next_log_index(&mut self, index: usize) {
+        if let Some(tracing) = &mut self.tracing {
+            tracing.set_next_log_index(index);
+        }
+    }
+
     /// Try converting this [MuxInspector] into a [MuxFrame].
     pub fn try_into_mux_frame<T: EvmTypesHost>(
         &self,
@@ -173,6 +182,19 @@ impl MuxInspector {
         }
 
         Ok(MuxFrame(frame))
+    }
+
+    /// Finalizes the transaction root for tracers sharing the tracing inspector.
+    pub(crate) fn finalize_transaction<E>(
+        &mut self,
+        tx: &Recovered<impl Transaction>,
+        result: &TxResultExt<E>,
+    ) {
+        if let Some(inspector) = &mut self.tracing {
+            inspector.recover_runtime_oog_root(tx, result);
+            inspector.set_transaction_gas_limit(tx.gas_limit());
+            inspector.set_transaction_caller(tx.signer());
+        }
     }
 }
 

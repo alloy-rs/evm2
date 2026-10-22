@@ -30,7 +30,7 @@ use inkwell::{
     },
     values::{
         AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue,
-        FunctionValue, InstructionValue, PointerValue,
+        FunctionValue, InstructionValue, PointerValue, UnnamedAddress,
     },
 };
 use object::{Object, ObjectSymbol};
@@ -1442,6 +1442,18 @@ impl Builder for EvmLlvmBuilder<'_> {
         self.bcx.build_global_string_ptr(value, "").unwrap().as_pointer_value().into()
     }
 
+    fn const_array(&mut self, ty: Self::Type, values: &[u64]) -> Self::Value {
+        let ty = ty.into_int_type();
+        let values = values.iter().map(|&v| ty.const_int(v, false)).collect::<Vec<_>>();
+        let init = ty.const_array(&values);
+        let global = self.module().add_global(init.get_type(), None, "");
+        global.set_initializer(&init);
+        global.set_constant(true);
+        global.set_linkage(convert_linkage(evm2_jit_backend::Linkage::Private));
+        global.set_unnamed_address(UnnamedAddress::Global);
+        global.as_pointer_value().into()
+    }
+
     fn nullptr(&mut self) -> Self::Value {
         self.ty_ptr.const_null().into()
     }
@@ -1730,6 +1742,13 @@ impl Builder for EvmLlvmBuilder<'_> {
         self.call(ctlz, &[value, is_poison_on_zero]).unwrap()
     }
 
+    fn popcnt(&mut self, value: Self::Value) -> Self::Value {
+        let ty = value.get_type();
+        let name = format!("llvm.ctpop.{}", fmt_ty(ty));
+        let ctpop = self.get_or_add_function(&name, |this| this.fn_type(Some(ty), &[ty]));
+        self.call(ctpop, &[value]).unwrap()
+    }
+
     fn bitor_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value {
         let rhs = self.iconst(lhs.get_type(), rhs);
         self.bitor(lhs, rhs)
@@ -1978,7 +1997,12 @@ impl Builder for EvmLlvmBuilder<'_> {
 
 /// Builds the LLVM pass pipeline string. See [`EvmLlvmBackend::optimize_module`].
 fn build_pass_pipeline(with_licm: bool) -> String {
-    let mut passes = String::from("module(globalopt,cgscc(inline),globalopt,function(");
+    // `globalopt`, `cgscc(inline)`, a second `sroa`, and `adce` change no benchmark's
+    // assembly, so they are left out: the module has no global data, its only internal
+    // function (the `mresize` stub) is `noinline`, the first `sroa` promotes the one
+    // `alloca`, and `dse`/`simplifycfg` remove what `adce` would. Revisit them when
+    // codegen emits inlinable helper functions or global data.
+    let mut passes = String::from("module(function(");
     let function_passes: &[&str] = &[
         "simplifycfg",
         "sroa",
@@ -1990,15 +2014,8 @@ fn build_pass_pipeline(with_licm: bool) -> String {
     ];
     let licm_passes: &[&str] =
         &["loop-mssa(licm,loop-rotate,licm)", "simplifycfg", "instcombine<no-verify-fixpoint>"];
-    let post_passes: &[&str] = &[
-        "sroa",
-        "early-cse",
-        "sccp",
-        "instcombine<no-verify-fixpoint>",
-        "adce",
-        "dse",
-        "simplifycfg",
-    ];
+    let post_passes: &[&str] =
+        &["early-cse", "sccp", "instcombine<no-verify-fixpoint>", "dse", "simplifycfg"];
 
     let iter =
         function_passes.iter().chain(if with_licm { licm_passes } else { &[] }).chain(post_passes);
@@ -2048,18 +2065,41 @@ fn init_() -> Result<()> {
     let mut args = vec![
         c"evm2-jit-llvm".as_ptr(),
         c"-x86-asm-syntax=intel".as_ptr(),
-        // CodeGenPrepare's memory optimization has a pathological interaction with our IR shape:
-        // repeated stores to the same `gas_remaining` pointer in a huge function cause
-        // MemoryDependenceResults::getNonLocalPointerDependency to do superlinear work.
-        // Mark functions with ≥1000 BBs as "huge" to skip the expensive CGP memory opts,
-        // which produce identical codegen at that scale. Small functions still benefit from
-        // CGP's address sinking and branch optimizations.
-        c"--cgpp-huge-func=1000".as_ptr(),
+        // CodeGenPrepare restarts from the first block whenever it changes the dominator tree;
+        // in "huge" functions it revisits only the changed blocks. Our functions hit this often,
+        // so the restarts are superlinear: CGP took 40% of codegen time in a 973-block function
+        // (the default threshold is 10000 blocks). Treat every function as huge; codegen barely
+        // changes.
+        c"--cgpp-huge-func=0".as_ptr(),
         // Greedy register allocation's global live range splitting is superlinear on large
         // functions with many long-lived values. Treat smaller live ranges as huge so LLVM uses
         // the cheaper splitting path; this preserves code size on snailtracer while cutting llc
         // time by ~3x.
         c"--huge-size-for-split=64".as_ptr(),
+        // SimplifyCFG folds each block's out-of-gas and stack-bound checks into a logical-or
+        // `select` with branch weights. CodeGenPrepare would turn that back into a branch
+        // diamond with an `i1` phi; kept as a `select`, SelectionDAG splits it into two plain
+        // conditional branches instead. The flag applies to every `select`, but the IR has few
+        // others.
+        c"-disable-cgp-select2branch".as_ptr(),
+        // A JUMPDEST that dominates the rest of the code and is reached again through the
+        // dynamic jump table or an internal function's return switch heads a loop that spans
+        // most of the function. MachineLICM hoists every constant materialization in it, often
+        // hundreds of constant pool loads, into the preheader, and greedy register allocation
+        // then spends most of codegen splitting those function-wide live ranges. Sink them back
+        // into their users when the preheader's register pressure exceeds the limit: this cut
+        // codegen by up to 15x on large mainnet contracts.
+        c"-sink-insts-to-avoid-spills".as_ptr(),
+        // PHI elimination splits critical edges to put each phi copy on its own edge. The dynamic
+        // jump table and internal-function return switches have many critical edges into blocks
+        // with phis, and the new blocks and jumps give greedy register allocation more places to
+        // split live ranges and reload. Keeping the copies in the predecessors cut reloads by 12%
+        // on the mainnet corpus.
+        c"-disable-phi-elim-edge-splitting".as_ptr(),
+        // These change little or no code on the benchmarks and the mainnet corpus but still walk
+        // every machine instruction.
+        c"-disable-x86-domain-reassignment".as_ptr(),
+        c"-disable-postra-machine-licm".as_ptr(),
     ];
     args.extend(extra.iter().map(|s| s.as_ptr()));
     unsafe {
@@ -2180,7 +2220,8 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::Writable => ("writable", AttrValue::Enum(0)),
         // memory(argmem: readwrite) = ModRef(3) << ArgMem(0) = 3.
         OurAttr::ArgMemOnly => ("memory", AttrValue::Enum(3)),
-        OurAttr::DeadOnReturn => ("dead_on_return", AttrValue::Enum(0)),
+        // `u64::MAX` marks all reachable memory as dead; `0` would mark zero bytes.
+        OurAttr::DeadOnReturn => ("dead_on_return", AttrValue::Enum(u64::MAX)),
 
         OurAttr::Initializes(size) => {
             return cpp::create_initializes_attr(bcx.cx, 0, size as i64);

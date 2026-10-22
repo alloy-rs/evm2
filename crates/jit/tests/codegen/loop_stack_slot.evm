@@ -1,0 +1,39 @@
+    PUSH0
+    CALLDATALOAD
+    PUSH0
+    PUSH1 0x01
+loop:
+    JUMPDEST
+    DUP3
+    ISZERO
+    PUSH %done
+    JUMPI
+    SWAP1
+    PUSH1 0x01
+    ADD
+    DUP1
+    SWAP2
+    MUL
+    SWAP2
+    PUSH1 0x01
+    SWAP1
+    SUB
+    SWAP2
+    PUSH %loop
+    JUMP
+done:
+    JUMPDEST
+    SWAP2
+    POP
+    POP
+    PUSH0
+    MSTORE
+    PUSH1 0x20
+    PUSH0
+    RETURN
+
+; The product slot is written on every iteration but read only after the loop. LICM keeps it in a
+; register and stores it once on exit.
+; CHECK: [[HEADER:bb1\.[a-zA-Z0-9.]*]]:
+; CHECK-NOT: store i256
+; CHECK: label %[[HEADER]]

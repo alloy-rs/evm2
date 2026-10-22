@@ -572,6 +572,38 @@ impl CompilerState {
     }
 }
 
+/// Worker threads can serve different backends; never reuse a compiler across ABI/gas profiles.
+#[cfg(feature = "llvm")]
+#[derive(PartialEq, Eq)]
+struct CompilerProfile {
+    host_type: std::any::TypeId,
+    layout: evm2_jit_codegen::HostLayout,
+    resolver: usize,
+    gas_params: Option<evm2::version::GasParams>,
+    debug_assertions: bool,
+    single_error: bool,
+    no_dedup: bool,
+    no_dse: bool,
+    target: CompilerTarget,
+}
+
+#[cfg(feature = "llvm")]
+impl CompilerProfile {
+    fn new(config: &RuntimeConfig, target: CompilerTarget) -> Self {
+        Self {
+            host_type: config.host.type_id,
+            layout: config.host.layout,
+            resolver: config.host.resolver as usize,
+            gas_params: config.gas_params,
+            debug_assertions: config.debug_assertions,
+            single_error: config.single_error,
+            no_dedup: config.no_dedup,
+            no_dse: config.no_dse,
+            target,
+        }
+    }
+}
+
 #[cfg(feature = "llvm")]
 thread_local! {
     static JIT_COMPILER: RefCell<Option<CompilerState>> = const { RefCell::new(None) };
@@ -837,37 +869,5 @@ mod lifecycle_tests {
         });
         release.send(()).unwrap();
         owner.join().unwrap();
-    }
-}
-
-/// Worker threads can serve different backends; never reuse a compiler across ABI/gas profiles.
-#[cfg(feature = "llvm")]
-#[derive(PartialEq, Eq)]
-struct CompilerProfile {
-    host_type: std::any::TypeId,
-    layout: evm2_jit_codegen::HostLayout,
-    resolver: usize,
-    gas_params: Option<evm2::version::GasParams>,
-    debug_assertions: bool,
-    single_error: bool,
-    no_dedup: bool,
-    no_dse: bool,
-    target: CompilerTarget,
-}
-
-#[cfg(feature = "llvm")]
-impl CompilerProfile {
-    fn new(config: &RuntimeConfig, target: CompilerTarget) -> Self {
-        Self {
-            host_type: config.host.type_id,
-            layout: config.host.layout,
-            resolver: config.host.resolver as usize,
-            gas_params: config.gas_params,
-            debug_assertions: config.debug_assertions,
-            single_error: config.single_error,
-            no_dedup: config.no_dedup,
-            no_dse: config.no_dse,
-            target,
-        }
     }
 }

@@ -75,10 +75,6 @@ pub fn run_interpreter<'frame, 'host, T: EvmTypesHost>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "llvm")]
-    use crate::runtime::RuntimeConfig;
-    #[cfg(feature = "llvm")]
-    use alloy_primitives::Address;
     use alloy_primitives::Bytes;
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId,
@@ -88,10 +84,15 @@ mod tests {
         evm::EmptyDB,
         interpreter::{MessageExt, op},
     };
+
+    #[cfg(feature = "llvm")]
+    use crate::runtime::RuntimeConfig;
+    #[cfg(feature = "llvm")]
+    use alloy_primitives::{Address, hex};
     #[cfg(feature = "llvm")]
     use evm2::{
         evm::{AccountInfo, InMemoryDB},
-        interpreter::Word,
+        interpreter::{Host, Word},
     };
 
     #[cfg(feature = "llvm")]
@@ -250,7 +251,9 @@ mod tests {
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
         let tx_env = TxEnvExt::default();
-        let mut code = vec![op::PUSH1, 0x20, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0];
+        // The call output overwrites the word stored before it.
+        let mut code = vec![op::PUSH1, 0x69, op::PUSH0, op::MSTORE];
+        code.extend([op::PUSH1, 0x20, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0]);
         push20(&mut code, target);
         code.extend([
             op::PUSH2,
@@ -532,6 +535,86 @@ mod tests {
         let interpreter = run(false);
         let jit = run(true);
         assert_eq!(jit, interpreter);
+    }
+
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn compiled_precompile_dispatch_uses_original_callee() {
+        let sha256 = Address::with_last_byte(2);
+        let delegate = Address::with_last_byte(0x33);
+        let parent = Address::with_last_byte(0x44);
+        let caller = Address::with_last_byte(0xaa);
+        let sha256_output =
+            hex!("9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a");
+        for (callee, delegated, expected_output) in [
+            (sha256, delegate, sha256_output.as_slice()),
+            (sha256, sha256, sha256_output.as_slice()),
+            (Address::with_last_byte(0x55), sha256, &[]),
+        ] {
+            for opcode in [op::CALL, op::CALLCODE, op::DELEGATECALL, op::STATICCALL] {
+                // Copy input, call with no output buffer, then return all return data.
+                let mut code = vec![op::CALLDATASIZE, op::PUSH0, op::PUSH0, op::CALLDATACOPY];
+                code.extend([op::PUSH0, op::PUSH0, op::PUSH1, 4, op::PUSH0]);
+                if matches!(opcode, op::CALL | op::CALLCODE) {
+                    code.push(op::PUSH0);
+                }
+                push20(&mut code, callee);
+                code.extend([
+                    op::GAS,
+                    opcode,
+                    op::POP,
+                    op::RETURNDATASIZE,
+                    op::PUSH0,
+                    op::PUSH0,
+                    op::RETURNDATACOPY,
+                    op::RETURNDATASIZE,
+                    op::PUSH0,
+                    op::RETURN,
+                ]);
+                let message = MessageExt {
+                    gas_limit: 100_000,
+                    destination: parent,
+                    call_target: parent,
+                    code_address: parent,
+                    caller,
+                    input: hex!("01020304").into(),
+                    code: Bytecode::new_legacy(code.into()),
+                    ..Default::default()
+                };
+                let run = |with_jit| {
+                    let mut database = InMemoryDB::default();
+                    database.insert_account_info(
+                        &callee,
+                        AccountInfo::default().with_code(Bytecode::new_eip7702(delegated)),
+                    );
+                    database.insert_account_info(
+                        &delegate,
+                        AccountInfo::default()
+                            .with_code(Bytecode::new_legacy(Bytes::from_static(BYTECODE_RET42))),
+                    );
+                    let mut host = Evm::<BaseEvmTypes>::new(
+                        SpecId::PRAGUE,
+                        BlockEnvExt::default(),
+                        ethereum_tx_registry(SpecId::PRAGUE),
+                        database,
+                        Precompiles::base(SpecId::PRAGUE),
+                    );
+                    host.warm_precompiles();
+                    host.state_mut().prewarm(&caller);
+                    host.state_mut().prewarm(&parent);
+                    if with_jit {
+                        host.set_interpreter_runner(JitInterpreterRunner::new(blocking_backend()));
+                    }
+                    Host::execute_message(&mut host, &TxEnvExt::default(), &mut message.clone())
+                        .unwrap()
+                };
+                let interpreted = run(false);
+                let compiled = run(true);
+                assert_eq!(compiled.stop, InstrStop::Return);
+                assert_eq!(compiled.output.as_ref(), expected_output);
+                assert_eq!(compiled, interpreted);
+            }
+        }
     }
 }
 

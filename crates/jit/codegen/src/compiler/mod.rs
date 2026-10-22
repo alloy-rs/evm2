@@ -802,6 +802,11 @@ impl<B: Backend> EvmCompiler<B> {
             }
         }
 
+        // The caller owns the whole stack buffer, so the function may write any slot even on paths
+        // that don't. This lets LICM promote stack slots whose stores only some paths through a
+        // loop execute, and store them once on loop exit.
+        bcx.add_function_attribute(None, Attribute::Writable, FunctionAttributeLocation::Param(1));
+
         // The stack argument's contents are dead after return when the stack is not observed,
         // so the caller can elide any stores to the buffer.
         if !bytecode.stack_observed() {
@@ -1116,7 +1121,9 @@ mod default_attrs {
     }
 
     pub(crate) fn for_ref() -> impl Iterator<Item = Attribute> {
-        for_ptr().chain([Attribute::NonNull, Attribute::NoAlias])
+        // `NoFree` keeps `dereferenceable` valid past control flow, which LICM needs to promote
+        // stack slots in loops.
+        for_ptr().chain([Attribute::NonNull, Attribute::NoAlias, Attribute::NoFree])
     }
 
     pub(crate) fn for_sized_ref((size, align): (usize, usize)) -> impl Iterator<Item = Attribute> {

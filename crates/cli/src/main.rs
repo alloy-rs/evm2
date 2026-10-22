@@ -11,12 +11,18 @@ mod replay;
 #[cfg(feature = "jit")]
 mod run;
 mod style;
+mod utils;
 
 use crate::{args::Args, error::Result};
 use clap::Parser;
 use std::{error::Error as _, process::ExitCode};
+use tracing_subscriber::EnvFilter;
+
+#[global_allocator]
+static ALLOC: utils::Allocator = utils::new_allocator();
 
 fn main() -> ExitCode {
+    init_tracing();
     if let Err(error) = run() {
         let style = style::ERROR;
         eprintln!("{style}error{style:#}: {error}");
@@ -47,4 +53,12 @@ fn run() -> Result<()> {
         #[cfg(feature = "jit")]
         args::Command::Run(command) => command.run().map_err(|source| error::Error::Run { source }),
     }
+}
+
+/// Logs to stderr, filtered by `RUST_LOG`.
+fn init_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .try_init();
 }

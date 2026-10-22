@@ -1,8 +1,8 @@
 use super::{
-    PreparedTx, execute_initial_frame, floor_gas, initial_gas_and_reservoir, intrinsic_gas,
+    PreparedTx, execute_initial_frame, initial_gas_and_reservoir, intrinsic_and_floor_gas,
     prepare_initial_frame, validate_block_gas_limit, validate_chain_id, validate_create_initcode,
     validate_execution_gas_limit_cap, validate_floor_gas, validate_gas_price,
-    validate_intrinsic_gas, validate_nonce_not_overflow, validate_sender,
+    validate_intrinsic_gas, validate_nonce_not_overflow, validate_sender_and_bump_nonce,
     validate_tx_gas_limit_cap, warm_base_accounts,
 };
 use crate::{
@@ -42,11 +42,11 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     validate_block_gas_limit(req.host.version(), tx.gas_limit, req.host.block.gas_limit)?;
     validate_create_initcode(req.host.version(), tx.to, &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
-    let mut intrinsic = intrinsic_gas(req.host.version(), caller, tx.to, &tx.input, 0, 0, tx.value);
+    let (mut intrinsic, mut floor_gas) =
+        intrinsic_and_floor_gas(req.host.version(), caller, tx.to, &tx.input, 0, 0, tx.value);
     // EIP-2780: create-transaction and EIP-7702 state gas is charged at the runtime gas phase, so
     // no state gas is charged at the intrinsic phase.
     let mut initial_state_gas = 0;
-    let mut floor_gas = floor_gas(req.host.version(), caller, tx.to, &tx.input, 0, 0, tx.value);
     H::adjust_intrinsic_gas(
         req.host,
         req.envelope,
@@ -59,11 +59,15 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
     validate_execution_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    validate_sender(req.host, caller, tx.nonce, max_gas_cost.saturating_add(tx.value))?;
+    validate_sender_and_bump_nonce(
+        req.host,
+        caller,
+        tx.nonce,
+        max_gas_cost.saturating_add(tx.value),
+    )?;
 
-    warm_base_accounts(req.host, caller, tx.to);
+    warm_base_accounts(req.host, tx.to);
 
-    req.host.state.account(&caller)?.bump_nonce();
     H::before_execution(req.host, req.envelope, caller, max_gas_cost)?;
 
     Ok(PreparedTx { caller, gas_price, intrinsic, initial_state_gas, floor_gas })

@@ -8,7 +8,7 @@ use crate::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Result, StackMut,
         Word, derive_create_destination,
     },
-    utils::{word_to_address, word_to_usize},
+    utils::WordExt,
     version::GasId,
 };
 use alloy_primitives::{Address, B256, Bytes};
@@ -38,9 +38,9 @@ fn resize_memory_range<T: EvmTypesHost>(
     offset: Word,
     len: Word,
 ) -> Result<Range<usize>> {
-    let len = word_to_usize(len)?;
+    let len = len.to_usize()?;
     let offset = if len != 0 {
-        let offset = word_to_usize(offset)?;
+        let offset = offset.to_usize()?;
         state.resize_memory(gas, offset, len)?;
         offset
     } else {
@@ -79,7 +79,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
-) -> Result<(u64, u64, Bytecode, Address, bool)> {
+) -> Result<(u64, u64, Bytecode, Address)> {
     if transfers_value {
         gas.spend(state.gas_params().get(GasId::TransferValueCost).into())?;
     }
@@ -116,15 +116,14 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     }
     let features = state.version().features;
     let mut new_account_state_gas = 0;
+    // Check emptiness only when new-account gas can apply: after EIP-161 a zero-value call never
+    // pays it, so it skips the extra account lookup.
     if create_empty_account
-        && should_charge_new_account_gas(
-            features.contains(EvmFeatures::EIP161),
-            transfers_value,
-            state
-                .host()
-                .target_is_empty_for_new_account_gas(&to, features)
-                .map_err(|error| state.fail(error))?,
-        )
+        && (!features.contains(EvmFeatures::EIP161) || transfers_value)
+        && state
+            .host()
+            .target_is_empty_for_new_account_gas(&to, features)
+            .map_err(|error| state.fail(error))?
     {
         cost += u64::from(state.gas_params().get(GasId::NewAccountCost));
         // EIP-8037: value transfer to a new account also charges state gas from
@@ -147,8 +146,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend).into());
     }
 
-    let disable_precompiles = code_address != to;
-    Ok((gas_limit, new_account_state_gas, code, code_address, disable_precompiles))
+    Ok((gas_limit, new_account_state_gas, code, code_address))
 }
 
 #[inline(never)]
@@ -168,7 +166,7 @@ fn prepare_call<T: EvmTypesHost>(
     let [local_gas_limit, to] = stack.popn::<2>()?;
     let value = if has_value { stack.pop()? } else { Word::ZERO };
     let [input_offset, input_len, return_offset, return_len] = stack.popn::<4>()?;
-    let to = word_to_address(to);
+    let to = to.to_address();
     let has_transfer = !value.is_zero();
     if state.is_static() && kind == MessageKind::Call && has_transfer {
         return Err(InstrStop::CallNotAllowedInsideStatic);
@@ -183,7 +181,7 @@ fn prepare_call<T: EvmTypesHost>(
         return_offset,
         return_len,
     )?;
-    let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address, disable_precompiles) =
+    let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address) =
         load_acc_and_calc_gas(
             gas,
             state,
@@ -218,7 +216,6 @@ fn prepare_call<T: EvmTypesHost>(
         value: call_value,
         code: loaded_code,
         code_address,
-        disable_precompiles,
         caller_is_static: state.is_static(),
         salt: B256::ZERO,
         ext: T::MessageExt::default(),
@@ -261,7 +258,7 @@ fn call_inner<T: EvmTypesHost>(
         state.memory().set_unchecked(return_memory_range.start, output);
     }
     state.swap_return_data(&mut result.output);
-    stack.push(Word::from(result.stop.is_success()))
+    stack.push_u64(result.stop.is_success() as u64)
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]
@@ -301,7 +298,7 @@ fn create_inner<T: EvmTypesHost>(
     let [value, offset, len] = stack.popn::<3>()?;
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
 
-    let len = word_to_usize(len)?;
+    let len = len.to_usize()?;
     if state.feature(EvmFeatures::EIP3860) {
         if len > state.version().max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
@@ -355,7 +352,7 @@ fn create_inner<T: EvmTypesHost>(
                 || depth > CALL_DEPTH_LIMIT)
         {
             state.clear_return_data();
-            stack.push(Word::ZERO)?;
+            stack.push_u64(0)?;
             return Ok(());
         }
 
@@ -391,7 +388,6 @@ fn create_inner<T: EvmTypesHost>(
         input,
         value,
         code_address: caller,
-        disable_precompiles: false,
         // CREATE is rejected in a static context (see `require_non_staticcall`).
         caller_is_static: false,
         salt,
@@ -426,7 +422,7 @@ fn create_inner<T: EvmTypesHost>(
 #[instruction(dynamic_gas)]
 pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     require_non_staticcall(cx.state)?;
-    let target = word_to_address(*target);
+    let target = target.to_address();
     let cold_load_gas = cx.state.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let destination = &cx.state.message().destination;

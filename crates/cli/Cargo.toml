@@ -7,7 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
 repository.workspace = true
 
 [[bin]]
@@ -43,6 +42,7 @@ serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["raw_value", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 zstd.workspace = true
 
 # jit
@@ -52,11 +52,18 @@ evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
 libloading = { version = "0.9", optional = true }
 open = { version = "5", optional = true }
 
+# mimalloc
+mimalloc = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# jemalloc
+tikv-jemallocator = { workspace = true, optional = true }
+
 [build-dependencies]
 evm2-jit-build = { workspace = true, optional = true }
 
 [features]
-default = []
+default = ["mimalloc"]
 jit = [
     "evm2-eest/jit",
     "dep:evm2-jit-context",
@@ -66,6 +73,9 @@ jit = [
     "dep:libloading",
     "dep:open",
 ]
+# Faster but possibly less portable allocators. `mimalloc` takes precedence over `jemalloc`.
+jemalloc = ["dep:tikv-jemallocator"]
+mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
 criterion.workspace = true

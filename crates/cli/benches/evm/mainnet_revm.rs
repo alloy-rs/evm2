@@ -1,9 +1,10 @@
-use criterion::{BenchmarkGroup, measurement::WallTime};
+use criterion::{BatchSize, BenchmarkGroup, measurement::WallTime};
 use evm2_cli::{
     evm_bench::BenchCase,
     replay_bench::{ReplayFixture, diff},
 };
 use evm2_eest::BlockchainTestNoopHook;
+use revm::database::InMemoryDB;
 use std::{
     borrow::Cow,
     path::{Path, PathBuf},
@@ -15,12 +16,15 @@ use std::{
 pub(crate) struct PreparedBench {
     name: Cow<'static, str>,
     fixture: Arc<ReplayFixture>,
+    pre_state: InMemoryDB,
 }
 
 impl PreparedBench {
     pub(crate) fn load(bench: &BenchCase) -> Self {
         let path = workspace_path(bench.fixture_path);
-        Self { name: bench.name.clone(), fixture: Arc::new(ReplayFixture::load(&path)) }
+        let fixture = ReplayFixture::load(&path);
+        let pre_state = fixture.revm_pre_state();
+        Self { name: bench.name.clone(), fixture: Arc::new(fixture), pre_state }
     }
 
     /// Replays the corpus through both engines once and refuses to benchmark
@@ -48,9 +52,14 @@ impl PreparedBench {
         );
     }
 
+    /// Times only block execution, like `mainnet::PreparedBench::bench`.
     pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
         group.bench_function(format!("{}/replay/revm", self.name), |b| {
-            b.iter(|| self.fixture.execute_revm(&mut BlockchainTestNoopHook));
+            b.iter_batched_ref(
+                || self.pre_state.clone(),
+                |database| self.fixture.execute_revm_on(database, &mut BlockchainTestNoopHook),
+                BatchSize::PerIteration,
+            );
         });
     }
 }

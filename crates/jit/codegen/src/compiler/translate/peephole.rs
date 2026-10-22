@@ -7,7 +7,10 @@
 use super::FunctionCx;
 use crate::{Backend, Builder, InstData, IntCC};
 use alloy_primitives::U256;
-use evm2::interpreter::{InstrStop, op};
+use evm2::{
+    interpreter::{InstrStop, op},
+    version::GasId,
+};
 use evm2_jit_builtins::Builtin;
 
 /// i256 INT_MIN: 1 << 255.
@@ -69,9 +72,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     /// SDIV a, b => signed(a) / signed(b), rounded toward zero.
-    ///
-    /// Pow2 cases are intentionally skipped: signed division rounds toward zero while
-    /// arithmetic shift right rounds toward negative infinity, so the semantics differ.
     fn peephole_sdiv(&mut self) -> bool {
         let [dividend, divisor] = self.const_operands();
         match divisor {
@@ -95,6 +95,14 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 let min = self.bcx.iconst_256(INT_MIN);
                 let cmp = self.bcx.icmp(IntCC::Equal, a, min);
                 let r = self.bcx.zext(self.word_type, cmp);
+                self.push(r);
+            }
+            // x / ±C (pow2) => native sdiv, LLVM lowers to a biased ashr.
+            // Cannot overflow: -1 and INT_MIN are handled above.
+            Some(d) if d.is_power_of_two() || d.wrapping_neg().is_power_of_two() => {
+                let [a, _] = self.popn();
+                let d = self.bcx.iconst_256(d);
+                let r = self.bcx.sdiv(a, d);
                 self.push(r);
             }
             // 0 / x => 0 (EVM: 0 / 0 = 0).
@@ -132,6 +140,13 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         match modulus {
             // x % 0 => 0, x % 1 => 0, x % -1 => 0.
             Some(U256::ZERO) | Some(U256::ONE) | Some(U256::MAX) => self.fold_const(0),
+            // x % ±C (pow2) => native srem. Cannot overflow: -1 is handled above.
+            Some(m) if m.is_power_of_two() || m.wrapping_neg().is_power_of_two() => {
+                let [a, _] = self.popn();
+                let m = self.bcx.iconst_256(m);
+                let r = self.bcx.srem(a, m);
+                self.push(r);
+            }
             // 0 % x => 0 (EVM: 0 % 0 = 0).
             _ if dividend == Some(U256::ZERO) => self.fold_const(0),
             _ => return false,
@@ -145,6 +160,14 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         match modulus {
             // (a + b) % 0 => 0, (a + b) % 1 => 0.
             Some(U256::ZERO) | Some(U256::ONE) => self.fold_const(0),
+            // (a + b) % C (pow2) => (a + b) & (C - 1), exact since C divides 2^256.
+            Some(m) if m.is_power_of_two() => {
+                let [a, b, _] = self.popn();
+                let sum = self.bcx.iadd(a, b);
+                let mask = self.bcx.iconst_256(m - U256::ONE);
+                let r = self.bcx.bitand(sum, mask);
+                self.push(r);
+            }
             _ => match (a, b) {
                 // (0 + 0) % N => 0.
                 (Some(U256::ZERO), Some(U256::ZERO)) => self.fold_const(0),
@@ -160,6 +183,14 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         match modulus {
             // (a * b) % 0 => 0, (a * b) % 1 => 0.
             Some(U256::ZERO) | Some(U256::ONE) => self.fold_const(0),
+            // (a * b) % C (pow2) => (a * b) & (C - 1), exact since C divides 2^256.
+            Some(m) if m.is_power_of_two() => {
+                let [a, b, _] = self.popn();
+                let product = self.bcx.imul(a, b);
+                let mask = self.bcx.iconst_256(m - U256::ONE);
+                let r = self.bcx.bitand(product, mask);
+                self.push(r);
+            }
             _ => {
                 // a * 0 => 0, 0 * b => 0.
                 if a == Some(U256::ZERO) || b == Some(U256::ZERO) {
@@ -176,8 +207,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     ///
     /// Dynamic gas is folded into the section gas cost by `SectionsAnalysis` when the
     /// exponent is a compile-time constant, so the section gas check already covers it.
-    /// For constant-base cases with a dynamic exponent, call `ExpGas` to charge only the
-    /// dynamic gas and compute the result inline.
+    /// For constant-base cases with a dynamic exponent, charge the dynamic gas and compute the
+    /// result inline.
     fn peephole_exp(&mut self) -> bool {
         let [base, exponent] = self.const_operands();
         match exponent {
@@ -246,9 +277,22 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         true
     }
 
+    /// Charges `per_byte * byte_len(exponent)` without popping the exponent.
     fn pay_exp_dynamic_gas(&mut self) {
-        let exponent = self.sp_after_inputs_with(&[1]);
-        self.call_fallible_builtin(Builtin::ExpGas, &[self.ecx, exponent]);
+        if !self.config.gas_metering {
+            return;
+        }
+        let per_byte = self.bytecode.gas_params.get(GasId::ExpByte);
+        let exponent = self.stack_value_at_depth(1, 1, "b");
+        let clz = self.bcx.clz(exponent);
+        let clz = self.bcx.ireduce(self.isize_type, clz);
+        // (256 - clz + 7) / 8
+        let max = self.bcx.iconst(self.isize_type, 256 + 7);
+        let bits = self.bcx.isub(max, clz);
+        let three = self.bcx.iconst(self.isize_type, 3);
+        let bytes = self.bcx.ushr(bits, three);
+        let cost = self.bcx.imul_imm(bytes, per_byte.into());
+        self.gas_cost(cost);
     }
 
     /// SIGNEXTEND ext, x => sign-extend x from (ext+1) bytes.
@@ -307,7 +351,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         if let Some((offset, len)) = self.const_memory_operands(self.const_operands()) {
             let offset = self.bcx.iconst(self.isize_type, offset as i64);
             let len = self.bcx.iconst(self.isize_type, len as i64);
-            let sp = self.sp_after_inputs_with(&[]);
+            let sp = self.sp_after_const_inputs();
             self.call_fallible_builtin(Builtin::Keccak256CC, &[self.ecx, sp, offset, len]);
             true
         } else {

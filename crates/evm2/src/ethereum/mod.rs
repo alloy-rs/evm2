@@ -24,8 +24,7 @@ use crate::{
     },
     interpreter::{
         GasTracker, Host, InstrStop, Message, MessageExt, MessageKind, MessageResult,
-        MessageResultExt,
-        gas::{EIP2780_TX_BASE_COST, EIP8038_COLD_ACCOUNT_ACCESS, WARM_STORAGE_READ_COST},
+        MessageResultExt, gas::WARM_STORAGE_READ_COST,
     },
     registry::{HandlerError, HandlerResult, TxRegistry, handler},
     utils::num_words,
@@ -426,13 +425,15 @@ pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult
     Ok(())
 }
 
-/// Loads and validates the sender account.
-pub fn validate_sender<'a, T: EvmTypes>(
+/// Loads and validates the sender account, then marks it warm and bumps its nonce.
+///
+/// One account handle does all three, so the sender is looked up and journaled once.
+pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
     max_upfront: U256,
-) -> HandlerResult<AccountInfo> {
+) -> HandlerResult<()> {
     let has_nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let has_balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
     let has_balance_top_up = host.feature(EvmFeatures::BALANCE_TOP_UP);
@@ -449,17 +450,23 @@ pub fn validate_sender<'a, T: EvmTypes>(
         return Err(HandlerError::InvalidNonce { expected: sender.nonce(), got: nonce });
     }
     if has_balance_check && sender.balance() < max_upfront {
-        return Err(HandlerError::InsufficientFunds);
+        return Err(HandlerError::InsufficientFunds {
+            fee: max_upfront,
+            balance: sender.balance(),
+        });
     }
     if !has_balance_check && has_balance_top_up && sender.balance() < max_upfront {
         sender.add_balance(max_upfront - sender.balance());
     }
-    Ok(sender.get().cloned().unwrap_or_default())
+    // The sender is warm from the start of the transaction (EIP-2929).
+    sender.warm();
+    sender.bump_nonce();
+    Ok(())
 }
 
-/// Warms the accounts required by every transaction.
-pub fn warm_base_accounts<'a, T: EvmTypes>(host: &mut Evm<'a, T>, caller: Address, to: TxKind) {
-    host.state.prewarm(&caller);
+/// Warms the accounts required by every transaction other than the sender, which
+/// [`validate_sender_and_bump_nonce`] warms.
+pub fn warm_base_accounts<'a, T: EvmTypes>(host: &mut Evm<'a, T>, to: TxKind) {
     if host.feature(EvmFeatures::EIP3651) {
         host.state.prewarm(&host.block.beneficiary);
     }
@@ -577,7 +584,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 (recipient_is_empty, account.load_code()?)
             };
             let mut code_address = to;
-            let mut disable_precompiles = false;
             if host.feature(EvmFeatures::EIP2780) && !value.is_zero() && recipient_is_empty {
                 let new_account_state_gas = host.version().gas_params.new_account_state_gas();
                 if tx_gas.spend_state(new_account_state_gas).is_err() {
@@ -617,7 +623,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     code = account.load_code()?;
                 }
                 code_address = delegated_address;
-                disable_precompiles = true;
             }
             MessageExt {
                 kind: MessageKind::Call,
@@ -631,7 +636,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 value,
                 code,
                 code_address,
-                disable_precompiles,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
@@ -663,7 +667,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 value,
                 code: Bytecode::new_legacy(input.clone()),
                 code_address: destination,
-                disable_precompiles: false,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
@@ -819,60 +822,16 @@ pub fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
     (access_list.len() as u64, access_list.storage_keys_count() as u64)
 }
 
-/// Calculates transaction calldata floor gas.
-///
-/// `caller`/`to`/`value` feed the EIP-2780 floor base (ethereum/EIPs#11836):
-/// under EIP-2780 the floor is anchored on the decomposed execution-gas intrinsic
-/// base (`TX_BASE` + `to`-based + `value`-based, the same sum
-/// [`intrinsic_gas`] charges) instead of the flat `TxFloorCostBase`, so the
-/// floor never undercuts the transaction's own intrinsic base.
-pub fn floor_gas(
-    version: &Version,
-    caller: Address,
-    to: TxKind,
-    input: &Bytes,
-    access_list_accounts: u64,
-    access_list_storage_keys: u64,
-    value: U256,
-) -> u64 {
-    if !version.feature(EvmFeatures::EIP7623) {
-        return 0;
-    }
-    let params = &version.gas_params;
-    let floor_cost_per_token = u64::from(params.get(GasId::TxFloorCostPerToken));
-    if floor_cost_per_token == 0 {
-        return 0;
-    }
-
-    // tokens for access list
-    let al_multiplier = version.gas_params.get(GasId::TxAccessListFloorByteMultiplier) as u64;
-    let mut tokens = (access_list_accounts * 20 + access_list_storage_keys * 32) * al_multiplier;
-
-    // tokens for input. EIP-7623 weights zero bytes at `TxFloorZeroByteMultiplier`
-    // (1) and non-zero bytes at `TxTokenNonZeroByteMultiplier` (4); EIP-7976
-    // raises the zero-byte weight to 4 so every byte counts uniformly.
-    let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
-    let zero_multiplier = u64::from(params.get(GasId::TxFloorZeroByteMultiplier));
-    let zero_data_len = input.iter().filter(|v| **v == 0).count() as u64;
-    let non_zero_data_len = input.len() as u64 - zero_data_len;
-    tokens += zero_data_len * zero_multiplier + non_zero_data_len * non_zero_multiplier;
-
-    // EIP-2780 (ethereum/EIPs#11836): anchor the floor on the decomposed
-    // intrinsic base instead of the flat `TxFloorCostBase`.
-    let base = if version.feature(EvmFeatures::EIP2780) {
-        let is_self_transfer = matches!(to, TxKind::Call(t) if t == caller);
-        eip2780_base_to_value_gas(version, to.is_create(), is_self_transfer, value)
-    } else {
-        params.get(GasId::TxFloorCostBase) as u64
-    };
-    base + tokens * floor_cost_per_token
-}
-
-/// Calculates intrinsic transaction gas.
+/// Calculates intrinsic transaction gas and the calldata floor gas, returned as
+/// `(intrinsic_gas, floor_gas)`. The floor is zero without EIP-7623.
 ///
 /// `caller`/`value` feed the EIP-2780 decomposed model (which branches on
 /// self-transfer and whether `tx.value` is zero); the legacy model ignores them.
-pub fn intrinsic_gas(
+/// Under EIP-2780 the floor is also anchored on that decomposed base
+/// (`TX_BASE` + `to`-based + `value`-based, ethereum/EIPs#11836) instead of the
+/// flat `TxFloorCostBase`, so it never undercuts the transaction's own
+/// intrinsic base.
+pub fn intrinsic_and_floor_gas(
     version: &Version,
     caller: Address,
     to: TxKind,
@@ -880,10 +839,10 @@ pub fn intrinsic_gas(
     access_list_accounts: u64,
     access_list_storage_keys: u64,
     value: U256,
-) -> u64 {
+) -> (u64, u64) {
     let params = &version.gas_params;
     let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
-    let zero_data_len = input.iter().filter(|v| **v == 0).count() as u64;
+    let zero_data_len = count_zero_bytes(input);
     let non_zero_data_len = input.len() as u64 - zero_data_len;
     let tokens = zero_data_len + non_zero_data_len * non_zero_multiplier;
     let mut gas = tokens * u64::from(params.get(GasId::TxTokenCost));
@@ -892,10 +851,13 @@ pub fn intrinsic_gas(
 
     // Base + `to`-based + `value`-based charges.
     let is_create = to.is_create();
-    if version.feature(EvmFeatures::EIP2780) {
+    let eip2780_base = version.feature(EvmFeatures::EIP2780).then(|| {
         // EIP-2780: decomposed model replacing the legacy 21,000 base.
         let is_self_transfer = matches!(to, TxKind::Call(to) if to == caller);
-        gas += eip2780_base_to_value_gas(version, is_create, is_self_transfer, value);
+        eip2780_base_to_value_gas(version, is_create, is_self_transfer, value)
+    });
+    if let Some(base) = eip2780_base {
+        gas += base;
     } else {
         gas += u64::from(params.get(GasId::TxBaseStipend));
         if is_create && version.feature(EvmFeatures::EIP2) {
@@ -905,7 +867,44 @@ pub fn intrinsic_gas(
     if is_create && version.feature(EvmFeatures::EIP3860) {
         gas += u64::from(params.get(GasId::TxInitcodeCost)) * num_words(input.len()) as u64;
     }
-    gas
+
+    let floor_cost_per_token = u64::from(params.get(GasId::TxFloorCostPerToken));
+    if !version.feature(EvmFeatures::EIP7623) || floor_cost_per_token == 0 {
+        return (gas, 0);
+    }
+
+    // tokens for access list
+    let al_multiplier = params.get(GasId::TxAccessListFloorByteMultiplier) as u64;
+    let mut floor_tokens =
+        (access_list_accounts * 20 + access_list_storage_keys * 32) * al_multiplier;
+
+    // tokens for input. EIP-7623 weights zero bytes at `TxFloorZeroByteMultiplier`
+    // (1) and non-zero bytes at `TxTokenNonZeroByteMultiplier` (4); EIP-7976
+    // raises the zero-byte weight to 4 so every byte counts uniformly.
+    let zero_multiplier = u64::from(params.get(GasId::TxFloorZeroByteMultiplier));
+    floor_tokens += zero_data_len * zero_multiplier + non_zero_data_len * non_zero_multiplier;
+
+    let floor_base = eip2780_base.unwrap_or_else(|| params.get(GasId::TxFloorCostBase) as u64);
+    (gas, floor_base + floor_tokens * floor_cost_per_token)
+}
+
+/// Counts the zero bytes in `data`.
+///
+/// Each chunk's count fits in a `u8`, so the compiler can compare and sum whole vector
+/// registers of byte lanes and widen once per chunk; a `usize` count would widen every flag
+/// to a full lane. 192 is a multiple of every power-of-two vector width up to 64 bytes, so only
+/// the last chunk runs a scalar remainder.
+///
+/// With the aarch64 dot-product extension, LLVM turns a sum of 0/1 flags into a `udot` and
+/// `addp` per vector, which ran slower than byte adds on an Apple M4. Counting 2 per zero byte
+/// in 96-byte chunks keeps byte adds, at the cost of a mask per vector; a chunk still sums to at
+/// most 192.
+fn count_zero_bytes(data: &[u8]) -> u64 {
+    const STEP: u8 = if cfg!(target_feature = "dotprod") { 2 } else { 1 };
+    data.chunks(192 / STEP as usize)
+        .map(|c| c.iter().map(|&b| if b == 0 { STEP } else { 0 }).sum::<u8>() as u64)
+        .sum::<u64>()
+        / STEP as u64
 }
 
 /// EIP-2780: sum of the sender base, `tx.to`-based, and `tx.value`-based
@@ -923,12 +922,13 @@ fn eip2780_base_to_value_gas(
     value: U256,
 ) -> u64 {
     let params = &version.gas_params;
-    let mut gas = u64::from(EIP2780_TX_BASE_COST);
+    let mut gas = u64::from(params.get(GasId::TxBaseStipend));
     if is_create {
         // Since glamsterdam devnet-8, creates pay no value-based charge.
         gas += u64::from(params.get(GasId::TxCreateAccessCost));
     } else if !is_self_transfer {
-        gas += u64::from(EIP8038_COLD_ACCOUNT_ACCESS);
+        gas += u64::from(params.get(GasId::WarmStorageReadCost))
+            + params.cold_account_additional_cost();
         if !value.is_zero() {
             gas += u64::from(params.get(GasId::TxValueCost));
         }
@@ -946,7 +946,7 @@ mod tests {
         interpreter::{Host, InstrStop, op},
         registry::TxRegistry,
     };
-    use alloc::vec;
+    use alloc::{string::ToString, vec};
     use alloy_consensus::{TxEip2930, transaction::Recovered};
     use alloy_eips::eip2930::AccessList;
 
@@ -1023,59 +1023,25 @@ mod tests {
         let input = Bytes::from(vec![1; 74]);
 
         let sender = Address::with_last_byte(0xaa);
-        assert_eq!(
-            intrinsic_gas(
-                Version::base(SpecId::LONDON),
-                sender,
-                TxKind::Create,
-                &input,
-                0,
-                0,
-                U256::ZERO
-            ),
-            21_000 + 32_000 + 74 * 16
-        );
-        assert_eq!(
-            intrinsic_gas(
-                Version::base(SpecId::SHANGHAI),
-                sender,
-                TxKind::Create,
-                &input,
-                0,
-                0,
-                U256::ZERO
-            ),
-            21_000 + 32_000 + 74 * 16 + 3 * 2
-        );
+        let intrinsic = |version: &Version| {
+            intrinsic_and_floor_gas(version, sender, TxKind::Create, &input, 0, 0, U256::ZERO).0
+        };
+        assert_eq!(intrinsic(Version::base(SpecId::LONDON)), 21_000 + 32_000 + 74 * 16);
+        assert_eq!(intrinsic(Version::base(SpecId::SHANGHAI)), 21_000 + 32_000 + 74 * 16 + 3 * 2);
     }
 
     #[test]
     fn intrinsic_gas_charges_access_list_items() {
         let input = Bytes::new();
         let sender = Address::with_last_byte(0xaa);
+        let to = TxKind::Call(Address::ZERO);
+        let intrinsic = |version: &Version, accounts, keys| {
+            intrinsic_and_floor_gas(version, sender, to, &input, accounts, keys, U256::ZERO).0
+        };
 
+        assert_eq!(intrinsic(Version::base(SpecId::BERLIN), 2, 3), 21_000 + 2 * 2400 + 3 * 1900);
         assert_eq!(
-            intrinsic_gas(
-                Version::base(SpecId::BERLIN),
-                sender,
-                TxKind::Call(Address::ZERO),
-                &input,
-                2,
-                3,
-                U256::ZERO
-            ),
-            21_000 + 2 * 2400 + 3 * 1900
-        );
-        assert_eq!(
-            intrinsic_gas(
-                Version::base(SpecId::AMSTERDAM),
-                sender,
-                TxKind::Call(Address::ZERO),
-                &input,
-                1,
-                1,
-                U256::ZERO
-            ),
+            intrinsic(Version::base(SpecId::AMSTERDAM), 1, 1),
             // EIP-2780 replaces the 21,000 base with TX_BASE (12,000) +
             // COLD_ACCOUNT_ACCESS (3,000) for the zero-value call recipient.
             // EIP-8038 sets the per-item access-list base to the cold-minus-warm
@@ -1093,10 +1059,16 @@ mod tests {
         version.gas_params.set(GasId::TxTokenNonZeroByteMultiplier, 5);
         version.gas_params.set(GasId::TxBaseStipend, 10_000);
 
-        assert_eq!(
-            intrinsic_gas(&version, sender, TxKind::Call(Address::ZERO), &input, 0, 0, U256::ZERO),
-            10_000 + (1 + 2 * 5) * 3
+        let (intrinsic, _) = intrinsic_and_floor_gas(
+            &version,
+            sender,
+            TxKind::Call(Address::ZERO),
+            &input,
+            0,
+            0,
+            U256::ZERO,
         );
+        assert_eq!(intrinsic, 10_000 + (1 + 2 * 5) * 3);
     }
 
     #[test]
@@ -1141,16 +1113,13 @@ mod tests {
         let to = TxKind::Call(Address::ZERO);
         let mut prague_without_eip7623 = Version::new(SpecId::PRAGUE);
         prague_without_eip7623.features.remove(EvmFeatures::EIP7623);
+        let floor = |version: &Version| {
+            intrinsic_and_floor_gas(version, sender, to, &input, 0, 0, U256::ZERO).1
+        };
 
-        assert_eq!(
-            floor_gas(Version::base(SpecId::SHANGHAI), sender, to, &input, 0, 0, U256::ZERO),
-            0
-        );
-        assert_eq!(
-            floor_gas(Version::base(SpecId::PRAGUE), sender, to, &input, 0, 0, U256::ZERO),
-            21_000 + 9 * 10
-        );
-        assert_eq!(floor_gas(&prague_without_eip7623, sender, to, &input, 0, 0, U256::ZERO), 0);
+        assert_eq!(floor(Version::base(SpecId::SHANGHAI)), 0);
+        assert_eq!(floor(Version::base(SpecId::PRAGUE)), 21_000 + 9 * 10);
+        assert_eq!(floor(&prague_without_eip7623), 0);
     }
 
     #[test]
@@ -1162,9 +1131,12 @@ mod tests {
         // intrinsic base `TX_BASE + COLD_ACCOUNT_ACCESS` (12,000 + 3,000)
         // instead of the flat `TxFloorCostBase`.
         let to = TxKind::Call(Address::ZERO);
+        let floor = |version: &Version, input: &Bytes, accounts, keys| {
+            intrinsic_and_floor_gas(version, sender, to, input, accounts, keys, U256::ZERO).1
+        };
 
         assert_eq!(
-            floor_gas(Version::base(SpecId::AMSTERDAM), sender, to, &input, 1, 1, U256::ZERO),
+            floor(Version::base(SpecId::AMSTERDAM), &input, 1, 1),
             15_000 + (1000 * 4 + 80 + 128) * 16
         );
 
@@ -1172,14 +1144,11 @@ mod tests {
         // bytes in the floor (4 tokens each), unlike EIP-7623 (zero = 1 token).
         let zero_input = Bytes::from(vec![0; 1000]);
         assert_eq!(
-            floor_gas(Version::base(SpecId::AMSTERDAM), sender, to, &zero_input, 1, 1, U256::ZERO),
+            floor(Version::base(SpecId::AMSTERDAM), &zero_input, 1, 1),
             15_000 + (1000 * 4 + 80 + 128) * 16
         );
         // Prague keeps the EIP-7623 split: zero bytes count as one token each.
-        assert_eq!(
-            floor_gas(Version::base(SpecId::PRAGUE), sender, to, &zero_input, 0, 0, U256::ZERO),
-            21_000 + 1000 * 10
-        );
+        assert_eq!(floor(Version::base(SpecId::PRAGUE), &zero_input, 0, 0), 21_000 + 1000 * 10);
     }
 
     #[test]
@@ -1224,6 +1193,27 @@ mod tests {
     }
 
     #[test]
+    fn insufficient_funds_reports_cost_and_balance() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(10)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let error = validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100));
+        assert_eq!(
+            error,
+            Err(HandlerError::InsufficientFunds { fee: U256::from(100), balance: U256::from(10) })
+        );
+        assert_eq!(error.unwrap_err().to_string(), "lack of funds (10) for max fee (100)");
+    }
+
+    #[test]
     fn balance_top_up_can_be_disabled_independently() {
         let caller = Address::with_last_byte(0xaa);
         let mut version = Version::new(SpecId::OSAKA);
@@ -1238,8 +1228,9 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
-        assert!(evm.state.account_info_untracked(&caller).unwrap().is_none());
+        assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
+        let sender = evm.state.account_info_untracked(&caller).unwrap().unwrap();
+        assert_eq!((sender.balance, sender.nonce), (U256::ZERO, 1));
     }
 
     #[test]
@@ -1266,7 +1257,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
+        assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
         assert_eq!(
             evm.state.account_info_untracked(&caller).unwrap().unwrap().balance,
             U256::from(100)
@@ -1291,7 +1282,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
+        assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
         charge_upfront(&mut evm, caller, U256::from(100)).unwrap();
         assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().balance, U256::ZERO);
     }
@@ -1299,7 +1290,7 @@ mod tests {
     #[test]
     fn initial_delegated_call_uses_delegated_code_address() {
         let caller = Address::with_last_byte(0xaa);
-        let target = Address::with_last_byte(0x02);
+        let target = Address::with_last_byte(0x55);
         let delegated = Address::with_last_byte(0x33);
         let delegated_code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
@@ -1339,7 +1330,6 @@ mod tests {
         .unwrap();
         assert_eq!(message.destination, target);
         assert_eq!(message.code_address, delegated);
-        assert!(message.disable_precompiles);
         assert_eq!(charged_state_gas, 0);
 
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
@@ -1391,5 +1381,49 @@ mod tests {
                 cap: amsterdam_without_eip8037.tx_gas_limit_cap,
             })
         );
+    }
+
+    #[rstest::rstest]
+    #[case::call_zero_value(TxKind::Call(Address::ZERO), U256::ZERO, 15_000, 12_700)]
+    #[case::call_with_value(TxKind::Call(Address::ZERO), U256::from(1), 21_000, 18_700)]
+    #[case::self_transfer_zero_value(
+        TxKind::Call(Address::with_last_byte(0xaa)),
+        U256::ZERO,
+        12_000,
+        10_000
+    )]
+    #[case::self_transfer_with_value(
+        TxKind::Call(Address::with_last_byte(0xaa)),
+        U256::from(1),
+        12_000,
+        10_000
+    )]
+    #[case::create_zero_value(TxKind::Create, U256::ZERO, 24_000, 22_000)]
+    #[case::create_with_value(TxKind::Create, U256::from(1), 24_000, 22_000)]
+    fn eip2780_intrinsic_and_floor_gas_read_base_costs_from_gas_params(
+        #[case] to: TxKind,
+        #[case] value: U256,
+        #[case] default_base: u64,
+        #[case] custom_base: u64,
+        #[values(false, true)] custom_params: bool,
+    ) {
+        let sender = Address::with_last_byte(0xaa);
+        let mut version = Version::new(SpecId::AMSTERDAM);
+        if custom_params {
+            version.gas_params.set(GasId::TxBaseStipend, 10_000);
+            version.gas_params.set(GasId::WarmStorageReadCost, 200);
+            version.gas_params.set(GasId::ColdAccountAdditionalCost, 2500);
+        }
+        let base = if custom_params { custom_base } else { default_base };
+
+        for input in [Bytes::new(), Bytes::from_static(&[0, 1])] {
+            let calldata_gas = if input.is_empty() { 0 } else { 20 };
+            let floor_calldata_gas = if input.is_empty() { 0 } else { 128 };
+            let initcode_gas = if to.is_create() && !input.is_empty() { 2 } else { 0 };
+            let (intrinsic, floor) =
+                intrinsic_and_floor_gas(&version, sender, to, &input, 0, 0, value);
+            assert_eq!(intrinsic, base + calldata_gas + initcode_gas);
+            assert_eq!(floor, base + floor_calldata_gas);
+        }
     }
 }

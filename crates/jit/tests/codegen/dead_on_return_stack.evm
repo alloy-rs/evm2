@@ -1,0 +1,5 @@
+    PUSH1 0x2a
+    STOP
+
+; The whole stack must be dead on return, not a zero-byte prefix.
+; CHECK: define {{.*}}dead_on_return {{.*}}%arg.stack.addr

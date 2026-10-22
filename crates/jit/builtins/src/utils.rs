@@ -1,11 +1,6 @@
 use alloy_primitives::{Address, U256};
 use core::{hint::cold_path, num::NonZero};
-use evm2::{
-    EvmTypesHost,
-    evm::AccountLoad,
-    interpreter::Host,
-    utils::{word_to_usize, word_to_usize_saturated},
-};
+use evm2::{EvmTypesHost, evm::AccountLoad, interpreter::Host};
 use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 
 pub type BuiltinResult = Result<(), BuiltinError>;
@@ -44,6 +39,24 @@ pub(crate) fn require_non_staticcall<T: EvmTypesHost>(
 #[inline]
 pub(crate) fn word_to_u64_saturated(value: U256) -> u64 {
     value.try_into().unwrap_or(u64::MAX)
+}
+
+// JIT code writes stack words with 8-byte stores, so read them back with scalar loads. The
+// interpreter's helpers use one 32-byte load, which can't take its data from those stores.
+
+/// Converts a word to `usize`, returning an invalid-operand OOG stop on overflow.
+#[inline]
+pub(crate) fn word_to_usize(value: U256) -> Result<usize, InstrStop> {
+    value.try_into().map_err(|_| {
+        cold_path();
+        InstrStop::InvalidOperandOOG
+    })
+}
+
+/// Converts a word to `usize`, saturating on overflow.
+#[inline]
+pub(crate) fn word_to_usize_saturated(value: U256) -> usize {
+    value.try_into().unwrap_or(usize::MAX)
 }
 
 /// Loads an account, handling cold load gas accounting.

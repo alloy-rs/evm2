@@ -4,7 +4,7 @@ Experimental [JIT] and [AOT] compiler for the [Ethereum Virtual Machine][EVM].
 
 The compiler implementation is abstracted over an intermediate representation backend and integrates with evm2's interpreter runner.
 
-![image](https://github.com/paradigmxyz/evm2-jit/assets/17802178/96adf64b-8513-469d-925d-4f8d902e4e0a)
+![image](https://github.com/user-attachments/assets/96adf64b-8513-469d-925d-4f8d902e4e0a)
 
 The compiler backend is abstracted behind a trait ([`evm2-jit-backend`]), with an [LLVM] implementation ([`evm2-jit-llvm`]) providing full test coverage.
 
@@ -22,18 +22,18 @@ The compiler backend is abstracted behind a trait ([`evm2-jit-backend`]), with a
 ### LLVM backend
 
 - Linux or macOS, Windows is not supported
-- LLVM 22
+- LLVM 23
   - On Debian-based Linux distros: see [apt.llvm.org](https://apt.llvm.org/)
   - On Arch-based Linux distros: `pacman -S llvm`
-  - On macOS: `brew install llvm@22`
+  - On macOS: `brew install llvm@23`
   - The following environment variables may be required:
     ```bash
     prefix=$(llvm-config --prefix)
     # or
-    #prefix=$(llvm-config-22 --prefix)
+    #prefix=$(llvm-config-23 --prefix)
     # on macOS:
-    #prefix=$(brew --prefix llvm@22)
-    export LLVM_SYS_221_PREFIX=$prefix
+    #prefix=$(brew --prefix llvm@23)
+    export LLVM_SYS_231_PREFIX=$prefix
     ```
 
 ## Usage

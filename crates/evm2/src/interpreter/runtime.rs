@@ -314,6 +314,16 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         (self.stack(), self.memory.as_slice(), host)
     }
 
+    /// Borrows linear memory and the host independently, so memory can be passed to the host
+    /// without copying.
+    #[inline]
+    pub const fn memory_host(&mut self) -> (&Memory, &mut T::Host<'host>) {
+        // SAFETY: As in `host`, the host pointer is initialized during execution and points
+        // outside the interpreter's owned memory.
+        let host = unsafe { self.host.unwrap_unchecked().as_mut() };
+        (&self.memory, host)
+    }
+
     /// Returns the host implementation.
     #[inline]
     pub const fn host(&mut self) -> &mut T::Host<'host> {
@@ -456,7 +466,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Borrows instruction state for a custom interpreter runner's builtins.
     #[inline]
-    pub fn instruction_state(&mut self) -> &mut InterpreterState<'frame, 'host, T> {
+    pub const fn instruction_state(&mut self) -> &mut InterpreterState<'frame, 'host, T> {
         InterpreterState::wrap_mut(self)
     }
 

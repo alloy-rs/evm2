@@ -1,6 +1,6 @@
 //! Ethereum blockchain test execution.
 
-mod env;
+pub(crate) mod env;
 mod error;
 mod execute;
 mod hook;
@@ -8,7 +8,10 @@ mod runner;
 mod types;
 
 pub use error::TestError;
-pub use execute::{ExecuteConfig, ExecuteSummary, ExecutionMode, execute_str, execute_suite};
+pub use execute::{
+    ExecuteConfig, ExecuteSummary, ExecutionMode, execute_case_on, execute_str, execute_suite,
+    pre_state,
+};
 pub use hook::{
     BlockFailed, BlockFinished, BlockStarted, CaseStarted, Hook, NoopHook, TransactionFailed,
     TransactionFinished, TransactionStarted,

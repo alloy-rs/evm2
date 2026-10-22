@@ -1,10 +1,10 @@
 use crate::{
     EvmFeatures, EvmTypesHost,
     interpreter::{Host, InstrStop, InterpreterState, Result, StackMut, private::GasInstructionCx},
-    utils::word_to_usize,
+    utils::WordExt,
     version::GasId,
 };
-use alloy_primitives::{B256, Bytes, Log, LogData};
+use alloy_primitives::B256;
 use evm2_macros::instruction;
 
 #[inline]
@@ -32,7 +32,7 @@ pub fn sload(cx: _, [key]: [Word]) -> Result<out> {
     if load.is_cold {
         cx.gas.spend(additional_cold_cost)?;
     }
-    *out = load.value;
+    out.write(load.value);
 }
 
 #[instruction(dynamic_gas)]
@@ -113,25 +113,29 @@ fn log_common<T: EvmTypesHost>(
 ) -> Result {
     require_non_staticcall(cx.state)?;
     let [offset, len] = stack.popn()?;
-    let len = word_to_usize(len)?;
+    let len = len.to_usize()?;
     cx.gas.spend(cx.state.gas_params().log_cost(n as u8, len))?;
 
-    let data = if len == 0 {
-        Bytes::new()
+    let offset = if len == 0 {
+        0
     } else {
-        let offset = word_to_usize(offset)?;
+        let offset = offset.to_usize()?;
         cx.state.resize_memory(cx.gas, offset, len)?;
-        Bytes::copy_from_slice(cx.state.memory().slice(offset, len))
+        offset
     };
 
-    let topics = stack.popn_dyn(n)?.map(|topic| B256::from(topic.to_be_bytes::<32>())).collect();
-    let destination = cx.state.message().destination;
-    let emitted_log = Log {
-        address: destination,
-        // SAFETY: `log` is only dispatched for LOG0 through LOG4.
-        data: unsafe { LogData::new(topics, data).unwrap_unchecked() },
-    };
-    cx.state.host().log(emitted_log);
+    let mut topics = [B256::ZERO; 4];
+    for (topic, word) in topics.iter_mut().zip(stack.popn_dyn(n)?) {
+        *topic = B256::from(word.to_be_bytes::<32>());
+    }
+    let destination = &cx.state.message().destination;
+    let (memory, host) = cx.state.0.memory_host();
+    // SAFETY: `log` is only dispatched for LOG0 through LOG4.
+    host.log(
+        destination,
+        unsafe { topics.get_unchecked(..n) }.into(),
+        memory.slice(offset, len).into(),
+    );
     Ok(())
 }
 

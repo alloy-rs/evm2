@@ -35,11 +35,15 @@ pub use arch::evm2_jit_exit;
 /// generates code that accesses fields by offset using `offset_of!`.
 #[repr(C)]
 pub struct EvmContext<'ctx, 'frame, 'host, T: EvmTypesHost = BaseEvmTypes> {
+    /// The gas.
+    ///
+    /// First, so compiled code addresses the remaining gas through the context pointer
+    /// itself instead of keeping a separate pointer live.
+    pub gas: Gas,
+
     /// Active interpreter frame.
     pub interpreter: NonNull<Interpreter<'frame, 'host, T>>,
 
-    /// The gas.
-    pub gas: Gas,
     /// The size of return data from the last call-like operation.
     pub return_data_len: usize,
     /// The size of the call input data, cached for CALLDATASIZE.
@@ -56,6 +60,11 @@ pub struct EvmContext<'ctx, 'frame, 'host, T: EvmTypesHost = BaseEvmTypes> {
     /// Cached length of the current memory context in bytes.
     /// Refreshed after any memory resize.
     pub mem_len: usize,
+
+    /// The host's block environment, cached for block opcodes.
+    pub block_env: NonNull<BlockEnv<T>>,
+    /// The transaction environment, cached for transaction opcodes.
+    pub tx_env: &'frame TxEnv<T>,
 
     _marker: PhantomData<&'ctx mut Interpreter<'frame, 'host, T>>,
 }
@@ -85,6 +94,8 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
     ) -> (Self, &'ctx mut EvmStack, &'ctx mut usize) {
         let interpreter_ptr = ptr::from_mut(&mut *interpreter);
         let interpreter_ptr = unsafe { NonNull::new_unchecked(interpreter_ptr) };
+        let block_env = NonNull::from(interpreter.host().block_env());
+        let tx_env = interpreter.tx_env();
         let message = interpreter.message();
         let gas = interpreter.gas();
         let calldatasize = message.input.len();
@@ -100,6 +111,8 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
             exit_sp: ptr::null_mut(),
             mem_base: ptr::null_mut(),
             mem_len: 0,
+            block_env,
+            tx_env,
             _marker: PhantomData,
         };
         this.refresh_memory_cache();
@@ -127,7 +140,7 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
 
     /// Borrows the JIT gas and interpreter instruction state independently.
     #[inline]
-    pub fn instruction_parts(
+    pub const fn instruction_parts(
         &mut self,
     ) -> (&mut Gas, &mut evm2::interpreter::InterpreterState<'frame, 'host, T>) {
         // SAFETY: The context owns the live interpreter borrow. Its gas field is separate.
@@ -160,7 +173,7 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
 
     /// Returns host state consumed by host-touching builtins.
     #[inline]
-    pub fn host(&mut self) -> &mut T::Host<'host> {
+    pub const fn host(&mut self) -> &mut T::Host<'host> {
         self.interpreter_mut().host()
     }
 
@@ -172,14 +185,14 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
 
     /// Returns the current block environment.
     #[inline]
-    pub fn block_env(&mut self) -> &BlockEnv<T> {
-        self.host().block_env()
+    pub const fn block_env(&self) -> &BlockEnv<T> {
+        unsafe { self.block_env.as_ref() }
     }
 
     /// Returns the transaction-global environment.
     #[inline]
     pub const fn tx_env(&self) -> &'frame TxEnv<T> {
-        self.interpreter().tx_env()
+        self.tx_env
     }
 
     /// Returns active runtime version data.

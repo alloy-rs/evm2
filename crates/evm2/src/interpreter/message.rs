@@ -57,7 +57,8 @@ pub struct MessageExt<E = ()> {
     /// Address requested by the call opcode or transaction, before EIP-7702 code resolution.
     ///
     /// Unlike `destination`, this remains the requested callee for `CALLCODE` and
-    /// `DELEGATECALL`. For create messages it is the derived contract address.
+    /// `DELEGATECALL`. Native precompile dispatch uses this address before delegated bytecode.
+    /// For create messages it is the derived contract address.
     pub call_target: Address,
     /// Immediate caller.
     pub caller: Address,
@@ -65,18 +66,15 @@ pub struct MessageExt<E = ()> {
     pub input: Bytes,
     /// Value transferred with the message.
     pub value: U256,
-    /// Bytecode this frame executes: the code at [`MessageExt::code_address`] (the resolved
+    /// Bytecode resolved for this frame: the code at [`MessageExt::code_address`] (the resolved
     /// delegate's code for an EIP-7702 delegated call), or the initcode for create messages.
     ///
     /// Resolved by the message's producer when it is constructed, so frames never load accounts
-    /// for code.
+    /// for code. Native precompile dispatch at [`MessageExt::call_target`] takes precedence.
     pub code: Bytecode,
-    /// Address whose code is being executed. This can differ from `destination` for `CALLCODE`,
-    /// `DELEGATECALL`, and EIP-7702 delegated-code execution.
+    /// Address from which bytecode was resolved. This can differ from `destination` for
+    /// `CALLCODE`, `DELEGATECALL`, and EIP-7702 delegated-code execution.
     pub code_address: Address,
-    /// Whether native precompile dispatch is disabled for this frame because its bytecode was
-    /// loaded through an EIP-7702 delegation designation.
-    pub disable_precompiles: bool,
     /// Whether the immediate caller frame is executing in a static context. Combined with a
     /// `STATICCALL` kind, this determines whether the new frame is static.
     pub caller_is_static: bool,
@@ -110,7 +108,6 @@ impl<E> MessageExt<E> {
             value,
             code,
             code_address,
-            disable_precompiles,
             caller_is_static,
             salt,
             ext,
@@ -128,7 +125,6 @@ impl<E> MessageExt<E> {
             value,
             code,
             code_address,
-            disable_precompiles,
             caller_is_static,
             salt,
             ext: f(ext),

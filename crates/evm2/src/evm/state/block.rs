@@ -3,15 +3,11 @@
 use super::{
     AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange, Tracked,
 };
-use crate::{
-    bytecode::Bytecode,
-    interpreter::Word,
-    storage_key::{StorageKey, StorageKeyMap},
-};
+use crate::{bytecode::Bytecode, interpreter::Word, storage_key::StorageKey};
 use alloc::vec::Vec;
 use alloy_primitives::{
     Address, B256,
-    map::{AddressMap, AddressSet, B256Map, hash_map},
+    map::{AddressMap, AddressSet, B256Map, U256Map, hash_map},
 };
 use core::convert::Infallible;
 
@@ -21,7 +17,9 @@ use core::convert::Infallible;
 pub struct BlockStateAccumulator {
     accounts: AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: AddressSet,
-    storage: StorageKeyMap<Tracked<Word>>,
+    /// Storage deltas keyed by account, then slot. Accounts have no empty slot maps, so wiping or
+    /// recreating an account touches only its own slots.
+    storage: AddressMap<U256Map<Tracked<Word>>>,
     code: B256Map<Bytecode>,
 }
 
@@ -59,7 +57,9 @@ impl BlockStateAccumulator {
     /// before this slot and treat [`Tracked::current`] as the value to write after the wipe.
     #[inline]
     pub fn storage(&self) -> impl Iterator<Item = (StorageKey, &Tracked<Word>)> {
-        self.storage.iter().map(|(&key, delta)| (key, delta))
+        self.storage.iter().flat_map(|(&address, slots)| {
+            slots.iter().map(move |(&key, delta)| (StorageKey::new(address, key), delta))
+        })
     }
 
     /// Returns bytecode entries in arbitrary map order.
@@ -85,7 +85,7 @@ impl BlockStateAccumulator {
     /// Returns storage deltas with storage keys sorted by address and slot.
     pub fn storage_sorted(&self) -> Vec<(StorageKey, &Tracked<Word>)> {
         let mut storage = self.storage().collect::<Vec<_>>();
-        storage.sort_by_key(|(key, _)| (key.address(), key.key()));
+        storage.sort_unstable_by_key(|(key, _)| *key);
         storage
     }
 
@@ -115,6 +115,7 @@ impl StateChangeSink for BlockStateAccumulator {
         let original = change.original.map(AccountInfo::clone_no_code);
         let current = change.current.map(AccountInfo::clone_no_code);
         let deletes_account = current.is_none();
+        let mut created = false;
 
         match self.accounts.entry(change.address) {
             hash_map::Entry::Occupied(mut entry) => {
@@ -133,6 +134,7 @@ impl StateChangeSink for BlockStateAccumulator {
             }
             hash_map::Entry::Vacant(entry) => {
                 if original != current {
+                    created = original.is_none();
                     entry.insert(Tracked::from_parts(original, current));
                 }
             }
@@ -140,15 +142,19 @@ impl StateChangeSink for BlockStateAccumulator {
 
         if deletes_account {
             self.storage_wipes.remove(&change.address);
-            self.storage.retain(|key, _| key.address() != change.address);
-        } else if self.accounts.get(&change.address).is_some_and(|delta| delta.original.is_none()) {
-            for (key, delta) in &mut self.storage {
-                if key.address() == change.address {
+            self.storage.remove(&change.address);
+        } else if created {
+            // Only a newly created delta can have slots recorded against pre-block storage: while
+            // the delta exists, `storage` and `storage_wipe` already treat the account as created.
+            if let hash_map::Entry::Occupied(mut entry) = self.storage.entry(change.address) {
+                entry.get_mut().retain(|_, delta| {
                     delta.original = Word::ZERO;
+                    !delta.current.is_zero()
+                });
+                if entry.get().is_empty() {
+                    entry.remove();
                 }
             }
-            self.storage
-                .retain(|key, delta| key.address() != change.address || !delta.current.is_zero());
             self.storage_wipes.remove(&change.address);
         }
         Ok(())
@@ -159,16 +165,16 @@ impl StateChangeSink for BlockStateAccumulator {
         if record_wipe {
             self.storage_wipes.insert(address);
         }
-        self.storage.retain(|key, _| key.address() != address);
+        self.storage.remove(&address);
         Ok(())
     }
 
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
-        let storage_key = StorageKey::new(change.address, change.key);
         let account_created =
             self.accounts.get(&change.address).is_some_and(|account| account.original.is_none());
         let storage_replaced = self.storage_wipes.contains(&change.address) || account_created;
-        match self.storage.entry(storage_key) {
+        let slots = self.storage.entry(change.address).or_default();
+        match slots.entry(change.key) {
             hash_map::Entry::Occupied(mut entry) => {
                 let delta = entry.get_mut();
                 delta.set_current(change.current);
@@ -179,14 +185,16 @@ impl StateChangeSink for BlockStateAccumulator {
                 }
             }
             hash_map::Entry::Vacant(entry) => {
-                if (storage_replaced && change.current.is_zero())
-                    || (!storage_replaced && change.original == change.current)
+                if (storage_replaced && !change.current.is_zero())
+                    || (!storage_replaced && change.original != change.current)
                 {
-                    return Ok(());
+                    let original = if account_created { Word::ZERO } else { change.original };
+                    entry.insert(Tracked::from_parts(original, change.current));
                 }
-                let original = if account_created { Word::ZERO } else { change.original };
-                entry.insert(Tracked::from_parts(original, change.current));
             }
+        }
+        if slots.is_empty() {
+            self.storage.remove(&change.address);
         }
         Ok(())
     }
@@ -202,7 +210,7 @@ impl StateChangeSource for BlockStateAccumulator {
 fn visit_block_changes<S: StateChangeSink>(
     accounts: &AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: &AddressSet,
-    storage: &StorageKeyMap<Tracked<Word>>,
+    storage: &AddressMap<U256Map<Tracked<Word>>>,
     code: &B256Map<Bytecode>,
     sink: &mut S,
 ) -> Result<(), S::Error> {
@@ -218,15 +226,20 @@ fn visit_block_changes<S: StateChangeSink>(
         sink.storage_wipe(*address)?;
     }
 
-    let mut storage_deltas = storage.iter().collect::<Vec<_>>();
-    storage_deltas.sort_by_key(|entry| (entry.0.address(), entry.0.key()));
-    for (key, delta) in storage_deltas {
-        sink.storage(StorageChange {
-            address: key.address(),
-            key: key.key(),
-            original: delta.original,
-            current: delta.current,
-        })?;
+    let mut storage_accounts = storage.iter().collect::<Vec<_>>();
+    storage_accounts.sort_unstable_by_key(|entry| *entry.0);
+    let mut storage_deltas = Vec::new();
+    for (&address, slots) in storage_accounts {
+        storage_deltas.extend(slots.iter());
+        storage_deltas.sort_unstable_by_key(|entry| *entry.0);
+        for (&key, delta) in storage_deltas.drain(..) {
+            sink.storage(StorageChange {
+                address,
+                key,
+                original: delta.original,
+                current: delta.current,
+            })?;
+        }
     }
 
     let mut account_deltas = accounts.iter().collect::<Vec<_>>();
@@ -533,6 +546,86 @@ mod tests {
         assert!(accumulator.accounts_sorted().is_empty());
         assert_eq!(accumulator.storage_wipes_sorted(), [address]);
         assert!(accumulator.storage_sorted().is_empty());
+    }
+
+    #[test]
+    fn block_accumulator_drops_storage_reverted_to_original() {
+        let address = Address::from([0x57; 20]);
+        let key = Word::from(1);
+        let mut accumulator = BlockStateAccumulator::new();
+
+        changes(address, None, None, false, slot(key, Word::from(3), Word::from(4)))
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+        changes(address, None, None, false, slot(key, Word::from(4), Word::from(3)))
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+
+        assert!(accumulator.is_empty());
+    }
+
+    #[test]
+    fn block_accumulator_isolates_storage_between_accounts() {
+        let [a, b, c, d, e] = [0x61, 0x62, 0x63, 0x64, 0x65].map(|byte| Address::from([byte; 20]));
+        let (k1, k2) = (Word::from(1), Word::from(2));
+        let info = AccountInfo::default().with_nonce(1);
+        let w = Word::from;
+        let mut accumulator = BlockStateAccumulator::new();
+
+        // The same slot keys change in several accounts.
+        for address in [a, b, d] {
+            let mut slots = slot(k1, w(3), w(4));
+            slots.extend(slot(k2, w(5), w(6)));
+            changes(address, None, None, false, slots)
+                .visit(&mut accumulator)
+                .expect("block accumulator is infallible");
+        }
+        // Slot 2 of `c` is written to zero, so only slot 1 survives its creation.
+        let mut slots = slot(k1, w(3), w(4));
+        slots.extend(slot(k2, w(5), Word::ZERO));
+        changes(c, None, None, false, slots)
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+        // All of the slots of `e` are zero after its creation, so it keeps no slot map.
+        changes(e, None, None, false, slot(k1, w(3), Word::ZERO))
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+        assert_eq!(accumulator.storage_sorted().len(), 9);
+
+        // Deleting `b`, wiping `d`, and creating `c` and `e` change only their own slots.
+        changes(b, Some(info.clone()), None, true, U256Map::default())
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+        changes(d, Some(info.clone()), Some(info.clone()), true, U256Map::default())
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+        for address in [c, e] {
+            changes(address, None, Some(info.clone()), false, U256Map::default())
+                .visit(&mut accumulator)
+                .expect("block accumulator is infallible");
+        }
+        // Slot 1 of `a` is overwritten.
+        changes(a, None, None, false, slot(k1, w(4), w(9)))
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
+
+        assert_eq!(accumulator.storage_wipes_sorted(), [d]);
+        let storage = accumulator.storage_sorted();
+        let storage: Vec<_> =
+            storage.iter().map(|(key, delta)| (key.address(), key.key(), **delta)).collect();
+        assert_eq!(
+            storage,
+            [
+                (a, k1, Tracked::from_parts(w(3), w(9))),
+                (a, k2, Tracked::from_parts(w(5), w(6))),
+                (c, k1, Tracked::from_parts(Word::ZERO, w(4))),
+            ]
+        );
+
+        // Replaying the deltas into another accumulator yields the same state.
+        let mut merged = BlockStateAccumulator::new();
+        accumulator.visit(&mut merged).expect("block accumulator is infallible");
+        assert_eq!(merged, accumulator);
     }
 
     #[test]

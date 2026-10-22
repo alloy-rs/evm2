@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-v=${1:-22}
+v=${1:-23}
 
 brew install "llvm@${v}"
 prefix="$(brew --prefix "llvm@${v}")"
