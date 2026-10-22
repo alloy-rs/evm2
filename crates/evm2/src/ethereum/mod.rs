@@ -946,7 +946,7 @@ mod tests {
         interpreter::{Host, InstrStop, op},
         registry::TxRegistry,
     };
-    use alloc::vec;
+    use alloc::{string::ToString, vec};
     use alloy_consensus::{TxEip2930, transaction::Recovered};
     use alloy_eips::eip2930::AccessList;
 
