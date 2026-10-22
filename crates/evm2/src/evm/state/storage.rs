@@ -82,6 +82,13 @@ impl StorageSlot {
         if wiped { !self.value.current.is_zero() } else { self.value.is_changed() }
     }
 
+    /// Returns the slot's transaction-boundary original value. A wiped account's slots start from
+    /// empty storage, so their original is zero.
+    #[inline]
+    pub(crate) const fn original(&self, wiped: bool) -> Word {
+        if wiped { Word::ZERO } else { self.value.original }
+    }
+
     /// Creates a freshly loaded slot whose original and current values are `value`, with the given
     /// EIP-2929 warmth.
     #[inline]
@@ -239,8 +246,9 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 }
                 let value = inner.database.get_storage(address, &key)?;
                 let slot = entry.insert(StorageSlot::loaded(value, is_warm));
-                // A wiped account reads as empty, but keeps the database value as `original` so
-                // that rolling back the wipe can restore it.
+                // A wiped account reads as empty, but the slot keeps the database value as its raw
+                // `original` so that rolling back the wipe can restore it. Read it through
+                // `StorageSlot::original`.
                 if wiped {
                     slot.value.current = Word::ZERO;
                 }
@@ -275,6 +283,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     ///
     /// Used by account creation, which can be reverted: the previous wipe flag and current slot
     /// values come back, and slots first loaded after the wipe return to their database value.
+    #[inline]
     pub(super) fn wipe_journaled(&mut self) {
         let previous_wiped = self.storage.wiped;
         let previous_slots =
@@ -343,7 +352,7 @@ impl StorageSlotHandle<'_, '_> {
     /// Returns the slot's transaction-boundary original value, which is zero for a wiped account.
     #[inline]
     pub const fn original(&self) -> Word {
-        if self.wiped { Word::ZERO } else { self.slot.value.original }
+        self.slot.original(self.wiped)
     }
 
     /// Returns whether the slot is warm for EIP-2929 gas accounting, consulting both the

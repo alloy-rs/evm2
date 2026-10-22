@@ -73,7 +73,7 @@ pub enum JournalEntry {
         address: Address,
         /// Previous wipe flag.
         previous_wiped: bool,
-        /// Slots loaded before the wipe, with their previous current values.
+        /// Every loaded slot's current value before the wipe.
         previous_slots: Vec<(Word, Word)>,
     },
     /// Transient storage changed.

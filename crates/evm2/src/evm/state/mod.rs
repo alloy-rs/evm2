@@ -39,7 +39,7 @@ use crate::{
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
-    map::{AddressMap, AddressSet, U256Map, hash_map},
+    map::{AddressMap, AddressSet, hash_map},
 };
 use core::{
     mem,
@@ -825,13 +825,15 @@ impl<'a> State<'a> {
                 JournalEntry::StorageWiped { address, previous_wiped, previous_slots } => {
                     if let Some(account) = self.accounts.get_mut(&address) {
                         let storage = &mut account.storage;
-                        let previous_slots = previous_slots.into_iter().collect::<U256Map<_>>();
-                        for (key, slot) in &mut storage.slots {
-                            if let Some(&current) = previous_slots.get(key) {
-                                slot.value.current = current;
-                            } else if !previous_wiped {
-                                // Loaded after the wipe: `original` holds the database value.
+                        if !previous_wiped {
+                            // Loaded after the wipe: the raw `original` is the database value.
+                            for slot in storage.slots.values_mut() {
                                 slot.value.current = slot.value.original;
+                            }
+                        }
+                        for (key, current) in previous_slots {
+                            if let Some(slot) = storage.slots.get_mut(&key) {
+                                slot.value.current = current;
                             }
                         }
                         storage.wiped = previous_wiped;
