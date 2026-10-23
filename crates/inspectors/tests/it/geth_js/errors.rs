@@ -263,3 +263,25 @@ fn static_write_errors_follow_the_opcode_validation_stage() {
         }
     }
 }
+
+#[test]
+fn sparse_aggregate_hook_errors_preserve_execution() {
+    let mut call = hex!("6000600060006000600073").to_vec();
+    call.extend_from_slice(CHILD.as_slice());
+    call.extend_from_slice(&hex!("61fffff150600160015500"));
+    let baseline = "{fault:function(){},result:function(){return 42}}";
+    for hook in ["step", "enter", "exit", "fault"] {
+        let code = if hook == "fault" { &hex!("60ff56")[..] } else { call.as_slice() };
+        let (_, expected) = execute(baseline, code, false, 1_000_000);
+        let script = format!(
+            "{{enter:function(){{}},exit:function(){{}},fault:function(){{}},result:function(){{return 42}},{hook}:function(){{let e=new AggregateError([], 'boom');e.errors.length=4294967295;throw e}}}}"
+        );
+        let (output, actual) = execute(&script, code, false, 1_000_000);
+        assert_eq!(
+            error_message(output.unwrap_err()),
+            format!("AggregateError: boom    in server-side tracer function '{hook}'")
+        );
+        assert_eq!(actual.tx_result.result, expected.tx_result.result);
+        assert_eq!(actual.state, expected.state);
+    }
+}
