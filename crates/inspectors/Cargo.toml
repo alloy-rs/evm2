@@ -16,6 +16,7 @@ workspace = true
 # eth
 alloy-consensus.workspace = true
 alloy-eip2930.workspace = true
+alloy-eips = { workspace = true, features = ["k256"] }
 alloy-rpc-types-eth.workspace = true
 alloy-rpc-types-trace.workspace = true
 alloy-sol-types.workspace = true
@@ -37,7 +38,6 @@ num-bigint = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-consensus = { workspace = true, features = ["k256"] }
-alloy-eips.workspace = true
 alloy-hardforks.workspace = true
 snapbox = { workspace = true, features = ["term-svg"] }
 
