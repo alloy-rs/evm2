@@ -94,3 +94,47 @@ fn opcode_gas_excludes_uncharged_sentry_gas() {
         assert_eq!(evm.inspector().opcode_gas().get(&sstore), Some(&expected_cost));
     }
 }
+
+#[test]
+fn opcode_gas_preserves_cold_call_out_of_gas() {
+    let target = address!("0000000000000000000000000000000000000022");
+    let code = Bytecode::new_legacy(
+        [
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0x33,
+            op::PUSH2,
+            0xff,
+            0xff,
+            op::CALL,
+            op::STOP,
+        ]
+        .into(),
+    );
+    let context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            db.insert_account_info(&target, AccountInfo { code: Some(code), ..Default::default() });
+        });
+    let mut inspector = OpcodeGasInspector::new();
+    let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+    let res = evm
+        .inspect_tx(TxEnv {
+            caller: Address::ZERO,
+            gas_limit: 21_661,
+            kind: TransactTo::Call(target),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(!res.result.is_success());
+    let call = OpCode::new(op::CALL).unwrap();
+    assert_eq!(evm.inspector().opcode_gas().get(&call), Some(&640));
+}
