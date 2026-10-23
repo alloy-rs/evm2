@@ -60,7 +60,7 @@ ripemd.workspace = true
 
 # modexp
 aurora-engine-modexp.workspace = true
-gmp-mpfr-sys = { workspace = true, default-features = false, optional = true }
+gmp-mpfr-sys = { workspace = true, default-features = false, features = ["c-no-tests"], optional = true }
 
 # bn254
 bn = { workspace = true, optional = true }
