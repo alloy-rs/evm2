@@ -441,6 +441,14 @@ impl BackendState {
         let artifact_key = self.artifact_key(*key);
 
         match store.load(&artifact_key) {
+            Ok(Some(stored)) if stored.manifest.artifact_key != artifact_key => {
+                debug!(
+                    ?artifact_key,
+                    manifest_key = ?stored.manifest.artifact_key,
+                    "artifact manifest key mismatch, will recompile",
+                );
+                false
+            }
             Ok(Some(stored)) => {
                 match (|| -> eyre::Result<CompiledProgram> {
                     let library = unsafe { libloading::Library::new(&stored.dylib_path) }

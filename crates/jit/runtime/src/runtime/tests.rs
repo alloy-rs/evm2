@@ -1495,9 +1495,19 @@ fn preload_aot_skips_manifest_key_mismatch() {
     let tb = TestBackend::new(RuntimeConfig {
         enabled: true,
         store: Some(mismatched_store),
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
         ..Default::default()
     });
     assert_eq!(tb.stats().resident_entries, 0);
+
+    // The probe rejects it too, so the artifact is recompiled.
+    tb.prepare_aot_sync(AotRequest {
+        code_hash,
+        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        spec_id: SpecId::CANCUN,
+    })
+    .unwrap();
+    assert_eq!(tb.stats().compilations_dispatched, 1);
 }
 
 #[test]
