@@ -107,6 +107,8 @@ pub struct StorageHandle<'a, 'db> {
     address: &'a Address,
     /// Transaction overlay entry: the per-account storage slots plus the wipe flag.
     storage: &'a mut StorageOverlay,
+    /// Whether the account was created in this transaction, so its unloaded slots read as zero.
+    created: bool,
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
     inner: &'a mut StateInner<'db>,
@@ -119,9 +121,10 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     pub(crate) const fn new(
         address: &'a Address,
         storage: &'a mut StorageOverlay,
+        created: bool,
         inner: &'a mut StateInner<'db>,
     ) -> Self {
-        Self { address, storage, inner }
+        Self { address, storage, created, inner }
     }
 
     /// Returns the account address.
@@ -213,7 +216,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
         key: Word,
         skip_cold_load: bool,
     ) -> Result<(StorageSlotHandle<'a, 'db>, bool), LoadError> {
-        let Self { address, storage, inner } = self;
+        let Self { address, storage, created, inner } = self;
         let (slot, is_cold) = match storage.slots.entry(key) {
             hash_map::Entry::Occupied(entry) => {
                 // An already-loaded slot has no cold database read to skip, so the skip only
@@ -236,7 +239,9 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 if skip_cold_load && !is_warm {
                     return Err(LoadError::ColdLoadSkipped);
                 }
-                let value = if storage.wiped {
+                // Like revm, an unloaded slot of a created account reads zero without a database
+                // read, since the creation discards the address's old storage.
+                let value = if storage.wiped || created {
                     Word::ZERO
                 } else {
                     inner.database.get_storage(address, &key)?
@@ -262,6 +267,15 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     #[inline]
     pub fn wipe(&mut self) {
         self.storage.wiped = true;
+        self.zero_loaded();
+    }
+
+    /// Resets every loaded slot to zero, keeping the account's unloaded storage.
+    ///
+    /// Like [`Self::wipe`], this is only called during transaction finalization, so it is not
+    /// journaled.
+    #[inline]
+    pub(crate) fn zero_loaded(&mut self) {
         self.storage.slots.iter_mut().for_each(|(_, slot)| {
             slot.value.set_current(Word::ZERO);
         });

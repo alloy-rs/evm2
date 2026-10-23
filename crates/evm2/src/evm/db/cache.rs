@@ -163,10 +163,13 @@ impl<ExtDB> CacheDB<ExtDB> {
 
         for (&address, entry) in accounts {
             let overlay = &entry.storage;
+            // Like revm's in-block cache, later transactions read the unchanged slots of a created
+            // account as zero, without a storage wipe reaching the state stream.
+            let wiped = overlay.wiped || entry.just_created;
             let mut changed_slots = overlay.changed_slots().peekable();
-            if overlay.wiped || changed_slots.peek().is_some() {
+            if wiped || changed_slots.peek().is_some() {
                 let storage = self.cache.storage.entry(address).or_default();
-                if overlay.wiped {
+                if wiped {
                     storage.wipe();
                 }
                 storage.slots.extend(changed_slots.map(|(&key, slot)| (key, slot.current)));
@@ -199,7 +202,7 @@ impl<ExtDB> CacheDB<ExtDB> {
         if let Some(code) = &info.code
             && !code.is_empty()
         {
-            if info.code_hash == KECCAK256_EMPTY {
+            if info.is_empty_code_hash() {
                 info.code_hash = code.hash_slow();
             }
             contracts.entry(info.code_hash).or_insert_with(|| code.clone());
@@ -239,6 +242,9 @@ impl<ExtDB> CacheDB<ExtDB> {
 /// Applies streamed changes to the cache and forwards every callback to [`BalContext`]'s own sink
 /// impl, so a visited source folds into the BAL builder exactly like [`CacheDB::commit_pending`]
 /// when construction is enabled.
+///
+/// Unlike [`CacheDB::commit_pending`], this keeps the old storage of a created account, as revm's
+/// bundle does: only a storage wipe or an account deletion drops cached slots.
 impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     type Error = Infallible;
 
@@ -345,8 +351,8 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        // Serve the slot from the attached read BAL when it covers a write at or before the current
-        // index; otherwise fall through to the cache/database.
+        // Serve the slot from the attached read BAL when it covers a write strictly before the
+        // current index; otherwise fall through to the cache/database.
         match self.bal_context.bal_storage(address, key) {
             Ok(Some(value)) => return Ok(value),
             Ok(None) => {}
