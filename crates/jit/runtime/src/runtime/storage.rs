@@ -1,9 +1,9 @@
 //! Artifact storage trait and data model.
 
-use crate::{OptimizationLevel, eyre};
-use alloy_primitives::B256;
+use crate::{OptimizationLevel, eyre, runtime::RuntimeConfig};
+use alloy_primitives::{B256, keccak256};
 use dashmap::DashMap;
-use evm2::SpecId;
+use evm2::{SpecId, version::GasId};
 use std::{fs, path::PathBuf};
 
 /// Runtime cache key: the minimal identity for a compiled program at runtime.
@@ -28,6 +28,49 @@ pub struct ArtifactKey {
     pub opt_level: OptimizationLevel,
     /// The [`ABI_VERSION`](crate::ABI_VERSION) of the compiler that produced the artifact.
     pub abi_version: u32,
+    /// Digest of the compile-time configuration that changes generated code: the gas parameters
+    /// and compiler flags of the [`RuntimeConfig`].
+    pub config_hash: B256,
+}
+
+impl ArtifactKey {
+    /// Returns the key of an AOT artifact that the LLVM backend produces for `runtime` under
+    /// `opt_level` and the compile configuration with digest `config_hash`.
+    pub(crate) const fn llvm(
+        runtime: RuntimeCacheKey,
+        opt_level: OptimizationLevel,
+        config_hash: B256,
+    ) -> Self {
+        Self {
+            runtime,
+            backend: BackendSelection::Llvm,
+            opt_level,
+            abi_version: crate::ABI_VERSION,
+            config_hash,
+        }
+    }
+}
+
+/// Returns the digest of the [`RuntimeConfig`] fields that change generated code but are not part
+/// of the other [`ArtifactKey`] fields: the gas parameters (`None` selects the spec's base
+/// schedule, which the key's spec already identifies) and the compiler flags.
+///
+/// The encoding is explicit, so the digest is stable across processes and builds.
+pub(crate) fn compile_config_hash(config: &RuntimeConfig) -> B256 {
+    let mut bytes = vec![
+        config.debug_assertions as u8,
+        config.single_error as u8,
+        config.no_dedup as u8,
+        config.no_dse as u8,
+        config.gas_params.is_some() as u8,
+    ];
+    if let Some(gas_params) = &config.gas_params {
+        bytes.extend((0..GasId::COUNT).flat_map(|i| {
+            let gas_id = GasId::from_usize(i).expect("gas parameter index should be valid");
+            gas_params.get(gas_id).to_le_bytes()
+        }));
+    }
+    keccak256(bytes)
 }
 
 /// A stored artifact consisting of a manifest and a path to the compiled dylib.
@@ -118,8 +161,13 @@ impl RuntimeArtifactStore {
 
     fn artifact_path(&self, key: &ArtifactKey) -> PathBuf {
         self.dir.path().join(format!(
-            "{:x}_{:?}_{:?}_{:?}_v{}.so",
-            key.runtime.code_hash, key.runtime.spec_id, key.backend, key.opt_level, key.abi_version,
+            "{:x}_{:?}_{:?}_{:?}_v{}_{:x}.so",
+            key.runtime.code_hash,
+            key.runtime.spec_id,
+            key.backend,
+            key.opt_level,
+            key.abi_version,
+            key.config_hash,
         ))
     }
 }
@@ -179,6 +227,7 @@ mod tests {
             backend: BackendSelection::Llvm,
             opt_level: OptimizationLevel::Default,
             abi_version: crate::ABI_VERSION,
+            config_hash: B256::ZERO,
         }
     }
 

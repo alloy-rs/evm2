@@ -5,7 +5,7 @@ use crate::{
         api::{CompiledProgram, LoadedLibrary, ProgramKind},
         config::{CompilationEvent, CompilationKind, RuntimeConfig, RuntimeTuning},
         storage::{
-            ArtifactKey, ArtifactManifest, ArtifactStore, BackendSelection, RuntimeCacheKey,
+            ArtifactKey, ArtifactManifest, ArtifactStore, RuntimeCacheKey, compile_config_hash,
         },
         worker::{
             AotSuccess, CompileJob, JitCodeBacking, JitObjectSuccess, SyncNotifier, WorkerPool,
@@ -14,7 +14,7 @@ use crate::{
     },
 };
 use alloy_primitives::{
-    Bytes, keccak256,
+    B256, Bytes, keccak256,
     map::{DefaultHashBuilder, HashMap, hash_map::Entry},
 };
 use crossbeam_channel as chan;
@@ -226,6 +226,8 @@ struct BackendState {
     store: Option<Arc<dyn ArtifactStore>>,
     /// Tuning knobs.
     tuning: RuntimeTuning,
+    /// Digest of the compile-time configuration, see [`compile_config_hash`].
+    config_hash: B256,
     /// Whether observed misses compile AOT artifacts instead of JIT code.
     aot: bool,
     /// Number of keys currently in Working phase.
@@ -436,14 +438,17 @@ impl BackendState {
             None => return false,
         };
 
-        let artifact_key = ArtifactKey {
-            runtime: *key,
-            backend: BackendSelection::Llvm,
-            opt_level: self.tuning.aot_opt_level,
-            abi_version: crate::ABI_VERSION,
-        };
+        let artifact_key = self.artifact_key(*key);
 
         match store.load(&artifact_key) {
+            Ok(Some(stored)) if stored.manifest.artifact_key != artifact_key => {
+                debug!(
+                    ?artifact_key,
+                    manifest_key = ?stored.manifest.artifact_key,
+                    "artifact manifest key mismatch, will recompile",
+                );
+                false
+            }
             Ok(Some(stored)) => {
                 match (|| -> eyre::Result<CompiledProgram> {
                     let library = unsafe { libloading::Library::new(&stored.dylib_path) }
@@ -651,12 +656,7 @@ impl BackendState {
     }
 
     fn handle_aot_success(&mut self, key: RuntimeCacheKey, success: AotSuccess) {
-        let artifact_key = ArtifactKey {
-            runtime: key,
-            backend: BackendSelection::Llvm,
-            opt_level: self.tuning.aot_opt_level,
-            abi_version: crate::ABI_VERSION,
-        };
+        let artifact_key = self.artifact_key(key);
 
         let content_hash = keccak256(&success.dylib_bytes).0;
 
@@ -884,6 +884,11 @@ impl BackendState {
         self.unlink_cold_entry(key);
         self.entries.remove(key);
     }
+
+    /// Returns the full key under which this backend persists and probes AOT artifacts.
+    const fn artifact_key(&self, key: RuntimeCacheKey) -> ArtifactKey {
+        ArtifactKey::llvm(key, self.tuning.aot_opt_level, self.config_hash)
+    }
 }
 
 /// Runs the backend event loop. Called on the backend thread.
@@ -900,6 +905,7 @@ pub(crate) fn run(
 
     let sweep_interval = config.tuning.eviction_sweep_interval;
     let event_drain_interval = config.tuning.event_drain_interval;
+    let config_hash = compile_config_hash(&config);
 
     // Seed resident metadata from startup-preloaded AOT entries.
     let now = Instant::now();
@@ -919,6 +925,7 @@ pub(crate) fn run(
         result_rx,
         store: config.store,
         tuning: config.tuning,
+        config_hash,
         aot: config.aot,
         pending_jobs: 0,
         generation: 0,
@@ -991,6 +998,7 @@ mod notifier_tests {
             workers,
             jit_object_linker: JitObjectLinker::new(),
             result_rx,
+            config_hash: compile_config_hash(&config),
             store: config.store,
             tuning: config.tuning,
             aot: false,
