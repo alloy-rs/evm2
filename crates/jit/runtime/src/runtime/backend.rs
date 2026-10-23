@@ -878,7 +878,7 @@ impl BackendState {
     }
 
     /// Returns the full key under which this backend persists and probes AOT artifacts.
-    fn artifact_key(&self, key: RuntimeCacheKey) -> ArtifactKey {
+    const fn artifact_key(&self, key: RuntimeCacheKey) -> ArtifactKey {
         ArtifactKey::llvm(key, self.tuning.aot_opt_level, self.config_hash)
     }
 }
