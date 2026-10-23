@@ -674,7 +674,7 @@ impl<'a> State<'a> {
         if self
             .account(address)?
             .get()
-            .is_some_and(|account| account.nonce != 0 || account.code_hash != KECCAK256_EMPTY)
+            .is_some_and(|account| account.nonce != 0 || !account.is_empty_code_hash())
         {
             return Ok(Err(InstrStop::CreateCollision));
         }

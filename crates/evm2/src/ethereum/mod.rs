@@ -35,7 +35,7 @@ use alloy_consensus::{
     transaction::{Recovered, Transaction, TxEip4844Variant},
 };
 use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 
 /// Ethereum transaction envelope.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -440,7 +440,7 @@ pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
 
     let mut sender = host.state.account(&caller)?;
-    if has_eip3607 && sender.code_hash() != KECCAK256_EMPTY {
+    if has_eip3607 && !sender.is_empty_code_hash() {
         let code = sender.load_code()?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
