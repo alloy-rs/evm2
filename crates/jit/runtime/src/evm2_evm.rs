@@ -676,8 +676,7 @@ mod tests {
             let code =
                 [&[op::DIFFICULTY][..], zero, &[op::MSTORE, op::PUSH1, 0x20], zero, &[op::RETURN]]
                     .concat();
-            let run =
-                |with_jit| run_with_version(spec, version, block.clone(), &code, 100_000, with_jit);
+            let run = |with_jit| run_with_version(spec, version, block, &code, 100_000, with_jit);
             let interpreted = run(false);
             assert_eq!(interpreted.0, InstrStop::Return);
             assert_eq!(Word::from_be_slice(&interpreted.1), Word::from(expected));
