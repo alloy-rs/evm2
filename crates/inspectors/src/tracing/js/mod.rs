@@ -5,7 +5,7 @@ use crate::tracing::{
     config::TraceStyle,
     js::{
         bindings::{
-            CallFrame, Contract, FrameResult, JsEvmContext, OpcodeNames, PreStep,
+            CallFrame, Contract, FrameKind, FrameResult, JsEvmContext, OpcodeNames, PreStep,
             ReusableCallFrame, ReusableEvmDb, ReusableFrameResult, ReusableStepLog, StepInfo,
             StepSnapshot,
         },
@@ -23,16 +23,16 @@ use alloc::{
 };
 use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
-use boa_engine::{Context, JsError, JsObject, JsResult, JsValue, Script, Source, js_string};
+use boa_engine::{
+    Context, JsError, JsNativeError, JsObject, JsResult, JsValue, Script, Source,
+    error::EngineError, js_string,
+};
 use core::sync::atomic::{AtomicBool, Ordering};
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, ExecutionError, Inspector, TxResultWithState,
     env::BlockEnv,
     evm::DynDatabase,
-    interpreter::{
-        GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
-        opcode::op,
-    },
+    interpreter::{InstrStop, Interpreter, Message, MessageKind, MessageResult, opcode::op},
 };
 
 pub use boa_engine::vm::RuntimeLimits;
@@ -63,6 +63,8 @@ pub const RECURSION_LIMIT: usize = 128;
 struct PendingStep {
     snapshot: StepSnapshot,
     gas_spent_before: u64,
+    frame_refund: i64,
+    instruction: FaultStep,
     active: bool,
 }
 
@@ -119,6 +121,8 @@ pub struct JsInspector {
     precompiles_registered: bool,
     /// Pre-execution states captured in `step()` to be processed in `step_end()`.
     pending_steps: Vec<PendingStep>,
+    /// Retained until `fuse`; result collection prioritizes it over cancellation.
+    hook_error: Option<JsError>,
     /// Optional cancellation signal shared with the caller.
     interrupt: Option<JsInspectorInterrupt>,
 }
@@ -212,6 +216,7 @@ impl JsInspector {
             next_call_id: 1,
             precompiles_registered: false,
             pending_steps: Vec::new(),
+            hook_error: None,
             interrupt: None,
         })
     }
@@ -264,6 +269,7 @@ impl JsInspector {
         self.call_stack.clear();
         self.precompiles_registered = false;
         self.pending_steps.clear();
+        self.hook_error = None;
 
         Ok(())
     }
@@ -310,6 +316,9 @@ impl JsInspector {
         block: &BlockEnv<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<JsValue, JsInspectorError> {
+        if let Some(err) = &self.hook_error {
+            return Err(JsInspectorError::JsError(err.clone()));
+        }
         self.ensure_not_interrupted()?;
         let TxResultWithState { result, pending_state, .. } = res;
         let state = TxState::from_pending(pending_state);
@@ -403,31 +412,27 @@ impl JsInspector {
     /// Returns true if there's an enter function and the active call is not the root call.
     #[inline]
     const fn can_call_enter(&self) -> bool {
-        self.enter_fn.is_some() && !self.is_root_call_active()
+        self.enter_fn.is_some() && !self.is_root_call_active() && !self.hook_errored()
     }
 
     /// Returns true if there's an exit function and the active call is not the root call.
     #[inline]
     const fn can_call_exit(&mut self) -> bool {
-        self.exit_fn.is_some() && !self.is_root_call_active()
+        self.exit_fn.is_some() && !self.is_root_call_active() && !self.hook_errored()
     }
 
     /// Pushes a new call to the stack
     fn push_call(
         &mut self,
-        contract: Address,
-        input: Bytes,
-        value: U256,
+        contract: Contract,
         kind: CallKind,
-        caller: Address,
         gas_limit: u64,
+        frame_refund: i64,
     ) -> &CallStackItem {
-        let call = CallStackItem {
-            id: self.next_call_id,
-            contract: Contract { caller, contract, value, input },
-            kind,
-            gas_limit,
-        };
+        let enclosing_refund =
+            self.call_stack.last().map_or(0, |parent| parent.enclosing_refund + frame_refund);
+        let call =
+            CallStackItem { id: self.next_call_id, contract, kind, gas_limit, enclosing_refund };
         self.next_call_id += 1;
         self.call_stack.push(call);
         self.active_call()
@@ -515,52 +520,43 @@ impl JsInspector {
         interp.set_stop(InstrStop::FatalExternalError);
         true
     }
-}
 
-impl<T: EvmTypes> Inspector<T> for JsInspector {
-    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        if self.check_and_halt(interp) || self.step_fn.is_none() {
-            return;
+    fn record_hook_error(&mut self, hook: &'static str, err: JsError) {
+        if self.hook_error.is_none() {
+            let suffix = format!("    in server-side tracer function '{hook}'");
+            self.hook_error = Some(with_message_suffix(err, &suffix, &mut self.ctx));
         }
-        let depth = usize::from(interp.message().depth);
-        if self.pending_steps.len() <= depth {
-            self.pending_steps.resize_with(depth + 1, PendingStep::default);
-        }
-        let pending = &mut self.pending_steps[depth];
-        pending.gas_spent_before = interp.gas().spent();
-        pending.active = true;
-        pending.snapshot.record(PreStep {
-            pc: interp.pc() as u64,
-            op: interp.opcode(),
-            gas_remaining: interp.gas().remaining(),
-            refund: interp.gas().refunded() as u64,
-            stack: interp.stack().as_slice(),
-            memory: interp.memory().as_slice(),
-        });
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        if self.check_and_halt(interp) {
-            return;
-        }
-        let Some(step_fn) = &self.step_fn else {
-            return;
-        };
+    const fn hook_errored(&self) -> bool {
+        self.hook_error.is_some()
+    }
+
+    fn invoke_step_hook<T: EvmTypes>(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        fault: bool,
+        error: Option<String>,
+    ) {
         let depth = usize::from(interp.message().depth);
-        let Some(pending) = self.pending_steps.get_mut(depth) else {
-            return;
-        };
-        if !core::mem::take(&mut pending.active) {
-            return;
-        }
-        let result = interp.result();
-        let is_revert = matches!(result, Err(stop) if stop.is_revert());
+        let pending = &mut self.pending_steps[depth];
         let call = self.call_stack.last().expect("call stack is empty");
+        // evm2's CALL/CREATE step_end runs after the child has returned and merged its refund.
+        let frame_refund = if matches!(
+            pending.instruction.op,
+            op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CREATE2
+        ) {
+            pending.frame_refund
+        } else {
+            interp.gas().refunded()
+        };
+        let refund = call.enclosing_refund + frame_refund;
+        debug_assert!(refund >= 0, "transaction-wide refund counter went negative: {refund}");
         let info = StepInfo {
             cost: interp.gas().spent().saturating_sub(pending.gas_spent_before),
+            refund: refund.max(0) as u64,
             depth: depth as u64,
-            error: if is_revert { result.err().map(|err| format!("{err:?}")) } else { None },
-            op: is_revert.then_some(op::REVERT),
+            error,
             caller: interp.message().caller,
             contract: interp.message().destination,
             value: call.contract.value,
@@ -575,7 +571,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 memory,
                 info,
                 || {
-                    let f = if is_revert { &self.fault_fn } else { step_fn };
+                    let f = if fault { &self.fault_fn } else { self.step_fn.as_ref().unwrap() };
                     f.call(
                         &self.this,
                         &[self.reusable_step_log.value(), self.reusable_db.value()],
@@ -584,11 +580,76 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 },
             )
         });
-        if self.check_and_halt(interp) {
+        if let Err(err) = res {
+            self.record_hook_error(if fault { "fault" } else { "step" }, err);
+        }
+    }
+}
+
+impl<T: EvmTypes> Inspector<T> for JsInspector {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        if self.check_and_halt(interp) || self.hook_errored() {
             return;
         }
-        if !is_revert && res.is_err() && result.is_ok() {
-            interp.set_stop(InstrStop::Revert);
+        let depth = usize::from(interp.message().depth);
+        if self.pending_steps.len() <= depth {
+            self.pending_steps.resize_with(depth + 1, PendingStep::default);
+        }
+        let pending = &mut self.pending_steps[depth];
+        pending.gas_spent_before = interp.gas().spent();
+        pending.frame_refund = interp.gas().refunded();
+        pending.instruction = FaultStep {
+            pc: interp.pc() as u64,
+            op: interp.opcode(),
+            gas: interp.gas().remaining(),
+        };
+        pending.active = true;
+        if self.step_fn.is_some() {
+            pending.snapshot.record(PreStep {
+                pc: pending.instruction.pc,
+                op: pending.instruction.op,
+                gas_remaining: pending.instruction.gas,
+                stack: interp.stack().as_slice(),
+                memory: interp.memory().as_slice(),
+            });
+        }
+    }
+
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        if self.check_and_halt(interp) || self.hook_errored() {
+            return;
+        }
+        let depth = usize::from(interp.message().depth);
+        let Some(pending) = self.pending_steps.get_mut(depth) else {
+            return;
+        };
+        if !core::mem::take(&mut pending.active) {
+            return;
+        }
+        let result = interp.result().err();
+        let is_fault = result.is_some_and(should_fault);
+        let error = result.and_then(|stop| utils::fmt_error_msg(stop, TraceStyle::Geth));
+        if self.step_fn.is_none() {
+            if !is_fault {
+                return;
+            }
+            // Fault-only tracers expose post-execution stack and memory.
+            pending.snapshot.record(PreStep {
+                pc: pending.instruction.pc,
+                op: pending.instruction.op,
+                gas_remaining: pending.instruction.gas,
+                stack: interp.stack().as_slice(),
+                memory: interp.memory().as_slice(),
+            });
+        } else {
+            self.invoke_step_hook(interp, false, if is_fault { None } else { error.clone() });
+            if self.check_and_halt(interp) || self.hook_errored() {
+                return;
+            }
+        }
+        if is_fault {
+            self.invoke_step_hook(interp, true, error);
+            self.check_and_halt(interp);
         }
     }
 
@@ -610,27 +671,27 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             _ => (message.caller, message.destination),
         };
 
-        let value =
-            if message.kind == MessageKind::DelegateCall { U256::ZERO } else { message.value };
         self.push_call(
-            contract,
-            message.input.clone(),
-            value,
+            Contract { caller, contract, value: message.value, input: message.input.clone() },
             message.kind.into(),
-            caller,
             message.gas_limit,
+            interp.gas().refunded(),
         );
 
-        let mut result = None;
         if self.can_call_enter() {
             let call = self.active_call();
-            let frame =
-                CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
-            result = self.try_enter(frame).err().map(js_error_to_revert);
+            let frame = CallFrame {
+                contract: call.contract.clone(),
+                kind: FrameKind::Call(call.kind),
+                gas: call.gas_limit,
+            };
+            if let Err(err) = self.try_enter(frame) {
+                self.record_hook_error("enter", err);
+            }
         }
 
         self.check_interrupt(interp);
-        result
+        None
     }
 
     fn call_end(
@@ -649,7 +710,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 error: utils::fmt_error_msg(result.stop, TraceStyle::Geth),
             };
             if let Err(err) = self.try_exit(frame_result) {
-                *result = js_error_to_revert(err);
+                self.record_hook_error("exit", err);
             }
         }
 
@@ -667,24 +728,31 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         }
         self.register_precompiles(interp.host());
         self.push_call(
-            message.destination,
-            message.input.clone(),
-            message.value,
+            Contract {
+                caller: message.caller,
+                contract: message.destination,
+                value: message.value,
+                input: message.input.clone(),
+            },
             message.kind.into(),
-            message.caller,
             message.gas_limit,
+            interp.gas().refunded(),
         );
 
-        let mut result = None;
         if self.can_call_enter() {
             let call = self.active_call();
-            let frame =
-                CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
-            result = self.try_enter(frame).err().map(js_error_to_revert);
+            let frame = CallFrame {
+                contract: call.contract.clone(),
+                kind: FrameKind::Call(call.kind),
+                gas: call.gas_limit,
+            };
+            if let Err(err) = self.try_enter(frame) {
+                self.record_hook_error("enter", err);
+            }
         }
 
         self.check_interrupt(interp);
-        result
+        None
     }
 
     fn create_end(
@@ -703,7 +771,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 error: utils::fmt_error_msg(result.stop, TraceStyle::Geth),
             };
             if let Err(err) = self.try_exit(frame_result) {
-                *result = js_error_to_revert(err);
+                self.record_hook_error("exit", err);
             }
         }
 
@@ -713,27 +781,34 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
 
     fn selfdestruct(
         &mut self,
-        _contract: &Address,
-        _target: &Address,
-        _value: &U256,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
         _host: &mut T::Host<'_>,
     ) {
-        if self.is_interrupted() {
+        if self.is_interrupted() || self.hook_errored() {
             return;
         }
-        // This is exempt from the root call constraint, because selfdestruct is treated as a
-        // new scope that is entered and immediately exited.
         if self.enter_fn.is_some() {
-            let call = self.active_call();
-            let frame =
-                CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
-            let _ = self.try_enter(frame);
+            let frame = CallFrame {
+                contract: Contract {
+                    caller: *contract,
+                    contract: *target,
+                    value: *value,
+                    input: Bytes::new(),
+                },
+                kind: FrameKind::SelfDestruct,
+                gas: 0,
+            };
+            if let Err(err) = self.try_enter(frame) {
+                self.record_hook_error("enter", err);
+            }
         }
-
-        // exit with empty frame result ref <https://github.com/ethereum/go-ethereum/blob/0004c6b229b787281760b14fb9460ffd9c2496f1/core/vm/instructions.go#L829-L829>
-        if !self.is_interrupted() && self.exit_fn.is_some() {
-            let frame_result = FrameResult { gas_used: 0, output: Bytes::new(), error: None };
-            let _ = self.try_exit(frame_result);
+        if !self.is_interrupted() && !self.hook_errored() && self.exit_fn.is_some() {
+            let frame = FrameResult { gas_used: 0, output: Bytes::new(), error: None };
+            if let Err(err) = self.try_exit(frame) {
+                self.record_hook_error("exit", err);
+            }
         }
     }
 }
@@ -866,6 +941,8 @@ struct CallStackItem {
     contract: Contract,
     kind: CallKind,
     gas_limit: u64,
+    /// Child refunds merge into the parent only on success.
+    enclosing_refund: i64,
 }
 
 /// Error variants that can occur during JavaScript inspection.
@@ -908,16 +985,41 @@ pub enum JsInspectorError {
     Interrupted,
 }
 
-/// Converts a JavaScript error into a [InstrStop::Revert] [MessageResult].
-#[inline]
-fn js_error_to_revert<E: Default>(err: JsError) -> MessageResultExt<E> {
-    let output = err.to_string().as_bytes().to_vec();
-    MessageResultExt {
-        stop: InstrStop::Revert,
-        output: output.into(),
-        gas: GasTracker::new(0),
-        ..Default::default()
+#[derive(Debug, Default)]
+struct FaultStep {
+    pc: u64,
+    op: u8,
+    gas: u64,
+}
+
+// Stack and gas checks fail before Geth's opcode callback; execution faults follow it.
+const fn should_fault(stop: InstrStop) -> bool {
+    !stop.is_success()
+        && !stop.is_out_of_gas()
+        && !matches!(stop, InstrStop::StackUnderflow | InstrStop::StackOverflow)
+}
+
+// Preserve native error kinds and source positions, but omit Boa's multiline backtrace.
+fn with_message_suffix(err: JsError, suffix: &str, ctx: &mut Context) -> JsError {
+    match err.as_engine() {
+        Some(EngineError::RuntimeLimit(limit)) => {
+            return JsNativeError::range().with_message(format!("{limit}{suffix}")).into();
+        }
+        Some(engine) => {
+            return JsNativeError::error().with_message(format!("{engine}{suffix}")).into();
+        }
+        None => {}
     }
+    let Ok(native) = err.try_native(ctx) else {
+        let thrown = err
+            .as_opaque()
+            .and_then(|value| value.to_string(ctx).ok())
+            .map(|s| s.to_std_string_escaped())
+            .unwrap_or_else(|| err.to_string());
+        return JsNativeError::error().with_message(format!("{thrown}{suffix}")).into();
+    };
+    let message = format!("{}{suffix}", native.message());
+    native.with_message(message).into()
 }
 
 #[cfg(test)]
@@ -963,8 +1065,15 @@ mod tests {
         assert!(matches!(result, Err(JsInspectorError::FaultFunctionMissing)));
     }
 
-    // Helper function to run a trace and return the result
     fn run_trace(code: &str, contract: Option<Bytes>, success: bool) -> serde_json::Value {
+        try_run_trace(code, contract, success).unwrap()
+    }
+
+    fn try_run_trace(
+        code: &str,
+        contract: Option<Bytes>,
+        success: bool,
+    ) -> Result<serde_json::Value, JsInspectorError> {
         let addr = Address::repeat_byte(0x01);
         let mut db = CacheDB::new(EmptyDB::default());
 
@@ -1009,7 +1118,7 @@ mod tests {
         assert_eq!(res.result.status, success);
         let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
         let block = *evm.block_env();
-        inspector.json_result(&res, &tx, &block, evm.database_mut()).unwrap()
+        inspector.json_result(&res, &tx, &block, evm.database_mut())
     }
 
     #[test]
@@ -1032,8 +1141,8 @@ mod tests {
             fault: function() {},
             result: function() { return this.depths; }
         }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
+        let err = try_run_trace(code, None, true).unwrap_err();
+        assert!(matches!(err, JsInspectorError::JsError(_)));
     }
 
     #[test]
@@ -1044,8 +1153,8 @@ mod tests {
             fault: function() {},
             result: function() { return this.depths; }
         }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
+        let err = try_run_trace(code, None, true).unwrap_err();
+        assert!(matches!(err, JsInspectorError::JsError(_)));
     }
 
     #[test]
@@ -1056,8 +1165,8 @@ mod tests {
             fault: function() {},
             result: function() { return this.depths; }
         }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
+        let err = try_run_trace(code, None, true).unwrap_err();
+        assert!(matches!(err, JsInspectorError::JsError(_)));
     }
 
     #[test]
@@ -1080,8 +1189,8 @@ mod tests {
             fault: function() {},
             result: function() { return this.depths; }
         }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
+        let err = try_run_trace(code, None, true).unwrap_err();
+        assert!(matches!(err, JsInspectorError::JsError(_)));
     }
 
     #[test]
@@ -1092,8 +1201,8 @@ mod tests {
             fault: function() {},
             result: function() { return this.depths; }
         }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
+        let err = try_run_trace(code, None, true).unwrap_err();
+        assert!(matches!(err, JsInspectorError::JsError(_)));
     }
 
     #[test]
@@ -1104,8 +1213,8 @@ mod tests {
             fault: function() {},
             result: function() { return this.depths; }
         }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
+        let err = try_run_trace(code, None, true).unwrap_err();
+        assert!(matches!(err, JsInspectorError::JsError(_)));
     }
 
     #[test]
@@ -1116,8 +1225,8 @@ mod tests {
             fault: function() {},
             result: function() { return this.depths; }
         }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
+        let err = try_run_trace(code, None, true).unwrap_err();
+        assert!(matches!(err, JsInspectorError::JsError(_)));
     }
 
     #[test]
@@ -1128,8 +1237,8 @@ mod tests {
             fault: function() {},
             result: function() { return this.depths; }
         }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
+        let err = try_run_trace(code, None, true).unwrap_err();
+        assert!(matches!(err, JsInspectorError::JsError(_)));
     }
 
     #[test]
@@ -1140,8 +1249,8 @@ mod tests {
             fault: function() {},
             result: function() { return this.depths; }
         }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
+        let err = try_run_trace(code, None, true).unwrap_err();
+        assert!(matches!(err, JsInspectorError::JsError(_)));
     }
 
     #[test]
@@ -1152,8 +1261,8 @@ mod tests {
             fault: function() {},
             result: function() { return this.depths; }
         }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
+        let err = try_run_trace(code, None, true).unwrap_err();
+        assert!(matches!(err, JsInspectorError::JsError(_)));
     }
 
     #[test]
@@ -1262,24 +1371,20 @@ mod tests {
             result: function() { return this.res }
         }"#;
         let contract = hex!("60ff60005300"); // PUSH1, 0xff, PUSH1, 0x00, MSTORE8, STOP
-        let res = run_trace(code, Some(contract.into()), false);
-        assert_eq!(res, json!([]));
+        let res = run_trace(code, Some(contract.into()), true);
+        assert_eq!(res, json!([{ "0": 0, "1": 0 }, { "0": 255, "1": 0 }]));
     }
 
     #[test]
     fn test_memory_limit() {
-        // Accessing out-of-bounds memory in the tracer results in an empty array.
-        // Since we invoke the JS step callback in step_end (after the opcode executes),
-        // a JS error on the final STOP opcode cannot revert the transaction — it has
-        // already completed. The transaction succeeds but the trace result is empty.
         let code = r#"{
             res: [],
             step: function(log) { if (log.op.toString() === 'STOP') { this.res.push(log.memory.slice(5, 1025 * 1024)) } },
             fault: function() {},
             result: function() { return this.res }
         }"#;
-        let res = run_trace(code, None, true);
-        assert_eq!(res, json!([]));
+        let err = try_run_trace(code, None, true).unwrap_err();
+        assert!(matches!(err, JsInspectorError::JsError(_)));
     }
 
     #[test]

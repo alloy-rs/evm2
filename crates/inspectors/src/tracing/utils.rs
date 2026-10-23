@@ -48,7 +48,9 @@ pub(crate) fn fmt_error_msg(res: InstrStop, kind: TraceStyle) -> Option<String> 
         InstrStop::InvalidFEOpcode => {
             if kind.is_parity() { "Bad instruction" } else { "invalid opcode: INVALID" }.to_string()
         }
-        InstrStop::OpcodeNotFound | InstrStop::NotActivated => {
+        InstrStop::OpcodeNotFound
+        | InstrStop::NotActivated
+        | InstrStop::InvalidImmediateEncoding => {
             if kind.is_parity() { "Bad instruction" } else { "invalid opcode" }.to_string()
         }
         InstrStop::StackUnderflow => {
@@ -98,6 +100,10 @@ pub(crate) fn fmt_error_msg(res: InstrStop, kind: TraceStyle) -> Option<String> 
             "out of gas: not enough gas for reentrancy sentry"
         }
         .to_string(),
+        InstrStop::FatalExternalError => {
+            if kind.is_parity() { "Fatal external error" } else { "fatal external error" }
+                .to_string()
+        }
         status => format!("{status:?}"),
     };
 
@@ -182,6 +188,7 @@ mod tests {
             (InstrStop::InvalidFEOpcode, "invalid opcode: INVALID", "Bad instruction"),
             (InstrStop::OpcodeNotFound, "invalid opcode", "Bad instruction"),
             (InstrStop::NotActivated, "invalid opcode", "Bad instruction"),
+            (InstrStop::InvalidImmediateEncoding, "invalid opcode", "Bad instruction"),
         ] {
             assert_eq!(fmt_error_msg(stop, TraceStyle::Geth).as_deref(), Some(geth));
             assert_eq!(fmt_error_msg(stop, TraceStyle::Parity).as_deref(), Some(parity));
