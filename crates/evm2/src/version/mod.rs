@@ -388,6 +388,7 @@ evm_versions! {
             BALANCE_TOP_UP,
             BLOCK_GAS_LIMIT_CHECK,
             EIP3607,
+            BASE_FEE_CHECK,
             PRIORITY_FEE_CHECK,
             FEE_CHARGE,
             LOG_COLLECTION,
@@ -677,7 +678,6 @@ evm_versions! {
         features: [
             EIP3529,
             EIP3541,
-            BASE_FEE_CHECK,
         ],
         ops: [
             BASEFEE: BASE,

@@ -193,7 +193,7 @@ evm_features! {
     EIP3541,
     /// Checks [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559) transaction fee caps against the block base fee.
     ///
-    /// Default: on since London
+    /// Default: on
     BASE_FEE_CHECK,
     /// Applies [EIP-4399](https://eips.ethereum.org/EIPS/eip-4399) PREVRANDAO opcode semantics.
     ///
