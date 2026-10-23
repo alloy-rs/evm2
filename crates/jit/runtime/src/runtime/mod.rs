@@ -598,7 +598,6 @@ impl JitBackend {
         let config_hash = storage::compile_config_hash(config);
         let mut out: Vec<(RuntimeCacheKey, Arc<CompiledProgram>)> =
             Vec::with_capacity(artifacts.len());
-        let mut seen = alloy_primitives::map::HashSet::<RuntimeCacheKey>::default();
         let mut loaded = 0u64;
         let mut failed = 0u64;
         let mut skipped = 0u64;
@@ -608,8 +607,6 @@ impl JitBackend {
             let expected = ArtifactKey::llvm(key, config.tuning.aot_opt_level, config_hash);
             if artifact_key != expected || stored.manifest.artifact_key != artifact_key {
                 debug!(
-                    code_hash = %key.code_hash,
-                    spec_id = ?key.spec_id,
                     ?artifact_key,
                     manifest_key = ?stored.manifest.artifact_key,
                     ?expected,
@@ -621,14 +618,6 @@ impl JitBackend {
 
             match Self::load_artifact(&artifact_key, &stored) {
                 Ok(program) => {
-                    if !seen.insert(key) {
-                        warn!(
-                            code_hash = %key.code_hash,
-                            spec_id = ?key.spec_id,
-                            "duplicate artifact key, keeping first",
-                        );
-                        continue;
-                    }
                     out.push((key, Arc::new(program)));
                     loaded += 1;
                 }

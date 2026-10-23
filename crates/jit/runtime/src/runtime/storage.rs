@@ -36,7 +36,7 @@ pub struct ArtifactKey {
 impl ArtifactKey {
     /// Returns the key of an AOT artifact that the LLVM backend produces for `runtime` under
     /// `opt_level` and the compile configuration with digest `config_hash`.
-    pub(crate) fn llvm(
+    pub(crate) const fn llvm(
         runtime: RuntimeCacheKey,
         opt_level: OptimizationLevel,
         config_hash: B256,
