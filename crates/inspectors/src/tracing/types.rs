@@ -689,13 +689,14 @@ pub struct CallTraceStep {
 }
 
 impl CallTraceStep {
-    /// Converts this step into a geth [StructLog]
+    /// Converts this step into a geth [StructLog] with the given `stack`.
     ///
-    /// This sets memory and stack capture based on the `opts` parameter.
+    /// This sets memory capture based on the `opts` parameter.
     pub(crate) fn convert_to_geth_struct_log(
         &self,
         opts: &GethDefaultTracingOptions,
         depth: u64,
+        stack: Option<Vec<U256>>,
     ) -> StructLog {
         StructLog {
             depth,
@@ -711,11 +712,7 @@ impl CallTraceStep {
             },
             pc: self.pc as u64,
             refund_counter: Some(self.gas_refund_counter),
-            stack: if opts.is_stack_enabled() {
-                self.stack.as_ref().map(|stack| stack.to_vec())
-            } else {
-                None
-            },
+            stack,
             memory: if opts.is_memory_enabled() {
                 self.memory.as_ref().map(RecordedMemory::memory_chunks)
             } else {
