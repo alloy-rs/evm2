@@ -386,6 +386,12 @@ pub unsafe extern "C" fn __revmc_builtin_self_balance(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn __revmc_builtin_difficulty(ecx: &EvmContext, slot: &mut EvmWord) {
+    let block_env = ecx.block_env();
+    *slot = if ecx.enables(EvmFeatures::EIP4399) { block_env.prevrandao } else { block_env.difficulty }.into();
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_blob_hash(ecx: &EvmContext, index_ptr: &mut EvmWord) {
     let index = index_ptr.to_u256();
     let index_usize = word_to_usize_saturated(index);

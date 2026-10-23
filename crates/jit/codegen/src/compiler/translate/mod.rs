@@ -7,7 +7,7 @@ use crate::{
 };
 use alloy_primitives::U256;
 use evm2::{
-    BaseEvmTypes, EvmFeatures, Version,
+    BaseEvmTypes,
     env::{BlockEnv, TxEnv},
     interpreter::{InstrStop, Interpreter, Message, op},
 };
@@ -825,12 +825,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; number);
             }
             op::DIFFICULTY => {
-                let block_env = self.load_block_env_ptr();
-                if Version::base(self.bytecode.spec_id).feature(EvmFeatures::EIP4399) {
-                    field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; prevrandao);
-                } else {
-                    field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; difficulty);
-                }
+                let slot = self.sp_at_top();
+                let _ = self.call_builtin(Builtin::Difficulty, &[self.ecx, slot]);
             }
             op::GASLIMIT => {
                 let block_env = self.load_block_env_ptr();
