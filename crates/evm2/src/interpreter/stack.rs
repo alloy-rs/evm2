@@ -398,7 +398,10 @@ impl<'a> StackMut<'a> {
         Ok(unsafe { self.popn_unchecked() })
     }
 
-    /// Pops `n` words from the stack and returns an iterator over the popped words.
+    /// Returns an iterator that pops up to `n` words from the stack, starting at the top.
+    ///
+    /// Checks for underflow immediately, but pops each word only when the iterator yields it.
+    /// Dropping the iterator early leaves the unconsumed words on the stack.
     #[inline]
     pub fn popn_dyn(&mut self, n: usize) -> Result<impl Iterator<Item = Word> + '_> {
         if self.len() < n {

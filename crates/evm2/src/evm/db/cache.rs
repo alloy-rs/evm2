@@ -351,8 +351,8 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        // Serve the slot from the attached read BAL when it covers a write at or before the current
-        // index; otherwise fall through to the cache/database.
+        // Serve the slot from the attached read BAL when it covers a write strictly before the
+        // current index; otherwise fall through to the cache/database.
         match self.bal_context.bal_storage(address, key) {
             Ok(Some(value)) => return Ok(value),
             Ok(None) => {}
