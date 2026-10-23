@@ -537,6 +537,20 @@ impl BackendState {
     fn handle_worker_result(&mut self, result: WorkerResult) {
         self.pending_jobs = self.pending_jobs.saturating_sub(1);
 
+        // Discard stale results from a previous generation (e.g. after clear). Any entry for the
+        // key belongs to the current generation, because clearing drains every entry, so leave it
+        // and its waiters alone: it is the dedup for a job that is still running.
+        if result.generation != self.generation {
+            debug!(
+                code_hash = %result.key.code_hash,
+                result_gen = result.generation,
+                current_gen = self.generation,
+                "discarding stale worker result",
+            );
+            result.sync_notifier.notify();
+            return;
+        }
+
         // Drain pending notifiers from the entry before processing.
         let pending_notifiers = self
             .entries
@@ -550,19 +564,6 @@ impl BackendState {
                 n.notify();
             }
         };
-
-        // Discard stale results from a previous generation (e.g. after clear).
-        if result.generation != self.generation {
-            debug!(
-                code_hash = %result.key.code_hash,
-                result_gen = result.generation,
-                current_gen = self.generation,
-                "discarding stale worker result",
-            );
-            self.remove_entry(&result.key);
-            notify();
-            return;
-        }
 
         let kind = result.kind;
         let success = result.outcome.is_ok();
@@ -788,7 +789,7 @@ impl BackendState {
                     "evicting idle entry",
                 );
                 self.remove_resident(key);
-                self.remove_entry(key);
+                self.remove_evicted_entry(key);
                 self.inner.stats.evictions.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -834,7 +835,7 @@ impl BackendState {
                     "evicting entry to stay within memory budget",
                 );
                 self.remove_resident(&key);
-                self.remove_entry(&key);
+                self.remove_evicted_entry(&key);
                 self.inner.stats.evictions.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -883,6 +884,16 @@ impl BackendState {
     fn remove_entry(&mut self, key: &RuntimeCacheKey) {
         self.unlink_cold_entry(key);
         self.entries.remove(key);
+    }
+
+    /// Removes the entry of an evicted resident key unless a job is still in flight for it.
+    ///
+    /// A working entry is the only deduplication for a job that cannot be cancelled, such as an
+    /// AOT job for a JIT-resident key.
+    fn remove_evicted_entry(&mut self, key: &RuntimeCacheKey) {
+        if self.entries.get(key).is_none_or(|entry| entry.phase != EntryPhase::Working) {
+            self.remove_entry(key);
+        }
     }
 }
 
@@ -1071,6 +1082,74 @@ mod notifier_tests {
             assert_eq!(receiver.try_recv(), Ok(()));
             assert_eq!(receiver.try_recv(), Err(chan::TryRecvError::Disconnected));
         }
+    }
+
+    #[test]
+    fn stale_result_leaves_current_generation_working_entry() {
+        let mut state = new_state(RuntimeTuning::default());
+        let bytecode = Bytes::from_static(&[0x00]);
+        let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
+        let (waiter, waiter_rx) = chan::bounded(1);
+        state.generation = 1;
+        state.entries.insert(
+            key,
+            EntryState {
+                hotness: 8,
+                phase: EntryPhase::Working,
+                bytecode,
+                last_observed_at: Instant::now(),
+                pending_notifiers: vec![SyncNotifier::new(waiter)],
+                cold_links: None,
+            },
+        );
+        state.pending_jobs = 2;
+
+        let (stale, stale_rx) = chan::bounded(1);
+        state.handle_worker_result(WorkerResult {
+            key,
+            outcome: Err("stale".to_owned()),
+            kind: CompilationKind::Aot,
+            sync_notifier: SyncNotifier::new(stale),
+            generation: 0,
+            compile_duration: Duration::ZERO,
+            timings: crate::CompileTimings::default(),
+        });
+
+        assert_eq!(state.pending_jobs, 1);
+        assert_eq!(state.entries[&key].phase, EntryPhase::Working);
+        assert_eq!(state.entries[&key].pending_notifiers.len(), 1);
+        assert_eq!(stale_rx.try_recv(), Ok(()));
+        assert_eq!(waiter_rx.try_recv(), Err(chan::TryRecvError::Empty));
+    }
+
+    #[test]
+    fn idle_sweep_keeps_working_entry_of_evicted_resident_key() {
+        let mut state = new_state(RuntimeTuning {
+            idle_evict_duration: Some(Duration::ZERO),
+            eviction_sweep_interval: Duration::ZERO,
+            ..Default::default()
+        });
+        let bytecode = Bytes::from_static(&[0x00]);
+        let key = RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
+        state.resident_meta.insert(key, ResidentMeta { last_hit_at: Instant::now() });
+        state.entries.insert(
+            key,
+            EntryState {
+                hotness: 0,
+                phase: EntryPhase::Working,
+                bytecode,
+                last_observed_at: Instant::now(),
+                pending_notifiers: Vec::new(),
+                cold_links: None,
+            },
+        );
+        state.pending_jobs = 1;
+        std::thread::sleep(Duration::from_millis(1));
+
+        state.run_eviction_sweep();
+
+        assert!(state.resident_meta.is_empty());
+        assert_eq!(state.entries[&key].phase, EntryPhase::Working);
     }
 
     #[test]

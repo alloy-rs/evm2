@@ -4,7 +4,7 @@ use crate::{OptimizationLevel, eyre};
 use alloy_primitives::B256;
 use dashmap::DashMap;
 use evm2::SpecId;
-use std::{fs, path::PathBuf};
+use std::{fs, io::Write, path::PathBuf};
 
 /// Runtime cache key: the minimal identity for a compiled program at runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -140,7 +140,11 @@ impl ArtifactStore for RuntimeArtifactStore {
         dylib_bytes: &[u8],
     ) -> eyre::Result<()> {
         let path = self.artifact_path(key);
-        fs::write(&path, dylib_bytes)?;
+        // Write to a unique file and rename it over the target: a previous artifact for the key
+        // may be mapped, and rewriting it in place would corrupt the mapping.
+        let mut file = tempfile::NamedTempFile::new_in(self.dir.path())?;
+        file.write_all(dylib_bytes)?;
+        file.persist(&path).map_err(|err| err.error)?;
         self.artifacts
             .insert(*key, StoredArtifact { manifest: manifest.clone(), dylib_path: path });
         Ok(())
@@ -172,6 +176,7 @@ mod tests {
     use alloy_primitives::B256;
     use evm2::SpecId;
     use evm2_jit_backend::OptimizationLevel;
+    use std::io::Read;
 
     fn artifact_key(code_hash: B256) -> ArtifactKey {
         ArtifactKey {
@@ -234,6 +239,20 @@ mod tests {
         let loaded = store.load(&key).unwrap().unwrap();
         assert_eq!(loaded.manifest.artifact_len, 5);
         assert_eq!(std::fs::read(&loaded.dylib_path).unwrap(), b"three");
+    }
+
+    #[test]
+    fn runtime_artifact_store_replace_keeps_open_files_intact() {
+        let store = RuntimeArtifactStore::new().unwrap();
+        let key = artifact_key(B256::with_last_byte(5));
+
+        store.store(&key, &manifest(key, 3), b"one").unwrap();
+        let mut open = std::fs::File::open(store.load(&key).unwrap().unwrap().dylib_path).unwrap();
+        store.store(&key, &manifest(key, 5), b"three").unwrap();
+
+        let mut contents = Vec::new();
+        open.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"one");
     }
 
     #[test]
