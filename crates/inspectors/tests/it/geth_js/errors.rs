@@ -13,11 +13,21 @@ fn execute(
     create: bool,
     gas_limit: u64,
 ) -> (Result<Value, JsInspectorError>, ResultAndState) {
+    execute_with_child(script, code, &hex!("600160005500"), create, gas_limit)
+}
+
+fn execute_with_child(
+    script: &str,
+    code: &[u8],
+    child: &[u8],
+    create: bool,
+    gas_limit: u64,
+) -> (Result<Value, JsInspectorError>, ResultAndState) {
     let mut db = CacheDB::new(EmptyDB::default());
     for (address, code, balance) in [
         (Address::ZERO, &[][..], U256::from(1e18)),
         (TARGET, code, U256::from(5)),
-        (CHILD, &hex!("600160005500")[..], U256::ZERO),
+        (CHILD, child, U256::ZERO),
     ] {
         db.insert_account_info(
             &address,
@@ -59,6 +69,17 @@ fn error_message(error: JsInspectorError) -> String {
     let JsInspectorError::JsError(error) = error else { panic!("unexpected error: {error}") };
     let native = error.as_native().unwrap();
     format!("{}: {}", native.kind(), native.message())
+}
+
+fn error_events_tracer(has_step: bool) -> String {
+    let step = if has_step {
+        "step:function(l){if(l.getError())this.e.push(['step',l.op.toString(),l.getError()])},"
+    } else {
+        ""
+    };
+    format!(
+        "{{e:[],{step}fault:function(l){{this.e.push(['fault',l.op.toString(),l.getError()])}},result:function(){{return this.e}}}}"
+    )
 }
 
 #[test]
@@ -189,4 +210,56 @@ fn the_first_hook_error_wins() {
         error_message(execute(script, &hex!("60ff56"), false, 1_000_000).0.unwrap_err()),
         "TypeError: fault failed    in server-side tracer function 'fault'"
     );
+}
+
+#[test]
+fn oversized_initcode_is_reported_by_step() {
+    for (code, opcode) in
+        [(&hex!("61c00160006000f0")[..], "CREATE"), (&hex!("600061c00160006000f5")[..], "CREATE2")]
+    {
+        for has_step in [true, false] {
+            let script = error_events_tracer(has_step);
+            let (output, result) = execute(&script, code, false, 1_000_000);
+            assert!(!result.result.is_success());
+            assert_eq!(
+                output.unwrap(),
+                if has_step {
+                    json!([["step", opcode, "max initcode size exceeded"]])
+                } else {
+                    json!([])
+                },
+            );
+        }
+    }
+}
+
+#[test]
+fn static_write_errors_follow_the_opcode_validation_stage() {
+    let mut parent = hex!("600060006000600073").to_vec();
+    parent.extend_from_slice(CHILD.as_slice());
+    parent.extend_from_slice(&hex!("61fffffa00"));
+    for (child, opcode, callback) in [
+        (&hex!("6000600055")[..], "SSTORE", "step"),
+        (&hex!("600060006000f0")[..], "CREATE", "step"),
+        (&hex!("6000600060006000f5")[..], "CREATE2", "step"),
+        (&hex!("6000ff")[..], "SELFDESTRUCT", "step"),
+        (&hex!("60006000600060006001600061fffff1")[..], "CALL", "step"),
+        (&hex!("600060005d")[..], "TSTORE", "fault"),
+        (&hex!("60006000a0")[..], "LOG0", "fault"),
+    ] {
+        for has_step in [true, false] {
+            let script = error_events_tracer(has_step);
+            let (output, result) = execute_with_child(&script, &parent, child, false, 1_000_000);
+            assert!(result.result.is_success());
+            assert_eq!(
+                output.unwrap(),
+                if has_step || callback == "fault" {
+                    json!([[callback, opcode, "write protection"]])
+                } else {
+                    json!([])
+                },
+                "{opcode}, step callback: {has_step}",
+            );
+        }
+    }
 }
