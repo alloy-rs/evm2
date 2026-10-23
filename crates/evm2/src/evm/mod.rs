@@ -1858,7 +1858,7 @@ mod tests {
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_eip7928::{BlockAccessList, StorageChange};
-    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, Log, LogData, TxKind, U256};
+    use alloy_primitives::{Address, Bytes, Log, LogData, TxKind, U256};
     use core::{
         error::Error,
         fmt,
@@ -3557,7 +3557,7 @@ mod tests {
         let pending = evm.state.take_pending_state();
         let account =
             pending.accounts.get(&created).and_then(|entry| entry.present.as_ref()).unwrap();
-        assert_eq!(account.code_hash, KECCAK256_EMPTY);
+        assert!(account.is_empty_code_hash());
     }
 
     #[test]
@@ -3850,7 +3850,7 @@ mod tests {
             .expect("balance-only account should remain");
         assert_eq!(info.balance, U256::from(5));
         assert_eq!(info.nonce, 0);
-        assert_eq!(info.code_hash, KECCAK256_EMPTY);
+        assert!(info.is_empty_code_hash());
 
         let pending = state.take_pending_state();
         assert!(pending.accounts.contains_key(&contract), "account change recorded");

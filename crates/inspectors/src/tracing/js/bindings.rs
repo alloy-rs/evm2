@@ -17,7 +17,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsObject, JsResult, JsString, JsValue, js_string,
     native_function::NativeFunction,
@@ -542,18 +542,17 @@ struct ChangesDbReader<'a> {
 }
 
 impl ChangesDbReader<'_> {
-    fn code_from_info(&mut self, info: AccountInfo) -> DbResult<Bytecode> {
+    fn code_from_info(&mut self, mut info: AccountInfo) -> DbResult<Bytecode> {
         // Note: the changed account from the state output always holds the code.
-        if let Some(code) = info.code
+        if let Some(code) = info.code.take()
             && !code.is_empty()
         {
             return Ok(code);
         }
-        let code_hash = info.code_hash;
-        if code_hash == KECCAK256_EMPTY {
+        if info.is_empty_code_hash() {
             return Ok(Bytecode::default());
         }
-        self.db.get_code_by_hash(&code_hash)
+        self.db.get_code_by_hash(&info.code_hash)
     }
 }
 
