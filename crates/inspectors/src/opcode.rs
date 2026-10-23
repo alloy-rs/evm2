@@ -97,9 +97,12 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         // update gas usage for the last opcode
         if let Some(pending) = self.pending_steps.pop() {
-            let gas_cost = pending
-                .gas_remaining
-                .saturating_sub(interp.gas().remaining())
+            // Out-of-gas hooks see a zeroed remainder even when a guard rejected the opcode
+            // before charging gas. Attribute only the attempted charge, capped by available gas.
+            let gas_cost = interp
+                .failed_charge()
+                .map(|cost| cost.min(pending.gas_remaining))
+                .unwrap_or_else(|| pending.gas_remaining.saturating_sub(interp.gas().remaining()))
                 .saturating_sub(pending.child_gas_used);
             let opcode = pending.opcode;
             *self.opcode_gas.entry(opcode).or_default() += gas_cost;
