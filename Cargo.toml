@@ -163,6 +163,14 @@ criterion = { package = "codspeed-criterion-compat", version = "4", default-feat
 [profile.dev]
 opt-level = 3
 
+# Debug info makes the C and C++ precompile backends build about a third slower.
+[profile.dev.package]
+aws-lc-sys.debug = false
+blst.debug = false
+c-kzg.debug = false
+mcl_rust.debug = false
+secp256k1-sys.debug = false
+
 [profile.release]
 opt-level = 3
 panic = "abort"
