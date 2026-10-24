@@ -52,6 +52,9 @@ use types::{CallLog, CallTrace, CallTraceStep};
 
 mod tx_state;
 
+mod log_gas;
+use log_gas::PendingLogGas;
+
 mod utils;
 
 #[cfg(feature = "std")]
@@ -117,6 +120,8 @@ pub struct TracingInspector {
     ///
     /// All `Vec<CallTraceStep>` are always empty but may have capacity.
     reusable_step_vecs: Vec<Vec<CallTraceStep>>,
+    /// The pending LOG's remaining charge stages. LOG cannot open a child frame.
+    pending_log_gas: Option<PendingLogGas>,
 }
 
 impl TracingInspector {
@@ -156,6 +161,7 @@ impl TracingInspector {
             last_journal_len,
             spec_id,
             features,
+            pending_log_gas,
             // kept
             config,
             budget,
@@ -181,6 +187,7 @@ impl TracingInspector {
         spec_id.take();
         *features = EvmFeatures::empty();
         *last_journal_len = 0;
+        *pending_log_gas = None;
         budget.recorded = 0;
         budget.exceeded = false;
     }
@@ -464,6 +471,7 @@ impl TracingInspector {
         let op = OpCode::new_or_unknown(interp.opcode());
 
         let trace_idx = self.last_trace_idx();
+        self.pending_log_gas = None;
 
         let record = !self.budget.exceeded()
             && self.config.should_record_opcode(op)
@@ -474,6 +482,7 @@ impl TracingInspector {
             return;
         }
 
+        self.pending_log_gas = PendingLogGas::capture(interp);
         self.recorded_steps += 1;
         let node = &mut self.traces.arena[trace_idx];
 
@@ -583,6 +592,7 @@ impl TracingInspector {
     /// Invoked on [Inspector::step_end].
     #[cold]
     fn fill_step_on_step_end<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        let log_cost = self.pending_log_gas.take().and_then(|gas| gas.failed_cost(interp));
         let Some((trace_idx, step_idx)) = self.step_stack.pop() else {
             return;
         };
@@ -651,10 +661,10 @@ impl TracingInspector {
             };
         }
 
-        // The gas cost is the difference between the recorded gas remaining at the start of the
-        // step the remaining gas here, at the end of the step.
-        step.gas_cost = interp
-            .failed_charge()
+        // Failed deductions report the attempted cost. LOG includes charge stages that the
+        // interpreter may not have reached; ordinary steps use the actual gas delta.
+        step.gas_cost = log_cost
+            .or_else(|| interp.failed_charge())
             .unwrap_or_else(|| step.gas_remaining.saturating_sub(interp.gas().remaining()));
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {

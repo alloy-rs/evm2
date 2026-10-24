@@ -1145,3 +1145,6 @@ mod state_diff_birth;
 
 #[path = "parity/state_diff_selfdestruct.rs"]
 mod state_diff_selfdestruct;
+
+#[path = "parity/log_gas.rs"]
+mod log_gas;
