@@ -2614,7 +2614,7 @@ mod tests {
 
         evm.set_boxed_precompiles(Box::new(precompiles_with([])));
 
-        assert!(evm.precompiles_as::<Precompiles>().is_some());
+        assert!(evm.precompiles_as::<Precompiles>().unwrap().as_map().is_empty());
     }
 
     #[test]
