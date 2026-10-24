@@ -375,6 +375,13 @@ pub mod generic {
         Ok(())
     }
 
+    pub unsafe extern "C" fn __revmc_builtin_difficulty<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, slot: &mut EvmWord) {
+        let block_env = ecx.block_env();
+        let value =
+            if ecx.enables(EvmFeatures::EIP4399) { block_env.prevrandao } else { block_env.difficulty };
+        *slot = value.into();
+    }
+
     pub unsafe extern "C" fn __revmc_builtin_blob_hash<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, index_ptr: &mut EvmWord) {
         let index = index_ptr.to_u256();
         let index_usize = word_to_usize_saturated(index);
@@ -960,6 +967,7 @@ base_builtins! {
     __revmc_builtin_extcodehash(ecx: &mut EvmContext, address: &mut EvmWord);
     __revmc_builtin_blockhash(ecx: &mut EvmContext, number_ptr: &mut EvmWord);
     __revmc_builtin_self_balance(ecx: &mut EvmContext, slot: &mut EvmWord);
+    __revmc_builtin_difficulty(ecx: &EvmContext, slot: &mut EvmWord);
     __revmc_builtin_blob_hash(ecx: &EvmContext, index_ptr: &mut EvmWord);
     __revmc_builtin_mresize(ecx: &mut EvmContext, min_size: u64);
     __revmc_builtin_sload(ecx: &mut EvmContext, index: &mut EvmWord);

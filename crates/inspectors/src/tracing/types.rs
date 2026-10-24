@@ -742,13 +742,13 @@ impl CallTraceStep {
         )
     }
 
-    // Returns true if the status code is an error or revert, See [InstrStop::Revert]
+    // Reverts are control flow; only exceptional halts populate a step error.
     #[inline]
     pub(crate) const fn is_error(&self) -> bool {
         let Some(status) = self.status else {
             return false;
         };
-        !status.is_success()
+        status.is_halt()
     }
 
     /// Returns the error message if it is an erroneous result.

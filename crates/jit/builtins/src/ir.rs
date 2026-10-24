@@ -308,6 +308,7 @@ builtins! {
     ExtCodeHash    = __revmc_builtin_extcodehash(@[ecx] ptr, @[sp] ptr) None,
     BlockHash      = __revmc_builtin_blockhash(@[ecx] ptr, @[sp] ptr) None,
     SelfBalance    = __revmc_builtin_self_balance(@[ecx] ptr, @[sp] ptr) None,
+    Difficulty     = __revmc_builtin_difficulty(@[ecx_ro] ptr, @[sp] ptr) None,
     BlobHash       = __revmc_builtin_blob_hash(@[ecx_ro] ptr, @[sp] ptr) None,
     Mresize        = __revmc_builtin_mresize(@[ecx] ptr, usize) None,
     Sload          = __revmc_builtin_sload(@[ecx] ptr, @[sp] ptr) None,
@@ -372,6 +373,9 @@ impl Builtin {
             Self::BlockHash => crate::generic::__revmc_builtin_blockhash::<T> as *const () as usize,
             Self::SelfBalance => {
                 crate::generic::__revmc_builtin_self_balance::<T> as *const () as usize
+            }
+            Self::Difficulty => {
+                crate::generic::__revmc_builtin_difficulty::<T> as *const () as usize
             }
             Self::BlobHash => crate::generic::__revmc_builtin_blob_hash::<T> as *const () as usize,
             Self::Mresize => crate::generic::__revmc_builtin_mresize::<T> as *const () as usize,

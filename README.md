@@ -38,7 +38,7 @@ fn main() -> Result<()> {
 }
 ```
 
-See [`crates/evm2/examples/custom_evm`](crates/evm2/examples/custom_evm) for the complete version.
+See [`crates/evm2/examples/custom_evm`](https://github.com/alloy-rs/evm2/tree/main/crates/evm2/examples/custom_evm) for the complete version.
 
 ## Feature flags
 

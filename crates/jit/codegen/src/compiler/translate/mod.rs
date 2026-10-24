@@ -7,7 +7,7 @@ use crate::{
 };
 use alloy_primitives::U256;
 use evm2::{
-    BaseEvmTypes, EvmFeatures, EvmTypesHost, Version,
+    BaseEvmTypes, EvmTypesHost,
     env::{BlockEnv, TxEnv},
     interpreter::{InstrStop, Interpreter, Message, op},
 };
@@ -71,8 +71,6 @@ pub struct HostLayout {
     block_beneficiary: usize,
     block_timestamp: usize,
     block_number: usize,
-    block_prevrandao: usize,
-    block_difficulty: usize,
     block_gas_limit: usize,
     block_basefee: usize,
     block_blob_basefee: usize,
@@ -93,8 +91,6 @@ impl HostLayout {
             block_beneficiary: mem::offset_of!(BlockEnv<T>, beneficiary),
             block_timestamp: mem::offset_of!(BlockEnv<T>, timestamp),
             block_number: mem::offset_of!(BlockEnv<T>, number),
-            block_prevrandao: mem::offset_of!(BlockEnv<T>, prevrandao),
-            block_difficulty: mem::offset_of!(BlockEnv<T>, difficulty),
             block_gas_limit: mem::offset_of!(BlockEnv<T>, gas_limit),
             block_basefee: mem::offset_of!(BlockEnv<T>, basefee),
             block_blob_basefee: mem::offset_of!(BlockEnv<T>, blob_basefee),
@@ -872,12 +868,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 field!(@push self.word_type, block_env, self.config.layout.block_number; number);
             }
             op::DIFFICULTY => {
-                let block_env = self.load_block_env_ptr();
-                if Version::base(self.bytecode.spec_id).feature(EvmFeatures::EIP4399) {
-                    field!(@push self.word_type, block_env, self.config.layout.block_prevrandao; prevrandao);
-                } else {
-                    field!(@push self.word_type, block_env, self.config.layout.block_difficulty; difficulty);
-                }
+                let slot = self.sp_at_top();
+                let _ = self.call_builtin(Builtin::Difficulty, &[self.ecx, slot]);
             }
             op::GASLIMIT => {
                 let block_env = self.load_block_env_ptr();
