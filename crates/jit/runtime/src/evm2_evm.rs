@@ -2,7 +2,7 @@
 
 use crate::runtime::{JitBackend, LookupDecision, LookupRequest, RuntimeCacheKey};
 use evm2::{
-    BaseEvmTypes, Evm, InterpreterRunner,
+    EvmTypesHost, InterpreterRunner,
     interpreter::{Host, InstrStop, Interpreter},
 };
 
@@ -26,12 +26,12 @@ impl JitInterpreterRunner {
     }
 }
 
-impl InterpreterRunner<BaseEvmTypes> for JitInterpreterRunner {
+impl<T: EvmTypesHost> InterpreterRunner<T> for JitInterpreterRunner {
     #[inline]
     fn run<'frame, 'host>(
         &self,
-        interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
-        host: &mut Evm<'host, BaseEvmTypes>,
+        interpreter: &mut Interpreter<'frame, 'host, T>,
+        host: &mut T::Host<'host>,
     ) -> Option<InstrStop> {
         run_interpreter(&self.backend, interpreter, host)
     }
@@ -42,14 +42,17 @@ impl InterpreterRunner<BaseEvmTypes> for JitInterpreterRunner {
 /// Returns `None` when no compiled program is available, leaving the caller to
 /// run the same frame through the evm2 interpreter.
 #[inline]
-pub fn run_interpreter<'frame, 'host>(
+pub fn run_interpreter<'frame, 'host, T: EvmTypesHost>(
     backend: &JitBackend,
-    interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
-    host: &mut Evm<'host, BaseEvmTypes>,
+    interpreter: &mut Interpreter<'frame, 'host, T>,
+    host: &mut T::Host<'host>,
 ) -> Option<InstrStop> {
     // Disabled runners must not hash code merely to discover that lookup is unavailable.
     // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
-    if !backend.enabled() || interpreter.gas().remaining() > i64::MAX as u64 {
+    if !backend.enabled()
+        || interpreter.gas().remaining() > i64::MAX as u64
+        || !backend.supports_host::<T>(host.execution_config())
+    {
         return None;
     }
     let code_hash = interpreter.original_bytecode_hash();
@@ -729,5 +732,387 @@ mod tests {
         assert_eq!(interpreted.0, InstrStop::Stop);
         assert_eq!(interpreted.2, 1806);
         assert_eq!(run(true), interpreted);
+    }
+}
+
+#[cfg(all(test, feature = "llvm"))]
+mod custom_host_tests {
+    use super::*;
+    use crate::runtime::{HostConfig, RuntimeConfig};
+    use alloy_primitives::{Address, Bytes, U256};
+    use evm2::{
+        BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, ExecutionConfig, OpcodeConfig, SpecId,
+        bytecode::Bytecode,
+        config::BaseEvmConfigSelector,
+        env::{BlockEnvExt, TxEnvExt},
+        evm::{EmptyDB, precompile::NoPrecompiles},
+        interpreter::{MessageExt, Word, instructions::sstore_with, op},
+        registry::TxRegistry,
+    };
+    use evm2_macros::instruction;
+
+    #[derive(Debug)]
+    struct CustomTypes;
+
+    impl EvmTypesHost for CustomTypes {
+        type ConfigSelector = BaseEvmConfigSelector;
+        type SpecId = SpecId;
+        type Tx = evm2::ethereum::TxEnvelope;
+        type EvmExt = ();
+        type MessageExt = [u64; 17];
+        type MessageResultExt = ();
+        type TxEnvExt = [u64; 9];
+        type TxResultExt = ();
+        type BlockEnvExt = [u64; 13];
+        type Host<'a> = Evm<'a, Self>;
+    }
+
+    #[test]
+    fn custom_layout_matches_interpreter_and_rejects_wrong_backend() {
+        let backend = JitBackend::new(RuntimeConfig {
+            blocking: true,
+            single_error: false,
+            host: HostConfig::for_types::<CustomTypes>(),
+            ..Default::default()
+        })
+        .unwrap();
+        let mut host = Evm::<CustomTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            EmptyDB::default(),
+            NoPrecompiles::default(),
+        );
+        let tx = TxEnvExt::default();
+        // Exercise all direct message-field loads plus host and memory builtins.
+        let message = MessageExt {
+            gas_limit: 100_000,
+            destination: Address::repeat_byte(0x11),
+            caller: Address::repeat_byte(0x22),
+            value: U256::from(0x33),
+            input: Bytes::from_static(&[0x44; 32]),
+            code: Bytecode::new_legacy(Bytes::from_static(&[
+                op::ADDRESS,
+                op::PUSH0,
+                op::MSTORE,
+                op::CALLER,
+                op::PUSH1,
+                32,
+                op::MSTORE,
+                op::CALLVALUE,
+                op::PUSH1,
+                64,
+                op::MSTORE,
+                op::PUSH0,
+                op::CALLDATALOAD,
+                op::PUSH1,
+                96,
+                op::MSTORE,
+                op::TIMESTAMP,
+                op::PUSH1,
+                128,
+                op::MSTORE,
+                op::PUSH1,
+                160,
+                op::PUSH0,
+                op::RETURN,
+            ])),
+            ..Default::default()
+        };
+        let mut interpreted = Interpreter::<CustomTypes>::new(&tx, &message);
+        assert_eq!(interpreted.run(&mut host).unwrap(), InstrStop::Return);
+        let expected_output = interpreted.output().to_vec();
+        let expected_gas = interpreted.gas();
+        let mut compiled = Interpreter::<CustomTypes>::new(&tx, &message);
+        assert_eq!(run_interpreter(&backend, &mut compiled, &mut host), Some(InstrStop::Return));
+        assert_eq!(compiled.output(), expected_output);
+        assert_eq!(compiled.gas(), expected_gas);
+        let wrong =
+            JitBackend::new(RuntimeConfig { blocking: true, ..Default::default() }).unwrap();
+        let mut fresh = Interpreter::<CustomTypes>::new(&tx, &message);
+        assert_eq!(run_interpreter(&wrong, &mut fresh, &mut host), None);
+        assert_eq!(fresh.run(&mut host).unwrap(), InstrStop::Return);
+        assert_eq!(fresh.output(), expected_output);
+    }
+
+    const SSTORE_SURCHARGE: u64 = 1_000;
+    const ADDED_OPCODE: u8 = 0x0c;
+
+    #[instruction(EvmTypes = TableTypes, dynamic_gas)]
+    fn surcharged_sstore(cx: _, [key, value]: [Word]) -> Result {
+        sstore_with(cx.gas, cx.state, key, value, |gas, _state, _address, sstore| {
+            if sstore.is_noop() { Ok(()) } else { gas.spend(SSTORE_SURCHARGE) }
+        })
+    }
+
+    #[instruction(EvmTypes = TableTypes, dynamic_gas)]
+    fn charged_sload(cx: _, [_key]: [Word]) -> Result<out> {
+        cx.gas.spend(7)?;
+        // Rewrites existing memory, which compiled code must not assume it still knows.
+        if cx.state.memory().len() >= 32 {
+            cx.state.memory().set(0, &Word::from(2_u64).to_be_bytes::<32>());
+        }
+        *out = Word::from(0xbeef_u64);
+    }
+
+    #[instruction(EvmTypes = TableTypes)]
+    fn skipping_tload(cx: _, [_key]: [Word]) -> out {
+        // SAFETY: The test bytecode has a byte after the opcode.
+        unsafe { cx.pc.advance_unchecked(1) };
+        *out = Word::ZERO;
+    }
+
+    #[instruction(EvmTypes = TableTypes, no_stack_preamble)]
+    fn reading_balance(_cx: _) -> Result {
+        // Replaces its operand with the word below it.
+        let words = stack.as_slice_mut();
+        let [.., below, top] = words else { return Err(InstrStop::StackUnderflow) };
+        *top = *below;
+        Ok(())
+    }
+
+    #[instruction(EvmTypes = TableTypes, no_stack_preamble)]
+    fn position_extcodesize(cx: _) -> Result {
+        // Replaces its operand with its own position in the bytecode.
+        let position = cx.state.bytecode().pc_offset(*cx.pc);
+        let [.., top] = stack.as_slice_mut() else { return Err(InstrStop::StackUnderflow) };
+        *top = Word::from(position);
+        Ok(())
+    }
+
+    #[instruction(EvmTypes = TableTypes)]
+    fn added(cx: _) -> out {
+        *out = Word::from(0xdead_u64);
+    }
+
+    #[derive(Debug)]
+    struct TableTypes;
+
+    struct TableConfig<const BASE_SPEC_ID: u32>;
+
+    impl<const BASE_SPEC_ID: u32> EvmConfig<TableTypes> for TableConfig<BASE_SPEC_ID> {
+        const BASE_SPEC_ID: SpecId = SpecId::try_from_u32(BASE_SPEC_ID).unwrap();
+        const OPCODE_CONFIG: &'static OpcodeConfig<TableTypes> = &{
+            let mut config = OpcodeConfig::base::<BaseEvmConfig<BASE_SPEC_ID>>();
+            config.set_static_gas(op::ADD, 1);
+            config.set_instruction::<surcharged_sstore>(op::SSTORE, 0);
+            let sload_gas = config.static_gas(op::SLOAD);
+            config.set_instruction::<charged_sload>(op::SLOAD, sload_gas);
+            let tload_gas = config.static_gas(op::TLOAD);
+            config.set_instruction::<skipping_tload>(op::TLOAD, tload_gas);
+            let balance_gas = config.static_gas(op::BALANCE);
+            config.set_instruction::<reading_balance>(op::BALANCE, balance_gas);
+            let extcodesize_gas = config.static_gas(op::EXTCODESIZE);
+            config.set_instruction::<position_extcodesize>(op::EXTCODESIZE, extcodesize_gas);
+            config.set_instruction::<added>(ADDED_OPCODE, 2);
+            config.set_instruction::<added>(op::DUPN, 2);
+            config
+        };
+    }
+
+    struct TableSelector;
+
+    impl EvmConfigSelector<TableTypes> for TableSelector {
+        type Config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32> = TableConfig<BASE_SPEC_ID>;
+
+        fn execution_config(_: SpecId) -> ExecutionConfig<TableTypes> {
+            ExecutionConfig::for_config::<TableConfig<{ SpecId::OSAKA as u32 }>>()
+        }
+    }
+
+    impl EvmTypesHost for TableTypes {
+        type ConfigSelector = TableSelector;
+        type SpecId = SpecId;
+        type Tx = evm2::ethereum::TxEnvelope;
+        type EvmExt = ();
+        type MessageExt = [u64; 17];
+        type MessageResultExt = ();
+        type TxEnvExt = [u64; 9];
+        type TxResultExt = ();
+        type BlockEnvExt = [u64; 13];
+        type Host<'a> = Evm<'a, Self>;
+    }
+
+    /// Runs `code` through the interpreter and the compiled runner on the same host type.
+    fn run_both(
+        host_config: HostConfig,
+        code: &'static [u8],
+    ) -> (
+        Option<InstrStop>,
+        Interpreter<'static, 'static, TableTypes>,
+        InstrStop,
+        Interpreter<'static, 'static, TableTypes>,
+    ) {
+        let _ = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).try_init();
+        let backend = JitBackend::new(RuntimeConfig {
+            blocking: true,
+            single_error: false,
+            host: host_config,
+            ..Default::default()
+        })
+        .unwrap();
+        let new_host = || {
+            Evm::<TableTypes>::new(
+                SpecId::OSAKA,
+                BlockEnvExt::default(),
+                TxRegistry::new(),
+                EmptyDB::default(),
+                NoPrecompiles::default(),
+            )
+        };
+        let tx = Box::leak(Box::new(TxEnvExt::default()));
+        let message = Box::leak(Box::new(MessageExt {
+            gas_limit: 100_000,
+            caller: Address::repeat_byte(0x11),
+            code: Bytecode::new_legacy(Bytes::from_static(code)),
+            ..Default::default()
+        }));
+        let mut interpreted = Interpreter::<TableTypes>::new(tx, message);
+        let stop = interpreted.run(&mut new_host()).unwrap();
+        let mut compiled = Interpreter::<TableTypes>::new(tx, message);
+        let compiled_stop = run_interpreter(&backend, &mut compiled, &mut new_host());
+        (compiled_stop, compiled, stop, interpreted)
+    }
+
+    fn table_host() -> HostConfig {
+        let config = TableSelector::execution_config(SpecId::OSAKA);
+        HostConfig::for_config::<TableTypes>(&config)
+    }
+
+    #[test]
+    fn host_table_gas_and_overridden_sstore_match_interpreter() {
+        for code in [
+            &[op::PUSH1, 1, op::PUSH1, 2, op::ADD, op::STOP][..],
+            &[op::PUSH1, 1, op::PUSH0, op::SSTORE, op::STOP][..],
+        ] {
+            let (compiled_stop, compiled, stop, interpreted) = run_both(table_host(), code);
+            assert_eq!(compiled_stop, Some(stop));
+            assert_eq!(compiled.gas().spent(), interpreted.gas().spent());
+        }
+        let (_, _, _, sstore) =
+            run_both(table_host(), &[op::PUSH1, 1, op::PUSH0, op::SSTORE, op::STOP]);
+        assert!(sstore.gas().spent() >= SSTORE_SURCHARGE);
+    }
+
+    #[test]
+    fn host_table_overridden_sload_and_invalid_match_interpreter() {
+        // Both a constant and a dynamic key reach the host's `SLOAD`.
+        for code in [
+            &[op::PUSH1, 0, op::SLOAD, op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]
+                [..],
+            &[
+                op::PUSH0,
+                op::CALLDATASIZE,
+                op::ADD,
+                op::SLOAD,
+                op::PUSH0,
+                op::MSTORE,
+                op::PUSH1,
+                32,
+                op::PUSH0,
+                op::RETURN,
+            ][..],
+            &[
+                op::PUSH1,
+                1,
+                op::PUSH0,
+                op::MSTORE,
+                op::PUSH0,
+                op::SLOAD,
+                op::POP,
+                op::PUSH0,
+                op::MLOAD,
+                op::PUSH0,
+                op::MSTORE,
+                op::PUSH1,
+                32,
+                op::PUSH0,
+                op::RETURN,
+            ][..],
+            // The override reads the `CALLER` word below its operand, which the program
+            // otherwise discards.
+            &[
+                op::CALLER,
+                op::PUSH0,
+                op::BALANCE,
+                op::PUSH0,
+                op::MSTORE,
+                op::POP,
+                op::PUSH1,
+                32,
+                op::PUSH0,
+                op::RETURN,
+            ][..],
+            // Two identical blocks at different offsets must report their own positions.
+            &[
+                op::CALLDATASIZE,
+                op::PUSH1,
+                7,
+                op::JUMPI,
+                op::PUSH1,
+                16,
+                op::JUMP,
+                op::JUMPDEST,
+                op::PUSH0,
+                op::EXTCODESIZE,
+                op::PUSH0,
+                op::MSTORE,
+                op::PUSH1,
+                32,
+                op::PUSH0,
+                op::RETURN,
+                op::JUMPDEST,
+                op::PUSH0,
+                op::EXTCODESIZE,
+                op::PUSH0,
+                op::MSTORE,
+                op::PUSH1,
+                32,
+                op::PUSH0,
+                op::RETURN,
+            ][..],
+            &[op::INVALID][..],
+        ] {
+            let (compiled_stop, compiled, stop, interpreted) = run_both(table_host(), code);
+            assert_eq!(compiled_stop, Some(stop));
+            assert_eq!(compiled.gas().spent(), interpreted.gas().spent());
+            assert_eq!(compiled.output(), interpreted.output());
+        }
+    }
+
+    #[test]
+    fn host_instruction_that_moves_the_program_counter_halts() {
+        // The interpreter skips the `POP` after the override, which compiled code cannot do.
+        let code = &[op::PUSH0, op::TLOAD, op::POP, op::STOP][..];
+        let (compiled_stop, _, stop, _) = run_both(table_host(), code);
+        assert_eq!(stop, InstrStop::Stop);
+        assert_eq!(compiled_stop, Some(InstrStop::FatalExternalError));
+    }
+
+    #[test]
+    fn host_table_mismatch_and_added_opcodes_use_the_interpreter() {
+        // A backend built for the base table must not run frames with this host's table.
+        let (compiled_stop, _, stop, interpreted) =
+            run_both(HostConfig::for_types::<TableTypes>(), &[op::PUSH0, op::STOP]);
+        assert_eq!(compiled_stop, None);
+        assert_eq!(stop, InstrStop::Stop);
+        assert_eq!(interpreted.gas().spent(), 2);
+        // A jump target inside the immediate of an unsupported host opcode stays reachable.
+        let (compiled_stop, _, stop, _) =
+            run_both(table_host(), &[op::PUSH1, 4, op::JUMP, op::DUPN, op::JUMPDEST, op::STOP]);
+        assert_eq!(compiled_stop, Some(stop));
+        // An unreachable added opcode, such as metadata after `STOP`, does not block compilation.
+        let (compiled_stop, compiled, stop, interpreted) =
+            run_both(table_host(), &[op::PUSH0, op::STOP, ADDED_OPCODE, 0xa2, 0x64]);
+        assert_eq!(compiled_stop, Some(stop));
+        assert_eq!(compiled.gas().spent(), interpreted.gas().spent());
+        // A reachable added opcode stays on the interpreter, which runs it.
+        let (compiled_stop, _, stop, interpreted) = run_both(
+            table_host(),
+            &[ADDED_OPCODE, op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN],
+        );
+        assert_eq!(compiled_stop, None);
+        assert_eq!(stop, InstrStop::Return);
+        assert_eq!(interpreted.output()[24..], 0xdead_u64.to_be_bytes());
     }
 }

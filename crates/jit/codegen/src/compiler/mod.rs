@@ -1,8 +1,8 @@
 //! EVM bytecode compiler implementation.
 
 use crate::{
-    Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, Result,
-    bytecode::AnalysisConfig,
+    Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, OpcodeTable,
+    Result, bytecode::AnalysisConfig,
 };
 use alloy_primitives::Bytes;
 use evm2::{SpecId, version::GasParams};
@@ -22,6 +22,7 @@ use std::{
 };
 
 mod translate;
+pub use translate::HostLayout;
 use translate::{FcxConfig, FunctionCx};
 
 /// Collected timing remarks for the compiler dump.
@@ -95,6 +96,7 @@ pub struct EvmCompiler<B: Backend> {
     builtins: Builtins<B>,
     #[debug(skip)]
     gas_params: Option<GasParams>,
+    opcode_table: Option<OpcodeTable>,
 
     dedup: bool,
     dse: bool,
@@ -130,6 +132,7 @@ impl<B: Backend> EvmCompiler<B> {
             config: FcxConfig::default(),
             builtins: Builtins::new(),
             gas_params: None,
+            opcode_table: None,
             dedup: true,
             dse: true,
             dump_assembly: true,
@@ -139,6 +142,19 @@ impl<B: Backend> EvmCompiler<B> {
             compiled_sizes: Vec::new(),
             finalized: false,
         }
+    }
+
+    /// Configures the concrete host ABI before translating any programs.
+    ///
+    /// # Safety
+    /// The resolver must return C ABI functions matching each builtin's signature and layout.
+    pub unsafe fn set_host(
+        &mut self,
+        layout: HostLayout,
+        resolver: fn(evm2_jit_builtins::Builtin) -> usize,
+    ) {
+        self.config.layout = layout;
+        self.builtins.set_resolver(resolver);
     }
 
     /// Returns the module name.
@@ -505,6 +521,33 @@ impl<B: Backend> EvmCompiler<B> {
         self.config.single_error = yes;
     }
 
+    /// Makes the builtin symbol names unique to a host.
+    ///
+    /// For compilers whose objects the runtime links by name to the builtins of that host.
+    pub const fn set_builtin_symbol_suffix(&mut self, suffix: usize) {
+        self.builtins.set_symbol_suffix(suffix);
+    }
+
+    /// Returns the builtin symbol suffix, if set.
+    pub const fn builtin_symbol_suffix(&self) -> Option<usize> {
+        self.builtins.symbol_suffix()
+    }
+
+    /// Configures the concrete host layout, for programs whose builtins are linked by symbol.
+    ///
+    /// # Safety
+    /// The layout must describe the interpreter that runs the compiled programs.
+    pub const unsafe fn set_layout(&mut self, layout: HostLayout) {
+        self.config.layout = layout;
+    }
+
+    /// Sets the host's opcode table.
+    ///
+    /// Without one, programs use the base opcode table of their spec.
+    pub const fn set_opcode_table(&mut self, table: OpcodeTable) {
+        self.opcode_table = Some(table);
+    }
+
     /// Returns custom gas parameters, if set.
     pub const fn gas_params(&self) -> Option<GasParams> {
         self.gas_params
@@ -650,7 +693,8 @@ impl<B: Backend> EvmCompiler<B> {
         let _t = self.remarks.time(|r| &r.parse);
         let EvmCompilerInput::Code(bytecode) = input;
 
-        let mut bytecode = Bytecode::new(bytecode, spec_id, self.gas_params);
+        let mut bytecode =
+            Bytecode::new(bytecode, spec_id, self.gas_params, self.opcode_table.as_ref());
         bytecode.compiler_gas_limit = self.compiler_gas_limit;
         bytecode.config.set(AnalysisConfig::INSPECT_STACK, self.config.inspect_stack);
         bytecode.config.set(AnalysisConfig::DEDUP, self.dedup);

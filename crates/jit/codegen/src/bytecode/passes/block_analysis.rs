@@ -1732,6 +1732,11 @@ impl Bytecode<'_> {
                 // Disabled opcodes halt and have no stack inputs.
                 let loaded = if inst.flags.contains(InstFlags::DISABLED) {
                     None
+                } else if inst.flags.contains(InstFlags::HOST) {
+                    // The host's instruction may write any memory and any stack word.
+                    mem.0.clear();
+                    stack.fill(AbsValue::Top);
+                    None
                 } else {
                     mem.transfer(inst.opcode, &stack[stack.len() - inp..])
                 };
@@ -1815,7 +1820,7 @@ pub(crate) mod tests {
         crate::tests::init_tracing();
 
         eprintln!("{}", hex::encode(&code));
-        let mut bytecode = Bytecode::new(code, spec_id, None);
+        let mut bytecode = Bytecode::new(code, spec_id, None, None);
         bytecode.analyze().unwrap();
         eprintln!("{bytecode}");
         bytecode

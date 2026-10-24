@@ -644,6 +644,6 @@ fn apply_auth_list_accepts_custom_filtered_authorizations() {
     assert_eq!(evm.state.account(&applied).unwrap().code_hash(), delegation);
     assert_ne!(evm.state.account(&skipped).unwrap().code_hash(), delegation);
     // Before EIP-8037 only the existing, applied authority is refunded.
-    let per_auth = u64::from(evm.version().gas_params.get(GasId::TxEip7702AuthRefund));
+    let per_auth = evm.version().gas_params.get(GasId::TxEip7702AuthRefund);
     assert_eq!(refunds.execution_refund, per_auth);
 }

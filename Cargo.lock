@@ -2811,6 +2811,7 @@ dependencies = [
  "evm2-jit-codegen",
  "evm2-jit-context",
  "evm2-jit-llvm",
+ "evm2-macros",
  "eyre",
  "libc",
  "libloading",

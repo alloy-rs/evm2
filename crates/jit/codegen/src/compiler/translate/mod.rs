@@ -7,7 +7,7 @@ use crate::{
 };
 use alloy_primitives::U256;
 use evm2::{
-    BaseEvmTypes,
+    BaseEvmTypes, EvmTypesHost,
     env::{BlockEnv, TxEnv},
     interpreter::{InstrStop, Interpreter, Message, op},
 };
@@ -40,6 +40,7 @@ pub(super) struct FcxConfig {
     pub(super) stack_bound_checks: bool,
     pub(super) gas_metering: bool,
     pub(super) single_error: bool,
+    pub(super) layout: HostLayout,
 }
 
 impl Default for FcxConfig {
@@ -54,6 +55,107 @@ impl Default for FcxConfig {
             stack_bound_checks: true,
             gas_metering: true,
             single_error: true,
+            layout: HostLayout::for_types::<BaseEvmTypes>(),
+        }
+    }
+}
+
+/// Offsets read directly by generated code for a concrete interpreter host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostLayout {
+    interpreter_message: usize,
+    destination: usize,
+    caller: usize,
+    value: usize,
+    tx_origin: usize,
+    tx_gas_price: usize,
+    tx_chain_id: usize,
+    block_beneficiary: usize,
+    block_timestamp: usize,
+    block_number: usize,
+    block_gas_limit: usize,
+    block_basefee: usize,
+    block_blob_basefee: usize,
+    block_slot_num: usize,
+}
+
+impl HostLayout {
+    /// Number of words in the serialized layout.
+    pub const WORDS: usize = 14;
+
+    /// Returns the offsets as words, in field order.
+    pub const fn to_words(&self) -> [usize; Self::WORDS] {
+        [
+            self.interpreter_message,
+            self.destination,
+            self.caller,
+            self.value,
+            self.tx_origin,
+            self.tx_gas_price,
+            self.tx_chain_id,
+            self.block_beneficiary,
+            self.block_timestamp,
+            self.block_number,
+            self.block_gas_limit,
+            self.block_basefee,
+            self.block_blob_basefee,
+            self.block_slot_num,
+        ]
+    }
+
+    /// Rebuilds a layout from [`to_words`](Self::to_words).
+    pub const fn from_words(words: [usize; Self::WORDS]) -> Self {
+        let [
+            interpreter_message,
+            destination,
+            caller,
+            value,
+            tx_origin,
+            tx_gas_price,
+            tx_chain_id,
+            block_beneficiary,
+            block_timestamp,
+            block_number,
+            block_gas_limit,
+            block_basefee,
+            block_blob_basefee,
+            block_slot_num,
+        ] = words;
+        Self {
+            interpreter_message,
+            destination,
+            caller,
+            value,
+            tx_origin,
+            tx_gas_price,
+            tx_chain_id,
+            block_beneficiary,
+            block_timestamp,
+            block_number,
+            block_gas_limit,
+            block_basefee,
+            block_blob_basefee,
+            block_slot_num,
+        }
+    }
+
+    /// Computes offsets without assuming that custom message extensions preserve Rust layout.
+    pub const fn for_types<T: EvmTypesHost>() -> Self {
+        Self {
+            interpreter_message: Interpreter::<T>::message_field_offset_for_jit(),
+            destination: mem::offset_of!(Message<T>, destination),
+            caller: mem::offset_of!(Message<T>, caller),
+            value: mem::offset_of!(Message<T>, value),
+            tx_origin: mem::offset_of!(TxEnv<T>, origin),
+            tx_gas_price: mem::offset_of!(TxEnv<T>, gas_price),
+            tx_chain_id: mem::offset_of!(TxEnv<T>, chain_id),
+            block_beneficiary: mem::offset_of!(BlockEnv<T>, beneficiary),
+            block_timestamp: mem::offset_of!(BlockEnv<T>, timestamp),
+            block_number: mem::offset_of!(BlockEnv<T>, number),
+            block_gas_limit: mem::offset_of!(BlockEnv<T>, gas_limit),
+            block_basefee: mem::offset_of!(BlockEnv<T>, basefee),
+            block_blob_basefee: mem::offset_of!(BlockEnv<T>, blob_basefee),
+            block_slot_num: mem::offset_of!(BlockEnv<T>, slot_num),
         }
     }
 }
@@ -596,20 +698,20 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }};
         }
 
-        /// Gets the pointer to a field via chained `offset_of!`.
+        /// Gets the pointer to a field at a byte offset from `base`.
         macro_rules! field {
             // Gets the pointer to a field, named `<base>.<field>.addr`.
-            (@get $base:ident, $($paths:path),*; $($spec:tt).*) => {
+            (@get $base:ident, $offset:expr; $($spec:tt).*) => {
                 self.get_field(
                     $base,
-                    0 $(+ mem::offset_of!($paths, $spec))*,
+                    $offset,
                     concat!(stringify!($base), ".", stringify!($($spec).*), ".addr"),
                 )
             };
             // Loads a field.
             // `@[endian]` is the endianness of the stored value. If native, omit it.
-            (@load $(@[endian = $endian:tt])? $ty:expr, $base:ident, $($paths:path),*; $($spec:tt).*) => {{
-                let ptr = field!(@get $base, $($paths),*; $($spec).*);
+            (@load $(@[endian = $endian:tt])? $ty:expr, $base:ident, $offset:expr; $($spec:tt).*) => {{
+                let ptr = field!(@get $base, $offset; $($spec).*);
                 #[allow(unused_mut)]
                 let mut value = self.bcx.load_aligned(
                     $ty,
@@ -636,6 +738,25 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         }
 
         match data.opcode {
+            _ if data.flags.contains(InstFlags::HOST) => {
+                // The host runs on the interpreter's own stack.
+                evm2_jit_backend::eyre::ensure!(
+                    !self.config.local_stack,
+                    "host opcodes need the interpreter stack"
+                );
+                // The host instruction sees the whole stack.
+                self.materialize_live_stack();
+                let sp = self.sp_after_inputs();
+                let (inputs, outputs) = data.stack_io();
+                let pc = self.bcx.iconst(self.isize_type, self.bytecode.pc(inst) as i64);
+                let io =
+                    self.bcx.iconst(self.isize_type, (i64::from(inputs) << 8) | i64::from(outputs));
+                self.call_fallible_builtin(Builtin::HostInstruction, &[self.ecx, sp, pc, io]);
+                // It may have rewritten any stack word.
+                let live_start = self.vstack.live_range().start;
+                self.vstack.forget_stored_from(live_start);
+            }
+
             op::STOP => goto_return!(build InstrStop::Stop),
 
             op::ADD => {
@@ -767,7 +888,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
             op::ADDRESS => {
                 let message = self.load_message_ptr();
-                field!(@push @[endian = "big"] self.address_type, message, Message<BaseEvmTypes>; destination);
+                field!(@push @[endian = "big"] self.address_type, message, self.config.layout.destination; destination);
             }
             op::BALANCE => {
                 let sp = self.sp_after_inputs();
@@ -775,15 +896,15 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::ORIGIN => {
                 let tx_env = self.load_tx_env_ptr();
-                field!(@push @[endian = "big"] self.address_type, tx_env, TxEnv<BaseEvmTypes>; origin);
+                field!(@push @[endian = "big"] self.address_type, tx_env, self.config.layout.tx_origin; origin);
             }
             op::CALLER => {
                 let message = self.load_message_ptr();
-                field!(@push @[endian = "big"] self.address_type, message, Message<BaseEvmTypes>; caller);
+                field!(@push @[endian = "big"] self.address_type, message, self.config.layout.caller; caller);
             }
             op::CALLVALUE => {
                 let message = self.load_message_ptr();
-                field!(@push self.word_type, message, Message<BaseEvmTypes>; value);
+                field!(@push self.word_type, message, self.config.layout.value; value);
             }
             op::CALLDATALOAD => {
                 let sp = self.sp_after_inputs();
@@ -791,7 +912,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::CALLDATASIZE => {
                 let ecx = self.ecx;
-                field!(@push self.isize_type, ecx, EvmContext<'_, '_, '_>; calldatasize);
+                field!(@push self.isize_type, ecx, mem::offset_of!(EvmContext<'_, '_, '_>, calldatasize); calldatasize);
             }
             op::CALLDATACOPY => {
                 let sp = self.sp_after_inputs();
@@ -808,7 +929,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
             op::GASPRICE => {
                 let tx_env = self.load_tx_env_ptr();
-                field!(@push self.word_type, tx_env, TxEnv<BaseEvmTypes>; gas_price);
+                field!(@push self.word_type, tx_env, self.config.layout.tx_gas_price; gas_price);
             }
             op::EXTCODESIZE => {
                 let sp = self.sp_after_inputs();
@@ -820,7 +941,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::RETURNDATASIZE => {
                 let ecx = self.ecx;
-                field!(@push self.isize_type, ecx, EvmContext<'_, '_, '_>; return_data_len);
+                field!(@push self.isize_type, ecx, mem::offset_of!(EvmContext<'_, '_, '_>, return_data_len); return_data_len);
             }
             op::RETURNDATACOPY => {
                 let sp = self.sp_after_inputs();
@@ -836,15 +957,15 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::COINBASE => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push @[endian = "big"] self.address_type, block_env, BlockEnv<BaseEvmTypes>; beneficiary);
+                field!(@push @[endian = "big"] self.address_type, block_env, self.config.layout.block_beneficiary; beneficiary);
             }
             op::TIMESTAMP => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; timestamp);
+                field!(@push self.word_type, block_env, self.config.layout.block_timestamp; timestamp);
             }
             op::NUMBER => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; number);
+                field!(@push self.word_type, block_env, self.config.layout.block_number; number);
             }
             op::DIFFICULTY => {
                 let slot = self.sp_at_top();
@@ -852,11 +973,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::GASLIMIT => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; gas_limit);
+                field!(@push self.word_type, block_env, self.config.layout.block_gas_limit; gas_limit);
             }
             op::CHAINID => {
                 let tx_env = self.load_tx_env_ptr();
-                field!(@push self.word_type, tx_env, TxEnv<BaseEvmTypes>; chain_id);
+                field!(@push self.word_type, tx_env, self.config.layout.tx_chain_id; chain_id);
             }
             op::SELFBALANCE => {
                 let slot = self.sp_at_top();
@@ -864,7 +985,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::BASEFEE => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; basefee);
+                field!(@push self.word_type, block_env, self.config.layout.block_basefee; basefee);
             }
             op::BLOBHASH => {
                 let sp = self.sp_after_inputs();
@@ -872,11 +993,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::BLOBBASEFEE => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; blob_basefee);
+                field!(@push self.word_type, block_env, self.config.layout.block_blob_basefee; blob_basefee);
             }
             op::SLOTNUM => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; slot_num);
+                field!(@push self.word_type, block_env, self.config.layout.block_slot_num; slot_num);
             }
 
             op::POP => {
@@ -1374,7 +1495,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let interpreter = self.load_interpreter_ptr();
         let field = self.get_field(
             interpreter,
-            Interpreter::<BaseEvmTypes>::message_field_offset_for_jit(),
+            self.config.layout.interpreter_message,
             "interpreter.message.addr",
         );
         self.bcx.load(ptr_type, field, "interpreter.message")

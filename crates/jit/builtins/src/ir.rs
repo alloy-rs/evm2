@@ -7,7 +7,12 @@ const MANGLE_PREFIX: &str = "__revmc_builtin_";
 
 /// Builtin cache.
 #[derive(Debug)]
-pub struct Builtins<B: Backend>([Option<B::Function>; Builtin::COUNT]);
+pub struct Builtins<B: Backend> {
+    functions: [Option<B::Function>; Builtin::COUNT],
+    resolver: Option<fn(Builtin) -> usize>,
+    /// Suffix for the symbol names of a host whose builtins are linked by the runtime.
+    suffix: Option<usize>,
+}
 
 unsafe impl<B: Backend> Send for Builtins<B> {}
 
@@ -20,22 +25,49 @@ impl<B: Backend> Default for Builtins<B> {
 impl<B: Backend> Builtins<B> {
     /// Create a new cache.
     pub const fn new() -> Self {
-        Self([None; Builtin::COUNT])
+        Self { functions: [None; Builtin::COUNT], resolver: None, suffix: None }
+    }
+
+    /// Selects host-specific builtin addresses.
+    pub fn set_resolver(&mut self, resolver: fn(Builtin) -> usize) {
+        self.clear();
+        self.resolver = Some(resolver);
+    }
+
+    /// Makes the symbol names unique to a host, for builtins the runtime links by name.
+    pub const fn set_symbol_suffix(&mut self, suffix: usize) {
+        self.clear();
+        self.suffix = Some(suffix);
+    }
+
+    /// Returns the symbol suffix, if set.
+    pub const fn symbol_suffix(&self) -> Option<usize> {
+        self.suffix
     }
 
     /// Clear the cache.
     pub const fn clear(&mut self) {
-        *self = Self::new();
+        self.functions = [None; Builtin::COUNT];
     }
 
     /// Get the function for the given builtin.
     pub fn get(&mut self, builtin: Builtin, bcx: &mut B::Builder<'_>) -> B::Function {
-        *self.0[builtin as usize].get_or_insert_with(|| Self::init(builtin, bcx))
+        let (resolver, suffix) = (self.resolver, self.suffix);
+        *self.functions[builtin as usize]
+            .get_or_insert_with(|| Self::init(builtin, bcx, resolver, suffix))
     }
 
     #[cold]
-    fn init(builtin: Builtin, bcx: &mut B::Builder<'_>) -> B::Function {
-        let name = builtin.name();
+    fn init(
+        builtin: Builtin,
+        bcx: &mut B::Builder<'_>,
+        resolver: Option<fn(Builtin) -> usize>,
+        suffix: Option<usize>,
+    ) -> B::Function {
+        let resolved = resolver.map(|resolve| resolve(builtin));
+        let resolved_name =
+            resolved.or(suffix).map(|unique| format!("{}_{unique:x}", builtin.name()));
+        let name = resolved_name.as_deref().unwrap_or_else(|| builtin.name());
         debug_assert!(name.starts_with(MANGLE_PREFIX), "{name:?}");
         if builtin.call_conv() == CallConv::Default
             && let Some(r) = bcx.get_function(name)
@@ -44,15 +76,20 @@ impl<B: Backend> Builtins<B> {
             return r;
         }
 
-        let r = Self::build(name, builtin, bcx);
+        let address = resolved.unwrap_or_else(|| builtin.addr::<evm2::BaseEvmTypes>());
+        let r = Self::build(name, builtin, address, bcx);
         trace!(name, ?r, "built");
         r
     }
 
-    fn build(name: &str, builtin: Builtin, bcx: &mut B::Builder<'_>) -> B::Function {
+    fn build(
+        name: &str,
+        builtin: Builtin,
+        address: usize,
+        bcx: &mut B::Builder<'_>,
+    ) -> B::Function {
         let ret = builtin.ret(bcx);
         let params = builtin.params(bcx);
-        let address = builtin.addr();
         let linkage = evm2_jit_backend::Linkage::Import;
         let f = bcx.add_function(name, &params, ret, Some(address), linkage, CallConv::Default);
         Self::add_attrs(builtin, f, bcx);
@@ -130,9 +167,10 @@ macro_rules! builtins {
                 }
             }
 
-            pub fn addr(self) -> usize {
+            /// Returns the address of the builtin instantiated for the host types `T`.
+            pub fn addr<T: evm2::EvmTypesHost>(self) -> usize {
                 match self {
-                    $(Self::$ident => crate::$name as *const () as usize,)*
+                    $(Self::$ident => crate::$name::<T> as *const () as usize,)*
                 }
             }
 
@@ -195,6 +233,7 @@ macro_rules! builtins {
                 const MRESIZE: u8 = _0_0;
 
                 const LOG: u8 = _0_0;
+                const HOSTINSTRUCTION: u8 = _0_0;
                 const DORETURN: u8 = RETURN;
                 const DORETURNCC: u8 = _0_0;
 
@@ -298,6 +337,7 @@ builtins! {
     Tstore         = __revmc_builtin_tstore(@[ecx] ptr, @[sp] ptr) None,
     Mcopy          = __revmc_builtin_mcopy(@[ecx] ptr, @[sp] ptr) None,
     Log            = __revmc_builtin_log(@[ecx] ptr, @[sp_dyn] ptr, u8) None,
+    HostInstruction = __revmc_builtin_host_instruction(@[ecx] ptr, @[sp_dyn] ptr, usize, usize) None,
 
     Create         = __revmc_builtin_create(@[ecx] ptr, @[sp_dyn] ptr, u8) None,
     Call           = __revmc_builtin_call(@[ecx] ptr, @[sp_dyn] ptr, u8) None,
