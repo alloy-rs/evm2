@@ -1,19 +1,21 @@
 //! Runtime JIT backend: O(1) compiled-function lookup with background compilation.
 //!
 //! - Startup AOT preload from [`ArtifactStore::load_all`] into an immutable in-memory map.
-//! - O(1) [`JitBackend::lookup`] that only reads the resident map.
-//! - Fire-and-forget lookup-observed events to the backend thread.
+//! - O(1) [`JitBackend::lookup`] that reads a per-thread cache of the resident map.
+//! - Fire-and-forget lookup-observed events to the backend thread: every miss, and hits in
+//!   deduplicated per-thread batches.
 //! - Background JIT compilation for hot keys (threshold-based promotion).
 
 use crate::{
     EvmCompilerFn,
     eyre::{self, WrapErr},
 };
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Bytes};
 use api::LoadedLibrary;
 use backend::{Command, CompileJitRequest, EventQueue, PrepareAotRequest, ResidentMap};
 use crossbeam_channel as chan;
 use crossbeam_queue::ArrayQueue;
+use crossbeam_utils::CachePadded;
 use evm2::SpecId;
 use stats::RuntimeStats;
 use std::{
@@ -35,7 +37,13 @@ pub use api::{
 mod config;
 pub use config::{CompilationEvent, CompilationKind, JitMode, RuntimeConfig, RuntimeTuning};
 
+#[cfg(target_os = "linux")]
+mod affinity;
+
 mod backend;
+
+mod local;
+pub use local::LocalProgram;
 
 mod stats;
 pub use stats::RuntimeStatsSnapshot;
@@ -89,8 +97,13 @@ pub(crate) struct BackendShared {
     /// Lock-free queue of events.
     #[debug(skip)]
     events: EventQueue,
+    /// Per-thread caches of `resident`, invalidated when a program is removed or replaced.
+    #[debug(skip)]
+    local_caches: local::LocalCaches,
     /// Number of active out-of-process helper pauses.
-    pause_depth: AtomicUsize,
+    ///
+    /// Padded so that pausing and resuming does not contend with lookups on neighboring fields.
+    pause_depth: CachePadded<AtomicUsize>,
     /// Shared stats counters.
     #[debug(skip)]
     stats: Arc<RuntimeStats>,
@@ -190,7 +203,8 @@ impl JitBackend {
         let shared = Arc::new(BackendShared {
             resident: ResidentMap::default(),
             events,
-            pause_depth: AtomicUsize::new(0),
+            local_caches: Default::default(),
+            pause_depth: CachePadded::new(AtomicUsize::new(0)),
             stats: Arc::new(RuntimeStats::default()),
         });
         let this = Self {
@@ -214,38 +228,60 @@ impl JitBackend {
     ///
     /// In normal mode this never blocks. In [`blocking`](RuntimeConfig::blocking) mode,
     /// a miss triggers synchronous JIT compilation and the call blocks until it completes.
-    pub fn lookup(&self, mut req: LookupRequest) -> LookupDecision {
+    ///
+    /// Prefer [`lookup_local`](Self::lookup_local) on hot paths: it does not clone the bytecode
+    /// or the program handle.
+    pub fn lookup(&self, req: LookupRequest) -> LookupDecision {
+        match self.lookup_local(req.key, &req.code, || req.code.clone()) {
+            Ok(program) => LookupDecision::Compiled(program.to_arc()),
+            Err(reason) => LookupDecision::Unavailable(reason),
+        }
+    }
+
+    /// Looks up a compiled function for `key`, borrowing it from the calling thread's cache.
+    ///
+    /// `code` is the contract bytecode; `code_bytes` returns it as [`Bytes`] and is only called
+    /// on a miss, which hands the bytecode to the backend for hotness tracking and compilation.
+    /// A hit writes no shared state, except when the thread first reports the key since its last
+    /// batch of hits.
+    ///
+    /// In normal mode this never blocks. In [`blocking`](RuntimeConfig::blocking) mode,
+    /// a miss triggers synchronous JIT compilation and the call blocks until it completes.
+    #[inline]
+    pub fn lookup_local(
+        &self,
+        key: RuntimeCacheKey,
+        code: &[u8],
+        code_bytes: impl FnOnce() -> Bytes,
+    ) -> Result<LocalProgram, LookupMissReason> {
         let inner = &*self.inner;
-        let shared = &*inner.shared;
+        let shared = &inner.shared;
 
         if !inner.enabled.load(Ordering::Relaxed) {
             cold_path();
-            return LookupDecision::Unavailable(LookupMissReason::Disabled);
+            return Err(LookupMissReason::Disabled);
         }
         if inner.blocking {
             cold_path();
-            return self.lookup_blocking(req);
+            return match self.lookup_blocking(LookupRequest { key, code: code_bytes() }) {
+                LookupDecision::Compiled(program) => Ok(LocalProgram::owned(program)),
+                LookupDecision::Unavailable(reason) => Err(reason),
+            };
         }
-        if !inner.tuning.should_compile(&req.code) {
+        if !inner.tuning.should_compile(code) {
             cold_path();
-            return LookupDecision::Unavailable(LookupMissReason::Ineligible);
+            return Err(LookupMissReason::Ineligible);
         }
 
-        let decision = if let Some(program_ref) = shared.resident.try_get(&req.key).try_unwrap() {
-            let program = Arc::clone(&program_ref);
-            drop(program_ref);
-            req.code.clear();
-            LookupDecision::Compiled(program)
-        } else {
-            LookupDecision::Unavailable(LookupMissReason::NotReady)
-        };
+        if let Some(program) = local::get(shared, &key) {
+            return Ok(program);
+        }
 
-        if let Err(_v) = shared.events.push(req) {
+        if let Err(_v) = shared.events.push(LookupRequest { key, code: code_bytes() }) {
             cold_path();
             shared.stats.events_dropped.fetch_add(1, Ordering::Relaxed);
         }
-
-        decision
+        Err(LookupMissReason::NotReady)
     }
 
     /// Checks the resident map for a compiled program without enqueuing an event.
@@ -540,7 +576,7 @@ impl JitBackend {
         match Self::preload_aot(&config) {
             Ok(entries) => {
                 for (key, prog) in entries {
-                    self.inner.shared.resident.insert(key, prog);
+                    self.inner.shared.insert_resident(key, prog);
                 }
             }
             Err(e) => {
@@ -554,10 +590,18 @@ impl JitBackend {
         let shared = Arc::clone(&self.inner.shared);
         let backend_rx = rx.clone();
         let backend_config = config.clone();
+        #[cfg(target_os = "linux")]
+        let cpus =
+            config.tuning.jit_avoid_caller_llc.then(affinity::cpus_outside_current_llc).flatten();
 
         let thread = match builder
             .name(config.thread_name.clone())
             .spawn(move || {
+                // Compile workers and helper processes inherit the backend thread's CPUs.
+                #[cfg(target_os = "linux")]
+                if let Some(cpus) = &cpus {
+                    affinity::set_current_thread(cpus);
+                }
                 let result = backend::run(shared, backend_rx, backend_config);
                 let _ = done_tx.send(());
                 result
@@ -663,7 +707,7 @@ impl JitBackend {
         };
 
         if matches!(command, Command::ClearResident | Command::ClearAll) {
-            self.inner.shared.resident.clear();
+            self.inner.shared.clear_resident();
         }
         if matches!(command, Command::ClearPersisted | Command::ClearAll)
             && let Some(store) = lazy.config.store.as_deref()
@@ -686,6 +730,28 @@ impl JitBackend {
 }
 
 impl BackendShared {
+    /// Inserts a resident program, replacing any program under `key`.
+    pub(crate) fn insert_resident(&self, key: RuntimeCacheKey, program: Arc<CompiledProgram>) {
+        if self.resident.insert(key, program).is_some() {
+            local::invalidate_all(&self.local_caches);
+        }
+    }
+
+    /// Removes the resident program under `key`.
+    ///
+    /// Threads release their cached copies before this returns, unless they are running it.
+    pub(crate) fn remove_resident(&self, key: &RuntimeCacheKey) {
+        if self.resident.remove(key).is_some() {
+            local::invalidate_all(&self.local_caches);
+        }
+    }
+
+    /// Removes every resident program.
+    pub(crate) fn clear_resident(&self) {
+        self.resident.clear();
+        local::invalidate_all(&self.local_caches);
+    }
+
     /// Returns a point-in-time snapshot of runtime statistics.
     ///
     /// `command_queue_len` is omitted because the command channel sender lives
@@ -736,5 +802,7 @@ impl Drop for BackendInner {
         if let Err(err) = self.shutdown() {
             warn!(%err, "failed to shutdown JIT backend");
         }
+        // Release the programs that threads cached, rather than when they next look up.
+        local::invalidate_all(&self.shared.local_caches);
     }
 }

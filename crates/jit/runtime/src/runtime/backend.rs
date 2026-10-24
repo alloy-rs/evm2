@@ -40,8 +40,8 @@ pub(crate) type ResidentMap = DashMap<RuntimeCacheKey, Arc<CompiledProgram>, Def
 
 /// Bounded MPMC lock-free queue of lookup-observed events.
 ///
-/// Producers (lookup hot path) push without blocking; on overflow the event
-/// is silently dropped (`stats.events_dropped` is bumped). The backend
+/// Producers (lookup misses and per-thread hit reports) push without blocking; on overflow the
+/// event is silently dropped (`stats.events_dropped` is bumped). The backend
 /// drains via `pop` on every loop iteration. Hotness signal is best-effort.
 pub(crate) type EventQueue = ArrayQueue<LookupRequest>;
 
@@ -274,7 +274,7 @@ impl BackendState {
     fn handle_lookup_observed(&mut self, event: LookupRequest) {
         let hit = event.code.is_empty();
         if hit {
-            self.inner.stats.lookup_hits.fetch_add(1, Ordering::Relaxed);
+            // Callers count hits themselves and report each key once per batch of hits.
             if let Some(meta) = self.resident_meta.get_mut(&event.key) {
                 meta.last_hit_at = Instant::now();
             }
@@ -496,7 +496,7 @@ impl BackendState {
 
     fn handle_clear_resident(&mut self) {
         self.workers.cancel_in_flight();
-        self.inner.resident.clear();
+        self.inner.clear_resident();
         self.resident_meta.clear();
         self.cold_head = None;
         self.cold_tail = None;
@@ -530,12 +530,12 @@ impl BackendState {
     }
 
     fn insert_resident(&mut self, key: RuntimeCacheKey, program: Arc<CompiledProgram>) {
-        self.inner.resident.insert(key, program);
+        self.inner.insert_resident(key, program);
         self.resident_meta.insert(key, ResidentMeta { last_hit_at: Instant::now() });
     }
 
     fn remove_resident(&mut self, key: &RuntimeCacheKey) {
-        self.inner.resident.remove(key);
+        self.inner.remove_resident(key);
         self.resident_meta.remove(key);
     }
 
@@ -983,7 +983,7 @@ mod notifier_tests {
     use super::*;
     use crate::runtime::{BackendShared, stats::RuntimeStats};
     use evm2::{SpecId, interpreter::op};
-    use std::{sync::atomic::AtomicUsize, time::Duration};
+    use std::time::Duration;
 
     /// Creates backend state without starting compiler workers.
     fn new_state(tuning: RuntimeTuning) -> BackendState {
@@ -994,7 +994,8 @@ mod notifier_tests {
         let inner = Arc::new(BackendShared {
             resident: ResidentMap::default(),
             events: EventQueue::new(config.tuning.channel_capacity),
-            pause_depth: AtomicUsize::new(0),
+            local_caches: Default::default(),
+            pause_depth: Default::default(),
             stats: Arc::new(RuntimeStats::default()),
         });
         let (result_tx, result_rx) = chan::unbounded();

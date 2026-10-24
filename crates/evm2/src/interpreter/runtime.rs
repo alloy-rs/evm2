@@ -16,12 +16,18 @@ use alloy_primitives::{Address, B256, Bytes};
 use core::{fmt, hint::cold_path, ops::Range, ptr::NonNull};
 use derive_where::derive_where;
 
+/// Bytecode borrowed by interpreters that are not running a frame.
+static EMPTY_BYTECODE: Bytecode = Bytecode::new();
+
 /// EVM interpreter.
 #[derive_where(Debug)]
 pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
-    pub(in crate::interpreter) bytecode: Bytecode,
-    // Borrows the immutable allocations owned by `bytecode`. Cleared before replacing it;
-    // accessors must shorten the erased lifetime to the borrow of this interpreter.
+    // Borrowed from the frame's message rather than cloned: a per-frame `Arc` clone writes the
+    // shared refcount next to the read-mostly bytecode, which bounces between last-level caches
+    // when threads on several of them run the same contracts.
+    pub(in crate::interpreter) bytecode: &'frame Bytecode,
+    // Borrows the immutable allocations of `bytecode`. Cleared before replacing it; accessors
+    // must shorten the erased lifetime to the borrow of this interpreter.
     bytecode_ref: Option<BytecodeRef<'static>>,
     pub(in crate::interpreter) memory: Memory,
     pub(in crate::interpreter) return_data: Bytes,
@@ -49,8 +55,8 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` and `bytecode_ref` point into
-// immutable owned bytecode and its jump table. Frame-local references are cleared before pooling,
-// and host/inspector pointers are installed for
+// the frame's immutable bytecode and its jump table. Frame-local references are cleared before
+// pooling, and host/inspector pointers are installed for
 // execution and not used after the owning execution context is gone. The `Sync` bounds make the
 // retained shared frame references safe to transfer between threads.
 unsafe impl<T> Send for Interpreter<'_, '_, T>
@@ -75,7 +81,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     ///
     /// Must call `init` before use.
     unsafe fn uninit() -> Self {
-        let bytecode = Bytecode::new();
+        let bytecode = &EMPTY_BYTECODE;
         Self {
             pc: bytecode.original_byte_slice().as_ptr(),
             bytecode,
@@ -103,7 +109,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.
     fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
-        let bytecode = message.code.clone();
+        let bytecode = &message.code;
         let gas_limit = message.gas_limit;
         let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
         self.pc = bytecode.bytes_slice().as_ptr();
@@ -124,6 +130,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     }
 
     pub(crate) const fn clear_frame_refs(&mut self) {
+        self.bytecode = &EMPTY_BYTECODE;
+        self.bytecode_ref = None;
         self.tx_env = None;
         self.message = None;
         self.host = None;
@@ -183,7 +191,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Returns the active bytecode.
     #[inline]
     pub fn bytecode(&self) -> BytecodeRef<'_> {
-        self.bytecode_ref.unwrap_or_else(|| BytecodeRef::new(&self.bytecode))
+        self.bytecode_ref.unwrap_or_else(|| BytecodeRef::new(self.bytecode))
     }
 
     /// Returns the original active bytecode bytes.
@@ -426,10 +434,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[doc(hidden)]
     pub fn prepare_run(&mut self, host: &mut T::Host<'host>) {
         if self.bytecode_ref.is_none() {
-            // SAFETY: The view borrows immutable allocations retained by our owned `Bytecode`,
-            // so moving the interpreter does not invalidate it. `init` clears the view before
-            // replacing the owner, and accessors tie the returned view to `&self`.
-            let bytecode = unsafe { trustme::decouple_lt(&self.bytecode) };
+            // SAFETY: The view borrows immutable allocations of the frame's `Bytecode`, which
+            // outlives the interpreter's `'frame` borrow, so moving the interpreter does not
+            // invalidate it. `init` and `clear_frame_refs` clear the view before replacing the
+            // borrow, and accessors tie the returned view to `&self`.
+            let bytecode = unsafe { trustme::decouple_lt(self.bytecode) };
             self.bytecode_ref = Some(BytecodeRef::new(bytecode));
         }
         let config = host.execution_config();

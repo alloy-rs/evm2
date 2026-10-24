@@ -78,9 +78,19 @@ jemalloc = ["dep:tikv-jemallocator"]
 mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
+libc.workspace = true
 criterion.workspace = true
 revm = { workspace = true, features = ["test-types"] }
 
 [[bench]]
 name = "evm"
 harness = false
+
+[[bench]]
+name = "llc"
+harness = false
+required-features = ["jit"]
+
+[[example]]
+name = "llc_jit"
+required-features = ["jit"]

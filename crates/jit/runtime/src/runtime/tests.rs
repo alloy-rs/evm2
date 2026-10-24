@@ -1190,6 +1190,23 @@ fn stats_accuracy_concurrent() {
     assert_eq!(new_misses, 0, "all lookups should be hits");
 }
 
+#[test]
+#[cfg(feature = "llvm")]
+fn local_lookup_keeps_borrowed_program_across_clear() {
+    let tb =
+        TestBackend::with_tuning_1w(RuntimeTuning { jit_hot_threshold: 1, ..Default::default() });
+    let compiled = tb.trigger_jit_cancun(BYTECODE_RET42);
+    let req = TestBackend::req_cancun(BYTECODE_RET42);
+    let lookup = || tb.lookup_local(req.key, &req.code, || req.code.clone());
+
+    let outer = lookup().unwrap();
+    tb.clear_resident();
+    tb.wait_resident_count(0);
+    // The clear invalidates this thread's cache while `outer` still borrows from it.
+    assert_eq!(lookup().unwrap_err(), LookupMissReason::NotReady);
+    assert!(Arc::ptr_eq(&outer.to_arc(), &compiled));
+}
+
 // ===========================================================================
 // Tests: lifecycle (clear, set_enabled, shutdown).
 // ===========================================================================

@@ -342,6 +342,18 @@ pub struct RuntimeTuning {
     ///
     /// Defaults to `1000`.
     pub compiler_recycle_threshold: usize,
+
+    /// Whether the backend thread and its compile workers avoid the last-level cache of the
+    /// thread that starts the backend.
+    ///
+    /// When set, the backend started by [`JitBackend::new`](super::JitBackend::new) or
+    /// [`set_enabled`](super::JitBackend::set_enabled) runs on the CPUs the starting thread may
+    /// use outside that thread's current L3 domain, so compilation does not evict the executing
+    /// thread's cache. Start the backend from the thread that executes blocks, or one on the same
+    /// L3. Has no effect if no such CPU exists, or outside Linux.
+    ///
+    /// Defaults to `false`.
+    pub jit_avoid_caller_llc: bool,
 }
 
 impl RuntimeTuning {
@@ -383,6 +395,7 @@ impl Default for RuntimeTuning {
             idle_evict_duration: Some(Duration::from_secs(600)),
             eviction_sweep_interval: Duration::from_secs(60),
             compiler_recycle_threshold: 1000,
+            jit_avoid_caller_llc: false,
         }
     }
 }
