@@ -479,7 +479,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
                 StackMut { stack: &mut (*this).stack, len: &mut (*this).stack_len },
             )
         };
+        let start = pc.as_ptr();
         instr(&mut pc, stack.reborrow(), state)?;
+        // Compiled code continues at the next instruction.
+        if pc.as_ptr() != start {
+            return Err(InstrStop::FatalExternalError);
+        }
         Ok(self.stack_len)
     }
 

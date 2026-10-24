@@ -856,6 +856,13 @@ mod custom_host_tests {
     }
 
     #[instruction(EvmTypes = TableTypes)]
+    fn skipping_tload(cx: _, [_key]: [Word]) -> out {
+        // SAFETY: The test bytecode has a byte after the opcode.
+        unsafe { cx.pc.advance_unchecked(1) };
+        *out = Word::ZERO;
+    }
+
+    #[instruction(EvmTypes = TableTypes)]
     fn added(cx: _) -> out {
         *out = Word::from(0xdead_u64);
     }
@@ -873,6 +880,8 @@ mod custom_host_tests {
             config.set_instruction::<surcharged_sstore>(op::SSTORE, 0);
             let sload_gas = config.static_gas(op::SLOAD);
             config.set_instruction::<charged_sload>(op::SLOAD, sload_gas);
+            let tload_gas = config.static_gas(op::TLOAD);
+            config.set_instruction::<skipping_tload>(op::TLOAD, tload_gas);
             config.set_instruction::<added>(ADDED_OPCODE, 2);
             config
         };
@@ -1003,6 +1012,15 @@ mod custom_host_tests {
             assert_eq!(compiled.gas().spent(), interpreted.gas().spent());
             assert_eq!(compiled.output(), interpreted.output());
         }
+    }
+
+    #[test]
+    fn host_instruction_that_moves_the_program_counter_halts() {
+        // The interpreter skips the `POP` after the override, which compiled code cannot do.
+        let code = &[op::PUSH0, op::TLOAD, op::POP, op::STOP][..];
+        let (compiled_stop, _, stop, _) = run_both(table_host(), code);
+        assert_eq!(stop, InstrStop::Stop);
+        assert_eq!(compiled_stop, Some(InstrStop::FatalExternalError));
     }
 
     #[test]

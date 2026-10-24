@@ -752,6 +752,9 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 let io =
                     self.bcx.iconst(self.isize_type, (i64::from(inputs) << 8) | i64::from(outputs));
                 self.call_fallible_builtin(Builtin::HostInstruction, &[self.ecx, sp, pc, io]);
+                // It may have rewritten any stack word.
+                let live_start = self.vstack.live_range().start;
+                self.vstack.forget_stored_from(live_start);
             }
 
             op::STOP => goto_return!(build InstrStop::Stop),
