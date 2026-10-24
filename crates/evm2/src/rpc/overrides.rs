@@ -142,7 +142,7 @@ pub fn apply_state_overrides<DB: DynDatabase>(
                 }
                 db.insert_account_storage(&address, &change.key, &change.current);
             }
-            if original.as_ref() == Some(&account) && !replaces_storage {
+            if original.as_ref() == Some(&account) {
                 let Ok(()) = sink.account_read(address, original.as_ref());
             } else {
                 let Ok(()) = sink.account(AccountChangeRef {
@@ -161,7 +161,7 @@ pub fn apply_state_overrides<DB: DynDatabase>(
                 original: original.as_ref(),
                 current: None,
                 created: false,
-                selfdestructed: true,
+                selfdestructed: false,
             });
             db.cache.accounts.insert(address, None);
             db.cache.storage.entry(address).or_default().wipe();
@@ -435,7 +435,7 @@ mod tests {
         assert_eq!(db.get_storage(&address, &U256::from(3)).unwrap(), U256::ZERO);
         assert_eq!(db.get_storage(&other, &U256::from(3)).unwrap(), U256::from(30));
         // The sink sees the wipe first, then only the nonzero slots with their prior values, and
-        // the account last. Slot 2 and the zero-valued slots are not writes after a wipe.
+        // the account last. Zero-valued slots are not writes after a wipe.
         assert_eq!(sink.0.len(), 4);
         assert_eq!(sink.0[0], Event::StorageWipe(address));
         let storage = |key, original, current| {
@@ -448,7 +448,7 @@ mod tests {
         };
         assert!(sink.0[1..3].contains(&storage(1, 9, 100)));
         assert!(sink.0[1..3].contains(&storage(2, 0, 200)));
-        assert!(matches!(sink.0[3], Event::Account { .. }));
+        assert_eq!(sink.0[3], Event::AccountRead(address));
     }
 
     #[test]
@@ -572,7 +572,7 @@ mod tests {
                 original: Some((U256::from(5), 0)),
                 current: None,
                 created: false,
-                selfdestructed: true,
+                selfdestructed: false,
             }
         );
         assert!(
