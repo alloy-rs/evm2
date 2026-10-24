@@ -238,8 +238,9 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// storage wipe marker, so later reads of the address fall through to the backing database.
     /// Cached account info is kept.
     ///
-    /// Reads then see the backing database's values again, including slots that a committed
-    /// selfdestruct or account creation had wiped from the cache.
+    /// Reads then fall through to the backing database, including for slots that a storage wipe
+    /// had zeroed, unless the account is cached as absent (for example after a committed
+    /// selfdestruct): those reads still return zero.
     #[inline]
     pub fn remove_account_storage(&mut self, address: &Address) -> Option<AccountStorageCache> {
         self.cache.storage.remove(address)
@@ -646,6 +647,17 @@ mod tests {
         assert_eq!(cache.db.inner().storage_loads, 1);
         assert_eq!(cache.get_storage(&other, &key).unwrap(), committed);
         assert!(cache.remove_account_storage(&Address::with_last_byte(9)).is_none());
+
+        // A wiped account reads from the backing database once its wipe marker is removed.
+        cache.cache.storage.entry(other).or_default().wipe();
+        assert_eq!(cache.get_storage(&other, &key).unwrap(), Word::ZERO);
+        cache.remove_account_storage(&other);
+        assert_eq!(cache.get_storage(&other, &key).unwrap(), backing);
+
+        // An account cached as absent still shadows the backing database.
+        cache.cache.accounts.insert(other, None);
+        cache.remove_account_storage(&other);
+        assert_eq!(cache.get_storage(&other, &key).unwrap(), Word::ZERO);
     }
 
     #[test]
