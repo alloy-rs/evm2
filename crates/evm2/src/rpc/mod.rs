@@ -2,3 +2,6 @@
 
 mod fees;
 pub use fees::{CallFees, CallFeesError};
+
+mod transaction;
+pub use transaction::{EthTxEnvError, TryIntoTxEnv, normalize_transaction_request};
