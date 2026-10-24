@@ -4,8 +4,7 @@ use crate::{
     env::{BlockEnvExt, TxEnvExt},
     ethereum::{
         LazyAuthorization, LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope,
-        eip7702::{AuthRefunds, Eip7702Authorization, apply_auth_list},
-        eip7702::{AuthRefunds, RuntimeAuthCharges, apply_auth_list},
+        eip7702::{AuthRefunds, Eip7702Authorization, RuntimeAuthCharges, apply_auth_list},
         ethereum_tx_registry, prepare_initial_frame,
     },
     evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
