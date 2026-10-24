@@ -110,6 +110,8 @@ pub(crate) struct BackendInner {
     /// Blocking mode: every lookup synchronously compiles and never falls back.
     blocking: bool,
     host: config::HostConfig,
+    /// Address of the last opcode config that matched the host's opcode table.
+    verified_opcodes: std::sync::atomic::AtomicUsize,
     gas_params: Option<evm2::version::GasParams>,
     /// Tuning knobs (Copy). Cached for hot-path eligibility checks.
     tuning: crate::runtime::config::RuntimeTuning,
@@ -209,6 +211,7 @@ impl JitBackend {
                 started: AtomicBool::new(false),
                 blocking: config.blocking,
                 host: config.host.clone(),
+                verified_opcodes: std::sync::atomic::AtomicUsize::new(0),
                 gas_params: config.gas_params,
                 tx,
                 thread: std::sync::Mutex::new(None),
@@ -234,15 +237,28 @@ impl JitBackend {
                     .gas_params
                     .as_ref()
                     .unwrap_or(&evm2::Version::base(config.base_spec_id()).gas_params)
-            && match &host.opcodes {
-                None => config.has_base_opcode_table(),
-                Some(opcodes) => {
-                    // SAFETY: The type id matches `T`, so `opcodes.config` is a
-                    // `&'static OpcodeConfig<T>`.
-                    let expected = unsafe { &*(opcodes.config as *const evm2::OpcodeConfig<T>) };
-                    config.opcode_config().same_table(expected)
-                }
+            && self.opcodes_match(config)
+    }
+
+    /// Checks the active opcode config against the host's opcode table.
+    fn opcodes_match<T: evm2::EvmTypesHost>(&self, config: &evm2::ExecutionConfig<T>) -> bool {
+        let active = config.opcode_config();
+        let address = active as *const evm2::OpcodeConfig<T> as usize;
+        if self.inner.verified_opcodes.load(Ordering::Relaxed) == address {
+            return true;
+        }
+        let matches = match &self.inner.host.opcodes {
+            None => config.has_base_opcode_table(),
+            Some(opcodes) => {
+                // SAFETY: The caller checked that the host type is `T`, so `opcodes.config` is a
+                // `&'static OpcodeConfig<T>`.
+                active.same_table(unsafe { &*(opcodes.config as *const evm2::OpcodeConfig<T>) })
             }
+        };
+        if matches {
+            self.inner.verified_opcodes.store(address, Ordering::Relaxed);
+        }
+        matches
     }
 
     /// Looks up a compiled function for the given request.
