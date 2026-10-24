@@ -217,6 +217,9 @@ impl IndexMut<GasId> for GasParams {
 
 impl GasParams {
     /// Creates gas parameters with every cost set to zero.
+    ///
+    /// Methods that divide by a parameter, such as [`memory_cost`](Self::memory_cost), panic until
+    /// that parameter is set.
     #[inline]
     pub const fn empty() -> Self {
         Self { table: [0; GasId::COUNT], _align: [] }
@@ -474,7 +477,9 @@ impl GasParams {
     /// each of `floor_tokens` (see [`tx_calldata_tokens`](Self::tx_calldata_tokens)) and for the
     /// access list's bytes, weighted by `TxAccessListFloorByteMultiplier`.
     ///
-    /// The caller checks that EIP-7623 is active.
+    /// The caller checks that EIP-7623 is active. Under EIP-2780 the transaction's floor is based
+    /// on its decomposed intrinsic base instead of `TxFloorCostBase`, which this function does
+    /// not know.
     #[inline]
     pub const fn tx_floor_cost_with_tokens(
         &self,

@@ -1322,8 +1322,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return Err(InstrStop::CreateContractStartingWithEF);
         }
 
-        let code_deposit_gas = (output.len() as u64)
-            .saturating_mul(self.version().gas_params.get(GasId::CodeDepositCost));
+        let code_deposit_gas = output
+            .len()
+            .saturating_mul(self.version().gas_params.get(GasId::CodeDepositCost) as usize);
+        let code_deposit_gas = u64::try_from(code_deposit_gas).unwrap_or(u64::MAX);
         if gas.remaining() < code_deposit_gas {
             if self.feature(EvmFeatures::EIP2) {
                 // EIP-2 makes code-deposit OOG fail contract creation; Frontier instead
