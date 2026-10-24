@@ -669,6 +669,8 @@ pub struct CallTraceStep {
     // Fields filled in `step_end`
     /// Gas cost of step execution
     pub gas_cost: u64,
+    /// Structured-log cost when cold access metering differs from the execution trace cost.
+    pub geth_gas_cost: Option<u64>,
     /// Net state-gas change caused by this step.
     pub state_gas_cost: Option<i64>,
     /// State-gas reservoir before this step.
@@ -701,7 +703,7 @@ impl CallTraceStep {
             depth,
             error: self.as_error(),
             gas: self.gas_remaining,
-            gas_cost: self.gas_cost,
+            gas_cost: self.geth_gas_cost.unwrap_or(self.gas_cost),
             state_gas_cost: self.state_gas_cost,
             state_gas_reservoir: self.state_gas_reservoir,
             op: if self.op.is_valid() {

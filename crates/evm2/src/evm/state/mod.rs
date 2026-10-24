@@ -377,6 +377,16 @@ impl<'a> State<'a> {
         self.accounts.get(address)?.storage.slots.get(key).map(|slot| slot.value.current)
     }
 
+    /// Returns a slot's effective warmth without loading it or changing the access set.
+    #[inline]
+    pub fn is_storage_warm(&self, address: &Address, key: &Word) -> bool {
+        self.accounts
+            .get(address)
+            .and_then(|account| account.storage.slots.get(key))
+            .is_some_and(|slot| slot.is_warm)
+            || self.inner.prewarm_set.is_storage_warm(address, key)
+    }
+
     /// Sets the warmth of an already-loaded storage slot without journaling the change.
     ///
     /// Does nothing for unloaded slots and leaves values and the pre-warmed set unchanged.

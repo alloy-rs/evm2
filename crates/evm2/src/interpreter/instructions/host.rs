@@ -28,7 +28,7 @@ pub fn sload(cx: _, [key]: [Word]) -> Result<out> {
         .state
         .host()
         .sload(destination, key, skip_cold_load)
-        .map_err(|error| cx.state.fail(error))?;
+        .map_err(|error| cx.state.fail_cold_load(error, cx.gas, additional_cold_cost))?;
     if load.is_cold {
         cx.gas.spend(additional_cold_cost)?;
     }

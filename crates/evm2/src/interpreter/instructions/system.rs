@@ -87,8 +87,10 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     let additional_cold_cost = state.gas_params().cold_account_additional_cost();
     let remaining_gas = gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account =
-        state.host().load_account(&to, true, skip_cold_load).map_err(|error| state.fail(error))?;
+    let account = state
+        .host()
+        .load_account(&to, true, skip_cold_load)
+        .map_err(|error| state.fail_cold_load(error, gas, additional_cold_cost))?;
 
     let mut cost = 0;
     if account.is_cold {

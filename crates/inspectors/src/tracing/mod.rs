@@ -23,6 +23,7 @@ use evm2::{
         InstrStop, Interpreter, Message, MessageKind, MessageResult, MessageResultExt,
         opcode::{OpCode, op},
     },
+    version::GasId,
 };
 
 mod arena;
@@ -530,6 +531,25 @@ impl TracingInspector {
 
         self.last_journal_len = interp.host().state().journal().len();
 
+        // SLOAD's warm charge can fail before the host is reached. Capture its cold cost
+        // without loading storage, including when stack snapshots are disabled.
+        let mut geth_gas_cost = None;
+        if op.get() == op::SLOAD
+            && interp.version().feature(EvmFeatures::EIP2929)
+            && interp.gas().remaining()
+                < u64::from(interp.version().gas_params.get(GasId::WarmStorageReadCost))
+            && let Some(key) = interp.stack().as_slice().last().copied()
+        {
+            let address = interp.message().destination;
+            if !interp.host().state().is_storage_warm(&address, &key) {
+                let params = &interp.version().gas_params;
+                geth_gas_cost = Some(
+                    u64::from(params.get(GasId::WarmStorageReadCost))
+                        + u64::from(params.get(GasId::ColdStorageAdditionalCost)),
+                );
+            }
+        }
+
         let step_idx = node.trace.steps.len();
         node.trace.steps.push(CallTraceStep {
             pc: interp.pc(),
@@ -545,6 +565,7 @@ impl TracingInspector {
             // These fields will be populated in `step_end`.
             push_stack: None,
             gas_cost: 0,
+            geth_gas_cost,
             state_gas_cost: None,
             state_gas_reservoir: interp
                 .version()
@@ -656,6 +677,23 @@ impl TracingInspector {
         step.gas_cost = interp
             .failed_charge()
             .unwrap_or_else(|| step.gas_remaining.saturating_sub(interp.gas().remaining()));
+        step.geth_gas_cost = interp
+            .skipped_cold_load_cost()
+            .map(|cost| {
+                if matches!(
+                    step.op.get(),
+                    op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL
+                ) {
+                    // A failed cold call access aborts dynamic metering before it returns a cost.
+                    u64::from(interp.version().gas_params.get(GasId::WarmStorageReadCost))
+                } else {
+                    cost
+                }
+            })
+            .or(step.geth_gas_cost);
+        if interp.result() != Err(InstrStop::OutOfGas) {
+            step.geth_gas_cost = None;
+        }
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
             step.state_gas_cost = Some(state_gas_delta);

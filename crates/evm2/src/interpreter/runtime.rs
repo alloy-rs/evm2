@@ -43,6 +43,7 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     error: Option<ExecutionError>,
     step_gas_before: u64,
     failed_charge: Option<u64>,
+    skipped_cold_load_cost: Option<u64>,
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
@@ -87,6 +88,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             error: None,
             step_gas_before: 0,
             failed_charge: None,
+            skipped_cold_load_cost: None,
             output: 0..0,
             tx_env: None,
             message: None,
@@ -116,6 +118,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.error = None;
         self.step_gas_before = 0;
         self.failed_charge = None;
+        self.skipped_cold_load_cost = None;
         self.output = 0..0;
         self.tx_env = Some(tx_env);
         self.message = Some(message);
@@ -266,6 +269,15 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub const fn failed_charge(&self) -> Option<u64> {
         self.failed_charge
+    }
+
+    /// Returns the total access cost when the host skipped a cold load in this inspected step.
+    ///
+    /// Includes charges paid before the skipped load and its unpaid cold surcharge. This is
+    /// trace metadata only; it does not change the gas balance or the halt reason.
+    #[inline]
+    pub const fn skipped_cold_load_cost(&self) -> Option<u64> {
+        self.skipped_cold_load_cost
     }
 
     /// Sets the current instruction result to `stop`.
@@ -665,6 +677,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         }
         self.0.step_gas_before = self.0.gas.remaining();
         self.0.failed_charge = None;
+        self.0.skipped_cold_load_cost = None;
     }
 
     #[inline]
@@ -687,6 +700,26 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step_end(&mut self.0);
         }
+    }
+
+    /// Retains the attempted cost of a cold access rejected by the host.
+    #[inline]
+    pub(in crate::interpreter) fn fail_cold_load(
+        &mut self,
+        error: HostError,
+        gas: &Gas,
+        additional_cost: u64,
+    ) -> InstrStop {
+        let stop = self.fail(error);
+        if stop == InstrStop::OutOfGas && self.0.inspector.is_some() {
+            self.0.skipped_cold_load_cost = Some(
+                self.0
+                    .step_gas_before
+                    .saturating_sub(gas.remaining())
+                    .saturating_add(additional_cost),
+            );
+        }
+        stop
     }
 
     #[inline]

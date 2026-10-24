@@ -19,7 +19,7 @@ fn load_account<T: EvmTypesHost>(
         .state
         .host()
         .load_account(&account_address, load_code, skip_cold_load)
-        .map_err(|error| cx.state.fail(error))?;
+        .map_err(|error| cx.state.fail_cold_load(error, cx.gas, cold_load_gas))?;
     if account.is_cold {
         cx.gas.spend(cold_load_gas)?;
     }
