@@ -1246,7 +1246,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // constructed); warm it before running the initcode.
         self.state.account(&message.destination)?.warm();
 
-        if message.depth > 0
+        // Fee-disabled top-level creation defers its nonce increment until the inspector's
+        // value has passed the funds check, just like nested creation.
+        if (message.depth > 0 || !self.feature(EvmFeatures::FEE_CHARGE))
             && let Err(code) = self.state.account(&message.caller).map(|mut a| a.bump_nonce())
         {
             return Err(code.into());

@@ -425,19 +425,24 @@ pub const fn validate_floor_gas(gas_limit: u64, floor_gas: u64) -> HandlerResult
     Ok(())
 }
 
-/// Loads and validates the sender account, then marks it warm and bumps its nonce.
+/// Loads and validates the sender account, then warms and touches it.
 ///
-/// One account handle does all three, so the sender is looked up and journaled once.
+/// Calls and fee-charging transactions consume the nonce before execution. Fee-disabled creates
+/// defer the increment until after the inspector and value-transfer precheck, matching revm's
+/// simulation behavior. Custom handlers that disable fees must validate transfer funding or manage
+/// the nonce themselves if they commit underfunded creations.
 pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     caller: Address,
     nonce: u64,
     max_upfront: U256,
+    to: TxKind,
 ) -> HandlerResult<()> {
     let has_nonce_check = host.feature(EvmFeatures::NONCE_CHECK);
     let has_balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
     let has_balance_top_up = host.feature(EvmFeatures::BALANCE_TOP_UP);
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
+    let has_fee_charge = host.feature(EvmFeatures::FEE_CHARGE);
 
     let mut sender = host.state.account(&caller)?;
     if has_eip3607 && !sender.is_empty_code_hash() {
@@ -460,7 +465,10 @@ pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     }
     // The sender is warm from the start of the transaction (EIP-2929).
     sender.warm();
-    sender.bump_nonce();
+    sender.touch();
+    if to.is_call() || has_fee_charge {
+        sender.bump_nonce();
+    }
     Ok(())
 }
 
@@ -650,6 +658,11 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 if !target_alive {
                     let create_state_gas = host.version().gas_params.create_state_gas();
                     if tx_gas.spend_state(create_state_gas).is_err() {
+                        // A runtime-gas halt still consumes the transaction nonce, including
+                        // fee-disabled creation whose increment was deferred.
+                        if !host.feature(EvmFeatures::FEE_CHARGE) {
+                            host.state.account(&caller)?.bump_nonce();
+                        }
                         return Ok(None);
                     }
                     charged_state_gas = create_state_gas;
@@ -941,10 +954,10 @@ fn eip2780_base_to_value_gas(
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmTypes, ExecutionConfig, Precompiles,
+        BaseEvmTypes, ExecutionConfig, Inspector, Precompiles,
         env::{BlockEnvExt, TxEnvExt},
         evm::InMemoryDB,
-        interpreter::{Host, InstrStop, op},
+        interpreter::{Host, InstrStop, Interpreter, Message, MessageResult, op},
         registry::TxRegistry,
     };
     use alloc::{string::ToString, vec};
@@ -1257,7 +1270,13 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let error = validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100));
+        let error = validate_sender_and_bump_nonce(
+            &mut evm,
+            caller,
+            0,
+            U256::from(100),
+            TxKind::Call(Address::ZERO),
+        );
         assert_eq!(
             error,
             Err(HandlerError::InsufficientFunds { fee: U256::from(100), balance: U256::from(10) })
@@ -1280,7 +1299,16 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
+        assert!(
+            validate_sender_and_bump_nonce(
+                &mut evm,
+                caller,
+                0,
+                U256::from(100),
+                TxKind::Call(Address::ZERO)
+            )
+            .is_ok()
+        );
         let sender = evm.state.account_info_untracked(&caller).unwrap().unwrap();
         assert_eq!((sender.balance, sender.nonce), (U256::ZERO, 1));
     }
@@ -1309,7 +1337,16 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
+        assert!(
+            validate_sender_and_bump_nonce(
+                &mut evm,
+                caller,
+                0,
+                U256::from(100),
+                TxKind::Call(Address::ZERO)
+            )
+            .is_ok()
+        );
         assert_eq!(
             evm.state.account_info_untracked(&caller).unwrap().unwrap().balance,
             U256::from(100)
@@ -1334,7 +1371,16 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        assert!(validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100)).is_ok());
+        assert!(
+            validate_sender_and_bump_nonce(
+                &mut evm,
+                caller,
+                0,
+                U256::from(100),
+                TxKind::Call(Address::ZERO)
+            )
+            .is_ok()
+        );
         charge_upfront(&mut evm, caller, U256::from(100)).unwrap();
         assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().balance, U256::ZERO);
     }
@@ -1477,5 +1523,235 @@ mod tests {
             assert_eq!(intrinsic, base + calldata_gas + initcode_gas);
             assert_eq!(floor, base + floor_calldata_gas);
         }
+    }
+
+    #[rstest::rstest]
+    fn rejected_create_nonce_depends_on_fee_charging(#[values(false, true)] fee_charge: bool) {
+        let caller = Address::with_last_byte(0xaa);
+        let recipient = Address::with_last_byte(0xbb);
+        for spec in [SpecId::PRAGUE, SpecId::AMSTERDAM] {
+            for to in [TxKind::Create, TxKind::Call(recipient)] {
+                for value in [0, 1, 2] {
+                    for input in [
+                        Bytes::from_static(&[op::STOP]),
+                        Bytes::from_static(&[op::PUSH0, op::PUSH0, op::REVERT]),
+                    ] {
+                        for tx_type in 0..=2 {
+                            let mut version = Version::new(spec);
+                            version
+                                .features
+                                .remove(EvmFeatures::BALANCE_CHECK | EvmFeatures::BALANCE_TOP_UP);
+                            version.features.set(EvmFeatures::FEE_CHARGE, fee_charge);
+                            let mut database = InMemoryDB::default();
+                            database.insert_account_info(
+                                &caller,
+                                AccountInfo::default().with_nonce(10).with_balance(U256::ONE),
+                            );
+                            database.insert_account_info(
+                                &recipient,
+                                AccountInfo::default()
+                                    .with_code(Bytecode::new_legacy(input.clone())),
+                            );
+                            let tx = match tx_type {
+                                0 => TxEnvelope::Legacy(TxLegacy {
+                                    nonce: 10,
+                                    gas_limit: 500_000,
+                                    to,
+                                    value: U256::from(value),
+                                    input: input.clone(),
+                                    ..Default::default()
+                                }),
+                                1 => TxEnvelope::Eip2930(TxEip2930 {
+                                    chain_id: version.chain_id,
+                                    nonce: 10,
+                                    gas_limit: 500_000,
+                                    to,
+                                    value: U256::from(value),
+                                    input: input.clone(),
+                                    ..Default::default()
+                                }),
+                                _ => TxEnvelope::Eip1559(TxEip1559 {
+                                    chain_id: version.chain_id,
+                                    nonce: 10,
+                                    gas_limit: 500_000,
+                                    to,
+                                    value: U256::from(value),
+                                    input: input.clone(),
+                                    ..Default::default()
+                                }),
+                            };
+                            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                                ExecutionConfig::for_spec_and_version(spec, version),
+                                spec,
+                                BlockEnvExt {
+                                    gas_limit: U256::from(10_000_000),
+                                    ..Default::default()
+                                },
+                                ethereum_tx_registry(spec),
+                                database,
+                                Precompiles::base(spec),
+                            );
+                            let tx = Recovered::new_unchecked(tx, caller);
+                            let result = evm.transact(&tx).unwrap().commit();
+                            if value == 2 {
+                                assert_eq!(result.stop, InstrStop::OutOfFunds);
+                            } else {
+                                assert_eq!(result.status, input[0] == op::STOP);
+                            }
+                            let nonce =
+                                evm.state.account_info_untracked(&caller).unwrap().unwrap().nonce;
+                            assert_eq!(
+                                nonce,
+                                if !fee_charge && to.is_create() && value == 2 { 10 } else { 11 },
+                                "{spec:?} {to:?} value={value} type={tx_type}"
+                            );
+                            if fee_charge && value == 2 {
+                                assert_eq!(
+                                    evm.transact(&tx).map(crate::evm::ExecutedTx::discard),
+                                    Err(HandlerError::InvalidNonce { expected: 11, got: 10 })
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[rstest::rstest]
+    fn create_runtime_gas_halt_consumes_sender_nonce(#[values(false, true)] fee_charge: bool) {
+        let caller = Address::with_last_byte(0xaa);
+        let spec = SpecId::AMSTERDAM;
+        let mut version = Version::new(spec);
+        version.features.remove(EvmFeatures::BALANCE_CHECK | EvmFeatures::BALANCE_TOP_UP);
+        version.features.set(EvmFeatures::FEE_CHARGE, fee_charge);
+        let input = Bytes::new();
+        let value = U256::from(2);
+        let (intrinsic, floor) =
+            intrinsic_and_floor_gas(&version, caller, TxKind::Create, &input, 0, 0, value);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_nonce(10).with_balance(U256::ONE),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            BlockEnvExt { gas_limit: U256::from(10_000_000), ..Default::default() },
+            ethereum_tx_registry(spec),
+            database,
+            Precompiles::base(spec),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                nonce: 10,
+                gas_limit: intrinsic.max(floor) + 1,
+                to: TxKind::Create,
+                value,
+                input,
+                ..Default::default()
+            }),
+            caller,
+        );
+        let result = evm.transact(&tx).unwrap().commit();
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert_eq!(evm.state.account_info_untracked(&caller).unwrap().unwrap().nonce, 11);
+    }
+
+    #[rstest::rstest]
+    fn create_nonce_uses_inspector_value(
+        #[values(false, true)] fee_charge: bool,
+        #[values(SpecId::PRAGUE, SpecId::AMSTERDAM)] spec: SpecId,
+        #[values((2, 1), (1, 2))] values: (u64, u64),
+    ) {
+        struct ChangeCreateValue(U256);
+
+        impl Inspector<BaseEvmTypes> for ChangeCreateValue {
+            fn create(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                message.value = self.0;
+                None
+            }
+        }
+
+        let caller = Address::with_last_byte(0xaa);
+        let mut version = Version::new(spec);
+        version.features.remove(EvmFeatures::BALANCE_CHECK | EvmFeatures::BALANCE_TOP_UP);
+        version.features.set(EvmFeatures::FEE_CHARGE, fee_charge);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_nonce(10).with_balance(U256::ONE),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            BlockEnvExt { gas_limit: U256::from(10_000_000), ..Default::default() },
+            ethereum_tx_registry(spec),
+            database,
+            Precompiles::base(spec),
+        );
+        evm.set_inspector(ChangeCreateValue(U256::from(values.1)));
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                nonce: 10,
+                gas_limit: 500_000,
+                to: TxKind::Create,
+                value: U256::from(values.0),
+                input: Bytes::from_static(&[op::STOP]),
+                ..Default::default()
+            }),
+            caller,
+        );
+        let result = evm.transact(&tx).unwrap().commit();
+        let funded = values.1 == 1;
+        assert_eq!(result.stop, if funded { InstrStop::Stop } else { InstrStop::OutOfFunds });
+        assert_eq!(result.created_address, funded.then_some(caller.create(10)));
+        assert_eq!(
+            evm.state.account_info_untracked(&caller).unwrap().unwrap().nonce,
+            if fee_charge || funded { 11 } else { 10 }
+        );
+    }
+
+    #[rstest::rstest]
+    fn rejected_create_touches_empty_sender(
+        #[values(SpecId::TANGERINE, SpecId::SPURIOUS_DRAGON)] spec: SpecId,
+        #[values(false, true)] existing: bool,
+    ) {
+        let caller = Address::with_last_byte(0xaa);
+        let mut version = Version::new(spec);
+        version.features.remove(
+            EvmFeatures::BALANCE_CHECK | EvmFeatures::BALANCE_TOP_UP | EvmFeatures::FEE_CHARGE,
+        );
+        let mut database = InMemoryDB::default();
+        if existing {
+            database.insert_account_info(&caller, AccountInfo::default());
+        }
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            BlockEnvExt { gas_limit: U256::from(10_000_000), ..Default::default() },
+            ethereum_tx_registry(spec),
+            database,
+            Precompiles::base(spec),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_limit: 100_000,
+                to: TxKind::Create,
+                value: U256::ONE,
+                ..Default::default()
+            }),
+            caller,
+        );
+        let result = evm.transact(&tx).unwrap().commit();
+        assert_eq!(result.stop, InstrStop::OutOfFunds);
+        assert_eq!(
+            evm.state.account_info_untracked(&caller).unwrap(),
+            (spec == SpecId::TANGERINE).then(AccountInfo::default)
+        );
     }
 }

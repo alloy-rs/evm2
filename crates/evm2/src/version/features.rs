@@ -145,6 +145,10 @@ evm_features! {
     PRIORITY_FEE_CHECK,
     /// Charges transaction fees.
     ///
+    /// When disabled, top-level creation follows revm's simulation behavior: an insufficient
+    /// value balance leaves the sender nonce unchanged. Custom handlers committing these
+    /// transactions must validate transfer funding or manage their nonce accounting themselves.
+    ///
     /// Default: on
     FEE_CHARGE,
     /// Records emitted logs in the transaction result.
