@@ -48,7 +48,9 @@ pub fn run_interpreter<'frame, 'host, T: EvmTypesHost>(
     host: &mut T::Host<'host>,
 ) -> Option<InstrStop> {
     // Disabled runners must not hash code merely to discover that lookup is unavailable.
+    // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
     if !backend.enabled()
+        || interpreter.gas().remaining() > i64::MAX as u64
         || !backend.supports_host::<T>(
             &host.execution_config().version().gas_params,
             host.execution_config().base_spec_id(),
@@ -270,6 +272,27 @@ mod tests {
         );
 
         assert_eq!(run_interpreter(&JitBackend::disabled(), &mut interpreter, &mut host), None);
+    }
+
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn gas_above_i64_max_falls_back_to_interpreter() {
+        let tx_env = TxEnvExt::default();
+        let message = MessageExt {
+            gas_limit: i64::MAX as u64 + 1,
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            ..Default::default()
+        };
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            EmptyDB::default(),
+            Precompiles::base(SpecId::CANCUN),
+        );
+
+        assert_eq!(run_interpreter(&blocking_backend(), &mut interpreter, &mut host), None);
     }
 
     #[test]

@@ -337,7 +337,8 @@ impl EvmCompilerFn {
     ///
     /// # Safety
     ///
-    /// The caller must ensure that the function is safe to call for this interpreter state.
+    /// The caller must ensure that the function is safe to call for this interpreter state, and
+    /// that the remaining gas is at most `i64::MAX`.
     #[inline]
     pub unsafe fn call_with_interpreter<'ctx, 'frame, 'host, T: EvmTypesHost>(
         self,
@@ -364,7 +365,8 @@ impl EvmCompilerFn {
     ///
     /// # Safety
     ///
-    /// The caller must ensure that the arguments are valid and that the function is safe to call.
+    /// The caller must ensure that the arguments are valid, that the function is safe to call, and
+    /// that the remaining gas is at most `i64::MAX`.
     #[inline]
     pub unsafe fn call<T: EvmTypesHost>(
         self,
