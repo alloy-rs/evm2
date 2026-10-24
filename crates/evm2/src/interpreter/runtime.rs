@@ -261,7 +261,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Returns the execution gas the current step attempted to charge when it ran out of gas.
     ///
     /// Only set during an inspector's `step_end`, where the remaining gas has already been
-    /// zeroed after the failed charge.
+    /// zeroed after the failed charge. An `OutOfGas` guard without a failed deduction leaves
+    /// this unset so inspectors account for the consumed frame remainder instead.
     #[inline]
     pub const fn failed_charge(&self) -> Option<u64> {
         self.failed_charge
@@ -672,8 +673,13 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.stack_len = stack_len;
         if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
             cold_path();
-            self.0.failed_charge =
-                Some(self.0.step_gas_before.wrapping_sub(self.0.gas.remaining()));
+            let remaining = self.0.gas.remaining();
+            // A plain OutOfGas guard (such as a skipped cold load) can halt after only part
+            // of the opcode's gas was charged. Only an underflow represents a failed charge
+            // in that case. Preserve other OOG statuses, including the uncharged SSTORE sentry.
+            self.0.failed_charge = (remaining > self.0.step_gas_before
+                || self.0.result != Err(InstrStop::OutOfGas))
+            .then(|| self.0.step_gas_before.wrapping_sub(remaining));
             // Failed charges may leave a wrapped counter until frame settlement.
             self.0.gas.set_remaining(0);
         }
