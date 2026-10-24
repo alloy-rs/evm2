@@ -16,6 +16,8 @@ pub mod constants;
 mod error;
 pub mod ethereum;
 pub mod interpreter;
+#[cfg(feature = "rpc")]
+pub mod rpc;
 pub mod utils;
 pub use error::{AnyError, DatabaseError, ExecutionError, HostError, LoadError};
 

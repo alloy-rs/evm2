@@ -2581,6 +2581,7 @@ dependencies = [
  "alloy-eip7928",
  "alloy-eips",
  "alloy-primitives",
+ "alloy-rpc-types-eth",
  "ark-bls12-381",
  "ark-bn254",
  "ark-ec",
