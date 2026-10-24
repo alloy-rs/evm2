@@ -207,8 +207,11 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     settle(req.host, result)
 }
 
-fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations: usize) -> u64 {
-    let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
+const fn eip7702_authorization_gas<'a, T: EvmTypes>(
+    host: &Evm<'a, T>,
+    authorizations: usize,
+) -> u64 {
+    let per_auth = host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost);
     (authorizations as u64).saturating_mul(per_auth)
 }
 
@@ -328,7 +331,7 @@ impl<'g> RuntimeAuthCharges<'g> {
                 0
             },
             delegation_bytes_state_gas: if is_eip8037 {
-                u64::from(version.gas_params.get(GasId::TxEip7702PerAuthState))
+                version.gas_params.get(GasId::TxEip7702PerAuthState)
             } else {
                 0
             },
@@ -388,12 +391,12 @@ pub struct AuthRefunds {
 
 impl AuthRefunds {
     /// Creates refund accounting with `version`'s authorization prices.
-    pub fn new(version: &Version) -> Self {
+    pub const fn new(version: &Version) -> Self {
         Self {
             is_eip8037: version.feature(EvmFeatures::EIP8037),
             new_account: version.gas_params.new_account_state_gas(),
-            auth_base: u64::from(version.gas_params.get(GasId::TxEip7702PerAuthState)),
-            execution_per_auth: u64::from(version.gas_params.get(GasId::TxEip7702AuthRefund)),
+            auth_base: version.gas_params.get(GasId::TxEip7702PerAuthState),
+            execution_per_auth: version.gas_params.get(GasId::TxEip7702AuthRefund),
             state_refund: 0,
             execution_refund: 0,
         }

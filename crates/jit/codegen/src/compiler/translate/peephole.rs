@@ -291,7 +291,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let bits = self.bcx.isub(max, clz);
         let three = self.bcx.iconst(self.isize_type, 3);
         let bytes = self.bcx.ushr(bits, three);
-        let cost = self.bcx.imul_imm(bytes, per_byte.into());
+        let cost = self.bcx.imul_imm(bytes, per_byte as i64);
         self.gas_cost(cost);
     }
 

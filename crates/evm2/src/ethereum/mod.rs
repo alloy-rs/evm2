@@ -785,7 +785,7 @@ pub fn finalize_gas<'a, T: EvmTypes>(
         result,
     } = settlement;
 
-    let max_refund_quotient = u64::from(host.version().gas_params.get(GasId::MaxRefundQuotient));
+    let max_refund_quotient = host.version().gas_params.get(GasId::MaxRefundQuotient);
     // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
     // `TxResult::tx_gas_used` reproduces the finalized gas used. State gas is execution state gas
     // plus the upfront `initial_state_gas`, less the EIP-7702 per-authorization `state_refund`.
@@ -842,13 +842,13 @@ pub fn intrinsic_and_floor_gas(
     value: U256,
 ) -> (u64, u64) {
     let params = &version.gas_params;
-    let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
+    let non_zero_multiplier = params.get(GasId::TxTokenNonZeroByteMultiplier);
     let zero_data_len = count_zero_bytes(input);
     let non_zero_data_len = input.len() as u64 - zero_data_len;
     let tokens = zero_data_len + non_zero_data_len * non_zero_multiplier;
-    let mut gas = tokens * u64::from(params.get(GasId::TxTokenCost));
-    gas += access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressCost));
-    gas += access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyCost));
+    let mut gas = tokens * params.get(GasId::TxTokenCost);
+    gas += access_list_accounts * params.get(GasId::TxAccessListAddressCost);
+    gas += access_list_storage_keys * params.get(GasId::TxAccessListStorageKeyCost);
 
     // Base + `to`-based + `value`-based charges.
     let is_create = to.is_create();
@@ -860,32 +860,32 @@ pub fn intrinsic_and_floor_gas(
     if let Some(base) = eip2780_base {
         gas += base;
     } else {
-        gas += u64::from(params.get(GasId::TxBaseStipend));
+        gas += params.get(GasId::TxBaseStipend);
         if is_create && version.feature(EvmFeatures::EIP2) {
-            gas += u64::from(params.get(GasId::TxCreateCost));
+            gas += params.get(GasId::TxCreateCost);
         }
     }
     if is_create && version.feature(EvmFeatures::EIP3860) {
-        gas += u64::from(params.get(GasId::TxInitcodeCost)) * num_words(input.len()) as u64;
+        gas += params.get(GasId::TxInitcodeCost) * num_words(input.len()) as u64;
     }
 
-    let floor_cost_per_token = u64::from(params.get(GasId::TxFloorCostPerToken));
+    let floor_cost_per_token = params.get(GasId::TxFloorCostPerToken);
     if !version.feature(EvmFeatures::EIP7623) || floor_cost_per_token == 0 {
         return (gas, 0);
     }
 
     // tokens for access list
-    let al_multiplier = params.get(GasId::TxAccessListFloorByteMultiplier) as u64;
+    let al_multiplier = params.get(GasId::TxAccessListFloorByteMultiplier);
     let mut floor_tokens =
         (access_list_accounts * 20 + access_list_storage_keys * 32) * al_multiplier;
 
     // tokens for input. EIP-7623 weights zero bytes at `TxFloorZeroByteMultiplier`
     // (1) and non-zero bytes at `TxTokenNonZeroByteMultiplier` (4); EIP-7976
     // raises the zero-byte weight to 4 so every byte counts uniformly.
-    let zero_multiplier = u64::from(params.get(GasId::TxFloorZeroByteMultiplier));
+    let zero_multiplier = params.get(GasId::TxFloorZeroByteMultiplier);
     floor_tokens += zero_data_len * zero_multiplier + non_zero_data_len * non_zero_multiplier;
 
-    let floor_base = eip2780_base.unwrap_or_else(|| params.get(GasId::TxFloorCostBase) as u64);
+    let floor_base = eip2780_base.unwrap_or_else(|| params.get(GasId::TxFloorCostBase));
     (gas, floor_base + floor_tokens * floor_cost_per_token)
 }
 
@@ -923,15 +923,14 @@ fn eip2780_base_to_value_gas(
     value: U256,
 ) -> u64 {
     let params = &version.gas_params;
-    let mut gas = u64::from(params.get(GasId::TxBaseStipend));
+    let mut gas = params.get(GasId::TxBaseStipend);
     if is_create {
         // Since glamsterdam devnet-8, creates pay no value-based charge.
-        gas += u64::from(params.get(GasId::TxCreateAccessCost));
+        gas += params.get(GasId::TxCreateAccessCost);
     } else if !is_self_transfer {
-        gas += u64::from(params.get(GasId::WarmStorageReadCost))
-            + params.cold_account_additional_cost();
+        gas += params.get(GasId::WarmStorageReadCost) + params.cold_account_additional_cost();
         if !value.is_zero() {
-            gas += u64::from(params.get(GasId::TxValueCost));
+            gas += params.get(GasId::TxValueCost);
         }
     }
     gas

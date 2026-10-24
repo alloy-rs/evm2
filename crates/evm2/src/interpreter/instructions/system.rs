@@ -81,7 +81,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     stack_gas_limit: u64,
 ) -> Result<(u64, u64, Bytecode, Address)> {
     if transfers_value {
-        gas.spend(state.gas_params().get(GasId::TransferValueCost).into())?;
+        gas.spend(state.gas_params().get(GasId::TransferValueCost))?;
     }
 
     let additional_cold_cost = state.gas_params().cold_account_additional_cost();
@@ -99,7 +99,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     if state.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
-        cost += u64::from(state.gas_params().get(GasId::WarmStorageReadCost));
+        cost += state.gas_params().get(GasId::WarmStorageReadCost);
         if cost > remaining_gas {
             return Err(InstrStop::OutOfGas);
         }
@@ -125,7 +125,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
             .target_is_empty_for_new_account_gas(&to, features)
             .map_err(|error| state.fail(error))?
     {
-        cost += u64::from(state.gas_params().get(GasId::NewAccountCost));
+        cost += state.gas_params().get(GasId::NewAccountCost);
         // EIP-8037: value transfer to a new account also charges state gas from
         // the reservoir. Charged before the 63/64 child gas split below.
         if features.contains(EvmFeatures::EIP8037) && transfers_value {
@@ -143,7 +143,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     gas.spend(gas_limit)?;
 
     if transfers_value {
-        gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend).into());
+        gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend));
     }
 
     Ok((gas_limit, new_account_state_gas, code, code_address))
@@ -310,7 +310,7 @@ fn create_inner<T: EvmTypesHost>(
     let create_cost = if is_create2 {
         state.gas_params().create2_cost(len)
     } else {
-        state.gas_params().get(GasId::Create).into()
+        state.gas_params().get(GasId::Create)
     };
     gas.spend(create_cost)?;
 
