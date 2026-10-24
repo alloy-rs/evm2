@@ -355,8 +355,7 @@ impl GasTracker {
 
     /// Spends state gas, leaving the tracker unchanged on failure.
     ///
-    /// Unlike [`Self::spend_state`], a failed spend neither wraps `remaining` nor drains the
-    /// reservoir.
+    /// Unlike [`Self::spend_state`], a failed spend does not wrap `remaining`.
     #[inline]
     pub fn try_spend_state(&mut self, cost: u64) -> Result {
         if self.remaining < cost.saturating_sub(self.reservoir) {
@@ -999,6 +998,13 @@ mod tests {
         let mut gas = GasTracker::new(10);
         let before = gas;
         assert_matches!(gas.try_spend_state(11), Err(InstrStop::OutOfGas));
+        assert_eq!(gas, before);
+
+        // Non-zero spent and spilled state gas survive a failed spend.
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(100, 10);
+        assert!(gas.try_spend_state(40).is_ok());
+        let before = gas;
+        assert_matches!(gas.try_spend_state(71), Err(InstrStop::OutOfGas));
         assert_eq!(gas, before);
 
         // The reservoir alone covers the cost.
