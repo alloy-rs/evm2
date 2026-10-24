@@ -1,5 +1,5 @@
 use crate::{
-    EvmConfig, EvmTypesHost,
+    BaseEvmConfig, EvmConfig, EvmTypesHost, SpecId,
     interpreter::{
         instructions as instr, op,
         private::{Instruction, InstructionImplFn},
@@ -18,6 +18,8 @@ pub struct OpcodeConfig<T: EvmTypesHost> {
     instruction_impls: InstructionImplTable<T>,
     /// Per-opcode revision for dispatch-table rebuild decisions.
     revisions: [u8; 256],
+    /// Number of times each opcode's instruction was set.
+    instruction_sets: [u8; 256],
 }
 
 pub(crate) struct InstructionInfo<T: EvmTypesHost> {
@@ -45,6 +47,7 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
             static_gas_table: StaticGasTable::empty(),
             instruction_impls: InstructionImplTable::empty(),
             revisions: [0; 256],
+            instruction_sets: [0; 256],
         }
     }
 
@@ -52,6 +55,39 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
     #[inline(always)]
     pub const fn static_gas(&self, opcode: u8) -> u16 {
         self.static_gas_table.get(opcode)
+    }
+
+    /// Returns the base opcode config for `spec`.
+    pub fn base_for_spec(spec: SpecId) -> &'static Self {
+        crate::spec_to_generic!(spec, |BASE_SPEC_ID| {
+            <BaseEvmConfig<BASE_SPEC_ID> as EvmConfig<T>>::OPCODE_CONFIG
+        })
+    }
+
+    /// Returns whether `opcode` has an instruction implementation.
+    #[inline]
+    pub const fn is_defined(&self, opcode: u8) -> bool {
+        !self.is_unknown_opcode(opcode)
+    }
+
+    /// Returns whether the instruction of `opcode` was overridden or added relative to `base`, a
+    /// config derived from the same base spec.
+    ///
+    /// This holds for an instruction that was set again to an identical implementation.
+    #[inline]
+    pub const fn is_overridden(&self, base: &Self, opcode: u8) -> bool {
+        self.instruction_sets[opcode as usize] != base.instruction_sets[opcode as usize]
+    }
+
+    /// Returns whether `self` and `other` define the same opcodes, static gas and instruction
+    /// overrides.
+    pub fn same_table(&self, other: &Self) -> bool {
+        core::ptr::eq(self, other)
+            || (0..=u8::MAX).all(|op| {
+                self.static_gas(op) == other.static_gas(op)
+                    && self.is_defined(op) == other.is_defined(op)
+                    && !self.is_overridden(other, op)
+            })
     }
 
     /// Returns the dispatch-table revision for `opcode`.
@@ -89,6 +125,7 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
     pub const fn set_instruction<I: Instruction<T>>(&mut self, opcode: u8, gas: u16) {
         assert!(opcode != op::INVALID, "INVALID opcode cannot be overridden");
         self.set_static_gas(opcode, gas);
+        self.instruction_sets[opcode as usize] += 1;
         if self.instruction_impls.set(opcode, I::execute, I::DYNAMIC_GAS) {
             self.bump_revision(opcode);
         }

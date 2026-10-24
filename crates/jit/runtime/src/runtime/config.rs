@@ -2,9 +2,9 @@
 
 use crate::{CompileTimings, eyre, runtime::storage::ArtifactStore};
 use alloy_primitives::B256;
-use evm2::{BaseEvmTypes, EvmTypesHost, SpecId, version::GasParams};
+use evm2::{BaseEvmTypes, EvmTypesHost, ExecutionConfig, OpcodeConfig, SpecId, version::GasParams};
 use evm2_jit_builtins::Builtin;
-use evm2_jit_codegen::HostLayout;
+use evm2_jit_codegen::{HostLayout, OpcodeTable};
 use std::{any::TypeId, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 const JIT_MODE_ENV: &str = "EVM2_JIT_MODE";
@@ -414,11 +414,21 @@ fn env_path(name: &str) -> Option<PathBuf> {
     })
 }
 
+/// Opcode table of the host's execution config, which compiled code must match.
+#[derive(Clone, Debug)]
+pub(crate) struct HostOpcodes {
+    pub(crate) table: Arc<OpcodeTable>,
+    /// Address of the `&'static OpcodeConfig<T>` the table was read from.
+    pub(crate) config: usize,
+}
+
 /// Immutable type identity and layout for an in-process JIT host.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct HostConfig {
     pub(crate) type_id: TypeId,
     pub(crate) layout: HostLayout,
+    /// `None` for the base opcode table of the executing spec.
+    pub(crate) opcodes: Option<HostOpcodes>,
     /// `None` for the base host, whose builtins are the exported `__revmc_builtin_*` symbols.
     pub(crate) resolver: Option<fn(Builtin) -> usize>,
 }
@@ -430,11 +440,27 @@ impl HostConfig {
         Self {
             type_id,
             layout: HostLayout::for_types::<T>(),
+            opcodes: None,
             resolver: (type_id != TypeId::of::<BaseEvmTypes>()).then_some(Builtin::addr_for::<T>),
         }
     }
 
-    pub(crate) const fn is_default(self) -> bool {
+    /// Selects the interpreter layout and builtins for `T`, and the opcode table of `config`.
+    ///
+    /// Compiled code runs only frames whose execution config has this opcode table: it charges
+    /// the table's static gas, and runs the host's own instruction for overridden `SSTORE`,
+    /// `SLOAD` and other builtin-backed opcodes. Contracts that use opcodes the host adds or
+    /// overrides in any other way stay on the interpreter.
+    pub fn for_config<T: EvmTypesHost>(config: &ExecutionConfig<T>) -> Self {
+        let mut host = Self::for_types::<T>();
+        host.opcodes = Some(HostOpcodes {
+            table: Arc::new(OpcodeTable::from_execution_config(config)),
+            config: config.opcode_config() as *const OpcodeConfig<T> as usize,
+        });
+        host
+    }
+
+    pub(crate) const fn is_default(&self) -> bool {
         self.resolver.is_none()
     }
 

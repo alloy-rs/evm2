@@ -1815,7 +1815,7 @@ pub(crate) mod tests {
         crate::tests::init_tracing();
 
         eprintln!("{}", hex::encode(&code));
-        let mut bytecode = Bytecode::new(code, spec_id, None);
+        let mut bytecode = Bytecode::new(code, spec_id, None, None);
         bytecode.analyze().unwrap();
         eprintln!("{bytecode}");
         bytecode

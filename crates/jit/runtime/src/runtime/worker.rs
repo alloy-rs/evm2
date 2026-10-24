@@ -579,6 +579,7 @@ struct CompilerProfile {
     host_type: std::any::TypeId,
     layout: evm2_jit_codegen::HostLayout,
     resolver: Option<usize>,
+    opcode_table: Option<std::sync::Arc<evm2_jit_codegen::OpcodeTable>>,
     opt_level: crate::OptimizationLevel,
     gas_params: Option<evm2::version::GasParams>,
     debug_assertions: bool,
@@ -595,6 +596,7 @@ impl CompilerProfile {
             host_type: config.host.type_id,
             layout: config.host.layout,
             resolver: config.host.resolver.map(|resolver| resolver as usize),
+            opcode_table: config.host.opcodes.as_ref().map(|opcodes| opcodes.table.clone()),
             opt_level: if target.is_aot_backend() {
                 config.tuning.aot_opt_level
             } else {
@@ -638,6 +640,9 @@ pub(super) fn create_compiler(
     if let Some(resolver) = config.host.resolver {
         // SAFETY: HostConfig construction establishes the resolver and layout contract.
         unsafe { compiler.set_host(config.host.layout, resolver) };
+    }
+    if let Some(opcodes) = &config.host.opcodes {
+        compiler.set_opcode_table((*opcodes.table).clone());
     }
     Ok(compiler)
 }

@@ -679,6 +679,15 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         }
 
         match data.opcode {
+            _ if data.flags.contains(InstFlags::HOST) => {
+                let sp = self.sp_after_inputs();
+                let (inputs, outputs) = data.stack_io();
+                let pc = self.bcx.iconst(self.isize_type, self.bytecode.pc(inst) as i64);
+                let io =
+                    self.bcx.iconst(self.isize_type, (i64::from(inputs) << 8) | i64::from(outputs));
+                self.call_fallible_builtin(Builtin::HostInstruction, &[self.ecx, sp, pc, io]);
+            }
+
             op::STOP => goto_return!(build InstrStop::Stop),
 
             op::ADD => {

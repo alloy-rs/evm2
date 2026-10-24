@@ -208,7 +208,7 @@ impl JitBackend {
                 enabled: AtomicBool::new(false),
                 started: AtomicBool::new(false),
                 blocking: config.blocking,
-                host: config.host,
+                host: config.host.clone(),
                 gas_params: config.gas_params,
                 tx,
                 thread: std::sync::Mutex::new(None),
@@ -221,15 +221,28 @@ impl JitBackend {
         Ok(this)
     }
 
-    /// Checks that generated code matches the interpreter type and gas schedule.
+    /// Checks that generated code matches the interpreter type, gas schedule, and opcode table.
     pub(crate) fn supports_host<T: evm2::EvmTypesHost>(
         &self,
-        gas: &evm2::version::GasParams,
-        spec: evm2::SpecId,
+        config: &evm2::ExecutionConfig<T>,
     ) -> bool {
-        self.inner.host.type_id == std::any::TypeId::of::<T>()
-            && gas
-                == self.inner.gas_params.as_ref().unwrap_or(&evm2::Version::base(spec).gas_params)
+        let host = &self.inner.host;
+        host.type_id == std::any::TypeId::of::<T>()
+            && config.version().gas_params
+                == *self
+                    .inner
+                    .gas_params
+                    .as_ref()
+                    .unwrap_or(&evm2::Version::base(config.base_spec_id()).gas_params)
+            && match &host.opcodes {
+                None => config.has_base_opcode_table(),
+                Some(opcodes) => {
+                    // SAFETY: The type id matches `T`, so `opcodes.config` is a
+                    // `&'static OpcodeConfig<T>`.
+                    let expected = unsafe { &*(opcodes.config as *const evm2::OpcodeConfig<T>) };
+                    config.opcode_config().same_table(expected)
+                }
+            }
     }
 
     /// Looks up a compiled function for the given request.

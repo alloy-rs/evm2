@@ -1,8 +1,8 @@
 //! EVM bytecode compiler implementation.
 
 use crate::{
-    Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, Result,
-    bytecode::AnalysisConfig,
+    Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, OpcodeTable,
+    Result, bytecode::AnalysisConfig,
 };
 use alloy_primitives::Bytes;
 use evm2::{SpecId, version::GasParams};
@@ -96,6 +96,7 @@ pub struct EvmCompiler<B: Backend> {
     builtins: Builtins<B>,
     #[debug(skip)]
     gas_params: Option<GasParams>,
+    opcode_table: Option<OpcodeTable>,
 
     dedup: bool,
     dse: bool,
@@ -131,6 +132,7 @@ impl<B: Backend> EvmCompiler<B> {
             config: FcxConfig::default(),
             builtins: Builtins::new(),
             gas_params: None,
+            opcode_table: None,
             dedup: true,
             dse: true,
             dump_assembly: true,
@@ -519,6 +521,13 @@ impl<B: Backend> EvmCompiler<B> {
         self.config.single_error = yes;
     }
 
+    /// Sets the host's opcode table.
+    ///
+    /// Without one, programs use the base opcode table of their spec.
+    pub fn set_opcode_table(&mut self, table: OpcodeTable) {
+        self.opcode_table = Some(table);
+    }
+
     /// Returns custom gas parameters, if set.
     pub const fn gas_params(&self) -> Option<GasParams> {
         self.gas_params
@@ -664,7 +673,8 @@ impl<B: Backend> EvmCompiler<B> {
         let _t = self.remarks.time(|r| &r.parse);
         let EvmCompilerInput::Code(bytecode) = input;
 
-        let mut bytecode = Bytecode::new(bytecode, spec_id, self.gas_params);
+        let mut bytecode =
+            Bytecode::new(bytecode, spec_id, self.gas_params, self.opcode_table.as_ref());
         bytecode.compiler_gas_limit = self.compiler_gas_limit;
         bytecode.config.set(AnalysisConfig::INSPECT_STACK, self.config.inspect_stack);
         bytecode.config.set(AnalysisConfig::DEDUP, self.dedup);

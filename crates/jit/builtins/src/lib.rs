@@ -483,6 +483,28 @@ pub mod generic {
             Ok(())
         }
 
+        pub unsafe extern "C" fn __revmc_builtin_host_instruction<T: EvmTypesHost>(
+            ecx: &mut EvmContext<'_, '_, '_, T>,
+            sp: *mut EvmWord,
+            pc: usize,
+            io: usize,
+        ) -> BuiltinResult {
+            let (inputs, outputs) = (io >> 8, io & 0xff);
+            // SAFETY: The context owns the live interpreter borrow, and the stack view is
+            // dropped before the instruction runs.
+            let base = unsafe { ecx.interpreter_mut().stack_mut().into_raw_parts() }.0;
+            // SAFETY: `sp` is the lowest input slot of the interpreter stack.
+            let len = unsafe { sp.offset_from(base.cast::<EvmWord>()) } as usize + inputs;
+            let gas = ecx.gas;
+            ecx.interpreter_mut().set_gas(gas);
+            let result = ecx.interpreter_mut().run_external_instruction(pc, len);
+            ecx.gas = ecx.interpreter().gas();
+            ecx.refresh_memory_cache();
+            let new_len = result?;
+            assert_eq!(new_len, len - inputs + outputs, "host instruction changed the stack effect");
+            Ok(())
+        }
+
         pub unsafe extern "C" fn __revmc_builtin_mcopy<T: EvmTypesHost>(
             ecx: &mut EvmContext<'_, '_, '_, T>,
             sp: &mut [EvmWord; 3],
@@ -980,6 +1002,7 @@ base_builtins! {
     __revmc_builtin_tload(ecx: &mut EvmContext, key: &mut EvmWord);
     __revmc_builtin_tstore(ecx: &mut EvmContext, sp: &mut [EvmWord; 2]);
     __revmc_builtin_mcopy(ecx: &mut EvmContext, sp: &mut [EvmWord; 3]);
+    __revmc_builtin_host_instruction(ecx: &mut EvmContext, sp: *mut EvmWord, pc: usize, io: usize);
     __revmc_builtin_log(ecx: &mut EvmContext, sp: *mut EvmWord, n: u8);
     __revmc_builtin_create(ecx: &mut EvmContext, sp: *mut EvmWord, create_kind: CreateKind);
     __revmc_builtin_call(ecx: &mut EvmContext, sp: *mut EvmWord, call_kind: CallKind);

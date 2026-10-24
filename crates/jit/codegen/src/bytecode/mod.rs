@@ -8,7 +8,7 @@ use evm2::{
     interpreter::{op, opcode::OpCode},
     version::GasParams,
 };
-use evm2_jit_backend::Result;
+use evm2_jit_backend::{Result, eyre::bail};
 use oxc_index::IndexVec;
 use smallvec::SmallVec;
 use std::{borrow::Cow, cell::RefCell};
@@ -169,6 +169,8 @@ pub struct Bytecode<'a> {
     pub(crate) gas_params: GasParams,
     /// Whether the bytecode contains dynamic jumps.
     has_dynamic_jumps: bool,
+    /// First opcode the host implements in a way compiled code cannot reproduce.
+    unsupported_host_opcode: Option<u8>,
     /// Mapping from program counter to instruction.
     pc_to_inst: FxHashMap<u32, Inst>,
     /// Mapping from instruction index to its program counter (`code[pc]` is the opcode byte).
@@ -216,17 +218,23 @@ impl<'a> Bytecode<'a> {
         code: impl Into<Cow<'a, [u8]>>,
         spec_id: SpecId,
         gas_params: Option<GasParams>,
+        table: Option<&OpcodeTable>,
     ) -> Self {
-        Self::new_mono(code.into(), spec_id, gas_params)
+        Self::new_mono(code.into(), spec_id, gas_params, table)
     }
 
     #[cfg(test)]
     pub(crate) fn test(code: impl Into<Cow<'a, [u8]>>) -> Self {
-        Self::new(code, crate::tests::DEF_SPEC, None)
+        Self::new(code, crate::tests::DEF_SPEC, None, None)
     }
 
     #[instrument(name = "Bytecode::new", level = "debug", skip_all)]
-    fn new_mono(code: Cow<'a, [u8]>, spec_id: SpecId, gas_params: Option<GasParams>) -> Self {
+    fn new_mono(
+        code: Cow<'a, [u8]>,
+        spec_id: SpecId,
+        gas_params: Option<GasParams>,
+        table: Option<&OpcodeTable>,
+    ) -> Self {
         let gas_params = gas_params.unwrap_or(evm2::Version::base(spec_id).gas_params);
         let mut insts = IndexVec::with_capacity(code.len() + 8);
         let mut inst_to_pc = IndexVec::with_capacity(code.len() + 8);
@@ -238,8 +246,10 @@ impl<'a> Bytecode<'a> {
         let jumpdests = legacy_jumpdests(&code);
         let mut pc_to_inst = FxHashMap::with_capacity_and_hasher(code.len(), Default::default());
         let mut u256_interner = U256Interner::new();
-        let op_infos = op_info_map(spec_id);
-        let mut iter = OpcodesIter::new(&code, spec_id).with_pc();
+        let owned_infos = table.map(|table| table.op_infos(spec_id));
+        let op_infos = owned_infos.as_ref().unwrap_or_else(|| op_info_map(spec_id));
+        let mut unsupported_host_opcode = None;
+        let mut iter = OpcodesIter::with_infos(&code, op_infos).with_pc();
         while let Some((pc, Opcode { opcode, immediate })) = iter.next() {
             let inst: Inst = insts.next_idx();
             pc_to_inst.insert(pc as u32, inst);
@@ -253,11 +263,18 @@ impl<'a> Bytecode<'a> {
             if info.is_disabled() {
                 flags |= InstFlags::DISABLED;
             }
-            let (base_gas, stack_io) = if info.is_unknown() || info.is_disabled() {
-                (0, (0, 0))
-            } else {
-                (info.base_gas(), compute_stack_io(opcode, immediate))
-            };
+            if info.is_host() {
+                flags |= InstFlags::HOST;
+            }
+            if info.is_unsupported_host() {
+                unsupported_host_opcode.get_or_insert(opcode);
+            }
+            let (base_gas, stack_io) =
+                if info.is_unknown() || info.is_disabled() || info.is_unsupported_host() {
+                    (0, (0, 0))
+                } else {
+                    (info.base_gas(), compute_stack_io(opcode, immediate))
+                };
 
             let data = match opcode {
                 op::PUSH0..=op::PUSH32 | op::DUPN | op::SWAPN | op::EXCHANGE => {
@@ -309,7 +326,7 @@ impl<'a> Bytecode<'a> {
             // bytes: every desynchronizing immediate is an invalid DUPN/SWAPN/EXCHANGE
             // encoding, so the opcode preceding them halts at runtime.
             // A truncated immediate at the end of the code consumes the remaining bytes.
-            let imm_len = if info.is_unknown() || info.is_disabled() {
+            let imm_len = if info.is_unknown() || info.is_disabled() || info.is_unsupported_host() {
                 0
             } else {
                 min_imm_len(opcode) as usize
@@ -335,6 +352,7 @@ impl<'a> Bytecode<'a> {
             spec_id,
             gas_params,
             has_dynamic_jumps: false,
+            unsupported_host_opcode,
             snapshots: Snapshots::default(),
             memory_sections: IndexVec::new(),
             u256_interner: RefCell::new(u256_interner),
@@ -423,6 +441,9 @@ impl<'a> Bytecode<'a> {
     /// Runs a list of analysis passes on the instructions.
     #[instrument(level = "debug", skip_all)]
     pub(crate) fn analyze(&mut self) -> Result<()> {
+        if let Some(opcode) = self.unsupported_host_opcode {
+            bail!("host opcode {opcode:#04x} is not supported by compiled code");
+        }
         self.refresh_cfg();
 
         self.block_analysis_local();
@@ -1243,6 +1264,8 @@ bitflags::bitflags! {
         /// `stack_section` holds only the bounds that the previous sections have not checked;
         /// the virtual stack already tracks the checked range.
         const CONTINUES_STACK_SECTION = 1 << 10;
+        /// The host's own instruction implementation executes this opcode, through a builtin.
+        const HOST = 1 << 11;
     }
 }
 

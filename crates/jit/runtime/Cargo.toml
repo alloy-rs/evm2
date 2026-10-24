@@ -44,6 +44,7 @@ wait-timeout.workspace = true
 wincode.workspace = true
 
 [dev-dependencies]
+evm2-macros.workspace = true
 paste.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 

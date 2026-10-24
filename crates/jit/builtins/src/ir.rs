@@ -215,6 +215,7 @@ macro_rules! builtins {
                 const MRESIZE: u8 = _0_0;
 
                 const LOG: u8 = _0_0;
+                const HOSTINSTRUCTION: u8 = _0_0;
                 const DORETURN: u8 = RETURN;
                 const DORETURNCC: u8 = _0_0;
 
@@ -318,6 +319,7 @@ builtins! {
     Tstore         = __revmc_builtin_tstore(@[ecx] ptr, @[sp] ptr) None,
     Mcopy          = __revmc_builtin_mcopy(@[ecx] ptr, @[sp] ptr) None,
     Log            = __revmc_builtin_log(@[ecx] ptr, @[sp_dyn] ptr, u8) None,
+    HostInstruction = __revmc_builtin_host_instruction(@[ecx] ptr, @[sp_dyn] ptr, usize, usize) None,
 
     Create         = __revmc_builtin_create(@[ecx] ptr, @[sp_dyn] ptr, u8) None,
     Call           = __revmc_builtin_call(@[ecx] ptr, @[sp_dyn] ptr, u8) None,
@@ -385,6 +387,9 @@ impl Builtin {
             Self::Tload => crate::generic::__revmc_builtin_tload::<T> as *const () as usize,
             Self::Tstore => crate::generic::__revmc_builtin_tstore::<T> as *const () as usize,
             Self::Mcopy => crate::generic::__revmc_builtin_mcopy::<T> as *const () as usize,
+            Self::HostInstruction => {
+                crate::generic::__revmc_builtin_host_instruction::<T> as *const () as usize
+            }
             Self::Log => crate::generic::__revmc_builtin_log::<T> as *const () as usize,
             Self::Create => crate::generic::__revmc_builtin_create::<T> as *const () as usize,
             Self::Call => crate::generic::__revmc_builtin_call::<T> as *const () as usize,
