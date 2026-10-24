@@ -92,7 +92,10 @@ impl<'a> Bytecode<'a> {
 
             // Skip blocks containing PC — it returns the current program counter,
             // so identical bytecode at different positions produces different results.
-            if block.insts().any(|i| self.insts[i].opcode == op::PC) {
+            // A host instruction can observe its position too.
+            if block.insts().any(|i| {
+                self.insts[i].opcode == op::PC || self.insts[i].flags.contains(InstFlags::HOST)
+            }) {
                 continue;
             }
 

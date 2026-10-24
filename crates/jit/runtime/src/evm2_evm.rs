@@ -871,6 +871,15 @@ mod custom_host_tests {
         Ok(())
     }
 
+    #[instruction(EvmTypes = TableTypes, no_stack_preamble)]
+    fn position_extcodesize(cx: _) -> Result {
+        // Replaces its operand with its own position in the bytecode.
+        let position = cx.state.bytecode().pc_offset(*cx.pc);
+        let [.., top] = stack.as_slice_mut() else { return Err(InstrStop::StackUnderflow) };
+        *top = Word::from(position);
+        Ok(())
+    }
+
     #[instruction(EvmTypes = TableTypes)]
     fn added(cx: _) -> out {
         *out = Word::from(0xdead_u64);
@@ -893,6 +902,8 @@ mod custom_host_tests {
             config.set_instruction::<skipping_tload>(op::TLOAD, tload_gas);
             let balance_gas = config.static_gas(op::BALANCE);
             config.set_instruction::<reading_balance>(op::BALANCE, balance_gas);
+            let extcodesize_gas = config.static_gas(op::EXTCODESIZE);
+            config.set_instruction::<position_extcodesize>(op::EXTCODESIZE, extcodesize_gas);
             config.set_instruction::<added>(ADDED_OPCODE, 2);
             config
         };
@@ -1026,6 +1037,34 @@ mod custom_host_tests {
                 op::PUSH0,
                 op::MSTORE,
                 op::POP,
+                op::PUSH1,
+                32,
+                op::PUSH0,
+                op::RETURN,
+            ][..],
+            // Two identical blocks at different offsets must report their own positions.
+            &[
+                op::CALLDATASIZE,
+                op::PUSH1,
+                7,
+                op::JUMPI,
+                op::PUSH1,
+                16,
+                op::JUMP,
+                op::JUMPDEST,
+                op::PUSH0,
+                op::EXTCODESIZE,
+                op::PUSH0,
+                op::MSTORE,
+                op::PUSH1,
+                32,
+                op::PUSH0,
+                op::RETURN,
+                op::JUMPDEST,
+                op::PUSH0,
+                op::EXTCODESIZE,
+                op::PUSH0,
+                op::MSTORE,
                 op::PUSH1,
                 32,
                 op::PUSH0,
