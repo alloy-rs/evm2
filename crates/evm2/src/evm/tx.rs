@@ -103,7 +103,7 @@ impl<E> TxResultExt<E> {
         !self.status && matches!(self.stop, InstrStop::Revert)
     }
 
-    /// Returns whether execution failed without success or a `REVERT`.
+    /// Returns whether execution failed for a reason other than the `REVERT` opcode.
     #[inline]
     pub const fn is_halt(&self) -> bool {
         !self.status && !self.is_revert()
