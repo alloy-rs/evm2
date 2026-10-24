@@ -232,6 +232,16 @@ impl<ExtDB> CacheDB<ExtDB> {
         self.cache.storage.entry(*address).or_default().slots.insert(*key, *value);
     }
 
+    /// Drops all cached storage for `address` and returns it.
+    ///
+    /// This discards both read-cached slots and accepted (committed) writes, along with any
+    /// storage wipe marker, so later reads of the address fall through to the backing database.
+    /// Cached account info is kept.
+    #[inline]
+    pub fn remove_account_storage(&mut self, address: &Address) -> Option<AccountStorageCache> {
+        self.cache.storage.remove(address)
+    }
+
     /// Sets a historical block hash.
     #[inline]
     pub fn insert_block_hash(&mut self, number: &Word, hash: &B256) {
@@ -599,6 +609,40 @@ mod tests {
         cache.commit_pending(&pending);
 
         assert_eq!(cache.get_storage(&address, &key).unwrap(), value);
+    }
+
+    #[test]
+    fn remove_account_storage_falls_through_to_backing_db() {
+        let address = Address::with_last_byte(1);
+        let other = Address::with_last_byte(2);
+        let key = Word::from(2);
+        let committed = Word::from(3);
+        let backing = Word::from(4);
+        let mut cache = CacheDB::new(crate::evm::Db::new(CountingDB {
+            account: Some(AccountInfo::default()),
+            storage: backing,
+            ..CountingDB::default()
+        }));
+        let mut pending = PendingState::default();
+        for account in [address, other] {
+            pending.insert_account(
+                account,
+                Some(AccountInfo::default()),
+                Some(AccountInfo::default()),
+            );
+            pending.insert_storage(account, key, backing, committed);
+        }
+        cache.commit_pending(&pending);
+        assert_eq!(cache.get_storage(&address, &key).unwrap(), committed);
+        assert_eq!(cache.db.inner().storage_loads, 0);
+
+        let removed = cache.remove_account_storage(&address).unwrap();
+        assert_eq!(removed.slots[&key], committed);
+
+        assert_eq!(cache.get_storage(&address, &key).unwrap(), backing);
+        assert_eq!(cache.db.inner().storage_loads, 1);
+        assert_eq!(cache.get_storage(&other, &key).unwrap(), committed);
+        assert!(cache.remove_account_storage(&Address::with_last_byte(9)).is_none());
     }
 
     #[test]

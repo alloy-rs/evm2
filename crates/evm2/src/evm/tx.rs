@@ -87,6 +87,30 @@ impl<E> TxResultExt<E> {
         }
     }
 
+    /// Returns whether execution succeeded.
+    #[inline]
+    pub const fn is_success(&self) -> bool {
+        self.status
+    }
+
+    /// Returns whether execution ended with the `REVERT` opcode.
+    ///
+    /// Unlike [`InstrStop::is_revert`], this does not count [`InstrStop::CallTooDeep`] or
+    /// [`InstrStop::OutOfFunds`]. Those are call-frame failures that the interpreter treats as
+    /// reverts, but a transaction result reports them as halts, like revm's top-level
+    /// `ExecutionResult::Revert`.
+    #[inline]
+    pub const fn is_revert(&self) -> bool {
+        !self.status && matches!(self.stop, InstrStop::Revert)
+    }
+
+    /// Returns whether execution failed without success or a `REVERT`, like revm's
+    /// `ExecutionResult::is_halt`.
+    #[inline]
+    pub const fn is_halt(&self) -> bool {
+        !self.status && !self.is_revert()
+    }
+
     /// Returns the receipt gas-used value: `max(total_gas_spent - refunded, floor_gas)`.
     #[inline]
     pub const fn tx_gas_used(&self) -> u64 {
@@ -347,6 +371,7 @@ pub struct TxResultWithState<T: EvmTypesHost = crate::BaseEvmTypes> {
 #[cfg(test)]
 mod tests {
     use super::TxResultExt;
+    use crate::interpreter::InstrStop;
 
     fn result(
         total_gas_spent: u64,
@@ -372,6 +397,23 @@ mod tests {
         assert_eq!(r.execution_gas_spent(), 70_000);
         assert_eq!(r.state_gas_spent(), 30_000);
         assert_eq!(r.execution_gas_spent() + r.state_gas_spent(), r.total_gas_spent);
+    }
+
+    #[test]
+    fn status_helpers_classify_stop_reasons() {
+        let result = |status, stop| TxResultExt::<()> { status, stop, ..TxResultExt::default() };
+
+        let success = result(true, InstrStop::Return);
+        assert!(success.is_success() && !success.is_revert() && !success.is_halt());
+
+        let revert = result(false, InstrStop::Revert);
+        assert!(!revert.is_success() && revert.is_revert() && !revert.is_halt());
+
+        // Counted by `InstrStop::is_revert`, but not a top-level `REVERT`.
+        for stop in [InstrStop::OutOfFunds, InstrStop::CallTooDeep, InstrStop::OutOfGas] {
+            let halt = result(false, stop);
+            assert!(!halt.is_success() && !halt.is_revert() && halt.is_halt(), "{stop:?}");
+        }
     }
 
     #[test]
