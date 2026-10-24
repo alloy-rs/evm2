@@ -770,6 +770,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.evm_send = false;
     }
 
+    /// Replaces the precompile provider with an already boxed one.
+    #[inline]
+    pub fn set_boxed_precompiles(&mut self, precompiles: Box<dyn PrecompileProvider<T> + 'a>) {
+        self.assert_precompiles_mutable();
+        self.precompiles = precompiles;
+        self.evm_send = false;
+    }
+
     /// Returns the precompile provider as `P` if it has that concrete type.
     #[inline]
     pub fn precompiles_as<P: PrecompileProvider<T> + 'static>(&self) -> Option<&P>
@@ -2704,6 +2712,21 @@ mod tests {
         let message = precompile_message(TEST_PRECOMPILE);
 
         evm.execute_precompile(&message, &mut GasTracker::new(30_000)).unwrap();
+    }
+
+    #[test]
+    fn set_boxed_precompiles_keeps_provider_type() {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        evm.set_boxed_precompiles(Box::new(precompiles_with([])));
+
+        assert!(evm.precompiles_as::<Precompiles>().unwrap().as_map().is_empty());
     }
 
     #[test]

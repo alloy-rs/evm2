@@ -450,6 +450,86 @@ impl GasParams {
     pub const fn cold_account_additional_cost(&self) -> u64 {
         self.get(GasId::ColdAccountAdditionalCost) as u64
     }
+
+    /// Returns the `(intrinsic_tokens, floor_tokens)` of transaction calldata `input`.
+    ///
+    /// Both weigh non-zero bytes at `TxTokenNonZeroByteMultiplier`. Intrinsic tokens count a zero
+    /// byte as one token; floor tokens weigh it at `TxFloorZeroByteMultiplier` (EIP-7623: one;
+    /// EIP-7976: the non-zero weight).
+    ///
+    /// Intrinsic gas is `intrinsic_tokens * TxTokenCost`. Sum the tokens over several inputs
+    /// before pricing them, and pass the summed floor tokens to
+    /// [`tx_floor_cost_with_tokens`](Self::tx_floor_cost_with_tokens).
+    #[inline]
+    pub fn tx_calldata_tokens(&self, input: &[u8]) -> (u64, u64) {
+        let zero_bytes = count_zero_bytes(input);
+        let non_zero_tokens = (input.len() as u64 - zero_bytes)
+            * u64::from(self.get(GasId::TxTokenNonZeroByteMultiplier));
+        (
+            zero_bytes + non_zero_tokens,
+            zero_bytes * u64::from(self.get(GasId::TxFloorZeroByteMultiplier)) + non_zero_tokens,
+        )
+    }
+
+    /// Returns the EIP-7623 calldata floor gas: `TxFloorCostBase` plus `TxFloorCostPerToken` for
+    /// each of `floor_tokens` (see [`tx_calldata_tokens`](Self::tx_calldata_tokens)) and for the
+    /// access list's bytes, weighted by `TxAccessListFloorByteMultiplier`.
+    ///
+    /// The caller checks that EIP-7623 is active. Under EIP-2780 the transaction's floor is based
+    /// on its decomposed intrinsic base instead of `TxFloorCostBase`, which this function does
+    /// not know.
+    #[inline]
+    pub fn tx_floor_cost_with_tokens(
+        &self,
+        floor_tokens: u64,
+        access_list_accounts: u64,
+        access_list_storage_keys: u64,
+    ) -> u64 {
+        self.tx_floor_cost_with_base(
+            u64::from(self.get(GasId::TxFloorCostBase)),
+            floor_tokens,
+            access_list_accounts,
+            access_list_storage_keys,
+        )
+    }
+
+    /// Like [`tx_floor_cost_with_tokens`](Self::tx_floor_cost_with_tokens), with an explicit base.
+    #[inline]
+    pub(crate) fn tx_floor_cost_with_base(
+        &self,
+        base: u64,
+        floor_tokens: u64,
+        access_list_accounts: u64,
+        access_list_storage_keys: u64,
+    ) -> u64 {
+        let access_list_bytes = access_list_accounts
+            .saturating_mul(20)
+            .saturating_add(access_list_storage_keys.saturating_mul(32));
+        let tokens = floor_tokens.saturating_add(
+            access_list_bytes
+                .saturating_mul(u64::from(self.get(GasId::TxAccessListFloorByteMultiplier))),
+        );
+        base.saturating_add(tokens.saturating_mul(u64::from(self.get(GasId::TxFloorCostPerToken))))
+    }
+}
+
+/// Counts the zero bytes in `data`.
+///
+/// Each chunk's count fits in a `u8`, so the compiler can compare and sum whole vector
+/// registers of byte lanes and widen once per chunk; a `usize` count would widen every flag
+/// to a full lane. 192 is a multiple of every power-of-two vector width up to 64 bytes, so only
+/// the last chunk runs a scalar remainder.
+///
+/// With the aarch64 dot-product extension, LLVM turns a sum of 0/1 flags into a `udot` and
+/// `addp` per vector, which ran slower than byte adds on an Apple M4. Counting 2 per zero byte
+/// in 96-byte chunks keeps byte adds, at the cost of a mask per vector; a chunk still sums to at
+/// most 192.
+fn count_zero_bytes(data: &[u8]) -> u64 {
+    const STEP: u8 = if cfg!(target_feature = "dotprod") { 2 } else { 1 };
+    data.chunks(192 / STEP as usize)
+        .map(|c| c.iter().map(|&b| if b == 0 { STEP } else { 0 }).sum::<u8>() as u64)
+        .sum::<u64>()
+        / STEP as u64
 }
 
 #[cfg(test)]
@@ -572,5 +652,28 @@ mod tests {
         assert_eq!(params.exp_cost(U256::ZERO), 0);
         assert_eq!(params.exp_cost(U256::from(0xff)), 10);
         assert_eq!(params.exp_cost(U256::from(0x100)), 20);
+    }
+
+    #[test]
+    fn calldata_tokens_and_floor_cost_follow_the_fork() {
+        // Zero bytes weigh 1 and non-zero bytes 4 in the intrinsic tokens.
+        let input = [0, 0, 1];
+
+        // EIP-7623: the floor weighs zero bytes like the intrinsic tokens and ignores the
+        // access list.
+        let prague = gas_params(SpecId::PRAGUE);
+        assert_eq!(prague.tx_calldata_tokens(&input), (6, 6));
+        assert_eq!(prague.tx_calldata_tokens(&[]), (0, 0));
+        assert_eq!(prague.tx_floor_cost_with_tokens(6, 0, 0), 21_000 + 6 * 10);
+        assert_eq!(prague.tx_floor_cost_with_tokens(6, 3, 4), 21_000 + 6 * 10);
+
+        // EIP-7976: the floor weighs every byte by 4. EIP-7981 adds the access list bytes.
+        let amsterdam = gas_params(SpecId::AMSTERDAM);
+        assert_eq!(amsterdam.tx_calldata_tokens(&input), (6, 12));
+        assert_eq!(amsterdam.tx_floor_cost_with_tokens(12, 0, 0), 12_000 + 12 * 16);
+        assert_eq!(
+            amsterdam.tx_floor_cost_with_tokens(12, 1, 1),
+            12_000 + (12 + (20 + 32) * 4) * 16
+        );
     }
 }
