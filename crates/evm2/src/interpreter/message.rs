@@ -131,6 +131,25 @@ impl<E> MessageExt<E> {
             _non_exhaustive,
         }
     }
+
+    /// Returns `true` if the frame executing this message is static: the caller is static or the
+    /// message is a `STATICCALL`.
+    #[inline]
+    pub fn is_static(&self) -> bool {
+        self.caller_is_static || self.kind == MessageKind::StaticCall
+    }
+
+    /// Returns `true` if the account whose context the message runs in is the requested
+    /// [`call_target`](Self::call_target), i.e. it is not a `DELEGATECALL` or `CALLCODE` into
+    /// another account.
+    ///
+    /// This compares addresses, so a `DELEGATECALL` or `CALLCODE` to the caller's own address also
+    /// counts as direct, and so does an EIP-7702 delegated `CALL`. Native precompiles use this to
+    /// reject delegated calls.
+    #[inline]
+    pub fn is_direct_call(&self) -> bool {
+        self.destination == self.call_target
+    }
 }
 
 /// Derives the contract address a create message deploys to, i.e. its
@@ -149,5 +168,53 @@ pub fn derive_create_destination(
     match kind {
         MessageKind::Create2 => caller.create2(salt, keccak256(init_code)),
         _ => caller.create(nonce),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_static_follows_caller_or_staticcall_kind() {
+        let message = |kind, caller_is_static| MessageExt::<()> {
+            kind,
+            caller_is_static,
+            ..MessageExt::default()
+        };
+
+        assert!(!message(MessageKind::Call, false).is_static());
+        assert!(!message(MessageKind::DelegateCall, false).is_static());
+        assert!(message(MessageKind::Call, true).is_static());
+        assert!(message(MessageKind::DelegateCall, true).is_static());
+        assert!(message(MessageKind::StaticCall, false).is_static());
+        assert!(message(MessageKind::StaticCall, true).is_static());
+    }
+
+    #[test]
+    fn is_direct_call_rejects_delegated_code() {
+        let callee = Address::with_last_byte(1);
+        let caller = Address::with_last_byte(2);
+        let call = MessageExt::<()> {
+            kind: MessageKind::Call,
+            destination: callee,
+            call_target: callee,
+            caller,
+            ..MessageExt::default()
+        };
+        let delegate =
+            MessageExt { kind: MessageKind::DelegateCall, destination: caller, ..call.clone() };
+        let callcode =
+            MessageExt { kind: MessageKind::CallCode, destination: caller, ..call.clone() };
+        let static_call = MessageExt { kind: MessageKind::StaticCall, ..call.clone() };
+        let self_delegate =
+            MessageExt { kind: MessageKind::DelegateCall, destination: callee, ..call.clone() };
+
+        assert!(call.is_direct_call());
+        assert!(static_call.is_direct_call());
+        assert!(!delegate.is_direct_call());
+        assert!(!callcode.is_direct_call());
+        // Address-based: a delegate call to the caller's own address is direct.
+        assert!(self_delegate.is_direct_call());
     }
 }
