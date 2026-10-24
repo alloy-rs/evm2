@@ -1,6 +1,6 @@
 use super::{
-    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking,
-    StackMut, StackRef, Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, Pc, Result, StackBacking, StackMut,
+    StackRef, Word,
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
@@ -105,7 +105,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
         let bytecode = message.code.clone();
         let gas_limit = message.gas_limit;
-        let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
+        let is_static = message.is_static();
         self.pc = bytecode.bytes_slice().as_ptr();
         self.bytecode_ref = None;
         self.bytecode = bytecode;

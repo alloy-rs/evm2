@@ -842,10 +842,7 @@ pub fn intrinsic_and_floor_gas(
     value: U256,
 ) -> (u64, u64) {
     let params = &version.gas_params;
-    let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
-    let zero_data_len = count_zero_bytes(input);
-    let non_zero_data_len = input.len() as u64 - zero_data_len;
-    let tokens = zero_data_len + non_zero_data_len * non_zero_multiplier;
+    let (tokens, floor_tokens) = params.tx_calldata_tokens(input);
     let mut gas = tokens * u64::from(params.get(GasId::TxTokenCost));
     gas += access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressCost));
     gas += access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyCost));
@@ -874,38 +871,14 @@ pub fn intrinsic_and_floor_gas(
         return (gas, 0);
     }
 
-    // tokens for access list
-    let al_multiplier = params.get(GasId::TxAccessListFloorByteMultiplier) as u64;
-    let mut floor_tokens =
-        (access_list_accounts * 20 + access_list_storage_keys * 32) * al_multiplier;
-
-    // tokens for input. EIP-7623 weights zero bytes at `TxFloorZeroByteMultiplier`
-    // (1) and non-zero bytes at `TxTokenNonZeroByteMultiplier` (4); EIP-7976
-    // raises the zero-byte weight to 4 so every byte counts uniformly.
-    let zero_multiplier = u64::from(params.get(GasId::TxFloorZeroByteMultiplier));
-    floor_tokens += zero_data_len * zero_multiplier + non_zero_data_len * non_zero_multiplier;
-
-    let floor_base = eip2780_base.unwrap_or_else(|| params.get(GasId::TxFloorCostBase) as u64);
-    (gas, floor_base + floor_tokens * floor_cost_per_token)
-}
-
-/// Counts the zero bytes in `data`.
-///
-/// Each chunk's count fits in a `u8`, so the compiler can compare and sum whole vector
-/// registers of byte lanes and widen once per chunk; a `usize` count would widen every flag
-/// to a full lane. 192 is a multiple of every power-of-two vector width up to 64 bytes, so only
-/// the last chunk runs a scalar remainder.
-///
-/// With the aarch64 dot-product extension, LLVM turns a sum of 0/1 flags into a `udot` and
-/// `addp` per vector, which ran slower than byte adds on an Apple M4. Counting 2 per zero byte
-/// in 96-byte chunks keeps byte adds, at the cost of a mask per vector; a chunk still sums to at
-/// most 192.
-fn count_zero_bytes(data: &[u8]) -> u64 {
-    const STEP: u8 = if cfg!(target_feature = "dotprod") { 2 } else { 1 };
-    data.chunks(192 / STEP as usize)
-        .map(|c| c.iter().map(|&b| if b == 0 { STEP } else { 0 }).sum::<u8>() as u64)
-        .sum::<u64>()
-        / STEP as u64
+    let floor_base = eip2780_base.unwrap_or_else(|| u64::from(params.get(GasId::TxFloorCostBase)));
+    let floor_gas = params.tx_floor_cost_with_base(
+        floor_base,
+        floor_tokens,
+        access_list_accounts,
+        access_list_storage_keys,
+    );
+    (gas, floor_gas)
 }
 
 /// EIP-2780: sum of the sender base, `tx.to`-based, and `tx.value`-based
