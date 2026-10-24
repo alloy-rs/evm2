@@ -1,5 +1,8 @@
 //! Geth Js tracer tests
 
+mod errors;
+mod values;
+
 use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, EmptyDB, ResultAndState, SpecId, TestDbExt,
     TransactTo, TxEnv, deploy_contract,
@@ -222,7 +225,7 @@ fn test_geth_jstracer_proxy_contract() {
     let result = js_result(insp, &res, context);
     assert_eq!(
         result,
-        json!([{"event": "Transfer", "token": proxy_addr, "caller": deployer, "value": "0"}])
+        json!([{"event": "Transfer", "token": proxy_addr, "caller": deployer, "value": "7"}])
     );
 }
 
