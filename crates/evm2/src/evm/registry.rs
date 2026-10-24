@@ -342,13 +342,22 @@ where
 }
 
 /// A type-erased transaction handler registry keyed by transaction type byte.
+///
+/// Cloning is cheap and clones share handler instances. Registering on a clone copies the table
+/// first, so it never affects the original.
 pub struct TxRegistry<T: EvmTypesHost, Output = ()> {
-    handlers: HashMap<u8, Arc<dyn ErasedTxHandler<T, Output>>>,
+    handlers: Arc<HashMap<u8, Arc<dyn ErasedTxHandler<T, Output>>>>,
 }
 
 impl<T: EvmTypesHost, Output> fmt::Debug for TxRegistry<T, Output> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TxRegistry").field("len", &self.handlers.len()).finish_non_exhaustive()
+    }
+}
+
+impl<T: EvmTypesHost, Output> Clone for TxRegistry<T, Output> {
+    fn clone(&self) -> Self {
+        Self { handlers: Arc::clone(&self.handlers) }
     }
 }
 
@@ -361,7 +370,7 @@ impl<T: EvmTypesHost, Output> Default for TxRegistry<T, Output> {
 impl<T: EvmTypesHost, Output> TxRegistry<T, Output> {
     /// Creates an empty registry.
     pub fn new() -> Self {
-        Self { handlers: HashMap::default() }
+        Self { handlers: Arc::default() }
     }
 
     /// Registers a typed handler for a transaction type byte.
@@ -374,7 +383,8 @@ impl<T: EvmTypesHost, Output> TxRegistry<T, Output> {
         H: TxHandler<T, Tx, Output> + Send + Sync + 'static,
         F: for<'a> Fn(&'a T::Tx) -> Option<&'a Tx> + Send + Sync + 'static,
     {
-        self.handlers.insert(type_id, Arc::new(HandlerAdapter::new(type_id, extract, handler)));
+        Arc::make_mut(&mut self.handlers)
+            .insert(type_id, Arc::new(HandlerAdapter::new(type_id, extract, handler)));
         self
     }
 
@@ -697,5 +707,23 @@ mod tests {
             Err(HandlerError::WrongTransactionType { expected: 0x01 })
         );
         assert_eq!(prepared_count.load(Ordering::Relaxed), 6);
+    }
+
+    #[test]
+    fn cloned_registries_are_independent() {
+        let mut original = TxRegistry::<TestTypes, Receipt>::new();
+        original.register(0x01, transfer, handler(|_| Ok(()), |req, ()| handle_transfer(req)));
+
+        let mut cloned = original.clone();
+        assert!(Arc::ptr_eq(&original.handlers, &cloned.handlers));
+        cloned.register(0x02, create, handler(|_| Ok(()), |req, ()| handle_create(req)));
+        assert!(cloned.contains(0x01));
+        assert!(cloned.contains(0x02));
+        assert!(original.contains(0x01));
+        assert!(!original.contains(0x02));
+
+        original.register(0x03, transfer, handler(|_| Ok(()), |req, ()| handle_transfer(req)));
+        assert!(original.contains(0x03));
+        assert!(!cloned.contains(0x03));
     }
 }
