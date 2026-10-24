@@ -48,7 +48,12 @@ pub fn run_interpreter<'frame, 'host, T: EvmTypesHost>(
     host: &mut T::Host<'host>,
 ) -> Option<InstrStop> {
     // Disabled runners must not hash code merely to discover that lookup is unavailable.
-    if !backend.enabled() || !backend.supports_host::<T>(host.execution_config()) {
+    if !backend.enabled()
+        || !backend.supports_host::<T>(
+            &host.execution_config().version().gas_params,
+            host.execution_config().base_spec_id(),
+        )
+    {
         return None;
     }
     let code_hash = interpreter.original_bytecode_hash();
@@ -619,7 +624,7 @@ mod custom_host_tests {
     use crate::runtime::{HostConfig, RuntimeConfig};
     use alloy_primitives::{Address, Bytes, U256};
     use evm2::{
-        BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, ExecutionConfig, OpcodeConfig, SpecId,
+        Evm, SpecId,
         bytecode::Bytecode,
         config::BaseEvmConfigSelector,
         env::{BlockEnvExt, TxEnvExt},
@@ -642,78 +647,6 @@ mod custom_host_tests {
         type TxResultExt = ();
         type BlockEnvExt = [u64; 13];
         type Host<'a> = Evm<'a, Self>;
-    }
-
-    #[derive(Debug)]
-    struct CheapAddTypes;
-
-    struct CheapAddConfig<const BASE_SPEC_ID: u32>;
-
-    impl<const BASE_SPEC_ID: u32> EvmConfig<CheapAddTypes> for CheapAddConfig<BASE_SPEC_ID> {
-        const BASE_SPEC_ID: SpecId = SpecId::try_from_u32(BASE_SPEC_ID).unwrap();
-        const OPCODE_CONFIG: &'static OpcodeConfig<CheapAddTypes> = &{
-            let mut config = OpcodeConfig::base::<BaseEvmConfig<BASE_SPEC_ID>>();
-            config.set_static_gas(op::ADD, 1);
-            config
-        };
-    }
-
-    struct CheapAddSelector;
-
-    impl EvmConfigSelector<CheapAddTypes> for CheapAddSelector {
-        type Config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32> =
-            CheapAddConfig<BASE_SPEC_ID>;
-
-        fn execution_config(_: SpecId) -> ExecutionConfig<CheapAddTypes> {
-            ExecutionConfig::for_config::<CheapAddConfig<{ SpecId::OSAKA as u32 }>>()
-        }
-    }
-
-    impl EvmTypesHost for CheapAddTypes {
-        type ConfigSelector = CheapAddSelector;
-        type SpecId = SpecId;
-        type Tx = evm2::ethereum::TxEnvelope;
-        type EvmExt = ();
-        type MessageExt = [u64; 17];
-        type MessageResultExt = ();
-        type TxEnvExt = [u64; 9];
-        type TxResultExt = ();
-        type BlockEnvExt = [u64; 13];
-        type Host<'a> = Evm<'a, Self>;
-    }
-
-    #[test]
-    fn custom_opcode_table_falls_back_to_interpreter() {
-        let backend = JitBackend::new(RuntimeConfig {
-            blocking: true,
-            host: HostConfig::for_types::<CheapAddTypes>(),
-            ..Default::default()
-        })
-        .unwrap();
-        let mut host = Evm::<CheapAddTypes>::new(
-            SpecId::OSAKA,
-            BlockEnvExt::default(),
-            TxRegistry::new(),
-            EmptyDB::default(),
-            NoPrecompiles::default(),
-        );
-        let tx = TxEnvExt::default();
-        let message = MessageExt {
-            gas_limit: 100_000,
-            code: Bytecode::new_legacy(Bytes::from_static(&[
-                op::PUSH1,
-                1,
-                op::PUSH1,
-                2,
-                op::ADD,
-                op::STOP,
-            ])),
-            ..Default::default()
-        };
-        let mut compiled = Interpreter::<CheapAddTypes>::new(&tx, &message);
-        assert_eq!(run_interpreter(&backend, &mut compiled, &mut host), None);
-        assert_eq!(compiled.run(&mut host).unwrap(), InstrStop::Stop);
-        assert_eq!(compiled.gas().spent(), 3 + 3 + 1);
     }
 
     #[test]

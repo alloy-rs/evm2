@@ -132,8 +132,6 @@ pub struct ExecutionConfig<T: EvmTypesHost> {
     base_spec_id: SpecId,
     pub(crate) version: Version,
     #[derive_where(skip)]
-    opcode_config: &'static OpcodeConfig<T>,
-    #[derive_where(skip)]
     pub(crate) instructions: &'static InstrTable<T>,
     #[derive_where(skip)]
     pub(crate) inspect_instructions: &'static InstrTable<T>,
@@ -158,7 +156,6 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
         Self {
             base_spec_id,
             version: Version::new(base_spec_id),
-            opcode_config: SelectorOpcodeConfig::<T, F, CUSTOM_SPEC_ID>::OPCODE_CONFIG[i],
             instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
             inspect_instructions:
                 &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSPECT_INSTRUCTIONS[i],
@@ -172,7 +169,6 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
         Self {
             base_spec_id,
             version: Version::new(base_spec_id),
-            opcode_config: C::OPCODE_CONFIG,
             instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
             inspect_instructions: ConfigInstrTables::<T, C>::INSPECT_INSTRUCTIONS,
         }
@@ -203,17 +199,6 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
     #[inline]
     pub const fn version(&self) -> &Version {
         &self.version
-    }
-
-    /// Returns whether the defined opcodes and their static gas match the base table for
-    /// [`base_spec_id`](Self::base_spec_id).
-    ///
-    /// Instruction implementations are not compared.
-    pub fn has_base_opcode_table(&self) -> bool {
-        let base = crate::spec_to_generic!(self.base_spec_id, |BASE_SPEC_ID| {
-            <BaseEvmConfig<BASE_SPEC_ID> as EvmConfig<T>>::OPCODE_CONFIG
-        });
-        core::ptr::eq(self.opcode_config, base) || self.opcode_config.same_table_layout(base)
     }
 }
 
