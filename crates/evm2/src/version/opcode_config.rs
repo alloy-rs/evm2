@@ -54,6 +54,12 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
         self.static_gas_table.get(opcode)
     }
 
+    /// Returns whether `self` and `other` define the same opcodes with the same static gas.
+    pub(crate) fn same_table_layout(&self, other: &Self) -> bool {
+        self.static_gas_table.table == other.static_gas_table.table
+            && (0..=u8::MAX).all(|op| self.is_unknown_opcode(op) == other.is_unknown_opcode(op))
+    }
+
     /// Returns the dispatch-table revision for `opcode`.
     #[inline(always)]
     pub(crate) const fn revision(&self, opcode: u8) -> u8 {
