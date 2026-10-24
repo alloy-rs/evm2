@@ -1113,7 +1113,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let guard = self.enter_execution();
-        let result = handler.execute(tx, guard.evm);
+        let result = handler.execute(tx.as_recovered_ref(), guard.evm);
         drop(guard);
         if result.is_err() {
             self.state.clear_transaction_state();
@@ -1139,8 +1139,10 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     ///
     /// Uses the active validation rules; callers must configure any pool-specific relaxations.
     pub fn validate_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<()> {
-        let result =
-            self.registry.try_get_by_type(tx.ty()).and_then(|handler| handler.validate(tx, self));
+        let result = self
+            .registry
+            .try_get_by_type(tx.ty())
+            .and_then(|handler| handler.validate(tx.as_recovered_ref(), self));
         self.state.clear_transaction_state();
         result
     }

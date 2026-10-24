@@ -151,8 +151,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // `SYSTEM_MAX_SSTORES_PER_CALL` new-slot writes (execution-specs
         // `process_unchecked_system_transaction`).
         let reservoir = if self.feature(EvmFeatures::EIP8037) {
-            self.version().gas_params.get(GasId::SstoreSetState) as u64
-                * SYSTEM_MAX_SSTORES_PER_CALL
+            self.version().gas_params.get(GasId::SstoreSetState) * SYSTEM_MAX_SSTORES_PER_CALL
         } else {
             0
         };

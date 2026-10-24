@@ -22,7 +22,7 @@ pub const fn install_gas_params(gas_params: &mut GasParams) {
 // Static gas comes from the instruction table; the dynamic part comes from the active version.
 #[instruction(dynamic_gas)]
 pub fn custom(cx: _) -> Result<out> {
-    cx.gas.spend(cx.state.gas_params().get(CUSTOM_OPCODE_DYNAMIC_GAS_ID).into())?;
+    cx.gas.spend(cx.state.gas_params().get(CUSTOM_OPCODE_DYNAMIC_GAS_ID))?;
     *out = Word::from(0xdead_u64);
 }
 
