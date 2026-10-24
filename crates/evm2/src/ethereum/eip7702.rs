@@ -217,6 +217,9 @@ fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations:
 #[derive(Clone, Copy, Debug)]
 pub struct AppliedAuth {
     /// Whether the authority account already existed when this authorization was processed.
+    ///
+    /// An account counts as existing when it is present in state or touched earlier in the
+    /// transaction, even if it is still absent.
     pub existed: bool,
     /// Whether the authority's code was a valid delegation at the start of the transaction.
     pub delegated_before_tx: bool,
@@ -246,7 +249,7 @@ pub fn validate_one_auth<'a, T: EvmTypes>(
     };
     let mut account = host.state.account(&authority)?;
     account.warm();
-    let existed = account.exists();
+    let existed = account.exists() || account.is_touched();
     let authority_nonce = account.nonce();
     let code = account.load_code()?;
     // Reject an authority that already carries non-delegation code; otherwise non-empty code is
