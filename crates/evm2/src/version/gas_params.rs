@@ -216,9 +216,12 @@ impl IndexMut<GasId> for GasParams {
 }
 
 impl GasParams {
-    /// Creates empty gas parameters.
+    /// Creates gas parameters with every cost set to zero.
+    ///
+    /// Methods that divide by a parameter, such as [`memory_cost`](Self::memory_cost), panic until
+    /// that parameter is set.
     #[inline]
-    pub(super) const fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self { table: [0; GasId::COUNT], _align: [] }
     }
 
@@ -572,5 +575,14 @@ mod tests {
         assert_eq!(params.exp_cost(U256::ZERO), 0);
         assert_eq!(params.exp_cost(U256::from(0xff)), 10);
         assert_eq!(params.exp_cost(U256::from(0x100)), 20);
+    }
+
+    #[test]
+    fn empty_gas_params_are_all_zero() {
+        let mut params = GasParams::empty();
+        assert!((0..GasId::COUNT).all(|i| params[GasId::from_usize(i).unwrap()] == 0));
+
+        params.set(GasId::ExpByte, 7);
+        assert_eq!(params.get(GasId::ExpByte), 7);
     }
 }
