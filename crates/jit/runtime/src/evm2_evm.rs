@@ -905,6 +905,7 @@ mod custom_host_tests {
             let extcodesize_gas = config.static_gas(op::EXTCODESIZE);
             config.set_instruction::<position_extcodesize>(op::EXTCODESIZE, extcodesize_gas);
             config.set_instruction::<added>(ADDED_OPCODE, 2);
+            config.set_instruction::<added>(op::DUPN, 2);
             config
         };
     }
@@ -1096,6 +1097,10 @@ mod custom_host_tests {
         assert_eq!(compiled_stop, None);
         assert_eq!(stop, InstrStop::Stop);
         assert_eq!(interpreted.gas().spent(), 2);
+        // A jump target inside the immediate of an unsupported host opcode stays reachable.
+        let (compiled_stop, _, stop, _) =
+            run_both(table_host(), &[op::PUSH1, 4, op::JUMP, op::DUPN, op::JUMPDEST, op::STOP]);
+        assert_eq!(compiled_stop, Some(stop));
         // An unreachable added opcode, such as metadata after `STOP`, does not block compilation.
         let (compiled_stop, compiled, stop, interpreted) =
             run_both(table_host(), &[op::PUSH0, op::STOP, ADDED_OPCODE, 0xa2, 0x64]);

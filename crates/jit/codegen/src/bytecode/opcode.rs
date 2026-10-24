@@ -136,7 +136,7 @@ impl<'a> Iterator for OpcodesIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         self.iter.next().map(|&opcode| {
             let info = self.info[opcode as usize];
-            if info.is_unknown() || info.is_disabled() {
+            if info.is_unknown() || info.is_disabled() || info.is_unsupported_host() {
                 return Opcode { opcode, immediate: None };
             }
 
