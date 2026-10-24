@@ -8,6 +8,8 @@ extern crate self as evm2;
 
 extern crate alloc;
 
+#[cfg(feature = "rpc")]
+use alloy_rpc_types_eth as _;
 #[cfg(feature = "nightly")]
 use ruint as _;
 
@@ -16,6 +18,8 @@ pub mod constants;
 mod error;
 pub mod ethereum;
 pub mod interpreter;
+#[cfg(feature = "rpc")]
+pub mod rpc;
 pub mod utils;
 pub use error::{AnyError, DatabaseError, ExecutionError, HostError, LoadError};
 

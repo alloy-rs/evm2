@@ -34,6 +34,9 @@ phf = { workspace = true, features = ["macros"], optional = true }
 # "serde"
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
+# "rpc"
+alloy-rpc-types-eth = { workspace = true, optional = true }
+
 # "async"
 corosensei = { workspace = true, optional = true }
 
@@ -121,6 +124,7 @@ std = [
     "alloy-eip7928/std",
     "alloy-eips/std",
     "alloy-primitives/std",
+    "alloy-rpc-types-eth?/std",
     "ark-bls12-381/std",
     "ark-bn254/std",
     "ark-ec/std",
@@ -148,6 +152,7 @@ serde = [
     "alloy-eip7928/serde",
     "alloy-eips/serde",
     "alloy-primitives/serde",
+    "alloy-rpc-types-eth?/serde",
     "ark-serialize/serde",
     "derive-where/serde",
     "k256/serde",
@@ -164,6 +169,9 @@ arbitrary = [
     "alloy-eips/arbitrary",
     "alloy-primitives/arbitrary",
 ]
+
+# Optional helpers for RPC endpoints.
+rpc = ["dep:alloy-rpc-types-eth"]
 
 # Opt-in chain-specific account data; Ethereum builds keep the original account layout.
 account-ext = ["dep:triomphe"]
