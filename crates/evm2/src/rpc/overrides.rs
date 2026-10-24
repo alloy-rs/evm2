@@ -82,6 +82,8 @@ pub fn apply_block_overrides<DB, E>(
 /// Changes reach `sink` in the order of [`StateChangeSink`]: bytecode, storage wipe, changed slots
 /// with their values before the override, then the account. `movePrecompileToAddress` is not
 /// supported. Pass [`NoopChangeSink`](crate::evm::NoopChangeSink) to discard the changes.
+///
+/// An attached block access list takes precedence over the cache when reading, so detach it first.
 pub fn apply_state_overrides<DB: DynDatabase>(
     overrides: StateOverride,
     db: &mut CacheDB<DB>,
