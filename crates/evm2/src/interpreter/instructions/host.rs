@@ -20,7 +20,7 @@ pub fn sload(cx: _, [key]: [Word]) -> Result<out> {
     // EIP-2929: SLOAD pays the warm read cost as static opcode gas, then only
     // charges the additional cold cost when the slot was not already warm. Avoid
     // touching the host/database if the frame cannot afford that cold surcharge.
-    let additional_cold_cost = cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into();
+    let additional_cold_cost = cx.state.gas_params().get(GasId::ColdStorageAdditionalCost);
     let skip_cold_load =
         cx.state.feature(EvmFeatures::EIP2929) && cx.gas.remaining() < additional_cold_cost;
     let destination = &cx.state.message().destination;
@@ -42,20 +42,20 @@ pub fn sstore(cx: _, [key, value]: [Word]) -> Result {
 
     // EIP-2200: SSTORE may not execute with only the value-transfer stipend left. This
     // check happens before any gas is charged or host storage is touched.
-    if is_eip2200 && cx.gas.remaining() <= cx.state.gas_params().get(GasId::CallStipend).into() {
+    if is_eip2200 && cx.gas.remaining() <= cx.state.gas_params().get(GasId::CallStipend) {
         return Err(InstrStop::ReentrancySentryOOG);
     }
 
     // Frontier through Petersburg charge a fixed SSTORE_RESET static cost. Istanbul
     // (EIP-2200) turns this into the SLOAD-equivalent cost, and Berlin (EIP-2929)
     // makes that the warm storage read cost.
-    cx.gas.spend(cx.state.gas_params().get(GasId::SstoreStatic).into())?;
+    cx.gas.spend(cx.state.gas_params().get(GasId::SstoreStatic))?;
 
     // EIP-2929: avoid performing a cold storage load if the frame cannot afford the
     // additional cold-load charge. The host performs the write and returns
     // original/present/new values for net metering.
     let skip_cold_load = cx.state.feature(EvmFeatures::EIP2929)
-        && cx.gas.remaining() < cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into();
+        && cx.gas.remaining() < cx.state.gas_params().get(GasId::ColdStorageAdditionalCost);
     let destination = &cx.state.message().destination;
     let state_load = cx
         .state

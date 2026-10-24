@@ -65,7 +65,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         access_list_storage_keys,
         tx.value,
     );
-    intrinsic += eip7702_authorization_gas(req.host, tx.authorization_list.len());
+    intrinsic += eip7702_authorization_gas(req.host.version(), tx.authorization_list.len());
     // EIP-2780 (ethereum/EIPs#11844): the per-auth state-dependent charges are applied at the
     // runtime gas phase, so no state gas is charged at the intrinsic phase (pre-Amsterdam there is
     // none either). A transaction that passes the intrinsic check but cannot afford the runtime
@@ -207,9 +207,12 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     settle(req.host, result)
 }
 
-fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations: usize) -> u64 {
-    let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
-    (authorizations as u64).saturating_mul(per_auth)
+/// Returns the EIP-7702 intrinsic gas for `authorizations` authorization tuples.
+///
+/// The caller checks that EIP-7702 is active.
+pub const fn eip7702_authorization_gas(version: &Version, authorizations: usize) -> u64 {
+    (authorizations as u64)
+        .saturating_mul(version.gas_params.get(GasId::TxEip7702PerEmptyAccountCost))
 }
 
 /// Outcome of validating one EIP-7702 authorization, carrying the facts needed to compute its gas
@@ -328,7 +331,7 @@ impl<'g> RuntimeAuthCharges<'g> {
                 0
             },
             delegation_bytes_state_gas: if is_eip8037 {
-                u64::from(version.gas_params.get(GasId::TxEip7702PerAuthState))
+                version.gas_params.get(GasId::TxEip7702PerAuthState)
             } else {
                 0
             },
@@ -388,12 +391,12 @@ pub struct AuthRefunds {
 
 impl AuthRefunds {
     /// Creates refund accounting with `version`'s authorization prices.
-    pub fn new(version: &Version) -> Self {
+    pub const fn new(version: &Version) -> Self {
         Self {
             is_eip8037: version.feature(EvmFeatures::EIP8037),
             new_account: version.gas_params.new_account_state_gas(),
-            auth_base: u64::from(version.gas_params.get(GasId::TxEip7702PerAuthState)),
-            execution_per_auth: u64::from(version.gas_params.get(GasId::TxEip7702AuthRefund)),
+            auth_base: version.gas_params.get(GasId::TxEip7702PerAuthState),
+            execution_per_auth: version.gas_params.get(GasId::TxEip7702AuthRefund),
             state_refund: 0,
             execution_refund: 0,
         }
@@ -469,4 +472,17 @@ pub fn apply_auth_list<'a, T: EvmTypes>(
         host.state.account(&authority)?.set_delegation(*authorization.address());
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SpecId;
+
+    #[test]
+    fn authorization_gas_charges_per_authorization() {
+        assert_eq!(eip7702_authorization_gas(Version::base(SpecId::PRAGUE), 0), 0);
+        assert_eq!(eip7702_authorization_gas(Version::base(SpecId::PRAGUE), 3), 3 * 25_000);
+        assert_eq!(eip7702_authorization_gas(Version::base(SpecId::AMSTERDAM), 2), 2 * 7_816);
+    }
 }
