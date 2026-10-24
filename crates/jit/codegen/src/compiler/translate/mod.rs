@@ -744,6 +744,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                     !self.config.local_stack,
                     "host opcodes need the interpreter stack"
                 );
+                // The host instruction sees the whole stack.
+                self.materialize_live_stack();
                 let sp = self.sp_after_inputs();
                 let (inputs, outputs) = data.stack_io();
                 let pc = self.bcx.iconst(self.isize_type, self.bytecode.pc(inst) as i64);

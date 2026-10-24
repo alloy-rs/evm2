@@ -486,14 +486,15 @@ pub unsafe extern "C" fn __revmc_builtin_host_instruction<T: EvmTypesHost>(
     // SAFETY: `sp` is the lowest input slot of the interpreter stack.
     let len = unsafe { sp.offset_from(base.cast::<EvmWord>()) } as usize + inputs;
     let gas = ecx.gas;
+    let memory_len = ecx.memory().len();
     ecx.interpreter_mut().set_gas(gas);
     let result = unsafe { ecx.interpreter_mut().run_external_instruction(pc, len) };
     ecx.gas = ecx.interpreter().gas();
     ecx.return_data_len = ecx.interpreter().return_data().len();
     ecx.refresh_memory_cache();
     let new_len = result?;
-    if new_len != len - inputs + outputs {
-        // The host overrode the opcode with a different stack effect.
+    // Compiled code relies on memory never shrinking, and on the opcode's stack effect.
+    if new_len != len - inputs + outputs || ecx.memory().len() < memory_len {
         return Err(InstrStop::FatalExternalError.into());
     }
     Ok(())
