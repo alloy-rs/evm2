@@ -476,7 +476,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         let (state, mut stack) = unsafe {
             (
                 InterpreterState::wrap_mut(&mut *this),
-                StackMut { stack: &mut *(*this).stack, len: &mut (*this).stack_len },
+                StackMut { stack: &mut (*this).stack, len: &mut (*this).stack_len },
             )
         };
         instr(&mut pc, stack.reborrow(), state)?;
