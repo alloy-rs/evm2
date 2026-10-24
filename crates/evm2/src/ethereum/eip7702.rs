@@ -212,6 +212,42 @@ fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations:
     (authorizations as u64).saturating_mul(per_auth)
 }
 
+/// An EIP-7702 authorization as consumed by [`apply_auth_list`].
+///
+/// Exposes the fields the authorization loop reads. Implement it to process authorizations that
+/// carry a different signature scheme than [`LazyAuthorization`].
+pub trait Eip7702Authorization {
+    /// Returns the chain ID the authorization is valid for; zero means any chain.
+    fn chain_id(&self) -> U256;
+
+    /// Returns the nonce the authority account must have for the authorization to apply.
+    fn nonce(&self) -> u64;
+
+    /// Returns the address the authority delegates to; the zero address clears the delegation.
+    fn address(&self) -> Address;
+
+    /// Returns the recovered authority, or `None` if the signature is invalid.
+    fn authority(&self) -> Option<Address>;
+}
+
+impl Eip7702Authorization for LazyAuthorization {
+    fn chain_id(&self) -> U256 {
+        *Self::chain_id(self)
+    }
+
+    fn nonce(&self) -> u64 {
+        Self::nonce(self)
+    }
+
+    fn address(&self) -> Address {
+        *Self::address(self)
+    }
+
+    fn authority(&self) -> Option<Address> {
+        Self::authority(self)
+    }
+}
+
 /// Outcome of validating one EIP-7702 authorization, carrying the facts needed to compute its gas
 /// charges (execution-specs `set_delegation`).
 #[derive(Clone, Copy, Debug)]
@@ -233,9 +269,10 @@ pub struct AppliedAuth {
 pub fn validate_one_auth<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     chain_id: u64,
-    authorization: &LazyAuthorization,
+    authorization: &impl Eip7702Authorization,
 ) -> HandlerResult<Option<(Address, AppliedAuth)>> {
-    if !authorization.chain_id().is_zero() && authorization.chain_id() != &U256::from(chain_id) {
+    let auth_chain_id = authorization.chain_id();
+    if !auth_chain_id.is_zero() && auth_chain_id != U256::from(chain_id) {
         return Ok(None);
     }
     if authorization.nonce() == u64::MAX {
@@ -452,10 +489,10 @@ impl AuthAccounting for AuthRefunds {
 /// their delegation is applied. An accounting out-of-gas aborts the list without loading the
 /// remaining authorities — keeping them out of the EIP-7928 block access list — and returns
 /// `true`; the caller is responsible for rolling back the partially applied delegations.
-pub fn apply_auth_list<'a, T: EvmTypes>(
+pub fn apply_auth_list<'a, 'b, T: EvmTypes, A: Eip7702Authorization + 'b>(
     host: &mut Evm<'a, T>,
     chain_id: u64,
-    authorizations: &[LazyAuthorization],
+    authorizations: impl IntoIterator<Item = &'b A>,
     accounting: &mut impl AuthAccounting,
 ) -> HandlerResult<bool> {
     for authorization in authorizations {
@@ -466,7 +503,7 @@ pub fn apply_auth_list<'a, T: EvmTypes>(
         if accounting.accepted(authority, &auth).is_err() {
             return Ok(true);
         }
-        host.state.account(&authority)?.set_delegation(*authorization.address());
+        host.state.account(&authority)?.set_delegation(authorization.address());
     }
     Ok(false)
 }
