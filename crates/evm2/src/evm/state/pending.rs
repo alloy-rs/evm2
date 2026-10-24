@@ -167,7 +167,10 @@ mod tests {
             Some(info.clone()),
             Some(AccountInfo { nonce: 2, ..info.clone() }),
         );
-        state.insert_account(unchanged, Some(info.clone()), Some(info));
+        state.insert_account(unchanged, Some(info.clone()), Some(info.clone()));
+        let destroyed = Address::with_last_byte(0xdd);
+        state.insert_account(destroyed, Some(info.clone()), Some(info));
+        state.selfdestructs.insert(destroyed);
 
         let changes = state.account_changes_for(&changed).unwrap();
         assert_eq!(changes.address, changed);
@@ -175,6 +178,9 @@ mod tests {
         let changes = state.account_changes_for(&unchanged).unwrap();
         assert_eq!(changes.address, unchanged);
         assert!(!changes.is_changed());
+        let changes = state.account_changes_for(&destroyed).unwrap();
+        assert!(changes.selfdestructed);
+        assert!(changes.is_changed());
         assert!(state.account_changes_for(&Address::with_last_byte(0xcc)).is_none());
     }
 }
