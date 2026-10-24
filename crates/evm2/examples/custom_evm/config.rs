@@ -3,7 +3,7 @@
 use crate::opcode;
 use evm2::{
     BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, EvmTypesHost, ExecutionConfig, OpcodeConfig,
-    SpecId, Version,
+    SpecId, Version, interpreter::op,
 };
 
 #[repr(u32)]
@@ -118,6 +118,7 @@ pub const fn custom_opcode_config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID:
             opcode::CUSTOM_OPCODE,
             opcode::CUSTOM_OPCODE_GAS,
         );
+        config.set_instruction::<opcode::custom_sstore>(op::SSTORE, config.static_gas(op::SSTORE));
         config.set_instruction::<opcode::l1_blocknumber>(
             opcode::L1_BLOCKNUMBER_OPCODE,
             opcode::L1_BLOCKNUMBER_GAS,

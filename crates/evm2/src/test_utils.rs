@@ -215,8 +215,7 @@ impl Host<TestTypes> for TestHost {
                 ..Default::default()
             });
         }
-        self.call_static_flags
-            .push(message.caller_is_static || message.kind == MessageKind::StaticCall);
+        self.call_static_flags.push(message.is_static());
         self.calls.push(message.clone());
         match self.execute_error.clone() {
             Some(error) => Err(error),
