@@ -619,6 +619,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             "async EVM execution requires EVM erased fields to be verified as Send with \
              Evm::evm_is_send"
         );
+        assert!(
+            !matches!(self.inspector, Some(InspectorSlot::Borrowed(_))),
+            "async EVM execution cannot run with a borrowed inspector"
+        );
     }
 
     /// Marks this EVM as thread-sendable after checking the current erased field types.
@@ -969,8 +973,8 @@ impl<'a, T: EvmTypesHost> InspectorSlot<'a, T> {
         match self {
             Self::Owned(inspector) => &mut **inspector,
             // SAFETY: A borrowed pointer is only installed by `ScopedInspector`, which holds the
-            // inspector's `&mut` borrow and removes the pointer before that borrow ends. The slot
-            // is reachable only through `&mut Evm`, so this reference is the only access.
+            // inspector's `&mut` borrow and removes the pointer before that borrow ends, so the
+            // pointee is live and not otherwise borrowed for as long as the slot holds it.
             Self::Borrowed(inspector) => unsafe { inspector.as_mut() },
         }
     }
@@ -980,15 +984,14 @@ impl<'a, T: EvmTypesHost> InspectorSlot<'a, T> {
 struct ScopedInspector<'scope, 'a, T: EvmTypesHost> {
     evm: &'scope mut Evm<'a, T>,
     previous: Option<InspectorSlot<'a, T>>,
-    was_send: bool,
 }
 
 impl<'scope, 'a, T: EvmTypesHost> ScopedInspector<'scope, 'a, T> {
     #[inline]
     fn install(evm: &'scope mut Evm<'a, T>, inspector: &mut (dyn Inspector<T> + '_)) -> Self {
         // SAFETY: Only the object lifetime bound is erased. The slot cannot be replaced or read
-        // out while the inspector is installed: `ScopedInspector` holds `&mut Evm`, so no user
-        // code touches the EVM except through hooks, and those run with `running` set, where
+        // out while the inspector is installed: `ScopedInspector` holds `&mut Evm`, so user code
+        // only touches the EVM from handlers and hooks, which run with `running` set, where
         // every inspector setter and `inspector_mut` panic, while `inspector` and the other
         // readers skip a borrowed slot. `Drop` removes the pointer before this call returns or
         // unwinds, which ends the `inspector` borrow.
@@ -998,9 +1001,7 @@ impl<'scope, 'a, T: EvmTypesHost> ScopedInspector<'scope, 'a, T> {
             )
         };
         let previous = evm.inspector.replace(InspectorSlot::Borrowed(inspector));
-        // The borrowed inspector is not known to be `Send`.
-        let was_send = core::mem::replace(&mut evm.evm_send, false);
-        Self { evm, previous, was_send }
+        Self { evm, previous }
     }
 }
 
@@ -1008,7 +1009,6 @@ impl<T: EvmTypesHost> Drop for ScopedInspector<'_, '_, T> {
     #[inline]
     fn drop(&mut self) {
         self.evm.inspector = self.previous.take();
-        self.evm.evm_send = self.was_send;
         // A panic unwinding out of a frame skips its cleanup, which would leave this pointing at
         // a dropped interpreter.
         self.evm.current_frame = None;
@@ -4494,10 +4494,32 @@ mod tests {
             let _ = evm.transact_with_inspector(&test_tx(0), &mut panicking);
         }));
         assert!(result.is_err());
+        assert!(evm.current_frame.is_none());
 
         let mut inspector = CallCounter::default();
         let _ = evm.transact_with_inspector(&test_tx(0), &mut inspector).unwrap().discard();
         assert_eq!(inspector.calls, 1);
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    #[should_panic(expected = "async EVM execution cannot run with a borrowed inspector")]
+    fn transact_with_inspector_rejects_nested_async_send() {
+        let mut evm = scoped_inspector_evm();
+        evm.registry.register(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    drop(req.host.transact_async_send(&test_tx(1)));
+                    Ok(TxResultExt::default())
+                },
+            ),
+        );
+        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
+
+        let _ = evm.transact_with_inspector(&test_tx(0), &mut CallCounter::default());
     }
 
     #[test]
