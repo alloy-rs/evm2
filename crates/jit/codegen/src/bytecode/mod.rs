@@ -646,6 +646,22 @@ impl<'a> Bytecode<'a> {
         self.insts[inst].is_diverging()
     }
 
+    /// Returns `true` if `inst` can only be entered by falling through from the previous
+    /// instruction.
+    pub(crate) fn is_fall_through_only(&self, inst: Inst) -> bool {
+        let data = self.inst(inst);
+        if data.is_reachable_jumpdest(self.has_dynamic_jumps())
+            || data.flags.contains(InstFlags::REDIRECT_TARGET)
+        {
+            return false;
+        }
+        if inst.index() == 0 {
+            return true;
+        }
+        let prev = self.inst(inst - 1);
+        !prev.is_dead_code() && prev.can_fall_through()
+    }
+
     /// Converts a program counter (`self.code[pc]`) to an instruction (`self.inst(inst)`).
     #[inline]
     pub(crate) fn pc_to_inst(&self, pc: usize) -> Inst {
@@ -1124,6 +1140,12 @@ impl InstData {
         self.flags.contains(InstFlags::STACK_SECTION_HEAD)
     }
 
+    /// Returns `true` if this stack section head continues the previous section.
+    #[inline]
+    pub(crate) const fn continues_stack_section(&self) -> bool {
+        self.flags.contains(InstFlags::CONTINUES_STACK_SECTION)
+    }
+
     /// Returns `true` if this instruction is dead code.
     pub(crate) const fn is_dead_code(&self) -> bool {
         self.flags.contains(InstFlags::DEAD_CODE)
@@ -1213,6 +1235,14 @@ bitflags::bitflags! {
         const STACK_SECTION_HEAD = 1 << 7;
         /// Don't generate any code.
         const DEAD_CODE = 1 << 8;
+        /// Dedup redirected another block here, so it can be entered from more than one place
+        /// without a jump.
+        const REDIRECT_TARGET = 1 << 9;
+        /// This stack section head is only entered by falling through the preceding `JUMPI`,
+        /// so it keeps the previous section's virtual stack and stack length. Its
+        /// `stack_section` holds only the bounds that the previous sections have not checked;
+        /// the virtual stack already tracks the checked range.
+        const CONTINUES_STACK_SECTION = 1 << 10;
     }
 }
 

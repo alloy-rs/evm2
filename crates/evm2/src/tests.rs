@@ -3,8 +3,9 @@ use crate::{
     bytecode::Bytecode,
     env::{BlockEnvExt, TxEnvExt},
     ethereum::{
-        LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope,
+        LazyAuthorization, LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope,
         eip7702::{AuthRefunds, Eip7702Authorization, apply_auth_list},
+        eip7702::{AuthRefunds, RuntimeAuthCharges, apply_auth_list},
         ethereum_tx_registry, prepare_initial_frame,
     },
     evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
@@ -289,6 +290,62 @@ fn eip2780_authorization_charges_no_state_gas_without_eip8037() {
     let authority = result.pending_state.account_info(&authority).unwrap();
     assert_eq!(authority.nonce, 1);
     assert_eq!(authority.code_hash, Bytecode::new_eip7702(delegate).hash_slow());
+}
+
+fn absent_authority_evm(spec: SpecId, touched: Address) -> TestEvm {
+    let mut evm = TestEvm::new(
+        spec,
+        BlockEnvExt::default(),
+        ethereum_tx_registry(spec),
+        InMemoryDB::default(),
+        Precompiles::base(spec),
+    );
+    evm.state.account(&touched).unwrap().touch();
+    evm
+}
+
+fn auth_for(authority: Address) -> LazyAuthorization {
+    RecoveredAuthorization::new_unchecked(
+        Authorization { chain_id: U256::ZERO, address: Address::with_last_byte(0xdd), nonce: 0 },
+        RecoveredAuthority::Valid(authority),
+    )
+    .into()
+}
+
+#[test]
+fn apply_auth_list_refunds_touched_absent_authority() {
+    let touched = Address::with_last_byte(0xa1);
+    let untouched = Address::with_last_byte(0xa2);
+    let mut evm = absent_authority_evm(SpecId::PRAGUE, touched);
+    let mut refunds = AuthRefunds::new(evm.version());
+
+    apply_auth_list(&mut evm, 1, &[auth_for(touched), auth_for(untouched)], &mut refunds).unwrap();
+
+    // An authority is refunded unless it is absent and untouched.
+    let per_auth = u64::from(evm.version().gas_params.get(GasId::TxEip7702AuthRefund));
+    assert_eq!(refunds.execution_refund, per_auth);
+}
+
+#[test]
+fn eip2780_touched_absent_authority_pays_no_new_account_state_gas() {
+    let authority = Address::with_last_byte(0xa1);
+    let state_gas_spent = |touched: Address| {
+        let mut evm = absent_authority_evm(SpecId::AMSTERDAM, touched);
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(1_000_000, 1_000_000);
+        let mut charges = RuntimeAuthCharges::new(
+            evm.version(),
+            &mut gas,
+            Address::with_last_byte(0xb0),
+            Address::with_last_byte(0xc0),
+            U256::ZERO,
+        );
+        assert!(!apply_auth_list(&mut evm, 1, &[auth_for(authority)], &mut charges).unwrap());
+        (gas.state_gas_spent(), evm.version().gas_params.new_account_state_gas())
+    };
+
+    let (untouched, new_account) = state_gas_spent(Address::with_last_byte(0xff));
+    let (touched, _) = state_gas_spent(authority);
+    assert_eq!(untouched - touched, i64::try_from(new_account).unwrap());
 }
 
 const LOG_CALLER: Address = Address::with_last_byte(0xa0);
