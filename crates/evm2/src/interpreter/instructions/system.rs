@@ -5,8 +5,8 @@ use crate::{
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
     interpreter::{
-        Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Result, StackMut,
-        Word, derive_create_destination,
+        CallInput, Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind,
+        Result, StackMut, Word, derive_create_destination,
     },
     utils::WordExt,
     version::GasId,
@@ -190,7 +190,15 @@ fn prepare_call<T: EvmTypesHost>(
             kind == MessageKind::Call,
             local_gas_limit,
         )?;
-    let input = memory_range_bytes(state, input_range)?;
+    // The child reads its calldata straight from this frame's memory if the host runs this frame;
+    // otherwise the input is copied.
+    let input = if input_range.is_empty() {
+        CallInput::default()
+    } else if state.is_running_frame() {
+        CallInput::SharedBuffer(input_range)
+    } else {
+        CallInput::Bytes(memory_range_bytes(state, input_range)?)
+    };
 
     let current = state.message();
     let (destination, caller, call_value, code_address) = match kind {
@@ -239,8 +247,17 @@ fn call_inner<T: EvmTypesHost>(
         prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)?;
 
     let tx_env = state.tx();
-    let mut result =
-        state.host().execute_message(tx_env, &mut message).map_err(|error| state.fail(error))?;
+    let shared = matches!(message.input, CallInput::SharedBuffer(_));
+    let result = if shared {
+        // SAFETY: `prepare_call` only makes a shared input if the host runs this frame, and this
+        // frame is suspended in this call instruction. The host bounds-checks the range after the
+        // last hook that can reach this frame and before the child starts; from then on the child
+        // is the running frame, so no hook reaches this frame's memory until the call returns.
+        unsafe { state.host().execute_shared_message(tx_env, &mut message) }
+    } else {
+        state.host().execute_message(tx_env, &mut message)
+    };
+    let mut result = result.map_err(|error| state.fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
@@ -385,7 +402,7 @@ fn create_inner<T: EvmTypesHost>(
         call_target: destination,
         caller,
         code: Bytecode::new_legacy(input.clone()),
-        input,
+        input: CallInput::Bytes(input),
         value,
         code_address: caller,
         // CREATE is rejected in a static context (see `require_non_staticcall`).

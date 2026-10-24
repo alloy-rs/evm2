@@ -98,9 +98,8 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
         let interpreter_ptr = unsafe { NonNull::new_unchecked(interpreter_ptr) };
         let block_env = NonNull::from(interpreter.host().block_env());
         let tx_env = interpreter.tx_env();
-        let message = interpreter.message();
         let gas = interpreter.gas();
-        let calldatasize = message.input.len();
+        let calldatasize = interpreter.input().len();
         let return_data_len = interpreter.return_data().len();
         let (stack_ptr, stack_len) = unsafe { interpreter.stack_mut().into_raw_parts() };
         let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
@@ -171,8 +170,8 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
 
     /// Returns calldata bytes.
     #[inline]
-    pub const fn input(&self) -> &Bytes {
-        &self.message().input
+    pub const fn input(&self) -> &[u8] {
+        self.interpreter().input()
     }
 
     /// Returns the current block environment.

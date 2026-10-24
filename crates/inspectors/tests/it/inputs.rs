@@ -1,10 +1,15 @@
 //! Recording inputs is optional and does not affect execution.
 
 use crate::utils::{AccountInfo, Bytecode, CacheDB, EmptyDB, SpecId, TransactTo, TxEnv};
-use alloy_primitives::{Address, Bytes, hex};
-use evm2::{BaseEvmTypes, Evm, Precompiles, ethereum::ethereum_tx_registry};
+use alloy_primitives::{Address, Bytes, Log, Selector, hex};
+use evm2::{
+    BaseEvmTypes, Evm, Precompiles,
+    ethereum::ethereum_tx_registry,
+    evm::inspector::Inspector,
+    interpreter::{Interpreter, Message, MessageResult},
+};
 use evm2_inspectors::tracing::{
-    TraceLimitBehavior, TraceLimits, TracingInspector, TracingInspectorConfig,
+    FourByteInspector, TraceLimitBehavior, TraceLimits, TracingInspector, TracingInspectorConfig,
 };
 
 /// A single `CALL` passing 64 KiB of memory as calldata, which evm2 copies into a
@@ -213,4 +218,95 @@ fn byte_budget_can_halt_from_a_step() {
     );
     assert!(!completed);
     assert!(inspector.limit_exceeded());
+}
+
+/// Runs the four-byte and tracing inspectors after a hook that clears the caller's memory, which
+/// leaves the message's shared input range stale.
+struct ShrinkThenInspect {
+    shrink: bool,
+    fourbyte: FourByteInspector,
+    tracing: TracingInspector,
+}
+
+impl Inspector<BaseEvmTypes> for ShrinkThenInspect {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        self.tracing.initialize_interp(interp);
+    }
+
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        self.tracing.step(interp);
+    }
+
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        self.tracing.step_end(interp);
+    }
+
+    fn log(&mut self, log: &Log, host: &mut Evm<'_, BaseEvmTypes>) {
+        Inspector::<BaseEvmTypes>::log(&mut self.tracing, log, host);
+    }
+
+    fn call(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &mut Message<BaseEvmTypes>,
+    ) -> Option<MessageResult<BaseEvmTypes>> {
+        if self.shrink && message.depth > 0 {
+            interp.memory_mut().clear();
+        }
+        self.fourbyte.call(interp, message);
+        self.tracing.call(interp, message)
+    }
+
+    fn call_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        message: &Message<BaseEvmTypes>,
+        result: &mut MessageResult<BaseEvmTypes>,
+    ) {
+        self.tracing.call_end(interp, message, result);
+    }
+}
+
+#[test]
+fn shrinking_caller_memory_in_a_hook_zero_pads_recorded_input() {
+    // Store 0xaabbccdd in the first four bytes of memory, then CALL `0x43` with the first eight
+    // bytes as calldata.
+    let code = hex!("63aabbccdd60e01b5f525f5f60085f5f6043612000f100");
+    let target = Address::with_last_byte(0x42);
+    for shrink in [false, true] {
+        let mut db = CacheDB::<EmptyDB>::default();
+        for (address, code) in
+            [(target, &code[..]), (Address::with_last_byte(0x43), &hex!("00")[..])]
+        {
+            db.insert_account_info(
+                &address,
+                AccountInfo::default().with_code(Bytecode::new_raw(code.to_vec().into())),
+            );
+        }
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::PRAGUE,
+            Default::default(),
+            ethereum_tx_registry(SpecId::PRAGUE),
+            db,
+            Precompiles::base(SpecId::PRAGUE),
+        );
+        evm.set_inspector(ShrinkThenInspect {
+            shrink,
+            fourbyte: FourByteInspector::default(),
+            tracing: TracingInspector::new(TracingInspectorConfig::none().set_record_inputs(true)),
+        });
+        let tx = TxEnv::builder().gas_limit(1_000_000).kind(TransactTo::Call(target)).build_fill();
+        assert!(evm.transact(&tx.envelope()).is_ok());
+        let inspector = evm.clear_inspector_as::<ShrinkThenInspect>().unwrap();
+
+        let (selector, input) = if shrink {
+            ([0; 4], Bytes::from_static(&[0; 8]))
+        } else {
+            ([0xaa, 0xbb, 0xcc, 0xdd], Bytes::from_static(&hex!("aabbccdd00000000")))
+        };
+        assert_eq!(inspector.fourbyte.inner().get(&(Selector::from(selector), 4)), Some(&1));
+        let nodes = inspector.tracing.traces().nodes();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[1].trace.data, input);
+    }
 }

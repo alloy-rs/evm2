@@ -1,5 +1,8 @@
-use crate::{BaseEvmTypes, EvmTypesHost, bytecode::Bytecode};
+use super::Memory;
+use crate::{BaseEvmTypes, EvmTypesHost, bytecode::Bytecode, utils::right_pad_vec};
+use alloc::borrow::Cow;
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
+use core::ops::Range;
 
 /// EVM message kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -25,6 +28,115 @@ impl MessageKind {
     #[inline]
     pub const fn is_create(&self) -> bool {
         matches!(self, Self::Create | Self::Create2)
+    }
+}
+
+/// Input data of a [`Message`].
+///
+/// `CALL`-family instructions do not copy their input out of the caller's memory when the host
+/// runs the caller frame: the message carries the [`SharedBuffer`](Self::SharedBuffer) range
+/// instead, and the callee reads the range in place, which is valid because the caller frame is
+/// suspended until the message returns. Otherwise, and for create and top-level transaction
+/// messages, it holds [`Bytes`](Self::Bytes).
+///
+/// Only the host's own call path reads a range in place. A range in a message that safe code sends
+/// with [`Host::execute_message`](super::Host::execute_message) is copied out first, and resolving
+/// one with [`CallInput::as_bytes`], [`CallInput::to_bytes`] or
+/// [`Evm::call_input`](crate::Evm::call_input) is total: a range that memory no longer covers, for
+/// example because a hook shrank it, reads as zeros.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallInput {
+    /// Owned input bytes.
+    Bytes(Bytes),
+    /// Range of the memory of the frame that executes the message's `CALL`-family instruction.
+    ///
+    /// Call hooks receive that frame as their interpreter argument; resolve the range with
+    /// [`CallInput::as_bytes`] on its memory. A running frame reads its own calldata with
+    /// [`Interpreter::input`](crate::interpreter::Interpreter::input) instead, since its memory
+    /// is not the caller's.
+    SharedBuffer(Range<usize>),
+}
+
+impl Default for CallInput {
+    #[inline]
+    fn default() -> Self {
+        Self::Bytes(Bytes::new())
+    }
+}
+
+impl From<Bytes> for CallInput {
+    #[inline]
+    fn from(bytes: Bytes) -> Self {
+        Self::Bytes(bytes)
+    }
+}
+
+impl CallInput {
+    /// Returns the length of the input in bytes.
+    #[inline]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Bytes(bytes) => bytes.len(),
+            Self::SharedBuffer(range) => range.len(),
+        }
+    }
+
+    /// Returns whether the input is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the owned bytes, or `None` for a shared-buffer input.
+    #[inline]
+    pub const fn as_owned(&self) -> Option<&Bytes> {
+        match self {
+            Self::Bytes(bytes) => Some(bytes),
+            Self::SharedBuffer(_) => None,
+        }
+    }
+
+    /// Returns the input bytes, resolving a shared-buffer range against `caller_memory`.
+    ///
+    /// This never fails: bytes of the range that `caller_memory` does not hold read as zero, as
+    /// bytes past the end of memory do, which happens when a hook shrank the memory after the
+    /// range was made. Those are returned as owned bytes, which allocates `range.len()` bytes; a
+    /// range inside the memory is borrowed.
+    #[inline]
+    pub fn as_bytes<'a>(&'a self, caller_memory: &'a Memory) -> Cow<'a, [u8]> {
+        self.as_bytes_from(caller_memory.as_slice())
+    }
+
+    /// Like [`CallInput::as_bytes`], for the bytes of the caller's memory.
+    #[inline]
+    pub(crate) fn as_bytes_from<'a>(&'a self, caller_memory: &'a [u8]) -> Cow<'a, [u8]> {
+        match self {
+            Self::Bytes(bytes) => Cow::Borrowed(bytes),
+            Self::SharedBuffer(range) => match caller_memory.get(range.clone()) {
+                Some(bytes) => Cow::Borrowed(bytes),
+                None => {
+                    let start = range.start.min(caller_memory.len());
+                    let end = range.end.min(caller_memory.len()).max(start);
+                    right_pad_vec(&caller_memory[start..end], range.len())
+                }
+            },
+        }
+    }
+
+    /// Returns the input as owned bytes, copying a shared-buffer range out of `caller_memory`.
+    ///
+    /// Bytes of the range that `caller_memory` does not hold read as zero.
+    #[inline]
+    pub fn to_bytes(&self, caller_memory: &Memory) -> Bytes {
+        self.to_bytes_from(caller_memory.as_slice())
+    }
+
+    /// Like [`CallInput::to_bytes`], for the bytes of the caller's memory.
+    pub(crate) fn to_bytes_from(&self, caller_memory: &[u8]) -> Bytes {
+        match self {
+            Self::Bytes(bytes) => bytes.clone(),
+            Self::SharedBuffer(_) => self.as_bytes_from(caller_memory).into_owned().into(),
+        }
     }
 }
 
@@ -63,7 +175,7 @@ pub struct MessageExt<E = ()> {
     /// Immediate caller.
     pub caller: Address,
     /// Call input data, or initcode for create messages.
-    pub input: Bytes,
+    pub input: CallInput,
     /// Value transferred with the message.
     pub value: U256,
     /// Bytecode resolved for this frame: the code at [`MessageExt::code_address`] (the resolved

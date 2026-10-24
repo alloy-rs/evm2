@@ -25,6 +25,15 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     bytecode_ref: Option<BytecodeRef<'static>>,
     pub(in crate::interpreter) memory: Memory,
     pub(in crate::interpreter) return_data: Bytes,
+    // Calldata of the active frame: borrows either `message.input`, which the frame's `&Message`
+    // keeps immutable, or the caller frame's memory. The latter only happens for a message sent by
+    // the caller's call instruction through `Host::execute_shared_message`: safe code, which uses
+    // `Host::execute_message`, always gets a copy. The caller is suspended in that instruction
+    // until this frame is pooled, and `Evm::run_interpreter` registers this frame as the running
+    // frame before any hook can run for it, so no hook or nested message can reach the caller's
+    // memory meanwhile. Reset before pooling; accessors shorten the erased lifetime to the borrow
+    // of this interpreter.
+    pub(in crate::interpreter) input: NonNull<[u8]>,
 
     pub(in crate::interpreter) pc: *const u8,
     output: Range<u32>,
@@ -64,10 +73,20 @@ where
 impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Creates an interpreter from a transaction-global environment and a frame-local message,
     /// which carries the bytecode to run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the message's input is a
+    /// [`CallInput::SharedBuffer`](super::CallInput::SharedBuffer), which only a running caller
+    /// frame can resolve.
     pub fn new(tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) -> Self {
         // SAFETY: Calling init right after.
         let mut interp = unsafe { Self::uninit() };
-        interp.init(tx_env, message);
+        let input = message
+            .input
+            .as_owned()
+            .expect("an interpreter created without a caller frame needs owned message input");
+        interp.init(tx_env, message, input);
         interp
     }
 
@@ -92,6 +111,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             message: None,
             is_static: false,
             return_data: Bytes::new(),
+            input: NonNull::<[u8]>::from_ref(&[]),
             host: None,
             inspector: None,
             spec: SpecId::DEFAULT,
@@ -102,7 +122,9 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     }
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.
-    fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
+    ///
+    /// `input` is the resolved `message.input`; it must stay valid until the frame is pooled.
+    fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>, input: &[u8]) {
         let bytecode = message.code.clone();
         let gas_limit = message.gas_limit;
         let is_static = message.is_static();
@@ -121,9 +143,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.message = Some(message);
         self.is_static = is_static;
         self.return_data = Bytes::new();
+        self.input = NonNull::from(input);
     }
 
     pub(crate) const fn clear_frame_refs(&mut self) {
+        self.input = NonNull::<[u8]>::from_ref(&[]);
         self.tx_env = None;
         self.message = None;
         self.host = None;
@@ -291,6 +315,17 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     pub const fn tx_env(&self) -> &'frame TxEnv<T> {
         // SAFETY: `tx_env` is initialized before execution starts.
         unsafe { self.tx_env.unwrap_unchecked() }
+    }
+
+    /// Returns the calldata of the active frame.
+    ///
+    /// Unlike `message().input`, this resolves a shared-buffer input against the caller frame's
+    /// memory.
+    #[inline]
+    pub const fn input(&self) -> &[u8] {
+        // SAFETY: `init` stores a slice that stays valid until the frame is pooled, which resets
+        // it; see the field.
+        unsafe { self.input.as_ref() }
     }
 
     /// Returns return data from the last call-like operation.
@@ -562,6 +597,15 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         unsafe { self.0.host.unwrap_unchecked().as_mut() }
     }
 
+    /// Returns whether the host runs this frame, so that it can resolve a range of this frame's
+    /// memory as call input.
+    #[inline]
+    pub(crate) fn is_running_frame(&self) -> bool {
+        // SAFETY: As in `host`.
+        let host = unsafe { self.0.host.unwrap_unchecked().as_ref() };
+        host.is_running_frame(&raw const self.0)
+    }
+
     /// Returns the active runtime version data.
     #[inline]
     pub fn version(&self) -> &Version {
@@ -713,14 +757,14 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
         &mut self,
         tx_env: &'frame TxEnv<T>,
         message: &'frame Message<T>,
+        input: &[u8],
     ) -> Box<Interpreter<'frame, 'host, T>> {
-        let frame = match self.frames.pop() {
-            Some(mut frame) => {
-                frame.init(tx_env, message);
-                frame
-            }
-            None => Box::new(Interpreter::new(tx_env, message)),
-        };
+        let mut frame = self
+            .frames
+            // SAFETY: Calling init right after.
+            .pop()
+            .unwrap_or_else(|| Box::new(unsafe { Interpreter::uninit() }));
+        frame.init(tx_env, message, input);
         // SAFETY: Frames stored in the pool have their frame-local references cleared before they
         // are erased to `'static`. Rebinding the lifetime is only used to initialize the next
         // frame.

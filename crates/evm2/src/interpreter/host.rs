@@ -1,4 +1,4 @@
-use super::{GasTracker, InstrStop, Message, Result, Word};
+use super::{GasTracker, InstrStop, Interpreter, Message, Result, Word};
 use crate::{
     BaseEvmTypes, DatabaseError, EvmFeatures, EvmTypesHost, ExecutionConfig, ExecutionError,
     HostError, SpecId,
@@ -171,7 +171,45 @@ pub trait Host<T: EvmTypesHost> {
     /// may pass owned values. The host copies borrowed values only if it keeps the log.
     fn log(&mut self, address: &Address, topics: Cow<'_, [B256]>, data: Cow<'_, [u8]>);
 
+    /// Returns whether `frame` is the frame this host is running.
+    ///
+    /// A call instruction passes its input to the host as a range of the caller's memory
+    /// ([`CallInput::SharedBuffer`](super::CallInput::SharedBuffer)) only when the host runs the
+    /// caller, since the host resolves the range against the running frame's memory. Otherwise it
+    /// copies the input out. `frame` is only compared, never dereferenced.
+    #[inline]
+    fn is_running_frame(&self, frame: *const Interpreter<'_, '_, T>) -> bool {
+        let _ = frame;
+        false
+    }
+
+    /// Executes a message whose call input may be a
+    /// [`CallInput::SharedBuffer`](super::CallInput::SharedBuffer) of the running frame's memory.
+    ///
+    /// The host reads the range in place for the duration of the message, so, unlike
+    /// [`Host::execute_message`], which copies any shared range it is given, nothing may reach
+    /// that memory meanwhile. The default implementation does not support shared input and runs
+    /// the message like [`Host::execute_message`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must be the call instruction of the frame for which
+    /// [`Host::is_running_frame`] returned `true`, running with that frame suspended in it and
+    /// no other reference to the frame's memory alive until this method returns, and the message's
+    /// input must be a range of that memory or owned bytes.
+    #[inline]
+    unsafe fn execute_shared_message(
+        &mut self,
+        tx_env: &TxEnv<T>,
+        message: &mut Message<T>,
+    ) -> Result<MessageResult<T>, ExecutionError> {
+        self.execute_message(tx_env, message)
+    }
+
     /// Executes a message inside this host.
+    ///
+    /// A shared call input in `message` is copied out of the running frame's memory before the
+    /// message executes, unless the message is a create, which has no call input.
     fn execute_message(
         &mut self,
         tx_env: &TxEnv<T>,

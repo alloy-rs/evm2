@@ -150,8 +150,8 @@ mod tests {
         ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State},
         interpreter::{
-            GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageResult,
-            MessageResultExt, Word, op,
+            CallInput, GasTracker, Host, InstrStop, Interpreter, Message, MessageExt,
+            MessageResult, MessageResultExt, Word, op,
         },
         registry::TxRegistry,
         test_utils::{TestHost, TestTypes, legacy_bytecode, push, push_all},
@@ -1580,6 +1580,472 @@ mod tests {
             evm.state_mut().storage_slot_untracked(&Address::ZERO, &Word::ZERO).unwrap(),
             Word::ZERO
         );
+    }
+
+    /// The word the callers of the call input tests keep in memory: bytes 1 to 32.
+    const CALL_INPUT_WORD: [u8; 32] = {
+        let mut word = [0; 32];
+        let mut i = 0;
+        while i < 32 {
+            word[i] = i as u8 + 1;
+            i += 1;
+        }
+        word
+    };
+
+    /// Code that returns its first calldata word and its calldata size.
+    const CALLDATA_ECHO_CODE: [u8; 12] = [
+        op::PUSH0,
+        op::CALLDATALOAD,
+        op::PUSH0,
+        op::MSTORE,
+        op::CALLDATASIZE,
+        op::PUSH1,
+        32,
+        op::MSTORE,
+        op::PUSH1,
+        64,
+        op::PUSH0,
+        op::RETURN,
+    ];
+
+    /// What a call hook does to the caller's memory after the call instruction made its message.
+    #[derive(Clone, Copy)]
+    enum MemoryEdit {
+        None,
+        Grow,
+        Overwrite,
+        Shrink,
+    }
+
+    struct InputInspector {
+        edit: MemoryEdit,
+        call_inputs: Vec<Bytes>,
+        call_outputs: Vec<Bytes>,
+    }
+
+    impl Inspector<BaseEvmTypes> for InputInspector {
+        fn call(
+            &mut self,
+            interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            if message.depth > 0 {
+                match self.edit {
+                    MemoryEdit::None => {}
+                    MemoryEdit::Grow => interp.memory_mut().resize(0, 1 << 16).unwrap(),
+                    MemoryEdit::Overwrite => interp.memory_mut().set(4, &[0xaa; 8]),
+                    MemoryEdit::Shrink => interp.memory_mut().clear(),
+                }
+            }
+            None
+        }
+
+        fn call_end(
+            &mut self,
+            interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            message: &Message<BaseEvmTypes>,
+            result: &mut MessageResult<BaseEvmTypes>,
+        ) {
+            if message.depth > 0 {
+                self.call_inputs.push(message.input.to_bytes(interp.memory()));
+                self.call_outputs.push(result.output.clone());
+            }
+        }
+    }
+
+    /// Calls a contract and the identity precompile with input that the caller holds in memory at
+    /// bytes 4..12, with `edit` applied by the call hook. The contract returns its first calldata
+    /// word and its calldata size.
+    ///
+    /// Without `return_outputs` the caller keeps no output, so it does not touch its memory after
+    /// the calls.
+    fn call_with_memory_edit(
+        edit: MemoryEdit,
+        return_outputs: bool,
+    ) -> (MessageResult<BaseEvmTypes>, Box<InputInspector>) {
+        let child = Address::with_last_byte(0xbb);
+        let identity = Address::with_last_byte(4);
+        let call = |code: &mut Vec<u8>, target: Address, out_offset: u8, out_len: u8| {
+            let (out_offset, out_len) = if return_outputs { (out_offset, out_len) } else { (0, 0) };
+            push_all(
+                code,
+                [
+                    Word::from(out_len),
+                    Word::from(out_offset),
+                    Word::from(8),
+                    Word::from(4),
+                    Word::ZERO,
+                    address_to_word(&target),
+                    Word::from(100_000),
+                ],
+            );
+            code.extend([op::CALL, op::POP]);
+        };
+
+        let word = CALL_INPUT_WORD;
+        let mut parent_code = vec![op::PUSH32];
+        parent_code.extend(word);
+        parent_code.extend([op::PUSH0, op::MSTORE]);
+        call(&mut parent_code, child, 32, 64);
+        call(&mut parent_code, identity, 96, 8);
+        if return_outputs {
+            parent_code.extend([op::PUSH1, 72, op::PUSH1, 32, op::RETURN]);
+        } else {
+            parent_code.extend([op::STOP]);
+        }
+        let child_code = CALLDATA_ECHO_CODE;
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &child,
+            AccountInfo::default().with_code(legacy_bytecode(child_code)),
+        );
+        let inspector = InputInspector { edit, call_inputs: Vec::new(), call_outputs: Vec::new() };
+        let (result, inspector, _) = run_evm_with_inspector_db(
+            db,
+            parent_code,
+            &MessageExt::default(),
+            1_000_000,
+            inspector,
+        );
+        (result, inspector)
+    }
+
+    /// The child frame, a precompile and the call hooks all see the bytes the caller held when it
+    /// issued the call.
+    #[test]
+    fn call_input_resolves_against_caller_memory() {
+        let word = CALL_INPUT_WORD;
+        let input = Bytes::copy_from_slice(&word[4..12]);
+        let mut expected_output = [0; 72];
+        expected_output[..8].copy_from_slice(&input);
+        expected_output[63] = 8;
+        expected_output[64..].copy_from_slice(&input);
+
+        let (result, inspector) = call_with_memory_edit(MemoryEdit::None, true);
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(result.output.as_ref(), expected_output);
+        assert_eq!(inspector.call_inputs, [input.clone(), input]);
+    }
+
+    /// A call hook that grows the caller's memory, which reallocates it, does not invalidate the
+    /// input the child reads.
+    #[test]
+    fn call_hook_growing_caller_memory_keeps_input() {
+        let word = CALL_INPUT_WORD;
+        let input = Bytes::copy_from_slice(&word[4..12]);
+
+        let (result, inspector) = call_with_memory_edit(MemoryEdit::Grow, true);
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(&result.output[..8], input.as_ref());
+        assert_eq!(result.output[63], 8);
+        assert_eq!(&result.output[64..], input.as_ref());
+        assert_eq!(inspector.call_inputs, [input.clone(), input]);
+    }
+
+    /// A call hook that writes the caller's memory changes the input, as it does when it edits the
+    /// message's input.
+    #[test]
+    fn call_hook_writing_caller_memory_changes_input() {
+        let (result, inspector) = call_with_memory_edit(MemoryEdit::Overwrite, true);
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(&result.output[..8], [0xaa; 8]);
+        assert_eq!(&result.output[64..], [0xaa; 8]);
+        assert_eq!(inspector.call_inputs, [const { Bytes::from_static(&[0xaa; 8]) }; 2]);
+    }
+
+    /// A call hook that shrinks the caller's memory below the input range leaves the child with
+    /// zeros for the bytes the memory no longer holds, rather than out-of-bounds data.
+    #[test]
+    fn call_hook_shrinking_caller_memory_zero_pads_input() {
+        let (result, inspector) = call_with_memory_edit(MemoryEdit::Shrink, false);
+        assert_eq!(result.stop, InstrStop::Stop);
+        let mut child_output = [0; 64];
+        child_output[63] = 8;
+        assert_eq!(
+            inspector.call_outputs,
+            [Bytes::copy_from_slice(&child_output), Bytes::copy_from_slice(&[0; 8])]
+        );
+        assert_eq!(inspector.call_inputs, [const { Bytes::from_static(&[0; 8]) }; 2]);
+    }
+
+    /// The EIP-7708 transfer log is emitted between the call hooks and the execution of the
+    /// message. A hook for it that shrinks the caller's memory through a nested message leaves the
+    /// child with zeros for the bytes the memory no longer holds.
+    #[test]
+    fn log_hook_shrinking_caller_memory_zero_pads_input() {
+        const SHRINK_DEPTH: u16 = 5;
+
+        #[derive(Default)]
+        struct LogShrinkInspector {
+            shrunk: bool,
+            child_outputs: Vec<Bytes>,
+        }
+        impl Inspector<BaseEvmTypes> for LogShrinkInspector {
+            fn log(&mut self, _log: &Log, host: &mut Evm<'_, BaseEvmTypes>) {
+                let identity = Address::with_last_byte(4);
+                let mut message = MessageExt {
+                    depth: SHRINK_DEPTH,
+                    gas_limit: 1_000,
+                    destination: identity,
+                    call_target: identity,
+                    code_address: identity,
+                    ..MessageExt::default()
+                };
+                Host::execute_message(host, &TxEnvExt::default(), &mut message).unwrap();
+            }
+
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth == SHRINK_DEPTH {
+                    interp.memory_mut().clear();
+                    self.shrunk = true;
+                }
+                None
+            }
+
+            fn call_end(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &Message<BaseEvmTypes>,
+                result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                if message.depth == 1 {
+                    self.child_outputs.push(result.output.clone());
+                }
+            }
+        }
+
+        let parent = Address::ZERO;
+        let child = Address::with_last_byte(0xbb);
+        let mut parent_code = vec![op::PUSH32];
+        parent_code.extend(CALL_INPUT_WORD);
+        parent_code.extend([op::PUSH0, op::MSTORE]);
+        push_all(
+            &mut parent_code,
+            [
+                Word::ZERO,
+                Word::ZERO,
+                Word::from(8),
+                Word::from(4),
+                Word::from(1),
+                address_to_word(&child),
+                Word::from(100_000),
+            ],
+        );
+        parent_code.extend([op::CALL, op::STOP]);
+        let child_code = CALLDATA_ECHO_CODE;
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&parent, AccountInfo::default().with_balance(Word::from(10)));
+        db.insert_account_info(
+            &child,
+            AccountInfo::default().with_code(legacy_bytecode(child_code)),
+        );
+        let (result, inspector, _) = run_evm_with_inspector_db_spec(
+            SpecId::AMSTERDAM,
+            db,
+            parent_code,
+            &MessageExt::default(),
+            1_000_000,
+            LogShrinkInspector::default(),
+        );
+
+        assert_eq!(result.stop, InstrStop::Stop);
+        assert!(inspector.shrunk);
+        let mut child_output = [0; 64];
+        child_output[63] = 8;
+        assert_eq!(inspector.child_outputs, [Bytes::copy_from_slice(&child_output)]);
+    }
+
+    /// A panic that unwinds out of a nested frame and is caught leaves the caller registered as
+    /// the running frame again.
+    #[cfg(feature = "std")]
+    #[test]
+    fn caught_unwind_restores_the_running_frame() {
+        #[derive(Default)]
+        struct UnwindInspector {
+            restored: Option<bool>,
+        }
+        impl Inspector<BaseEvmTypes> for UnwindInspector {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if interp.message().depth == 2 {
+                    panic!("nested frame");
+                }
+            }
+
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth == 1 {
+                    let mut nested = MessageExt {
+                        depth: 2,
+                        gas_limit: 1_000,
+                        code: legacy_bytecode([op::STOP]),
+                        ..MessageExt::default()
+                    };
+                    let tx_env = TxEnvExt::default();
+                    let host = interp.host();
+                    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        Host::execute_message(host, &tx_env, &mut nested)
+                    }));
+                    assert!(unwound.is_err());
+                    let frame = &raw const *interp;
+                    self.restored = Some(interp.host().is_running_frame(frame));
+                }
+                None
+            }
+        }
+
+        let child = Address::with_last_byte(0xbb);
+        let mut parent_code = Vec::new();
+        push_all(
+            &mut parent_code,
+            [
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(&child),
+                Word::from(100_000),
+            ],
+        );
+        parent_code.extend([op::CALL, op::STOP]);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &child,
+            AccountInfo::default().with_code(legacy_bytecode([op::STOP])),
+        );
+        let (result, inspector, _) = run_evm_with_inspector_db(
+            db,
+            parent_code,
+            &MessageExt::default(),
+            1_000_000,
+            UnwindInspector::default(),
+        );
+        assert_eq!(result.stop, InstrStop::Stop);
+        assert_eq!(inspector.restored, Some(true));
+    }
+
+    /// Messages sent from `initialize_interp` come from the frame being initialized, so hooks for
+    /// them cannot reach the caller whose memory the frame reads its input from.
+    #[test]
+    fn initialize_interp_messages_come_from_the_new_frame() {
+        #[derive(Default)]
+        struct InitInspector {
+            callers: Vec<Address>,
+        }
+        impl Inspector<BaseEvmTypes> for InitInspector {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if interp.message().depth == 1 {
+                    let identity = Address::with_last_byte(4);
+                    let mut message = MessageExt {
+                        depth: 2,
+                        gas_limit: 1_000,
+                        destination: identity,
+                        call_target: identity,
+                        code_address: identity,
+                        caller: interp.message().destination,
+                        ..MessageExt::default()
+                    };
+                    Host::execute_message(interp.host(), &TxEnvExt::default(), &mut message)
+                        .unwrap();
+                }
+            }
+
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth == 2 {
+                    self.callers.push(interp.message().destination);
+                }
+                None
+            }
+        }
+
+        let child = Address::with_last_byte(0xbb);
+        let mut parent_code = vec![op::PUSH1, 1, op::PUSH0, op::MSTORE8];
+        push_all(
+            &mut parent_code,
+            [
+                Word::ZERO,
+                Word::ZERO,
+                Word::from(1),
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(&child),
+                Word::from(100_000),
+            ],
+        );
+        parent_code.extend([op::CALL, op::STOP]);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &child,
+            AccountInfo::default().with_code(legacy_bytecode([op::CALLDATASIZE, op::STOP])),
+        );
+        let (result, inspector, _) = run_evm_with_inspector_db(
+            db,
+            parent_code,
+            &MessageExt::default(),
+            1_000_000,
+            InitInspector::default(),
+        );
+        assert_eq!(result.stop, InstrStop::Stop);
+        assert_eq!(inspector.callers, [child]);
+    }
+
+    /// A top-level call hook that drops the message's input does not invalidate the input of the
+    /// frame the hooks receive.
+    #[test]
+    fn top_level_hook_replacing_input_keeps_frame_input() {
+        #[derive(Default)]
+        struct ReplaceInspector {
+            seen: Vec<u8>,
+        }
+        impl Inspector<BaseEvmTypes> for ReplaceInspector {
+            fn call(
+                &mut self,
+                _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                message.input = CallInput::default();
+                None
+            }
+
+            fn call_end(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &Message<BaseEvmTypes>,
+                _result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                self.seen = interp.input().to_vec();
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(ReplaceInspector::default());
+        let mut message = MessageExt {
+            gas_limit: 100_000,
+            input: Bytes::from(vec![1, 2, 3]).into(),
+            code: legacy_bytecode([op::STOP]),
+            ..MessageExt::default()
+        };
+        Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        let inspector = evm.clear_inspector_as::<ReplaceInspector>().unwrap();
+        assert_eq!(inspector.seen, [1, 2, 3]);
     }
 
     #[test]
