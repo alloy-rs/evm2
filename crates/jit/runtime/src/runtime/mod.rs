@@ -191,10 +191,8 @@ impl JitBackend {
             eyre::bail!("AOT mode does not support out-of-process compilation");
         }
 
-        if !config.host.is_default()
-            && (config.aot || config.store.is_some() || config.jit_mode == JitMode::OutOfProcess)
-        {
-            eyre::bail!("custom hosts require in-process JIT without an artifact store");
+        if !config.host.is_default() && (config.aot || config.store.is_some()) {
+            eyre::bail!("custom hosts require JIT without an artifact store");
         }
         let enabled = config.enabled;
         let (tx, rx) = chan::bounded::<Command>(config.tuning.channel_capacity);

@@ -521,6 +521,14 @@ impl<B: Backend> EvmCompiler<B> {
         self.config.single_error = yes;
     }
 
+    /// Configures the concrete host layout, for programs whose builtins are linked by symbol.
+    ///
+    /// # Safety
+    /// The layout must describe the interpreter that runs the compiled programs.
+    pub const unsafe fn set_layout(&mut self, layout: HostLayout) {
+        self.config.layout = layout;
+    }
+
     /// Sets the host's opcode table.
     ///
     /// Without one, programs use the base opcode table of their spec.

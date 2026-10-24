@@ -66,6 +66,8 @@ fn jit_total_bytes() -> usize {
 #[cfg(feature = "llvm")]
 struct JitObjectLinker {
     backend: Option<crate::EvmLlvmBackend>,
+    /// Resolves the builtins of a custom host, which the helper leaves as symbols.
+    resolver: Option<fn(evm2_jit_builtins::Builtin) -> usize>,
 }
 
 #[cfg(not(feature = "llvm"))]
@@ -73,8 +75,8 @@ struct JitObjectLinker;
 
 #[cfg(feature = "llvm")]
 impl JitObjectLinker {
-    const fn new() -> Self {
-        Self { backend: None }
+    const fn new(resolver: Option<fn(evm2_jit_builtins::Builtin) -> usize>) -> Self {
+        Self { backend: None, resolver }
     }
 
     fn link(
@@ -91,9 +93,12 @@ impl JitObjectLinker {
             .builtin_symbols
             .iter()
             .map(|name| {
-                let addr = evm2_jit_builtins::Builtin::parse(name)
-                    .ok_or_else(|| eyre::eyre!("unknown builtin symbol: {name}"))?
-                    .addr::<evm2::BaseEvmTypes>();
+                let builtin = evm2_jit_builtins::Builtin::parse(name)
+                    .ok_or_else(|| eyre::eyre!("unknown builtin symbol: {name}"))?;
+                let addr = self.resolver.map_or_else(
+                    || builtin.addr::<evm2::BaseEvmTypes>(),
+                    |resolve| resolve(builtin),
+                );
                 Ok((CString::new(name.as_str())?, addr))
             })
             .collect::<eyre::Result<Vec<_>>>()?;
@@ -110,7 +115,7 @@ impl JitObjectLinker {
 
 #[cfg(not(feature = "llvm"))]
 impl JitObjectLinker {
-    const fn new() -> Self {
+    const fn new(_resolver: Option<fn(evm2_jit_builtins::Builtin) -> usize>) -> Self {
         Self
     }
 
@@ -931,7 +936,7 @@ pub(crate) fn run(
         cold_head: None,
         cold_tail: None,
         workers,
-        jit_object_linker: JitObjectLinker::new(),
+        jit_object_linker: JitObjectLinker::new(config.host.resolver),
         result_rx,
         store: config.store,
         tuning: config.tuning,
@@ -1006,7 +1011,7 @@ mod notifier_tests {
             cold_head: None,
             cold_tail: None,
             workers,
-            jit_object_linker: JitObjectLinker::new(),
+            jit_object_linker: JitObjectLinker::new(config.host.resolver),
             result_rx,
             config_hash: compile_config_hash(&config),
             store: config.store,
@@ -1409,7 +1414,7 @@ mod tests {
             builtin_symbols: success.builtin_symbols.clone(),
         };
 
-        let mut linker = JitObjectLinker::new();
+        let mut linker = JitObjectLinker::new(None);
         let (_first_func, _first_backing) = linker.link(&success).unwrap();
         let (_second_func, _second_backing) = linker
             .link(&success2)

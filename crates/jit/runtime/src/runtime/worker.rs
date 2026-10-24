@@ -640,6 +640,9 @@ pub(super) fn create_compiler(
     if let Some(resolver) = config.host.resolver {
         // SAFETY: HostConfig construction establishes the resolver and layout contract.
         unsafe { compiler.set_host(config.host.layout, resolver) };
+    } else {
+        // SAFETY: HostConfig construction establishes the layout contract.
+        unsafe { compiler.set_layout(config.host.layout) };
     }
     if let Some(opcodes) = &config.host.opcodes {
         compiler.set_opcode_table((*opcodes.table).clone());

@@ -907,6 +907,7 @@ mod custom_host_tests {
         InstrStop,
         Interpreter<'static, 'static, TableTypes>,
     ) {
+        let _ = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).try_init();
         let backend = JitBackend::new(RuntimeConfig {
             blocking: true,
             single_error: false,
@@ -1004,19 +1005,5 @@ mod custom_host_tests {
         assert_eq!(compiled_stop, None);
         assert_eq!(stop, InstrStop::Return);
         assert_eq!(interpreted.output()[24..], 0xdead_u64.to_be_bytes());
-    }
-
-    #[test]
-    fn custom_host_rejects_out_of_process_compilation() {
-        let error = JitBackend::new(RuntimeConfig {
-            host: HostConfig::for_types::<CustomTypes>(),
-            jit_mode: crate::runtime::JitMode::OutOfProcess,
-            ..Default::default()
-        })
-        .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "custom hosts require in-process JIT without an artifact store"
-        );
     }
 }

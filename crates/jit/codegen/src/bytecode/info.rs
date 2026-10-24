@@ -304,6 +304,16 @@ impl OpcodeTable {
         table
     }
 
+    /// Returns the static gas, defined and host flags of every opcode.
+    pub const fn to_parts(&self) -> ([u16; 256], [bool; 256], [bool; 256]) {
+        (self.gas, self.defined, self.host)
+    }
+
+    /// Rebuilds a table from [`to_parts`](Self::to_parts).
+    pub const fn from_parts(gas: [u16; 256], defined: [bool; 256], host: [bool; 256]) -> Self {
+        Self { gas, defined, host }
+    }
+
     /// Returns the opcode info map for `spec_id` under this table.
     pub(crate) fn op_infos(&self, spec_id: SpecId) -> [OpcodeInfo; 256] {
         let base = op_info_map(spec_id);

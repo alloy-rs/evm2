@@ -80,6 +80,65 @@ pub struct HostLayout {
 }
 
 impl HostLayout {
+    /// Number of words in the serialized layout.
+    pub const WORDS: usize = 14;
+
+    /// Returns the offsets as words, in field order.
+    pub const fn to_words(&self) -> [usize; Self::WORDS] {
+        [
+            self.interpreter_message,
+            self.destination,
+            self.caller,
+            self.value,
+            self.tx_origin,
+            self.tx_gas_price,
+            self.tx_chain_id,
+            self.block_beneficiary,
+            self.block_timestamp,
+            self.block_number,
+            self.block_gas_limit,
+            self.block_basefee,
+            self.block_blob_basefee,
+            self.block_slot_num,
+        ]
+    }
+
+    /// Rebuilds a layout from [`to_words`](Self::to_words).
+    pub const fn from_words(words: [usize; Self::WORDS]) -> Self {
+        let [
+            interpreter_message,
+            destination,
+            caller,
+            value,
+            tx_origin,
+            tx_gas_price,
+            tx_chain_id,
+            block_beneficiary,
+            block_timestamp,
+            block_number,
+            block_gas_limit,
+            block_basefee,
+            block_blob_basefee,
+            block_slot_num,
+        ] = words;
+        Self {
+            interpreter_message,
+            destination,
+            caller,
+            value,
+            tx_origin,
+            tx_gas_price,
+            tx_chain_id,
+            block_beneficiary,
+            block_timestamp,
+            block_number,
+            block_gas_limit,
+            block_basefee,
+            block_blob_basefee,
+            block_slot_num,
+        }
+    }
+
     /// Computes offsets without assuming that custom message extensions preserve Rust layout.
     pub const fn for_types<T: EvmTypesHost>() -> Self {
         Self {

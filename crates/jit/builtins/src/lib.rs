@@ -961,18 +961,22 @@ pub unsafe extern "C" fn __revmc_builtin_do_return_cc<T: EvmTypesHost>(
 
 /// Exports the builtins instantiated for [`BaseEvmTypes`] under their linker symbol names.
 macro_rules! base_builtins {
-    ($($name:ident($($arg:ident: $ty:ty),*);)*) => { paste::paste! {$(
-        #[unsafe(export_name = stringify!($name))]
-        pub unsafe extern "C" fn [<base_ $name>]($($arg: $ty),*) {
-            unsafe { $name::<BaseEvmTypes>($($arg),*) }
-        }
-    )*}};
+    ($($name:ident($($arg:ident: $ty:ty),*);)*) => {$(
+        const _: () = {
+            #[unsafe(export_name = stringify!($name))]
+            unsafe extern "C" fn export($($arg: $ty),*) {
+                unsafe { $name::<BaseEvmTypes>($($arg),*) }
+            }
+        };
+    )*};
 }
 
-#[unsafe(export_name = "__revmc_builtin_panic")]
-pub unsafe extern "C" fn base_panic(data: *const u8, len: usize) -> ! {
-    unsafe { __revmc_builtin_panic::<BaseEvmTypes>(data, len) }
-}
+const _: () = {
+    #[unsafe(export_name = "__revmc_builtin_panic")]
+    unsafe extern "C" fn export(data: *const u8, len: usize) -> ! {
+        unsafe { __revmc_builtin_panic::<BaseEvmTypes>(data, len) }
+    }
+};
 
 base_builtins! {
     __revmc_builtin_div(sp: &mut [EvmWord; 2]);
