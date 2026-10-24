@@ -7,10 +7,10 @@ const MANGLE_PREFIX: &str = "__revmc_builtin_";
 
 /// Builtin cache.
 #[derive(Debug)]
-pub struct Builtins<B: Backend>(
-    [Option<B::Function>; Builtin::COUNT],
-    Option<fn(Builtin) -> usize>,
-);
+pub struct Builtins<B: Backend> {
+    functions: [Option<B::Function>; Builtin::COUNT],
+    resolver: Option<fn(Builtin) -> usize>,
+}
 
 unsafe impl<B: Backend> Send for Builtins<B> {}
 
@@ -23,24 +23,24 @@ impl<B: Backend> Default for Builtins<B> {
 impl<B: Backend> Builtins<B> {
     /// Create a new cache.
     pub const fn new() -> Self {
-        Self([None; Builtin::COUNT], None)
+        Self { functions: [None; Builtin::COUNT], resolver: None }
     }
 
     /// Selects host-specific builtin addresses.
     pub fn set_resolver(&mut self, resolver: fn(Builtin) -> usize) {
         self.clear();
-        self.1 = Some(resolver);
+        self.resolver = Some(resolver);
     }
 
     /// Clear the cache.
     pub const fn clear(&mut self) {
-        self.0 = [None; Builtin::COUNT];
+        self.functions = [None; Builtin::COUNT];
     }
 
     /// Get the function for the given builtin.
     pub fn get(&mut self, builtin: Builtin, bcx: &mut B::Builder<'_>) -> B::Function {
-        let resolver = self.1;
-        *self.0[builtin as usize].get_or_insert_with(|| Self::init(builtin, bcx, resolver))
+        let resolver = self.resolver;
+        *self.functions[builtin as usize].get_or_insert_with(|| Self::init(builtin, bcx, resolver))
     }
 
     #[cold]
