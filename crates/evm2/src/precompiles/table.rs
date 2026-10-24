@@ -239,7 +239,11 @@ impl<T: EvmTypesHost> PrecompileMap<T> {
     /// Returns the precompile data at `address`, if any.
     #[inline]
     pub(super) fn get_data(&self, address: &Address) -> Option<&PrecompileData<T>> {
-        self.inner.get(address)
+        match short_address(address) {
+            Some(index) if !self.short.get(index) => None,
+            None if self.long_count == 0 => None,
+            _ => self.inner.get(address),
+        }
     }
 
     /// Maps the precompile at `address`, if it exists.
@@ -624,6 +628,30 @@ mod tests {
 
         assert!(map.contains(&first));
         assert!(!map.contains(&second));
+    }
+
+    #[test]
+    fn get_data_matches_inner_lookup() {
+        let identity = IDENTITY::<BaseEvmTypes>();
+        let identity_address = identity.address();
+        let short_miss = address!("0x0000000000000000000000000000000000000999");
+        let long = address!("0x1000000000000000000000000000000000000004");
+        let long_miss = address!("0x1000000000000000000000000000000000000005");
+        let mut map = PrecompileMap::from_precompiles([identity]);
+
+        assert_eq!(map.get_data(&identity_address).unwrap().id(), &PrecompileId::Identity);
+        assert!(map.get_data(&short_miss).is_none());
+        assert!(map.get_data(&long).is_none());
+
+        map.move_precompiles([(identity_address, long)]).unwrap();
+
+        assert!(map.get_data(&identity_address).is_none());
+        assert_eq!(map.get_data(&long).unwrap().id(), &PrecompileId::Identity);
+        assert!(map.get_data(&long_miss).is_none());
+
+        map.remove(long);
+
+        assert!(map.get_data(&long).is_none());
     }
 
     #[test]
