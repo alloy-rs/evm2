@@ -862,6 +862,15 @@ mod custom_host_tests {
         *out = Word::ZERO;
     }
 
+    #[instruction(EvmTypes = TableTypes, no_stack_preamble)]
+    fn reading_balance(_cx: _) -> Result {
+        // Replaces its operand with the word below it.
+        let words = stack.as_slice_mut();
+        let [.., below, top] = words else { return Err(InstrStop::StackUnderflow) };
+        *top = *below;
+        Ok(())
+    }
+
     #[instruction(EvmTypes = TableTypes)]
     fn added(cx: _) -> out {
         *out = Word::from(0xdead_u64);
@@ -882,6 +891,8 @@ mod custom_host_tests {
             config.set_instruction::<charged_sload>(op::SLOAD, sload_gas);
             let tload_gas = config.static_gas(op::TLOAD);
             config.set_instruction::<skipping_tload>(op::TLOAD, tload_gas);
+            let balance_gas = config.static_gas(op::BALANCE);
+            config.set_instruction::<reading_balance>(op::BALANCE, balance_gas);
             config.set_instruction::<added>(ADDED_OPCODE, 2);
             config
         };
@@ -940,6 +951,7 @@ mod custom_host_tests {
         let tx = Box::leak(Box::new(TxEnvExt::default()));
         let message = Box::leak(Box::new(MessageExt {
             gas_limit: 100_000,
+            caller: Address::repeat_byte(0x11),
             code: Bytecode::new_legacy(Bytes::from_static(code)),
             ..Default::default()
         }));
@@ -1000,6 +1012,20 @@ mod custom_host_tests {
                 op::MLOAD,
                 op::PUSH0,
                 op::MSTORE,
+                op::PUSH1,
+                32,
+                op::PUSH0,
+                op::RETURN,
+            ][..],
+            // The override reads the `CALLER` word below its operand, which the program
+            // otherwise discards.
+            &[
+                op::CALLER,
+                op::PUSH0,
+                op::BALANCE,
+                op::PUSH0,
+                op::MSTORE,
+                op::POP,
                 op::PUSH1,
                 32,
                 op::PUSH0,
