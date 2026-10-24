@@ -991,7 +991,12 @@ mod custom_host_tests {
         assert_eq!(compiled_stop, None);
         assert_eq!(stop, InstrStop::Stop);
         assert_eq!(interpreted.gas().spent(), 2);
-        // An opcode the host adds stays on the interpreter, which runs it.
+        // An unreachable added opcode, such as metadata after `STOP`, does not block compilation.
+        let (compiled_stop, compiled, stop, interpreted) =
+            run_both(table_host(), &[op::PUSH0, op::STOP, ADDED_OPCODE, 0xa2, 0x64]);
+        assert_eq!(compiled_stop, Some(stop));
+        assert_eq!(compiled.gas().spent(), interpreted.gas().spent());
+        // A reachable added opcode stays on the interpreter, which runs it.
         let (compiled_stop, _, stop, interpreted) = run_both(
             table_host(),
             &[ADDED_OPCODE, op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN],

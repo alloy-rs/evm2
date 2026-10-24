@@ -169,8 +169,6 @@ pub struct Bytecode<'a> {
     pub(crate) gas_params: GasParams,
     /// Whether the bytecode contains dynamic jumps.
     has_dynamic_jumps: bool,
-    /// First opcode the host implements in a way compiled code cannot reproduce.
-    unsupported_host_opcode: Option<u8>,
     /// Mapping from program counter to instruction.
     pc_to_inst: FxHashMap<u32, Inst>,
     /// Mapping from instruction index to its program counter (`code[pc]` is the opcode byte).
@@ -248,7 +246,6 @@ impl<'a> Bytecode<'a> {
         let mut u256_interner = U256Interner::new();
         let owned_infos = table.map(|table| table.op_infos(spec_id));
         let op_infos = owned_infos.as_ref().unwrap_or_else(|| op_info_map(spec_id));
-        let mut unsupported_host_opcode = None;
         let mut iter = OpcodesIter::with_infos(&code, op_infos).with_pc();
         while let Some((pc, Opcode { opcode, immediate })) = iter.next() {
             let inst: Inst = insts.next_idx();
@@ -267,7 +264,9 @@ impl<'a> Bytecode<'a> {
                 flags |= InstFlags::HOST;
             }
             if info.is_unsupported_host() {
-                unsupported_host_opcode.get_or_insert(opcode);
+                // Analysis treats it as an unknown opcode; `analyze` rejects the program if one
+                // is reachable.
+                flags |= InstFlags::UNKNOWN | InstFlags::UNSUPPORTED_HOST;
             }
             let (base_gas, stack_io) =
                 if info.is_unknown() || info.is_disabled() || info.is_unsupported_host() {
@@ -352,7 +351,6 @@ impl<'a> Bytecode<'a> {
             spec_id,
             gas_params,
             has_dynamic_jumps: false,
-            unsupported_host_opcode,
             snapshots: Snapshots::default(),
             memory_sections: IndexVec::new(),
             u256_interner: RefCell::new(u256_interner),
@@ -441,9 +439,6 @@ impl<'a> Bytecode<'a> {
     /// Runs a list of analysis passes on the instructions.
     #[instrument(level = "debug", skip_all)]
     pub(crate) fn analyze(&mut self) -> Result<()> {
-        if let Some(opcode) = self.unsupported_host_opcode {
-            bail!("host opcode {opcode:#04x} is not supported by compiled code");
-        }
         self.refresh_cfg();
 
         self.block_analysis_local();
@@ -476,6 +471,12 @@ impl<'a> Bytecode<'a> {
         if tracing::enabled!(tracing::Level::TRACE) {
             self.log_ir_stats();
             self.log_const_input_stats();
+        }
+
+        if let Some((_, data)) =
+            self.iter_insts().find(|(_, data)| data.flags.contains(InstFlags::UNSUPPORTED_HOST))
+        {
+            bail!("host opcode {:#04x} is not supported by compiled code", data.opcode);
         }
 
         Ok(())
@@ -1270,6 +1271,9 @@ bitflags::bitflags! {
         const CONTINUES_STACK_SECTION = 1 << 10;
         /// The host's own instruction implementation executes this opcode, through a builtin.
         const HOST = 1 << 11;
+        /// The host implements this opcode in a way compiled code cannot reproduce, so a
+        /// program where it is reachable is not compiled.
+        const UNSUPPORTED_HOST = 1 << 12;
     }
 }
 
