@@ -524,7 +524,7 @@ impl<B: Backend> EvmCompiler<B> {
     /// Sets the host's opcode table.
     ///
     /// Without one, programs use the base opcode table of their spec.
-    pub fn set_opcode_table(&mut self, table: OpcodeTable) {
+    pub const fn set_opcode_table(&mut self, table: OpcodeTable) {
         self.opcode_table = Some(table);
     }
 
