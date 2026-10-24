@@ -111,872 +111,867 @@ macro_rules! builtins {
     };
 }
 
-/// Builtins generic over the interpreter host types.
-pub mod generic {
-    use super::*;
-
-    builtins! {
+builtins! {
 
     pub unsafe extern "C" fn __revmc_builtin_panic<T: EvmTypesHost>(data: *const u8, len: usize) -> ! {
-        let msg = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(data, len)) };
-        panic!("{msg}");
+let msg = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(data, len)) };
+panic!("{msg}");
     }
 
     pub unsafe extern "C" fn __revmc_builtin_div<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
-        let divisor = b.to_u256();
-        *b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_div(divisor) }.into();
+let divisor = b.to_u256();
+*b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_div(divisor) }.into();
     }
 
     pub unsafe extern "C" fn __revmc_builtin_sdiv<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
-        *b = i256::i256_div(a.to_u256(), b.to_u256()).into();
+*b = i256::i256_div(a.to_u256(), b.to_u256()).into();
     }
 
     pub unsafe extern "C" fn __revmc_builtin_mod<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
-        let divisor = b.to_u256();
-        *b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_rem(divisor) }.into();
+let divisor = b.to_u256();
+*b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_rem(divisor) }.into();
     }
 
     pub unsafe extern "C" fn __revmc_builtin_smod<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
-        *b = i256::i256_mod(a.to_u256(), b.to_u256()).into();
+*b = i256::i256_mod(a.to_u256(), b.to_u256()).into();
     }
 
     pub unsafe extern "C" fn __revmc_builtin_addmod<T: EvmTypesHost>(rev![a, b, c]: &mut [EvmWord; 3]) {
-        *c = a.to_u256().add_mod(b.to_u256(), c.to_u256()).into();
+*c = a.to_u256().add_mod(b.to_u256(), c.to_u256()).into();
     }
 
     pub unsafe extern "C" fn __revmc_builtin_mulmod<T: EvmTypesHost>(rev![a, b, c]: &mut [EvmWord; 3]) {
-        *c = a.to_u256().mul_mod(b.to_u256(), c.to_u256()).into();
+*c = a.to_u256().mul_mod(b.to_u256(), c.to_u256()).into();
     }
 
-        pub unsafe extern "C" fn __revmc_builtin_assert_spec_id<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, expected: u32) {
-            assert_eq!(
-                u32::from(ecx.spec_id()), expected,
-                "evm2_jit panic: runtime spec_id does not match compilation spec_id"
-            );
-        }
+pub unsafe extern "C" fn __revmc_builtin_assert_spec_id<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, expected: u32) {
+    assert_eq!(
+        u32::from(ecx.spec_id()), expected,
+        "evm2_jit panic: runtime spec_id does not match compilation spec_id"
+    );
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_exp<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: &mut [EvmWord; 2],
-        ) -> BuiltinResult {
-            let rev![base, exponent_ptr] = sp;
-            let exponent = exponent_ptr.to_u256();
-            ecx.gas.spend(ecx.gas_params().exp_cost(exponent))?;
-            *exponent_ptr = base.to_u256().pow(exponent).into();
-            Ok(())
-        }
+pub unsafe extern "C" fn __revmc_builtin_exp<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: &mut [EvmWord; 2],
+) -> BuiltinResult {
+    let rev![base, exponent_ptr] = sp;
+    let exponent = exponent_ptr.to_u256();
+    ecx.gas.spend(ecx.gas_params().exp_cost(exponent))?;
+    *exponent_ptr = base.to_u256().pow(exponent).into();
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_keccak256<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: &mut [EvmWord; 2],
-        ) -> BuiltinResult {
-            let rev![offset, len_ptr] = sp;
-            let len = word_to_usize(len_ptr.to_u256())?;
-            do_keccak256(ecx, len_ptr, *offset, len)
-        }
+pub unsafe extern "C" fn __revmc_builtin_keccak256<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: &mut [EvmWord; 2],
+) -> BuiltinResult {
+    let rev![offset, len_ptr] = sp;
+    let len = word_to_usize(len_ptr.to_u256())?;
+    do_keccak256(ecx, len_ptr, *offset, len)
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_keccak256_cc<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            out: &mut EvmWord,
-            offset: u64,
-            len: u64,
-        ) -> BuiltinResult {
-            do_keccak256(ecx, out, U256::from(offset).into(), len as usize)
-        }
+pub unsafe extern "C" fn __revmc_builtin_keccak256_cc<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    out: &mut EvmWord,
+    offset: u64,
+    len: u64,
+) -> BuiltinResult {
+    do_keccak256(ecx, out, U256::from(offset).into(), len as usize)
+}
 
-        fn do_keccak256<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            out: &mut EvmWord,
-            offset: EvmWord,
-            len: usize,
-        ) -> BuiltinResult {
-            *out = EvmWord::from_be_bytes(if len == 0 {
-                KECCAK256_EMPTY
-            } else {
-                ecx.gas.spend(ecx.gas_params().keccak256_word_cost(len))?;
-                let offset = word_to_usize(offset.to_u256())?;
-                ensure_memory(ecx, offset, len)?;
-                keccak256(ecx.memory().slice(offset, len))
-            });
-            Ok(())
-        }
+fn do_keccak256<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    out: &mut EvmWord,
+    offset: EvmWord,
+    len: usize,
+) -> BuiltinResult {
+    *out = EvmWord::from_be_bytes(if len == 0 {
+        KECCAK256_EMPTY
+    } else {
+        ecx.gas.spend(ecx.gas_params().keccak256_word_cost(len))?;
+        let offset = word_to_usize(offset.to_u256())?;
+        ensure_memory(ecx, offset, len)?;
+        keccak256(ecx.memory().slice(offset, len))
+    });
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_balance<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            address: &mut EvmWord,
-        ) -> BuiltinResult {
-            let account = load_account(ecx, &address.to_address(), false)?;
-            *address = account.balance.into();
-            Ok(())
-        }
+pub unsafe extern "C" fn __revmc_builtin_balance<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    address: &mut EvmWord,
+) -> BuiltinResult {
+    let account = load_account(ecx, &address.to_address(), false)?;
+    *address = account.balance.into();
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_calldataload<T: EvmTypesHost>(
-            ecx: &EvmContext<'_, '_, '_, T>,
-            offset_ptr: &mut EvmWord,
-        ) {
-            do_calldataload(ecx, offset_ptr, word_to_usize_saturated(offset_ptr.to_u256()));
-        }
+pub unsafe extern "C" fn __revmc_builtin_calldataload<T: EvmTypesHost>(
+    ecx: &EvmContext<'_, '_, '_, T>,
+    offset_ptr: &mut EvmWord,
+) {
+    do_calldataload(ecx, offset_ptr, word_to_usize_saturated(offset_ptr.to_u256()));
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_calldataload_c<T: EvmTypesHost>(
-            ecx: &EvmContext<'_, '_, '_, T>,
-            offset_ptr: &mut EvmWord,
-            offset: u64,
-        ) {
-            do_calldataload(ecx, offset_ptr, offset as usize);
-        }
+pub unsafe extern "C" fn __revmc_builtin_calldataload_c<T: EvmTypesHost>(
+    ecx: &EvmContext<'_, '_, '_, T>,
+    offset_ptr: &mut EvmWord,
+    offset: u64,
+) {
+    do_calldataload(ecx, offset_ptr, offset as usize);
+}
 
-        fn do_calldataload<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, out: &mut EvmWord, offset: usize) {
-            *out = EvmWord::from_be_bytes(read_word_padded(ecx.input(), offset));
-        }
+fn do_calldataload<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, out: &mut EvmWord, offset: usize) {
+    *out = EvmWord::from_be_bytes(read_word_padded(ecx.input(), offset));
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_calldatacopy<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: &mut [EvmWord; 3],
-        ) -> BuiltinResult {
-            let rev![memory_offset, data_offset, len] = sp;
-            let len = word_to_usize(len.to_u256())?;
-            if len != 0 {
-                ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
-                let memory_offset = word_to_usize(memory_offset.to_u256())?;
-                ensure_memory(ecx, memory_offset, len)?;
-                let data_offset = word_to_usize_saturated(data_offset.to_u256());
-                let input = ecx.input().as_ref();
-                let input = unsafe { core::slice::from_raw_parts(input.as_ptr(), input.len()) };
-                ecx.memory_mut().set_data(memory_offset, data_offset, len, input);
-            }
-            Ok(())
-        }
+pub unsafe extern "C" fn __revmc_builtin_calldatacopy<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: &mut [EvmWord; 3],
+) -> BuiltinResult {
+    let rev![memory_offset, data_offset, len] = sp;
+    let len = word_to_usize(len.to_u256())?;
+    if len != 0 {
+        ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
+        let memory_offset = word_to_usize(memory_offset.to_u256())?;
+        ensure_memory(ecx, memory_offset, len)?;
+        let data_offset = word_to_usize_saturated(data_offset.to_u256());
+        let input = ecx.input().as_ref();
+        let input = unsafe { core::slice::from_raw_parts(input.as_ptr(), input.len()) };
+        ecx.memory_mut().set_data(memory_offset, data_offset, len, input);
+    }
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_codecopy<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: &mut [EvmWord; 3],
-        ) -> BuiltinResult {
-            let bytecode = ecx.bytecode();
-            unsafe { copy_operation(ecx, sp, bytecode.as_ref()) }
-        }
+pub unsafe extern "C" fn __revmc_builtin_codecopy<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: &mut [EvmWord; 3],
+) -> BuiltinResult {
+    let bytecode = ecx.bytecode();
+    unsafe { copy_operation(ecx, sp, bytecode.as_ref()) }
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_extcodesize<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            address: &mut EvmWord,
-        ) -> BuiltinResult {
-            let account = load_account(ecx, &address.to_address(), true)?;
-            *address = U256::from(account.code.len()).into();
-            Ok(())
-        }
+pub unsafe extern "C" fn __revmc_builtin_extcodesize<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    address: &mut EvmWord,
+) -> BuiltinResult {
+    let account = load_account(ecx, &address.to_address(), true)?;
+    *address = U256::from(account.code.len()).into();
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_extcodecopy<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: &mut [EvmWord; 4],
-        ) -> BuiltinResult {
-            let rev![address, memory_offset, code_offset, len] = sp;
-            let len = word_to_usize(len.to_u256())?;
-            ecx.gas.spend(ecx.gas_params().extcodecopy_cost(len))?;
+pub unsafe extern "C" fn __revmc_builtin_extcodecopy<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: &mut [EvmWord; 4],
+) -> BuiltinResult {
+    let rev![address, memory_offset, code_offset, len] = sp;
+    let len = word_to_usize(len.to_u256())?;
+    ecx.gas.spend(ecx.gas_params().extcodecopy_cost(len))?;
 
-            let mut memory_offset_usize = 0;
-            if len != 0 {
-                memory_offset_usize = word_to_usize(memory_offset.to_u256())?;
-                ensure_memory(ecx, memory_offset_usize, len)?;
-            }
+    let mut memory_offset_usize = 0;
+    if len != 0 {
+        memory_offset_usize = word_to_usize(memory_offset.to_u256())?;
+        ensure_memory(ecx, memory_offset_usize, len)?;
+    }
 
-            let account = load_account(ecx, &address.to_address(), true)?;
-            let code = account.code.original_bytes();
+    let account = load_account(ecx, &address.to_address(), true)?;
+    let code = account.code.original_bytes();
 
-            let code_offset_usize = core::cmp::min(word_to_usize_saturated(code_offset.to_u256()), code.len());
-            ecx.memory_mut().set_data(memory_offset_usize, code_offset_usize, len, &code);
-            Ok(())
-        }
+    let code_offset_usize = core::cmp::min(word_to_usize_saturated(code_offset.to_u256()), code.len());
+    ecx.memory_mut().set_data(memory_offset_usize, code_offset_usize, len, &code);
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_returndatacopy<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: &mut [EvmWord; 3],
-        ) -> BuiltinResult {
-            let rev![memory_offset, offset, len] = sp;
-            let len = word_to_usize(len.to_u256())?;
-            let data_offset = word_to_usize_saturated(offset.to_u256());
+pub unsafe extern "C" fn __revmc_builtin_returndatacopy<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: &mut [EvmWord; 3],
+) -> BuiltinResult {
+    let rev![memory_offset, offset, len] = sp;
+    let len = word_to_usize(len.to_u256())?;
+    let data_offset = word_to_usize_saturated(offset.to_u256());
 
-            // Bounds check before charging gas.
-            let data_end = data_offset.saturating_add(len);
-            if data_end > ecx.return_data().len() {
-                return Err(InstrStop::OutOfOffset.into());
-            }
+    // Bounds check before charging gas.
+    let data_end = data_offset.saturating_add(len);
+    if data_end > ecx.return_data().len() {
+        return Err(InstrStop::OutOfOffset.into());
+    }
 
-            ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
-            if len != 0 {
-                let memory_offset = word_to_usize(memory_offset.to_u256())?;
-                ensure_memory(ecx, memory_offset, len)?;
-                let return_data = ecx.return_data();
-                let data =
-                    unsafe { core::slice::from_raw_parts(return_data.as_ptr().add(data_offset), len) };
-                ecx.memory_mut().set(memory_offset, data);
-            }
-            Ok(())
-        }
+    ecx.gas.spend(ecx.gas_params().copy_cost(len))?;
+    if len != 0 {
+        let memory_offset = word_to_usize(memory_offset.to_u256())?;
+        ensure_memory(ecx, memory_offset, len)?;
+        let return_data = ecx.return_data();
+        let data =
+            unsafe { core::slice::from_raw_parts(return_data.as_ptr().add(data_offset), len) };
+        ecx.memory_mut().set(memory_offset, data);
+    }
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_extcodehash<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            address: &mut EvmWord,
-        ) -> BuiltinResult {
-            let account = load_account(ecx, &address.to_address(), false)?;
-            let code_hash = if account.is_empty { B256::ZERO } else { account.code_hash };
-            *address = EvmWord::from_be_bytes(code_hash);
-            Ok(())
-        }
+pub unsafe extern "C" fn __revmc_builtin_extcodehash<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    address: &mut EvmWord,
+) -> BuiltinResult {
+    let account = load_account(ecx, &address.to_address(), false)?;
+    let code_hash = if account.is_empty { B256::ZERO } else { account.code_hash };
+    *address = EvmWord::from_be_bytes(code_hash);
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_blockhash<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            number_ptr: &mut EvmWord,
-        ) -> BuiltinResult {
-            let requested_number = number_ptr.to_u256();
-            let block_number = ecx.block_env().number;
+pub unsafe extern "C" fn __revmc_builtin_blockhash<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    number_ptr: &mut EvmWord,
+) -> BuiltinResult {
+    let requested_number = number_ptr.to_u256();
+    let block_number = ecx.block_env().number;
 
-            // Check if requested block is in the future
-            let Some(diff) = block_number.checked_sub(requested_number) else {
-                *number_ptr = EvmWord::ZERO;
-                return Ok(());
-            };
+    // Check if requested block is in the future
+    let Some(diff) = block_number.checked_sub(requested_number) else {
+        *number_ptr = EvmWord::ZERO;
+        return Ok(());
+    };
 
-            let diff = word_to_u64_saturated(diff);
+    let diff = word_to_u64_saturated(diff);
 
-            // Current block returns 0
-            if diff == 0 {
-                *number_ptr = EvmWord::ZERO;
-                return Ok(());
-            }
+    // Current block returns 0
+    if diff == 0 {
+        *number_ptr = EvmWord::ZERO;
+        return Ok(());
+    }
 
-            if diff <= BLOCK_HASH_HISTORY {
-                let hash = ecx.host().block_hash(&requested_number).map_err(|error| ecx.interpreter_mut().fail(error))?;
-                *number_ptr = EvmWord::from_be_bytes(hash);
-            } else {
-                // Too old, return 0
-                *number_ptr = EvmWord::ZERO;
-            }
+    if diff <= BLOCK_HASH_HISTORY {
+        let hash = ecx.host().block_hash(&requested_number).map_err(|error| ecx.interpreter_mut().fail(error))?;
+        *number_ptr = EvmWord::from_be_bytes(hash);
+    } else {
+        // Too old, return 0
+        *number_ptr = EvmWord::ZERO;
+    }
 
-            Ok(())
-        }
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_self_balance<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            slot: &mut EvmWord,
-        ) -> BuiltinResult {
-            let destination = ecx.message().destination;
-            let balance = ecx
-                .host()
-                .load_account(&destination, false, false)
-                .map_err(|stop| ecx.interpreter_mut().fail(stop))?
-                .balance;
-            *slot = balance.into();
-            Ok(())
-        }
+pub unsafe extern "C" fn __revmc_builtin_self_balance<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    slot: &mut EvmWord,
+) -> BuiltinResult {
+    let destination = ecx.message().destination;
+    let balance = ecx
+        .host()
+        .load_account(&destination, false, false)
+        .map_err(|stop| ecx.interpreter_mut().fail(stop))?
+        .balance;
+    *slot = balance.into();
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_difficulty<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, slot: &mut EvmWord) {
-            let block_env = ecx.block_env();
-            let value =
-                if ecx.enables(EvmFeatures::EIP4399) { block_env.prevrandao } else { block_env.difficulty };
-            *slot = value.into();
-        }
+pub unsafe extern "C" fn __revmc_builtin_difficulty<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, slot: &mut EvmWord) {
+    let block_env = ecx.block_env();
+    let value =
+        if ecx.enables(EvmFeatures::EIP4399) { block_env.prevrandao } else { block_env.difficulty };
+    *slot = value.into();
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_blob_hash<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, index_ptr: &mut EvmWord) {
-            let index = index_ptr.to_u256();
-            let index_usize = word_to_usize_saturated(index);
-            *index_ptr = ecx.tx_env().blob_hashes.get(index_usize).copied().unwrap_or_default().into();
-        }
+pub unsafe extern "C" fn __revmc_builtin_blob_hash<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, index_ptr: &mut EvmWord) {
+    let index = index_ptr.to_u256();
+    let index_usize = word_to_usize_saturated(index);
+    *index_ptr = ecx.tx_env().blob_hashes.get(index_usize).copied().unwrap_or_default().into();
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_mresize<T: EvmTypesHost>(ecx: &mut EvmContext<'_, '_, '_, T>, min_size: u64) -> BuiltinResult {
-            ensure_memory(ecx, min_size as usize, 0)
-        }
+pub unsafe extern "C" fn __revmc_builtin_mresize<T: EvmTypesHost>(ecx: &mut EvmContext<'_, '_, '_, T>, min_size: u64) -> BuiltinResult {
+    ensure_memory(ecx, min_size as usize, 0)
+}
 
 
     pub unsafe extern "C" fn __revmc_builtin_sload<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            index: &mut EvmWord,
-        ) -> BuiltinResult {
-            let address = &ecx.message().destination;
-            let key = index.to_u256();
-            let additional_cold_cost = ecx.gas_params().get(GasId::ColdStorageAdditionalCost);
-            let skip_cold =
-                ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
-            let storage =
-                ecx.host().sload(address, &key, skip_cold).map_err(|stop| ecx.interpreter_mut().fail(stop))?;
-            if storage.is_cold {
-                ecx.gas.spend(additional_cold_cost)?;
-            }
-            *index = storage.value.into();
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    index: &mut EvmWord,
+) -> BuiltinResult {
+    let address = &ecx.message().destination;
+    let key = index.to_u256();
+    let additional_cold_cost = ecx.gas_params().get(GasId::ColdStorageAdditionalCost);
+    let skip_cold =
+        ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
+    let storage =
+        ecx.host().sload(address, &key, skip_cold).map_err(|stop| ecx.interpreter_mut().fail(stop))?;
+    if storage.is_cold {
+        ecx.gas.spend(additional_cold_cost)?;
+    }
+    *index = storage.value.into();
 
-            Ok(())
-        }
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_sload_c<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            index: &mut EvmWord,
-            key: u64,
-        ) -> BuiltinResult {
-            *index = U256::from(key).into();
-            unsafe { __revmc_builtin_sload(ecx, index) };
-            Ok(())
-        }
+pub unsafe extern "C" fn __revmc_builtin_sload_c<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    index: &mut EvmWord,
+    key: u64,
+) -> BuiltinResult {
+    *index = U256::from(key).into();
+    unsafe { __revmc_builtin_sload(ecx, index) };
+    Ok(())
+}
 
 
     pub unsafe extern "C" fn __revmc_builtin_sstore<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: &mut [EvmWord; 2],
-        ) -> BuiltinResult {
-            let rev![index, value] = sp;
-            require_non_staticcall(ecx)?;
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: &mut [EvmWord; 2],
+) -> BuiltinResult {
+    let rev![index, value] = sp;
+    require_non_staticcall(ecx)?;
 
-            let target = &ecx.message().destination;
-            let is_eip2200 = ecx.enables(EvmFeatures::EIP2200);
+    let target = &ecx.message().destination;
+    let is_eip2200 = ecx.enables(EvmFeatures::EIP2200);
 
-            // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
-            if is_eip2200 && ecx.gas.remaining() <= ecx.gas_params().get(GasId::CallStipend) {
-                return Err(InstrStop::ReentrancySentryOOG.into());
-            }
+    // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
+    if is_eip2200 && ecx.gas.remaining() <= ecx.gas_params().get(GasId::CallStipend) {
+        return Err(InstrStop::ReentrancySentryOOG.into());
+    }
 
-            ecx.gas.spend(ecx.gas_params().get(GasId::SstoreStatic))?;
+    ecx.gas.spend(ecx.gas_params().get(GasId::SstoreStatic))?;
 
-            let additional_cold_cost = ecx.gas_params().get(GasId::ColdStorageAdditionalCost);
-            let skip_cold =
-                ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
-            let index = index.to_u256();
-            let value = value.to_u256();
-            let state_load = ecx
-                .host()
-                .sstore(target, &index, &value, skip_cold)
-                .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
+    let additional_cold_cost = ecx.gas_params().get(GasId::ColdStorageAdditionalCost);
+    let skip_cold =
+        ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
+    let index = index.to_u256();
+    let value = value.to_u256();
+    let state_load = ecx
+        .host()
+        .sstore(target, &index, &value, skip_cold)
+        .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
 
-            let dynamic_gas = ecx.gas_params().sstore_dynamic_gas(is_eip2200, &state_load);
-            ecx.gas.spend(dynamic_gas)?;
+    let dynamic_gas = ecx.gas_params().sstore_dynamic_gas(is_eip2200, &state_load);
+    ecx.gas.spend(dynamic_gas)?;
 
-            // State gas for new slot creation (EIP-8037).
-            if ecx.enables(EvmFeatures::EIP8037) {
-                let state_gas = ecx.gas_params().sstore_state_gas(&state_load);
-                ecx.gas.spend_state(state_gas)?;
-                let refill = ecx.gas_params().sstore_state_gas_refill(&state_load);
-                ecx.gas.refill_reservoir(refill);
-            }
+    // State gas for new slot creation (EIP-8037).
+    if ecx.enables(EvmFeatures::EIP8037) {
+        let state_gas = ecx.gas_params().sstore_state_gas(&state_load);
+        ecx.gas.spend_state(state_gas)?;
+        let refill = ecx.gas_params().sstore_state_gas_refill(&state_load);
+        ecx.gas.refill_reservoir(refill);
+    }
 
-            let refund = ecx.gas_params().sstore_refund(is_eip2200, &state_load);
-            ecx.gas.record_refund(refund);
-            Ok(())
-        }
+    let refund = ecx.gas_params().sstore_refund(is_eip2200, &state_load);
+    ecx.gas.record_refund(refund);
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_tload<T: EvmTypesHost>(ecx: &mut EvmContext<'_, '_, '_, T>, key: &mut EvmWord) {
-            let target = &ecx.message().destination;
-            let key_word = key.to_u256();
-            *key = ecx.host().tload(target, &key_word).into();
-        }
+pub unsafe extern "C" fn __revmc_builtin_tload<T: EvmTypesHost>(ecx: &mut EvmContext<'_, '_, '_, T>, key: &mut EvmWord) {
+    let target = &ecx.message().destination;
+    let key_word = key.to_u256();
+    *key = ecx.host().tload(target, &key_word).into();
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_tstore<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: &mut [EvmWord; 2],
-        ) -> BuiltinResult {
-            let rev![key, value] = sp;
-            require_non_staticcall(ecx)?;
-            let target = &ecx.message().destination;
-            ecx.host().tstore(target, &key.to_u256(), &value.to_u256());
-            Ok(())
-        }
+pub unsafe extern "C" fn __revmc_builtin_tstore<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: &mut [EvmWord; 2],
+) -> BuiltinResult {
+    let rev![key, value] = sp;
+    require_non_staticcall(ecx)?;
+    let target = &ecx.message().destination;
+    ecx.host().tstore(target, &key.to_u256(), &value.to_u256());
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_host_instruction<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: *mut EvmWord,
-            pc: usize,
-            io: usize,
-        ) -> BuiltinResult {
-            let (inputs, outputs) = (io >> 8, io & 0xff);
-            // SAFETY: The context owns the live interpreter borrow, and the stack view is
-            // dropped before the instruction runs. Compiled code runs on the interpreter's own
-            // stack, so `sp` points into it and its first `len` words are initialized.
-            let base = unsafe { ecx.interpreter_mut().stack_mut().into_raw_parts() }.0;
-            // SAFETY: `sp` is the lowest input slot of the interpreter stack.
-            let len = unsafe { sp.offset_from(base.cast::<EvmWord>()) } as usize + inputs;
-            let gas = ecx.gas;
-            ecx.interpreter_mut().set_gas(gas);
-            let result = unsafe { ecx.interpreter_mut().run_external_instruction(pc, len) };
-            ecx.gas = ecx.interpreter().gas();
-            ecx.refresh_memory_cache();
-            let new_len = result?;
-            if new_len != len - inputs + outputs {
-                // The host overrode the opcode with a different stack effect.
-                return Err(InstrStop::FatalExternalError.into());
-            }
-            Ok(())
-        }
+pub unsafe extern "C" fn __revmc_builtin_host_instruction<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: *mut EvmWord,
+    pc: usize,
+    io: usize,
+) -> BuiltinResult {
+    let (inputs, outputs) = (io >> 8, io & 0xff);
+    // SAFETY: The context owns the live interpreter borrow, and the stack view is
+    // dropped before the instruction runs. Compiled code runs on the interpreter's own
+    // stack, so `sp` points into it and its first `len` words are initialized.
+    let base = unsafe { ecx.interpreter_mut().stack_mut().into_raw_parts() }.0;
+    // SAFETY: `sp` is the lowest input slot of the interpreter stack.
+    let len = unsafe { sp.offset_from(base.cast::<EvmWord>()) } as usize + inputs;
+    let gas = ecx.gas;
+    ecx.interpreter_mut().set_gas(gas);
+    let result = unsafe { ecx.interpreter_mut().run_external_instruction(pc, len) };
+    ecx.gas = ecx.interpreter().gas();
+    ecx.refresh_memory_cache();
+    let new_len = result?;
+    if new_len != len - inputs + outputs {
+        // The host overrode the opcode with a different stack effect.
+        return Err(InstrStop::FatalExternalError.into());
+    }
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_mcopy<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: &mut [EvmWord; 3],
-        ) -> BuiltinResult {
-            let rev![dst, src, len] = sp;
-            let len = word_to_usize(len.to_u256())?;
-            ecx.gas.spend(ecx.gas_params().mcopy_cost(len))?;
-            if len != 0 {
-                let dst = word_to_usize(dst.to_u256())?;
-                let src = word_to_usize(src.to_u256())?;
-                ensure_memory(ecx, dst.max(src), len)?;
-                ecx.memory_mut().copy(dst, src, len);
-            }
-            Ok(())
-        }
+pub unsafe extern "C" fn __revmc_builtin_mcopy<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: &mut [EvmWord; 3],
+) -> BuiltinResult {
+    let rev![dst, src, len] = sp;
+    let len = word_to_usize(len.to_u256())?;
+    ecx.gas.spend(ecx.gas_params().mcopy_cost(len))?;
+    if len != 0 {
+        let dst = word_to_usize(dst.to_u256())?;
+        let src = word_to_usize(src.to_u256())?;
+        ensure_memory(ecx, dst.max(src), len)?;
+        ecx.memory_mut().copy(dst, src, len);
+    }
+    Ok(())
+}
 
-        pub unsafe extern "C" fn __revmc_builtin_log<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: *mut EvmWord,
-            n: u8,
-        ) -> BuiltinResult {
-            require_non_staticcall(ecx)?;
-            assume!(n <= 4, "invalid log topic count: {n}");
-            let sp = unsafe { sp.add(n as usize) };
-            let rev![offset, len] = unsafe { read_words_rev(sp) };
-            let len = word_to_usize(len.to_u256())?;
-            ecx.gas.spend(ecx.gas_params().log_cost(n, len))?;
-            let offset = if len != 0 {
-                let offset = word_to_usize(offset.to_u256())?;
-                ensure_memory(ecx, offset, len)?;
-                offset
-            } else {
-                0
-            };
+pub unsafe extern "C" fn __revmc_builtin_log<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: *mut EvmWord,
+    n: u8,
+) -> BuiltinResult {
+    require_non_staticcall(ecx)?;
+    assume!(n <= 4, "invalid log topic count: {n}");
+    let sp = unsafe { sp.add(n as usize) };
+    let rev![offset, len] = unsafe { read_words_rev(sp) };
+    let len = word_to_usize(len.to_u256())?;
+    ecx.gas.spend(ecx.gas_params().log_cost(n, len))?;
+    let offset = if len != 0 {
+        let offset = word_to_usize(offset.to_u256())?;
+        ensure_memory(ecx, offset, len)?;
+        offset
+    } else {
+        0
+    };
 
-            let mut topics = [B256::ZERO; 4];
-            for (i, topic) in topics[..n as usize].iter_mut().enumerate() {
-                *topic = unsafe { sp.sub(i + 1).read() }.to_be_bytes();
-            }
+    let mut topics = [B256::ZERO; 4];
+    for (i, topic) in topics[..n as usize].iter_mut().enumerate() {
+        *topic = unsafe { sp.sub(i + 1).read() }.to_be_bytes();
+    }
 
-            let address = &ecx.message().destination;
-            let (memory, host) = ecx.interpreter_mut().memory_host();
-            Host::log(host, address, topics[..n as usize].into(), memory.slice(offset, len).into());
-            Ok(())
-        }
+    let address = &ecx.message().destination;
+    let (memory, host) = ecx.interpreter_mut().memory_host();
+    Host::log(host, address, topics[..n as usize].into(), memory.slice(offset, len).into());
+    Ok(())
+}
 
 
     pub unsafe extern "C" fn __revmc_builtin_create<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: *mut EvmWord,
-            create_kind: CreateKind,
-        ) -> BuiltinResult {
-            require_non_staticcall(ecx)?;
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: *mut EvmWord,
+    create_kind: CreateKind,
+) -> BuiltinResult {
+    require_non_staticcall(ecx)?;
 
-            let len = match create_kind {
-                CreateKind::Create => 3,
-                CreateKind::Create2 => 4,
-            };
-            let mut sp = unsafe { sp.add(len) };
-            pop!(sp; value, code_offset, len);
+    let len = match create_kind {
+        CreateKind::Create => 3,
+        CreateKind::Create2 => 4,
+    };
+    let mut sp = unsafe { sp.add(len) };
+    pop!(sp; value, code_offset, len);
 
-            let len = word_to_usize(len.to_u256())?;
-            let version = *ecx.version();
-            let code = if len != 0 {
-                if ecx.enables(EvmFeatures::EIP3860) {
-                    if len > version.max_initcode_size {
-                        return Err(InstrStop::CreateInitCodeSizeLimit.into());
-                    }
-                    ecx.gas.spend(version.gas_params.initcode_cost(len))?;
-                }
+    let len = word_to_usize(len.to_u256())?;
+    let version = *ecx.version();
+    let code = if len != 0 {
+        if ecx.enables(EvmFeatures::EIP3860) {
+            if len > version.max_initcode_size {
+                return Err(InstrStop::CreateInitCodeSizeLimit.into());
+            }
+            ecx.gas.spend(version.gas_params.initcode_cost(len))?;
+        }
 
-                let code_offset = word_to_usize(code_offset.to_u256())?;
-                ensure_memory(ecx, code_offset, len)?;
-                Bytes::copy_from_slice(ecx.memory().slice(code_offset, len))
-            } else {
-                Bytes::new()
-            };
+        let code_offset = word_to_usize(code_offset.to_u256())?;
+        ensure_memory(ecx, code_offset, len)?;
+        Bytes::copy_from_slice(ecx.memory().slice(code_offset, len))
+    } else {
+        Bytes::new()
+    };
 
-            let is_create2 = create_kind == CreateKind::Create2;
-            let create_cost = if is_create2 {
-                version.gas_params.create2_cost(len)
-            } else {
-                version.gas_params.get(GasId::Create)
-            };
-            ecx.gas.spend(create_cost)?;
-            let salt = if is_create2 {
-                pop!(sp; salt);
-                B256::from(salt.to_be_bytes())
-            } else {
-                B256::ZERO
-            };
-            let kind = if is_create2 { MessageKind::Create2 } else { MessageKind::Create };
-            let current = ecx.message();
-            let caller = current.destination;
-            let depth = current.depth.saturating_add(1);
+    let is_create2 = create_kind == CreateKind::Create2;
+    let create_cost = if is_create2 {
+        version.gas_params.create2_cost(len)
+    } else {
+        version.gas_params.get(GasId::Create)
+    };
+    ecx.gas.spend(create_cost)?;
+    let salt = if is_create2 {
+        pop!(sp; salt);
+        B256::from(salt.to_be_bytes())
+    } else {
+        B256::ZERO
+    };
+    let kind = if is_create2 { MessageKind::Create2 } else { MessageKind::Create };
+    let current = ecx.message();
+    let caller = current.destination;
+    let depth = current.depth.saturating_add(1);
+    let value = value.to_u256();
+
+    // Derive the created contract address once (mirrors the interpreter's `create` opcode). CREATE
+    // needs the creator's (pre-bump) nonce; the caller is the currently-executing contract, already
+    // warm. CREATE2 needs no nonce. The same load feeds the EIP-8037 balance/nonce checks below, so
+    // it is only performed when one of the two needs it.
+    let caller_info = if is_create2 && !ecx.enables(EvmFeatures::EIP8037) {
+        None
+    } else {
+        Some(ecx.host().load_account(&caller, false, false).map_err(|error| ecx.interpreter_mut().fail(error))?)
+    };
+    let destination = derive_create_destination(
+        kind,
+        &caller,
+        &salt,
+        &code,
+        caller_info.as_ref().map_or(0, |info| info.nonce),
+    );
+
+    // EIP-8037: charge the CREATE account-creation state gas before the child
+    // gas split, conditional on the destination not already existing.
+    let mut charged_create_state_gas = false;
+    if ecx.enables(EvmFeatures::EIP8037) {
+        // `caller_info` is always `Some` when EIP-8037 is enabled.
+        if let Some(caller_info) = caller_info.as_ref()
+            && (caller_info.balance < value
+                || caller_info.nonce == u64::MAX
+                || depth > CALL_DEPTH_LIMIT)
+        {
+            unsafe {
+                sp.write(EvmWord::ZERO);
+            }
+            ecx.set_return_data(Bytes::new());
+            return Ok(());
+        }
+
+        // The destination is loaded here and made warm. Balance, nonce, and depth pre-access
+        // failures return above before the destination is accessed.
+        if ecx.host().target_is_empty_for_new_account_gas(&destination, version.features).map_err(|error| ecx.interpreter_mut().fail(error))? {
+            ecx.gas.spend_state(version.gas_params.create_state_gas())?;
+            charged_create_state_gas = true;
+        }
+    }
+
+    let mut gas_limit = ecx.gas.remaining();
+    if ecx.enables(EvmFeatures::EIP150) {
+        gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
+    }
+    ecx.gas.spend(gas_limit)?;
+
+    let tx_env = ecx.tx_env();
+    let mut message = MessageExt {
+        kind,
+        depth,
+        gas_limit,
+        reservoir: ecx.gas.reservoir(),
+        destination,
+        call_target: destination,
+        caller,
+        code: Bytecode::new_legacy(code.clone()),
+        input: code,
+        value,
+        code_address: caller,
+        caller_is_static: false,
+        salt,
+        ext: T::MessageExt::default(),
+        _non_exhaustive: (),
+    };
+    let mut result = ecx.host().execute_message(tx_env, &mut message).map_err(|error| ecx.interpreter_mut().fail(error))?;
+    if result.stop.is_fatal() {
+        return Err(result.stop.into());
+    }
+    ecx.gas.merge_child_gas(result.gas, result.stop);
+    // EIP-8037: refund the conditional create state gas when the create fails
+    // to deploy (no new account leaf is created).
+    let create_failed = result.created_address.is_none() || !result.stop.is_success();
+    if charged_create_state_gas && create_failed {
+        ecx.gas.refill_reservoir(version.gas_params.create_state_gas());
+    }
+
+    let address = EvmWord::from(result.created_address_for_parent());
+    let return_data = if result.stop == InstrStop::Revert {
+        core::mem::take(&mut result.output)
+    } else {
+        Bytes::new()
+    };
+    unsafe {
+        sp.write(address);
+    }
+    ecx.set_return_data(return_data);
+    Ok(())
+}
+
+pub unsafe extern "C" fn __revmc_builtin_call<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: *mut EvmWord,
+    call_kind: CallKind,
+) -> BuiltinResult {
+    let len = match call_kind {
+        CallKind::Call | CallKind::CallCode => 7,
+        CallKind::DelegateCall | CallKind::StaticCall => 6,
+    };
+    let mut sp = unsafe { sp.add(len) };
+
+    pop!(sp; local_gas_limit, to);
+    let local_gas_limit = local_gas_limit.to_u256();
+    let to = to.to_address();
+
+    let local_gas_limit = word_to_u64_saturated(local_gas_limit);
+
+    let value = match call_kind {
+        CallKind::Call | CallKind::CallCode => {
+            pop!(sp; value);
             let value = value.to_u256();
-
-            // Derive the created contract address once (mirrors the interpreter's `create` opcode). CREATE
-            // needs the creator's (pre-bump) nonce; the caller is the currently-executing contract, already
-            // warm. CREATE2 needs no nonce. The same load feeds the EIP-8037 balance/nonce checks below, so
-            // it is only performed when one of the two needs it.
-            let caller_info = if is_create2 && !ecx.enables(EvmFeatures::EIP8037) {
-                None
-            } else {
-                Some(ecx.host().load_account(&caller, false, false).map_err(|error| ecx.interpreter_mut().fail(error))?)
-            };
-            let destination = derive_create_destination(
-                kind,
-                &caller,
-                &salt,
-                &code,
-                caller_info.as_ref().map_or(0, |info| info.nonce),
-            );
-
-            // EIP-8037: charge the CREATE account-creation state gas before the child
-            // gas split, conditional on the destination not already existing.
-            let mut charged_create_state_gas = false;
-            if ecx.enables(EvmFeatures::EIP8037) {
-                // `caller_info` is always `Some` when EIP-8037 is enabled.
-                if let Some(caller_info) = caller_info.as_ref()
-                    && (caller_info.balance < value
-                        || caller_info.nonce == u64::MAX
-                        || depth > CALL_DEPTH_LIMIT)
-                {
-                    unsafe {
-                        sp.write(EvmWord::ZERO);
-                    }
-                    ecx.set_return_data(Bytes::new());
-                    return Ok(());
-                }
-
-                // The destination is loaded here and made warm. Balance, nonce, and depth pre-access
-                // failures return above before the destination is accessed.
-                if ecx.host().target_is_empty_for_new_account_gas(&destination, version.features).map_err(|error| ecx.interpreter_mut().fail(error))? {
-                    ecx.gas.spend_state(version.gas_params.create_state_gas())?;
-                    charged_create_state_gas = true;
-                }
+            if call_kind == CallKind::Call && ecx.is_static() && value != U256::ZERO {
+                return Err(InstrStop::CallNotAllowedInsideStatic.into());
             }
-
-            let mut gas_limit = ecx.gas.remaining();
-            if ecx.enables(EvmFeatures::EIP150) {
-                gas_limit = version.gas_params.call_stipend_reduction(gas_limit);
-            }
-            ecx.gas.spend(gas_limit)?;
-
-            let tx_env = ecx.tx_env();
-            let mut message = MessageExt {
-                kind,
-                depth,
-                gas_limit,
-                reservoir: ecx.gas.reservoir(),
-                destination,
-                call_target: destination,
-                caller,
-                code: Bytecode::new_legacy(code.clone()),
-                input: code,
-                value,
-                code_address: caller,
-                caller_is_static: false,
-                salt,
-                ext: T::MessageExt::default(),
-                _non_exhaustive: (),
-            };
-            let mut result = ecx.host().execute_message(tx_env, &mut message).map_err(|error| ecx.interpreter_mut().fail(error))?;
-            if result.stop.is_fatal() {
-                return Err(result.stop.into());
-            }
-            ecx.gas.merge_child_gas(result.gas, result.stop);
-            // EIP-8037: refund the conditional create state gas when the create fails
-            // to deploy (no new account leaf is created).
-            let create_failed = result.created_address.is_none() || !result.stop.is_success();
-            if charged_create_state_gas && create_failed {
-                ecx.gas.refill_reservoir(version.gas_params.create_state_gas());
-            }
-
-            let address = EvmWord::from(result.created_address_for_parent());
-            let return_data = if result.stop == InstrStop::Revert {
-                core::mem::take(&mut result.output)
-            } else {
-                Bytes::new()
-            };
-            unsafe {
-                sp.write(address);
-            }
-            ecx.set_return_data(return_data);
-            Ok(())
+            value
         }
+        CallKind::DelegateCall | CallKind::StaticCall => U256::ZERO,
+    };
+    let transfers_value = value != U256::ZERO;
 
-        pub unsafe extern "C" fn __revmc_builtin_call<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: *mut EvmWord,
-            call_kind: CallKind,
-        ) -> BuiltinResult {
-            let len = match call_kind {
-                CallKind::Call | CallKind::CallCode => 7,
-                CallKind::DelegateCall | CallKind::StaticCall => 6,
-            };
-            let mut sp = unsafe { sp.add(len) };
+    pop!(sp; in_offset, in_len, out_offset, out_len);
 
-            pop!(sp; local_gas_limit, to);
-            let local_gas_limit = local_gas_limit.to_u256();
-            let to = to.to_address();
+    let in_len = word_to_usize(in_len.to_u256())?;
+    let input = if in_len != 0 {
+        let in_offset = word_to_usize(in_offset.to_u256())?;
+        ensure_memory(ecx, in_offset, in_len)?;
+        Bytes::copy_from_slice(ecx.memory().slice(in_offset, in_len))
+    } else {
+        Bytes::new()
+    };
 
-            let local_gas_limit = word_to_u64_saturated(local_gas_limit);
+    let out_len = word_to_usize(out_len.to_u256())?;
+    let out_offset = if out_len != 0 {
+        let out_offset = word_to_usize(out_offset.to_u256())?;
+        ensure_memory(ecx, out_offset, out_len)?;
+        out_offset
+    } else {
+        usize::MAX
+    };
 
-            let value = match call_kind {
-                CallKind::Call | CallKind::CallCode => {
-                    pop!(sp; value);
-                    let value = value.to_u256();
-                    if call_kind == CallKind::Call && ecx.is_static() && value != U256::ZERO {
-                        return Err(InstrStop::CallNotAllowedInsideStatic.into());
-                    }
-                    value
-                }
-                CallKind::DelegateCall | CallKind::StaticCall => U256::ZERO,
-            };
-            let transfers_value = value != U256::ZERO;
+    let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address) =
+        load_acc_and_calc_gas(ecx, to, transfers_value, call_kind == CallKind::Call, local_gas_limit)?;
 
-            pop!(sp; in_offset, in_len, out_offset, out_len);
-
-            let in_len = word_to_usize(in_len.to_u256())?;
-            let input = if in_len != 0 {
-                let in_offset = word_to_usize(in_offset.to_u256())?;
-                ensure_memory(ecx, in_offset, in_len)?;
-                Bytes::copy_from_slice(ecx.memory().slice(in_offset, in_len))
-            } else {
-                Bytes::new()
-            };
-
-            let out_len = word_to_usize(out_len.to_u256())?;
-            let out_offset = if out_len != 0 {
-                let out_offset = word_to_usize(out_offset.to_u256())?;
-                ensure_memory(ecx, out_offset, out_len)?;
-                out_offset
-            } else {
-                usize::MAX
-            };
-
-            let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address) =
-                load_acc_and_calc_gas(ecx, to, transfers_value, call_kind == CallKind::Call, local_gas_limit)?;
-
-            let current = ecx.message();
-            let (destination, caller, call_value, code_address) = match call_kind {
-                CallKind::Call => (to, current.destination, value, resolved_code_address),
-                CallKind::CallCode => {
-                    (current.destination, current.destination, value, resolved_code_address)
-                }
-                CallKind::DelegateCall => {
-                    (current.destination, current.caller, current.value, resolved_code_address)
-                }
-                CallKind::StaticCall => (to, current.destination, U256::ZERO, resolved_code_address),
-            };
-            let mut message = MessageExt {
-                kind: call_kind.into(),
-                depth: current.depth.saturating_add(1),
-                gas_limit,
-                reservoir: ecx.gas.reservoir(),
-                destination,
-                call_target: to,
-                caller,
-                input,
-                value: call_value,
-                code: loaded_code,
-                code_address,
-                caller_is_static: ecx.is_static(),
-                salt: B256::ZERO,
-                ext: T::MessageExt::default(),
-                _non_exhaustive: (),
-            };
-
-            let tx_env = ecx.tx_env();
-            let mut result = ecx.host().execute_message(tx_env, &mut message).map_err(|error| ecx.interpreter_mut().fail(error))?;
-            if result.stop.is_fatal() {
-                return Err(result.stop.into());
-            }
-            ecx.gas.merge_child_gas(result.gas, result.stop);
-            if new_account_state_gas != 0 && !result.stop.is_success() {
-                ecx.gas.refill_reservoir(new_account_state_gas);
-            }
-
-            let copy_len = min(out_len, result.output.len());
-            if copy_len != 0 {
-                ecx.memory_mut().set(out_offset, &result.output[..copy_len]);
-            }
-            let success = EvmWord::from(Word::from(u8::from(result.stop.is_success())));
-            unsafe {
-                sp.write(success);
-            }
-            ecx.set_return_data(core::mem::take(&mut result.output));
-            Ok(())
+    let current = ecx.message();
+    let (destination, caller, call_value, code_address) = match call_kind {
+        CallKind::Call => (to, current.destination, value, resolved_code_address),
+        CallKind::CallCode => {
+            (current.destination, current.destination, value, resolved_code_address)
         }
-
-        const fn should_charge_new_account_gas(
-            eip161: bool,
-            transfers_value: bool,
-            target_is_empty_for_new_account_gas: bool,
-        ) -> bool {
-            target_is_empty_for_new_account_gas && (!eip161 || transfers_value)
+        CallKind::DelegateCall => {
+            (current.destination, current.caller, current.value, resolved_code_address)
         }
+        CallKind::StaticCall => (to, current.destination, U256::ZERO, resolved_code_address),
+    };
+    let mut message = MessageExt {
+        kind: call_kind.into(),
+        depth: current.depth.saturating_add(1),
+        gas_limit,
+        reservoir: ecx.gas.reservoir(),
+        destination,
+        call_target: to,
+        caller,
+        input,
+        value: call_value,
+        code: loaded_code,
+        code_address,
+        caller_is_static: ecx.is_static(),
+        salt: B256::ZERO,
+        ext: T::MessageExt::default(),
+        _non_exhaustive: (),
+    };
 
-        fn load_acc_and_calc_gas<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            to: Address,
-            transfers_value: bool,
-            create_empty_account: bool,
-            stack_gas_limit: u64,
-        ) -> Result<(u64, u64, Bytecode, Address), BuiltinError> {
-            let version = *ecx.version();
-            if transfers_value {
-                ecx.gas.spend(version.gas_params.get(GasId::TransferValueCost))?;
-            }
+    let tx_env = ecx.tx_env();
+    let mut result = ecx.host().execute_message(tx_env, &mut message).map_err(|error| ecx.interpreter_mut().fail(error))?;
+    if result.stop.is_fatal() {
+        return Err(result.stop.into());
+    }
+    ecx.gas.merge_child_gas(result.gas, result.stop);
+    if new_account_state_gas != 0 && !result.stop.is_success() {
+        ecx.gas.refill_reservoir(new_account_state_gas);
+    }
 
-            let additional_cold_cost = version.gas_params.cold_account_additional_cost();
-            let remaining_gas = ecx.gas.remaining();
-            let skip_cold_load = remaining_gas < additional_cold_cost;
-            let account = ecx
-                .host()
-                .load_account(&to, true, skip_cold_load)
-                .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
+    let copy_len = min(out_len, result.output.len());
+    if copy_len != 0 {
+        ecx.memory_mut().set(out_offset, &result.output[..copy_len]);
+    }
+    let success = EvmWord::from(Word::from(u8::from(result.stop.is_success())));
+    unsafe {
+        sp.write(success);
+    }
+    ecx.set_return_data(core::mem::take(&mut result.output));
+    Ok(())
+}
 
-            let mut cost = 0;
-            if account.is_cold {
-                cost += additional_cold_cost;
-            }
-            let mut new_account_state_gas = 0;
-            let mut code = account.code;
-            let mut code_address = to;
-            if ecx.enables(EvmFeatures::EIP7702)
-                && let Some(delegated_address) = code.eip7702_address()
-            {
-                cost += version.gas_params.get(GasId::WarmStorageReadCost);
-                if cost > remaining_gas {
-                    return Err(InstrStop::OutOfGas.into());
-                }
-                let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
-                let delegated_account = ecx
-                    .host()
-                    .load_account(&delegated_address, true, skip_cold_load)
-                    .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
-                if delegated_account.is_cold {
-                    cost += additional_cold_cost;
-                }
-                code = delegated_account.code;
-                code_address = delegated_address;
-            }
-            let features = ecx.version().features;
-            // Check emptiness only when new-account gas can apply: after EIP-161 a zero-value call never
-            // pays it, so it skips the extra account lookup.
-            if create_empty_account
-                && (!features.contains(EvmFeatures::EIP161) || transfers_value)
-                && ecx
-                    .host()
-                    .target_is_empty_for_new_account_gas(&to, features)
-                    .map_err(|error| ecx.interpreter_mut().fail(error))?
-            {
-                cost += version.gas_params.get(GasId::NewAccountCost);
-                if features.contains(EvmFeatures::EIP8037) && transfers_value {
-                    new_account_state_gas = version.gas_params.new_account_state_gas();
-                }
-            }
-            ecx.gas.spend(cost)?;
-            ecx.gas.spend_state(new_account_state_gas)?;
+const fn should_charge_new_account_gas(
+    eip161: bool,
+    transfers_value: bool,
+    target_is_empty_for_new_account_gas: bool,
+) -> bool {
+    target_is_empty_for_new_account_gas && (!eip161 || transfers_value)
+}
 
-            let mut gas_limit = if ecx.enables(EvmFeatures::EIP150) {
-                min(version.gas_params.call_stipend_reduction(ecx.gas.remaining()), stack_gas_limit)
-            } else {
-                stack_gas_limit
-            };
-            ecx.gas.spend(gas_limit)?;
+fn load_acc_and_calc_gas<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    to: Address,
+    transfers_value: bool,
+    create_empty_account: bool,
+    stack_gas_limit: u64,
+) -> Result<(u64, u64, Bytecode, Address), BuiltinError> {
+    let version = *ecx.version();
+    if transfers_value {
+        ecx.gas.spend(version.gas_params.get(GasId::TransferValueCost))?;
+    }
 
-            if transfers_value {
-                gas_limit = gas_limit.saturating_add(version.gas_params.get(GasId::CallStipend));
-            }
+    let additional_cold_cost = version.gas_params.cold_account_additional_cost();
+    let remaining_gas = ecx.gas.remaining();
+    let skip_cold_load = remaining_gas < additional_cold_cost;
+    let account = ecx
+        .host()
+        .load_account(&to, true, skip_cold_load)
+        .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
 
-            Ok((gas_limit, new_account_state_gas, code, code_address))
+    let mut cost = 0;
+    if account.is_cold {
+        cost += additional_cold_cost;
+    }
+    let mut new_account_state_gas = 0;
+    let mut code = account.code;
+    let mut code_address = to;
+    if ecx.enables(EvmFeatures::EIP7702)
+        && let Some(delegated_address) = code.eip7702_address()
+    {
+        cost += version.gas_params.get(GasId::WarmStorageReadCost);
+        if cost > remaining_gas {
+            return Err(InstrStop::OutOfGas.into());
         }
-
-        pub unsafe extern "C" fn __revmc_builtin_do_return<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            sp: &mut [EvmWord; 2],
-            result: InstrStop,
-        ) -> BuiltinResult {
-            let rev![offset, len] = sp;
-            let len = word_to_usize(len.to_u256())?;
-            let output = if len != 0 {
-                let offset = word_to_usize(offset.to_u256())?;
-                let Some(end) = offset.checked_add(len) else {
-                    return Err(InstrStop::MemoryOOG.into());
-                };
-                if end > u32::MAX as usize {
-                    return Err(InstrStop::MemoryLimitOOG.into());
-                }
-                ensure_memory(ecx, offset, len)?;
-                offset as u32..end as u32
-            } else {
-                0..0
-            };
-            ecx.interpreter_mut().set_output(output);
-            Err(result.into())
+        let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
+        let delegated_account = ecx
+            .host()
+            .load_account(&delegated_address, true, skip_cold_load)
+            .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
+        if delegated_account.is_cold {
+            cost += additional_cold_cost;
         }
-
-        pub unsafe extern "C" fn __revmc_builtin_do_return_cc<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            offset: u64,
-            len: u64,
-            result: InstrStop,
-        ) -> BuiltinResult {
-            let offset = offset as usize;
-            let len = len as usize;
-            let output = if len != 0 {
-                let Some(end) = offset.checked_add(len) else {
-                    return Err(InstrStop::MemoryOOG.into());
-                };
-                if end > u32::MAX as usize {
-                    return Err(InstrStop::MemoryLimitOOG.into());
-                }
-                ensure_memory(ecx, offset, len)?;
-                offset as u32..end as u32
-            } else {
-                0..0
-            };
-            ecx.interpreter_mut().set_output(output);
-            Err(result.into())
+        code = delegated_account.code;
+        code_address = delegated_address;
+    }
+    let features = ecx.version().features;
+    // Check emptiness only when new-account gas can apply: after EIP-161 a zero-value call never
+    // pays it, so it skips the extra account lookup.
+    if create_empty_account
+        && (!features.contains(EvmFeatures::EIP161) || transfers_value)
+        && ecx
+            .host()
+            .target_is_empty_for_new_account_gas(&to, features)
+            .map_err(|error| ecx.interpreter_mut().fail(error))?
+    {
+        cost += version.gas_params.get(GasId::NewAccountCost);
+        if features.contains(EvmFeatures::EIP8037) && transfers_value {
+            new_account_state_gas = version.gas_params.new_account_state_gas();
         }
+    }
+    ecx.gas.spend(cost)?;
+    ecx.gas.spend_state(new_account_state_gas)?;
+
+    let mut gas_limit = if ecx.enables(EvmFeatures::EIP150) {
+        min(version.gas_params.call_stipend_reduction(ecx.gas.remaining()), stack_gas_limit)
+    } else {
+        stack_gas_limit
+    };
+    ecx.gas.spend(gas_limit)?;
+
+    if transfers_value {
+        gas_limit = gas_limit.saturating_add(version.gas_params.get(GasId::CallStipend));
+    }
+
+    Ok((gas_limit, new_account_state_gas, code, code_address))
+}
+
+pub unsafe extern "C" fn __revmc_builtin_do_return<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    sp: &mut [EvmWord; 2],
+    result: InstrStop,
+) -> BuiltinResult {
+    let rev![offset, len] = sp;
+    let len = word_to_usize(len.to_u256())?;
+    let output = if len != 0 {
+        let offset = word_to_usize(offset.to_u256())?;
+        let Some(end) = offset.checked_add(len) else {
+            return Err(InstrStop::MemoryOOG.into());
+        };
+        if end > u32::MAX as usize {
+            return Err(InstrStop::MemoryLimitOOG.into());
+        }
+        ensure_memory(ecx, offset, len)?;
+        offset as u32..end as u32
+    } else {
+        0..0
+    };
+    ecx.interpreter_mut().set_output(output);
+    Err(result.into())
+}
+
+pub unsafe extern "C" fn __revmc_builtin_do_return_cc<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    offset: u64,
+    len: u64,
+    result: InstrStop,
+) -> BuiltinResult {
+    let offset = offset as usize;
+    let len = len as usize;
+    let output = if len != 0 {
+        let Some(end) = offset.checked_add(len) else {
+            return Err(InstrStop::MemoryOOG.into());
+        };
+        if end > u32::MAX as usize {
+            return Err(InstrStop::MemoryLimitOOG.into());
+        }
+        ensure_memory(ecx, offset, len)?;
+        offset as u32..end as u32
+    } else {
+        0..0
+    };
+    ecx.interpreter_mut().set_output(output);
+    Err(result.into())
+}
 
 
     pub unsafe extern "C" fn __revmc_builtin_selfdestruct<T: EvmTypesHost>(
-            ecx: &mut EvmContext<'_, '_, '_, T>,
-            target: &mut EvmWord,
-        ) -> BuiltinResult {
-            require_non_staticcall(ecx)?;
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    target: &mut EvmWord,
+) -> BuiltinResult {
+    require_non_staticcall(ecx)?;
 
-            let cold_load_gas = ecx.gas_params().selfdestruct_cold_cost();
-            let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
-            let address = &ecx.message().destination;
-            let target = target.to_address();
-            let res = ecx
-                .host()
-                .selfdestruct(address, &target, skip_cold_load)
-                .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
+    let cold_load_gas = ecx.gas_params().selfdestruct_cold_cost();
+    let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
+    let address = &ecx.message().destination;
+    let target = target.to_address();
+    let res = ecx
+        .host()
+        .selfdestruct(address, &target, skip_cold_load)
+        .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
 
-            // EIP-161: State trie clearing (invariant-preserving alternative)
-            let should_charge_topup =
-                should_charge_new_account_gas(ecx.enables(EvmFeatures::EIP161), res.had_value, res.target_is_empty);
+    // EIP-161: State trie clearing (invariant-preserving alternative)
+    let should_charge_topup =
+        should_charge_new_account_gas(ecx.enables(EvmFeatures::EIP161), res.had_value, res.target_is_empty);
 
-            ecx.gas.spend(ecx.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
+    ecx.gas.spend(ecx.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
 
-            // State gas for new account creation (EIP-8037).
-            if ecx.enables(EvmFeatures::EIP8037) && should_charge_topup {
-                ecx.gas.spend_state(ecx.gas_params().get(GasId::NewAccountState))?;
-            }
+    // State gas for new account creation (EIP-8037).
+    if ecx.enables(EvmFeatures::EIP8037) && should_charge_topup {
+        ecx.gas.spend_state(ecx.gas_params().get(GasId::NewAccountState))?;
+    }
 
-            if !res.previously_destroyed {
-                ecx.gas.record_refund(ecx.gas_params().get(GasId::SelfdestructRefund) as i64);
-            }
+    if !res.previously_destroyed {
+        ecx.gas.record_refund(ecx.gas_params().get(GasId::SelfdestructRefund) as i64);
+    }
 
-            Err(InstrStop::SelfDestruct.into())
-        }
+    Err(InstrStop::SelfDestruct.into())
+}
 
-        }
 }
 
 /// Exports the builtins instantiated for [`BaseEvmTypes`] under their linker symbol names.
 macro_rules! base_builtins {
-    ($($name:ident($($arg:ident: $ty:ty),*);)*) => {$(
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name($($arg: $ty),*) {
-            unsafe { generic::$name::<BaseEvmTypes>($($arg),*) }
+    ($($name:ident($($arg:ident: $ty:ty),*);)*) => { paste::paste! {$(
+        #[unsafe(export_name = stringify!($name))]
+        pub unsafe extern "C" fn [<base_ $name>]($($arg: $ty),*) {
+            unsafe { $name::<BaseEvmTypes>($($arg),*) }
         }
-    )*};
+    )*}};
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_panic(data: *const u8, len: usize) -> ! {
-    unsafe { generic::__revmc_builtin_panic::<BaseEvmTypes>(data, len) }
+#[unsafe(export_name = "__revmc_builtin_panic")]
+pub unsafe extern "C" fn base_panic(data: *const u8, len: usize) -> ! {
+    unsafe { __revmc_builtin_panic::<BaseEvmTypes>(data, len) }
 }
 
 base_builtins! {
