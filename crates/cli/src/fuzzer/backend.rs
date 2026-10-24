@@ -11,6 +11,7 @@ use evm2::{
     bytecode::Bytecode,
     ethereum::ethereum_tx_registry,
     evm::{AccountInfo as Evm2AccountInfo, InMemoryDB},
+    interpreter::InstrStop,
 };
 use revm::{
     ExecuteCommitEvm, ExecuteEvm, MainBuilder, MainContext,
@@ -65,7 +66,7 @@ impl EvmBackend for Evm2Backend {
                 Ok(result) => {
                     let mut state = CanonicalState::default();
                     let Ok(tx_result) = result.commit_with(&mut state);
-                    let output = if tx_result.is_success() || tx_result.is_revert() {
+                    let output = if tx_result.status || tx_result.stop == InstrStop::Revert {
                         Some(tx_result.output.to_vec())
                     } else {
                         None
