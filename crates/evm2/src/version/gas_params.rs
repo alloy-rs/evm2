@@ -453,9 +453,9 @@ impl GasParams {
 
     /// Returns the `(intrinsic_tokens, floor_tokens)` of transaction calldata `input`.
     ///
-    /// Both weigh non-zero bytes at `TxTokenNonZeroByteMultiplier` and zero bytes differently:
-    /// intrinsic tokens count a zero byte as one token, while floor tokens use
-    /// `TxFloorZeroByteMultiplier` (EIP-7623: one; EIP-7976: the non-zero weight).
+    /// Both weigh non-zero bytes at `TxTokenNonZeroByteMultiplier`. Intrinsic tokens count a zero
+    /// byte as one token; floor tokens weigh it at `TxFloorZeroByteMultiplier` (EIP-7623: one;
+    /// EIP-7976: the non-zero weight).
     ///
     /// Intrinsic gas is `intrinsic_tokens * TxTokenCost`. Sum the tokens over several inputs
     /// before pricing them, and pass the summed floor tokens to
