@@ -8,8 +8,6 @@ extern crate self as evm2;
 
 extern crate alloc;
 
-#[cfg(feature = "rpc")]
-use alloy_rpc_types_eth as _;
 #[cfg(feature = "nightly")]
 use ruint as _;
 
