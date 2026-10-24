@@ -511,6 +511,8 @@ struct HelperInit {
     /// Words of the host layout, see [`HostLayout::to_words`].
     layout: Vec<u64>,
     opcode_table: Option<OpcodeTableWire>,
+    /// Makes the helper's builtin symbols unique to the host's resolver.
+    symbol_suffix: Option<u64>,
     jit_worker_count: usize,
     compiler_recycle_threshold: usize,
 }
@@ -923,6 +925,7 @@ fn helper_init(config: &RuntimeConfig) -> HelperInit {
             .opcodes
             .as_ref()
             .map(|opcodes| OpcodeTableWire::new(&opcodes.table)),
+        symbol_suffix: config.host.resolver.map(|resolver| resolver as usize as u64),
         jit_worker_count: config.tuning.jit_worker_count,
         compiler_recycle_threshold: config.tuning.compiler_recycle_threshold,
     }
@@ -936,6 +939,7 @@ fn runtime_config_from_init(init: HelperInit) -> eyre::Result<RuntimeConfig> {
         eyre::bail!("invalid host layout length");
     };
     host.layout = HostLayout::from_words(words.map(|word| word as usize));
+    host.symbol_suffix = init.symbol_suffix.map(|suffix| suffix as usize);
     host.opcodes = init
         .opcode_table
         .map(|table| table.into_table())

@@ -521,6 +521,18 @@ impl<B: Backend> EvmCompiler<B> {
         self.config.single_error = yes;
     }
 
+    /// Makes the builtin symbol names unique to a host.
+    ///
+    /// For compilers whose objects the runtime links by name to the builtins of that host.
+    pub fn set_builtin_symbol_suffix(&mut self, suffix: usize) {
+        self.builtins.set_symbol_suffix(suffix);
+    }
+
+    /// Returns the builtin symbol suffix, if set.
+    pub const fn builtin_symbol_suffix(&self) -> Option<usize> {
+        self.builtins.symbol_suffix()
+    }
+
     /// Configures the concrete host layout, for programs whose builtins are linked by symbol.
     ///
     /// # Safety

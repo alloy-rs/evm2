@@ -739,6 +739,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
         match data.opcode {
             _ if data.flags.contains(InstFlags::HOST) => {
+                // The host runs on the interpreter's own stack.
+                evm2_jit_backend::eyre::ensure!(
+                    !self.config.local_stack,
+                    "host opcodes need the interpreter stack"
+                );
                 let sp = self.sp_after_inputs();
                 let (inputs, outputs) = data.stack_io();
                 let pc = self.bcx.iconst(self.isize_type, self.bytecode.pc(inst) as i64);

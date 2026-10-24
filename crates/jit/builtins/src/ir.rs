@@ -10,6 +10,8 @@ const MANGLE_PREFIX: &str = "__revmc_builtin_";
 pub struct Builtins<B: Backend> {
     functions: [Option<B::Function>; Builtin::COUNT],
     resolver: Option<fn(Builtin) -> usize>,
+    /// Suffix for the symbol names of a host whose builtins are linked by the runtime.
+    suffix: Option<usize>,
 }
 
 unsafe impl<B: Backend> Send for Builtins<B> {}
@@ -23,13 +25,24 @@ impl<B: Backend> Default for Builtins<B> {
 impl<B: Backend> Builtins<B> {
     /// Create a new cache.
     pub const fn new() -> Self {
-        Self { functions: [None; Builtin::COUNT], resolver: None }
+        Self { functions: [None; Builtin::COUNT], resolver: None, suffix: None }
     }
 
     /// Selects host-specific builtin addresses.
     pub fn set_resolver(&mut self, resolver: fn(Builtin) -> usize) {
         self.clear();
         self.resolver = Some(resolver);
+    }
+
+    /// Makes the symbol names unique to a host, for builtins the runtime links by name.
+    pub const fn set_symbol_suffix(&mut self, suffix: usize) {
+        self.clear();
+        self.suffix = Some(suffix);
+    }
+
+    /// Returns the symbol suffix, if set.
+    pub const fn symbol_suffix(&self) -> Option<usize> {
+        self.suffix
     }
 
     /// Clear the cache.
@@ -39,8 +52,9 @@ impl<B: Backend> Builtins<B> {
 
     /// Get the function for the given builtin.
     pub fn get(&mut self, builtin: Builtin, bcx: &mut B::Builder<'_>) -> B::Function {
-        let resolver = self.resolver;
-        *self.functions[builtin as usize].get_or_insert_with(|| Self::init(builtin, bcx, resolver))
+        let (resolver, suffix) = (self.resolver, self.suffix);
+        *self.functions[builtin as usize]
+            .get_or_insert_with(|| Self::init(builtin, bcx, resolver, suffix))
     }
 
     #[cold]
@@ -48,9 +62,11 @@ impl<B: Backend> Builtins<B> {
         builtin: Builtin,
         bcx: &mut B::Builder<'_>,
         resolver: Option<fn(Builtin) -> usize>,
+        suffix: Option<usize>,
     ) -> B::Function {
         let resolved = resolver.map(|resolve| resolve(builtin));
-        let resolved_name = resolved.map(|address| format!("{}_{address:x}", builtin.name()));
+        let resolved_name =
+            resolved.or(suffix).map(|unique| format!("{}_{unique:x}", builtin.name()));
         let name = resolved_name.as_deref().unwrap_or_else(|| builtin.name());
         debug_assert!(name.starts_with(MANGLE_PREFIX), "{name:?}");
         if builtin.call_conv() == CallConv::Default

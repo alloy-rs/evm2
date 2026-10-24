@@ -93,7 +93,12 @@ impl JitObjectLinker {
             .builtin_symbols
             .iter()
             .map(|name| {
-                let builtin = evm2_jit_builtins::Builtin::parse(name)
+                // The helper suffixed the symbols with the resolver's address.
+                let plain = self
+                    .resolver
+                    .and_then(|resolve| name.strip_suffix(&format!("_{:x}", resolve as usize)))
+                    .unwrap_or(name);
+                let builtin = evm2_jit_builtins::Builtin::parse(plain)
                     .ok_or_else(|| eyre::eyre!("unknown builtin symbol: {name}"))?;
                 let addr = self.resolver.map_or_else(
                     || builtin.addr::<evm2::BaseEvmTypes>(),

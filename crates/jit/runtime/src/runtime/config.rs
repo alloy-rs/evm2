@@ -429,6 +429,8 @@ pub struct HostConfig {
     pub(crate) layout: HostLayout,
     /// `None` for the base opcode table of the executing spec.
     pub(crate) opcodes: Option<HostOpcodes>,
+    /// Suffix of the builtin symbols in objects an out-of-process helper compiles.
+    pub(crate) symbol_suffix: Option<usize>,
     /// `None` for the base host, whose builtins are the exported `__revmc_builtin_*` symbols.
     pub(crate) resolver: Option<fn(Builtin) -> usize>,
 }
@@ -441,6 +443,7 @@ impl HostConfig {
             type_id,
             layout: HostLayout::for_types::<T>(),
             opcodes: None,
+            symbol_suffix: None,
             resolver: (type_id != TypeId::of::<BaseEvmTypes>()).then_some(Builtin::addr::<T>),
         }
     }

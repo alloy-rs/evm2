@@ -579,6 +579,7 @@ struct CompilerProfile {
     host_type: std::any::TypeId,
     layout: evm2_jit_codegen::HostLayout,
     resolver: Option<usize>,
+    symbol_suffix: Option<usize>,
     opcode_table: Option<std::sync::Arc<evm2_jit_codegen::OpcodeTable>>,
     opt_level: crate::OptimizationLevel,
     gas_params: Option<evm2::version::GasParams>,
@@ -596,6 +597,7 @@ impl CompilerProfile {
             host_type: config.host.type_id,
             layout: config.host.layout,
             resolver: config.host.resolver.map(|resolver| resolver as usize),
+            symbol_suffix: config.host.symbol_suffix,
             opcode_table: config.host.opcodes.as_ref().map(|opcodes| opcodes.table.clone()),
             opt_level: if target.is_aot_backend() {
                 config.tuning.aot_opt_level
@@ -643,6 +645,9 @@ pub(super) fn create_compiler(
     } else {
         // SAFETY: HostConfig construction establishes the layout contract.
         unsafe { compiler.set_layout(config.host.layout) };
+        if let Some(suffix) = config.host.symbol_suffix {
+            compiler.set_builtin_symbol_suffix(suffix);
+        }
     }
     if let Some(opcodes) = &config.host.opcodes {
         compiler.set_opcode_table((*opcodes.table).clone());
@@ -695,9 +700,13 @@ pub(super) fn compile_jit_object_artifact(
         .map(|name| name.to_string_lossy().into_owned())
         .collect();
     if builtin_symbols.is_empty() {
+        let suffix = compiler.builtin_symbol_suffix();
         builtin_symbols = evm2_jit_builtins::Builtin::ALL
             .iter()
-            .map(|builtin| builtin.name().to_string())
+            .map(|builtin| match suffix {
+                Some(suffix) => format!("{}_{suffix:x}", builtin.name()),
+                None => builtin.name().to_string(),
+            })
             .collect();
     }
 
