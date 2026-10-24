@@ -116,8 +116,8 @@ pub struct CallTrace {
     pub steps: Vec<CallTraceStep>,
     /// The deltas recorded for [`Self::steps`], in step order.
     ///
-    /// Only steps that report memory or storage, make a call or gain gas have an entry, and only
-    /// if [`record_step_deltas`] is enabled.
+    /// Only steps that report memory or storage, make a call or gain gas have an entry. Memory
+    /// and storage require [`record_step_deltas`]; gas balances are recorded independently.
     ///
     /// [`record_step_deltas`]: crate::tracing::TracingInspectorConfig::record_step_deltas
     #[cfg_attr(feature = "serde", serde(default))]
@@ -281,12 +281,19 @@ impl CallTraceNode {
 
     /// Iterates over steps in execution order, matching call opcodes to recorded children.
     pub(crate) fn steps_with_children(&self) -> impl Iterator<Item = CallTraceStepStackItem<'_>> {
-        let mut children = self.children.iter();
-        self.trace.steps.iter().map(move |step| {
-            // A call opcode can fail before a child is recorded, e.g. due to out of gas:
-            // <https://github.com/paradigmxyz/reth/issues/3915>.
+        let mut ordering = self.ordering.iter().peekable();
+        self.trace.steps.iter().enumerate().map(move |(step_idx, step)| {
+            // Filtered-out call opcodes still have children, while calls that fail before their
+            // hook have none. Only an immediately following Call belongs to this recorded step.
             let call_child_id =
-                if step.is_call_like_op() { children.next().copied() } else { None };
+                if ordering.find(|entry| **entry == TraceMemberOrder::Step(step_idx)).is_some()
+                    && step.is_call_like_op()
+                    && let Some(TraceMemberOrder::Call(child)) = ordering.peek()
+                {
+                    self.children.get(*child).copied()
+                } else {
+                    None
+                };
             CallTraceStepStackItem { trace_node: self, step, call_child_id }
         })
     }
@@ -766,7 +773,8 @@ impl CallTraceStep {
 /// The deltas a [`CallTraceStep`] produced, as reported by parity's `vmTrace`.
 ///
 /// Recorded in [`CallTrace::step_deltas`] for the steps that report memory or storage, make a
-/// call or gain gas, when [`record_step_deltas`] is enabled.
+/// call or gain gas. Memory and storage require [`record_step_deltas`]; gas balances are recorded
+/// independently.
 ///
 /// [`record_step_deltas`]: crate::tracing::TracingInspectorConfig::record_step_deltas
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

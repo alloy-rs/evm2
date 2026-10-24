@@ -1,6 +1,6 @@
 use super::*;
 use crate::tracing::types::{
-    CallTrace, CallTraceStep, RecordedMemory, StorageChange, StorageChangeReason,
+    CallTrace, CallTraceStep, RecordedMemory, StorageChange, StorageChangeReason, TraceMemberOrder,
 };
 use evm2::{
     evm::EmptyDB,
@@ -190,6 +190,17 @@ fn opcode_trace_resumes_parents_after_nested_and_empty_calls() {
             }
         })
         .collect();
+    for node in &mut nodes {
+        let mut children = 0..node.children.len();
+        for (step_idx, step) in node.trace.steps.iter().enumerate() {
+            node.ordering.push(TraceMemberOrder::Step(step_idx));
+            if step.is_call_like_op()
+                && let Some(child) = children.next()
+            {
+                node.ordering.push(TraceMemberOrder::Call(child));
+            }
+        }
+    }
     nodes[0].trace.steps.last_mut().unwrap().status = Some(InstrStop::OutOfGas);
     let builder = GethTraceBuilder::new(nodes);
     let expected = [

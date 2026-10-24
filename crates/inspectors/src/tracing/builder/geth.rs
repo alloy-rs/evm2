@@ -105,6 +105,13 @@ impl<'a> GethTraceBuilder<'a> {
             // have depth 1.
             let mut log = step.convert_to_geth_struct_log(opts, trace_node.trace.depth as u64 + 1);
 
+            if matches!(step.op.get(), op::CREATE | op::CREATE2)
+                && let Some(child_id) = call_child_id
+            {
+                // Geth logs CREATE before its opcode implementation forwards gas to the child.
+                log.gas_cost = log.gas_cost.saturating_sub(self.nodes[child_id].trace.gas_limit);
+            }
+
             // Only touch the storage cache when updating it or emitting a storage snapshot.
             if opts.is_storage_enabled()
                 && (step.storage_change.is_some()
