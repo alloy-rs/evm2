@@ -221,7 +221,7 @@ pub struct Evm<'a, T: EvmTypesHost> {
     #[derive_where(skip)]
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
-    inspector: Option<Box<dyn Inspector<T> + 'a>>,
+    inspector: Option<InspectorSlot<'a, T>>,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
     /// The currently running interpreter frame, if any.
@@ -786,22 +786,32 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     /// Returns the active execution inspector.
+    ///
+    /// A borrowed inspector installed by [`Self::transact_with_inspector`] is not returned.
     #[inline]
     pub fn inspector(&self) -> Option<&(dyn Inspector<T> + 'a)> {
-        self.inspector.as_deref()
+        match &self.inspector {
+            Some(InspectorSlot::Owned(inspector)) => Some(&**inspector),
+            Some(InspectorSlot::Borrowed(_)) | None => None,
+        }
     }
 
     /// Returns the active execution inspector mutably.
+    ///
+    /// A borrowed inspector installed by [`Self::transact_with_inspector`] is not returned.
     #[inline]
     pub fn inspector_mut(&mut self) -> Option<&mut (dyn Inspector<T> + 'a)> {
         self.assert_inspector_mutable();
-        self.inspector.as_deref_mut()
+        match &mut self.inspector {
+            Some(InspectorSlot::Owned(inspector)) => Some(&mut **inspector),
+            Some(InspectorSlot::Borrowed(_)) | None => None,
+        }
     }
 
     #[inline]
     fn inspect_log(&mut self, log: &Log) {
         let guard = self.enter_execution();
-        if let Some(inspector) = guard.evm.inspector.as_deref_mut() {
+        if let Some(inspector) = guard.evm.inspector.as_mut().map(InspectorSlot::as_dyn_mut) {
             // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
             // replacement while the hook is running.
             let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
@@ -855,7 +865,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'a>(&mut self, inspector: I) {
         self.assert_inspector_mutable();
-        self.inspector = Some(boxed_inspector(inspector));
+        self.inspector = Some(InspectorSlot::Owned(boxed_inspector(inspector)));
         self.evm_send = false;
     }
 
@@ -863,7 +873,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T> + 'a>) {
         self.assert_inspector_mutable();
-        self.inspector = Some(inspector);
+        self.inspector = Some(InspectorSlot::Owned(inspector));
         self.evm_send = false;
     }
 
@@ -872,7 +882,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T> + 'a>> {
         self.assert_inspector_mutable();
         self.evm_send = false;
-        self.inspector.take()
+        match self.inspector.take()? {
+            InspectorSlot::Owned(inspector) => Some(inspector),
+            InspectorSlot::Borrowed(_) => unreachable!("borrowed inspector outlived its call"),
+        }
     }
 
     /// Removes the active execution inspector if it has type `I`.
@@ -882,7 +895,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         'a: 'static,
     {
         self.assert_inspector_mutable();
-        let i = self.inspector.take_if(|i| i.is::<I>())?;
+        let slot = self.inspector.take_if(|slot| match slot {
+            InspectorSlot::Owned(inspector) => inspector.is::<I>(),
+            InspectorSlot::Borrowed(_) => false,
+        })?;
+        let InspectorSlot::Owned(i) = slot else { unreachable!() };
         Some(unsafe { Box::from_raw(Box::into_raw(i).cast::<I>()) })
     }
 
@@ -929,6 +946,60 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub const fn config_spec_id(&self) -> T::SpecId {
         self.spec_id
+    }
+}
+
+/// The active inspector: owned by the EVM, or borrowed for one [`Evm::transact_with_inspector`]
+/// call.
+enum InspectorSlot<'a, T: EvmTypesHost> {
+    Owned(Box<dyn Inspector<T> + 'a>),
+    /// Lifetime-erased pointer to the inspector borrowed by [`ScopedInspector`], which removes it
+    /// before the borrow ends.
+    Borrowed(NonNull<dyn Inspector<T>>),
+}
+
+impl<'a, T: EvmTypesHost> InspectorSlot<'a, T> {
+    #[inline]
+    fn as_dyn_mut(&mut self) -> &mut (dyn Inspector<T> + 'a) {
+        match self {
+            Self::Owned(inspector) => &mut **inspector,
+            // SAFETY: A borrowed pointer is only installed by `ScopedInspector`, which holds the
+            // inspector's `&mut` borrow and removes the pointer before that borrow ends. The slot
+            // is reachable only through `&mut Evm`, so this reference is the only access.
+            Self::Borrowed(inspector) => unsafe { inspector.as_mut() },
+        }
+    }
+}
+
+/// Installs a borrowed inspector in an [`Evm`] and restores the previous slot on drop.
+struct ScopedInspector<'scope, 'a, T: EvmTypesHost> {
+    evm: &'scope mut Evm<'a, T>,
+    previous: Option<InspectorSlot<'a, T>>,
+}
+
+impl<'scope, 'a, T: EvmTypesHost> ScopedInspector<'scope, 'a, T> {
+    #[inline]
+    fn install(evm: &'scope mut Evm<'a, T>, inspector: &mut (dyn Inspector<T> + '_)) -> Self {
+        // SAFETY: Only the object lifetime bound is erased. The slot cannot be replaced or read
+        // out while the inspector is installed: `ScopedInspector` holds `&mut Evm`, so no user
+        // code touches the EVM except through hooks, and those run with `running` set, where
+        // every inspector setter and `inspector_mut` panic, while `inspector` and the other
+        // readers skip a borrowed slot. `Drop` removes the pointer before this call returns or
+        // unwinds, which ends the `inspector` borrow.
+        let inspector = unsafe {
+            core::mem::transmute::<NonNull<dyn Inspector<T> + '_>, NonNull<dyn Inspector<T>>>(
+                NonNull::from(inspector),
+            )
+        };
+        let previous = evm.inspector.replace(InspectorSlot::Borrowed(inspector));
+        Self { evm, previous }
+    }
+}
+
+impl<T: EvmTypesHost> Drop for ScopedInspector<'_, '_, T> {
+    #[inline]
+    fn drop(&mut self) {
+        self.evm.inspector = self.previous.take();
     }
 }
 
@@ -979,17 +1050,40 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// Transaction handlers cannot modify the inspector, precompile provider, interpreter runner,
     /// or execution configuration while the transaction is being executed.
     pub fn transact(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
+        let result = self.execute_tx(tx)?;
+        self.finish_executed_tx(result)
+    }
+
+    /// Dispatches the transaction like [`Self::transact`], inspecting it with a borrowed
+    /// inspector.
+    ///
+    /// The borrowed inspector replaces the installed inspector, if any, for this call only. The
+    /// installed inspector is restored before this method returns, including when it unwinds, so
+    /// the borrow of `inspector` ends with the call even while the returned [`ExecutedTx`] is
+    /// alive. During the call, [`Self::inspector`] and [`Self::inspector_mut`] return `None`, and
+    /// the inspector setters panic like they do during any execution.
+    pub fn transact_with_inspector(
+        &mut self,
+        tx: &Recovered<T::Tx>,
+        inspector: &mut (dyn Inspector<T> + '_),
+    ) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
+        self.assert_inspector_mutable();
+        let scope = ScopedInspector::install(self, inspector);
+        let result = scope.evm.execute_tx(tx);
+        drop(scope);
+        self.finish_executed_tx(result?)
+    }
+
+    #[inline]
+    fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let guard = self.enter_execution();
         let result = handler.execute(tx, guard.evm);
         drop(guard);
-        match result {
-            Ok(result) => self.finish_executed_tx(result),
-            Err(err) => {
-                self.state.clear_transaction_state();
-                Err(err)
-            }
+        if result.is_err() {
+            self.state.clear_transaction_state();
         }
+        result
     }
 
     /// Executes a transaction for its outcome and discards its state changes.
@@ -1122,7 +1216,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         message: &'frame mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
         let guard = self.enter_execution();
-        let Some(inspector) = guard.evm.inspector.as_deref_mut() else {
+        let Some(inspector) = guard.evm.inspector.as_mut().map(InspectorSlot::as_dyn_mut) else {
             return guard.evm.execute_message_impl(tx_env, message);
         };
         // SAFETY: The inspector is stored in `self`; the execution guard prevents inspector
@@ -1486,10 +1580,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             guard.evm.interpreter_pool.pop(tx_env, message);
         let interp_ref = interp.as_mut();
         guard.evm.inspect_initialize_interp(interp_ref);
-        let inspector = guard.evm.inspector.as_deref_mut().map(|inspector| {
+        let inspector = guard.evm.inspector.as_mut().map(|slot| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // interpreter run.
-            unsafe { trustme::decouple_lt_mut(inspector) }
+            unsafe { trustme::decouple_lt_mut(slot.as_dyn_mut()) }
         });
         let prev_frame = guard
             .evm
@@ -1511,7 +1605,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 
     fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, 'a, T>) {
-        if let Some(inspector) = self.inspector.as_deref_mut() {
+        if let Some(inspector) = self.inspector.as_mut().map(InspectorSlot::as_dyn_mut) {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // hook.
             let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
@@ -4253,5 +4347,142 @@ mod tests {
         );
 
         let _ = evm.transact(&test_tx(0));
+    }
+
+    #[derive(Default)]
+    struct CallCounter {
+        calls: usize,
+        panic_on_call: bool,
+        probe_host: bool,
+        saw_inspector: bool,
+    }
+
+    impl Inspector<BaseEvmTypes> for CallCounter {
+        fn call(
+            &mut self,
+            interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            _message: &mut Message,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            self.calls += 1;
+            self.saw_inspector |= self.probe_host && interp.host().inspector().is_some();
+            assert!(!self.panic_on_call, "inspector panicked");
+            None
+        }
+    }
+
+    fn scoped_inspector_evm() -> Evm<'static, BaseEvmTypes> {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    let mut message = precompile_message(TEST_PRECOMPILE);
+                    Host::execute_message(req.host, &TxEnvExt::default(), &mut message)?;
+                    Ok(TxResultExt::default())
+                },
+            ),
+        );
+        let precompiles = precompiles_with([test_precompile(TEST_PRECOMPILE, |_, _, _| {
+            Ok(PrecompileOutput::new(Bytes::new()))
+        })]);
+        Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            registry,
+            InMemoryDB::default(),
+            precompiles,
+        )
+    }
+
+    #[test]
+    fn transact_with_inspector_reads_state_between_calls() {
+        let mut evm = scoped_inspector_evm();
+        let mut inspector = CallCounter::default();
+
+        let _ = evm.transact_with_inspector(&test_tx(0), &mut inspector).unwrap().discard();
+        assert_eq!(inspector.calls, 1);
+        let _ = evm.transact_with_inspector(&test_tx(0), &mut inspector).unwrap().discard();
+        assert_eq!(inspector.calls, 2);
+        assert!(evm.inspector().is_none());
+    }
+
+    #[test]
+    fn transact_with_inspector_is_unreachable_afterwards() {
+        let mut evm = scoped_inspector_evm();
+        let mut borrowed = CallCounter { probe_host: true, ..CallCounter::default() };
+
+        let _ = evm.transact_with_inspector(&test_tx(0), &mut borrowed).unwrap().discard();
+        assert_eq!(borrowed.calls, 1);
+        assert!(!borrowed.saw_inspector);
+        assert!(evm.inspector().is_none() && evm.inspector_mut().is_none());
+        assert!(evm.clear_inspector().is_none());
+
+        evm.set_inspector(CallCounter::default());
+        let _ = evm.transact_with_inspector(&test_tx(0), &mut borrowed).unwrap().discard();
+        assert_eq!(borrowed.calls, 2);
+        let previous = evm.inspector().unwrap().downcast_ref::<CallCounter>().unwrap();
+        assert_eq!(previous.calls, 0);
+        let _ = evm.call_tx(&test_tx(0)).unwrap();
+        let previous = evm.clear_inspector_as::<CallCounter>().unwrap();
+        assert_eq!(previous.calls, 1);
+        assert_eq!(borrowed.calls, 2);
+        assert!(evm.clear_inspector().is_none());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn transact_with_inspector_restores_previous_inspector_after_panic() {
+        let mut evm = scoped_inspector_evm();
+        evm.set_inspector(CallCounter::default());
+        let mut panicking = CallCounter { panic_on_call: true, ..CallCounter::default() };
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.transact_with_inspector(&test_tx(0), &mut panicking);
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(panicking.calls, 1);
+        let _ = evm.call_tx(&test_tx(0)).unwrap();
+        let previous = evm.clear_inspector_as::<CallCounter>().unwrap();
+        assert_eq!(previous.calls, 1);
+        assert_eq!(panicking.calls, 1);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn transact_with_inspector_clears_borrowed_inspector_after_panic() {
+        let mut evm = scoped_inspector_evm();
+        let mut panicking = CallCounter { panic_on_call: true, ..CallCounter::default() };
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.transact_with_inspector(&test_tx(0), &mut panicking);
+        }));
+
+        assert!(result.is_err());
+        assert!(evm.inspector().is_none());
+        let _ = evm.call_tx(&test_tx(0)).unwrap();
+        assert_eq!(panicking.calls, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn nested_transact_with_inspector_panics() {
+        let mut evm = scoped_inspector_evm();
+        evm.registry.register(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    let _ = req
+                        .host
+                        .transact_with_inspector(&test_tx(1), &mut CallCounter::default())?;
+                    Ok(TxResultExt::default())
+                },
+            ),
+        );
+
+        let _ = evm.transact_with_inspector(&test_tx(0), &mut CallCounter::default());
     }
 }
