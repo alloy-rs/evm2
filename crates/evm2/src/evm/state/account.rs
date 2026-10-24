@@ -152,10 +152,16 @@ impl AccountInfo {
     /// Returns whether this account is empty by the Spurious Dragon definition.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        let empty = self.balance.is_zero() && self.nonce == 0 && self.code_hash == KECCAK256_EMPTY;
+        let empty = self.balance.is_zero() && self.nonce == 0 && self.is_empty_code_hash();
         #[cfg(feature = "account-ext")]
         let empty = empty && self.extension.is_empty();
         empty
+    }
+
+    /// Returns whether the code hash is the empty code hash.
+    #[inline]
+    pub fn is_empty_code_hash(&self) -> bool {
+        self.code_hash == KECCAK256_EMPTY
     }
 }
 
@@ -254,8 +260,8 @@ impl Account {
             || self.original.as_ref().map(|original| original.code_hash) != Some(code_hash))
             && !code.is_empty()
             && !code_hash.is_zero()
-            && code_hash != KECCAK256_EMPTY)
-            .then_some((code_hash, code))
+            && !account.is_empty_code_hash())
+        .then_some((code_hash, code))
     }
 
     /// Returns this account's transaction changes.
@@ -341,7 +347,12 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if self.tracked.storage.slots.capacity() == 0 {
             self.tracked.storage.slots = self.storage_pool.take();
         }
-        StorageHandle::new(&self.address, &mut self.tracked.storage, self.inner)
+        StorageHandle::new(
+            &self.address,
+            &mut self.tracked.storage,
+            self.tracked.just_created,
+            self.inner,
+        )
     }
 
     /// Records the pre-mutation revert entry the first time a change is made through this handle.
@@ -396,6 +407,13 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub fn code_hash(&self) -> B256 {
         self.tracked.present.as_ref().map_or(KECCAK256_EMPTY, |account| account.code_hash)
+    }
+
+    /// Returns whether the account code hash is the empty code hash, which includes an absent
+    /// account.
+    #[inline]
+    pub fn is_empty_code_hash(&self) -> bool {
+        self.tracked.present.as_ref().is_none_or(AccountInfo::is_empty_code_hash)
     }
 
     /// Returns whether the account is warm for EIP-2929 gas accounting, consulting both the
@@ -455,7 +473,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         let Some(account) = self.tracked.present.as_ref() else {
             return Ok(Bytecode::default());
         };
-        if account.code_hash == KECCAK256_EMPTY {
+        if account.is_empty_code_hash() {
             return Ok(Bytecode::default());
         }
         if let Some(code) = account.code.as_ref()
@@ -478,7 +496,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         let Some(account) = self.tracked.original.as_ref() else {
             return Ok(Bytecode::default());
         };
-        if account.code_hash == KECCAK256_EMPTY {
+        if account.is_empty_code_hash() {
             return Ok(Bytecode::default());
         }
         if let Some(code) = account.code.as_ref()
@@ -653,7 +671,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Resets a self-destructed account to a balance-only account for EIP-8246 finalization.
     ///
     /// The balance is preserved while the nonce is reset to 0 and the code is cleared. The caller
-    /// is responsible for wiping the account's storage. This is only called for accounts that
+    /// is responsible for clearing the account's storage. This is only called for accounts that
     /// still hold a balance; zero-balance self-destructed accounts are removed via
     /// [`Self::delete_for_finalization`] instead. Like [`Self::delete_for_finalization`], the
     /// mutation is not journaled because finalization runs after the last revertible scope.
@@ -734,7 +752,7 @@ mod tests {
             .expect("account materialized by mutation");
         assert_eq!(info.balance, Word::from(100));
         assert_eq!(info.nonce, 8);
-        assert_ne!(info.code_hash, KECCAK256_EMPTY);
+        assert!(!info.is_empty_code_hash());
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(!state.account(&address).unwrap().is_warm());

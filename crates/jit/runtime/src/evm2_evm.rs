@@ -71,10 +71,6 @@ pub fn run_interpreter<'frame, 'host>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "llvm")]
-    use crate::runtime::RuntimeConfig;
-    #[cfg(feature = "llvm")]
-    use alloy_primitives::Address;
     use alloy_primitives::Bytes;
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId,
@@ -84,10 +80,18 @@ mod tests {
         evm::EmptyDB,
         interpreter::{MessageExt, op},
     };
+
+    #[cfg(feature = "llvm")]
+    use crate::runtime::RuntimeConfig;
+    #[cfg(feature = "llvm")]
+    use alloy_primitives::{Address, hex};
     #[cfg(feature = "llvm")]
     use evm2::{
+        EvmFeatures, ExecutionConfig, Version,
+        env::BlockEnv,
         evm::{AccountInfo, InMemoryDB},
-        interpreter::Word,
+        interpreter::{Host, Word},
+        version::GasId,
     };
 
     #[cfg(feature = "llvm")]
@@ -98,6 +102,46 @@ mod tests {
     fn blocking_backend() -> JitBackend {
         JitBackend::new(RuntimeConfig { enabled: true, blocking: true, ..RuntimeConfig::default() })
             .unwrap()
+    }
+
+    /// Runs `code` under `version` over `spec`, returning the stop reason, output, and gas spent.
+    #[cfg(feature = "llvm")]
+    fn run_with_version(
+        spec: SpecId,
+        version: Version,
+        block: BlockEnvExt,
+        code: &[u8],
+        gas_limit: u64,
+        with_jit: bool,
+    ) -> (InstrStop, Bytes, u64) {
+        let backend = JitBackend::new(RuntimeConfig {
+            enabled: true,
+            blocking: true,
+            gas_params: Some(version.gas_params),
+            ..RuntimeConfig::default()
+        })
+        .unwrap();
+        let mut host = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            BlockEnv::<BaseEvmTypes>::from(block),
+            ethereum_tx_registry(spec),
+            InMemoryDB::default(),
+            Precompiles::base(spec),
+        );
+        let message = MessageExt {
+            gas_limit,
+            code: Bytecode::new_legacy(Bytes::copy_from_slice(code)),
+            ..MessageExt::default()
+        };
+        let tx_env = TxEnvExt::default();
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let stop = if with_jit {
+            run_interpreter(&backend, &mut interpreter, &mut host).unwrap()
+        } else {
+            interpreter.run(&mut host).unwrap()
+        };
+        (stop, Bytes::copy_from_slice(interpreter.output()), interpreter.gas().spent())
     }
 
     #[cfg(feature = "llvm")]
@@ -551,5 +595,139 @@ mod tests {
         let interpreter = run(false);
         let jit = run(true);
         assert_eq!(jit, interpreter);
+    }
+
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn compiled_precompile_dispatch_uses_original_callee() {
+        let sha256 = Address::with_last_byte(2);
+        let delegate = Address::with_last_byte(0x33);
+        let parent = Address::with_last_byte(0x44);
+        let caller = Address::with_last_byte(0xaa);
+        let sha256_output =
+            hex!("9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a");
+        for (callee, delegated, expected_output) in [
+            (sha256, delegate, sha256_output.as_slice()),
+            (sha256, sha256, sha256_output.as_slice()),
+            (Address::with_last_byte(0x55), sha256, &[]),
+        ] {
+            for opcode in [op::CALL, op::CALLCODE, op::DELEGATECALL, op::STATICCALL] {
+                // Copy input, call with no output buffer, then return all return data.
+                let mut code = vec![op::CALLDATASIZE, op::PUSH0, op::PUSH0, op::CALLDATACOPY];
+                code.extend([op::PUSH0, op::PUSH0, op::PUSH1, 4, op::PUSH0]);
+                if matches!(opcode, op::CALL | op::CALLCODE) {
+                    code.push(op::PUSH0);
+                }
+                push20(&mut code, callee);
+                code.extend([
+                    op::GAS,
+                    opcode,
+                    op::POP,
+                    op::RETURNDATASIZE,
+                    op::PUSH0,
+                    op::PUSH0,
+                    op::RETURNDATACOPY,
+                    op::RETURNDATASIZE,
+                    op::PUSH0,
+                    op::RETURN,
+                ]);
+                let message = MessageExt {
+                    gas_limit: 100_000,
+                    destination: parent,
+                    call_target: parent,
+                    code_address: parent,
+                    caller,
+                    input: hex!("01020304").into(),
+                    code: Bytecode::new_legacy(code.into()),
+                    ..Default::default()
+                };
+                let run = |with_jit| {
+                    let mut database = InMemoryDB::default();
+                    database.insert_account_info(
+                        &callee,
+                        AccountInfo::default().with_code(Bytecode::new_eip7702(delegated)),
+                    );
+                    database.insert_account_info(
+                        &delegate,
+                        AccountInfo::default()
+                            .with_code(Bytecode::new_legacy(Bytes::from_static(BYTECODE_RET42))),
+                    );
+                    let mut host = Evm::<BaseEvmTypes>::new(
+                        SpecId::PRAGUE,
+                        BlockEnvExt::default(),
+                        ethereum_tx_registry(SpecId::PRAGUE),
+                        database,
+                        Precompiles::base(SpecId::PRAGUE),
+                    );
+                    host.warm_precompiles();
+                    host.state_mut().prewarm(&caller);
+                    host.state_mut().prewarm(&parent);
+                    if with_jit {
+                        host.set_interpreter_runner(JitInterpreterRunner::new(blocking_backend()));
+                    }
+                    Host::execute_message(&mut host, &TxEnvExt::default(), &mut message.clone())
+                        .unwrap()
+                };
+                let interpreted = run(false);
+                let compiled = run(true);
+                assert_eq!(compiled.stop, InstrStop::Return);
+                assert_eq!(compiled.output.as_ref(), expected_output);
+                assert_eq!(compiled, interpreted);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn compiled_difficulty_uses_active_features() {
+        let block = BlockEnvExt {
+            difficulty: Word::from(2),
+            prevrandao: Word::from(7),
+            ..BlockEnvExt::default()
+        };
+        for (spec, enabled, expected) in [(SpecId::CANCUN, false, 2), (SpecId::LONDON, true, 7)] {
+            let mut version = Version::new(spec);
+            if enabled {
+                version.features.insert(EvmFeatures::EIP4399);
+            } else {
+                version.features.remove(EvmFeatures::EIP4399);
+            }
+            // PUSH0 is not active before Shanghai.
+            let zero: &[u8] =
+                if spec.enables(SpecId::SHANGHAI) { &[op::PUSH0] } else { &[op::PUSH1, 0] };
+            let code =
+                [&[op::DIFFICULTY][..], zero, &[op::MSTORE, op::PUSH1, 0x20], zero, &[op::RETURN]]
+                    .concat();
+            let run = |with_jit| run_with_version(spec, version, block, &code, 100_000, with_jit);
+            let interpreted = run(false);
+            assert_eq!(interpreted.0, InstrStop::Return);
+            assert_eq!(Word::from_be_slice(&interpreted.1), Word::from(expected));
+            assert_eq!(run(true), interpreted);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn compiled_sstore_stipend_uses_active_features() {
+        let mut version = Version::new(SpecId::PETERSBURG);
+        version.features.insert(EvmFeatures::EIP2200);
+        version.gas_params.set(GasId::SstoreStatic, 800);
+        let mut code = vec![op::PUSH1, 0, op::PUSH1, 0, op::SSTORE];
+        code.extend([op::PUSH1, 0, op::POP].repeat(200));
+        code.push(op::STOP);
+        let run = |with_jit| {
+            run_with_version(
+                SpecId::PETERSBURG,
+                version,
+                BlockEnvExt::default(),
+                &code,
+                3000,
+                with_jit,
+            )
+        };
+        let interpreted = run(false);
+        assert_eq!(interpreted.0, InstrStop::Stop);
+        assert_eq!(interpreted.2, 1806);
+        assert_eq!(run(true), interpreted);
     }
 }

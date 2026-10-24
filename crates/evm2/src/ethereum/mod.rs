@@ -35,7 +35,7 @@ use alloy_consensus::{
     transaction::{Recovered, Transaction, TxEip4844Variant},
 };
 use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 
 /// Ethereum transaction envelope.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -440,7 +440,7 @@ pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
 
     let mut sender = host.state.account(&caller)?;
-    if has_eip3607 && sender.code_hash() != KECCAK256_EMPTY {
+    if has_eip3607 && !sender.is_empty_code_hash() {
         let code = sender.load_code()?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
@@ -450,7 +450,10 @@ pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
         return Err(HandlerError::InvalidNonce { expected: sender.nonce(), got: nonce });
     }
     if has_balance_check && sender.balance() < max_upfront {
-        return Err(HandlerError::InsufficientFunds);
+        return Err(HandlerError::InsufficientFunds {
+            fee: max_upfront,
+            balance: sender.balance(),
+        });
     }
     if !has_balance_check && has_balance_top_up && sender.balance() < max_upfront {
         sender.add_balance(max_upfront - sender.balance());
@@ -581,7 +584,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 (recipient_is_empty, account.load_code()?)
             };
             let mut code_address = to;
-            let mut disable_precompiles = false;
             if host.feature(EvmFeatures::EIP2780) && !value.is_zero() && recipient_is_empty {
                 let new_account_state_gas = host.version().gas_params.new_account_state_gas();
                 if tx_gas.spend_state(new_account_state_gas).is_err() {
@@ -621,7 +623,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     code = account.load_code()?;
                 }
                 code_address = delegated_address;
-                disable_precompiles = true;
             }
             MessageExt {
                 kind: MessageKind::Call,
@@ -635,7 +636,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 value,
                 code,
                 code_address,
-                disable_precompiles,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
@@ -667,7 +667,6 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 value,
                 code: Bytecode::new_legacy(input.clone()),
                 code_address: destination,
-                disable_precompiles: false,
                 caller_is_static: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
@@ -758,7 +757,8 @@ pub fn default_settle_gas<'a, T: EvmTypes>(
         let gas_remaining = gas_limit.saturating_sub(gas_used);
         let caller_refund = U256::from(gas_remaining) * gas_price;
         host.state.account(&caller)?.add_balance(caller_refund);
-        let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
+        // The base fee is burned from London on, independent of `BASE_FEE_CHECK`.
+        let beneficiary_gas_price = if host.spec_id().enables(SpecId::LONDON) {
             gas_price.saturating_sub(host.block.basefee)
         } else {
             gas_price
@@ -947,7 +947,7 @@ mod tests {
         interpreter::{Host, InstrStop, op},
         registry::TxRegistry,
     };
-    use alloc::vec;
+    use alloc::{string::ToString, vec};
     use alloy_consensus::{TxEip2930, transaction::Recovered};
     use alloy_eips::eip2930::AccessList;
 
@@ -1165,6 +1165,15 @@ mod tests {
         london.features.remove(EvmFeatures::BASE_FEE_CHECK);
         assert_eq!(validate_gas_price(&london, U256::ZERO, U256::ONE), Ok(()));
 
+        // A configured base fee is checked before London too.
+        assert_eq!(
+            validate_gas_price(&Version::new(SpecId::BERLIN), U256::ZERO, U256::ONE),
+            Err(HandlerError::FeeCapLessThanBaseFee {
+                max_fee_per_gas: U256::ZERO,
+                base_fee: U256::ONE,
+            })
+        );
+
         let mut prague = Version::new(SpecId::PRAGUE);
         assert_eq!(
             validate_priority_fee(&prague, U256::ONE, U256::from(2)),
@@ -1191,6 +1200,69 @@ mod tests {
         assert_eq!(validate_chain_id(&version, None, true), Ok(()));
         version.features.remove(EvmFeatures::TX_CHAIN_ID_CHECK);
         assert_eq!(validate_chain_id(&version, Some(1), false), Ok(()));
+    }
+
+    #[rstest::rstest]
+    #[case::berlin(SpecId::BERLIN, true, 15)]
+    #[case::london(SpecId::LONDON, true, 5)]
+    #[case::london_without_base_fee_check(SpecId::LONDON, false, 5)]
+    fn base_fee_burn_depends_on_spec(
+        #[case] spec: SpecId,
+        #[case] base_fee_check: bool,
+        #[case] beneficiary_gas_price: u64,
+    ) {
+        let caller = Address::with_last_byte(0xaa);
+        let beneficiary = Address::with_last_byte(0xcc);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000)),
+        );
+        let mut version = Version::new(spec);
+        version.features.set(EvmFeatures::BASE_FEE_CHECK, base_fee_check);
+        let block = BlockEnvExt { basefee: U256::from(10), beneficiary, ..BlockEnvExt::default() };
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            block,
+            ethereum_tx_registry(spec),
+            database,
+            Precompiles::base(spec),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_price: 15,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
+                ..TxLegacy::default()
+            }),
+            caller,
+        );
+
+        assert!(evm.transact(&tx).unwrap().commit().status);
+        let reward = evm.state.account_info_untracked(&beneficiary).unwrap().unwrap().balance;
+        assert_eq!(reward, U256::from(21_000 * beneficiary_gas_price));
+    }
+
+    #[test]
+    fn insufficient_funds_reports_cost_and_balance() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(10)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let error = validate_sender_and_bump_nonce(&mut evm, caller, 0, U256::from(100));
+        assert_eq!(
+            error,
+            Err(HandlerError::InsufficientFunds { fee: U256::from(100), balance: U256::from(10) })
+        );
+        assert_eq!(error.unwrap_err().to_string(), "lack of funds (10) for max fee (100)");
     }
 
     #[test]
@@ -1270,7 +1342,7 @@ mod tests {
     #[test]
     fn initial_delegated_call_uses_delegated_code_address() {
         let caller = Address::with_last_byte(0xaa);
-        let target = Address::with_last_byte(0x02);
+        let target = Address::with_last_byte(0x55);
         let delegated = Address::with_last_byte(0x33);
         let delegated_code = Bytecode::new_legacy(Bytes::from_static(&[
             op::PUSH1,
@@ -1310,7 +1382,6 @@ mod tests {
         .unwrap();
         assert_eq!(message.destination, target);
         assert_eq!(message.code_address, delegated);
-        assert!(message.disable_precompiles);
         assert_eq!(charged_state_gas, 0);
 
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();

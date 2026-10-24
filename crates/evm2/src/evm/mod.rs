@@ -358,7 +358,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline]
     fn contains_precompile(&self, message: &Message<T>) -> bool {
-        !message.disable_precompiles && self.precompiles.contains(&message.code_address)
+        // Native dispatch takes precedence over code stored at the original callee.
+        self.precompiles.contains(&message.call_target)
     }
 
     #[inline]
@@ -762,6 +763,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T> + 'a) {
         self.assert_precompiles_mutable();
         self.precompiles = boxed_precompile_provider(precompiles);
+        self.evm_send = false;
+    }
+
+    /// Replaces the precompile provider with an already boxed one.
+    #[inline]
+    pub fn set_boxed_precompiles(&mut self, precompiles: Box<dyn PrecompileProvider<T> + 'a>) {
+        self.assert_precompiles_mutable();
+        self.precompiles = precompiles;
         self.evm_send = false;
     }
 
@@ -1216,7 +1225,6 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             };
         }
         message.code_address = message.destination;
-        message.disable_precompiles = false;
         let input = core::mem::take(&mut message.input);
         let result = self.run_interpreter(tx_env, message);
         message.input = input;
@@ -1382,6 +1390,17 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         }
         if self.contains_precompile(message) {
             return self.execute_call_precompile(checkpoint, message);
+        }
+        // Empty accounts complete the call without executing the bytecode's padding STOP.
+        if message.code.is_empty() {
+            return Ok(MessageResultExt {
+                stop: InstrStop::Stop,
+                gas: GasTracker::new_with_execution_gas_and_reservoir(
+                    message.gas_limit,
+                    message.reservoir,
+                ),
+                ..MessageResultExt::default()
+            });
         }
         let stop = self.run_interpreter(tx_env, message)?;
         Ok(self.finish_call_message_run(checkpoint, stop))
@@ -1858,7 +1877,7 @@ mod tests {
     use alloc::{borrow::Cow, string::ToString, sync::Arc, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_eip7928::{BlockAccessList, StorageChange};
-    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, Log, LogData, TxKind, U256};
+    use alloy_primitives::{Address, Bytes, Log, LogData, TxKind, U256};
     use core::{
         error::Error,
         fmt,
@@ -2018,7 +2037,6 @@ mod tests {
             value: U256::ZERO,
             code: Bytecode::default(),
             code_address: address,
-            disable_precompiles: false,
             caller_is_static: false,
             salt: B256::ZERO,
             ext: (),
@@ -2585,6 +2603,21 @@ mod tests {
     }
 
     #[test]
+    fn set_boxed_precompiles_keeps_provider_type() {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        evm.set_boxed_precompiles(Box::new(precompiles_with([])));
+
+        assert!(evm.precompiles_as::<Precompiles>().unwrap().as_map().is_empty());
+    }
+
+    #[test]
     #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
     fn precompiles_mut_panics_during_execution() {
         run_precompile_access(PrecompileAccess::Mut);
@@ -2856,7 +2889,6 @@ mod tests {
             assert_eq!(message.input, Bytes::from_static(b"message input"));
             assert_eq!(message.value, U256::from(99));
             assert_eq!(message.code_address, TEST_PRECOMPILE);
-            assert!(!message.disable_precompiles);
             Ok(PrecompileOutput::new(Bytes::copy_from_slice(&evm.block.number.to_be_bytes::<32>())))
         })]);
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -2878,7 +2910,6 @@ mod tests {
             value: U256::from(99),
             code: Bytecode::default(),
             code_address: address,
-            disable_precompiles: false,
             caller_is_static: false,
             salt: B256::ZERO,
             ext: (),
@@ -3254,6 +3285,21 @@ mod tests {
     }
 
     #[test]
+    fn same_index_commits_that_restore_a_slot_record_a_read() {
+        let mut evm = lifecycle_evm();
+        evm.state.enable_bal_builder();
+        evm.state.set_bal_index(BlockAccessIndex::new(1));
+
+        // Two commits at one index write 1 -> 7 -> 1.
+        let _ = evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").commit();
+        let _ = evm.transact(&test_tx(1)).expect("lifecycle transaction should execute").commit();
+
+        let bal = evm.state.take_bal_builder().expect("builder was enabled");
+        let slot = &bal.accounts[&LIFECYCLE_ACCOUNT].storage.storage[&LIFECYCLE_STORAGE_KEY];
+        assert!(slot.is_empty());
+    }
+
+    #[test]
     fn executed_transaction_commit_with_tee_fans_out_changes() {
         let mut evm = lifecycle_evm();
         let mut left = BlockStateAccumulator::new();
@@ -3545,7 +3591,7 @@ mod tests {
         let pending = evm.state.take_pending_state();
         let account =
             pending.accounts.get(&created).and_then(|entry| entry.present.as_ref()).unwrap();
-        assert_eq!(account.code_hash, KECCAK256_EMPTY);
+        assert!(account.is_empty_code_hash());
     }
 
     #[test]
@@ -3838,7 +3884,7 @@ mod tests {
             .expect("balance-only account should remain");
         assert_eq!(info.balance, U256::from(5));
         assert_eq!(info.nonce, 0);
-        assert_eq!(info.code_hash, KECCAK256_EMPTY);
+        assert!(info.is_empty_code_hash());
 
         let pending = state.take_pending_state();
         assert!(pending.accounts.contains_key(&contract), "account change recorded");
@@ -4071,7 +4117,7 @@ mod tests {
     fn validate_tx_discards_preparation_writes_on_success_and_error() {
         let mut evm = lifecycle_evm();
         let errors = [
-            HandlerError::InsufficientFunds,
+            HandlerError::NonceOverflow,
             HandlerError::Database(crate::DatabaseError::new(fmt::Error, true)),
             HandlerError::Database(crate::DatabaseError::new(fmt::Error, false)),
             HandlerError::Fatal("preparation failed".into()),
@@ -4162,7 +4208,7 @@ mod tests {
                 |_| Ok(()),
                 |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| match req.tx.nonce {
                     0 => Ok(TxResultExt::default()),
-                    1 => Err(HandlerError::InsufficientFunds),
+                    1 => Err(HandlerError::NonceOverflow),
                     _ => panic!("transaction handler panicked"),
                 },
             ),
@@ -4175,7 +4221,7 @@ mod tests {
             }));
             match nonce {
                 0 => assert!(result.unwrap().is_ok()),
-                1 => assert_eq!(result.unwrap().unwrap_err(), HandlerError::InsufficientFunds),
+                1 => assert_eq!(result.unwrap().unwrap_err(), HandlerError::NonceOverflow),
                 _ => assert!(result.is_err()),
             }
             assert!(evm.clear_inspector_as::<NoopInspector>().is_some());

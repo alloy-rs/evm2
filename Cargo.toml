@@ -103,6 +103,7 @@ color-eyre = "0.6"
 eyre = "0.6"
 libc = "0.2"
 libtest-mimic = "0.8"
+mimalloc = { version = "0.1", default-features = false }
 once_cell = { version = "1.21", default-features = false }
 paste = { version = "1.0", default-features = false }
 phf = { version = "0.14", default-features = false }
@@ -111,6 +112,7 @@ postcard = { version = "1.1.3", default-features = false }
 rand = "0.10"
 rayon = "1.10"
 revm = { version = "43", default-features = true, features = ["asm-keccak"] }
+revm-bytecode = { version = "43", default-features = false }
 rmp-serde = "1.3"
 rstest = "0.27.0"
 ruint = { version = "1.18", default-features = false }
@@ -118,6 +120,7 @@ serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false }
 snapbox = "1.2"
 thiserror = { version = "2.0", default-features = false }
+tikv-jemallocator = { version = "0.7", default-features = false }
 typeid = { version = "1.0.3", default-features = false }
 tokio = { version = "1", default-features = false }
 tracing = "0.1"
@@ -160,6 +163,14 @@ criterion = { package = "codspeed-criterion-compat", version = "4", default-feat
 
 [profile.dev]
 opt-level = 3
+
+# Debug info makes the C and C++ precompile backends build about a third slower.
+[profile.dev.package]
+aws-lc-sys.debug = false
+blst.debug = false
+c-kzg.debug = false
+mcl_rust.debug = false
+secp256k1-sys.debug = false
 
 [profile.release]
 opt-level = 3

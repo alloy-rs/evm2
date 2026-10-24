@@ -248,7 +248,7 @@ impl SectionsAnalysis {
         // Branching instructions and host effects that depend on the remaining gas end both
         // sections.
         let next = inst + 1;
-        if data.is_branching() || data.ends_sections(bytecode.spec_id) {
+        if data.is_branching() || data.ends_sections() {
             let continues = continues_into(bytecode, inst);
             self.save_stack_reset(bytecode, next, continues);
             self.gas.save_to_reset(bytecode, next);
@@ -432,22 +432,29 @@ mod tests {
     #[test]
     fn cold_load_ends_section() {
         let cases = [
-            ("PUSH0 BALANCE PUSH0 STOP", op::BALANCE),
-            ("PUSH0 EXTCODESIZE PUSH0 STOP", op::EXTCODESIZE),
-            ("PUSH0 PUSH0 PUSH0 PUSH0 EXTCODECOPY PUSH0 STOP", op::EXTCODECOPY),
-            ("PUSH0 EXTCODEHASH PUSH0 STOP", op::EXTCODEHASH),
-            ("PUSH0 SLOAD PUSH0 STOP", op::SLOAD),
+            ("{p} BALANCE {p} STOP", op::BALANCE),
+            ("{p} EXTCODESIZE {p} STOP", op::EXTCODESIZE),
+            ("{p} {p} {p} {p} EXTCODECOPY {p} STOP", op::EXTCODECOPY),
+            ("{p} EXTCODEHASH {p} STOP", op::EXTCODEHASH),
+            ("{p} SLOAD {p} STOP", op::SLOAD),
+            ("{p} {p} SSTORE {p} STOP", op::SSTORE),
         ];
 
-        for (src, opcode) in cases {
-            let bytecode = analyze_asm_spec(src, SpecId::AMSTERDAM);
-            let (inst, data) =
-                bytecode.iter_insts().find(|(_, data)| data.opcode == opcode).unwrap();
-            assert!(data.ends_sections(SpecId::AMSTERDAM));
+        // Active features can enable EIP-2200 and EIP-2929 over any base spec, so sections end at
+        // these opcodes even before Istanbul and Berlin.
+        for (spec, push, push_gas) in
+            [(SpecId::AMSTERDAM, "PUSH0", 2), (SpecId::PETERSBURG, "PUSH1 0", 3)]
+        {
+            for (src, opcode) in cases {
+                let bytecode = analyze_asm_spec(&src.replace("{p}", push), spec);
+                let (inst, data) =
+                    bytecode.iter_insts().find(|(_, data)| data.opcode == opcode).unwrap();
+                assert!(data.ends_sections());
 
-            let after = bytecode.inst(inst + 1);
-            assert!(after.is_stack_section_head());
-            assert_eq!(after.gas_section.gas_cost, 2);
+                let after = bytecode.inst(inst + 1);
+                assert!(after.is_stack_section_head());
+                assert_eq!(after.gas_section.gas_cost, push_gas);
+            }
         }
     }
 

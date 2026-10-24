@@ -79,7 +79,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
-) -> Result<(u64, u64, Bytecode, Address, bool)> {
+) -> Result<(u64, u64, Bytecode, Address)> {
     if transfers_value {
         gas.spend(state.gas_params().get(GasId::TransferValueCost).into())?;
     }
@@ -146,8 +146,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend).into());
     }
 
-    let disable_precompiles = code_address != to;
-    Ok((gas_limit, new_account_state_gas, code, code_address, disable_precompiles))
+    Ok((gas_limit, new_account_state_gas, code, code_address))
 }
 
 #[inline(never)]
@@ -182,7 +181,7 @@ fn prepare_call<T: EvmTypesHost>(
         return_offset,
         return_len,
     )?;
-    let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address, disable_precompiles) =
+    let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address) =
         load_acc_and_calc_gas(
             gas,
             state,
@@ -217,7 +216,6 @@ fn prepare_call<T: EvmTypesHost>(
         value: call_value,
         code: loaded_code,
         code_address,
-        disable_precompiles,
         caller_is_static: state.is_static(),
         salt: B256::ZERO,
         ext: T::MessageExt::default(),
@@ -390,7 +388,6 @@ fn create_inner<T: EvmTypesHost>(
         input,
         value,
         code_address: caller,
-        disable_precompiles: false,
         // CREATE is rejected in a static context (see `require_non_staticcall`).
         caller_is_static: false,
         salt,

@@ -11,11 +11,15 @@ mod replay;
 #[cfg(feature = "jit")]
 mod run;
 mod style;
+mod utils;
 
 use crate::{args::Args, error::Result};
 use clap::Parser;
 use std::{error::Error as _, process::ExitCode};
 use tracing_subscriber::EnvFilter;
+
+#[global_allocator]
+static ALLOC: utils::Allocator = utils::new_allocator();
 
 fn main() -> ExitCode {
     init_tracing();

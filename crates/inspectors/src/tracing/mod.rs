@@ -653,7 +653,6 @@ impl TracingInspector {
 
         // The gas cost is the difference between the recorded gas remaining at the start of the
         // step the remaining gas here, at the end of the step.
-        // TODO: Figure out why this can overflow. https://github.com/paradigmxyz/revm-inspectors/pull/38
         step.gas_cost = interp
             .failed_charge()
             .unwrap_or_else(|| step.gas_remaining.saturating_sub(interp.gas().remaining()));
@@ -796,9 +795,10 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         };
 
         // if calls to precompiles should be excluded, check whether this is a call to a precompile
-        let maybe_precompile = self.config.exclude_precompile_calls.then(|| {
-            !message.disable_precompiles && self.is_precompile_call(interp.host(), &to, &value)
-        });
+        let maybe_precompile = self
+            .config
+            .exclude_precompile_calls
+            .then(|| self.is_precompile_call(interp.host(), &to, &value));
 
         let input = if self.config.record_inputs
             && (message.depth == 0 || self.budget.reserve(message.input.len()))
