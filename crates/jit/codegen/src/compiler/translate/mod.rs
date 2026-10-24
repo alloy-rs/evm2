@@ -14,7 +14,7 @@ use evm2::{
 use evm2_jit_backend::{Attribute, BackendTypes, FunctionAttributeLocation, Pointer, TypeMethods};
 use evm2_jit_builtins::{Builtin, Builtins, CallKind, CreateKind};
 use oxc_index::IndexVec;
-use std::mem;
+use std::{mem, ops::Range};
 
 mod peephole;
 
@@ -25,6 +25,8 @@ const STACK_CAP: usize = 1024;
 /// The size of a stack word in bytes. Stack lengths are kept in bytes so that stack addresses
 /// need no scaling.
 const WORD_SIZE: i64 = 32;
+/// The most gas that sections entered only by fall-through may charge before a signed check.
+const GAS_CHECK_THRESHOLD: u64 = 1000;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct FcxConfig {
@@ -114,6 +116,8 @@ pub(super) struct FunctionCx<'a, B: Backend> {
     /// `section_len_offset + diff`. Stores are skipped when the new offset matches this value.
     stored_len_offset: i32,
     cached_mem_base: Option<B::Value>,
+    /// Gas subtracted without a check since the last check, in translation order.
+    unchecked_gas: u64,
     /// Memory ranges already ensured in the current stack section, as `(base, lo, hi)`: memory
     /// covers every access at `base + c` with `lo <= c` and `c + len <= hi`. Memory never
     /// shrinks within a frame, so these hold until the next section head.
@@ -257,6 +261,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             section_len_offset: 0,
             stored_len_offset: 0,
             cached_mem_base: None,
+            unchecked_gas: 0,
             ensured_memory: Vec::new(),
             value_offsets: Vec::new(),
             bcx,
@@ -333,10 +338,19 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             // `InstrStop` codes exist purely for debugging and error messages.
             // `single_error` collapses every failure path to a single placeholder
             // (OOG), letting LLVM DCE the per-site materialization and the phi.
+            let out_of_gas = fx.bcx.iconst(fx.i8_type, InstrStop::OutOfGas as i64);
             let failure_value = if config.single_error {
-                fx.bcx.iconst(fx.i8_type, InstrStop::OutOfGas as i64)
+                out_of_gas
             } else {
-                fx.bcx.phi(fx.i8_type, &fx.incoming_failures)
+                let failure_value = fx.bcx.phi(fx.i8_type, &fx.incoming_failures);
+                // Gas subtracted without a check may have run out before this failure.
+                if config.gas_metering {
+                    let remaining = fx.load_gas_remaining();
+                    let is_negative = fx.bcx.icmp_imm(IntCC::SignedLessThan, remaining, 0);
+                    fx.bcx.select(is_negative, out_of_gas, failure_value)
+                } else {
+                    failure_value
+                }
             };
             fx.bcx.set_current_block_cold();
             // Do not sync the stack here: this is a shared synthetic merge block for
@@ -464,7 +478,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         }
 
         // Pay static gas for the current section.
-        self.gas_cost_imm(data.gas_section.gas_cost as u64);
+        debug_assert!(data.is_stack_section_head() || data.gas_section.is_empty());
+        if data.is_stack_section_head() {
+            self.charge_section_gas(inst);
+        }
 
         // Compute bytes_before for this instruction.
         // At section heads: load from the alloca once and reset the section offset.
@@ -473,16 +490,21 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let diff = out as i32 - inp as i32;
         self.len_offset = 0;
         if data.is_stack_section_head() {
-            self.section_start_bytes = self.stack_bytes.load(&mut self.bcx, "stack_bytes");
-            self.section_start_sp = self.sp_at(self.section_start_bytes);
-            self.section_len_offset = 0;
-            self.stored_len_offset = 0;
-            self.cached_mem_base = None;
-            self.ensured_memory.clear();
-            self.value_offsets.clear();
-
             let section = data.stack_section;
-            self.vstack.reset(section.inputs as usize, section.max_growth.max(0) as usize);
+            if data.continues_stack_section() {
+                // Only the preceding `JUMPI` falls through here, and it kept the section state.
+                let top = self.section_len_offset;
+                self.vstack.extend(top - section.inputs as i32, top + section.max_growth as i32);
+            } else {
+                self.section_start_bytes = self.stack_bytes.load(&mut self.bcx, "stack_bytes");
+                self.section_start_sp = self.sp_at(self.section_start_bytes);
+                self.section_len_offset = 0;
+                self.stored_len_offset = 0;
+                self.cached_mem_base = None;
+                self.ensured_memory.clear();
+                self.value_offsets.clear();
+                self.vstack.reset(section.inputs as usize, section.max_growth.max(0) as usize);
+            }
         }
         self.bytes_before = if self.section_len_offset == 0 {
             self.section_start_bytes
@@ -894,85 +916,97 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                     // Pop and discard the target; it's always on the stack.
                     self.pop_ignore(1);
                     self.build_fail_imm(InstrStop::InvalidJump);
+                    goto_return!(no_branch);
+                }
+
+                let is_multi = data.flags.contains(InstFlags::MULTI_JUMP);
+                let target_value = if is_multi || !data.flags.contains(InstFlags::STATIC_JUMP) {
+                    Some(self.pop())
                 } else {
-                    let target = if is_invalid {
-                        debug_assert_eq!(*data, op::JUMPI);
-                        // The jump target is invalid, but we still need to pop it.
-                        self.pop_ignore(1);
-                        self.add_invalid_jump()
-                    } else if data.flags.contains(InstFlags::MULTI_JUMP) {
-                        // The analysis proved the target is one of `targets`, all of which fit in
-                        // 64 bits, so switch on the low bits instead of the whole word.
-                        let target_value = self.pop();
-                        let i64_type = self.bcx.type_int(64);
-                        let target_value = self.bcx.ireduce(i64_type, target_value);
-                        let targets = self.bytecode.multi_jump_targets(inst).unwrap();
+                    // Pop and discard the target; it's always on the stack.
+                    self.pop_ignore(1);
+                    None
+                };
 
-                        if opcode == op::JUMPI && !has_const_jumpi_condition {
-                            let cond_word = self.pop();
-                            self.materialize_live_stack();
-                            let cond = self.bcx.icmp_imm(IntCC::NotEqual, cond_word, 0);
-                            let next = self
-                                .effective_next_entry(inst)
-                                .expect("JUMPI must have a fallthrough target");
-                            let switch_block = self.bcx.create_block("multi_jump");
-                            self.bcx.brif(cond, switch_block, next);
-                            self.bcx.switch_to_block(switch_block);
-                        } else {
-                            if opcode == op::JUMPI {
-                                self.pop_ignore(1);
-                            }
-                            self.materialize_live_stack();
-                        }
-
-                        let switch_targets: Vec<_> = targets
-                            .iter()
-                            .map(|&t| {
-                                let pc = self.bytecode.inst(t).jumpdest_pc() as u64;
-                                (pc, self.effective_entry(t))
-                            })
-                            .collect();
-                        let invalid_jump = self.add_invalid_jump();
-                        self.bcx.switch(target_value, invalid_jump, &switch_targets, true);
-
-                        goto_return!(no_branch);
-                    } else if data.flags.contains(InstFlags::STATIC_JUMP) {
-                        // Pop and discard the target; it's always on the stack.
-                        self.pop_ignore(1);
-                        let target_inst = data.static_jump_target();
-                        debug_assert!(
-                            *self.bytecode.inst(target_inst) == op::JUMPDEST
-                                || (opcode == op::JUMPI && has_const_jumpi_condition),
-                            "jumping to non-JUMPDEST; target_inst={target_inst}",
-                        );
-                        self.effective_entry(target_inst)
-                    } else {
-                        // Dynamic jump.
-                        debug_assert!(self.bytecode.has_dynamic_jumps());
-                        let target = self.pop();
-                        let target = self.u256_to_u64_saturating(target, 64);
-                        self.incoming_dynamic_jumps
-                            .push((target, self.bcx.current_block().unwrap()));
-                        self.dynamic_jump_table
-                    };
-
-                    if opcode == op::JUMPI && !has_const_jumpi_condition {
-                        let cond_word = self.pop();
-                        // Flush virtual values before leaving the section.
+                // The condition and fall-through block of a `JUMPI` whose taken edge is still
+                // to be built.
+                let mut jumpi = None;
+                if opcode == op::JUMPI && !has_const_jumpi_condition {
+                    let cond_word = self.pop();
+                    let cond = self.bcx.icmp_imm(IntCC::NotEqual, cond_word, 0);
+                    let next = self
+                        .effective_next_entry(inst)
+                        .expect("JUMPI must have a fallthrough target");
+                    // When the fall-through continues this section, it keeps the virtual stack
+                    // in SSA and only the taken edge stores it, in its own block.
+                    let keep_vstack = self.bytecode.inst(inst + 1).continues_stack_section()
+                        && self.vstack.virtual_count() != 0;
+                    if !keep_vstack {
                         self.materialize_live_stack();
-                        let cond = self.bcx.icmp_imm(IntCC::NotEqual, cond_word, 0);
-                        let next = self
-                            .effective_next_entry(inst)
-                            .expect("JUMPI must have a fallthrough target");
-                        self.bcx.brif(cond, target, next);
-                    } else {
-                        if opcode == op::JUMPI {
-                            self.pop_ignore(1);
-                        }
-                        // Flush virtual values before leaving the section.
-                        self.materialize_live_stack();
-                        self.bcx.br(target);
                     }
+                    if keep_vstack || is_multi {
+                        let name = if is_multi { "multi_jump" } else { "jumpi.taken" };
+                        let current_block = self.current_block();
+                        let taken = self.create_block_after(current_block, name);
+                        self.bcx.brif(cond, taken, next);
+                        self.bcx.switch_to_block(taken);
+                        if keep_vstack {
+                            self.store_range(self.vstack.live_range());
+                        }
+                    } else {
+                        jumpi = Some((cond, next));
+                    }
+                } else {
+                    if opcode == op::JUMPI {
+                        self.pop_ignore(1);
+                    }
+                    // Flush virtual values before leaving the section.
+                    self.materialize_live_stack();
+                }
+                // A continuation of this section starts from the stack after the jump.
+                self.section_len_offset += diff;
+
+                if is_multi {
+                    // The analysis proved the target is one of `targets`, all of which fit in
+                    // 64 bits, so switch on the low bits instead of the whole word.
+                    let i64_type = self.bcx.type_int(64);
+                    let target_value = self.bcx.ireduce(i64_type, target_value.unwrap());
+                    let targets = self.bytecode.multi_jump_targets(inst).unwrap();
+                    let switch_targets: Vec<_> = targets
+                        .iter()
+                        .map(|&t| {
+                            let pc = self.bytecode.inst(t).jumpdest_pc() as u64;
+                            (pc, self.effective_entry(t))
+                        })
+                        .collect();
+                    let invalid_jump = self.add_invalid_jump();
+                    self.bcx.switch(target_value, invalid_jump, &switch_targets, true);
+                    goto_return!(no_branch);
+                }
+
+                let target = if is_invalid {
+                    debug_assert_eq!(*data, op::JUMPI);
+                    self.add_invalid_jump()
+                } else if let Some(target) = target_value {
+                    // Dynamic jump.
+                    debug_assert!(self.bytecode.has_dynamic_jumps());
+                    let target = self.u256_to_u64_saturating(target, 64);
+                    let current_block = self.current_block();
+                    self.incoming_dynamic_jumps.push((target, current_block));
+                    self.dynamic_jump_table
+                } else {
+                    let target_inst = data.static_jump_target();
+                    debug_assert!(
+                        *self.bytecode.inst(target_inst) == op::JUMPDEST
+                            || (opcode == op::JUMPI && has_const_jumpi_condition),
+                        "jumping to non-JUMPDEST; target_inst={target_inst}",
+                    );
+                    self.effective_entry(target_inst)
+                };
+                if let Some((cond, next)) = jumpi {
+                    self.bcx.brif(cond, target, next);
+                } else {
+                    self.bcx.br(target);
                 }
 
                 goto_return!(no_branch);
@@ -992,9 +1026,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.push(msize);
             }
             op::GAS => {
-                let addr = self.gas_remaining_addr();
-                let i64_type = self.bcx.type_int(64);
-                let mut remaining = self.bcx.load(i64_type, addr, "ecx.gas.remaining");
+                self.build_gas_check();
+                let mut remaining = self.load_gas_remaining();
                 // The section head already charged the static gas of the instructions after this.
                 let owed = data.gas_owed();
                 if self.config.gas_metering && owed != 0 {
@@ -1081,7 +1114,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             op::SELFDESTRUCT => {
                 let sp = self.sp_after_inputs();
                 self.sync_diverging_stack_effect();
-                let _ = self.call_builtin(Builtin::SelfDestruct, &[self.ecx, sp]);
+                self.call_fallible_builtin(Builtin::SelfDestruct, &[self.ecx, sp]);
                 self.bcx.unreachable();
                 goto_return!(no_branch);
             }
@@ -1291,7 +1324,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let sp = self.sp_after_inputs();
         let ir_const = self.bcx.iconst(self.i8_type, ir as i64);
         self.sync_diverging_stack_effect();
-        let _ = self.call_builtin(Builtin::DoReturn, &[self.ecx, sp, ir_const]);
+        self.call_fallible_builtin(Builtin::DoReturn, &[self.ecx, sp, ir_const]);
         self.bcx.unreachable();
     }
 
@@ -1375,6 +1408,12 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     fn gas_remaining_addr(&mut self) -> B::Value {
         const OFFSET: usize = mem::offset_of!(EvmContext<'_, '_, '_>, gas);
         self.get_field(self.ecx, OFFSET, "ecx.gas.remaining.addr")
+    }
+
+    fn load_gas_remaining(&mut self) -> B::Value {
+        let addr = self.gas_remaining_addr();
+        let i64_type = self.bcx.type_int(64);
+        self.bcx.load(i64_type, addr, "ecx.gas.remaining")
     }
 
     /// Saves the local `stack_bytes` to `stack_len_arg` as a number of words.
@@ -1554,37 +1593,101 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
     /// Materializes all virtual slots in the given section-relative offset range.
     fn materialize_range(&mut self, start: i32, end: i32) {
-        let pending: Vec<_> = self.vstack.pending_stores(start..end).collect();
+        self.store_range(start..end);
+        self.vstack.mark_stored_range(start..end);
+    }
+
+    /// Stores all virtual slots in the given section-relative offset range without marking
+    /// them materialized.
+    fn store_range(&mut self, range: Range<i32>) {
+        let pending: Vec<_> = self.vstack.pending_stores(range).collect();
         for (off, value) in pending {
             let sp = self.sp_from_section(off as i64);
             self.bcx.store(value, sp);
         }
-        self.vstack.mark_stored_range(start..end);
     }
 
-    /// Builds a gas cost deduction for an immediate value.
-    fn gas_cost_imm(&mut self, cost: u64) {
-        if !self.config.gas_metering || cost == 0 {
-            return;
-        }
-        let value = self.bcx.iconst(self.isize_type, cost as i64);
-        self.gas_cost(value);
-    }
-
-    /// Builds a gas cost deduction for a value.
-    fn gas_cost(&mut self, cost: B::Value) {
+    /// Charges the static gas of the section headed by `head`.
+    ///
+    /// Only a section entered through a `JUMPDEST` can start unbounded work, so sections entered
+    /// only by falling through subtract their gas without a branch until the gas charged since
+    /// the last check reaches [`GAS_CHECK_THRESHOLD`]. The check is signed, so a skipped deficit
+    /// stays visible as negative remaining gas. Sections that return or call builtins that charge
+    /// gas check at their head; [`build_gas_check`](Self::build_gas_check) covers the rest.
+    fn charge_section_gas(&mut self, head: Inst) {
         if !self.config.gas_metering {
             return;
         }
 
-        // Modified from `Gas::record_cost`.
-        // This can overflow the gas counters, which has to be adjusted for after the call.
+        if !self.bytecode.is_fall_through_only(head) {
+            // Other paths can arrive with gas left unchecked, so force a check.
+            self.unchecked_gas = GAS_CHECK_THRESHOLD;
+        }
+        let cost = self.bytecode.inst(head).gas_section.gas_cost as u64;
+        if cost != 0 {
+            let remaining = self.load_gas_remaining();
+            let remaining = self.bcx.isub_imm(remaining, cost as i64);
+            let addr = self.gas_remaining_addr();
+            self.bcx.store(remaining, addr);
+            self.unchecked_gas += cost;
+        }
+        if self.unchecked_gas >= GAS_CHECK_THRESHOLD
+            || (self.unchecked_gas != 0 && self.section_needs_gas_check(head))
+        {
+            self.build_gas_check();
+        }
+    }
+
+    /// Returns `true` if the section headed by `head` reads the remaining gas, charges it in a
+    /// builtin, or ends execution.
+    ///
+    /// Memory resizes are left out: they are conditional and check on their own cold path.
+    fn section_needs_gas_check(&self, head: Inst) -> bool {
+        std::iter::successors(Some(head), |&inst| self.lexical_next_inst(inst))
+            .map(|inst| (inst, self.bytecode.inst(inst)))
+            .filter(|(_, data)| !data.is_dead_code())
+            .take_while(|&(inst, data)| inst == head || !data.is_stack_section_head())
+            .any(|(_, data)| {
+                data.is_diverging()
+                    || data.ends_sections()
+                    || matches!(
+                        data.opcode,
+                        op::GAS
+                            | op::EXP
+                            | op::KECCAK256
+                            | op::CALLDATACOPY
+                            | op::CODECOPY
+                            | op::RETURNDATACOPY
+                            | op::MCOPY
+                            | op::LOG0..=op::LOG4
+                    )
+            })
+    }
+
+    /// Fails with `OutOfGas` if gas subtracted without a check left the remaining gas negative.
+    ///
+    /// The check covers all gas charged so far, so it clears `unchecked_gas`;
+    /// [`if_then`](Self::if_then) restores it after a conditional path.
+    fn build_gas_check(&mut self) {
+        if mem::take(&mut self.unchecked_gas) == 0 {
+            return;
+        }
+        let remaining = self.load_gas_remaining();
+        let out_of_gas = self.bcx.icmp_imm(IntCC::SignedLessThan, remaining, 0);
+        self.build_check(out_of_gas, InstrStop::OutOfGas);
+    }
+
+    /// Charges a dynamic gas cost, failing with `OutOfGas` if the remaining gas goes negative.
+    fn gas_cost(&mut self, cost: B::Value) {
+        if !self.config.gas_metering {
+            return;
+        }
+        let remaining = self.load_gas_remaining();
+        let remaining = self.bcx.isub(remaining, cost);
         let addr = self.gas_remaining_addr();
-        let i64_type = self.bcx.type_int(64);
-        let gas_remaining = self.bcx.load(i64_type, addr, "ecx.gas.remaining");
-        let (res, overflow) = self.bcx.usub_overflow(gas_remaining, cost);
-        self.bcx.store(res, addr);
-        self.build_check(overflow, InstrStop::OutOfGas);
+        self.bcx.store(remaining, addr);
+        let out_of_gas = self.bcx.icmp_imm(IntCC::SignedLessThan, remaining, 0);
+        self.build_check(out_of_gas, InstrStop::OutOfGas);
     }
 
     /// Ensures the memory is large enough for `offset + len` bytes, calling the `mresize`
@@ -1828,6 +1931,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
     /// Builds a branch to the return block.
     fn build_return(&mut self, ret: B::Value) {
+        self.build_gas_check();
         if self.config.inspect_stack {
             self.materialize_live_stack();
         }
@@ -1939,6 +2043,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     ///
     /// The builtin longjmps on error, so no return value check is needed.
     fn call_fallible_builtin(&mut self, builtin: Builtin, args: &[B::Value]) {
+        self.build_gas_check();
         let _ = self.call_builtin(builtin, args);
     }
 
@@ -1991,7 +2096,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.brif(cond, then_block, done_block);
 
         self.bcx.switch_to_block(then_block);
+        // A gas check on this path does not cover the path that skips it.
+        let unchecked_gas = self.unchecked_gas;
         then(self);
+        self.unchecked_gas = unchecked_gas;
         self.bcx.br(done_block);
 
         self.bcx.switch_to_block(done_block);

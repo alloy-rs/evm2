@@ -372,7 +372,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             let ir_const = self.bcx.iconst(self.i8_type, ir as i64);
             let offset = self.bcx.iconst(self.isize_type, offset as i64);
             let len = self.bcx.iconst(self.isize_type, len as i64);
-            let _ = self.call_builtin(Builtin::DoReturnCC, &[self.ecx, offset, len, ir_const]);
+            self.call_fallible_builtin(Builtin::DoReturnCC, &[self.ecx, offset, len, ir_const]);
             self.bcx.unreachable();
             true
         } else {
