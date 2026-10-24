@@ -212,42 +212,6 @@ fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations:
     (authorizations as u64).saturating_mul(per_auth)
 }
 
-/// An EIP-7702 authorization as consumed by [`apply_auth_list`].
-///
-/// Exposes the fields the authorization loop reads. Implement it to process authorizations that
-/// carry a different signature scheme than [`LazyAuthorization`].
-pub trait Eip7702Authorization {
-    /// Returns the chain ID the authorization is valid for; zero means any chain.
-    fn chain_id(&self) -> U256;
-
-    /// Returns the nonce the authority account must have for the authorization to apply.
-    fn nonce(&self) -> u64;
-
-    /// Returns the address the authority delegates to; the zero address clears the delegation.
-    fn address(&self) -> Address;
-
-    /// Returns the recovered authority, or `None` if the signature is invalid.
-    fn authority(&self) -> Option<Address>;
-}
-
-impl Eip7702Authorization for LazyAuthorization {
-    fn chain_id(&self) -> U256 {
-        *Self::chain_id(self)
-    }
-
-    fn nonce(&self) -> u64 {
-        Self::nonce(self)
-    }
-
-    fn address(&self) -> Address {
-        *Self::address(self)
-    }
-
-    fn authority(&self) -> Option<Address> {
-        Self::authority(self)
-    }
-}
-
 /// Outcome of validating one EIP-7702 authorization, carrying the facts needed to compute its gas
 /// charges (execution-specs `set_delegation`).
 #[derive(Clone, Copy, Debug)]
@@ -506,4 +470,40 @@ pub fn apply_auth_list<'a, 'b, T: EvmTypes, A: Eip7702Authorization + 'b>(
         host.state.account(&authority)?.set_delegation(authorization.address());
     }
     Ok(false)
+}
+
+/// An EIP-7702 authorization as consumed by [`apply_auth_list`].
+///
+/// Exposes the fields the authorization loop reads. Implement it to process authorizations that
+/// carry a different signature scheme than [`LazyAuthorization`].
+pub trait Eip7702Authorization {
+    /// Returns the chain ID the authorization is valid for; zero means any chain.
+    fn chain_id(&self) -> U256;
+
+    /// Returns the nonce the authority account must have for the authorization to apply.
+    fn nonce(&self) -> u64;
+
+    /// Returns the address the authority delegates to; the zero address clears the delegation.
+    fn address(&self) -> Address;
+
+    /// Returns the recovered authority, or `None` if the signature is invalid.
+    fn authority(&self) -> Option<Address>;
+}
+
+impl Eip7702Authorization for LazyAuthorization {
+    fn chain_id(&self) -> U256 {
+        *Self::chain_id(self)
+    }
+
+    fn nonce(&self) -> u64 {
+        Self::nonce(self)
+    }
+
+    fn address(&self) -> Address {
+        *Self::address(self)
+    }
+
+    fn authority(&self) -> Option<Address> {
+        Self::authority(self)
+    }
 }
