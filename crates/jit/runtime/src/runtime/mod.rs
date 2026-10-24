@@ -112,6 +112,8 @@ pub(crate) struct BackendInner {
     host: config::HostConfig,
     /// Address of the last opcode config that matched the host's opcode table.
     verified_opcodes: std::sync::atomic::AtomicUsize,
+    /// Address of the last opcode config that did not match the host's opcode table.
+    rejected_opcodes: std::sync::atomic::AtomicUsize,
     gas_params: Option<evm2::version::GasParams>,
     /// Tuning knobs (Copy). Cached for hot-path eligibility checks.
     tuning: crate::runtime::config::RuntimeTuning,
@@ -212,6 +214,7 @@ impl JitBackend {
                 blocking: config.blocking,
                 host: config.host.clone(),
                 verified_opcodes: std::sync::atomic::AtomicUsize::new(0),
+                rejected_opcodes: std::sync::atomic::AtomicUsize::new(0),
                 gas_params: config.gas_params,
                 tx,
                 thread: std::sync::Mutex::new(None),
@@ -247,6 +250,9 @@ impl JitBackend {
         if self.inner.verified_opcodes.load(Ordering::Relaxed) == address {
             return true;
         }
+        if self.inner.rejected_opcodes.load(Ordering::Relaxed) == address {
+            return false;
+        }
         let matches = match &self.inner.host.opcodes {
             None => config.has_base_opcode_table(),
             Some(opcodes) => {
@@ -255,9 +261,9 @@ impl JitBackend {
                 active.same_table(unsafe { &*(opcodes.config as *const evm2::OpcodeConfig<T>) })
             }
         };
-        if matches {
-            self.inner.verified_opcodes.store(address, Ordering::Relaxed);
-        }
+        let cache =
+            if matches { &self.inner.verified_opcodes } else { &self.inner.rejected_opcodes };
+        cache.store(address, Ordering::Relaxed);
         matches
     }
 

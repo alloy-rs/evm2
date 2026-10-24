@@ -461,7 +461,7 @@ impl HostConfig {
     }
 
     pub(crate) const fn is_default(&self) -> bool {
-        self.resolver.is_none()
+        self.resolver.is_none() && self.opcodes.is_none()
     }
 
     /// Replaces builtin addresses for a chain-specific instruction implementation.

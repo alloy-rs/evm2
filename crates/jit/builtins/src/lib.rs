@@ -491,17 +491,21 @@ pub mod generic {
         ) -> BuiltinResult {
             let (inputs, outputs) = (io >> 8, io & 0xff);
             // SAFETY: The context owns the live interpreter borrow, and the stack view is
-            // dropped before the instruction runs.
+            // dropped before the instruction runs. Compiled code runs on the interpreter's own
+            // stack, so `sp` points into it and its first `len` words are initialized.
             let base = unsafe { ecx.interpreter_mut().stack_mut().into_raw_parts() }.0;
             // SAFETY: `sp` is the lowest input slot of the interpreter stack.
             let len = unsafe { sp.offset_from(base.cast::<EvmWord>()) } as usize + inputs;
             let gas = ecx.gas;
             ecx.interpreter_mut().set_gas(gas);
-            let result = ecx.interpreter_mut().run_external_instruction(pc, len);
+            let result = unsafe { ecx.interpreter_mut().run_external_instruction(pc, len) };
             ecx.gas = ecx.interpreter().gas();
             ecx.refresh_memory_cache();
             let new_len = result?;
-            assert_eq!(new_len, len - inputs + outputs, "host instruction changed the stack effect");
+            if new_len != len - inputs + outputs {
+                // The host overrode the opcode with a different stack effect.
+                return Err(InstrStop::FatalExternalError.into());
+            }
             Ok(())
         }
 

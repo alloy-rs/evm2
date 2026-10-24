@@ -740,7 +740,7 @@ impl<'a> Bytecode<'a> {
         inst: Inst,
     ) -> [Option<(Option<u64>, Option<u64>)>; 2] {
         let data = self.inst(inst);
-        if data.flags.intersects(InstFlags::DISABLED | InstFlags::UNKNOWN) {
+        if data.flags.intersects(InstFlags::DISABLED | InstFlags::UNKNOWN | InstFlags::HOST) {
             return [None, None];
         }
 
@@ -1180,6 +1180,10 @@ impl InstData {
     /// reads `gasleft()`, but it is pure, so it adds back the gas charged ahead of it instead.
     #[inline]
     pub(crate) const fn ends_sections(&self) -> bool {
+        // The host's instruction may read the remaining gas.
+        if self.flags.contains(InstFlags::HOST) {
+            return true;
+        }
         match self.opcode {
             // Calls and contract creation cap the gas forwarded based on the remaining gas, and
             // the callee can return a value transfer's stipend, leaving more gas than before.

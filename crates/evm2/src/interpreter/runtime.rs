@@ -446,12 +446,16 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     ///
     /// Gas is read from and written to this interpreter, so the caller must keep it current.
     ///
+    /// # Safety
+    ///
+    /// The first `stack_len` words of the stack must be initialized.
+    ///
     /// # Panics
     ///
     /// Panics if [`prepare_run`](Self::prepare_run) has not run, or if `pc` or `stack_len` is out
     /// of bounds.
     #[doc(hidden)]
-    pub fn run_external_instruction(
+    pub unsafe fn run_external_instruction(
         &mut self,
         pc: usize,
         stack_len: usize,

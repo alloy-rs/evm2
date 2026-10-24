@@ -312,8 +312,12 @@ impl OpcodeTable {
             let i = op as usize;
             let base_known = !base[i].is_unknown() && !base[i].is_disabled();
             if !self.defined[i] {
-                if base_known {
-                    map[i] = OpcodeInfo(OpcodeInfo::UNKNOWN);
+                // The interpreter halts on an opcode that the table leaves out with
+                // `NotActivated`. `INVALID` is never in a table and keeps its own stop reason.
+                if base_known && op != op::INVALID {
+                    let mut info = OpcodeInfo::new(0);
+                    info.set_disabled();
+                    map[i] = info;
                 }
                 continue;
             }

@@ -845,6 +845,12 @@ mod custom_host_tests {
         })
     }
 
+    #[instruction(EvmTypes = TableTypes, dynamic_gas)]
+    fn charged_sload(cx: _, [key]: [Word]) -> Result<out> {
+        cx.gas.spend(7)?;
+        *out = Word::from(0xbeef_u64);
+    }
+
     #[instruction(EvmTypes = TableTypes)]
     fn added(cx: _) -> out {
         *out = Word::from(0xdead_u64);
@@ -861,6 +867,8 @@ mod custom_host_tests {
             let mut config = OpcodeConfig::base::<BaseEvmConfig<BASE_SPEC_ID>>();
             config.set_static_gas(op::ADD, 1);
             config.set_instruction::<surcharged_sstore>(op::SSTORE, 0);
+            let sload_gas = config.static_gas(op::SLOAD);
+            config.set_instruction::<charged_sload>(op::SLOAD, sload_gas);
             config.set_instruction::<added>(ADDED_OPCODE, 2);
             config
         };
@@ -946,6 +954,33 @@ mod custom_host_tests {
         let (_, _, _, sstore) =
             run_both(table_host(), &[op::PUSH1, 1, op::PUSH0, op::SSTORE, op::STOP]);
         assert!(sstore.gas().spent() >= SSTORE_SURCHARGE);
+    }
+
+    #[test]
+    fn host_table_overridden_sload_and_invalid_match_interpreter() {
+        // Both a constant and a dynamic key reach the host's `SLOAD`.
+        for code in [
+            &[op::PUSH1, 0, op::SLOAD, op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]
+                [..],
+            &[
+                op::PUSH0,
+                op::CALLDATASIZE,
+                op::ADD,
+                op::SLOAD,
+                op::PUSH0,
+                op::MSTORE,
+                op::PUSH1,
+                32,
+                op::PUSH0,
+                op::RETURN,
+            ][..],
+            &[op::INVALID][..],
+        ] {
+            let (compiled_stop, compiled, stop, interpreted) = run_both(table_host(), code);
+            assert_eq!(compiled_stop, Some(stop));
+            assert_eq!(compiled.gas().spent(), interpreted.gas().spent());
+            assert_eq!(compiled.output(), interpreted.output());
+        }
     }
 
     #[test]
