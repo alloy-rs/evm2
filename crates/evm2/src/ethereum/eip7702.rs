@@ -214,8 +214,8 @@ fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations:
 
 /// An EIP-7702 authorization as consumed by [`apply_auth_list`].
 ///
-/// Mirrors revm's `AuthorizationTr`. Implement it to process authorizations that carry a
-/// different signature scheme than [`LazyAuthorization`].
+/// Exposes the fields the authorization loop reads. Implement it to process authorizations that
+/// carry a different signature scheme than [`LazyAuthorization`].
 pub trait Eip7702Authorization {
     /// Returns the chain ID the authorization is valid for; zero means any chain.
     fn chain_id(&self) -> U256;
@@ -254,8 +254,8 @@ impl Eip7702Authorization for LazyAuthorization {
 pub struct AppliedAuth {
     /// Whether the authority account already existed when this authorization was processed.
     ///
-    /// Following revm, an account counts as existing when it is present in state or touched
-    /// earlier in the transaction, even if it is still absent.
+    /// An account counts as existing when it is present in state or touched earlier in the
+    /// transaction, even if it is still absent.
     pub existed: bool,
     /// Whether the authority's code was a valid delegation at the start of the transaction.
     pub delegated_before_tx: bool,

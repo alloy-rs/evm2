@@ -380,7 +380,7 @@ fn apply_auth_list_refunds_touched_absent_authority() {
 
     apply_auth_list(&mut evm, 1, &[auth(touched), auth(untouched)], &mut refunds).unwrap();
 
-    // revm refunds an authority unless it is absent and untouched.
+    // An authority is refunded unless it is absent and untouched.
     let per_auth = u64::from(evm.version().gas_params.get(GasId::TxEip7702AuthRefund));
     assert_eq!(refunds.execution_refund, per_auth);
 }
