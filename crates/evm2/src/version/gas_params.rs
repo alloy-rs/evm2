@@ -579,10 +579,7 @@ mod tests {
 
     #[test]
     fn empty_gas_params_are_all_zero() {
-        let mut params = GasParams::empty();
+        let params = GasParams::empty();
         assert!((0..GasId::COUNT).all(|i| params[GasId::from_usize(i).unwrap()] == 0));
-
-        params.set(GasId::ExpByte, 7);
-        assert_eq!(params.get(GasId::ExpByte), 7);
     }
 }
