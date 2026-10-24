@@ -37,6 +37,26 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
 }
 
 #[test]
+fn struct_log_errors_exclude_reverts() {
+    for (status, has_error) in [
+        (None, false),
+        (Some(InstrStop::Stop), false),
+        (Some(InstrStop::Return), false),
+        (Some(InstrStop::Revert), false),
+        (Some(InstrStop::OutOfFunds), false),
+        (Some(InstrStop::CallTooDeep), false),
+        (Some(InstrStop::OutOfGas), true),
+        (Some(InstrStop::StackUnderflow), true),
+        (Some(InstrStop::OpcodeNotFound), true),
+    ] {
+        let mut step = test_step(0, op::REVERT);
+        step.status = status;
+        let log = step.convert_to_geth_struct_log(&Default::default(), 1, None);
+        assert_eq!(log.error.is_some(), has_error, "{status:?}");
+    }
+}
+
+#[test]
 fn erc7562_keccak_preimages_require_successful_steps() {
     for status in [
         None,

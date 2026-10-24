@@ -537,7 +537,7 @@ impl JitBackend {
         );
 
         // Preload AOT artifacts into the already-allocated resident map.
-        match Self::preload_aot(config.store.as_deref()) {
+        match Self::preload_aot(&config) {
             Ok(entries) => {
                 for (key, prog) in entries {
                     self.inner.shared.resident.insert(key, prog);
@@ -578,10 +578,13 @@ impl JitBackend {
     }
 
     /// Preloads AOT artifacts from the store as `Arc<CompiledProgram>`s ready to insert.
+    ///
+    /// Skips entries that do not match the key this backend would persist and probe for their
+    /// runtime key. They stay in the store, since another configuration may still use them.
     fn preload_aot(
-        store: Option<&dyn ArtifactStore>,
+        config: &RuntimeConfig,
     ) -> eyre::Result<Vec<(RuntimeCacheKey, Arc<CompiledProgram>)>> {
-        let Some(store) = store else {
+        let Some(store) = config.store.as_deref() else {
             debug!("no artifact store configured, skipping AOT preload");
             return Ok(Vec::new());
         };
@@ -592,24 +595,29 @@ impl JitBackend {
         let artifacts = store.load_all()?;
         info!(count = artifacts.len(), "loading AOT artifacts");
 
+        let config_hash = storage::compile_config_hash(config);
         let mut out: Vec<(RuntimeCacheKey, Arc<CompiledProgram>)> =
             Vec::with_capacity(artifacts.len());
-        let mut seen = alloy_primitives::map::HashSet::<RuntimeCacheKey>::default();
         let mut loaded = 0u64;
         let mut failed = 0u64;
+        let mut skipped = 0u64;
 
         for (artifact_key, stored) in artifacts {
+            let key = artifact_key.runtime;
+            let expected = ArtifactKey::llvm(key, config.tuning.aot_opt_level, config_hash);
+            if artifact_key != expected || stored.manifest.artifact_key != artifact_key {
+                debug!(
+                    ?artifact_key,
+                    manifest_key = ?stored.manifest.artifact_key,
+                    ?expected,
+                    "artifact key mismatch, skipping",
+                );
+                skipped += 1;
+                continue;
+            }
+
             match Self::load_artifact(&artifact_key, &stored) {
                 Ok(program) => {
-                    let key = artifact_key.runtime;
-                    if !seen.insert(key) {
-                        warn!(
-                            code_hash = %key.code_hash,
-                            spec_id = ?key.spec_id,
-                            "duplicate artifact key, keeping first",
-                        );
-                        continue;
-                    }
                     out.push((key, Arc::new(program)));
                     loaded += 1;
                 }
@@ -624,7 +632,7 @@ impl JitBackend {
             }
         }
 
-        info!(loaded, failed, "AOT preload complete");
+        info!(loaded, failed, skipped, "AOT preload complete");
         Ok(out)
     }
 

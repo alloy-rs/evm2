@@ -35,7 +35,7 @@ use alloy_consensus::{
     transaction::{Recovered, Transaction, TxEip4844Variant},
 };
 use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 
 /// Ethereum transaction envelope.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -440,7 +440,7 @@ pub fn validate_sender_and_bump_nonce<'a, T: EvmTypes>(
     let has_eip3607 = host.feature(EvmFeatures::EIP3607);
 
     let mut sender = host.state.account(&caller)?;
-    if has_eip3607 && sender.code_hash() != KECCAK256_EMPTY {
+    if has_eip3607 && !sender.is_empty_code_hash() {
         let code = sender.load_code()?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
@@ -757,7 +757,8 @@ pub fn default_settle_gas<'a, T: EvmTypes>(
         let gas_remaining = gas_limit.saturating_sub(gas_used);
         let caller_refund = U256::from(gas_remaining) * gas_price;
         host.state.account(&caller)?.add_balance(caller_refund);
-        let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
+        // The base fee is burned from London on, independent of `BASE_FEE_CHECK`.
+        let beneficiary_gas_price = if host.spec_id().enables(SpecId::LONDON) {
             gas_price.saturating_sub(host.block.basefee)
         } else {
             gas_price
@@ -1164,6 +1165,15 @@ mod tests {
         london.features.remove(EvmFeatures::BASE_FEE_CHECK);
         assert_eq!(validate_gas_price(&london, U256::ZERO, U256::ONE), Ok(()));
 
+        // A configured base fee is checked before London too.
+        assert_eq!(
+            validate_gas_price(&Version::new(SpecId::BERLIN), U256::ZERO, U256::ONE),
+            Err(HandlerError::FeeCapLessThanBaseFee {
+                max_fee_per_gas: U256::ZERO,
+                base_fee: U256::ONE,
+            })
+        );
+
         let mut prague = Version::new(SpecId::PRAGUE);
         assert_eq!(
             validate_priority_fee(&prague, U256::ONE, U256::from(2)),
@@ -1190,6 +1200,48 @@ mod tests {
         assert_eq!(validate_chain_id(&version, None, true), Ok(()));
         version.features.remove(EvmFeatures::TX_CHAIN_ID_CHECK);
         assert_eq!(validate_chain_id(&version, Some(1), false), Ok(()));
+    }
+
+    #[rstest::rstest]
+    #[case::berlin(SpecId::BERLIN, true, 15)]
+    #[case::london(SpecId::LONDON, true, 5)]
+    #[case::london_without_base_fee_check(SpecId::LONDON, false, 5)]
+    fn base_fee_burn_depends_on_spec(
+        #[case] spec: SpecId,
+        #[case] base_fee_check: bool,
+        #[case] beneficiary_gas_price: u64,
+    ) {
+        let caller = Address::with_last_byte(0xaa);
+        let beneficiary = Address::with_last_byte(0xcc);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000)),
+        );
+        let mut version = Version::new(spec);
+        version.features.set(EvmFeatures::BASE_FEE_CHECK, base_fee_check);
+        let block = BlockEnvExt { basefee: U256::from(10), beneficiary, ..BlockEnvExt::default() };
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            block,
+            ethereum_tx_registry(spec),
+            database,
+            Precompiles::base(spec),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_price: 15,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
+                ..TxLegacy::default()
+            }),
+            caller,
+        );
+
+        assert!(evm.transact(&tx).unwrap().commit().status);
+        let reward = evm.state.account_info_untracked(&beneficiary).unwrap().unwrap().balance;
+        assert_eq!(reward, U256::from(21_000 * beneficiary_gas_price));
     }
 
     #[test]

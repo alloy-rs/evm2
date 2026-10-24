@@ -19,7 +19,7 @@ evm2-macros.workspace = true
 
 alloy-consensus.workspace = true
 alloy-eip7928.workspace = true
-alloy-eips = { workspace = true, features = ["k256"] }
+alloy-eips.workspace = true
 alloy-primitives.workspace = true
 auto_impl.workspace = true
 derive-where.workspace = true
@@ -48,7 +48,6 @@ k256 = { workspace = true, features = ["ecdsa"] }
 secp256k1 = { workspace = true, features = [
     "alloc",
     "recovery",
-    "rand",
     "global-context",
 ], optional = true }
 
@@ -87,7 +86,9 @@ p256 = { workspace = true, features = ["ecdsa"] }
 aws-lc-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
+alloy-eips = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true, features = ["serde", "std"] }
+revm-bytecode = { workspace = true, features = ["serde", "std"] }
 rmp-serde.workspace = true
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
