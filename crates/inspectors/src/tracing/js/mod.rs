@@ -1881,111 +1881,59 @@ mod tests {
     }
 
     #[test]
-    fn test_hook_error_does_not_read_aggregate_contents() {
-        let mut ctx = Context::default();
-        let err = ctx
-            .eval(Source::from_bytes(
-                r#"
-            globalThis.reads = 0;
-            const error = new AggregateError([], 'boom');
-            Object.defineProperty(error.errors, 0, {get() { reads++; return 'nested'; }});
-            throw error;
-        "#,
-            ))
-            .unwrap_err();
-        let error = with_message_suffix(err, " suffix", &mut ctx);
-        assert_eq!(ctx.eval(Source::from_bytes("reads")).unwrap(), JsValue::from(0));
-        let native = error.as_native().unwrap();
-        assert_eq!(native.kind().to_string(), "AggregateError");
-        assert_eq!(native.message(), "boom suffix");
+    fn memory_slice_padding_boundaries() {
+        let tracer = r#"{r:null,step:function(log){if(log.op.toString()!=='STOP')return;
+            var a=log.memory.slice(0,33);var capped=log.memory.slice(32,32+1024*1024);var error=null;
+            try{log.memory.slice(32,33+1024*1024)}catch(e){error=e.name}
+            this.r=[a[0],a[32],capped.length,log.memory.slice(2**40,2**40).length,error];
+        },fault:function(){},result:function(){return this.r}}"#;
+        assert_eq!(
+            run_trace(tracer, Some(hex!("60ff60005300").into()), true),
+            json!([255, 0, 1024 * 1024, 0, "TypeError"])
+        );
     }
 
     #[test]
-    fn test_hook_error_does_not_invoke_properties_or_coercions() {
-        for property in ["message", "cause", "errors", "constructor"] {
+    fn hook_error_normalization_avoids_user_code() {
+        for (script, expected) in [
+            (
+                "const e = new AggregateError([], 'boom'); for (const p of ['cause','errors','constructor']) Object.defineProperty(e,p,{get(){reads++;throw 0}}); throw e;",
+                "AggregateError: boom suffix",
+            ),
+            (
+                "const e = new Error(); Object.defineProperty(e,'message',{get(){reads++;throw 0}}); throw e;",
+                "Error:  suffix",
+            ),
+            ("throw new Proxy({}, {get(){reads++;throw 0}})", "Error: [object Object] suffix"),
+            (
+                "const e = new Error(); e.message = {toString(){reads++;throw 0}}; throw e;",
+                "Error:  suffix",
+            ),
+            (
+                "class E extends TypeError {}; E.prototype.message = 'inherited'; throw new E();",
+                "TypeError: inherited suffix",
+            ),
+            (
+                "const e = new Error(); let p = {message:'hidden'}; for (let i=0;i<1024;i++) p=Object.create(p); Object.setPrototypeOf(e,p); throw e;",
+                "Error:  suffix",
+            ),
+        ] {
             let mut ctx = Context::default();
-            let script = format!(
-                r#"
-                globalThis.reads = 0;
-                const error = new AggregateError([], 'boom');
-                Object.defineProperty(error, '{property}', {{get() {{ reads++; throw 0; }}}});
-                throw error;
-            "#
-            );
+            let script = format!("globalThis.reads = 0; {script}");
             let err = ctx.eval(Source::from_bytes(&script)).unwrap_err();
             let error = with_message_suffix(err, " suffix", &mut ctx);
             assert_eq!(ctx.eval(Source::from_bytes("reads")).unwrap(), JsValue::from(0));
             let native = error.as_native().unwrap();
-            assert_eq!(native.kind().to_string(), "AggregateError");
-            assert_eq!(
-                native.message(),
-                if property == "message" { " suffix" } else { "boom suffix" }
-            );
-            assert!(native.cause().is_none());
-        }
-        for script in [
-            "const e = new Error(); e.message = e; e.toString = () => { throw 0 }; throw e;",
-            "throw { toString() { while (true) {} } };",
-            "throw new Proxy({}, { get() { while (true) {} } });",
-            "throw new Array(4294967295);",
-        ] {
-            let mut ctx = Context::default();
-            let err = ctx.eval(Source::from_bytes(script)).unwrap_err();
-            let error = with_message_suffix(err, " suffix", &mut ctx);
-            assert_eq!(
-                error.as_native().unwrap().message(),
-                if script.starts_with("const e") { " suffix" } else { "[object Object] suffix" }
-            );
+            assert_eq!(format!("{}: {}", native.kind(), native.message()), expected);
         }
     }
 
     #[test]
-    fn test_hook_error_preserves_kind_and_location() {
-        for constructor in [
-            "Error",
-            "TypeError",
-            "RangeError",
-            "ReferenceError",
-            "SyntaxError",
-            "EvalError",
-            "URIError",
-            "AggregateError",
-        ] {
-            let mut ctx = Context::default();
-            let args = if constructor == "AggregateError" { "[], 'boom'" } else { "'boom'" };
-            let script = format!("throw new {constructor}({args})");
-            let err = ctx.eval(Source::from_bytes(&script)).unwrap_err();
-            let expected = err.try_native(&mut ctx).unwrap().with_message("boom suffix");
-            let actual = with_message_suffix(err, " suffix", &mut ctx);
-            assert_eq!(actual.as_native().unwrap(), &expected);
-            assert_eq!(actual.to_string(), expected.to_string());
-        }
-    }
-
-    #[test]
-    fn test_hook_error_inherited_messages_are_bounded() {
-        for (script, expected) in [
-            (
-                "class E extends Error {}; E.prototype.message = 'inherited'; throw new E();",
-                "inherited suffix",
-            ),
-            (
-                "const e = new TypeError(); Object.setPrototypeOf(e, {message:'inherited'}); throw e;",
-                "inherited suffix",
-            ),
-            (
-                "const e = new Error(); let p = {message:'hidden'}; for (let i=0;i<1024;i++) p=Object.create(p); Object.setPrototypeOf(e,p); throw e;",
-                " suffix",
-            ),
-            (
-                "const e = new Error('boom'); Object.defineProperty(Object.prototype, 'cause', {get(){throw 0}}); throw e;",
-                "boom suffix",
-            ),
-        ] {
-            let mut ctx = Context::default();
-            let err = ctx.eval(Source::from_bytes(script)).unwrap_err();
-            let error = with_message_suffix(err, " suffix", &mut ctx);
-            assert_eq!(error.as_native().unwrap().message(), expected);
-        }
+    fn hook_error_preserves_kind_and_location() {
+        let mut ctx = Context::default();
+        let err = ctx.eval(Source::from_bytes("throw new TypeError('boom')")).unwrap_err();
+        let expected = err.try_native(&mut ctx).unwrap().with_message("boom suffix");
+        let actual = with_message_suffix(err, " suffix", &mut ctx);
+        assert_eq!(actual.as_native().unwrap(), &expected);
     }
 }

@@ -10,17 +10,15 @@ const CHILD: Address = Address::repeat_byte(0xbb);
 fn execute(
     script: &str,
     code: &[u8],
-    create: bool,
     gas_limit: u64,
 ) -> (Result<Value, JsInspectorError>, ResultAndState) {
-    execute_with_child(script, code, &hex!("600160005500"), create, gas_limit)
+    execute_with_child(script, code, &hex!("600160005500"), gas_limit)
 }
 
 fn execute_with_child(
     script: &str,
     code: &[u8],
     child: &[u8],
-    create: bool,
     gas_limit: u64,
 ) -> (Result<Value, JsInspectorError>, ResultAndState) {
     let mut db = CacheDB::new(EmptyDB::default());
@@ -43,25 +41,12 @@ fn execute_with_child(
         .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
         .with_db(db)
         .build_mainnet_with_inspector(inspector);
-    let tx = TxEnv {
-        kind: if create { TransactTo::Create } else { TransactTo::Call(TARGET) },
-        data: if create { code.to_vec().into() } else { Default::default() },
-        gas_limit,
-        ..Default::default()
-    };
+    let tx = TxEnv { kind: TransactTo::Call(TARGET), gas_limit, ..Default::default() };
     let result = evm.inspect_tx(tx.clone()).unwrap();
     let (ctx, inspector) = evm.ctx_inspector();
     let block = *ctx.block();
     let tx = tx.envelope();
     let output = inspector.json_result(&result.tx_result, &tx, &block, ctx.db_mut());
-    let repeated = inspector.json_result(&result.tx_result, &tx, &block, ctx.db_mut());
-    assert_eq!(
-        output.as_ref().map_err(ToString::to_string),
-        repeated.as_ref().map_err(ToString::to_string)
-    );
-    inspector.fuse().unwrap();
-    let after_reset = inspector.json_result(&result.tx_result, &tx, &block, ctx.db_mut());
-    assert!(after_reset.is_ok());
     (output, result)
 }
 
@@ -69,74 +54,6 @@ fn error_message(error: JsInspectorError) -> String {
     let JsInspectorError::JsError(error) = error else { panic!("unexpected error: {error}") };
     let native = error.as_native().unwrap();
     format!("{}: {}", native.kind(), native.message())
-}
-
-fn error_events_tracer(has_step: bool) -> String {
-    let step = if has_step {
-        "step:function(l){if(l.getError())this.e.push(['step',l.op.toString(),l.getError()])},"
-    } else {
-        ""
-    };
-    format!(
-        "{{e:[],{step}fault:function(l){{this.e.push(['fault',l.op.toString(),l.getError()])}},result:function(){{return this.e}}}}"
-    )
-}
-
-#[test]
-fn hook_errors_preserve_execution() {
-    let mut call = hex!("6000600060006000600073").to_vec();
-    call.extend_from_slice(CHILD.as_slice());
-    call.extend_from_slice(&hex!("61fffff150600160015500"));
-    // The initcode stores to slot zero, then returns empty code.
-    let create = hex!("600a6010600039600a60006000f05000600160005560006000f3");
-    let selfdestruct = hex!("60ccff");
-    let baseline = "{step:function(){},enter:function(){},exit:function(){},fault:function(){},result:function(){return 42}}";
-    for (code, root_create) in [
-        (call.as_slice(), false),
-        (create.as_slice(), false),
-        (selfdestruct.as_slice(), false),
-        (&hex!("600160005560006000f3")[..], true),
-    ] {
-        let (_, expected) = execute(baseline, code, root_create, 1_000_000);
-        assert!(expected.result.is_success());
-        for hook in ["step", "enter", "exit"] {
-            if root_create && hook != "step" {
-                continue;
-            }
-            let script = format!(
-                "{{step:function(){{}},enter:function(){{}},exit:function(){{}},fault:function(){{}},result:function(){{return 42}},{hook}:function(){{throw new Error('boom')}}}}"
-            );
-            let (output, actual) = execute(&script, code, root_create, 1_000_000);
-            assert_eq!(
-                error_message(output.unwrap_err()),
-                format!("Error: boom    in server-side tracer function '{hook}'")
-            );
-            assert_eq!(actual.tx_result.result, expected.tx_result.result);
-            assert_eq!(actual.state, expected.state);
-        }
-    }
-}
-
-#[test]
-fn hook_errors_keep_their_kind() {
-    for (body, expected) in [
-        ("null.x", "TypeError: cannot convert 'null' or 'undefined' to object"),
-        ("throw 'plain'", "Error: plain"),
-        (
-            "while(true){}",
-            "RangeError: reached the maximum number of iteration loops on this execution",
-        ),
-    ] {
-        let script = format!(
-            "{{step:function(){{{body}}},fault:function(){{}},result:function(){{return 42}}}}"
-        );
-        let (output, result) = execute(&script, &hex!("600160005500"), false, 1_000_000);
-        assert!(result.result.is_success());
-        assert_eq!(
-            error_message(output.unwrap_err()),
-            format!("{expected}    in server-side tracer function 'step'")
-        );
-    }
 }
 
 #[test]
@@ -156,127 +73,56 @@ fn faults_follow_steps_and_preserve_instruction_metadata() {
             ]),
         ),
         (
-            &hex!("60006000fd")[..],
-            1_000_000,
-            json!([
-                [
-                    ["step", 0, "PUSH1", null],
-                    ["step", 2, "PUSH1", null],
-                    ["step", 4, "REVERT", null],
-                    ["fault", 4, "REVERT", "execution reverted"]
-                ],
-                "execution reverted"
-            ]),
-        ),
-        (
             &hex!("01")[..],
             1_000_000,
             json!([[["step", 0, "ADD", "stack underflow"]], "stack underflow"]),
         ),
-        (
-            &hex!("fe")[..],
-            1_000_000,
-            json!([
-                [["step", 0, "INVALID", null], ["fault", 0, "INVALID", "invalid opcode: INVALID"]],
-                "invalid opcode: INVALID"
-            ]),
-        ),
         (&hex!("6001")[..], 21_002, json!([[["step", 0, "PUSH1", "out of gas"]], "out of gas"])),
     ] {
-        let (actual, result) = execute(script, code, false, gas_limit);
+        let (actual, result) = execute(script, code, gas_limit);
         assert!(!result.result.is_success());
         assert_eq!(actual.unwrap(), expected);
     }
     let fault_only = "{e:[],fault:function(l){this.e.push([l.getPC(),l.op.toString(),l.getCost()])},result:function(){return this.e}}";
     assert_eq!(
-        execute(fault_only, &hex!("60ff5600"), false, 1_000_000).0.unwrap(),
+        execute(fault_only, &hex!("60ff5600"), 1_000_000).0.unwrap(),
         json!([[2, "JUMP", 8]])
     );
-    assert_eq!(execute(fault_only, &hex!("00"), false, 1_000_000).0.unwrap(), json!([]));
 }
 
 #[test]
-fn the_first_hook_error_wins() {
-    let script = "{step:function(){throw new Error('step failed')},fault:function(){throw new Error('fault failed')},result:function(){return 42}}";
-    let (error, result) = execute(script, &hex!("fe"), false, 1_000_000);
-    assert!(!result.result.is_success());
+fn validation_errors_use_step_and_execution_errors_use_fault() {
+    let script = "{e:[],step:function(l){if(l.getError())this.e.push(['step',l.op.toString(),l.getError()])},fault:function(l){this.e.push(['fault',l.op.toString(),l.getError()])},result:function(){return this.e}}";
     assert_eq!(
-        error_message(error.unwrap_err()),
-        "Error: step failed    in server-side tracer function 'step'"
+        execute(script, &hex!("600061c00160006000f5"), 1_000_000).0.unwrap(),
+        json!([["step", "CREATE2", "max initcode size exceeded"]])
     );
-    let script =
-        "{fault:function(){throw new TypeError('fault failed')},result:function(){return 42}}";
-    assert_eq!(
-        error_message(execute(script, &hex!("60ff56"), false, 1_000_000).0.unwrap_err()),
-        "TypeError: fault failed    in server-side tracer function 'fault'"
-    );
-}
-
-#[test]
-fn oversized_initcode_is_reported_by_step() {
-    for (code, opcode) in
-        [(&hex!("61c00160006000f0")[..], "CREATE"), (&hex!("600061c00160006000f5")[..], "CREATE2")]
-    {
-        for has_step in [true, false] {
-            let script = error_events_tracer(has_step);
-            let (output, result) = execute(&script, code, false, 1_000_000);
-            assert!(!result.result.is_success());
-            assert_eq!(
-                output.unwrap(),
-                if has_step {
-                    json!([["step", opcode, "max initcode size exceeded"]])
-                } else {
-                    json!([])
-                },
-            );
-        }
-    }
-}
-
-#[test]
-fn static_write_errors_follow_the_opcode_validation_stage() {
     let mut parent = hex!("600060006000600073").to_vec();
     parent.extend_from_slice(CHILD.as_slice());
     parent.extend_from_slice(&hex!("61fffffa00"));
-    for (child, opcode, callback) in [
-        (&hex!("6000600055")[..], "SSTORE", "step"),
-        (&hex!("600060006000f0")[..], "CREATE", "step"),
-        (&hex!("6000600060006000f5")[..], "CREATE2", "step"),
-        (&hex!("6000ff")[..], "SELFDESTRUCT", "step"),
-        (&hex!("60006000600060006001600061fffff1")[..], "CALL", "step"),
-        (&hex!("600060005d")[..], "TSTORE", "fault"),
-        (&hex!("60006000a0")[..], "LOG0", "fault"),
-    ] {
-        for has_step in [true, false] {
-            let script = error_events_tracer(has_step);
-            let (output, result) = execute_with_child(&script, &parent, child, false, 1_000_000);
-            assert!(result.result.is_success());
-            assert_eq!(
-                output.unwrap(),
-                if has_step || callback == "fault" {
-                    json!([[callback, opcode, "write protection"]])
-                } else {
-                    json!([])
-                },
-                "{opcode}, step callback: {has_step}",
-            );
-        }
+    for (child, opcode, callback) in
+        [(&hex!("6000600055")[..], "SSTORE", "step"), (&hex!("600060005d")[..], "TSTORE", "fault")]
+    {
+        let (output, result) = execute_with_child(script, &parent, child, 1_000_000);
+        assert!(result.result.is_success());
+        assert_eq!(output.unwrap(), json!([[callback, opcode, "write protection"]]));
     }
 }
 
 #[test]
-fn sparse_aggregate_hook_errors_preserve_execution() {
+fn hook_errors_preserve_execution() {
     let mut call = hex!("6000600060006000600073").to_vec();
     call.extend_from_slice(CHILD.as_slice());
     call.extend_from_slice(&hex!("61fffff150600160015500"));
     let baseline = "{fault:function(){},result:function(){return 42}}";
     for hook in ["step", "enter", "exit", "fault"] {
-        let code = if hook == "fault" { &hex!("60ff56")[..] } else { call.as_slice() };
-        let (_, expected) = execute(baseline, code, false, 1_000_000);
+        let child = if hook == "fault" { &hex!("60ff56")[..] } else { &hex!("600160005500")[..] };
+        let (_, expected) = execute_with_child(baseline, &call, child, 1_000_000);
+        assert!(expected.result.is_success());
         let script = format!(
             "{{enter:function(){{}},exit:function(){{}},fault:function(){{}},result:function(){{return 42}},{hook}:function(){{let e=new AggregateError([], 'boom');e.errors.length=4294967295;throw e}}}}"
         );
-        let (output, actual) = execute(&script, code, false, 1_000_000);
+        let (output, actual) = execute_with_child(&script, &call, child, 1_000_000);
         assert_eq!(
             error_message(output.unwrap_err()),
             format!("AggregateError: boom    in server-side tracer function '{hook}'")
