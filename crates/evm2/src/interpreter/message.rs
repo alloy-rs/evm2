@@ -139,10 +139,13 @@ impl<E> MessageExt<E> {
         self.caller_is_static || self.kind == MessageKind::StaticCall
     }
 
-    /// Returns `true` if the message executes the code of the account it targets, i.e. it is not
-    /// a `DELEGATECALL` or `CALLCODE` running another account's code.
+    /// Returns `true` if the account whose context the message runs in is the requested
+    /// [`call_target`](Self::call_target), i.e. it is not a `DELEGATECALL` or `CALLCODE` into
+    /// another account.
     ///
-    /// Native precompiles use this to reject delegated calls.
+    /// This compares addresses, like revm's `target_address == bytecode_address` check, so a
+    /// `DELEGATECALL` or `CALLCODE` to the caller's own address also counts as direct, and so does
+    /// an EIP-7702 delegated `CALL`. Native precompiles use this to reject delegated calls.
     #[inline]
     pub fn is_direct_call(&self) -> bool {
         self.destination == self.call_target
@@ -204,10 +207,14 @@ mod tests {
         let callcode =
             MessageExt { kind: MessageKind::CallCode, destination: caller, ..call.clone() };
         let static_call = MessageExt { kind: MessageKind::StaticCall, ..call.clone() };
+        let self_delegate =
+            MessageExt { kind: MessageKind::DelegateCall, destination: callee, ..call.clone() };
 
         assert!(call.is_direct_call());
         assert!(static_call.is_direct_call());
         assert!(!delegate.is_direct_call());
         assert!(!callcode.is_direct_call());
+        // Address-based, as in revm: a delegate call to the caller's own address is direct.
+        assert!(self_delegate.is_direct_call());
     }
 }

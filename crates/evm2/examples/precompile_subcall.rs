@@ -81,8 +81,7 @@ fn staticcall_precompile(
         value: U256::ZERO,
         code: loaded.code,
         code_address: SUBCALL_TARGET,
-        caller_is_static: message.caller_is_static
-            || matches!(message.kind, MessageKind::StaticCall),
+        caller_is_static: message.is_static(),
         ..MessageExt::default()
     };
 

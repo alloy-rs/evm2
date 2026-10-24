@@ -370,8 +370,7 @@ pub struct TxResultWithState<T: EvmTypesHost = crate::BaseEvmTypes> {
 
 #[cfg(test)]
 mod tests {
-    use super::TxResultExt;
-    use crate::interpreter::InstrStop;
+    use super::*;
 
     fn result(
         total_gas_spent: u64,
@@ -401,17 +400,17 @@ mod tests {
 
     #[test]
     fn status_helpers_classify_stop_reasons() {
-        let result = |status, stop| TxResultExt::<()> { status, stop, ..TxResultExt::default() };
+        let with_stop = |status, stop| TxResultExt::<()> { status, stop, ..TxResultExt::default() };
 
-        let success = result(true, InstrStop::Return);
+        let success = with_stop(true, InstrStop::Return);
         assert!(success.is_success() && !success.is_revert() && !success.is_halt());
 
-        let revert = result(false, InstrStop::Revert);
+        let revert = with_stop(false, InstrStop::Revert);
         assert!(!revert.is_success() && revert.is_revert() && !revert.is_halt());
 
         // Counted by `InstrStop::is_revert`, but not a top-level `REVERT`.
         for stop in [InstrStop::OutOfFunds, InstrStop::CallTooDeep, InstrStop::OutOfGas] {
-            let halt = result(false, stop);
+            let halt = with_stop(false, stop);
             assert!(!halt.is_success() && !halt.is_revert() && halt.is_halt(), "{stop:?}");
         }
     }

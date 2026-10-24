@@ -237,6 +237,9 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// This discards both read-cached slots and accepted (committed) writes, along with any
     /// storage wipe marker, so later reads of the address fall through to the backing database.
     /// Cached account info is kept.
+    ///
+    /// Reads then see the backing database's values again, including slots that a committed
+    /// selfdestruct or account creation had wiped from the cache.
     #[inline]
     pub fn remove_account_storage(&mut self, address: &Address) -> Option<AccountStorageCache> {
         self.cache.storage.remove(address)
