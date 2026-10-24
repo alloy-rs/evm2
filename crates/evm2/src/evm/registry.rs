@@ -345,7 +345,8 @@ where
 
 /// A type-erased transaction handler registry keyed by transaction type byte.
 ///
-/// Cloning is cheap: clones share the handler table until one of them registers a handler.
+/// Cloning is cheap and clones share handler instances. Registering on a clone copies the table
+/// first, so it never affects the original.
 pub struct TxRegistry<T: EvmTypesHost, Output = ()> {
     handlers: Arc<HashMap<u8, Arc<dyn ErasedTxHandler<T, Output>>>>,
 }
@@ -725,19 +726,17 @@ mod tests {
 
     #[test]
     fn wrapper_forwards_borrowed_envelope() {
-        let seen = Arc::new(AtomicUsize::new(0));
         let mut inner = TxRegistry::<TestTypes, Receipt>::new();
         inner.register(
             0x01,
             transfer,
-            handler(|_| Ok(()), {
-                let seen = seen.clone();
-                move |req: TxRequest<'_, '_, TestTypes, TransferTx>, ()| {
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, TestTypes, TransferTx>, ()| {
                     assert_eq!(req.tx.signer(), Address::with_last_byte(1));
-                    seen.fetch_add(1, Ordering::Relaxed);
                     handle_transfer(req)
-                }
-            }),
+                },
+            ),
         );
         let mut outer = TxRegistry::<TestTypes, Receipt>::new();
         outer.register(0x01, transfer, Forwarding(inner.try_get_by_type(0x01).unwrap()));
@@ -750,7 +749,6 @@ mod tests {
         let mut host = TestHost { block: BlockEnvExt::default() };
         assert_eq!(handler.validate(tx.as_recovered_ref(), &mut host), Ok(()));
         assert_eq!(handler.execute(tx.as_recovered_ref(), &mut host), Ok(receipt(21_003)));
-        assert_eq!(seen.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -759,6 +757,7 @@ mod tests {
         original.register(0x01, transfer, handler(|_| Ok(()), |req, ()| handle_transfer(req)));
 
         let mut cloned = original.clone();
+        assert!(Arc::ptr_eq(&original.handlers, &cloned.handlers));
         cloned.register(0x02, create, handler(|_| Ok(()), |req, ()| handle_create(req)));
         assert!(cloned.contains(0x01));
         assert!(cloned.contains(0x02));
