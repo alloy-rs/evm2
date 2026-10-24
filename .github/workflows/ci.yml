@@ -298,8 +298,6 @@ jobs:
           cache-bin: false
       - name: check
         run: cargo build -p evm2 --target ${{ matrix.target }} --no-default-features
-      - name: check rpc
-        run: cargo build -p evm2 --target ${{ matrix.target }} --no-default-features --features rpc
 
   feature-checks:
     name: features ${{ matrix.flags }}

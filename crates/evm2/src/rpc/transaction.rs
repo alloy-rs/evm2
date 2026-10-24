@@ -17,7 +17,9 @@ use alloy_rpc_types_eth::{
 
 /// Converts `self` into `T`.
 ///
-/// Should create an executable transaction using [`TransactionRequest`].
+/// Should create an executable transaction using [`TransactionRequest`]. The conversion does not
+/// disable the EVM's base fee check, so a `gasPrice` below the block base fee still fails when the
+/// transaction executes.
 pub trait TryIntoTxEnv<T, E = ()> {
     /// An associated error that can occur during the conversion.
     type Err;
@@ -205,6 +207,7 @@ pub fn normalize_transaction_request<E>(
 mod tests {
     use super::*;
     use crate::SpecId;
+    use alloc::vec;
     use alloy_consensus::Transaction;
     use alloy_eips::{
         eip2930::{AccessList, AccessListItem},

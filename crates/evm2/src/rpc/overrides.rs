@@ -4,6 +4,7 @@ use crate::{
     env::BlockEnvExt,
     evm::{AccountChangeRef, CacheDB, DynDatabase, StateChangeSink, StorageChange},
 };
+use alloc::vec::Vec;
 use alloy_primitives::{Address, U256};
 use alloy_rpc_types_eth::{BlockOverrides, state::StateOverride};
 use core::convert::Infallible;
@@ -78,7 +79,9 @@ pub fn apply_block_overrides<DB, E>(
 /// Applies RPC state overrides to a state cache and streams each change to `sink`.
 ///
 /// An override of `state` replaces the account's storage, `stateDiff` updates individual slots.
-/// Pass [`NoopChangeSink`](crate::evm::NoopChangeSink) to discard the changes.
+/// Changes reach `sink` in the order of [`StateChangeSink`]: bytecode, storage wipe, changed slots
+/// with their values before the override, then the account. `movePrecompileToAddress` is not
+/// supported. Pass [`NoopChangeSink`](crate::evm::NoopChangeSink) to discard the changes.
 pub fn apply_state_overrides<DB: DynDatabase>(
     overrides: StateOverride,
     db: &mut CacheDB<DB>,
@@ -102,35 +105,54 @@ pub fn apply_state_overrides<DB: DynDatabase>(
         let replaces_storage = account_override.state.is_some();
         let storage = match (account_override.state, account_override.state_diff) {
             (Some(_), Some(_)) => return Err(StateOverrideError::BothStateAndStateDiff(address)),
-            (Some(state), None) => {
-                db.cache.storage.entry(address).or_default().wipe();
-                let Ok(()) = sink.storage_wipe(address);
-                Some(state)
-            }
-            (None, Some(state)) => Some(state),
-            (None, None) => None,
+            (state, state_diff) => state.or(state_diff).unwrap_or_default(),
         };
+        // Read the values before the override, ahead of any storage wipe.
+        let changes = storage
+            .into_iter()
+            .map(|(key, value)| {
+                let key = U256::from_be_bytes(key.0);
+                let current = U256::from_be_bytes(value.0);
+                let original =
+                    db.get_storage(&address, &key).map_err(StateOverrideError::Database)?;
+                Ok(StorageChange { address, key, original, current })
+            })
+            .collect::<Result<Vec<_>, StateOverrideError>>()?;
 
         // Account existence affects authorization refunds and new-account gas charges. The
         // override touches the account, so under EIP-161 an empty result is removed regardless of
         // whether the account existed before, unless storage materializes it. A full storage
         // replacement always materializes the account, even with no slots.
-        if !account.is_empty()
-            || replaces_storage
-            || storage.as_ref().is_some_and(|state| !state.is_empty())
-        {
+        if !account.is_empty() || replaces_storage || !changes.is_empty() {
             if let Some(code) = &account.code
                 && !code.is_empty()
             {
                 let Ok(()) = sink.bytecode(account.code_hash, code);
             }
-            let Ok(()) = sink.account(AccountChangeRef {
-                address,
-                original: original.as_ref(),
-                current: Some(&account),
-                created: original.is_none(),
-                selfdestructed: false,
-            });
+            if replaces_storage {
+                let Ok(()) = sink.storage_wipe(address);
+                db.cache.storage.entry(address).or_default().wipe();
+            }
+            for change in &changes {
+                // A wipe zeroes every slot, and an unchanged slot is not a write.
+                if (replaces_storage && !change.current.is_zero())
+                    || (!replaces_storage && change.original != change.current)
+                {
+                    let Ok(()) = sink.storage(*change);
+                }
+                db.insert_account_storage(&address, &change.key, &change.current);
+            }
+            if original.as_ref() == Some(&account) && !replaces_storage {
+                let Ok(()) = sink.account_read(address, original.as_ref());
+            } else {
+                let Ok(()) = sink.account(AccountChangeRef {
+                    address,
+                    original: original.as_ref(),
+                    current: Some(&account),
+                    created: original.is_none(),
+                    selfdestructed: false,
+                });
+            }
             db.insert_account_info(&address, account);
         } else if original.is_some() {
             let Ok(()) = sink.storage_wipe(address);
@@ -144,14 +166,6 @@ pub fn apply_state_overrides<DB: DynDatabase>(
             db.cache.accounts.insert(address, None);
             db.cache.storage.entry(address).or_default().wipe();
         }
-
-        for (key, value) in storage.into_iter().flatten() {
-            let key = U256::from_be_bytes(key.0);
-            let current = U256::from_be_bytes(value.0);
-            let original = db.get_storage(&address, &key).map_err(StateOverrideError::Database)?;
-            let Ok(()) = sink.storage(StorageChange { address, key, original, current });
-            db.insert_account_storage(&address, &key, &current);
-        }
     }
 
     Ok(())
@@ -161,7 +175,6 @@ pub fn apply_state_overrides<DB: DynDatabase>(
 mod tests {
     use super::*;
     use crate::evm::{AccountInfo, InMemoryDB, NoopChangeSink};
-    use alloc::vec::Vec;
     use alloy_primitives::{B256, Bytes, address, bytes, keccak256, map::B256Map};
     use alloy_rpc_types_eth::state::AccountOverride;
 
@@ -174,6 +187,7 @@ mod tests {
         Bytecode(B256),
         StorageWipe(Address),
         Storage(StorageChange),
+        AccountRead(Address),
         Account {
             address: Address,
             original: Option<(U256, u64)>,
@@ -212,6 +226,15 @@ mod tests {
                 created: change.created,
                 selfdestructed: change.selfdestructed,
             });
+            Ok(())
+        }
+
+        fn account_read(
+            &mut self,
+            address: Address,
+            _info: Option<&AccountInfo>,
+        ) -> Result<(), Self::Error> {
+            self.0.push(Event::AccountRead(address));
             Ok(())
         }
     }
@@ -411,14 +434,76 @@ mod tests {
         assert_eq!(db.get_storage(&address, &U256::from(2)).unwrap(), U256::from(200));
         assert_eq!(db.get_storage(&address, &U256::from(3)).unwrap(), U256::ZERO);
         assert_eq!(db.get_storage(&other, &U256::from(3)).unwrap(), U256::from(30));
-        assert_eq!(sink.0[0], Event::StorageWipe(address));
+        // The sink sees the wipe first, then only the nonzero slots with their prior values, and
+        // the account last. Slot 2 and the zero-valued slots are not writes after a wipe.
         assert_eq!(sink.0.len(), 4);
-        // Replaced slots start from zero because the wipe precedes the writes.
-        assert!(sink.0.iter().any(|event| matches!(
-            event,
-            Event::Storage(StorageChange { key, original, current, .. })
-                if *key == U256::ONE && original.is_zero() && *current == U256::from(100)
-        )));
+        assert_eq!(sink.0[0], Event::StorageWipe(address));
+        let storage = |key, original, current| {
+            Event::Storage(StorageChange {
+                address,
+                key: U256::from(key),
+                original: U256::from(original),
+                current: U256::from(current),
+            })
+        };
+        assert!(sink.0[1..3].contains(&storage(1, 9, 100)));
+        assert!(sink.0[1..3].contains(&storage(2, 0, 200)));
+        assert!(matches!(sink.0[3], Event::Account { .. }));
+    }
+
+    #[test]
+    fn sink_skips_unchanged_and_zeroed_writes() {
+        let address = Address::with_last_byte(1);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_nonce(1));
+        db.insert_account_storage(&address, &U256::ONE, &U256::from(9));
+
+        // Rewriting a slot to its current value changes nothing.
+        let account_override = AccountOverride::default().with_state_diff(slots([(1, 9)]));
+        let mut sink = Recorder::default();
+        let overrides = StateOverride::from_iter([(address, account_override)]);
+        apply_state_overrides(overrides, &mut db, &mut sink).unwrap();
+        assert_eq!(sink.0, [Event::AccountRead(address)]);
+
+        // Zero-valued slots of a replacement are not writes.
+        let account_override = AccountOverride::default().with_state(slots([(1, 0), (2, 0)]));
+        let mut sink = Recorder::default();
+        let overrides = StateOverride::from_iter([(address, account_override)]);
+        apply_state_overrides(overrides, &mut db, &mut sink).unwrap();
+        assert!(!sink.0.iter().any(|event| matches!(event, Event::Storage(_))));
+        assert_eq!(db.get_storage(&address, &U256::ONE).unwrap(), U256::ZERO);
+    }
+
+    #[test]
+    fn overrides_shadow_the_backing_database() {
+        let kept = Address::with_last_byte(1);
+        let replaced = Address::with_last_byte(2);
+        let emptied = Address::with_last_byte(3);
+        let mut backing = InMemoryDB::default();
+        for address in [kept, replaced] {
+            backing.insert_account_info(&address, AccountInfo::default().with_nonce(1));
+            backing.insert_account_storage(&address, &U256::ONE, &U256::from(10));
+            backing.insert_account_storage(&address, &U256::from(2), &U256::from(20));
+        }
+        backing.insert_account_info(&emptied, AccountInfo::default().with_balance(U256::ONE));
+        backing.insert_account_storage(&emptied, &U256::ONE, &U256::from(10));
+        let mut db = CacheDB::new(backing);
+
+        let overrides = StateOverride::from_iter([
+            (kept, AccountOverride::default().with_state_diff(slots([(1, 11)]))),
+            (replaced, AccountOverride::default().with_state(slots([(1, 11)]))),
+            (emptied, AccountOverride::default().with_balance(U256::ZERO)),
+        ]);
+        apply_state_overrides(overrides, &mut db, &mut NoopChangeSink::default()).unwrap();
+
+        // A diff leaves other slots to the backing database, a replacement hides them.
+        assert_eq!(db.get_storage(&kept, &U256::ONE).unwrap(), U256::from(11));
+        assert_eq!(db.get_storage(&kept, &U256::from(2)).unwrap(), U256::from(20));
+        assert_eq!(db.get_storage(&replaced, &U256::ONE).unwrap(), U256::from(11));
+        assert_eq!(db.get_storage(&replaced, &U256::from(2)).unwrap(), U256::ZERO);
+        // An emptied account that only the backing database holds is removed with its storage.
+        assert_eq!(db.get_account(&emptied).unwrap(), None);
+        assert_eq!(db.get_storage(&emptied, &U256::ONE).unwrap(), U256::ZERO);
     }
 
     #[test]
