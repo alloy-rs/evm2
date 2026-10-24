@@ -984,6 +984,7 @@ impl<'a, T: EvmTypesHost> InspectorSlot<'a, T> {
 struct ScopedInspector<'scope, 'a, T: EvmTypesHost> {
     evm: &'scope mut Evm<'a, T>,
     previous: Option<InspectorSlot<'a, T>>,
+    completed: bool,
 }
 
 impl<'scope, 'a, T: EvmTypesHost> ScopedInspector<'scope, 'a, T> {
@@ -1001,7 +1002,7 @@ impl<'scope, 'a, T: EvmTypesHost> ScopedInspector<'scope, 'a, T> {
             )
         };
         let previous = evm.inspector.replace(InspectorSlot::Borrowed(inspector));
-        Self { evm, previous }
+        Self { evm, previous, completed: false }
     }
 }
 
@@ -1012,6 +1013,9 @@ impl<T: EvmTypesHost> Drop for ScopedInspector<'_, '_, T> {
         // A panic unwinding out of a frame skips its cleanup, which would leave this pointing at
         // a dropped interpreter.
         self.evm.current_frame = None;
+        if !self.completed {
+            self.evm.state.clear_transaction_state();
+        }
     }
 }
 
@@ -1073,16 +1077,17 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     /// installed inspector is restored before this method returns, including when it unwinds, so
     /// the borrow of `inspector` ends with the call even while the returned [`ExecutedTx`] is
     /// alive. During the call, [`Self::inspector`] and [`Self::inspector_mut`] return `None`, and
-    /// the inspector setters panic like they do during any execution. System calls are not
-    /// inspected.
+    /// the inspector setters panic like they do during any execution. If the call unwinds, the
+    /// transaction state is discarded. System calls are not inspected.
     pub fn transact_with_inspector(
         &mut self,
         tx: &Recovered<T::Tx>,
         inspector: &mut (dyn Inspector<T> + '_),
     ) -> HandlerResult<ExecutedTx<'_, 'a, T>> {
         self.assert_inspector_mutable();
-        let scope = ScopedInspector::install(self, inspector);
+        let mut scope = ScopedInspector::install(self, inspector);
         let result = scope.evm.execute_tx(tx);
+        scope.completed = true;
         drop(scope);
         self.finish_executed_tx(result?)
     }
@@ -4499,6 +4504,37 @@ mod tests {
         let mut inspector = CallCounter::default();
         let _ = evm.transact_with_inspector(&test_tx(0), &mut inspector).unwrap().discard();
         assert_eq!(inspector.calls, 1);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn transact_with_inspector_discards_transaction_state_after_panic() {
+        let mut evm = scoped_inspector_evm();
+        evm.registry.register(
+            TEST_TX_TYPE,
+            TxEnvelope::as_legacy,
+            handler(
+                |_| Ok(()),
+                |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
+                    req.host.log(Log { address: TEST_PRECOMPILE, data: LogData::default() });
+                    assert!(!req.host.logs().is_empty());
+                    let mut message = MessageExt {
+                        code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+                        ..MessageExt::default()
+                    };
+                    Host::execute_message(req.host, &TxEnvExt::default(), &mut message)?;
+                    Ok(TxResultExt::default())
+                },
+            ),
+        );
+        let mut panicking = CallCounter { panic_on_step: true, ..CallCounter::default() };
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = evm.transact_with_inspector(&test_tx(0), &mut panicking);
+        }));
+
+        assert!(result.is_err());
+        assert!(evm.logs().is_empty());
     }
 
     #[cfg(feature = "async")]
