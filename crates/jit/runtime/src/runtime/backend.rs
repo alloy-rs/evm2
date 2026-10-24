@@ -93,7 +93,7 @@ impl JitObjectLinker {
             .map(|name| {
                 let addr = evm2_jit_builtins::Builtin::parse(name)
                     .ok_or_else(|| eyre::eyre!("unknown builtin symbol: {name}"))?
-                    .addr();
+                    .addr::<evm2::BaseEvmTypes>();
                 Ok((CString::new(name.as_str())?, addr))
             })
             .collect::<eyre::Result<Vec<_>>>()?;

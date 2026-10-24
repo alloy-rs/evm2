@@ -111,49 +111,42 @@ macro_rules! builtins {
     };
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_panic(data: *const u8, len: usize) -> ! {
-    let msg = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(data, len)) };
-    panic!("{msg}");
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_div(rev![a, b]: &mut [EvmWord; 2]) {
-    let divisor = b.to_u256();
-    *b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_div(divisor) }.into();
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_sdiv(rev![a, b]: &mut [EvmWord; 2]) {
-    *b = i256::i256_div(a.to_u256(), b.to_u256()).into();
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_mod(rev![a, b]: &mut [EvmWord; 2]) {
-    let divisor = b.to_u256();
-    *b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_rem(divisor) }.into();
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_smod(rev![a, b]: &mut [EvmWord; 2]) {
-    *b = i256::i256_mod(a.to_u256(), b.to_u256()).into();
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_addmod(rev![a, b, c]: &mut [EvmWord; 3]) {
-    *c = a.to_u256().add_mod(b.to_u256(), c.to_u256()).into();
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_mulmod(rev![a, b, c]: &mut [EvmWord; 3]) {
-    *c = a.to_u256().mul_mod(b.to_u256(), c.to_u256()).into();
-}
-
 /// Builtins generic over the interpreter host types.
 pub mod generic {
     use super::*;
 
     builtins! {
+
+    pub unsafe extern "C" fn __revmc_builtin_panic<T: EvmTypesHost>(data: *const u8, len: usize) -> ! {
+        let msg = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(data, len)) };
+        panic!("{msg}");
+    }
+
+    pub unsafe extern "C" fn __revmc_builtin_div<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
+        let divisor = b.to_u256();
+        *b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_div(divisor) }.into();
+    }
+
+    pub unsafe extern "C" fn __revmc_builtin_sdiv<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
+        *b = i256::i256_div(a.to_u256(), b.to_u256()).into();
+    }
+
+    pub unsafe extern "C" fn __revmc_builtin_mod<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
+        let divisor = b.to_u256();
+        *b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_rem(divisor) }.into();
+    }
+
+    pub unsafe extern "C" fn __revmc_builtin_smod<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
+        *b = i256::i256_mod(a.to_u256(), b.to_u256()).into();
+    }
+
+    pub unsafe extern "C" fn __revmc_builtin_addmod<T: EvmTypesHost>(rev![a, b, c]: &mut [EvmWord; 3]) {
+        *c = a.to_u256().add_mod(b.to_u256(), c.to_u256()).into();
+    }
+
+    pub unsafe extern "C" fn __revmc_builtin_mulmod<T: EvmTypesHost>(rev![a, b, c]: &mut [EvmWord; 3]) {
+        *c = a.to_u256().mul_mod(b.to_u256(), c.to_u256()).into();
+    }
 
         pub unsafe extern "C" fn __revmc_builtin_assert_spec_id<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, expected: u32) {
             assert_eq!(
@@ -981,7 +974,18 @@ macro_rules! base_builtins {
     )*};
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __revmc_builtin_panic(data: *const u8, len: usize) -> ! {
+    unsafe { generic::__revmc_builtin_panic::<BaseEvmTypes>(data, len) }
+}
+
 base_builtins! {
+    __revmc_builtin_div(sp: &mut [EvmWord; 2]);
+    __revmc_builtin_sdiv(sp: &mut [EvmWord; 2]);
+    __revmc_builtin_mod(sp: &mut [EvmWord; 2]);
+    __revmc_builtin_smod(sp: &mut [EvmWord; 2]);
+    __revmc_builtin_addmod(sp: &mut [EvmWord; 3]);
+    __revmc_builtin_mulmod(sp: &mut [EvmWord; 3]);
     __revmc_builtin_assert_spec_id(ecx: &EvmContext, expected: u32);
     __revmc_builtin_exp(ecx: &mut EvmContext, sp: &mut [EvmWord; 2]);
     __revmc_builtin_keccak256(ecx: &mut EvmContext, sp: &mut [EvmWord; 2]);

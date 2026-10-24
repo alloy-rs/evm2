@@ -49,8 +49,8 @@ impl<B: Backend> Builtins<B> {
         bcx: &mut B::Builder<'_>,
         resolver: Option<fn(Builtin) -> usize>,
     ) -> B::Function {
-        let address = resolver.map_or_else(|| builtin.addr(), |resolve| resolve(builtin));
-        let resolved_name = resolver.map(|_| format!("{}_{address:x}", builtin.name()));
+        let resolved = resolver.map(|resolve| resolve(builtin));
+        let resolved_name = resolved.map(|address| format!("{}_{address:x}", builtin.name()));
         let name = resolved_name.as_deref().unwrap_or_else(|| builtin.name());
         debug_assert!(name.starts_with(MANGLE_PREFIX), "{name:?}");
         if builtin.call_conv() == CallConv::Default
@@ -60,6 +60,7 @@ impl<B: Backend> Builtins<B> {
             return r;
         }
 
+        let address = resolved.unwrap_or_else(|| builtin.addr::<evm2::BaseEvmTypes>());
         let r = Self::build(name, builtin, address, bcx);
         trace!(name, ?r, "built");
         r
@@ -150,9 +151,10 @@ macro_rules! builtins {
                 }
             }
 
-            pub fn addr(self) -> usize {
+            /// Returns the address of the builtin instantiated for the host types `T`.
+            pub fn addr<T: evm2::EvmTypesHost>(self) -> usize {
                 match self {
-                    $(Self::$ident => crate::$name as *const () as usize,)*
+                    $(Self::$ident => crate::generic::$name::<T> as *const () as usize,)*
                 }
             }
 
@@ -333,80 +335,6 @@ impl Builtin {
         match self {
             Self::Mresize => CallConv::Cold,
             _ => CallConv::Default,
-        }
-    }
-}
-
-impl Builtin {
-    /// Resolves builtins for a concrete host type.
-    pub fn addr_for<T: evm2::EvmTypesHost>(self) -> usize {
-        match self {
-            Self::AssertSpecId => {
-                crate::generic::__revmc_builtin_assert_spec_id::<T> as *const () as usize
-            }
-            Self::Exp => crate::generic::__revmc_builtin_exp::<T> as *const () as usize,
-            Self::Keccak256 => crate::generic::__revmc_builtin_keccak256::<T> as *const () as usize,
-            Self::Keccak256CC => {
-                crate::generic::__revmc_builtin_keccak256_cc::<T> as *const () as usize
-            }
-            Self::Balance => crate::generic::__revmc_builtin_balance::<T> as *const () as usize,
-            Self::CallDataLoad => {
-                crate::generic::__revmc_builtin_calldataload::<T> as *const () as usize
-            }
-            Self::CallDataLoadC => {
-                crate::generic::__revmc_builtin_calldataload_c::<T> as *const () as usize
-            }
-            Self::CallDataCopy => {
-                crate::generic::__revmc_builtin_calldatacopy::<T> as *const () as usize
-            }
-            Self::CodeCopy => crate::generic::__revmc_builtin_codecopy::<T> as *const () as usize,
-            Self::ExtCodeSize => {
-                crate::generic::__revmc_builtin_extcodesize::<T> as *const () as usize
-            }
-            Self::ExtCodeCopy => {
-                crate::generic::__revmc_builtin_extcodecopy::<T> as *const () as usize
-            }
-            Self::ReturnDataCopy => {
-                crate::generic::__revmc_builtin_returndatacopy::<T> as *const () as usize
-            }
-            Self::ExtCodeHash => {
-                crate::generic::__revmc_builtin_extcodehash::<T> as *const () as usize
-            }
-            Self::BlockHash => crate::generic::__revmc_builtin_blockhash::<T> as *const () as usize,
-            Self::SelfBalance => {
-                crate::generic::__revmc_builtin_self_balance::<T> as *const () as usize
-            }
-            Self::Difficulty => {
-                crate::generic::__revmc_builtin_difficulty::<T> as *const () as usize
-            }
-            Self::BlobHash => crate::generic::__revmc_builtin_blob_hash::<T> as *const () as usize,
-            Self::Mresize => crate::generic::__revmc_builtin_mresize::<T> as *const () as usize,
-            Self::Sload => crate::generic::__revmc_builtin_sload::<T> as *const () as usize,
-            Self::SloadC => crate::generic::__revmc_builtin_sload_c::<T> as *const () as usize,
-            Self::Sstore => crate::generic::__revmc_builtin_sstore::<T> as *const () as usize,
-            Self::Tload => crate::generic::__revmc_builtin_tload::<T> as *const () as usize,
-            Self::Tstore => crate::generic::__revmc_builtin_tstore::<T> as *const () as usize,
-            Self::Mcopy => crate::generic::__revmc_builtin_mcopy::<T> as *const () as usize,
-            Self::HostInstruction => {
-                crate::generic::__revmc_builtin_host_instruction::<T> as *const () as usize
-            }
-            Self::Log => crate::generic::__revmc_builtin_log::<T> as *const () as usize,
-            Self::Create => crate::generic::__revmc_builtin_create::<T> as *const () as usize,
-            Self::Call => crate::generic::__revmc_builtin_call::<T> as *const () as usize,
-            Self::DoReturn => crate::generic::__revmc_builtin_do_return::<T> as *const () as usize,
-            Self::DoReturnCC => {
-                crate::generic::__revmc_builtin_do_return_cc::<T> as *const () as usize
-            }
-            Self::SelfDestruct => {
-                crate::generic::__revmc_builtin_selfdestruct::<T> as *const () as usize
-            }
-            Self::Panic
-            | Self::Div
-            | Self::SDiv
-            | Self::Mod
-            | Self::SMod
-            | Self::AddMod
-            | Self::MulMod => self.addr(),
         }
     }
 }

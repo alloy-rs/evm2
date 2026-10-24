@@ -846,7 +846,7 @@ mod custom_host_tests {
     }
 
     #[instruction(EvmTypes = TableTypes, dynamic_gas)]
-    fn charged_sload(cx: _, [key]: [Word]) -> Result<out> {
+    fn charged_sload(cx: _, [_key]: [Word]) -> Result<out> {
         cx.gas.spend(7)?;
         *out = Word::from(0xbeef_u64);
     }

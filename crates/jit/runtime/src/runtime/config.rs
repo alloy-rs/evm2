@@ -441,7 +441,7 @@ impl HostConfig {
             type_id,
             layout: HostLayout::for_types::<T>(),
             opcodes: None,
-            resolver: (type_id != TypeId::of::<BaseEvmTypes>()).then_some(Builtin::addr_for::<T>),
+            resolver: (type_id != TypeId::of::<BaseEvmTypes>()).then_some(Builtin::addr::<T>),
         }
     }
 
