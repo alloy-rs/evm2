@@ -205,4 +205,75 @@ mod tests {
         let t = blst::verify_kzg_proof(&commitment, &z, &y, &proof);
         assert!(!t);
     }
+
+    /// Runs each vector through every compiled backend. Reaches
+    /// [`arkworks::verify_kzg_proof`], which the dispatching tests never do in workspace builds.
+    #[test]
+    fn test_backends_agree() {
+        type Verify = fn(&[u8; 48], &[u8; 32], &[u8; 32], &[u8; 48]) -> bool;
+
+        let backends: &[(&str, Verify)] = &[
+            ("arkworks", arkworks::verify_kzg_proof),
+            #[cfg(feature = "blst")]
+            ("blst", blst::verify_kzg_proof),
+        ];
+
+        let infinity = hex!(
+            "c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        );
+        let generator = hex!(
+            "97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb"
+        );
+        // [5]G1 compressed
+        let five_g1 = hex!(
+            "b0e7791fb972fe014159aa33a98622da3cdc98ff707965e536d8636b5fcc5ac7a91a8c46e59a00dca575af0f18fb13dc"
+        );
+        let zero = [0u8; 32];
+        // BLS_MODULUS - 1.
+        let r_minus_one = hex!("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000000");
+        let valid_commitment = hex!(
+            "8f59a8d2a1a625a17f3fea0fe5eb8c896db3764f3185481bc22f91b4aaffcca25f26936857bc3a7c2539ea8ec3a952b7"
+        );
+        let valid_y = hex!("1522a4a7f34e1ea350ae07c29c96c7e79655aa926122e95fe69fcbd932ca49e9");
+        let valid_proof = hex!(
+            "a62ad71d14c5719385c0686f1871430475bf3a00f0aa3f7b8dd99a9abc2160744faf0070725e00b60ad9a026a15b1a8c"
+        );
+        let wrong_y = hex!("1522a4a7f34e1ea350ae07c29c96c7e79655aa926122e95fe69fcbd932ca49ea");
+        let scalar = |n: u8| {
+            let mut bytes = [0u8; 32];
+            bytes[31] = n;
+            bytes
+        };
+
+        let cases = [
+            ("c-kzg valid", valid_commitment, r_minus_one, valid_y, valid_proof, true),
+            ("c-kzg wrong y", valid_commitment, r_minus_one, wrong_y, valid_proof, false),
+            ("constant polynomial", five_g1, scalar(3), scalar(5), infinity, true),
+            ("constant polynomial wrong y", five_g1, scalar(1), zero, infinity, false),
+            ("zero polynomial", infinity, r_minus_one, zero, infinity, true),
+            ("infinity commitment, generator proof", infinity, zero, zero, generator, false),
+            (
+                "y with maximal chunks",
+                hex!(
+                    "af9fa6ab68e8bf95421568b59f6fada4aac1f754efdaf173f5aafc8747feeb6ad373ab7967fd5807806fc301df995597"
+                ),
+                hex!("4dd733910cc8eedc40e2dcdaf04ba70e8d3af425c7cd10cdbe08bae5e9183864"),
+                hex!("73eda752ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+                hex!(
+                    "aeef75c83def587786d1f97cd044edd51396403cb00bd107d88086e184216e5a6b2c397140fd1615f33a987a48f57a6b"
+                ),
+                true,
+            ),
+        ];
+
+        for (backend, verify) in backends {
+            for (case, commitment, z, y, proof, expected) in &cases {
+                assert_eq!(
+                    verify(commitment, z, y, proof),
+                    *expected,
+                    "{backend} backend, case: {case}"
+                );
+            }
+        }
+    }
 }

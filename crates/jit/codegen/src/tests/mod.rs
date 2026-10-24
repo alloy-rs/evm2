@@ -71,6 +71,21 @@ pub fn with_jit_compiler<R>(
     f(&mut compiler)
 }
 
+/// A section that falls through a `JUMPI` whose condition is zero at runtime but unknown to the
+/// analysis, so the next section is entered only by falling through.
+const FALL_THROUGH: [u8; 4] = [op::CALLVALUE, op::ISZERO, op::PUSH0, op::JUMPI];
+/// Gas charged by [`FALL_THROUGH`].
+const FALL_THROUGH_GAS: u64 = 2 + 3 + 2 + 10;
+
+/// An `MSTORE` that grows memory, in a section entered only by falling through, then `STOP`.
+const MSTORE_THEN_STOP: [u8; 8] =
+    [op::PUSH0, op::PUSH0, op::MSTORE, op::CALLVALUE, op::ISZERO, op::PUSH0, op::JUMPI, op::STOP];
+
+/// Returns `n` copies of [`FALL_THROUGH`] followed by `tail`.
+fn fall_through_then(n: usize, tail: &[u8]) -> Vec<u8> {
+    [&FALL_THROUGH.repeat(n)[..], tail].concat()
+}
+
 const I256_MIN: U256 = U256::from_limbs([
     0x0000000000000000,
     0x0000000000000000,
@@ -1391,6 +1406,45 @@ tests! {
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
 
+        // The JUMPI fall-throughs continue the section at `head`: each one reads deeper
+        // below the section start, and the final taken edge stores the values that only
+        // lived in SSA. DUP5 reads the deepest value, exactly at the checked range.
+        jumpi_fallthrough_chain(@raw {
+            bytecode: &asm(&jumpi_fallthrough_chain("CALLDATASIZE ISZERO", "DUP5")),
+            expected_return: InstrStop::Stop,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // DUP6 reads one below the stack.
+        jumpi_fallthrough_underflow(@raw {
+            bytecode: &asm(&jumpi_fallthrough_chain("CALLDATASIZE ISZERO", "DUP6")),
+            expected_return: InstrStop::StackUnderflow,
+        }),
+        // The underflow is on the fall-through, so it must not fail when the jump is taken.
+        jumpi_taken_skips_fallthrough_underflow(@raw {
+            bytecode: &asm(&jumpi_fallthrough_chain("CALLDATASIZE", "DUP6")),
+            expected_return: InstrStop::Stop,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        // The second fall-through fills the stack to exactly 1024.
+        jumpi_fallthrough_full_stack(@raw {
+            bytecode: &asm(&jumpi_fallthrough_overflow("CALLDATASIZE ISZERO", 3)),
+            expected_return: InstrStop::Stop,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        jumpi_fallthrough_overflow(@raw {
+            bytecode: &asm(&jumpi_fallthrough_overflow("CALLDATASIZE ISZERO", 4)),
+            expected_return: InstrStop::StackOverflow,
+        }),
+        jumpi_taken_skips_fallthrough_overflow(@raw {
+            bytecode: &asm(&jumpi_fallthrough_overflow("CALLDATASIZE", 4)),
+            expected_return: InstrStop::Stop,
+            expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+
         pc(@raw {
             bytecode: &[op::PC, op::PC, op::PUSH1, 69, op::PC, op::PUSH0, op::PC],
             expected_stack: &[0_U256, 1_U256, 69_U256, 4_U256, 0_U256, 6_U256],
@@ -1429,6 +1483,158 @@ tests! {
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
 
+        // Sections entered only by falling through skip their gas check, so these run out of
+        // gas partway through such a run and must still fail at the next exit or builtin.
+        fall_through_oog_then_stop(@raw {
+            bytecode: &fall_through_then(6, &[op::STOP]),
+            gas_limit: 3 * FALL_THROUGH_GAS + 5,
+            expected_return: InstrStop::OutOfGas,
+        }),
+        fall_through_exact_gas_then_stop(@raw {
+            bytecode: &fall_through_then(6, &[op::STOP]),
+            gas_limit: 6 * FALL_THROUGH_GAS,
+            expected_gas: 6 * FALL_THROUGH_GAS,
+        }),
+        fall_through_oog_by_one_then_stop(@raw {
+            bytecode: &fall_through_then(6, &[op::STOP]),
+            gas_limit: 6 * FALL_THROUGH_GAS - 1,
+            expected_return: InstrStop::OutOfGas,
+        }),
+        fall_through_then_revert(@raw {
+            bytecode: &fall_through_then(6, &[op::PUSH0, op::PUSH0, op::REVERT]),
+            expected_return: InstrStop::Revert,
+            expected_gas: 6 * FALL_THROUGH_GAS + 2 + 2,
+        }),
+        fall_through_oog_then_revert(@raw {
+            bytecode: &fall_through_then(6, &[op::PUSH0, op::PUSH0, op::REVERT]),
+            gas_limit: 6 * FALL_THROUGH_GAS,
+            expected_return: InstrStop::OutOfGas,
+        }),
+        fall_through_oog_then_invalid(@raw {
+            bytecode: &fall_through_then(6, &[op::INVALID]),
+            gas_limit: 3 * FALL_THROUGH_GAS,
+            expected_return: InstrStop::OutOfGas,
+        }),
+        fall_through_then_gas(@raw {
+            bytecode: &fall_through_then(6, &[op::GAS]),
+            expected_stack: &[U256::from(DEF_GAS_LIMIT - 6 * FALL_THROUGH_GAS - 2)],
+            expected_gas: 6 * FALL_THROUGH_GAS + 2,
+        }),
+        fall_through_oog_then_sload(@raw {
+            bytecode: &fall_through_then(6, &[op::PUSH0, op::SLOAD]),
+            gas_limit: 3 * FALL_THROUGH_GAS,
+            expected_return: InstrStop::OutOfGas,
+        }),
+        fall_through_oog_then_log(@raw {
+            bytecode: &fall_through_then(6, &[op::PUSH0, op::PUSH0, op::LOG0]),
+            gas_limit: 3 * FALL_THROUGH_GAS,
+            expected_return: InstrStop::OutOfGas,
+            assert_host: Some(|host| assert!(host.logs.is_empty())),
+        }),
+        // The memory resize builtin checks the gas inline on its cold path.
+        fall_through_then_mstore(@raw {
+            bytecode: &fall_through_then(6, &MSTORE_THEN_STOP),
+            expected_memory: &[0; 32],
+            expected_gas: 7 * FALL_THROUGH_GAS + 2 + 2 + 3 + 3,
+        }),
+        fall_through_oog_then_mstore(@raw {
+            bytecode: &fall_through_then(6, &MSTORE_THEN_STOP),
+            gas_limit: 3 * FALL_THROUGH_GAS,
+            expected_return: InstrStop::OutOfGas,
+            assert_ecx: Some(|ecx| assert!(ecx.memory().is_empty())),
+        }),
+        fall_through_memory_oog_then_mstore(@raw {
+            bytecode: &fall_through_then(6, &MSTORE_THEN_STOP),
+            gas_limit: 7 * FALL_THROUGH_GAS + 2 + 2 + 3 + 2,
+            expected_return: InstrStop::OutOfGas,
+        }),
+        // The `MLOAD` skips its resize at runtime, so its cold-path check must not clear the debt
+        // before `TSTORE`.
+        fall_through_oog_then_mload_then_tstore(@raw {
+            bytecode: &[
+                &[op::PUSH0, op::PUSH0, op::MSTORE][..],
+                &FALL_THROUGH.repeat(6),
+                &[op::CALLVALUE, op::ISZERO, op::MLOAD, op::POP],
+                &[op::CALLVALUE, op::PUSH0, op::TSTORE],
+                &fall_through_then(1, &[op::STOP])[..],
+            ]
+            .concat(),
+            gas_limit: 2 + 2 + 3 + 3 + 3 * FALL_THROUGH_GAS,
+            expected_return: InstrStop::OutOfGas,
+            assert_host: Some(|host| assert!(host.transient_storage.is_empty())),
+        }),
+        fall_through_past_threshold_then_stop(@raw {
+            bytecode: &fall_through_then(70, &[op::STOP]),
+            gas_limit: 70 * FALL_THROUGH_GAS,
+            expected_gas: 70 * FALL_THROUGH_GAS,
+        }),
+        fall_through_oog_past_threshold_then_stop(@raw {
+            bytecode: &fall_through_then(70, &[op::STOP]),
+            gas_limit: 10 * FALL_THROUGH_GAS,
+            expected_return: InstrStop::OutOfGas,
+        }),
+        // Unresolved jumps to valid targets in different table pairs, including the
+        // first and last bit of a bitmap, and to invalid and out-of-range targets.
+        dynamic_jump_to_63(@raw {
+            bytecode: &bytecode_dynamic_jump(63_U256),
+            expected_stack: &[64_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_96(@raw {
+            bytecode: &bytecode_dynamic_jump(96_U256),
+            expected_stack: &[97_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_127(@raw {
+            bytecode: &bytecode_dynamic_jump(127_U256),
+            expected_stack: &[128_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_130(@raw {
+            bytecode: &bytecode_dynamic_jump(130_U256),
+            expected_stack: &[131_U256],
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_65(@raw {
+            bytecode: &bytecode_dynamic_jump(65_U256),
+            expected_return: InstrStop::InvalidJump,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_97(@raw {
+            bytecode: &bytecode_dynamic_jump(97_U256),
+            expected_return: InstrStop::InvalidJump,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_code_end(@raw {
+            bytecode: &bytecode_dynamic_jump(133_U256),
+            expected_return: InstrStop::InvalidJump,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_table_end(@raw {
+            bytecode: &bytecode_dynamic_jump(160_U256),
+            expected_return: InstrStop::InvalidJump,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_u64_max(@raw {
+            bytecode: &bytecode_dynamic_jump(U256::from(u64::MAX)),
+            expected_return: InstrStop::InvalidJump,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        dynamic_jump_to_u64_overflow(@raw {
+            bytecode: &bytecode_dynamic_jump((1_U256 << 64) + 63_U256),
+            expected_return: InstrStop::InvalidJump,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
     }
 
     arith {
@@ -3539,6 +3745,17 @@ fn store_dynamic_operands(code: &mut Vec<u8>, operands: &[(U256, bool, u8)]) {
     }
 }
 
+/// Jumps to `target` through memory, so the jump stays unresolved, with `JUMPDEST PC STOP`
+/// at PCs 63, 96, 127 and 130.
+fn bytecode_dynamic_jump(target: U256) -> Vec<u8> {
+    let mut code = bytecode_unop_opaque(op::JUMP, target);
+    for pc in [63, 96, 127, 130] {
+        code.resize(pc, op::STOP);
+        code.extend([op::JUMPDEST, op::PC, op::STOP]);
+    }
+    code
+}
+
 fn bytecode_binop_mixed(opcode: u8, a: U256, b: U256, a_const: bool, b_const: bool) -> Vec<u8> {
     let mut code = Vec::with_capacity(128);
     store_dynamic_operands(&mut code, &[(a, a_const, 0x00), (b, b_const, 0x20)]);
@@ -3571,6 +3788,59 @@ fn bytecode_ternop_mixed(
 
 fn asm(s: &str) -> Vec<u8> {
     crate::parse_asm(s).unwrap()
+}
+
+/// Three unknown values enter the section at `head`, followed by a chain of JUMPI
+/// fall-throughs. `cond` decides whether the third JUMPI jumps to `end`; the third
+/// fall-through then runs `deep_dup` with five values on the stack. The last JUMPI keeps
+/// the sum below it only in SSA, as CHAINID writes its output to memory.
+fn jumpi_fallthrough_chain(cond: &str, deep_dup: &str) -> String {
+    format!(
+        "
+        CALLDATASIZE
+        PUSH 1 CALLDATALOAD
+        PUSH 2 CALLDATALOAD
+        PUSH %head
+        JUMP
+    fail:
+        JUMPDEST
+        INVALID
+    head:
+        JUMPDEST
+        CALLDATASIZE ISZERO PUSH %fail JUMPI
+        DUP2 PUSH0 CALLDATALOAD ADD
+        CALLDATASIZE ISZERO PUSH %fail JUMPI
+        DUP4 DUP2 MUL
+        {cond} PUSH %end JUMPI
+        {deep_dup}
+        CALLDATASIZE ISZERO PUSH %fail JUMPI
+        ADD
+        CHAINID PUSH %end JUMPI
+        INVALID
+    end:
+        JUMPDEST
+        STOP
+        "
+    )
+}
+
+/// 1020 values followed by a chain of JUMPI fall-throughs. `cond` decides whether the second
+/// JUMPI jumps to `end`; the second fall-through then pushes `pushes` values onto 1021.
+fn jumpi_fallthrough_overflow(cond: &str, pushes: usize) -> String {
+    format!(
+        "
+        {}
+        CALLDATASIZE ISZERO PUSH %end JUMPI
+        PUSH0 {cond} PUSH %end JUMPI
+        {}
+        STOP
+    end:
+        JUMPDEST
+        STOP
+        ",
+        "PUSH0 ".repeat(1020),
+        "PUSH0 ".repeat(pushes),
+    )
 }
 
 /// Pushes `done`, then for each stage pushes one of two targets depending on a calldata byte,

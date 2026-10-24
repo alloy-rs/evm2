@@ -170,7 +170,7 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
-        let precompile = self.map.as_ref().get_data(&message.code_address)?;
+        let precompile = self.map.as_ref().get_data(&message.call_target)?;
         Some(precompile.execute(evm, message, gas))
     }
 }

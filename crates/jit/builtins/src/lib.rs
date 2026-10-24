@@ -386,6 +386,14 @@ pub unsafe extern "C" fn __revmc_builtin_self_balance(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn __revmc_builtin_difficulty(ecx: &EvmContext, slot: &mut EvmWord) {
+    let block_env = ecx.block_env();
+    let value =
+        if ecx.enables(EvmFeatures::EIP4399) { block_env.prevrandao } else { block_env.difficulty };
+    *slot = value.into();
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_blob_hash(ecx: &EvmContext, index_ptr: &mut EvmWord) {
     let index = index_ptr.to_u256();
     let index_usize = word_to_usize_saturated(index);
@@ -651,7 +659,6 @@ pub unsafe extern "C" fn __revmc_builtin_create(
         input: code,
         value,
         code_address: caller,
-        disable_precompiles: false,
         caller_is_static: false,
         salt,
         ext: (),
@@ -733,7 +740,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         usize::MAX
     };
 
-    let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address, disable_precompiles) =
+    let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address) =
         load_acc_and_calc_gas(ecx, to, transfers_value, call_kind == CallKind::Call, local_gas_limit)?;
 
     let current = ecx.message();
@@ -759,7 +766,6 @@ pub unsafe extern "C" fn __revmc_builtin_call(
         value: call_value,
         code: loaded_code,
         code_address,
-        disable_precompiles,
         caller_is_static: ecx.is_static(),
         salt: B256::ZERO,
         ext: (),
@@ -802,7 +808,7 @@ fn load_acc_and_calc_gas(
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
-) -> Result<(u64, u64, Bytecode, Address, bool), BuiltinError> {
+) -> Result<(u64, u64, Bytecode, Address), BuiltinError> {
     let version = *ecx.version();
     if transfers_value {
         ecx.gas.spend(version.gas_params.get(GasId::TransferValueCost).into())?;
@@ -870,8 +876,7 @@ fn load_acc_and_calc_gas(
         gas_limit = gas_limit.saturating_add(version.gas_params.get(GasId::CallStipend).into());
     }
 
-    let disable_precompiles = code_address != to;
-    Ok((gas_limit, new_account_state_gas, code, code_address, disable_precompiles))
+    Ok((gas_limit, new_account_state_gas, code, code_address))
 }
 
 #[unsafe(no_mangle)]

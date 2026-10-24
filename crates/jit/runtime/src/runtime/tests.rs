@@ -1426,6 +1426,151 @@ fn preload_aot_seeds_resident() {
     }
 }
 
+#[test]
+#[cfg(feature = "llvm")]
+fn preload_aot_skips_stale_abi_version() {
+    let store = Arc::new(RuntimeArtifactStore::new().unwrap());
+    let code_hash = alloy_primitives::keccak256(BYTECODE_RET42);
+
+    {
+        let tb = TestBackend::new(RuntimeConfig {
+            enabled: true,
+            store: Some(store.clone()),
+            tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+            ..Default::default()
+        });
+        tb.prepare_aot_sync(AotRequest {
+            code_hash,
+            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            spec_id: SpecId::CANCUN,
+        })
+        .unwrap();
+    }
+
+    let (key, stored) = store.load_all().unwrap().pop().unwrap();
+    let stale_key = ArtifactKey { abi_version: crate::ABI_VERSION - 1, ..key };
+    let stale_manifest = ArtifactManifest { artifact_key: stale_key, ..stored.manifest.clone() };
+    let stale_store = Arc::new(RuntimeArtifactStore::new().unwrap());
+    stale_store
+        .store(&stale_key, &stale_manifest, &std::fs::read(&stored.dylib_path).unwrap())
+        .unwrap();
+
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        store: Some(stale_store.clone()),
+        ..Default::default()
+    });
+    assert!(tb.get_compiled(code_hash, SpecId::CANCUN).is_none());
+    assert_eq!(tb.stats().resident_entries, 0);
+    assert_eq!(stale_store.len(), 1);
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn preload_aot_skips_manifest_key_mismatch() {
+    let store = Arc::new(RuntimeArtifactStore::new().unwrap());
+    let code_hash = alloy_primitives::keccak256(BYTECODE_RET42);
+
+    {
+        let tb = TestBackend::new(RuntimeConfig {
+            enabled: true,
+            store: Some(store.clone()),
+            tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+            ..Default::default()
+        });
+        tb.prepare_aot_sync(AotRequest {
+            code_hash,
+            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            spec_id: SpecId::CANCUN,
+        })
+        .unwrap();
+    }
+
+    let (key, stored) = store.load_all().unwrap().pop().unwrap();
+    let stale_key = ArtifactKey { abi_version: crate::ABI_VERSION - 1, ..key };
+    let manifest = ArtifactManifest { artifact_key: stale_key, ..stored.manifest.clone() };
+    let mismatched_store = Arc::new(RuntimeArtifactStore::new().unwrap());
+    mismatched_store.store(&key, &manifest, &std::fs::read(&stored.dylib_path).unwrap()).unwrap();
+
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        store: Some(mismatched_store),
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+        ..Default::default()
+    });
+    assert_eq!(tb.stats().resident_entries, 0);
+
+    // The probe rejects it too, so the artifact is recompiled.
+    tb.prepare_aot_sync(AotRequest {
+        code_hash,
+        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        spec_id: SpecId::CANCUN,
+    })
+    .unwrap();
+    assert_eq!(tb.stats().compilations_dispatched, 1);
+}
+
+#[test]
+fn compile_config_hash_covers_every_compile_input() {
+    let hash = |config: RuntimeConfig| storage::compile_config_hash(&config);
+    let base = RuntimeConfig::default();
+    let mut gas_params = evm2::Version::base(SpecId::CANCUN).gas_params;
+    let with_gas_params = RuntimeConfig { gas_params: Some(gas_params), ..Default::default() };
+    *gas_params.get_mut(evm2::version::GasId::ExpByte) += 1;
+
+    let hashes = [
+        hash(base.clone()),
+        hash(RuntimeConfig { debug_assertions: !base.debug_assertions, ..base.clone() }),
+        hash(RuntimeConfig { single_error: !base.single_error, ..base.clone() }),
+        hash(RuntimeConfig { no_dedup: !base.no_dedup, ..base.clone() }),
+        hash(RuntimeConfig { no_dse: !base.no_dse, ..base.clone() }),
+        hash(with_gas_params),
+        hash(RuntimeConfig { gas_params: Some(gas_params), ..base }),
+    ];
+    for (i, a) in hashes.iter().enumerate() {
+        assert!(hashes[i + 1..].iter().all(|b| a != b), "hash {i} collides");
+    }
+}
+
+/// An artifact compiled under one gas schedule is neither preloaded nor probed by a backend that
+/// runs another, and both artifacts coexist in the shared store.
+#[test]
+#[cfg(feature = "llvm")]
+fn artifacts_are_scoped_to_compile_config() {
+    let store = Arc::new(RuntimeArtifactStore::new().unwrap());
+    let code_hash = alloy_primitives::keccak256(BYTECODE_RET42);
+    let req = || AotRequest {
+        code_hash,
+        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        spec_id: SpecId::CANCUN,
+    };
+    let config = |gas_params| RuntimeConfig {
+        enabled: true,
+        store: Some(store.clone()),
+        gas_params,
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+        ..Default::default()
+    };
+
+    {
+        let tb = TestBackend::new(config(None));
+        tb.prepare_aot_sync(req()).unwrap();
+    }
+    assert_eq!(store.len(), 1);
+
+    let mut gas_params = evm2::Version::base(SpecId::CANCUN).gas_params;
+    *gas_params.get_mut(evm2::version::GasId::ExpByte) += 1;
+
+    let tb = TestBackend::new(config(Some(gas_params)));
+    assert!(tb.get_compiled(code_hash, SpecId::CANCUN).is_none());
+    assert_eq!(tb.stats().resident_entries, 0);
+
+    tb.prepare_aot_sync(req()).unwrap();
+    assert_eq!(tb.stats().compilations_dispatched, 1);
+    assert_eq!(store.len(), 2);
+    assert!(tb.get_compiled(code_hash, SpecId::CANCUN).is_some());
+}
+
 /// `prepare_aot()` on a key that is already persisted in the store but not resident
 /// (e.g. after a `clear_resident`) loads from the store without recompiling.
 #[test]
@@ -1475,41 +1620,85 @@ fn prepare_aot_already_persisted_not_resident() {
     );
 }
 
-/// `prepare_aot()` on a key that is already resident as JIT should be skipped.
-/// This documents the current behavior (todo: JIT-resident code should still persist).
+/// AOT preparation persists JIT-resident code and allows reloading without recompilation.
 #[test]
 #[cfg(feature = "llvm")]
-fn prepare_aot_skips_jit_resident() {
+fn prepare_aot_persists_jit_resident() {
     let store = Arc::new(RuntimeArtifactStore::new().unwrap());
     let code_hash = alloy_primitives::keccak256(BYTECODE_RET42);
 
     let tb = TestBackend::new(RuntimeConfig {
         enabled: true,
         store: Some(store.clone()),
-        tuning: RuntimeTuning { jit_hot_threshold: 1, jit_worker_count: 1, ..Default::default() },
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
         ..Default::default()
     });
 
     // JIT-compile first.
-    let p = tb.trigger_jit_cancun(BYTECODE_RET42);
+    tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+    let p = tb.get_compiled(code_hash, SpecId::CANCUN).unwrap();
     assert_eq!(p.kind, ProgramKind::Jit);
     assert_eq!(tb.stats().resident_entries, 1);
+    assert!(store.is_empty());
+    let dispatched_before = tb.stats().compilations_dispatched;
 
-    // Now request AOT — should be skipped because key is already resident.
-    tb.prepare_aot(AotRequest {
+    // JIT requests still reuse the resident program.
+    tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+    assert_eq!(tb.stats().compilations_dispatched, dispatched_before);
+
+    let req = AotRequest {
         code_hash,
         code: Bytes::copy_from_slice(BYTECODE_RET42),
         spec_id: SpecId::CANCUN,
+    };
+    tb.prepare_aot_sync(req.clone()).unwrap();
+
+    assert_eq!(store.len(), 1);
+    assert_eq!(tb.get_compiled(code_hash, SpecId::CANCUN).unwrap().kind, ProgramKind::Aot);
+    let dispatched_after = tb.stats().compilations_dispatched;
+    assert_eq!(dispatched_after, dispatched_before + 1);
+
+    // Both request kinds reuse the resident AOT program.
+    tb.prepare_aot_sync(req.clone()).unwrap();
+    tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+    assert_eq!(tb.stats().compilations_dispatched, dispatched_after);
+    assert_eq!(tb.get_compiled(code_hash, SpecId::CANCUN).unwrap().kind, ProgramKind::Aot);
+
+    // Clearing memory leaves an artifact that can be loaded without recompiling.
+    tb.clear_resident();
+    tb.wait_resident_count(0);
+    tb.prepare_aot_sync(req).unwrap();
+    assert_eq!(tb.get_compiled(code_hash, SpecId::CANCUN).unwrap().kind, ProgramKind::Aot);
+    assert_eq!(tb.stats().compilations_dispatched, dispatched_after);
+}
+
+/// Failure to reload the AOT artifact leaves the original JIT program available.
+#[test]
+#[cfg(feature = "llvm")]
+fn prepare_aot_preserves_jit_resident_on_failure() {
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        store: Some(Arc::new(EmptyStore)),
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+        ..Default::default()
     });
+    let req = TestBackend::req_cancun(BYTECODE_RET42);
+    tb.compile_jit_sync(req.clone()).unwrap();
+    let jit = tb.get_compiled(req.key.code_hash, req.key.spec_id).unwrap();
+    assert_eq!(jit.kind, ProgramKind::Jit);
+    let before = tb.stats();
 
-    // Give backend time to process.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // EmptyStore accepts writes but cannot return the artifact for loading.
+    tb.prepare_aot_sync(AotRequest {
+        code_hash: req.key.code_hash,
+        code: req.code,
+        spec_id: req.key.spec_id,
+    })
+    .unwrap();
 
-    // Nothing was persisted — AOT was skipped because the key was already resident as JIT.
-    assert_eq!(store.len(), 0, "prepare_aot should skip JIT-resident keys");
-    // Still JIT, not replaced.
-    let p = tb.get_compiled(code_hash, SpecId::CANCUN).unwrap();
-    assert_eq!(p.kind, ProgramKind::Jit);
+    assert_eq!(tb.stats().compilations_dispatched, before.compilations_dispatched + 1);
+    assert_eq!(tb.stats().compilations_failed, before.compilations_failed + 1);
+    assert!(Arc::ptr_eq(&jit, &tb.get_compiled(req.key.code_hash, req.key.spec_id).unwrap()));
 }
 
 // ===========================================================================

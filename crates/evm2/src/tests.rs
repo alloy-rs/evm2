@@ -2,16 +2,21 @@ use crate::{
     BaseEvmTypes, Evm, EvmFeatures, ExecutionConfig, Inspector, Precompiles, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnvExt, TxEnvExt},
-    ethereum::{LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
+    ethereum::{
+        LazyAuthorization, LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope,
+        eip7702::{AuthRefunds, RuntimeAuthCharges, apply_auth_list},
+        ethereum_tx_registry, prepare_initial_frame,
+    },
     evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
-    interpreter::{Host, InstrStop, MessageExt, Word, op},
+    interpreter::{GasTracker, Host, InstrStop, MessageExt, Word, op},
     registry::TxRegistry,
     test_utils::{legacy_bytecode, push, push_address, push_all},
+    version::GasId,
 };
 use alloc::{vec, vec::Vec};
 use alloy_consensus::{TxEip7702, TxLegacy, transaction::Recovered};
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
-use alloy_primitives::{Address, Log, TxKind, U256};
+use alloy_primitives::{Address, Log, TxKind, U256, hex};
 
 type TestEvm = Evm<'static, BaseEvmTypes>;
 
@@ -286,6 +291,62 @@ fn eip2780_authorization_charges_no_state_gas_without_eip8037() {
     assert_eq!(authority.code_hash, Bytecode::new_eip7702(delegate).hash_slow());
 }
 
+fn absent_authority_evm(spec: SpecId, touched: Address) -> TestEvm {
+    let mut evm = TestEvm::new(
+        spec,
+        BlockEnvExt::default(),
+        ethereum_tx_registry(spec),
+        InMemoryDB::default(),
+        Precompiles::base(spec),
+    );
+    evm.state.account(&touched).unwrap().touch();
+    evm
+}
+
+fn auth_for(authority: Address) -> LazyAuthorization {
+    RecoveredAuthorization::new_unchecked(
+        Authorization { chain_id: U256::ZERO, address: Address::with_last_byte(0xdd), nonce: 0 },
+        RecoveredAuthority::Valid(authority),
+    )
+    .into()
+}
+
+#[test]
+fn apply_auth_list_refunds_touched_absent_authority() {
+    let touched = Address::with_last_byte(0xa1);
+    let untouched = Address::with_last_byte(0xa2);
+    let mut evm = absent_authority_evm(SpecId::PRAGUE, touched);
+    let mut refunds = AuthRefunds::new(evm.version());
+
+    apply_auth_list(&mut evm, 1, &[auth_for(touched), auth_for(untouched)], &mut refunds).unwrap();
+
+    // An authority is refunded unless it is absent and untouched.
+    let per_auth = u64::from(evm.version().gas_params.get(GasId::TxEip7702AuthRefund));
+    assert_eq!(refunds.execution_refund, per_auth);
+}
+
+#[test]
+fn eip2780_touched_absent_authority_pays_no_new_account_state_gas() {
+    let authority = Address::with_last_byte(0xa1);
+    let state_gas_spent = |touched: Address| {
+        let mut evm = absent_authority_evm(SpecId::AMSTERDAM, touched);
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(1_000_000, 1_000_000);
+        let mut charges = RuntimeAuthCharges::new(
+            evm.version(),
+            &mut gas,
+            Address::with_last_byte(0xb0),
+            Address::with_last_byte(0xc0),
+            U256::ZERO,
+        );
+        assert!(!apply_auth_list(&mut evm, 1, &[auth_for(authority)], &mut charges).unwrap());
+        (gas.state_gas_spent(), evm.version().gas_params.new_account_state_gas())
+    };
+
+    let (untouched, new_account) = state_gas_spent(Address::with_last_byte(0xff));
+    let (touched, _) = state_gas_spent(authority);
+    assert_eq!(untouched - touched, i64::try_from(new_account).unwrap());
+}
+
 const LOG_CALLER: Address = Address::with_last_byte(0xa0);
 const LOG_CONTRACT: Address = Address::with_last_byte(0xa1);
 const LOG_EMITTER: Address = Address::with_last_byte(0xa2);
@@ -416,3 +477,105 @@ fn log_collection_off_still_inspects_logs() {
     );
     assert_eq!(inspector.0, collected.logs);
 }
+
+#[rstest::rstest]
+#[case::empty_precompile(2, Bytecode::default(), &SHA256_FOUR_BYTES, 72, 230)]
+#[case::precompile_with_code(2, legacy_bytecode([op::STOP]), &SHA256_FOUR_BYTES, 72, 230)]
+#[case::precompile_with_delegation(
+    2, Bytecode::new_eip7702(Address::with_last_byte(0x33)), &SHA256_FOUR_BYTES, 72, 2830
+)]
+#[case::precompile_with_self_delegation(
+    2, Bytecode::new_eip7702(Address::with_last_byte(2)), &SHA256_FOUR_BYTES, 72, 330
+)]
+#[case::ordinary_delegation(
+    0x55, Bytecode::new_eip7702(Address::with_last_byte(0x33)),
+    &hex!("000000000000000000000000000000000000000000000000000000000000002a"), 18, 5276
+)]
+#[case::delegation_to_precompile(
+    0x55, Bytecode::new_eip7702(Address::with_last_byte(2)), &[], 0, 2755
+)]
+fn precompile_dispatch_uses_original_callee(
+    #[case] callee: u8,
+    #[case] code: Bytecode,
+    #[case] expected_output: &[u8],
+    #[case] root_gas: u64,
+    #[case] call_gas: u64,
+    #[values(
+        None,
+        Some(op::CALL),
+        Some(op::CALLCODE),
+        Some(op::DELEGATECALL),
+        Some(op::STATICCALL)
+    )]
+    opcode: Option<u8>,
+) {
+    let callee = Address::with_last_byte(callee);
+    let delegate = Address::with_last_byte(0x33);
+    let parent = Address::with_last_byte(0x44);
+    let caller = Address::with_last_byte(0xaa);
+    let mut database = InMemoryDB::default();
+    database.insert_account_info(&callee, AccountInfo::default().with_code(code));
+    database.insert_account_info(
+        &delegate,
+        AccountInfo::default().with_code(legacy_bytecode(hex!("602a60005260206000f3"))),
+    );
+
+    let target = if let Some(opcode) = opcode {
+        // Copy transaction input into memory, call the callee, and return its entire output.
+        let mut code = vec![op::CALLDATASIZE];
+        push_all(&mut code, [0, 0]);
+        code.push(op::CALLDATACOPY);
+        push_all(&mut code, [0, 0, 4, 0]);
+        if matches!(opcode, op::CALL | op::CALLCODE) {
+            push(&mut code, 0);
+        }
+        push_address(&mut code, &callee);
+        code.extend([op::GAS, opcode, op::POP, op::RETURNDATASIZE]);
+        push_all(&mut code, [0, 0]);
+        code.extend([op::RETURNDATACOPY, op::RETURNDATASIZE]);
+        push(&mut code, 0);
+        code.push(op::RETURN);
+        database
+            .insert_account_info(&parent, AccountInfo::default().with_code(legacy_bytecode(code)));
+        parent
+    } else {
+        callee
+    };
+    let mut evm = TestEvm::new(
+        SpecId::PRAGUE,
+        BlockEnvExt::default(),
+        TxRegistry::new(),
+        database,
+        Precompiles::base(SpecId::PRAGUE),
+    );
+    evm.warm_precompiles();
+    evm.state.prewarm(&caller);
+    evm.state.prewarm(&target);
+    let mut gas = GasTracker::new(100_000);
+    let mut frame = prepare_initial_frame(
+        &mut evm,
+        caller,
+        0,
+        TxKind::Call(target),
+        &hex!("01020304").into(),
+        U256::ZERO,
+        &mut gas,
+    )
+    .unwrap()
+    .unwrap();
+    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut frame.message).unwrap();
+
+    assert!(result.stop.is_success(), "{:?}", result.stop);
+    assert_eq!(result.output.as_ref(), expected_output);
+    // Geth's Prague gas usage includes delegation resolution even for precompile callees.
+    let expected_gas = match opcode {
+        None => root_gas,
+        Some(op::DELEGATECALL | op::STATICCALL) => call_gas - 3,
+        Some(_) => call_gas,
+    };
+    assert_eq!(result.gas.spent(), expected_gas);
+}
+
+// SHA-256 of the four input bytes 0x01020304.
+const SHA256_FOUR_BYTES: [u8; 32] =
+    hex!("9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a");

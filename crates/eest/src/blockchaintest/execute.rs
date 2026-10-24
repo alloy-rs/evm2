@@ -840,17 +840,6 @@ fn pre_block_system_calls(
     if block.number.is_zero() {
         return Ok(());
     }
-    if spec.enables(SpecId::PRAGUE)
-        && let Some(hash) = parent_block_hash
-    {
-        run_system_call(
-            evm,
-            block_state,
-            HISTORY_STORAGE_ADDRESS,
-            Bytes::copy_from_slice(hash.as_slice()),
-            "eip2935",
-        )?;
-    }
     if spec.enables(SpecId::CANCUN)
         && let Some(root) = parent_beacon_block_root
     {
@@ -860,6 +849,17 @@ fn pre_block_system_calls(
             BEACON_ROOTS_ADDRESS,
             Bytes::copy_from_slice(root.as_slice()),
             "eip4788",
+        )?;
+    }
+    if spec.enables(SpecId::PRAGUE)
+        && let Some(hash) = parent_block_hash
+    {
+        run_system_call(
+            evm,
+            block_state,
+            HISTORY_STORAGE_ADDRESS,
+            Bytes::copy_from_slice(hash.as_slice()),
+            "eip2935",
         )?;
     }
     Ok(())
@@ -949,7 +949,7 @@ fn run_system_call(
     if !executed.result().status {
         let _ = executed.discard();
         let has_code = match evm.read_account_info(&address) {
-            Ok(info) => info.is_some_and(|info| info.code_hash != KECCAK256_EMPTY),
+            Ok(info) => info.is_some_and(|info| !info.is_empty_code_hash()),
             Err(code) => return Err(TestErrorKind::UnexpectedFailure(code.to_string())),
         };
         if has_code {
