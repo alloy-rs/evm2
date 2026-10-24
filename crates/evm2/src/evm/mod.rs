@@ -2469,6 +2469,7 @@ mod tests {
         Mut,
         AsMut,
         Set,
+        SetBoxed,
     }
 
     fn run_precompile_access(access: PrecompileAccess) {
@@ -2485,6 +2486,10 @@ mod tests {
                 },
                 PrecompileAccess::Set => |evm, _, _| {
                     evm.set_precompiles(empty_precompiles());
+                    Ok(PrecompileOutput::new(Bytes::new()))
+                },
+                PrecompileAccess::SetBoxed => |evm, _, _| {
+                    evm.set_boxed_precompiles(Box::new(empty_precompiles()));
                     Ok(PrecompileOutput::new(Bytes::new()))
                 },
             },
@@ -2633,6 +2638,12 @@ mod tests {
     #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
     fn set_precompiles_panics_during_execution() {
         run_precompile_access(PrecompileAccess::Set);
+    }
+
+    #[test]
+    #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
+    fn set_boxed_precompiles_panics_during_execution() {
+        run_precompile_access(PrecompileAccess::SetBoxed);
     }
 
     #[derive(Clone, Copy)]
@@ -4232,6 +4243,7 @@ mod tests {
     #[rstest::rstest]
     #[case(PrecompileAccess::Mut)]
     #[case(PrecompileAccess::Set)]
+    #[case(PrecompileAccess::SetBoxed)]
     #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
     fn precompiles_cannot_be_modified_during_transact(#[case] access: PrecompileAccess) {
         let mut evm = lifecycle_evm();
@@ -4246,6 +4258,9 @@ mod tests {
                             let _ = req.host.precompiles_mut();
                         }
                         PrecompileAccess::Set => req.host.set_precompiles(empty_precompiles()),
+                        PrecompileAccess::SetBoxed => {
+                            req.host.set_boxed_precompiles(Box::new(empty_precompiles()))
+                        }
                         PrecompileAccess::AsMut => unreachable!(),
                     }
                     Ok(TxResultExt::default())
