@@ -1732,6 +1732,10 @@ impl Bytecode<'_> {
                 // Disabled opcodes halt and have no stack inputs.
                 let loaded = if inst.flags.contains(InstFlags::DISABLED) {
                     None
+                } else if inst.flags.contains(InstFlags::HOST) {
+                    // The host's instruction may write any memory.
+                    mem.0.clear();
+                    None
                 } else {
                     mem.transfer(inst.opcode, &stack[stack.len() - inp..])
                 };

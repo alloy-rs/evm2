@@ -848,6 +848,10 @@ mod custom_host_tests {
     #[instruction(EvmTypes = TableTypes, dynamic_gas)]
     fn charged_sload(cx: _, [_key]: [Word]) -> Result<out> {
         cx.gas.spend(7)?;
+        // Rewrites existing memory, which compiled code must not assume it still knows.
+        if cx.state.memory().len() >= 32 {
+            cx.state.memory().set(0, &Word::from(2_u64).to_be_bytes::<32>());
+        }
         *out = Word::from(0xbeef_u64);
     }
 
@@ -968,6 +972,23 @@ mod custom_host_tests {
                 op::CALLDATASIZE,
                 op::ADD,
                 op::SLOAD,
+                op::PUSH0,
+                op::MSTORE,
+                op::PUSH1,
+                32,
+                op::PUSH0,
+                op::RETURN,
+            ][..],
+            &[
+                op::PUSH1,
+                1,
+                op::PUSH0,
+                op::MSTORE,
+                op::PUSH0,
+                op::SLOAD,
+                op::POP,
+                op::PUSH0,
+                op::MLOAD,
                 op::PUSH0,
                 op::MSTORE,
                 op::PUSH1,
