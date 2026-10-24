@@ -524,7 +524,7 @@ impl<B: Backend> EvmCompiler<B> {
     /// Makes the builtin symbol names unique to a host.
     ///
     /// For compilers whose objects the runtime links by name to the builtins of that host.
-    pub fn set_builtin_symbol_suffix(&mut self, suffix: usize) {
+    pub const fn set_builtin_symbol_suffix(&mut self, suffix: usize) {
         self.builtins.set_symbol_suffix(suffix);
     }
 
