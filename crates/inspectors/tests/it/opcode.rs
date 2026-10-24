@@ -1,5 +1,5 @@
-use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, TransactTo, TxEnv};
-use alloy_primitives::{Address, address};
+use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, SpecId, TransactTo, TxEnv};
+use alloy_primitives::{Address, address, hex};
 use evm2::interpreter::opcode::{OpCode, op};
 use evm2_inspectors::opcode::OpcodeGasInspector;
 
@@ -137,4 +137,47 @@ fn opcode_gas_preserves_cold_call_out_of_gas() {
     assert!(!res.result.is_success());
     let call = OpCode::new(op::CALL).unwrap();
     assert_eq!(evm.inspector().opcode_gas().get(&call), Some(&640));
+}
+
+#[test]
+fn opcode_gas_excludes_failed_memory_expansion_charge() {
+    let contract = address!("0000000000000000000000000000000000000022");
+    // The mainnet failure starts with PUSH1 0x80; PUSH1 0x40; MSTORE and 12 gas.
+    // MSTORE pays its base cost, but cannot expand empty memory to three words.
+    for (opcode, code, execution_gas, expected_cost) in [
+        (op::MSTORE, vec![op::PUSH1, 0x80, op::PUSH1, 0x40, op::MSTORE], 12, 3),
+        (op::MSTORE8, vec![op::PUSH1, 0x80, op::PUSH1, 0x40, op::MSTORE8], 12, 3),
+        (op::MLOAD, vec![op::PUSH1, 0x40, op::MLOAD], 9, 3),
+        // Mainnet CALLDATACOPY failures after expanding memory to 465/329 words.
+        // Copying 23 words costs 72 gas, leaving 40/94 for expansion costing 112/100.
+        (op::CALLDATACOPY, hex!("60006139e4526102e06117a4613a0437").to_vec(), 1947, 72),
+        (op::CALLDATACOPY, hex!("60006128e4526102e0610d6461290437").to_vec(), 1382, 72),
+        // A failed base charge still consumes the available gas before step_end.
+        (op::MSTORE, vec![op::PUSH1, 0x80, op::PUSH1, 0x40, op::MSTORE], 8, 2),
+    ] {
+        let context = Context::mainnet()
+            .with_db(CacheDB::<EmptyDB>::default())
+            .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+            .modify_db_chained(|db| {
+                db.insert_account_info(
+                    &contract,
+                    AccountInfo {
+                        code: Some(Bytecode::new_legacy(code.into())),
+                        ..Default::default()
+                    },
+                );
+            });
+        let mut inspector = OpcodeGasInspector::new();
+        let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+        let gas_limit = 21_000 + execution_gas;
+        let res = evm
+            .inspect_tx(TxEnv { gas_limit, kind: TransactTo::Call(contract), ..Default::default() })
+            .unwrap();
+
+        assert!(!res.result.is_success());
+        assert_eq!(res.result.tx_gas_used(), gas_limit);
+        let opcode = OpCode::new(opcode).unwrap();
+        assert_eq!(inspector.opcode_counts().get(&opcode), Some(&1));
+        assert_eq!(inspector.opcode_gas().get(&opcode), Some(&expected_cost));
+    }
 }

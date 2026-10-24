@@ -635,7 +635,8 @@ mod tests {
         impl Inspector<BaseEvmTypes> for GasInspector {
             fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
                 if matches!(interp.result(), Err(InstrStop::OutOfGas | InstrStop::MemoryOOG)) {
-                    assert_eq!(interp.gas().remaining(), 0);
+                    let expected = if interp.result() == Err(InstrStop::MemoryOOG) { 2 } else { 0 };
+                    assert_eq!(interp.gas().remaining(), expected);
                     self.failures += 1;
                     if self.recover {
                         interp.gas_mut().set_remaining(17);

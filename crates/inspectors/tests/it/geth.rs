@@ -1878,6 +1878,49 @@ fn test_geth_struct_log_out_of_gas_cost() {
     assert_eq!(sstore.gas_cost, 22_100);
 }
 
+#[test]
+fn test_geth_struct_log_failed_memory_expansion_cost() {
+    let contract = address!("c000000000000000000000000000000000000004");
+    for (code, execution_gas, gas_before, expected_cost) in [
+        (hex!("6080604052").to_vec(), 12, 6, 12),
+        (hex!("60006139e4526102e06117a4613a0437").to_vec(), 1947, 112, 184),
+        (hex!("60006128e4526102e0610d6461290437").to_vec(), 1382, 166, 172),
+    ] {
+        let context = Context::mainnet()
+            .with_db(CacheDB::<EmptyDB>::default())
+            .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+            .modify_db_chained(|db| {
+                db.insert_account_info(
+                    &contract,
+                    AccountInfo {
+                        code: Some(Bytecode::new_legacy(code.into())),
+                        ..Default::default()
+                    },
+                );
+            });
+        let mut inspector = TracingInspector::new(TracingInspectorConfig::default_geth());
+        let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+        let res = evm
+            .inspect_tx(TxEnv {
+                gas_limit: 21_000 + execution_gas,
+                kind: TransactTo::Call(contract),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(!res.result.is_success());
+        assert_eq!(res.result.tx_gas_used(), 21_000 + execution_gas);
+        let frame = inspector.geth_builder().geth_traces(
+            res.result.tx_gas_used(),
+            res.result.output().unwrap_or_default().clone(),
+            GethDefaultTracingOptions::default(),
+        );
+        let step = frame.struct_logs.last().unwrap();
+        assert_eq!(step.gas, gas_before);
+        // Geth reports the full attempted cost, even when memory expansion fails.
+        assert_eq!(step.gas_cost, expected_cost);
+    }
+}
+
 /// EIP-7708: a transfer log of a reverted call is rolled back and does not consume an index.
 #[test]
 fn test_geth_calltracer_log_index_eip7708_revert() {
