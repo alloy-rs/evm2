@@ -1136,7 +1136,7 @@ impl InstData {
     /// host reads that survive a revert, such as EIP-7928 block access list entries. `GAS` also
     /// reads `gasleft()`, but it is pure, so it adds back the gas charged ahead of it instead.
     #[inline]
-    pub(crate) const fn ends_sections(&self, spec_id: SpecId) -> bool {
+    pub(crate) const fn ends_sections(&self) -> bool {
         match self.opcode {
             // Calls and contract creation cap the gas forwarded based on the remaining gas, and
             // the callee can return a value transfer's stipend, leaving more gas than before.
@@ -1146,15 +1146,16 @@ impl InstData {
             | op::DELEGATECALL
             | op::CREATE2
             | op::STATICCALL => true,
-            // EIP-2200 rejects SSTORE when the remaining gas is at most the call stipend.
-            op::SSTORE => spec_id.enables(SpecId::ISTANBUL),
-            // EIP-2929 skips cold host loads when the remaining gas cannot cover their cost.
-            op::BALANCE
+            // EIP-2200 rejects SSTORE when the remaining gas is at most the call stipend, and
+            // EIP-2929 skips cold host loads when the remaining gas cannot cover their cost. The
+            // active features, not the base spec, decide whether either applies.
+            op::SSTORE
+            | op::BALANCE
             | op::EXTCODESIZE
             | op::EXTCODECOPY
             | op::EXTCODEHASH
             | op::SLOAD
-            | op::SELFDESTRUCT => spec_id.enables(SpecId::BERLIN),
+            | op::SELFDESTRUCT => true,
             _ => false,
         }
     }
