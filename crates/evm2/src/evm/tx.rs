@@ -97,15 +97,13 @@ impl<E> TxResultExt<E> {
     ///
     /// Unlike [`InstrStop::is_revert`], this does not count [`InstrStop::CallTooDeep`] or
     /// [`InstrStop::OutOfFunds`]. Those are call-frame failures that the interpreter treats as
-    /// reverts, but a transaction result reports them as halts, like revm's top-level
-    /// `ExecutionResult::Revert`.
+    /// reverts, but a transaction result reports them as halts.
     #[inline]
     pub const fn is_revert(&self) -> bool {
         !self.status && matches!(self.stop, InstrStop::Revert)
     }
 
-    /// Returns whether execution failed without success or a `REVERT`, like revm's
-    /// `ExecutionResult::is_halt`.
+    /// Returns whether execution failed without success or a `REVERT`.
     #[inline]
     pub const fn is_halt(&self) -> bool {
         !self.status && !self.is_revert()
