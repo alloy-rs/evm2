@@ -254,8 +254,8 @@ impl Eip7702Authorization for LazyAuthorization {
 pub struct AppliedAuth {
     /// Whether the authority account already existed when this authorization was processed.
     ///
-    /// Following revm, an account that is absent but touched (such as a sender whose nonce was
-    /// not bumped) counts as existing.
+    /// Following revm, an account counts as existing when it is present in state or touched
+    /// earlier in the transaction, even if it is still absent.
     pub existed: bool,
     /// Whether the authority's code was a valid delegation at the start of the transaction.
     pub delegated_before_tx: bool,
