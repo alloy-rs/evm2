@@ -290,14 +290,18 @@ impl OpcodeTable {
     /// when its static gas differs and the base builtin pays its whole cost.
     pub fn from_execution_config<T: EvmTypesHost>(config: &ExecutionConfig<T>) -> Self {
         let opcodes = config.opcode_config();
-        let base = OpcodeConfig::<T>::base_for_spec(config.base_spec_id());
+        // A table that started from another spec's base table cannot be compared opcode by
+        // opcode, so every opcode counts as the host's.
+        let comparable = opcodes.origin_spec() == config.base_spec_id();
+        let base = OpcodeConfig::<T>::base_for_spec(opcodes.origin_spec());
         let mut table = Self { gas: [0; 256], defined: [false; 256], host: [false; 256] };
         for op in 0..=u8::MAX {
             let i = op as usize;
             table.gas[i] = opcodes.static_gas(op);
             table.defined[i] = opcodes.is_defined(op);
             table.host[i] = table.defined[i]
-                && (opcodes.is_overridden(base, op)
+                && (!comparable
+                    || opcodes.is_overridden(base, op)
                     || (contains(FULLY_DYNAMIC, op)
                         && opcodes.static_gas(op) != base.static_gas(op)));
         }

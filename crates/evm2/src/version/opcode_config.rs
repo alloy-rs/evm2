@@ -20,6 +20,8 @@ pub struct OpcodeConfig<T: EvmTypesHost> {
     revisions: [u8; 256],
     /// Number of times each opcode's instruction was set.
     instruction_sets: [u8; 256],
+    /// The base spec whose table this config started from.
+    origin: SpecId,
 }
 
 pub(crate) struct InstructionInfo<T: EvmTypesHost> {
@@ -42,8 +44,9 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
 
     /// Creates empty type-specific opcode config.
     #[inline]
-    pub(super) const fn empty() -> Self {
+    pub(super) const fn empty(origin: SpecId) -> Self {
         Self {
+            origin,
             static_gas_table: StaticGasTable::empty(),
             instruction_impls: InstructionImplTable::empty(),
             revisions: [0; 256],
@@ -62,6 +65,12 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
         crate::spec_to_generic!(spec, |BASE_SPEC_ID| {
             <BaseEvmConfig<BASE_SPEC_ID> as EvmConfig<T>>::OPCODE_CONFIG
         })
+    }
+
+    /// Returns the base spec whose table this config started from.
+    #[inline]
+    pub const fn origin_spec(&self) -> SpecId {
+        self.origin
     }
 
     /// Returns whether `opcode` has an instruction implementation.
@@ -83,11 +92,12 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
     /// overrides.
     pub fn same_table(&self, other: &Self) -> bool {
         core::ptr::eq(self, other)
-            || (0..=u8::MAX).all(|op| {
-                self.static_gas(op) == other.static_gas(op)
-                    && self.is_defined(op) == other.is_defined(op)
-                    && !self.is_overridden(other, op)
-            })
+            || self.origin == other.origin
+                && (0..=u8::MAX).all(|op| {
+                    self.static_gas(op) == other.static_gas(op)
+                        && self.is_defined(op) == other.is_defined(op)
+                        && !self.is_overridden(other, op)
+                })
     }
 
     /// Returns the dispatch-table revision for `opcode`.
@@ -214,14 +224,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "INVALID opcode cannot be overridden")]
     fn invalid_static_gas_cannot_be_overridden() {
-        let mut tables = OpcodeConfig::<BaseEvmTypes>::empty();
+        let mut tables = OpcodeConfig::<BaseEvmTypes>::empty(SpecId::default());
         tables.set_static_gas(op::INVALID, 1);
     }
 
     #[test]
     #[should_panic(expected = "INVALID opcode cannot be overridden")]
     fn invalid_instruction_cannot_be_overridden() {
-        let mut tables = OpcodeConfig::<BaseEvmTypes>::empty();
+        let mut tables = OpcodeConfig::<BaseEvmTypes>::empty(SpecId::default());
         tables.set_instruction::<instr::stop<BaseEvmTypes>>(op::INVALID, 0);
     }
 }
