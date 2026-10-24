@@ -5,12 +5,20 @@ ignore = [
     "RUSTSEC-2024-0436", # paste - no longer maintained
     # `proc-macro-error2` is unmaintained - transitive dependency
     "RUSTSEC-2026-0173",
+    # Alloy/revm still require crypto-bigint 0.5.5, which has no compatible patch.
+    # Its uses here verify public transaction/precompile inputs; signing uses fixed test keys.
+    # Remove this exception when their RustCrypto dependencies are upgraded.
+    { id = "RUSTSEC-2026-0387", reason = "Unpatched 0.5.5 is required by Alloy/revm; vulnerable newer versions are banned below." },
 ]
 
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"
 highlight = "all"
+deny = [
+    # Keep the advisory exception above from allowing affected newer release lines.
+    { name = "crypto-bigint", version = ">=0.6, <0.7.6", reason = "RUSTSEC-2026-0387 is fixed in 0.7.6." },
+]
 
 [licenses]
 confidence-threshold = 0.9
