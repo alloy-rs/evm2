@@ -464,12 +464,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.finish_run(stop)
     }
 
-    /// Borrows instruction state for a custom interpreter runner's builtins.
-    #[inline]
-    pub const fn instruction_state(&mut self) -> &mut InterpreterState<'frame, 'host, T> {
-        InterpreterState::wrap_mut(self)
-    }
-
     /// Takes an owned error recorded by an instruction or inspector hook.
     pub(crate) const fn take_error(&mut self) -> Option<ExecutionError> {
         self.error.take()

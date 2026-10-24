@@ -138,16 +138,6 @@ impl<'ctx, 'frame, 'host, T: EvmTypesHost> EvmContext<'ctx, 'frame, 'host, T> {
         unsafe { self.interpreter.as_mut() }
     }
 
-    /// Borrows the JIT gas and interpreter instruction state independently.
-    #[inline]
-    pub const fn instruction_parts(
-        &mut self,
-    ) -> (&mut Gas, &mut evm2::interpreter::InterpreterState<'frame, 'host, T>) {
-        // SAFETY: The context owns the live interpreter borrow. Its gas field is separate.
-        let state = unsafe { self.interpreter.as_mut() }.instruction_state();
-        (&mut self.gas, state)
-    }
-
     /// Returns the current linear memory.
     #[inline]
     pub const fn memory(&self) -> &Memory {
