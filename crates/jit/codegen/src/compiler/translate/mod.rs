@@ -1519,8 +1519,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     #[must_use]
     fn sp_after_const_inputs(&mut self) -> B::Value {
         let inputs = self.current_inst().stack_io().0 as usize;
-        let top = self.section_len_offset;
-        self.observe_slots(top - inputs as i32..top);
         self.write_const_operands(inputs);
         self.sp_from_top(inputs)
     }
@@ -1557,9 +1555,12 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.gep(self.i8_type, ptr, &[stack_bytes], "sp")
     }
 
-    /// Returns the stack pointer at `n` from the top (`&stack[len - n]`).
+    /// Returns the stack pointer at `n` from the top (`&stack[len - n]`) for a builtin, which may
+    /// read the slots above it.
     fn sp_from_top(&mut self, n: usize) -> B::Value {
-        self.sp_from_section(self.section_len_offset as i64 - n as i64)
+        let top = self.section_len_offset;
+        self.observe_slots(top - n as i32..top);
+        self.sp_from_section(top as i64 - n as i64)
     }
 
     /// Resolves a stack value at the given depth via the virtual stack.
