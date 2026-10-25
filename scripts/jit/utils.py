@@ -171,10 +171,15 @@ STACK_STRINGS = 32768
 def no_aslr() -> list[str]:
     """Command prefix that disables address space randomization, empty where that is denied."""
     try:
-        r = subprocess.run(["setarch", "-R", "true"], capture_output=True, check=False)
+        ok = (
+            subprocess.run(["setarch", "-R", "true"], capture_output=True, check=False).returncode
+            == 0
+        )
     except FileNotFoundError:
-        return []
-    return ["setarch", "-R"] if r.returncode == 0 else []
+        ok = False
+    if not ok:
+        eprint("warning: cannot disable address space randomization; runtime cycles will be noisy")
+    return ["setarch", "-R"] if ok else []
 
 
 def fixed_stack_env(binary: str, args: list[str]) -> dict[str, str]:
@@ -186,8 +191,8 @@ def fixed_stack_env(binary: str, args: list[str]) -> dict[str, str]:
     every revision and bench size.
     """
     env = {**os.environ, "EVM2_BENCH_PAD": ""}
-    used = 2 * len(binary) + 2 + sum(len(a) + 1 for a in args)
-    used += sum(len(k) + len(v) + 2 for k, v in env.items())
+    strings = [binary, binary, *args, *(f"{k}={v}" for k, v in env.items())]
+    used = sum(len(os.fsencode(s)) + 1 for s in strings)
     env["EVM2_BENCH_PAD"] = "x" * max(STACK_STRINGS - used, 0)
     return env
 

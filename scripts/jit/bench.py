@@ -1034,7 +1034,7 @@ def measure(sides: list[Side], benches: list[str], runs: int, perf: bool):
 # so compile-time noise stays negligible.
 RUNTIME_TARGET = 20e9
 RUNTIME_SAMPLES = 5
-# Compile-only runs per side, whose median is subtracted from each sample.
+# Compile-only runs per side, to subtract from each sample: median instructions, fewest cycles.
 COMPILE_RUNS = 3
 
 
@@ -1050,7 +1050,7 @@ def runtime_args(bench: str, n: int) -> list[str]:
     return ["run", bench, str(n), "--jit-only", *RUN_ARGS]
 
 
-def sample_iters(side: Side, bench: str, compile_only: tuple[int, int]) -> int:
+def sample_iters(side: Side, bench: str, compile_only: tuple[float, float]) -> int:
     """Return the `N` whose run executes about `RUNTIME_TARGET / RUNTIME_SAMPLES` instructions."""
     # Compile cost varies by about 0.3%, which can swamp a short probe and make it
     # negative, so grow the probe until execution clearly dominates that noise.
@@ -1077,11 +1077,11 @@ def measure_runtime_bench(sides: list[Side], bench: str):
     samples = {side.label: [] for side in live}
     for side in live[:]:
         try:
-            runs = [
-                perf_counts(side.binary, ["run", bench, "0", *RUN_ARGS])
-                for _ in range(COMPILE_RUNS)
-            ]
-            compile_only[side.label] = tuple(statistics.median(c) for c in zip(*runs, strict=True))
+            runs = [perf_counts(side.binary, runtime_args(bench, 0)) for _ in range(COMPILE_RUNS)]
+            compile_only[side.label] = (
+                statistics.median(c[0] for c in runs),
+                min(c[1] for c in runs),
+            )
             iters[side.label] = sample_iters(side, bench, compile_only[side.label])
         except subprocess.CalledProcessError as e:
             side.failures[bench] = last_line(e.stderr)
