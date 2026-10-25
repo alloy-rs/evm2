@@ -190,8 +190,9 @@ enum EntryPhase {
     Cold,
     /// JIT compilation in progress on a worker.
     Working,
-    /// Compilation failed at this time; the key is not retried until the entry is swept.
-    Failed(Instant),
+    /// Compilation of this kind failed at this time; the key is not retried for that kind until
+    /// the entry is swept.
+    Failed(Instant, CompilationKind),
 }
 
 /// Whether a JIT admission request was triggered by hot-path observation
@@ -376,9 +377,14 @@ impl BackendState {
             return;
         }
 
-        if matches!(entry.phase, EntryPhase::Failed(_)) {
-            sync_notifier.notify();
-            return;
+        if let EntryPhase::Failed(_, failed_kind) = entry.phase {
+            if failed_kind == kind {
+                sync_notifier.notify();
+                return;
+            }
+            // The other kind may still succeed, so it starts over from cold.
+            entry.phase = EntryPhase::Cold;
+            entry.hotness = 0;
         }
 
         if matches!(mode, AdmitMode::Observed) {
@@ -610,7 +616,7 @@ impl BackendState {
                 self.handle_jit_object_success(result.key, success, result.compile_duration);
             }
             Err(err) => {
-                self.fail_entry(&result.key, result.transient);
+                self.fail_entry(&result.key, kind, result.transient);
                 self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
 
                 warn!(
@@ -647,7 +653,7 @@ impl BackendState {
                 );
             }
             Err(err) => {
-                self.fail_entry(&key, false);
+                self.fail_entry(&key, CompilationKind::Jit, false);
                 self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
 
                 warn!(
@@ -810,7 +816,7 @@ impl BackendState {
                             && !self.inner.resident.contains_key(key)
                     }
                     EntryPhase::Working => false,
-                    EntryPhase::Failed(at) => now.duration_since(at) > idle,
+                    EntryPhase::Failed(at, _) => now.duration_since(at) > idle,
                 })
                 .map(|(key, _)| *key)
                 .collect::<Vec<_>>();
@@ -890,13 +896,13 @@ impl BackendState {
     ///
     /// The entry is marked failed, except after a first transient failure, which returns it to
     /// cold: a job that crashes its helper looks the same as one that lost its helper.
-    fn fail_entry(&mut self, key: &RuntimeCacheKey, transient: bool) {
+    fn fail_entry(&mut self, key: &RuntimeCacheKey, kind: CompilationKind, transient: bool) {
         let Some(entry) = self.entries.get_mut(key) else { return };
         if transient && !mem::replace(&mut entry.transient_failed, true) {
             entry.phase = EntryPhase::Cold;
             entry.hotness = 0;
         } else {
-            entry.phase = EntryPhase::Failed(Instant::now());
+            entry.phase = EntryPhase::Failed(Instant::now(), kind);
         }
         self.link_cold_entry(key);
         // Explicit requests are not capped on admission, so cap their failures here.
@@ -1127,7 +1133,7 @@ mod notifier_tests {
             transient: false,
         });
         assert_eq!(state.pending_jobs, 0);
-        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(_)));
+        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(..)));
         for receiver in [original_rx, first_rx, second_rx] {
             assert_eq!(receiver.try_recv(), Ok(()));
             assert_eq!(receiver.try_recv(), Err(chan::TryRecvError::Disconnected));
@@ -1325,7 +1331,7 @@ mod notifier_tests {
         for key in &keys {
             state.entries.get_mut(key).unwrap().phase = EntryPhase::Working;
             state.unlink_cold_entry(key);
-            state.fail_entry(key, false);
+            state.fail_entry(key, CompilationKind::Jit, false);
         }
         assert_eq!(state.cold_head, Some(keys[0]));
         assert_eq!(state.cold_tail, Some(keys[9]));
@@ -1351,7 +1357,7 @@ mod notifier_tests {
         state.entries.get_mut(&key).unwrap().phase = EntryPhase::Working;
         state.unlink_cold_entry(&key);
         state.pending_jobs = 1;
-        state.fail_entry(&key, false);
+        state.fail_entry(&key, CompilationKind::Jit, false);
         state.pending_jobs = 0;
 
         let bytecode = state.entries[&key].bytecode.clone();
@@ -1366,9 +1372,17 @@ mod notifier_tests {
         });
 
         assert_eq!(receiver.try_recv(), Ok(()));
-        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(_)));
+        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(..)));
         assert_eq!(state.pending_jobs, 0);
         assert_eq!(state.inner.stats.compilations_dispatched.load(Ordering::Relaxed), 0);
+
+        // A failure of one kind does not block the other.
+        state.handle_prepare_aot(vec![PrepareAotRequest {
+            key,
+            bytecode: state.entries[&key].bytecode.clone(),
+            sync_notifier: SyncNotifier::none(),
+        }]);
+        assert_eq!(state.entries[&key].phase, EntryPhase::Cold);
     }
 
     #[test]
@@ -1401,7 +1415,7 @@ mod notifier_tests {
 
         // A second consecutive transient failure marks it failed.
         fail(&mut state, true);
-        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(_)));
+        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(..)));
         assert_eq!(state.cold_head, Some(key));
         assert_eq!(state.cold_tail, Some(key));
     }
@@ -1428,7 +1442,7 @@ mod notifier_tests {
             state.unlink_cold_entry(key);
         }
         for key in &keys {
-            state.fail_entry(key, false);
+            state.fail_entry(key, CompilationKind::Jit, false);
         }
         assert_eq!(state.entries.len(), 10);
         assert!(keys[2..].iter().all(|key| state.entries.contains_key(key)));
