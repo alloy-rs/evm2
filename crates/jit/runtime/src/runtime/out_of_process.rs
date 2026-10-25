@@ -866,6 +866,8 @@ fn gas_params_from_pairs(pairs: GasParamPairs) -> eyre::Result<GasParams> {
 }
 
 /// Returns the path that re-executes the running binary, even after it is replaced on disk.
+///
+/// Only Linux can do this; elsewhere the executable path is resolved once and cached.
 fn default_helper_path() -> Result<PathBuf, String> {
     if cfg!(target_os = "linux") {
         return Ok(PathBuf::from("/proc/self/exe"));
