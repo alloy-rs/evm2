@@ -29,6 +29,13 @@
 //! constants on the stack, so that internal functions are analyzed separately for each call chain
 //! (see [`ContextMode`]).
 //!
+//! A recursive call chain repeats return addresses, and would need a new context at every level.
+//! Instead, a stack that holds a jump target twice keeps only the entries above the deeper copy,
+//! and continues in one of a set of segments: shared stack fragments that may in turn continue in
+//! segments, including themselves. The recursion then reaches a fixed set of contexts without
+//! joining the frames of different levels, so that the code below the recursion still finds its
+//! own return addresses.
+//!
 //! A `JUMPI` propagates only along the edges that its condition allows in each context, and the
 //! values that its condition bounds on an edge, such as an index below an array length, get that
 //! bound there. Memory writes at ranged offsets only forget the words in their range.
@@ -264,6 +271,10 @@ const MAX_ABS_STACK_DEPTH: usize = STACK_LIMIT;
 /// at every level, reaches a fixed context instead of a new one per iteration.
 const MAX_CONTEXT_DEPTH: usize = 128;
 
+/// Maximum number of segments that may continue a stack, beyond which the stack is truncated
+/// instead, so that the joins and the runs of a block on each segment stay cheap.
+const MAX_SEGS_BELOW: usize = 64;
+
 /// Maximum number of memory words tracked by [`MemWords`].
 const MAX_MEM_WORDS: usize = 16;
 
@@ -355,6 +366,9 @@ enum BlockState {
         /// Whether entries below `stack` were dropped by a join or by [`MAX_ABS_STACK_DEPTH`]
         /// clamping, so that running out of tracked entries is not a stack underflow.
         truncated: bool,
+        /// The segments, one of which continues the stack below `stack`, sorted. Empty when the
+        /// stack ends at `stack` or is truncated.
+        below: SmallVec<[Seg; 2]>,
         /// Known memory words.
         mem: MemWords,
     },
@@ -366,11 +380,13 @@ impl BlockState {
     /// When stack heights differ, the stacks are top-aligned and the entries below the shorter
     /// one are dropped, marking the state truncated. This handles the common Solidity dispatch
     /// pattern where the "no selector match" fallthrough leaves an extra item on the stack that
-    /// the fallback ignores.
+    /// the fallback ignores. Stacks of the same height that both continue in segments keep the
+    /// segments of both.
     fn join(
         &mut self,
         incoming: &[AbsValue],
         incoming_truncated: bool,
+        incoming_below: &[Seg],
         incoming_mem: &MemWords,
         sets: &mut ConstSetInterner,
     ) -> bool {
@@ -381,19 +397,32 @@ impl BlockState {
                 *self = Self::Known {
                     stack: incoming[start..].to_vec(),
                     truncated: incoming_truncated,
+                    below: if incoming_truncated { SmallVec::new() } else { incoming_below.into() },
                     mem: incoming_mem.clone(),
                 };
                 true
             }
-            Self::Known { stack: existing, truncated, mem } => {
+            Self::Known { stack: existing, truncated, below, mem } => {
                 let mut changed = mem.join(incoming_mem, sets);
 
                 // Keep only the entries that both stacks have, so that joins never grow the
                 // stack.
                 let join_len = existing.len().min(incoming.len());
-                if (incoming_truncated || incoming.len() != existing.len()) && !*truncated {
-                    *truncated = true;
-                    changed = true;
+                if !*truncated {
+                    let lost = incoming_truncated
+                        || incoming.len() != existing.len()
+                        || incoming_below.is_empty() != below.is_empty();
+                    for &seg in incoming_below {
+                        if let Err(i) = below.binary_search(&seg) {
+                            below.insert(i, seg);
+                            changed = true;
+                        }
+                    }
+                    if lost || below.len() > MAX_SEGS_BELOW {
+                        *truncated = true;
+                        below.clear();
+                        changed = true;
+                    }
                 }
                 if existing.len() > join_len {
                     existing.drain(..existing.len() - join_len);
@@ -449,18 +478,21 @@ impl ContextMode {
                 block_parts: 2048,
                 parts: (num_blocks * 32).min(1 << 17),
                 pops: num_blocks * 128,
+                pop_work: 64,
                 work: num_insts as u64 * 320,
             },
             Self::Coarse => Budget {
                 block_parts: 128,
                 parts: (num_blocks * 8).min(1 << 15),
                 pops: num_blocks * 32,
+                pop_work: 0,
                 work: num_insts as u64 * 64,
             },
             Self::Insensitive => Budget {
                 block_parts: 1,
                 parts: num_blocks,
                 pops: num_blocks * 8,
+                pop_work: 0,
                 work: num_insts as u64 * 64,
             },
         }
@@ -475,14 +507,23 @@ struct Budget {
     parts: usize,
     /// Worklist pops.
     pops: usize,
-    /// Interpreted instructions, propagated edges, joined stack entries, and merged set
-    /// constants.
+    /// Work of a worklist pop of a state that continues in segments, besides its instructions.
+    /// Segments leave many pops of short stacks, which then cost about as much as the few pops
+    /// of long stacks without them.
+    pop_work: u64,
+    /// Worklist pops, interpreted instructions, propagated edges, joined stack entries, and
+    /// merged set constants.
     work: u64,
 }
 
 oxc_index::define_nonmax_u32_index_type! {
     /// A block state in one context.
     struct Part;
+}
+
+oxc_index::define_nonmax_u32_index_type! {
+    /// A stack segment that continues the stacks of block states below their tracked entries.
+    struct Seg;
 }
 
 /// How [`Bytecode::interpret_inst`] records snapshots.
@@ -502,6 +543,70 @@ struct Fixpoint {
     /// Constant sets referenced by the snapshots.
     const_sets: ConstSetInterner,
     converged: bool,
+}
+
+/// Block states of [`Bytecode::run_fixpoint`], one per context of each block.
+struct Parts {
+    states: IndexVec<Part, (Block, BlockState)>,
+    /// The part of each context of each block.
+    by_key: IndexVec<Block, FxHashMap<u64, Part>>,
+    /// Parts to visit, in code order, which mostly follows the CFG, so that a state is complete
+    /// before it propagates.
+    worklist: BinaryHeap<Reverse<(Block, Part)>>,
+    queued: BitVec,
+}
+
+impl Parts {
+    /// Joins a state into the part of context `key` of `bid`, queueing the part if it changes.
+    ///
+    /// Returns `false` if a new part would exceed `budget`.
+    #[expect(clippy::too_many_arguments)]
+    fn join(
+        &mut self,
+        bid: Block,
+        key: u64,
+        stack: &[AbsValue],
+        truncated: bool,
+        below: &[Seg],
+        mem: &MemWords,
+        sets: &mut ConstSetInterner,
+        budget: &Budget,
+    ) -> bool {
+        let part = match self.by_key[bid].get(&key) {
+            Some(&part) => part,
+            None => {
+                if self.by_key[bid].len() == budget.block_parts || self.states.len() == budget.parts
+                {
+                    return false;
+                }
+                let part = self.states.push((bid, BlockState::Bottom));
+                self.queued.push(false);
+                self.by_key[bid].insert(key, part);
+                part
+            }
+        };
+        if self.states[part].1.join(stack, truncated, below, mem, sets) {
+            self.queue(part);
+        }
+        true
+    }
+
+    fn queue(&mut self, part: Part) {
+        if !self.queued[part.index()] {
+            self.queued.set(part.index(), true);
+            self.worklist.push(Reverse((self.states[part].0, part)));
+        }
+    }
+}
+
+/// Stack segments of [`Bytecode::run_fixpoint`], one per context.
+#[derive(Default)]
+struct Segs {
+    /// The entries of each segment, as a state without memory words.
+    states: IndexVec<Seg, BlockState>,
+    by_key: FxHashMap<u64, Seg>,
+    /// The parts whose blocks read into each segment, to visit again when it changes.
+    users: IndexVec<Seg, Vec<Part>>,
 }
 
 oxc_index::define_nonmax_u32_index_type! {
@@ -1222,6 +1327,11 @@ impl Bytecode<'_> {
     /// Each block keeps one state per [context](Self::context_key) of the states reaching it, as
     /// chosen by `mode`. Snapshots join the values of all contexts.
     ///
+    /// In [`ContextMode::Full`], the stacks of recursive calls continue in segments, as the module
+    /// docs describe, cut at [`Self::recursion_cut`]. Segments with the same context share a
+    /// state. A block that reads below its state's entries runs again on each segment below them,
+    /// with the segment's entries prepended.
+    ///
     /// Snapshots are only recorded once the fixpoint converges, so on non-convergence they keep
     /// the safe block-local values computed by `block_analysis_local`.
     fn run_fixpoint(&mut self, mode: ContextMode) -> Fixpoint {
@@ -1229,28 +1339,19 @@ impl Bytecode<'_> {
         let mut const_sets = ConstSetInterner::new(self.jumpdests.clone());
         let budget = mode.budget(num_blocks, self.insts.len());
 
-        let mut states = IndexVec::<Part, (Block, BlockState)>::new();
-        let mut parts = IndexVec::<Block, FxHashMap<u64, Part>>::from_vec(vec![
-            FxHashMap::default();
-            num_blocks
-        ]);
+        let mut parts = Parts {
+            states: IndexVec::new(),
+            by_key: IndexVec::from_vec(vec![FxHashMap::default(); num_blocks]),
+            worklist: BinaryHeap::new(),
+            queued: BitVec::new(),
+        };
+        let mut segs = Segs::default();
 
         // Entry block starts with an empty stack, or with unknown entries when the caller may
         // pass a stack.
+        let no_mem = MemWords::default();
         let entry = Block::from_usize(0);
-        let entry_state = BlockState::Known {
-            stack: Vec::new(),
-            truncated: self.stack_observed(),
-            mem: MemWords::default(),
-        };
-        let entry_part = states.push((entry, entry_state));
-        parts[entry].insert(0, entry_part);
-        // Visit blocks in code order, which mostly follows the CFG, so that a state is complete
-        // before it propagates.
-        let mut worklist = BinaryHeap::new();
-        let mut queued: BitVec = BitVec::new();
-        queued.push(true);
-        worklist.push(Reverse((entry, entry_part)));
+        parts.join(entry, 0, &[], self.stack_observed(), &[], &no_mem, &mut const_sets, &budget);
 
         // Discovered dynamic-jump target edges per block.
         let mut discovered: IndexVec<Block, SmallVec<[Block; 4]>> =
@@ -1258,6 +1359,8 @@ impl Bytecode<'_> {
         // The same edges, to deduplicate them in constant time: a shared return block can have
         // thousands of targets.
         let mut discovered_set = FxHashSet::default();
+        // The parts in `segs.users`, to deduplicate them in constant time.
+        let mut seg_users = FxHashSet::default();
 
         let mut pops = 0;
         let mut work = 0;
@@ -1265,15 +1368,19 @@ impl Bytecode<'_> {
 
         // Reusable buffers to avoid per-iteration allocations.
         let mut stack_buf: Vec<AbsValue> = Vec::with_capacity(MAX_ABS_STACK_DEPTH);
+        let mut below_buf = SmallVec::<[Seg; 2]>::new();
+        let mut input_buf = Vec::new();
         let mut targets = SmallVec::<[Block; 4]>::new();
         let mut mem_buf = MemWords::default();
         let mut refined_buf = Vec::new();
 
         let branches: IndexVec<Block, Option<Branch>> =
             self.cfg.blocks.indices().map(|bid| self.branch(bid)).collect();
+        let forwarders: BitVec =
+            self.cfg.blocks.indices().map(|bid| self.is_forwarder(bid)).collect();
 
-        'fixpoint: while let Some(Reverse((_, pid))) = worklist.pop() {
-            queued.set(pid.index(), false);
+        'fixpoint: while let Some(Reverse((_, pid))) = parts.worklist.pop() {
+            parts.queued.set(pid.index(), false);
             pops += 1;
             if pops > budget.pops || work + const_sets.merged > budget.work {
                 converged = false;
@@ -1281,12 +1388,13 @@ impl Bytecode<'_> {
             }
 
             // Copy input state into reusable buffer.
-            let (bid, state) = &states[pid];
+            let (bid, state) = &parts.states[pid];
             let bid = *bid;
             stack_buf.clear();
-            let truncated = match state {
-                BlockState::Known { stack, truncated, mem } => {
+            let mut truncated = match state {
+                BlockState::Known { stack, truncated, below, mem } => {
                     stack_buf.extend_from_slice(stack);
+                    below_buf.clone_from(below);
                     mem_buf.clone_from(mem);
                     *truncated
                 }
@@ -1295,6 +1403,9 @@ impl Bytecode<'_> {
 
             let insts = self.cfg.blocks[bid].insts();
             work += insts.len() as u64;
+            if !below_buf.is_empty() {
+                work += budget.pop_work;
+            }
             let term_inst = self.cfg.blocks[bid].terminator();
             let mut operand = None;
             let mut condition = AbsValue::Top;
@@ -1303,9 +1414,47 @@ impl Bytecode<'_> {
                     operand = stack_buf.last().copied();
                     condition = stack_buf.iter().rev().nth(1).copied().unwrap_or_default();
                 }
-                if !self.interpret_inst(i, &mut stack_buf, truncated, &mut mem_buf, Record::Skip) {
+                if self.interpret_inst(i, &mut stack_buf, truncated, &mut mem_buf, Record::Skip) {
+                    continue;
+                }
+                // If the block reads below the state's entries rather than halts, run it on each
+                // segment below.
+                if stack_buf.len() >= self.insts[i].stack_io().0 as usize {
                     continue 'fixpoint;
                 }
+                let BlockState::Known { stack, mem, .. } = &parts.states[pid].1 else {
+                    unreachable!()
+                };
+                input_buf.clone_from(stack);
+                mem_buf.clone_from(mem);
+                for &seg in &below_buf {
+                    if seg_users.insert((seg, pid)) {
+                        segs.users[seg].push(pid);
+                    }
+                    let BlockState::Known { stack, truncated, below, .. } = &segs.states[seg]
+                    else {
+                        unreachable!()
+                    };
+                    stack_buf.clone_from(stack);
+                    stack_buf.extend_from_slice(&input_buf);
+                    let key =
+                        self.context_key(mode, &stack_buf, *truncated, !below.is_empty(), &mem_buf);
+                    work += budget.pop_work + 1 + stack_buf.len().min(MAX_ABS_STACK_DEPTH) as u64;
+                    if !parts.join(
+                        bid,
+                        key,
+                        &stack_buf,
+                        *truncated,
+                        below,
+                        &mem_buf,
+                        &mut const_sets,
+                        &budget,
+                    ) {
+                        converged = false;
+                        break 'fixpoint;
+                    }
+                }
+                continue 'fixpoint;
             }
             let branch = branches[bid].as_ref();
             let condition = match branch {
@@ -1333,7 +1482,43 @@ impl Bytecode<'_> {
             if self.cfg.blocks[bid].succs.is_empty() && targets.is_empty() {
                 continue;
             }
-            let key = self.context_key(mode, &stack_buf, truncated, &mem_buf);
+
+            // Move the entries from a repeated return address down into a segment.
+            if let ContextMode::Full = mode
+                && let Some(depth) = self.recursion_cut(&stack_buf, &forwarders)
+            {
+                let split = stack_buf.len() - depth;
+                let seg_stack = &stack_buf[..split];
+                let key =
+                    self.context_key(mode, seg_stack, truncated, !below_buf.is_empty(), &no_mem);
+                let seg = match segs.by_key.get(&key) {
+                    Some(&seg) => seg,
+                    None => {
+                        if segs.states.len() == budget.parts {
+                            converged = false;
+                            break 'fixpoint;
+                        }
+                        segs.users.push(Vec::new());
+                        let seg = segs.states.push(BlockState::Bottom);
+                        segs.by_key.insert(key, seg);
+                        seg
+                    }
+                };
+                work += 1 + split.min(MAX_ABS_STACK_DEPTH) as u64;
+                if segs.states[seg].join(seg_stack, truncated, &below_buf, &no_mem, &mut const_sets)
+                {
+                    for &user in &segs.users[seg] {
+                        parts.queue(user);
+                    }
+                }
+                stack_buf.drain(..split);
+                truncated = false;
+                below_buf.clear();
+                below_buf.push(seg);
+            }
+
+            let continued = !below_buf.is_empty();
+            let key = self.context_key(mode, &stack_buf, truncated, continued, &mem_buf);
             let mut refined_key = None;
             for &succ in self.cfg.blocks[bid].succs.iter().chain(&targets) {
                 let (mut stack, mut key) = (&stack_buf, key);
@@ -1361,48 +1546,45 @@ impl Bytecode<'_> {
                             refined_buf.clone_from(&stack_buf);
                             let value = &mut refined_buf[stack_buf.len() - 1 - depth];
                             *value = value.at_most(bound, &mut self.u256_interner.borrow_mut());
-                            self.context_key(mode, &refined_buf, truncated, &mem_buf)
+                            self.context_key(mode, &refined_buf, truncated, continued, &mem_buf)
                         });
                         (stack, key) = (&refined_buf, refined);
                     }
                 }
-                let part = match parts[succ].get(&key) {
-                    Some(&part) => part,
-                    None => {
-                        if parts[succ].len() == budget.block_parts || states.len() == budget.parts {
-                            converged = false;
-                            break 'fixpoint;
-                        }
-                        let part = states.push((succ, BlockState::Bottom));
-                        queued.push(false);
-                        parts[succ].insert(key, part);
-                        part
-                    }
-                };
                 work += 1 + stack.len().min(MAX_ABS_STACK_DEPTH) as u64;
-                if states[part].1.join(stack, truncated, &mem_buf, &mut const_sets)
-                    && !queued[part.index()]
-                {
-                    queued.set(part.index(), true);
-                    worklist.push(Reverse((succ, part)));
+                if !parts.join(
+                    succ,
+                    key,
+                    stack,
+                    truncated,
+                    &below_buf,
+                    &mem_buf,
+                    &mut const_sets,
+                    &budget,
+                ) {
+                    converged = false;
+                    break 'fixpoint;
                 }
             }
         }
 
         debug!(
             ?mode,
-            parts = states.len(),
+            parts = parts.states.len(),
+            segs = segs.states.len(),
             work = work + const_sets.merged,
             "{msg} after {pops} iterations (max={max})",
             msg = if converged { "converged" } else { "did not converge" },
             max = budget.pops,
         );
 
-        // Record the snapshots of the final states, joined across contexts.
+        // Record the snapshots of the final states, joined across contexts. A state with
+        // segments below stops where its block reads below it: the runs of the block on the
+        // segments record the rest.
         if converged {
             let mut visited: BitVec = BitVec::repeat(false, self.insts.len());
-            for (bid, state) in &states {
-                let BlockState::Known { stack, truncated, mem } = state else { continue };
+            for (bid, state) in &parts.states {
+                let BlockState::Known { stack, truncated, mem, .. } = state else { continue };
                 stack_buf.clone_from(stack);
                 mem_buf.clone_from(mem);
                 for i in self.cfg.blocks[*bid].insts() {
@@ -1418,7 +1600,7 @@ impl Bytecode<'_> {
                 }
             }
         }
-        let reached = parts.iter().map(|p| !p.is_empty()).collect();
+        let reached = parts.by_key.iter().map(|p| !p.is_empty()).collect();
         Fixpoint { reached, discovered, const_sets, converged }
     }
 
@@ -1500,7 +1682,8 @@ impl Bytecode<'_> {
         Some(Branch { fallthrough, fallthrough_is_target, bound: bound(tail) })
     }
 
-    /// Returns the context of an abstract stack: a hash of the constants `mode` keys on.
+    /// Returns the context of an abstract stack: a hash of the constants `mode` keys on, and of
+    /// whether segments continue the stack.
     ///
     /// Keys that collide share a state, which only costs precision.
     fn context_key(
@@ -1508,21 +1691,18 @@ impl Bytecode<'_> {
         mode: ContextMode,
         stack: &[AbsValue],
         truncated: bool,
+        continued: bool,
         mem: &MemWords,
     ) -> u64 {
-        let jump_target = |value: AbsValue| {
-            let pc = value.as_const()?.get_inline()?;
-            self.is_valid_jump(pc as usize).then_some(pc)
-        };
         let targets = (stack.iter().rev().enumerate())
-            .filter_map(|(depth, &value)| Some((depth, jump_target(value)?)));
+            .filter_map(|(depth, &value)| Some((depth, self.jump_target_pc(value)?)));
         let mut hasher = FxHasher::default();
         let tracked = stack.len().min(MAX_CONTEXT_DEPTH);
-        (tracked as u8, truncated || stack.len() > tracked).hash(&mut hasher);
+        (tracked as u8, truncated || stack.len() > tracked, continued).hash(&mut hasher);
         match mode {
             ContextMode::Full => {
                 for &(offset, value) in &mem.0 {
-                    if let Some(pc) = jump_target(value) {
+                    if let Some(pc) = self.jump_target_pc(value) {
                         (offset, pc).hash(&mut hasher);
                     }
                 }
@@ -1544,6 +1724,45 @@ impl Bytecode<'_> {
             ContextMode::Insensitive => return 0,
         }
         hasher.finish()
+    }
+
+    /// Returns the depth of the shallowest valid jump target constant in `stack` that repeats a
+    /// shallower one, such as the return address of a recursive call one level up.
+    ///
+    /// Targets in `forwarders` count from their third copy: compilers share such blocks as the
+    /// return address of many calls, which nest without a recursion.
+    fn recursion_cut(&self, stack: &[AbsValue], forwarders: &BitVec) -> Option<usize> {
+        let mut seen = SmallVec::<[(u32, u8); 8]>::new();
+        stack.iter().rev().enumerate().find_map(|(depth, &value)| {
+            let pc = self.jump_target_pc(value)?;
+            let Some((_, copies)) = seen.iter_mut().find(|(seen, _)| *seen == pc) else {
+                let bid = self.cfg.inst_to_block[self.pc_to_inst(pc as usize)]?;
+                seen.push((pc, if forwarders[bid.index()] { 2 } else { 1 }));
+                return None;
+            };
+            *copies -= 1;
+            (*copies == 0).then_some(depth)
+        })
+    }
+
+    /// Returns whether `bid` only moves stack entries and jumps, such as a shared block that
+    /// returns to the address below the top of the stack.
+    fn is_forwarder(&self, bid: Block) -> bool {
+        let block = &self.cfg.blocks[bid];
+        self.insts[block.terminator()].opcode == op::JUMP
+            && block.insts().rev().skip(1).map(|i| &self.insts[i]).all(|data| {
+                data.is_dead_code()
+                    || matches!(
+                        data.opcode,
+                        op::JUMPDEST | op::POP | op::DUP1..=op::DUP16 | op::SWAP1..=op::SWAP16
+                    )
+            })
+    }
+
+    /// Returns the pc of `value` if it is a valid jump target constant.
+    fn jump_target_pc(&self, value: AbsValue) -> Option<u32> {
+        let pc = value.as_const()?.get_inline()?;
+        self.is_valid_jump(pc as usize).then_some(pc)
     }
 
     /// Collects the blocks of the valid jump targets in `operand`.
@@ -1619,25 +1838,27 @@ impl Bytecode<'_> {
         let inp = inp as usize;
         let out = out as usize;
 
-        if truncated && stack.len() < inp {
+        // Check the stack height before recording, so that a state with segments below records
+        // nothing for an instruction that reads them.
+        if stack.len() < inp {
+            if !truncated {
+                return false;
+            }
             stack.splice(0..0, std::iter::repeat_n(AbsValue::Top, inp - stack.len()));
         }
 
         // Record pre-instruction input operand snapshot (in stack order, TOS last).
         if inp > 0 {
-            let start = stack.len().saturating_sub(inp);
-            let pad = inp.saturating_sub(stack.len());
+            let inputs = &stack[stack.len() - inp..];
             let snap = &mut self.snapshots.inputs[i];
             match &mut record {
                 Record::Skip => {}
                 Record::Overwrite => {
                     snap.clear();
-                    snap.resize(pad, AbsValue::Top);
-                    snap.extend_from_slice(&stack[start..]);
+                    snap.extend_from_slice(inputs);
                 }
                 Record::Join(sets) => {
-                    for (k, slot) in snap.iter_mut().enumerate() {
-                        let value = if k < pad { AbsValue::Top } else { stack[start + k - pad] };
+                    for (slot, &value) in snap.iter_mut().zip(inputs) {
                         *slot = join(sets, *slot, value);
                     }
                 }
@@ -1650,85 +1871,23 @@ impl Bytecode<'_> {
                 stack.push(AbsValue::Const(inst.imm()));
             }
             op::POP => {
-                if stack.pop().is_none() {
-                    return false;
-                }
+                stack.pop();
             }
-            op::DUP1..=op::DUP16 => {
-                let depth = (inst.opcode - op::DUP1 + 1) as usize;
-                if stack.len() < depth {
-                    return false;
-                }
-                stack.push(stack[stack.len() - depth]);
+            // Disabled, or an invalid immediate.
+            op::DUPN | op::SWAPN | op::EXCHANGE if inp == 0 => return false,
+            op::DUP1..=op::DUP16 | op::DUPN => {
+                stack.push(stack[stack.len() - inp]);
             }
-            op::SWAP1..=op::SWAP16 => {
-                let depth = (inst.opcode - op::SWAP1 + 1) as usize;
+            op::SWAP1..=op::SWAP16 | op::SWAPN => {
                 let len = stack.len();
-                if len < depth + 1 {
-                    return false;
-                }
-                stack.swap(len - 1, len - 1 - depth);
-            }
-            op::DUPN => {
-                let depth = crate::decode_single(inst.imm_byte());
-                match depth {
-                    Some(n) => {
-                        let n = n as usize;
-                        if stack.len() < n {
-                            // Depth exceeds the tracked abstract stack (truncated by a
-                            // join or MAX_ABS_STACK_DEPTH). The slot is reachable at runtime
-                            // but unknown abstractly.
-                            stack.push(AbsValue::Top);
-                        } else {
-                            stack.push(stack[stack.len() - n]);
-                        }
-                    }
-                    None => return false,
-                }
-            }
-            op::SWAPN => {
-                let depth = crate::decode_single(inst.imm_byte());
-                match depth {
-                    Some(n) => {
-                        let n = n as usize;
-                        let len = stack.len();
-                        if len < n + 1 {
-                            // Deep slot beyond tracked abstract stack; TOS becomes Top
-                            // and the deep slot (not tracked) is unchanged.
-                            if let Some(tos) = stack.last_mut() {
-                                *tos = AbsValue::Top;
-                            }
-                        } else {
-                            stack.swap(len - 1, len - 1 - n);
-                        }
-                    }
-                    None => return false,
-                }
+                stack.swap(len - 1, len - inp);
             }
             op::EXCHANGE => {
-                let pair = crate::decode_pair(inst.imm_byte());
-                match pair {
-                    Some((n, m)) => {
-                        let (n, m) = (n as usize, m as usize);
-                        let len = stack.len();
-                        if len < m + 1 {
-                            // Deep slot beyond tracked abstract stack; the shallower
-                            // slot (if tracked) becomes Top.
-                            if len > n {
-                                stack[len - 1 - n] = AbsValue::Top;
-                            }
-                        } else {
-                            stack.swap(len - 1 - n, len - 1 - m);
-                        }
-                    }
-                    None => return false,
-                }
+                let (n, _) = crate::decode_pair(inst.imm_byte()).unwrap();
+                let len = stack.len();
+                stack.swap(len - 1 - n as usize, len - inp);
             }
             _ => {
-                if stack.len() < inp {
-                    return false;
-                }
-
                 // Disabled opcodes halt and have no stack inputs.
                 let loaded = if inst.flags.contains(InstFlags::DISABLED) {
                     None
@@ -2991,8 +3150,9 @@ mod tests_edge_cases {
 
     #[test]
     fn truncated_stack_does_not_make_jumpi_unconditional() {
-        // Both paths reach `body` in one context. The join keeps the shorter stack, which
-        // does not hold the JUMPI condition.
+        // Both paths reach `body` in one context, as their stacks are deeper than
+        // `MAX_CONTEXT_DEPTH`. The join keeps the shorter stack, which does not hold the JUMPI
+        // condition.
         let src = format!(
             "
             CALLDATASIZE
@@ -3024,8 +3184,8 @@ mod tests_edge_cases {
             SSTORE
             STOP
             ",
-            "PUSH1 0x11\n".repeat(63),
-            "POP\n".repeat(63),
+            "PUSH1 0x11\n".repeat(MAX_CONTEXT_DEPTH + 2),
+            "POP\n".repeat(MAX_CONTEXT_DEPTH + 2),
         );
         let bytecode = analyze_asm(&src);
 
@@ -3689,7 +3849,7 @@ mod tests_edge_cases {
         assert_eq!(targets, [Inst::from_usize(5), Inst::from_usize(12)]);
     }
 
-    /// A recursive function's return must not resolve to a partial set of return sites.
+    /// A recursive function's return must resolve to all of its return sites.
     #[test]
     fn recursive_return() {
         let bytecode = analyze_asm(
@@ -3722,12 +3882,12 @@ mod tests_edge_cases {
             JUMP                ; return
         ",
         );
-        // Each recursion level keys a new context until the return addresses sink below
-        // `MAX_CONTEXT_DEPTH`, where the levels share a context whose join loses `done`, so the
-        // return must stay dynamic.
-        let (_, data) = bytecode.iter_insts().rfind(|(_, d)| d.is_jump()).unwrap();
-        assert!(!data.flags.contains(InstFlags::STATIC_JUMP));
-        assert!(bytecode.has_dynamic_jumps);
+        let (ret, _) = bytecode.iter_insts().rfind(|(_, d)| d.is_jump()).unwrap();
+        let mut targets: Vec<_> =
+            bytecode.multi_jump_targets(ret).unwrap().iter().map(|&t| bytecode.pc(t)).collect();
+        targets.sort_unstable();
+        assert_eq!(targets, [7, 25]);
+        assert!(!bytecode.has_dynamic_jumps);
     }
 
     /// A `try`/`catch` shape: the failed call jumps to the block that checks the decoded
@@ -4130,5 +4290,84 @@ mod tests_edge_cases {
         ",
         );
         assert!(!bytecode.has_dynamic_jumps);
+    }
+
+    /// A function that calls itself directly and through another function has a different call
+    /// chain at every recursion level. Its return must resolve to its three return sites, and its
+    /// caller must still find its own return address below the recursion.
+    #[test]
+    fn recursive_call_return() {
+        let bytecode = analyze_asm(
+            "
+            PUSH %main_ret
+            CALLDATASIZE
+            PUSH %outer
+            JUMP
+        main_ret:
+            JUMPDEST
+            STOP
+        outer:
+            JUMPDEST            ; [main_ret, n]
+            PUSH %outer_ret
+            DUP2
+            PUSH %rec
+            JUMP
+        outer_ret:
+            JUMPDEST            ; [main_ret, n]
+            POP
+            JUMP
+        rec:
+            JUMPDEST            ; [ret, n]
+            DUP1
+            ISZERO
+            PUSH %done
+            JUMPI
+            PUSH %r1
+            PUSH1 1
+            DUP3
+            SUB
+            PUSH %rec
+            JUMP
+        r1:
+            JUMPDEST            ; [ret, n]
+            PUSH %r2
+            PUSH1 2
+            DUP3
+            SUB
+            PUSH %g
+            JUMP
+        r2:
+            JUMPDEST
+        done:
+            JUMPDEST            ; [ret, n]
+            POP
+            JUMP
+        g:
+            JUMPDEST            ; [ret, n]
+            PUSH %g_ret
+            DUP2
+            PUSH %rec
+            JUMP
+        g_ret:
+            JUMPDEST            ; [ret, n]
+            POP
+            JUMP
+        ",
+        );
+
+        assert!(!bytecode.has_dynamic_jumps, "expected no dynamic jumps");
+        let jump_at =
+            |pc| bytecode.iter_insts().find(|&(i, d)| bytecode.pc(i) == pc && d.is_jump()).unwrap();
+        let (_, data) = jump_at(17);
+        assert!(!data.flags.contains(InstFlags::MULTI_JUMP));
+        assert_eq!(bytecode.pc(data.static_jump_target()), 6, "outer must return to main_ret");
+        let (rec_ret, _) = jump_at(46);
+        let mut targets: Vec<_> =
+            bytecode.multi_jump_targets(rec_ret).unwrap().iter().map(|&t| bytecode.pc(t)).collect();
+        targets.sort_unstable();
+        assert_eq!(targets, [15, 33, 54]);
+        let (_, data) = jump_at(56);
+        assert!(!data.flags.contains(InstFlags::MULTI_JUMP));
+        assert_eq!(bytecode.pc(data.static_jump_target()), 43, "g must return to r2");
     }
 }
