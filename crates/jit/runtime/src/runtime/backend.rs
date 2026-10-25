@@ -1407,12 +1407,14 @@ mod notifier_tests {
         assert!(state.evict_oldest_cold_entry());
         assert!(!state.entries.contains_key(&second));
         assert!(state.entries.contains_key(&first));
-        // Worker completion removes only the working entry and cannot damage the FIFO.
+        // Worker completion removes the working entry on success, or requeues it as failed
+        // (no LLVM backend), and cannot damage the FIFO.
         let result = state.result_rx.recv_timeout(Duration::from_secs(30)).unwrap();
         state.handle_worker_result(result);
-        assert!(state.entries.is_empty());
-        assert_eq!(state.cold_head, None);
-        assert_eq!(state.cold_tail, None);
+        let failed = state.entries.contains_key(&first).then_some(first);
+        assert_eq!(state.entries.len(), usize::from(failed.is_some()));
+        assert_eq!(state.cold_head, failed);
+        assert_eq!(state.cold_tail, failed);
         state.workers.shutdown().unwrap();
     }
 
