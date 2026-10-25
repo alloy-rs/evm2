@@ -1118,9 +1118,11 @@ impl Bytecode<'_> {
         &self,
         range: RangeInclusive<u32>,
     ) -> Option<impl Iterator<Item = Inst> + '_> {
-        let (start, last) = (range.start as usize, range.last as usize);
-        let end = (last + 1).min(self.jumpdests.len()).max(start);
-        (last - start < MAX_RANGE_JUMP_WIDTH).then(|| {
+        let (first, last) = (range.start as usize, range.last as usize);
+        // Clamped to the code, which the range may extend past.
+        let end = (last + 1).min(self.jumpdests.len());
+        let start = first.min(end);
+        (last - first < MAX_RANGE_JUMP_WIDTH).then(|| {
             self.jumpdests[start..end].iter_ones().map(move |i| self.pc_to_inst(start + i))
         })
     }
@@ -4222,6 +4224,10 @@ mod tests_edge_cases {
         // A static jump to the only target would skip that failure.
         let bytecode = analyze_asm(&src(2, "STOP"));
         assert!(bytecode.has_dynamic_jumps);
+
+        // A table past the end of the code has no targets.
+        let bytecode = analyze_asm("PUSH0 CALLDATALOAD PUSH1 0x03 AND PUSH2 0x1000 ADD JUMP");
+        assert!(!bytecode.has_dynamic_jumps);
     }
 
     /// Solady picks a jump target out of a word of packed targets with `BYTE`, at an index that
