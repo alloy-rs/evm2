@@ -177,7 +177,7 @@ struct EntryState {
     last_observed_at: Instant,
     /// Sync notifiers waiting for this entry to finish compiling.
     pending_notifiers: Vec<SyncNotifier>,
-    /// Links in the cold-entry FIFO; absent while compilation is in progress.
+    /// Links in the cold-entry FIFO, which also queues failed entries; absent while compiling.
     cold_links: Option<ColdLinks>,
 }
 
@@ -374,7 +374,6 @@ impl BackendState {
             return;
         }
 
-        // Failed keys are not retried until the eviction sweep drops them.
         if matches!(entry.phase, EntryPhase::Failed(_)) {
             sync_notifier.notify();
             return;
@@ -1322,6 +1321,33 @@ mod notifier_tests {
         assert!(state.entries.is_empty());
         assert_eq!(state.cold_head, None);
         assert_eq!(state.cold_tail, None);
+    }
+
+    #[test]
+    fn failed_entry_ignores_observed_and_explicit_requests() {
+        let mut state = new_state(RuntimeTuning { jit_hot_threshold: 1, ..Default::default() });
+        let key = observe(&mut state, 0);
+        state.entries.get_mut(&key).unwrap().phase = EntryPhase::Working;
+        state.unlink_cold_entry(&key);
+        state.pending_jobs = 1;
+        state.fail_entry(&key);
+        state.pending_jobs = 0;
+
+        let bytecode = state.entries[&key].bytecode.clone();
+        for _ in 0..10 {
+            state.handle_lookup_observed(LookupRequest { key, code: bytecode.clone() });
+        }
+        let (sender, receiver) = chan::bounded(1);
+        state.handle_compile_jit(CompileJitRequest {
+            key,
+            bytecode,
+            sync_notifier: SyncNotifier::new(sender),
+        });
+
+        assert_eq!(receiver.try_recv(), Ok(()));
+        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(_)));
+        assert_eq!(state.pending_jobs, 0);
+        assert_eq!(state.inner.stats.compilations_dispatched.load(Ordering::Relaxed), 0);
     }
 
     #[test]
