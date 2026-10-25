@@ -4279,6 +4279,38 @@ mod tests_edge_cases {
         assert_eq!(multi_jump_target_pcs(&bytecode), [0x10, 0x12, 0x14]);
     }
 
+    /// Solar's selector dispatch picks a target with `BYTE` at `16 + selector % 16`.
+    #[test]
+    fn mod_byte_jump_table() {
+        let bytecode = analyze_asm(
+            "
+            PUSH0
+            CALLDATALOAD
+            PUSH1 0xe0
+            SHR                 ; selector
+            PUSH1 0x10
+            DUP2
+            MOD
+            PUSH1 0x10
+            ADD
+            PUSH16 0x20222426202224262022242620222426
+            SWAP1
+            BYTE
+            JUMP
+            JUMPDEST            ; 0x20
+            STOP
+            JUMPDEST            ; 0x22
+            STOP
+            JUMPDEST            ; 0x24
+            STOP
+            JUMPDEST            ; 0x26
+            STOP
+        ",
+        );
+        assert!(!bytecode.has_dynamic_jumps);
+        assert_eq!(multi_jump_target_pcs(&bytecode), [0x20, 0x22, 0x24, 0x26]);
+    }
+
     /// Range jumps resolve to at most [`MAX_RANGE_JUMP_TARGETS`] targets in total, since each
     /// becomes its own switch.
     #[test]
