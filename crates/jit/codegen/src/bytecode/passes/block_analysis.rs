@@ -265,6 +265,9 @@ const MAX_ABS_STACK_DEPTH: usize = STACK_LIMIT;
 /// at every level, reaches a fixed context instead of a new one per iteration.
 const MAX_CONTEXT_DEPTH: usize = 128;
 
+/// Maximum number of values in a range that a jump resolves to the jump targets in it.
+const MAX_RANGE_JUMP_WIDTH: usize = 4096;
+
 /// Maximum number of memory words tracked by [`MemWords`].
 const MAX_MEM_WORDS: usize = 16;
 
@@ -1096,25 +1099,30 @@ impl Bytecode<'_> {
                     .collect::<Option<_>>()
                     .map_or_else(JumpResolution::top, JumpResolution::resolved)
             }
-            AbsValue::Range(range) => match self.range_jumpdests(range) {
-                Some(targets) if targets.is_empty() => JumpResolution::invalid(),
-                // A single target would become a static jump that skips the invalid jump check
-                // for the other values in the range, while a multi-target switch keeps it.
-                Some(targets) if targets.len() > 1 => JumpResolution::resolved(targets),
-                _ => JumpResolution::top(),
-            },
+            AbsValue::Range(range) => {
+                match self.range_jumpdests(range).map(Iterator::collect::<SmallVec<_>>) {
+                    Some(targets) if targets.is_empty() => JumpResolution::invalid(),
+                    // A single target would become a static jump that skips the invalid jump check
+                    // for the other values in the range, while a multi-target switch keeps it.
+                    Some(targets) if targets.len() > 1 => JumpResolution::resolved(targets),
+                    _ => JumpResolution::top(),
+                }
+            }
             AbsValue::Top => JumpResolution::top(),
         }
     }
 
-    /// Returns the valid jump targets in `range`, or `None` if it is too wide to scan.
-    fn range_jumpdests(&self, range: RangeInclusive<u32>) -> Option<SmallVec<[Inst; 4]>> {
-        const MAX_SCAN: u32 = 4096;
-        if range.last - range.start > MAX_SCAN {
-            return None;
-        }
-        let pcs = range.start as usize..=range.last as usize;
-        Some(pcs.filter(|&pc| self.is_valid_jump(pc)).map(|pc| self.pc_to_inst(pc)).collect())
+    /// Returns the valid jump targets in `range`, or `None` if it is wider than
+    /// [`MAX_RANGE_JUMP_WIDTH`].
+    fn range_jumpdests(
+        &self,
+        range: RangeInclusive<u32>,
+    ) -> Option<impl Iterator<Item = Inst> + '_> {
+        let (start, last) = (range.start as usize, range.last as usize);
+        let end = (last + 1).min(self.jumpdests.len()).max(start);
+        (last - start < MAX_RANGE_JUMP_WIDTH).then(|| {
+            self.jumpdests[start..end].iter_ones().map(move |i| self.pc_to_inst(start + i))
+        })
     }
 
     fn resolve_jump_condition(
@@ -1575,8 +1583,8 @@ impl Bytecode<'_> {
             AbsValue::Const(imm) => Either::Left(std::iter::once(imm)),
             AbsValue::ConstSet(set_idx) => Either::Right(const_sets.get(set_idx).iter().copied()),
             AbsValue::Range(range) => {
-                let insts = self.range_jumpdests(range).unwrap_or_default();
-                targets.extend(insts.into_iter().filter_map(|inst| self.cfg.inst_to_block[inst]));
+                let insts = self.range_jumpdests(range).into_iter().flatten();
+                targets.extend(insts.filter_map(|inst| self.cfg.inst_to_block[inst]));
                 return;
             }
             AbsValue::Top => return,
@@ -1778,7 +1786,8 @@ impl Bytecode<'_> {
                             &mut interner,
                             self.code.len(),
                         );
-                        if folded.is_some() {
+                        // Range folds take constant time.
+                        if matches!(folded, Some(AbsValue::Const(_))) {
                             self.compiler_gas_used += cost;
                         }
                         folded
@@ -4161,10 +4170,7 @@ mod tests_edge_cases {
             bytecode.iter_insts().filter(|(_, d)| d.flags.contains(InstFlags::MULTI_JUMP));
         let (jump, _) = jumps.next().expect("expected a multi-target jump");
         assert!(jumps.next().is_none());
-        let mut pcs: Vec<_> =
-            bytecode.multi_jump_targets(jump).unwrap().iter().map(|&t| bytecode.pc(t)).collect();
-        pcs.sort_unstable();
-        pcs
+        bytecode.multi_jump_targets(jump).unwrap().iter().map(|&t| bytecode.pc(t)).collect()
     }
 
     /// Solar lowers a dense `switch` to a jump into a table of equal-width entries, after a bounds
@@ -4218,37 +4224,33 @@ mod tests_edge_cases {
         assert!(bytecode.has_dynamic_jumps);
     }
 
-    /// Solady picks a jump target out of a word of packed targets with `BYTE`, after a bounds
-    /// check on the index.
+    /// Solady picks a jump target out of a word of packed targets with `BYTE`, at an index that
+    /// `AND` masks.
     #[test]
     fn byte_jump_table() {
         let bytecode = analyze_asm(
             "
             PUSH0
-            CALLDATALOAD        ; idx
+            CALLDATALOAD
             PUSH1 0x03
-            DUP2
-            LT
-            PUSH %body
-            JUMPI
-            PUSH0
-            DUP1
-            REVERT
-        body:
-            JUMPDEST
-            PUSH32 0x3531330000000000000000000000000000000000000000000000000000000000
-            DUP2
+            AND
+            PUSH1 0x1c
+            ADD                 ; 28 + (x & 3)
+            PUSH4 0x14101210
+            SWAP1
             BYTE
-            JUMP                ; byte idx of the word
-            JUMPDEST            ; 0x31
+            JUMP                ; one of the last 4 bytes of the word
+            JUMPDEST            ; 0x10
             STOP
-            JUMPDEST            ; 0x33
+            JUMPDEST            ; 0x12
             STOP
-            JUMPDEST            ; 0x35
+            JUMPDEST            ; 0x14
+            STOP
+            JUMPDEST            ; 0x16
             STOP
         ",
         );
         assert!(!bytecode.has_dynamic_jumps);
-        assert_eq!(multi_jump_target_pcs(&bytecode), [0x31, 0x33, 0x35]);
+        assert_eq!(multi_jump_target_pcs(&bytecode), [0x10, 0x12, 0x14]);
     }
 }

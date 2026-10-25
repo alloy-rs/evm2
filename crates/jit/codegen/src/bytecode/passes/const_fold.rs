@@ -206,19 +206,18 @@ fn try_range_fold(
     interner: &mut U256Interner,
 ) -> Option<AbsValue> {
     let &[b, a] = inputs else { return None };
-    // `x & c` is at most `c`.
+    // `a & b` is at most the smaller of their bounds.
     if opcode == op::AND {
         let c = [a, b].into_iter().filter_map(AbsValue::bounds).map(|r| r.last).min()?;
         return AbsValue::range((0..=u64::from(c)).into(), interner);
     }
-    // A small index range into a constant word, such as a jump table packed into a PUSH.
+    // An index range into a constant word, such as a jump table packed into a PUSH.
     if opcode == op::BYTE
         && let (Some(r), AbsValue::Const(w)) = (a.bounds(), b)
-        && r.last - r.start < 32
     {
-        let w = w.get(interner);
-        let bytes = (r.start..=r.last).map(|i| if i < 32 { w.byte(31 - i as usize) } else { 0 });
-        let (lo, hi) = bytes.fold((u8::MAX, 0), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        let w = w.get(interner).to_be_bytes::<32>();
+        let bytes = (r.start.min(32)..=r.last.min(32)).map(|i| w.get(i as usize).map_or(0, |&b| b));
+        let (lo, hi) = (bytes.clone().min().unwrap(), bytes.max().unwrap());
         return AbsValue::range((u64::from(lo)..=u64::from(hi)).into(), interner);
     }
     let (a, b) = (a.bounds()?, b.bounds()?);
