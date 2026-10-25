@@ -336,13 +336,12 @@ impl BackendState {
             return;
         }
 
-        if matches!(mode, AdmitMode::Observed) {
-            if !self.entries.contains_key(&key)
-                && self.entries.len() >= self.max_entries()
-                && !self.evict_oldest_cold_entry()
-            {
-                return;
-            }
+        if matches!(mode, AdmitMode::Observed)
+            && !self.entries.contains_key(&key)
+            && self.entries.len() >= self.max_entries()
+            && !self.evict_oldest_cold_entry()
+        {
+            return;
         }
 
         if kind == CompilationKind::Aot && self.try_load_persisted_aot(&key) {
@@ -876,7 +875,7 @@ impl BackendState {
         true
     }
 
-    fn max_entries(&self) -> usize {
+    const fn max_entries(&self) -> usize {
         self.tuning.jit_max_pending_jobs.saturating_mul(10)
     }
 
