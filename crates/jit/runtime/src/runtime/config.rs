@@ -287,8 +287,9 @@ pub struct RuntimeTuning {
 
     /// Timeout for a single out-of-process JIT compilation job.
     ///
-    /// When exceeded, the helper process is killed and a fresh helper is spawned for
-    /// the next job. Only applies to [`JitMode::OutOfProcess`].
+    /// Time while the helper is paused does not count. When exceeded, the helper process is killed
+    /// and a fresh helper is spawned for the next job. Only applies to
+    /// [`JitMode::OutOfProcess`].
     ///
     /// Defaults to `5s`.
     pub jit_timeout: Duration,

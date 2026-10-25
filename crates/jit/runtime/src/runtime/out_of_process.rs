@@ -41,6 +41,7 @@ use wincode::{SchemaRead, SchemaWrite};
 const HELPER_ENV: &str = "EVM2_JIT_HELPER";
 const GAS_PARAM_COUNT: usize = GasId::COUNT;
 const HELPER_PAUSE_TIMEOUT: Duration = Duration::from_millis(100);
+const RECV_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 type GasParamPairs = Vec<(u8, u32)>;
 type PendingResponses = Arc<Mutex<HashMap<u64, chan::Sender<Result<HelperJobResult, String>>>>>;
@@ -283,32 +284,27 @@ impl HelperProcessInner {
             }
         }
 
-        loop {
-            match rx.recv_timeout(config.tuning.jit_timeout) {
-                Ok(result) => return result,
-                Err(chan::RecvTimeoutError::Timeout) if self.paused.load(Ordering::Relaxed) => {
-                    continue;
-                }
-                Err(chan::RecvTimeoutError::Timeout) => {
-                    warn!(timeout = ?config.tuning.jit_timeout, "JIT helper timed out");
-                    self.pending.lock().unwrap().remove(&id);
-                    self.stats.jit_helper_timeouts.fetch_add(1, Ordering::Relaxed);
-                    self.kill();
-                    return Err(format!(
-                        "JIT helper timed out after {:?}; helper will be restarted",
-                        config.tuning.jit_timeout
-                    ));
-                }
-                Err(chan::RecvTimeoutError::Disconnected) => {
-                    let status = self.child.lock().unwrap().try_wait().ok().flatten();
-                    let message = match status {
-                        Some(status) => format!("JIT helper exited with {status}"),
-                        None => "JIT helper disconnected".into(),
-                    };
-                    warn!(message, "JIT helper disconnected");
-                    self.stats.jit_helper_disconnects.fetch_add(1, Ordering::Relaxed);
-                    return Err(format!("{message}; helper will be restarted"));
-                }
+        match recv_unpaused(&rx, config.tuning.jit_timeout, &self.paused) {
+            Ok(result) => result,
+            Err(chan::RecvTimeoutError::Timeout) => {
+                warn!(timeout = ?config.tuning.jit_timeout, "JIT helper timed out");
+                self.pending.lock().unwrap().remove(&id);
+                self.stats.jit_helper_timeouts.fetch_add(1, Ordering::Relaxed);
+                self.kill();
+                Err(format!(
+                    "JIT helper timed out after {:?}; helper will be restarted",
+                    config.tuning.jit_timeout
+                ))
+            }
+            Err(chan::RecvTimeoutError::Disconnected) => {
+                let status = self.child.lock().unwrap().try_wait().ok().flatten();
+                let message = match status {
+                    Some(status) => format!("JIT helper exited with {status}"),
+                    None => "JIT helper disconnected".into(),
+                };
+                warn!(message, "JIT helper disconnected");
+                self.stats.jit_helper_disconnects.fetch_add(1, Ordering::Relaxed);
+                Err(format!("{message}; helper will be restarted"))
             }
         }
     }
@@ -678,6 +674,32 @@ fn duration_to_nanos(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
+/// Receives from `rx`, failing with [`chan::RecvTimeoutError::Timeout`] once `timeout` of time
+/// spent unpaused has passed. A stopped helper makes no progress, so time under pause does not
+/// count.
+fn recv_unpaused<T>(
+    rx: &chan::Receiver<T>,
+    timeout: Duration,
+    paused: &AtomicBool,
+) -> Result<T, chan::RecvTimeoutError> {
+    let mut remaining = timeout;
+    loop {
+        let paused_before = paused.load(Ordering::Relaxed);
+        let start = Instant::now();
+        match rx.recv_timeout(remaining.min(RECV_POLL_INTERVAL)) {
+            Err(chan::RecvTimeoutError::Timeout) => {
+                if !paused_before && !paused.load(Ordering::Relaxed) {
+                    remaining = remaining.saturating_sub(start.elapsed());
+                    if remaining.is_zero() {
+                        return Err(chan::RecvTimeoutError::Timeout);
+                    }
+                }
+            }
+            result => return result,
+        }
+    }
+}
+
 thread_local! {
     static HELPER_COMPILER: RefCell<Option<CompilerState>> = const { RefCell::new(None) };
 }
@@ -976,6 +998,30 @@ mod tests {
         let helper = runtime_config_from_init(helper_init(&config)).unwrap();
         assert_eq!(helper.host.layout, host.layout);
         assert_eq!(helper.host.opcodes.as_ref().map(|o| &*o.table), Some(&table));
+    }
+
+    #[test]
+    fn job_timeout_does_not_count_paused_time() {
+        let paused = Arc::new(AtomicBool::new(true));
+        let (tx, rx) = chan::bounded(1);
+        let thread = std::thread::spawn({
+            let paused = Arc::clone(&paused);
+            move || {
+                std::thread::sleep(Duration::from_millis(300));
+                paused.store(false, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(400));
+                tx.send(()).unwrap();
+            }
+        });
+        // 700ms elapse, but only 400ms of them unpaused.
+        assert!(recv_unpaused(&rx, Duration::from_millis(500), &paused).is_ok());
+        thread.join().unwrap();
+
+        let (_tx, rx) = chan::bounded::<()>(1);
+        let start = Instant::now();
+        let result = recv_unpaused(&rx, Duration::from_millis(100), &paused);
+        assert_eq!(result, Err(chan::RecvTimeoutError::Timeout));
+        assert!(start.elapsed() >= Duration::from_millis(100));
     }
 
     #[test]
