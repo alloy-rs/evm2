@@ -34,7 +34,9 @@
 //! and continues in one of a set of segments: shared stack fragments that may in turn continue in
 //! segments, including themselves. The recursion then reaches a fixed set of contexts without
 //! joining the frames of different levels, so that the code below the recursion still finds its
-//! own return addresses.
+//! own return addresses. Calls that share a jump target without a recursion fold as well, which
+//! can join their frames, so the analysis only folds when it cannot resolve every jump without
+//! folds, and keeps the folded result only when it resolves every jump.
 //!
 //! A `JUMPI` propagates only along the edges that its condition allows in each context, and the
 //! values that its condition bounds on an edge, such as an index below an array length, get that
@@ -464,6 +466,9 @@ enum ContextMode {
     /// function apart, and the stack shape keeps the iterations of these loops apart, so that
     /// their memory offsets stay constant.
     Full,
+    /// Like [`Full`](Self::Full), but the stacks of recursive calls continue in segments, as the
+    /// module docs describe, cut at [`Bytecode::recursion_cut`].
+    Folded,
     /// Key on the tracked stack shape and the topmost valid jump target constant.
     Coarse,
     /// One state per block.
@@ -474,7 +479,7 @@ impl ContextMode {
     /// Returns the budget of a fixpoint attempt in this mode.
     fn budget(self, num_blocks: usize, num_insts: usize) -> Budget {
         match self {
-            Self::Full => Budget {
+            Self::Full | Self::Folded => Budget {
                 block_parts: 2048,
                 parts: (num_blocks * 32).min(1 << 17),
                 pops: num_blocks * 128,
@@ -1095,33 +1100,35 @@ impl Bytecode<'_> {
         }
 
         // Try the most precise contexts first, falling back to coarser ones when an attempt
-        // exceeds its budget.
+        // exceeds its budget. Recursive calls need a new context at every level, so when `Full`
+        // runs out of budget or leaves a jump unresolved, try folding them. Folds also join the
+        // frames of calls that share a jump target without a recursion, so their result
+        // only counts when it resolves every jump.
+        let has_top = |targets: &[(Inst, JumpResolution)]| targets.iter().any(|(_, t)| t.is_top());
+        let gas_used = self.compiler_gas_used;
         let mut fixpoint = self.run_fixpoint(ContextMode::Full);
-        for mode in [ContextMode::Coarse, ContextMode::Insensitive] {
-            if fixpoint.converged {
-                break;
-            }
-            fixpoint = self.run_fixpoint(mode);
-        }
-        let Fixpoint { reached, discovered: discovered_edges, const_sets, converged } = fixpoint;
-
-        // After convergence, resolve each dynamic jump from its snapshot operand.
-        let mut jump_targets: Vec<(Inst, JumpResolution)> = Vec::new();
-        let mut has_top_jump = false;
-        for &jump_inst in &jump_insts {
-            // Blocks the fixpoint never reached keep their block-local snapshots.
-            let target = if converged
-                && self.cfg.inst_to_block[jump_inst].is_some_and(|bid| !reached[bid.index()])
-            {
-                JumpResolution::bottom()
+        let mut jump_targets = self.resolve_jumps(&jump_insts, &fixpoint);
+        if !fixpoint.converged || has_top(&jump_targets) {
+            let full_snapshots = std::mem::replace(&mut self.snapshots, local_snapshots.clone());
+            let full_gas_used = std::mem::replace(&mut self.compiler_gas_used, gas_used);
+            let folded = self.run_fixpoint(ContextMode::Folded);
+            let folded_targets = self.resolve_jumps(&jump_insts, &folded);
+            if folded.converged && !has_top(&folded_targets) {
+                (fixpoint, jump_targets) = (folded, folded_targets);
             } else {
-                self.resolve_jump(jump_inst, &const_sets)
-            };
-            if target.is_top() {
-                has_top_jump = true;
+                self.snapshots = full_snapshots;
+                self.compiler_gas_used = full_gas_used;
+                for mode in [ContextMode::Coarse, ContextMode::Insensitive] {
+                    if fixpoint.converged {
+                        break;
+                    }
+                    fixpoint = self.run_fixpoint(mode);
+                    jump_targets = self.resolve_jumps(&jump_insts, &fixpoint);
+                }
             }
-            jump_targets.push((jump_inst, target));
         }
+        let has_top_jump = has_top(&jump_targets);
+        let Fixpoint { reached, discovered: discovered_edges, converged, .. } = fixpoint;
 
         // Invalidate resolutions that may be unsound due to incomplete analysis.
         // When the fixpoint didn't converge, partially-discovered ConstSets may be
@@ -1144,6 +1151,29 @@ impl Bytecode<'_> {
         }
 
         jump_targets
+    }
+
+    /// Resolves each jump in `jump_insts` from its snapshot operand after `fixpoint`.
+    fn resolve_jumps(
+        &self,
+        jump_insts: &[Inst],
+        fixpoint: &Fixpoint,
+    ) -> Vec<(Inst, JumpResolution)> {
+        let Fixpoint { reached, const_sets, converged, .. } = fixpoint;
+        jump_insts
+            .iter()
+            .map(|&jump_inst| {
+                // Blocks the fixpoint never reached keep their block-local snapshots.
+                let target = if *converged
+                    && self.cfg.inst_to_block[jump_inst].is_some_and(|bid| !reached[bid.index()])
+                {
+                    JumpResolution::bottom()
+                } else {
+                    self.resolve_jump(jump_inst, const_sets)
+                };
+                (jump_inst, target)
+            })
+            .collect()
     }
 
     fn resolve_jump(&self, jump_inst: Inst, const_sets: &ConstSetInterner) -> JumpResolution {
@@ -1327,10 +1357,9 @@ impl Bytecode<'_> {
     /// Each block keeps one state per [context](Self::context_key) of the states reaching it, as
     /// chosen by `mode`. Snapshots join the values of all contexts.
     ///
-    /// In [`ContextMode::Full`], the stacks of recursive calls continue in segments, as the module
-    /// docs describe, cut at [`Self::recursion_cut`]. Segments with the same context share a
-    /// state. A block that reads below its state's entries runs again on each segment below them,
-    /// with the segment's entries prepended.
+    /// In [`ContextMode::Folded`], the stacks of recursive calls continue in segments. Segments
+    /// with the same context share a state. A block that reads below its state's entries runs
+    /// again on each segment below them, with the segment's entries prepended.
     ///
     /// Snapshots are only recorded once the fixpoint converges, so on non-convergence they keep
     /// the safe block-local values computed by `block_analysis_local`.
@@ -1378,6 +1407,7 @@ impl Bytecode<'_> {
             self.cfg.blocks.indices().map(|bid| self.branch(bid)).collect();
         let forwarders: BitVec =
             self.cfg.blocks.indices().map(|bid| self.is_forwarder(bid)).collect();
+        let mut copies = vec![0; self.jumpdests.len()];
 
         'fixpoint: while let Some(Reverse((_, pid))) = parts.worklist.pop() {
             parts.queued.set(pid.index(), false);
@@ -1484,8 +1514,8 @@ impl Bytecode<'_> {
             }
 
             // Move the entries from a repeated return address down into a segment.
-            if let ContextMode::Full = mode
-                && let Some(depth) = self.recursion_cut(&stack_buf, &forwarders)
+            if let ContextMode::Folded = mode
+                && let Some(depth) = self.recursion_cut(&stack_buf, &forwarders, &mut copies)
             {
                 let split = stack_buf.len() - depth;
                 let seg_stack = &stack_buf[..split];
@@ -1700,7 +1730,7 @@ impl Bytecode<'_> {
         let tracked = stack.len().min(MAX_CONTEXT_DEPTH);
         (tracked as u8, truncated || stack.len() > tracked, continued).hash(&mut hasher);
         match mode {
-            ContextMode::Full => {
+            ContextMode::Full | ContextMode::Folded => {
                 for &(offset, value) in &mem.0 {
                     if let Some(pc) = self.jump_target_pc(value) {
                         (offset, pc).hash(&mut hasher);
@@ -1731,18 +1761,32 @@ impl Bytecode<'_> {
     ///
     /// Targets in `forwarders` count from their third copy: compilers share such blocks as the
     /// return address of many calls, which nest without a recursion.
-    fn recursion_cut(&self, stack: &[AbsValue], forwarders: &BitVec) -> Option<usize> {
-        let mut seen = SmallVec::<[(u32, u8); 8]>::new();
-        stack.iter().rev().enumerate().find_map(|(depth, &value)| {
+    ///
+    /// `copies` holds zero for every pc, and does again on return.
+    fn recursion_cut(
+        &self,
+        stack: &[AbsValue],
+        forwarders: &BitVec,
+        copies: &mut [u8],
+    ) -> Option<usize> {
+        let cut = stack.iter().rev().enumerate().find_map(|(depth, &value)| {
             let pc = self.jump_target_pc(value)?;
-            let Some((_, copies)) = seen.iter_mut().find(|(seen, _)| *seen == pc) else {
+            let left = &mut copies[pc as usize];
+            if *left == 0 {
                 let bid = self.cfg.inst_to_block[self.pc_to_inst(pc as usize)]?;
-                seen.push((pc, if forwarders[bid.index()] { 2 } else { 1 }));
+                *left = if forwarders[bid.index()] { 2 } else { 1 };
                 return None;
-            };
-            *copies -= 1;
-            (*copies == 0).then_some(depth)
-        })
+            }
+            *left -= 1;
+            (*left == 0).then_some(depth)
+        });
+        let scanned = cut.map_or(stack.len(), |depth| depth + 1);
+        for &value in stack.iter().rev().take(scanned) {
+            if let Some(pc) = self.jump_target_pc(value) {
+                copies[pc as usize] = 0;
+            }
+        }
+        cut
     }
 
     /// Returns whether `bid` only moves stack entries and jumps, such as a shared block that
@@ -3855,7 +3899,7 @@ mod tests_edge_cases {
         let bytecode = analyze_asm(
             "
             PUSH %done
-            PUSH1 0x03
+            CALLDATASIZE
             PUSH %rec
             JUMP
         done:
@@ -3868,10 +3912,9 @@ mod tests_edge_cases {
             PUSH %base
             JUMPI
             PUSH %back          ; [ret, n, back]
-            SWAP1               ; [ret, back, n]
             PUSH1 0x01
-            SWAP1
-            SUB                 ; [ret, back, n - 1]
+            DUP3
+            SUB                 ; [ret, n, back, n - 1]
             PUSH %rec
             JUMP
         back:
@@ -3886,7 +3929,7 @@ mod tests_edge_cases {
         let mut targets: Vec<_> =
             bytecode.multi_jump_targets(ret).unwrap().iter().map(|&t| bytecode.pc(t)).collect();
         targets.sort_unstable();
-        assert_eq!(targets, [7, 25]);
+        assert_eq!(targets, [6, 23]);
         assert!(!bytecode.has_dynamic_jumps);
     }
 
@@ -4369,5 +4412,58 @@ mod tests_edge_cases {
         let (_, data) = jump_at(56);
         assert!(!data.flags.contains(InstFlags::MULTI_JUMP));
         assert_eq!(bytecode.pc(data.static_jump_target()), 43, "g must return to r2");
+    }
+
+    /// Callers that pass a jump target twice, without a recursion, would fold into segments, which
+    /// joins their entries above the segments. That joins the flags that pick the branch of each
+    /// caller, so each return would also reach `t`. Each return must resolve to its caller alone.
+    #[test]
+    fn calls_sharing_a_jump_target_keep_full_precision() {
+        let bytecode = analyze_asm(
+            "
+            PUSH %t             ; w
+            PUSH %ra
+            PUSH %t
+            PUSH1 0x00          ; flag
+            PUSH %t
+            PUSH %f
+            JUMP
+        ra:
+            JUMPDEST            ; [w]
+            PUSH %rb
+            PUSH %t             ; z
+            PUSH %t
+            PUSH1 0x01          ; flag
+            PUSH %t
+            PUSH %f
+            JUMP
+        rb:
+            JUMPDEST
+            STOP
+        t:
+            JUMPDEST
+            STOP
+        f:
+            JUMPDEST            ; [.., flag, t]
+            POP
+            PUSH %b
+            JUMPI
+            POP                 ; [w, ra, t]
+            JUMP
+        b:
+            JUMPDEST            ; [w, rb, z, t]
+            POP
+            POP
+            JUMP
+        ",
+        );
+
+        assert!(!bytecode.has_dynamic_jumps, "expected no dynamic jumps");
+        let mut jumps = bytecode.iter_insts().filter(|(_, d)| d.is_jump()).rev();
+        for (ret, label) in [(27, "rb"), (13, "ra")] {
+            let (_, data) = jumps.next().unwrap();
+            assert!(!data.flags.contains(InstFlags::MULTI_JUMP));
+            assert_eq!(bytecode.pc(data.static_jump_target()), ret, "must return to {label}");
+        }
     }
 }
