@@ -336,9 +336,8 @@ impl BackendState {
         }
 
         if matches!(mode, AdmitMode::Observed) {
-            let max_entries = self.tuning.jit_max_pending_jobs.saturating_mul(10);
             if !self.entries.contains_key(&key)
-                && self.entries.len() >= max_entries
+                && self.entries.len() >= self.max_entries()
                 && !self.evict_oldest_cold_entry()
             {
                 return;
@@ -871,6 +870,10 @@ impl BackendState {
         true
     }
 
+    fn max_entries(&self) -> usize {
+        self.tuning.jit_max_pending_jobs.saturating_mul(10)
+    }
+
     /// Appends an unlinked entry to the cold FIFO.
     fn link_cold_entry(&mut self, key: &RuntimeCacheKey) {
         let prev = self.cold_tail;
@@ -896,6 +899,8 @@ impl BackendState {
             entry.phase = EntryPhase::Failed(Instant::now());
         }
         self.link_cold_entry(key);
+        // Explicit requests are not capped on admission, so cap their failures here.
+        while self.entries.len() > self.max_entries() && self.evict_oldest_cold_entry() {}
     }
 
     /// Unlinks a cold entry on dispatch or removal, without scanning the table.
@@ -1399,6 +1404,36 @@ mod notifier_tests {
         assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(_)));
         assert_eq!(state.cold_head, Some(key));
         assert_eq!(state.cold_tail, Some(key));
+    }
+
+    #[test]
+    fn explicit_failures_stay_within_entry_cap() {
+        let mut state = new_state(RuntimeTuning { jit_max_pending_jobs: 1, ..Default::default() });
+        let keys = (0..12u8)
+            .map(|i| {
+                let bytecode = Bytes::from(vec![op::PUSH1, i, op::STOP]);
+                let key =
+                    RuntimeCacheKey { code_hash: keccak256(&bytecode), spec_id: SpecId::CANCUN };
+                state.handle_compile_jit(CompileJitRequest {
+                    key,
+                    bytecode,
+                    sync_notifier: SyncNotifier::none(),
+                });
+                key
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(state.entries.len(), 12);
+        for key in &keys {
+            state.entries.get_mut(key).unwrap().phase = EntryPhase::Working;
+            state.unlink_cold_entry(key);
+        }
+        for key in &keys {
+            state.fail_entry(key, false);
+        }
+        assert_eq!(state.entries.len(), 10);
+        assert!(keys[2..].iter().all(|key| state.entries.contains_key(key)));
+        assert_eq!(state.cold_head, Some(keys[2]));
+        assert_eq!(state.cold_tail, Some(keys[11]));
     }
 
     #[test]
