@@ -125,6 +125,12 @@ pub(super) struct FunctionCx<'a, B: Backend> {
     /// Values in the current stack section known to equal another value plus a small constant,
     /// as `(value, base, addend)`: `ADD` results and reloads of materialized stack slots.
     value_offsets: Vec<(B::Value, B::Value, u64)>,
+    /// Stores from [`relieve_vstack_pressure`](Self::relieve_vstack_pressure) that nothing has
+    /// read yet, as `(offset, store, joins)`. Popping such a slot makes its store dead.
+    relief_stores: Vec<(i32, B::Inst, u32)>,
+    /// Number of join blocks built so far. A popped relief store's value is used instead of a
+    /// reload only before the next join, so its live range stays short.
+    joins: u32,
 
     /// The bytecode being translated.
     bytecode: &'a Bytecode<'a>,
@@ -264,6 +270,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             unchecked_gas: 0,
             ensured_memory: Vec::new(),
             value_offsets: Vec::new(),
+            relief_stores: Vec::new(),
+            joins: 0,
             bcx,
 
             bytecode,
@@ -503,6 +511,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.cached_mem_base = None;
                 self.ensured_memory.clear();
                 self.value_offsets.clear();
+                self.relief_stores.clear();
                 self.vstack.reset(section.inputs as usize, section.max_growth.max(0) as usize);
             }
         }
@@ -553,7 +562,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             // real stack diff. For DUP (out = inp+1) this is 0; for ADD (out = 1)
             // this equals inp.
             let drop_count = (inp + 1 - out) as usize;
-            self.vstack.drop_top(drop_count);
+            self.drop_top(drop_count);
             self.len_offset -= drop_count as i8;
             let value = self.bcx.iconst_256(const_out);
             self.push(value);
@@ -1140,7 +1149,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         }
         let delta = expected_top - current_top;
         if delta < 0 {
-            self.vstack.drop_top((-delta) as usize);
+            self.drop_top((-delta) as usize);
         } else {
             // For NOOP instructions that push values, use the known constant output
             // if available. This ensures the value can be materialized later.
@@ -1223,7 +1232,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             );
         }
         if delta < 0 {
-            self.vstack.drop_top((-delta) as usize);
+            self.drop_top((-delta) as usize);
         } else {
             for _ in 0..delta {
                 self.vstack.push_mem();
@@ -1270,8 +1279,23 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
     /// Consumes the topmost `n` elements from the stack without loading them.
     fn pop_ignore(&mut self, n: usize) {
-        self.vstack.drop_top(n);
+        self.drop_top(n);
         self.len_offset -= n as i8;
+    }
+
+    /// Drops the topmost `n` slots from the virtual stack and removes the relief stores to
+    /// them that nothing read.
+    fn drop_top(&mut self, n: usize) {
+        self.vstack.drop_top(n);
+        let top = self.vstack.top_offset();
+        let bcx = &mut self.bcx;
+        self.relief_stores.retain(|&(off, store, _)| {
+            let live = off < top;
+            if !live {
+                bcx.remove_inst(store);
+            }
+            live
+        });
     }
 
     /// Removes the topmost element from the stack and returns it.
@@ -1283,9 +1307,18 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     fn popn<const N: usize>(&mut self) -> [B::Value; N] {
         assert_ne!(N, 0);
 
+        let inst = self.current_inst.unwrap();
         let operand_depth_base = (-self.len_offset) as usize;
         let values = std::array::from_fn(|i| {
             let operand_depth = operand_depth_base + i;
+            // Using the value of a relief store made since the last join instead of reloading
+            // it leaves the store unread, so the pop below removes it.
+            if self.bytecode.const_operand(inst, operand_depth).is_none()
+                && let VSlot::Materialized(Some(stored)) = self.vstack.get(i)
+                && self.is_recent_relief_store(self.vstack.offset_at_depth(i))
+            {
+                return stored;
+            }
             let name = b'a' + i as u8;
             self.stack_value_at_depth(operand_depth, i, std::str::from_utf8(&[name]).unwrap())
         });
@@ -1486,6 +1519,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     #[must_use]
     fn sp_after_const_inputs(&mut self) -> B::Value {
         let inputs = self.current_inst().stack_io().0 as usize;
+        let top = self.section_len_offset;
+        self.observe_slots(top - inputs as i32..top);
         self.write_const_operands(inputs);
         self.sp_from_top(inputs)
     }
@@ -1548,6 +1583,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             VSlot::Virtual(v) => v,
             VSlot::Materialized(stored) => {
                 let off = self.vstack.offset_at_depth(live_depth);
+                self.observe_slots(off..off + 1);
                 let sp = self.sp_from_section(off as i64);
                 let value = self.load_word(sp, name);
                 if let Some(stored) = stored {
@@ -1587,8 +1623,26 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // Materialize everything below the hot window.
         let cold_end = (self.vstack.top_offset() - KEEP_HOT as i32).max(live.start);
         if cold_end > live.start {
-            self.materialize_range(live.start, cold_end);
+            let range = live.start..cold_end;
+            let pending: Vec<_> = self.vstack.pending_stores(range.clone()).collect();
+            for (off, value) in pending {
+                self.observe_slots(off..off + 1);
+                let sp = self.sp_from_section(off as i64);
+                let store = self.bcx.store(value, sp);
+                self.relief_stores.push((off, store, self.joins));
+            }
+            self.vstack.mark_stored_range(range);
         }
+    }
+
+    /// Returns whether the slot at `offset` holds a relief store made since the last join.
+    fn is_recent_relief_store(&self, offset: i32) -> bool {
+        self.relief_stores.iter().any(|&(off, _, joins)| off == offset && joins == self.joins)
+    }
+
+    /// Keeps the relief stores to the given slots, which something may read.
+    fn observe_slots(&mut self, range: Range<i32>) {
+        self.relief_stores.retain(|(off, ..)| !range.contains(off));
     }
 
     /// Materializes all virtual slots in the given section-relative offset range.
@@ -1600,6 +1654,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     /// Stores all virtual slots in the given section-relative offset range without marking
     /// them materialized.
     fn store_range(&mut self, range: Range<i32>) {
+        self.observe_slots(range.clone());
         let pending: Vec<_> = self.vstack.pending_stores(range).collect();
         for (off, value) in pending {
             let sp = self.sp_from_section(off as i64);
@@ -2103,6 +2158,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.br(done_block);
 
         self.bcx.switch_to_block(done_block);
+        self.joins += 1;
     }
 
     /// Returns the current block.

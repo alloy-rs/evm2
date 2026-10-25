@@ -825,6 +825,7 @@ impl BackendTypes for EvmLlvmBackend {
     type StackSlot = PointerValue<'static>;
     type BasicBlock = BasicBlock<'static>;
     type Function = FunctionValue<'static>;
+    type Inst = InstructionValue<'static>;
 }
 
 impl TypeMethods for EvmLlvmBackend {
@@ -1316,6 +1317,7 @@ impl BackendTypes for EvmLlvmBuilder<'_> {
     type StackSlot = <EvmLlvmBackend as BackendTypes>::StackSlot;
     type BasicBlock = <EvmLlvmBackend as BackendTypes>::BasicBlock;
     type Function = <EvmLlvmBackend as BackendTypes>::Function;
+    type Inst = <EvmLlvmBackend as BackendTypes>::Inst;
 }
 
 impl TypeMethods for EvmLlvmBuilder<'_> {
@@ -1471,7 +1473,7 @@ impl Builder for EvmLlvmBuilder<'_> {
     }
 
     fn stack_store(&mut self, value: Self::Value, slot: Self::StackSlot) {
-        self.store(value, slot.into())
+        self.store(value, slot.into());
     }
 
     fn stack_addr(&mut self, ty: Self::Type, slot: Self::StackSlot) -> Self::Value {
@@ -1504,16 +1506,21 @@ impl Builder for EvmLlvmBuilder<'_> {
         value
     }
 
-    fn store(&mut self, value: Self::Value, ptr: Self::Value) {
+    fn store(&mut self, value: Self::Value, ptr: Self::Value) -> Self::Inst {
         let inst = self.bcx.build_store(ptr.into_pointer_value(), value).unwrap();
         if value.get_type() == self.ty_i256.into() {
             inst.set_alignment(8).unwrap();
         }
+        inst
     }
 
     fn store_aligned(&mut self, value: Self::Value, ptr: Self::Value, align: usize) {
         let inst = self.bcx.build_store(ptr.into_pointer_value(), value).unwrap();
         inst.set_alignment(align as u32).unwrap();
+    }
+
+    fn remove_inst(&mut self, inst: Self::Inst) {
+        inst.erase_from_basic_block();
     }
 
     fn nop(&mut self) {
