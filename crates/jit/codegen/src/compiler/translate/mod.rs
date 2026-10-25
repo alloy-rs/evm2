@@ -1590,7 +1590,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                     let (base, addend) = self.memory_offset_parts(stored);
                     self.value_offsets.push((value, base, addend));
                 }
-                self.vstack.set(live_depth, value);
+                // Memory still holds the reloaded value, so don't store it back.
+                self.vstack.set_stored_at_offset(off, value);
                 value
             }
         }
