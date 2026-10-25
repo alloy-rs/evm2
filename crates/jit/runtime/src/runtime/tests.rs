@@ -765,7 +765,7 @@ fn pause_resume_depth_tracking_with_backend_thread() {
 }
 
 #[test]
-#[cfg(unix)]
+#[cfg(all(unix, feature = "llvm"))]
 fn blocking_out_of_process_pause_resume_does_not_stop_helper() {
     // The caller waits on compilation in blocking mode, so stopping the helper would hang it.
     let tb = TestBackend::new(RuntimeConfig {
