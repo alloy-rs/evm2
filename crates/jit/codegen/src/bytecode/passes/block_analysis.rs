@@ -268,6 +268,12 @@ const MAX_CONTEXT_DEPTH: usize = 128;
 /// Maximum number of values in a range that a jump resolves to the jump targets in it.
 const MAX_RANGE_JUMP_WIDTH: usize = 4096;
 
+/// Maximum total number of jump targets that the range jumps of one bytecode resolve to.
+///
+/// Each resolved range jump becomes its own switch, so later range jumps stay dynamic to bound
+/// compile time.
+const MAX_RANGE_JUMP_TARGETS: usize = 1024;
+
 /// Maximum number of memory words tracked by [`MemWords`].
 const MAX_MEM_WORDS: usize = 16;
 
@@ -705,7 +711,8 @@ impl Bytecode<'_> {
                 continue;
             }
 
-            let target = self.resolve_jump(term_inst, &empty_sets);
+            // Ranges never resolve to a single target, so they need no budget here.
+            let target = self.resolve_jump(term_inst, &empty_sets, &mut 0);
             let Some(target_inst) = target.as_single() else { continue };
 
             // Log non-adjacent resolutions (not simple PUSH+JUMP).
@@ -1007,6 +1014,7 @@ impl Bytecode<'_> {
         // After convergence, resolve each dynamic jump from its snapshot operand.
         let mut jump_targets: Vec<(Inst, JumpResolution)> = Vec::new();
         let mut has_top_jump = false;
+        let mut range_budget = MAX_RANGE_JUMP_TARGETS;
         for &jump_inst in &jump_insts {
             // Blocks the fixpoint never reached keep their block-local snapshots.
             let target = if converged
@@ -1014,7 +1022,7 @@ impl Bytecode<'_> {
             {
                 JumpResolution::bottom()
             } else {
-                self.resolve_jump(jump_inst, &const_sets)
+                self.resolve_jump(jump_inst, &const_sets, &mut range_budget)
             };
             if target.is_top() {
                 has_top_jump = true;
@@ -1045,7 +1053,12 @@ impl Bytecode<'_> {
         jump_targets
     }
 
-    fn resolve_jump(&self, jump_inst: Inst, const_sets: &ConstSetInterner) -> JumpResolution {
+    fn resolve_jump(
+        &self,
+        jump_inst: Inst,
+        const_sets: &ConstSetInterner,
+        range_budget: &mut usize,
+    ) -> JumpResolution {
         let condition = if self.insts[jump_inst].opcode == op::JUMPI {
             self.snapshots
                 .input(jump_inst, 1)
@@ -1061,9 +1074,9 @@ impl Bytecode<'_> {
         }
 
         match self.snapshots.input(jump_inst, 0) {
-            Some(operand) => {
-                self.resolve_jump_operand(operand, const_sets).with_condition(condition)
-            }
+            Some(operand) => self
+                .resolve_jump_operand(operand, const_sets, range_budget)
+                .with_condition(condition),
             None => {
                 trace!(%jump_inst, pc = self.pc(jump_inst), "jump in unreached block");
                 JumpResolution::bottom()
@@ -1072,10 +1085,13 @@ impl Bytecode<'_> {
     }
 
     /// Resolves a jump target from the snapshot operand recorded during the fixpoint.
+    ///
+    /// A range resolves only if its targets fit in `range_budget`, which they then use up.
     fn resolve_jump_operand(
         &self,
         operand: AbsValue,
         const_sets: &ConstSetInterner,
+        range_budget: &mut usize,
     ) -> JumpResolution {
         match operand {
             AbsValue::Const(imm) => {
@@ -1104,7 +1120,10 @@ impl Bytecode<'_> {
                     Some(targets) if targets.is_empty() => JumpResolution::invalid(),
                     // A single target would become a static jump that skips the invalid jump check
                     // for the other values in the range, while a multi-target switch keeps it.
-                    Some(targets) if targets.len() > 1 => JumpResolution::resolved(targets),
+                    Some(targets) if targets.len() > 1 && targets.len() <= *range_budget => {
+                        *range_budget -= targets.len();
+                        JumpResolution::resolved(targets)
+                    }
                     _ => JumpResolution::top(),
                 }
             }
@@ -4258,5 +4277,21 @@ mod tests_edge_cases {
         );
         assert!(!bytecode.has_dynamic_jumps);
         assert_eq!(multi_jump_target_pcs(&bytecode), [0x10, 0x12, 0x14]);
+    }
+
+    /// Range jumps resolve to at most [`MAX_RANGE_JUMP_TARGETS`] targets in total, since each
+    /// becomes its own switch.
+    #[test]
+    fn range_jump_budget() {
+        let jumpdests = "JUMPDEST ".repeat(600);
+        let jump = "PUSH0 CALLDATALOAD PUSH2 0x03ff AND JUMP";
+        let bytecode = analyze_asm(&format!("{jumpdests} {jump}"));
+        assert!(!bytecode.has_dynamic_jumps);
+        assert_eq!(multi_jump_target_pcs(&bytecode).len(), 600);
+
+        let bytecode = analyze_asm(&format!(
+            "{jumpdests} PUSH0 CALLDATALOAD PUSH0 CALLDATALOAD PUSH2 0x03ff AND JUMPI {jump}"
+        ));
+        assert!(bytecode.has_dynamic_jumps);
     }
 }
