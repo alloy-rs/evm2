@@ -188,6 +188,8 @@ enum EntryPhase {
     Cold,
     /// JIT compilation in progress on a worker.
     Working,
+    /// Compilation failed at this time; the key is not retried until the entry is swept.
+    Failed(Instant),
 }
 
 /// Whether a JIT admission request was triggered by hot-path observation
@@ -356,24 +358,25 @@ impl BackendState {
                     bytecode,
                     last_observed_at: now,
                     pending_notifiers: Vec::new(),
-                    cold_links: Some(ColdLinks { prev: self.cold_tail, next: None }),
+                    cold_links: None,
                 });
                 true
             }
         };
         if inserted {
-            if let Some(tail) = self.cold_tail {
-                self.entries.get_mut(&tail).unwrap().cold_links.as_mut().unwrap().next = Some(key);
-            } else {
-                self.cold_head = Some(key);
-            }
-            self.cold_tail = Some(key);
+            self.link_cold_entry(&key);
         }
         let entry = self.entries.get_mut(&key).unwrap();
         entry.last_observed_at = now;
 
         if entry.phase == EntryPhase::Working {
             sync_notifier.retain_waiter(&mut entry.pending_notifiers);
+            return;
+        }
+
+        // Failed keys are not retried until the eviction sweep drops them.
+        if matches!(entry.phase, EntryPhase::Failed(_)) {
+            sync_notifier.notify();
             return;
         }
 
@@ -606,7 +609,7 @@ impl BackendState {
                 self.handle_jit_object_success(result.key, success, result.compile_duration);
             }
             Err(err) => {
-                self.remove_entry(&result.key);
+                self.fail_entry(&result.key);
                 self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
 
                 warn!(
@@ -643,7 +646,7 @@ impl BackendState {
                 );
             }
             Err(err) => {
-                self.remove_entry(&key);
+                self.fail_entry(&key);
                 self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
 
                 warn!(
@@ -794,15 +797,19 @@ impl BackendState {
             }
         }
 
-        // Phase 2: evict stale cold entries that never became hot enough to compile.
+        // Phase 2: evict stale cold entries that never became hot enough to compile, and failed
+        // entries once the idle duration has passed since the failure.
         if let Some(idle) = idle_duration {
             let stale_keys = self
                 .entries
                 .iter()
-                .filter(|(key, entry)| {
-                    entry.phase == EntryPhase::Cold
-                        && now.duration_since(entry.last_observed_at) > idle
-                        && !self.inner.resident.contains_key(key)
+                .filter(|(key, entry)| match entry.phase {
+                    EntryPhase::Cold => {
+                        now.duration_since(entry.last_observed_at) > idle
+                            && !self.inner.resident.contains_key(key)
+                    }
+                    EntryPhase::Working => false,
+                    EntryPhase::Failed(at) => now.duration_since(at) > idle,
                 })
                 .map(|(key, _)| *key)
                 .collect::<Vec<_>>();
@@ -852,14 +859,33 @@ impl BackendState {
             && self.last_sweep.elapsed() >= self.tuning.eviction_sweep_interval
     }
 
-    /// Evicts the first-in cold entry with constant-time queue maintenance.
+    /// Evicts the first-in cold or failed entry with constant-time queue maintenance.
     fn evict_oldest_cold_entry(&mut self) -> bool {
         let Some(key) = self.cold_head else { return false };
-        // Cold entries never accumulate waiters: those belong to working entries.
-        debug_assert_eq!(self.entries[&key].phase, EntryPhase::Cold);
+        // Queued entries never accumulate waiters: those belong to working entries.
+        debug_assert_ne!(self.entries[&key].phase, EntryPhase::Working);
         debug_assert!(self.entries[&key].pending_notifiers.is_empty());
         self.remove_entry(&key);
         true
+    }
+
+    /// Appends an unlinked entry to the cold FIFO.
+    fn link_cold_entry(&mut self, key: &RuntimeCacheKey) {
+        let prev = self.cold_tail;
+        self.entries.get_mut(key).unwrap().cold_links = Some(ColdLinks { prev, next: None });
+        if let Some(tail) = prev {
+            self.entries.get_mut(&tail).unwrap().cold_links.as_mut().unwrap().next = Some(*key);
+        } else {
+            self.cold_head = Some(*key);
+        }
+        self.cold_tail = Some(*key);
+    }
+
+    /// Marks a working entry as failed and queues it for eviction under the entry cap.
+    fn fail_entry(&mut self, key: &RuntimeCacheKey) {
+        let Some(entry) = self.entries.get_mut(key) else { return };
+        entry.phase = EntryPhase::Failed(Instant::now());
+        self.link_cold_entry(key);
     }
 
     /// Unlinks a cold entry on dispatch or removal, without scanning the table.
@@ -1084,7 +1110,7 @@ mod notifier_tests {
             timings: crate::CompileTimings::default(),
         });
         assert_eq!(state.pending_jobs, 0);
-        assert!(!state.entries.contains_key(&key));
+        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(_)));
         for receiver in [original_rx, first_rx, second_rx] {
             assert_eq!(receiver.try_recv(), Ok(()));
             assert_eq!(receiver.try_recv(), Err(chan::TryRecvError::Disconnected));
@@ -1264,6 +1290,38 @@ mod notifier_tests {
         assert!(!state.evict_oldest_cold_entry());
         observe(&mut state, 0);
         assert!(state.evict_oldest_cold_entry());
+    }
+
+    #[test]
+    fn failed_entries_stay_bounded_and_expire_with_idle_sweep() {
+        let mut state = new_state(RuntimeTuning {
+            jit_hot_threshold: usize::MAX,
+            jit_max_pending_jobs: 1,
+            idle_evict_duration: Some(Duration::ZERO),
+            eviction_sweep_interval: Duration::ZERO,
+            ..Default::default()
+        });
+        let keys = (0..10).map(|i| observe(&mut state, i)).collect::<Vec<_>>();
+        for key in &keys {
+            state.entries.get_mut(key).unwrap().phase = EntryPhase::Working;
+            state.unlink_cold_entry(key);
+            state.fail_entry(key);
+        }
+        assert_eq!(state.cold_head, Some(keys[0]));
+        assert_eq!(state.cold_tail, Some(keys[9]));
+
+        // A full table evicts the oldest failed entry for a new key.
+        let new_key = observe(&mut state, 10);
+        assert_eq!(state.entries.len(), 10);
+        assert!(!state.entries.contains_key(&keys[0]));
+        assert!(state.entries.contains_key(&new_key));
+
+        // The sweep drops failed entries once the idle duration has passed since the failure.
+        std::thread::sleep(Duration::from_millis(1));
+        state.run_eviction_sweep();
+        assert!(state.entries.is_empty());
+        assert_eq!(state.cold_head, None);
+        assert_eq!(state.cold_tail, None);
     }
 
     #[test]

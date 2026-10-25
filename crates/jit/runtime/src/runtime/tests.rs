@@ -854,6 +854,47 @@ fn jit_max_bytecode_len_prevents_promotion() {
 }
 
 #[test]
+#[cfg(all(unix, feature = "llvm"))]
+fn failed_compile_is_not_retried_until_cleared() {
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        jit_mode: JitMode::OutOfProcess,
+        jit_helper_path: Some("/nonexistent/evm2-jit-helper".into()),
+        tuning: RuntimeTuning {
+            jit_worker_count: 1,
+            jit_hot_threshold: 1,
+            idle_evict_duration: None,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let lookup_rounds = || {
+        for _ in 0..10 {
+            let _ = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+
+    // Every compile fails at helper spawn, but the key is only dispatched once.
+    lookup_rounds();
+    tb.wait_stats(|s| s.compilations_failed == 1);
+    lookup_rounds();
+    tb.compile_jit(TestBackend::req_cancun(BYTECODE_RET42));
+    tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let stats = tb.stats();
+    assert_eq!(stats.compilations_dispatched, 1);
+    assert_eq!(stats.compilations_failed, 1);
+
+    // Clearing the resident map forgets the failure.
+    tb.clear_resident();
+    lookup_rounds();
+    let stats = tb.wait_stats(|s| s.compilations_failed == 2);
+    assert_eq!(stats.compilations_dispatched, 2);
+}
+
+#[test]
 #[cfg(feature = "llvm")]
 fn clear_resident_discards_inflight_jit() {
     let tb =
