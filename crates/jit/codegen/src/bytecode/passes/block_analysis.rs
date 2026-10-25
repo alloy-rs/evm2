@@ -457,9 +457,12 @@ impl ContextMode {
                 pops: num_blocks * 32,
                 work: num_insts as u64 * 64,
             },
-            Self::Insensitive => {
-                Budget { block_parts: 1, parts: num_blocks, pops: num_blocks * 8, work: u64::MAX }
-            }
+            Self::Insensitive => Budget {
+                block_parts: 1,
+                parts: num_blocks,
+                pops: num_blocks * 8,
+                work: num_insts as u64 * 64,
+            },
         }
     }
 }
@@ -3618,6 +3621,34 @@ mod tests_edge_cases {
             bytecode.has_dynamic_jumps,
             "return jump should remain dynamic when fixpoint doesn't converge"
         );
+    }
+
+    /// Many callers of a shared return block over a deep stack. Full and Coarse contexts exceed
+    /// their partition limits, so the context-insensitive fixpoint is the last attempt. Its work
+    /// grows with callers squared times stack depth, so it must run out of budget rather than
+    /// converge, leaving the return jump dynamic.
+    #[test]
+    fn insensitive_fixpoint_work_is_bounded() {
+        let callers = 2100;
+        let depth = 64;
+        let mut lines = vec!["CALLDATASIZE".to_string(); depth];
+        lines.push("PUSH %caller0".to_string());
+        lines.push("JUMP".to_string());
+        for i in 0..callers {
+            lines.push(format!("caller{i}:"));
+            lines.push("JUMPDEST".to_string());
+            if i + 1 < callers {
+                lines.push(format!("PUSH %caller{}", i + 1));
+                lines.push("PUSH %func".to_string());
+                lines.push("JUMP".to_string());
+            } else {
+                lines.push("STOP".to_string());
+            }
+        }
+        lines.extend(["func:", "JUMPDEST", "JUMP"].map(String::from));
+
+        let bytecode = analyze_asm(&lines.join("\n"));
+        assert!(bytecode.has_dynamic_jumps());
     }
 
     /// Snapshots inside a function analyzed once per caller context must join the values of

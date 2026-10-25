@@ -843,7 +843,7 @@ fn gas_params_to_pairs(gas_params: &GasParams) -> GasParamPairs {
         .map(|i| {
             let id = i as u8;
             let gas_id = GasId::from_usize(i).expect("gas parameter index should be valid");
-            (id, gas_params.get(gas_id))
+            (id, gas_params[gas_id])
         })
         .collect()
 }

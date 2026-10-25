@@ -5,7 +5,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use alloy_primitives::{Bytes, KECCAK256_EMPTY, hex};
+use alloy_primitives::{Bytes, hex};
 use alloy_sol_types::{ContractError, GenericRevertReason};
 use evm2::{
     AccountInfo, SpecId,
@@ -142,7 +142,7 @@ pub(crate) fn load_account_code(
     db: &mut dyn DynDatabase,
     account: &AccountInfo,
 ) -> DbResult<Option<Bytes>> {
-    if account.code_hash == KECCAK256_EMPTY {
+    if account.is_empty_code_hash() {
         return Ok(None);
     }
     if let Some(code) = &account.code {

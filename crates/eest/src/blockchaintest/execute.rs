@@ -949,7 +949,7 @@ fn run_system_call(
     if !executed.result().status {
         let _ = executed.discard();
         let has_code = match evm.read_account_info(&address) {
-            Ok(info) => info.is_some_and(|info| info.code_hash != KECCAK256_EMPTY),
+            Ok(info) => info.is_some_and(|info| !info.is_empty_code_hash()),
             Err(code) => return Err(TestErrorKind::UnexpectedFailure(code.to_string())),
         };
         if has_code {

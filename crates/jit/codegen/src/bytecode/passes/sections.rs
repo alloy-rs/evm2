@@ -1,6 +1,6 @@
 use crate::bytecode::{Bytecode, Inst, InstFlags};
 use alloy_primitives::U256;
-use core::fmt;
+use core::{fmt, ops::Range};
 use evm2::interpreter::op;
 use smallvec::SmallVec;
 
@@ -175,27 +175,15 @@ impl StackSectionAnalysis {
         self.max_growth = self.max_growth.max(self.diff);
     }
 
-    fn save_to_reset(&mut self, bytecode: &mut Bytecode<'_>, next_section_inst: Inst) {
-        self.save_to(bytecode, next_section_inst);
-        self.reset(next_section_inst);
-    }
-
     /// Saves the current stack section to the bytecode.
-    fn save_to(&self, bytecode: &mut Bytecode<'_>, next_section_inst: Inst) {
+    fn save_to(&self, bytecode: &mut Bytecode<'_>, section: StackSection, continues: bool) {
         if self.start_inst >= bytecode.insts.len_idx() {
             return;
         }
-        let section = self.section();
-        let _ = next_section_inst;
-        // trace!(
-        //     inst = %self.start_inst,
-        //     len = %(next_section_inst - self.start_inst).0,
-        //     ?section,
-        //     "saving stack"
-        // );
         let mut insts = bytecode.insts[self.start_inst..].iter_mut();
         if let Some(inst) = insts.find(|inst| !inst.is_dead_code()) {
             inst.flags |= InstFlags::STACK_SECTION_HEAD;
+            inst.flags.set(InstFlags::CONTINUES_STACK_SECTION, continues);
             inst.stack_section = section;
         }
     }
@@ -219,6 +207,15 @@ impl StackSectionAnalysis {
 pub(crate) struct SectionsAnalysis {
     gas: GasSectionAnalysis,
     stack: StackSectionAnalysis,
+    /// Whether the current stack section continues the previous one. See
+    /// [`InstFlags::CONTINUES_STACK_SECTION`].
+    continues: bool,
+    /// Start of the current stack section, relative to the start of the first section in its
+    /// chain of continuations.
+    chain_offset: i32,
+    /// Stack range already checked by the current chain of continuations, relative to the
+    /// start of its first section.
+    checked: Range<i32>,
 }
 
 impl SectionsAnalysis {
@@ -226,7 +223,7 @@ impl SectionsAnalysis {
     pub(crate) fn process(&mut self, bytecode: &mut Bytecode<'_>, inst: Inst) {
         // JUMPDEST starts both gas and stack sections.
         if bytecode.inst(inst).is_reachable_jumpdest(bytecode.has_dynamic_jumps()) {
-            self.stack.save_to_reset(bytecode, inst);
+            self.save_stack_reset(bytecode, inst, false);
             self.gas.save_to_reset(bytecode, inst);
         }
 
@@ -251,17 +248,52 @@ impl SectionsAnalysis {
         // Branching instructions and host effects that depend on the remaining gas end both
         // sections.
         let next = inst + 1;
-        if data.is_branching() || data.ends_sections(bytecode.spec_id) {
-            self.stack.save_to_reset(bytecode, next);
+        if data.is_branching() || data.ends_sections() {
+            let continues = continues_into(bytecode, inst);
+            self.save_stack_reset(bytecode, next, continues);
             self.gas.save_to_reset(bytecode, next);
         }
     }
 
+    /// Saves the current stack section and starts a new one at `next_section_inst`.
+    fn save_stack_reset(
+        &mut self,
+        bytecode: &mut Bytecode<'_>,
+        next_section_inst: Inst,
+        next_continues: bool,
+    ) {
+        self.save_stack(bytecode);
+        self.chain_offset += self.stack.diff();
+        self.continues = next_continues;
+        self.stack.reset(next_section_inst);
+    }
+
+    /// Saves the current stack section. A continuation keeps only the bounds that its chain
+    /// has not checked yet.
+    fn save_stack(&mut self, bytecode: &mut Bytecode<'_>) {
+        let mut section = self.stack.section();
+        if self.continues {
+            let low = self.chain_offset - section.inputs as i32;
+            let high = self.chain_offset + section.max_growth as i32;
+            if low >= self.checked.start {
+                section.inputs = 0;
+            }
+            if high <= self.checked.end {
+                section.max_growth = 0;
+            }
+            self.checked = self.checked.start.min(low)..self.checked.end.max(high);
+        } else {
+            self.chain_offset = 0;
+            self.checked = -(section.inputs as i32)..section.max_growth as i32;
+        }
+        self.stack.save_to(bytecode, section, self.continues);
+    }
+
     /// Finishes the analysis.
-    pub(crate) fn finish(self, bytecode: &mut Bytecode<'_>) {
+    pub(crate) fn finish(mut self, bytecode: &mut Bytecode<'_>) {
         let last = bytecode.insts.len_idx() - 1;
         self.gas.save_to(bytecode, last);
-        self.stack.save_to(bytecode, last);
+        self.save_stack(bytecode);
         if enabled!(tracing::Level::DEBUG) {
             let mut max_len = 0usize;
             let mut count = 0usize;
@@ -283,6 +315,16 @@ impl SectionsAnalysis {
             debug!(count, max_len, "sections");
         }
     }
+}
+
+/// Returns `true` if the stack section can continue past `inst` into the next instruction:
+/// `inst` is a `JUMPI` that may fall through, and nothing else enters the next instruction.
+fn continues_into(bytecode: &Bytecode<'_>, inst: Inst) -> bool {
+    let next = inst + 1;
+    bytecode.inst(inst).opcode == op::JUMPI
+        && next < bytecode.insts.len_idx()
+        && !bytecode.inst(next).is_dead_code()
+        && bytecode.is_fall_through_only(next)
 }
 
 #[cfg(test)]
@@ -390,22 +432,29 @@ mod tests {
     #[test]
     fn cold_load_ends_section() {
         let cases = [
-            ("PUSH0 BALANCE PUSH0 STOP", op::BALANCE),
-            ("PUSH0 EXTCODESIZE PUSH0 STOP", op::EXTCODESIZE),
-            ("PUSH0 PUSH0 PUSH0 PUSH0 EXTCODECOPY PUSH0 STOP", op::EXTCODECOPY),
-            ("PUSH0 EXTCODEHASH PUSH0 STOP", op::EXTCODEHASH),
-            ("PUSH0 SLOAD PUSH0 STOP", op::SLOAD),
+            ("{p} BALANCE {p} STOP", op::BALANCE),
+            ("{p} EXTCODESIZE {p} STOP", op::EXTCODESIZE),
+            ("{p} {p} {p} {p} EXTCODECOPY {p} STOP", op::EXTCODECOPY),
+            ("{p} EXTCODEHASH {p} STOP", op::EXTCODEHASH),
+            ("{p} SLOAD {p} STOP", op::SLOAD),
+            ("{p} {p} SSTORE {p} STOP", op::SSTORE),
         ];
 
-        for (src, opcode) in cases {
-            let bytecode = analyze_asm_spec(src, SpecId::AMSTERDAM);
-            let (inst, data) =
-                bytecode.iter_insts().find(|(_, data)| data.opcode == opcode).unwrap();
-            assert!(data.ends_sections(SpecId::AMSTERDAM));
+        // Active features can enable EIP-2200 and EIP-2929 over any base spec, so sections end at
+        // these opcodes even before Istanbul and Berlin.
+        for (spec, push, push_gas) in
+            [(SpecId::AMSTERDAM, "PUSH0", 2), (SpecId::PETERSBURG, "PUSH1 0", 3)]
+        {
+            for (src, opcode) in cases {
+                let bytecode = analyze_asm_spec(&src.replace("{p}", push), spec);
+                let (inst, data) =
+                    bytecode.iter_insts().find(|(_, data)| data.opcode == opcode).unwrap();
+                assert!(data.ends_sections());
 
-            let after = bytecode.inst(inst + 1);
-            assert!(after.is_stack_section_head());
-            assert_eq!(after.gas_section.gas_cost, 2);
+                let after = bytecode.inst(inst + 1);
+                assert!(after.is_stack_section_head());
+                assert_eq!(after.gas_section.gas_cost, push_gas);
+            }
         }
     }
 
