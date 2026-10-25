@@ -11,8 +11,9 @@ use core::ops::Range;
 pub(super) enum VSlot<T> {
     /// Physical memory already contains the canonical value.
     ///
-    /// Holds the SSA value the translator last stored there, if no builtin may have written
-    /// the slot since. It only identifies reloads of that value; codegen still reloads.
+    /// Holds the SSA value the translator last stored there or loaded from there, if no builtin
+    /// may have written the slot since. It only identifies reloads of that value; codegen still
+    /// reloads.
     Materialized(Option<T>),
     /// The canonical value exists only as an SSA value; memory may be stale.
     Virtual(T),
@@ -121,16 +122,10 @@ impl<T: Copy> VStack<T> {
         self.slots[idx] = Some(VSlot::Virtual(value));
     }
 
-    /// Records that memory at the given operand depth holds `value`.
-    pub(super) fn set_stored(&mut self, depth: usize, value: T) {
-        let idx = self.idx(self.offset_at_depth(depth));
-        self.slots[idx] = Some(VSlot::Materialized(Some(value)));
-    }
-
-    /// Sets a slot to virtual at a section-relative offset.
-    pub(super) fn set_at_offset(&mut self, offset: i32, value: T) {
+    /// Records that memory at a section-relative offset holds `value`.
+    pub(super) fn set_stored_at_offset(&mut self, offset: i32, value: T) {
         let idx = self.idx(offset);
-        self.slots[idx] = Some(VSlot::Virtual(value));
+        self.slots[idx] = Some(VSlot::Materialized(Some(value)));
     }
 
     /// Pushes a virtual value onto the top of the stack.

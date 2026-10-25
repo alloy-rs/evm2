@@ -337,10 +337,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             } else {
                 self.call_fallible_builtin(builtin, args);
             }
-            // Builtin wrote output to sp; reload into virtual stack.
+            // The builtin wrote its output to `sp`; reload it.
             let off = self.section_len_offset - 1;
             let value = self.load_word(sp, "builtin.out");
-            self.vstack.set_at_offset(off, value);
+            self.vstack.set_stored_at_offset(off, value);
             true
         } else {
             false

@@ -1555,7 +1555,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                     self.value_offsets.push((value, base, addend));
                 }
                 // Memory still holds the reloaded value, so don't store it back.
-                self.vstack.set_stored(live_depth, value);
+                self.vstack.set_stored_at_offset(off, value);
                 value
             }
         }
