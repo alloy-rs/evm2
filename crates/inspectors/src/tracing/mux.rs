@@ -315,9 +315,6 @@ pub enum Error {
     /// Config was provided for a tracer that does not expect it
     #[error("unexpected config for tracer '{0:?}'")]
     UnexpectedConfig(GethDebugBuiltInTracerType),
-    /// Expected config is missing
-    #[error("expected config is missing for tracer '{0:?}'")]
-    MissingConfig(GethDebugBuiltInTracerType),
     /// Unsupported tracer type (e.g. JS tracer)
     #[error("unsupported tracer type: '{0:?}'")]
     UnsupportedTracerType(GethDebugTracerType),

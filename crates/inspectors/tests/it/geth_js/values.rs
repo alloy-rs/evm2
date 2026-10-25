@@ -72,7 +72,7 @@ fn refund_steps(accounts: &[(Address, Vec<u8>)], outer: Address) -> serde_json::
         );
         db.insert_account_storage(addr, &U256::ZERO, &U256::ONE);
     }
-    let code = r#"{r:[],step:function(log){if(['SSTORE','CALL','DELEGATECALL','STOP'].includes(log.op.toString()))this.r.push([log.getDepth(),log.op.toString(),log.getRefund()])},fault:function(){},result:function(){return this.r}}"#;
+    let code = r#"{r:[],step:function(log){if(['SSTORE','CALL','DELEGATECALL','CREATE','STOP'].includes(log.op.toString()))this.r.push([log.getDepth(),log.op.toString(),log.getRefund()])},fault:function(){},result:function(){return this.r}}"#;
     trace_tx(
         code,
         db,
@@ -119,6 +119,40 @@ fn refund_includes_ancestors_and_negative_child_counters() {
             [1, "STOP", 7600],
             [0, "CALL", 4800],
             [0, "STOP", 7600]
+        ])
+    );
+}
+
+#[test]
+fn test_get_refund_drops_a_reverted_frame() {
+    let (outer, inner) = (Address::repeat_byte(0xaa), Address::repeat_byte(0xbb));
+    let steps = refund_steps(
+        &[(outer, clear_then_call(0xf1, inner)), (inner, hex!("600060005560006000fd").to_vec())],
+        outer,
+    );
+    assert_eq!(
+        steps,
+        json!([[0, "SSTORE", 4800], [1, "SSTORE", 9600], [0, "CALL", 4800], [0, "STOP", 4800]])
+    );
+}
+
+#[test]
+fn test_get_refund_at_create_excludes_the_unfinished_child() {
+    let outer = Address::repeat_byte(0xaa);
+    // SSTORE slot0 = 0 earns 4800, then CREATE initcode that sets and resets its own slot 1.
+    let steps = refund_steps(
+        &[(outer, hex!("60006000556a6001600155600060015500600052600b60156000f000").to_vec())],
+        outer,
+    );
+    assert_eq!(
+        steps,
+        json!([
+            [0, "SSTORE", 4800],
+            [1, "SSTORE", 4800],
+            [1, "SSTORE", 24700],
+            [1, "STOP", 24700],
+            [0, "CREATE", 4800],
+            [0, "STOP", 24700]
         ])
     );
 }

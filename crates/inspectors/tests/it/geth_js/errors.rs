@@ -56,6 +56,17 @@ fn error_message(error: JsInspectorError) -> String {
     format!("{}: {}", native.kind(), native.message())
 }
 
+fn error_events_tracer(has_step: bool) -> String {
+    let step = if has_step {
+        "step:function(l){if(l.getError())this.e.push(['step',l.op.toString(),l.getError()])},"
+    } else {
+        ""
+    };
+    format!(
+        "{{e:[],{step}fault:function(l){{this.e.push(['fault',l.op.toString(),l.getError()])}},result:function(){{return this.e}}}}"
+    )
+}
+
 #[test]
 fn faults_follow_steps_and_preserve_instruction_metadata() {
     let script = "{e:[],step:function(l){this.e.push(['step',l.getPC(),l.op.toString(),l.getError()||null])},fault:function(l){this.e.push(['fault',l.getPC(),l.op.toString(),l.getError()])},result:function(c){return [this.e,c.error||null]}}";
@@ -91,21 +102,54 @@ fn faults_follow_steps_and_preserve_instruction_metadata() {
 }
 
 #[test]
-fn validation_errors_use_step_and_execution_errors_use_fault() {
-    let script = "{e:[],step:function(l){if(l.getError())this.e.push(['step',l.op.toString(),l.getError()])},fault:function(l){this.e.push(['fault',l.op.toString(),l.getError()])},result:function(){return this.e}}";
-    assert_eq!(
-        execute(script, &hex!("600061c00160006000f5"), 1_000_000).0.unwrap(),
-        json!([["step", "CREATE2", "max initcode size exceeded"]])
-    );
+fn oversized_initcode_is_reported_by_step() {
+    for (code, opcode) in
+        [(&hex!("61c00160006000f0")[..], "CREATE"), (&hex!("600061c00160006000f5")[..], "CREATE2")]
+    {
+        for has_step in [true, false] {
+            let script = error_events_tracer(has_step);
+            let (output, result) = execute(&script, code, 1_000_000);
+            assert!(!result.result.is_success());
+            assert_eq!(
+                output.unwrap(),
+                if has_step {
+                    json!([["step", opcode, "max initcode size exceeded"]])
+                } else {
+                    json!([])
+                },
+            );
+        }
+    }
+}
+
+#[test]
+fn static_write_errors_follow_the_opcode_validation_stage() {
     let mut parent = hex!("600060006000600073").to_vec();
     parent.extend_from_slice(CHILD.as_slice());
     parent.extend_from_slice(&hex!("61fffffa00"));
-    for (child, opcode, callback) in
-        [(&hex!("6000600055")[..], "SSTORE", "step"), (&hex!("600060005d")[..], "TSTORE", "fault")]
-    {
-        let (output, result) = execute_with_child(script, &parent, child, 1_000_000);
-        assert!(result.result.is_success());
-        assert_eq!(output.unwrap(), json!([[callback, opcode, "write protection"]]));
+    for (child, opcode, callback) in [
+        (&hex!("6000600055")[..], "SSTORE", "step"),
+        (&hex!("600060006000f0")[..], "CREATE", "step"),
+        (&hex!("6000600060006000f5")[..], "CREATE2", "step"),
+        (&hex!("6000ff")[..], "SELFDESTRUCT", "step"),
+        (&hex!("60006000600060006001600061fffff1")[..], "CALL", "step"),
+        (&hex!("600060005d")[..], "TSTORE", "fault"),
+        (&hex!("60006000a0")[..], "LOG0", "fault"),
+    ] {
+        for has_step in [true, false] {
+            let script = error_events_tracer(has_step);
+            let (output, result) = execute_with_child(&script, &parent, child, 1_000_000);
+            assert!(result.result.is_success());
+            assert_eq!(
+                output.unwrap(),
+                if has_step || callback == "fault" {
+                    json!([[callback, opcode, "write protection"]])
+                } else {
+                    json!([])
+                },
+                "{opcode}, step callback: {has_step}",
+            );
+        }
     }
 }
 

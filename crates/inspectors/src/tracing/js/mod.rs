@@ -790,6 +790,8 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         if self.is_interrupted() || self.hook_errored() {
             return;
         }
+        // This is exempt from the root call constraint, because selfdestruct is treated as a
+        // new scope that is entered and immediately exited.
         if self.enter_fn.is_some() {
             let frame = CallFrame {
                 contract: Contract {
@@ -805,6 +807,8 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 self.record_hook_error("enter", err);
             }
         }
+
+        // exit with empty frame result ref <https://github.com/ethereum/go-ethereum/blob/0004c6b229b787281760b14fb9460ffd9c2496f1/core/vm/instructions.go#L829-L829>
         if !self.is_interrupted() && !self.hook_errored() && self.exit_fn.is_some() {
             let frame = FrameResult { gas_used: 0, output: Bytes::new(), error: None };
             if let Err(err) = self.try_exit(frame) {
