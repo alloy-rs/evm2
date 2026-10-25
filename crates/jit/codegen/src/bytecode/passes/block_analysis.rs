@@ -32,6 +32,7 @@
 //! A `JUMPI` propagates only along the edges that its condition allows in each context, and the
 //! values that its condition bounds on an edge, such as an index below an array length, get that
 //! bound there. Memory writes at ranged offsets only forget the words in their range.
+//! A jump to a range goes to the valid jump targets in it, such as the entries of a jump table.
 //!
 //! ## Soundness
 //!
@@ -1095,8 +1096,25 @@ impl Bytecode<'_> {
                     .collect::<Option<_>>()
                     .map_or_else(JumpResolution::top, JumpResolution::resolved)
             }
-            AbsValue::Range(..) | AbsValue::Top => JumpResolution::top(),
+            AbsValue::Range(range) => match self.range_jumpdests(range) {
+                Some(targets) if targets.is_empty() => JumpResolution::invalid(),
+                // A single target would become a static jump that skips the invalid jump check
+                // for the other values in the range, while a multi-target switch keeps it.
+                Some(targets) if targets.len() > 1 => JumpResolution::resolved(targets),
+                _ => JumpResolution::top(),
+            },
+            AbsValue::Top => JumpResolution::top(),
         }
+    }
+
+    /// Returns the valid jump targets in `range`, or `None` if it is too wide to scan.
+    fn range_jumpdests(&self, range: RangeInclusive<u32>) -> Option<SmallVec<[Inst; 4]>> {
+        const MAX_SCAN: u32 = 4096;
+        if range.last - range.start > MAX_SCAN {
+            return None;
+        }
+        let pcs = range.start as usize..=range.last as usize;
+        Some(pcs.filter(|&pc| self.is_valid_jump(pc)).map(|pc| self.pc_to_inst(pc)).collect())
     }
 
     fn resolve_jump_condition(
@@ -1556,7 +1574,12 @@ impl Bytecode<'_> {
         let consts = match operand {
             AbsValue::Const(imm) => Either::Left(std::iter::once(imm)),
             AbsValue::ConstSet(set_idx) => Either::Right(const_sets.get(set_idx).iter().copied()),
-            AbsValue::Range(..) | AbsValue::Top => return,
+            AbsValue::Range(range) => {
+                let insts = self.range_jumpdests(range).unwrap_or_default();
+                targets.extend(insts.into_iter().filter_map(|inst| self.cfg.inst_to_block[inst]));
+                return;
+            }
+            AbsValue::Top => return,
         };
         let interner = self.u256_interner.borrow();
         for imm in consts {
@@ -4130,5 +4153,102 @@ mod tests_edge_cases {
         ",
         );
         assert!(!bytecode.has_dynamic_jumps);
+    }
+
+    /// Returns the pcs of the targets of the only multi-target jump.
+    fn multi_jump_target_pcs(bytecode: &Bytecode<'_>) -> Vec<u32> {
+        let mut jumps =
+            bytecode.iter_insts().filter(|(_, d)| d.flags.contains(InstFlags::MULTI_JUMP));
+        let (jump, _) = jumps.next().expect("expected a multi-target jump");
+        assert!(jumps.next().is_none());
+        let mut pcs: Vec<_> =
+            bytecode.multi_jump_targets(jump).unwrap().iter().map(|&t| bytecode.pc(t)).collect();
+        pcs.sort_unstable();
+        pcs
+    }
+
+    /// Solar lowers a dense `switch` to a jump into a table of equal-width entries, after a bounds
+    /// check on the index.
+    #[test]
+    fn stride_jump_table() {
+        let src = |n: u8, entry1: &str| {
+            format!(
+                "
+                PUSH0
+                CALLDATALOAD        ; idx
+                PUSH1 {n:#x}
+                DUP2
+                LT
+                PUSH %body
+                JUMPI
+                PUSH0
+                DUP1
+                REVERT
+            body:
+                JUMPDEST
+                PUSH1 0x04
+                MUL
+                PUSH %table
+                ADD
+                JUMP                ; table + 4 * idx
+            table:
+                JUMPDEST            ; 0x14
+                PUSH1 0x01
+                STOP
+                {entry1}            ; 0x18
+                PUSH1 0x02
+                STOP
+                JUMPDEST            ; 0x1c
+                PUSH1 0x03
+                STOP
+                "
+            )
+        };
+        let bytecode = analyze_asm(&src(3, "JUMPDEST"));
+        assert!(!bytecode.has_dynamic_jumps);
+        assert_eq!(multi_jump_target_pcs(&bytecode), [0x14, 0x18, 0x1c]);
+
+        // Entries that are not jump targets fail at runtime, in the switch's default case.
+        let bytecode = analyze_asm(&src(3, "STOP"));
+        assert!(!bytecode.has_dynamic_jumps);
+        assert_eq!(multi_jump_target_pcs(&bytecode), [0x14, 0x1c]);
+
+        // A static jump to the only target would skip that failure.
+        let bytecode = analyze_asm(&src(2, "STOP"));
+        assert!(bytecode.has_dynamic_jumps);
+    }
+
+    /// Solady picks a jump target out of a word of packed targets with `BYTE`, after a bounds
+    /// check on the index.
+    #[test]
+    fn byte_jump_table() {
+        let bytecode = analyze_asm(
+            "
+            PUSH0
+            CALLDATALOAD        ; idx
+            PUSH1 0x03
+            DUP2
+            LT
+            PUSH %body
+            JUMPI
+            PUSH0
+            DUP1
+            REVERT
+        body:
+            JUMPDEST
+            PUSH32 0x3531330000000000000000000000000000000000000000000000000000000000
+            DUP2
+            BYTE
+            JUMP                ; byte idx of the word
+            JUMPDEST            ; 0x31
+            STOP
+            JUMPDEST            ; 0x33
+            STOP
+            JUMPDEST            ; 0x35
+            STOP
+        ",
+        );
+        assert!(!bytecode.has_dynamic_jumps);
+        assert_eq!(multi_jump_target_pcs(&bytecode), [0x31, 0x33, 0x35]);
     }
 }

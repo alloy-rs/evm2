@@ -198,14 +198,29 @@ pub(crate) fn try_const_fold(
     Some(AbsValue::Const(U256Imm::new(result, interner)))
 }
 
-/// Folds `ADD`, `MUL` and `SHL` on the [bounds](AbsValue::bounds) of their inputs, of which at
-/// least one is a range.
+/// Folds `ADD`, `MUL`, `SHL`, `AND` and `BYTE` on the [bounds](AbsValue::bounds) of their inputs,
+/// of which at least one is not a constant.
 fn try_range_fold(
     opcode: u8,
     inputs: &[AbsValue],
     interner: &mut U256Interner,
 ) -> Option<AbsValue> {
     let &[b, a] = inputs else { return None };
+    // `x & c` is at most `c`.
+    if opcode == op::AND {
+        let c = [a, b].into_iter().filter_map(AbsValue::bounds).map(|r| r.last).min()?;
+        return AbsValue::range((0..=u64::from(c)).into(), interner);
+    }
+    // A small index range into a constant word, such as a jump table packed into a PUSH.
+    if opcode == op::BYTE
+        && let (Some(r), AbsValue::Const(w)) = (a.bounds(), b)
+        && r.last - r.start < 32
+    {
+        let w = w.get(interner);
+        let bytes = (r.start..=r.last).map(|i| if i < 32 { w.byte(31 - i as usize) } else { 0 });
+        let (lo, hi) = bytes.fold((u8::MAX, 0), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        return AbsValue::range((u64::from(lo)..=u64::from(hi)).into(), interner);
+    }
     let (a, b) = (a.bounds()?, b.bounds()?);
     let [a_start, a_last, b_start, b_last] = [a.start, a.last, b.start, b.last].map(u64::from);
     // Bounds are below 2^31, so these cannot overflow.
