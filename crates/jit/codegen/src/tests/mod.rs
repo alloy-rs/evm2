@@ -888,6 +888,21 @@ tests! {
             expected_output: Some(&U256::from(0x42).to_be_bytes::<32>()),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
+        // Jumps into a table whose index the analysis only knows to be at most 3.
+        range_jump_table_entry(@raw {
+            bytecode: &asm(&range_jump_table(2)),
+            inspect_stack: Some(false),
+            expected_return: InstrStop::Return,
+            expected_memory: &U256::from(0x22).to_be_bytes::<32>(),
+            expected_output: Some(&U256::from(0x22).to_be_bytes::<32>()),
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
+        range_jump_table_non_jumpdest_entry(@raw {
+            bytecode: &asm(&range_jump_table(1)),
+            inspect_stack: Some(false),
+            expected_return: InstrStop::InvalidJump,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
         // The `JUMPI` condition is a different valid jump target in each caller, so its
         // constant set proves it nonzero.
         jumpi_condition_from_jumpdest_set(@raw {
@@ -3840,6 +3855,31 @@ fn jumpi_fallthrough_overflow(cond: &str, pushes: usize) -> String {
         ",
         "PUSH0 ".repeat(1020),
         "PUSH0 ".repeat(pushes),
+    )
+}
+
+/// Jumps to entry `index` of a table of 7-byte entries, through `x & 3` where `x` is `index`
+/// plus an opaque zero from fresh memory. Entry 1 is not a `JUMPDEST`; entry `i` otherwise returns
+/// `0x20 + i`.
+fn range_jump_table(index: u8) -> String {
+    let entry = |i: u8| {
+        let jumpdest = if i == 1 { "STOP" } else { "JUMPDEST" };
+        format!("{jumpdest} PUSH1 {:#x} PUSH2 %done JUMP\n", 0x20 + i)
+    };
+    format!(
+        "
+        PUSH0 MLOAD PUSH1 {index:#x} ADD
+        PUSH1 0x03 AND
+        PUSH1 0x07 MUL PUSH %table ADD
+        JUMP
+    table:
+        {}
+    done:
+        JUMPDEST
+        PUSH0 MSTORE
+        PUSH1 0x20 PUSH0 RETURN
+        ",
+        (0..4).map(entry).collect::<String>(),
     )
 }
 
