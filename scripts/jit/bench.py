@@ -1030,8 +1030,12 @@ def measure(sides: list[Side], benches: list[str], runs: int, perf: bool):
                     side.samples.setdefault(bench, []).append(sample)
 
 
-# Instructions spent executing per measurement, so compile-time noise stays negligible.
+# Instructions spent executing per side and bench, split over `RUNTIME_SAMPLES` samples,
+# so compile-time noise stays negligible.
 RUNTIME_TARGET = 20e9
+RUNTIME_SAMPLES = 5
+# Compile-only runs per side, whose median is subtracted from each sample.
+COMPILE_RUNS = 3
 
 
 def total_iters(n: int) -> int:
@@ -1042,37 +1046,70 @@ def total_iters(n: int) -> int:
     return n + max(n // 10, 10)
 
 
-def runtime_per_iter(side: Side, bench: str) -> tuple[float, float]:
-    """Return execution ``(instructions, cycles)`` per iteration."""
+def runtime_args(bench: str, n: int) -> list[str]:
+    return ["run", bench, str(n), "--jit-only", *RUN_ARGS]
 
-    def counts(n: int) -> tuple[int, int]:
-        return perf_counts(side.binary, ["run", bench, str(n), "--jit-only", *RUN_ARGS])
 
-    compile_only = counts(0)
+def sample_iters(side: Side, bench: str, compile_only: tuple[int, int]) -> int:
+    """Return the `N` whose run executes about `RUNTIME_TARGET / RUNTIME_SAMPLES` instructions."""
     # Compile cost varies by about 0.3%, which can swamp a short probe and make it
     # negative, so grow the probe until execution clearly dominates that noise.
-    n = 100
-    while (probe := counts(n)[0] - compile_only[0]) < compile_only[0] / 20 and n < 10**7:
+    n = 10
+    while (
+        probe := perf_counts(side.binary, runtime_args(bench, n))[0] - compile_only[0]
+    ) < compile_only[0] / 20 and n < 10**7:
         n *= 10
-    n = max(100, int(RUNTIME_TARGET / max(probe / total_iters(n), 1)))
-    instructions, cycles = counts(n)
-    iters = total_iters(n)
-    return (instructions - compile_only[0]) / iters, (cycles - compile_only[1]) / iters
+    iters = RUNTIME_TARGET / RUNTIME_SAMPLES / max(probe / total_iters(n), 1)
+    # Invert `total_iters` for a run with at least 100 timed iterations.
+    return max(10, int(iters / 1.1))
+
+
+def measure_runtime_bench(sides: list[Side], bench: str):
+    """Measure execution instructions and cycles per iteration of one bench.
+
+    Cycles move by several percent between runs of the same binary, so each side runs
+    `RUNTIME_SAMPLES` shorter samples, interleaved across sides with the order alternating
+    every round, and keeps the fewest cycles: noise only adds to them.
+    """
+    live = [side for side in sides if bench not in side.failures]
+    compile_only = {}
+    iters = {}
+    samples = {side.label: [] for side in live}
+    for side in live[:]:
+        try:
+            runs = [
+                perf_counts(side.binary, ["run", bench, "0", *RUN_ARGS])
+                for _ in range(COMPILE_RUNS)
+            ]
+            compile_only[side.label] = tuple(statistics.median(c) for c in zip(*runs, strict=True))
+            iters[side.label] = sample_iters(side, bench, compile_only[side.label])
+        except subprocess.CalledProcessError as e:
+            side.failures[bench] = last_line(e.stderr)
+            live.remove(side)
+    for i in range(RUNTIME_SAMPLES):
+        for side in live[:] if i % 2 == 0 else live[::-1]:
+            try:
+                samples[side.label].append(
+                    perf_counts(side.binary, runtime_args(bench, iters[side.label]))
+                )
+            except subprocess.CalledProcessError as e:
+                side.failures[bench] = last_line(e.stderr)
+                live.remove(side)
+    for side in live:
+        base_instructions, base_cycles = compile_only[side.label]
+        total = total_iters(iters[side.label])
+        counts = samples[side.label]
+        side.runtime[bench] = (statistics.median(c[0] for c in counts) - base_instructions) / total
+        side.runtime_cycles[bench] = (min(c[1] for c in counts) - base_cycles) / total
 
 
 def measure_runtime(sides: list[Side], benches: list[str]):
-    """Measure execution instructions per iteration with `perf stat`."""
+    """Measure execution instructions and cycles per iteration with `perf stat`."""
     if not perf_available():
         eprint("warning: `perf stat` is unavailable; skipping runtime")
         return
     for bench in tqdm(benches, desc="Runtime", unit="bench"):
-        for side in sides:
-            if bench in side.failures:
-                continue
-            try:
-                side.runtime[bench], side.runtime_cycles[bench] = runtime_per_iter(side, bench)
-            except subprocess.CalledProcessError as e:
-                side.failures[bench] = last_line(e.stderr)
+        measure_runtime_bench(sides, bench)
 
 
 def last_line(s: str | None) -> str:

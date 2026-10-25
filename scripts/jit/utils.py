@@ -1,5 +1,6 @@
 """Shared utilities for evm2-jit analysis scripts."""
 
+import functools
 import os
 import re
 import shutil
@@ -161,15 +162,61 @@ def time_cli(binary: str, args: list[str], perf: bool) -> tuple[int | None, int 
     return int(stats["instructions:u"]), int(stats["cycles:u"]), stats["task-clock"] / 1e3
 
 
+# Size of the strings the kernel puts at the top of a new process's stack: arguments, environment
+# and the executable path.
+STACK_STRINGS = 32768
+
+
+@functools.cache
+def no_aslr() -> list[str]:
+    """Command prefix that disables address space randomization, empty where that is denied."""
+    try:
+        r = subprocess.run(["setarch", "-R", "true"], capture_output=True, check=False)
+    except FileNotFoundError:
+        return []
+    return ["setarch", "-R"] if r.returncode == 0 else []
+
+
+def fixed_stack_env(binary: str, args: list[str]) -> dict[str, str]:
+    """Return an environment that makes the process's stack strings ``STACK_STRINGS`` bytes.
+
+    Where the stack starts depends on the length of the binary path, the arguments and the
+    environment, and the starting offset changes cycles by several percent (4K aliasing, cache
+    sets and the alignment of hot data). A fixed total puts the stack in the same place for
+    every revision and bench size.
+    """
+    env = {**os.environ, "EVM2_BENCH_PAD": ""}
+    used = 2 * len(binary) + 2 + sum(len(a) + 1 for a in args)
+    used += sum(len(k) + len(v) + 2 for k, v in env.items())
+    env["EVM2_BENCH_PAD"] = "x" * max(STACK_STRINGS - used, 0)
+    return env
+
+
 def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
-    """Run the CLI under ``perf stat`` and return user-space ``(instructions, cycles)``."""
+    """Run the CLI under ``perf stat`` and return user-space ``(instructions, cycles)``.
+
+    Runs without address space randomization and with a fixed stack layout, so the same binary
+    gives the same counts from run to run and two revisions are compared on equal terms.
+    """
     with tempfile.NamedTemporaryFile("r") as out:
         subprocess.run(
-            ["perf", "stat", "-x,", "-e", RUNTIME_EVENTS, "-o", out.name, binary, *args],
+            [
+                *no_aslr(),
+                "perf",
+                "stat",
+                "-x,",
+                "-e",
+                RUNTIME_EVENTS,
+                "-o",
+                out.name,
+                binary,
+                *args,
+            ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
             check=True,
+            env=fixed_stack_env(binary, args),
         )
         stats = {}
         for line in out:
