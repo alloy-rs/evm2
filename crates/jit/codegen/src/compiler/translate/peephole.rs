@@ -291,7 +291,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let bits = self.bcx.isub(max, clz);
         let three = self.bcx.iconst(self.isize_type, 3);
         let bytes = self.bcx.ushr(bits, three);
-        let cost = self.bcx.imul_imm(bytes, per_byte.into());
+        let cost = self.bcx.imul_imm(bytes, per_byte as i64);
         self.gas_cost(cost);
     }
 
@@ -337,10 +337,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             } else {
                 self.call_fallible_builtin(builtin, args);
             }
-            // Builtin wrote output to sp; reload into virtual stack.
+            // The builtin wrote its output to `sp`; reload it.
             let off = self.section_len_offset - 1;
             let value = self.load_word(sp, "builtin.out");
-            self.vstack.set_at_offset(off, value);
+            self.vstack.set_stored_at_offset(off, value);
             true
         } else {
             false
@@ -372,7 +372,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             let ir_const = self.bcx.iconst(self.i8_type, ir as i64);
             let offset = self.bcx.iconst(self.isize_type, offset as i64);
             let len = self.bcx.iconst(self.isize_type, len as i64);
-            let _ = self.call_builtin(Builtin::DoReturnCC, &[self.ecx, offset, len, ir_const]);
+            self.call_fallible_builtin(Builtin::DoReturnCC, &[self.ecx, offset, len, ir_const]);
             self.bcx.unreachable();
             true
         } else {

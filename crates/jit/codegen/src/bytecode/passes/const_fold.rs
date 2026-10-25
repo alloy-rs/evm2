@@ -9,6 +9,7 @@ use alloy_primitives::U256;
 use evm2::interpreter::{
     i256::{i256_cmp, i256_div, i256_mod},
     op,
+    opcode::OpCode,
 };
 use std::cmp::Ordering;
 
@@ -37,13 +38,11 @@ pub(crate) fn const_fold_gas(
         op::EXP => {
             // EXP: 10 + 50 * byte_size(exponent).
             // The exponent is the second operand (TOS - 1 in EVM stack order, inputs[0] here).
-            let exponent_bytes = match inputs.first() {
-                Some(&AbsValue::Const(imm)) => {
-                    let val = imm.get(interner);
-                    (256 - val.leading_zeros()).div_ceil(8)
-                }
-                _ => return None,
+            let exponent = match *inputs.first()? {
+                AbsValue::Const(imm) => imm.get(interner),
+                value => U256::from(value.bounds()?.last),
             };
+            let exponent_bytes = (256 - exponent.leading_zeros()).div_ceil(8);
             10 + 50 * exponent_bytes as u64
         }
         _ => return None,
@@ -69,7 +68,7 @@ pub(crate) fn try_const_fold(
         // 1 -> 1
         op::ISZERO | op::NOT | op::CLZ => {
             let &[AbsValue::Const(ai)] = inputs else {
-                return None;
+                return try_range_fold(opcode, inputs, interner);
             };
             let a = ai.get(interner);
             match opcode {
@@ -176,7 +175,7 @@ pub(crate) fn try_const_fold(
         // 3 -> 1
         op::ADDMOD | op::MULMOD => {
             let &[AbsValue::Const(ci), AbsValue::Const(bi), AbsValue::Const(ai)] = inputs else {
-                return None;
+                return try_range_fold(opcode, inputs, interner);
             };
             let a = ai.get(interner);
             let b = bi.get(interner);
@@ -198,24 +197,271 @@ pub(crate) fn try_const_fold(
     Some(AbsValue::Const(U256Imm::new(result, interner)))
 }
 
-/// Folds `ADD`, `MUL` and `SHL` on the [bounds](AbsValue::bounds) of their inputs, of which at
-/// least one is a range.
+/// Folds an instruction on the [bounds](AbsValue::bounds) of its inputs, of which at least one is
+/// not a constant, into a range that holds every result.
+///
+/// Inputs that are not small constants or ranges may hold any value, including values that are
+/// negative as signed integers. Results that may not fit in a range give `None`.
 fn try_range_fold(
     opcode: u8,
     inputs: &[AbsValue],
     interner: &mut U256Interner,
 ) -> Option<AbsValue> {
-    let &[b, a] = inputs else { return None };
-    let (a, b) = (a.bounds()?, b.bounds()?);
-    let [a_start, a_last, b_start, b_last] = [a.start, a.last, b.start, b.last].map(u64::from);
-    // Bounds are below 2^31, so these cannot overflow.
-    let range = match opcode {
-        op::ADD => a_start + b_start..=a_last + b_last,
-        op::MUL => a_start * b_start..=a_last * b_last,
-        op::SHL if a_last < 32 => b_start << a_start..=b_last << a_last,
-        _ => return None,
+    // The input at `depth`, where 0 is the top of the stack.
+    let input = |depth: usize| inputs[inputs.len() - 1 - depth];
+    let bounds =
+        |depth: usize| input(depth).bounds().map(|r| (u64::from(r.start), u64::from(r.last)));
+    let konst = |depth: usize| input(depth).as_const().map(|c| c.get(interner));
+    // `v >> s` for values below 2^31.
+    let shr = |v: u64, s: u64| if s < 64 { v >> s } else { 0 };
+    // The smallest `2^n - 1` that is at least `v`.
+    let mask = |v: u64| u64::MAX.checked_shr(v.leading_zeros()).unwrap_or(0);
+    // A comparison that is `lt` where it holds for every input value and `ge` where it fails for
+    // every one.
+    let cmp = |lt: bool, ge: bool| {
+        if lt {
+            (1, 1)
+        } else if ge {
+            (0, 0)
+        } else {
+            (0, 1)
+        }
     };
-    AbsValue::range(range.into(), interner)
+
+    let (lo, hi) = match opcode {
+        // Bounds are below 2^31, so sums and products cannot overflow.
+        op::ADD => {
+            let ((a_lo, a_hi), (b_lo, b_hi)) = (bounds(0)?, bounds(1)?);
+            (a_lo + b_lo, a_hi + b_hi)
+        }
+        op::MUL => {
+            let ((a_lo, a_hi), (b_lo, b_hi)) = (bounds(0)?, bounds(1)?);
+            (a_lo * b_lo, a_hi * b_hi)
+        }
+        // `a - b` wraps unless `a >= b` for every value.
+        op::SUB => {
+            let ((a_lo, a_hi), (b_lo, b_hi)) = (bounds(0)?, bounds(1)?);
+            (a_lo.checked_sub(b_hi)?, a_hi - b_lo)
+        }
+        // `a / b` is at most `a`, and 0 when `b` is 0. A large constant divisor bounds any `a`.
+        // Values below 2^31 are not negative, so the signed quotient of two of them is the same.
+        op::DIV | op::SDIV => match (bounds(0), bounds(1)) {
+            (Some((a_lo, a_hi)), Some((b_lo, b_hi))) if b_lo > 0 => (a_lo / b_hi, a_hi / b_lo),
+            (Some((_, a_hi)), b) if opcode == op::DIV || b.is_some() => (0, a_hi),
+            (None, _) if opcode == op::DIV => {
+                let b = konst(1)?;
+                (0, if b.is_zero() { 0 } else { (U256::MAX / b).try_into().ok()? })
+            }
+            _ => return None,
+        },
+        // `a % b` is at most `a` and below `b`, is `a` when `a < b`, and is 0 when `b` is 0.
+        // The signed result takes the sign of `a`, so it needs a non-negative `a`.
+        op::MOD | op::SMOD => {
+            let a = bounds(0);
+            let b = bounds(1);
+            if opcode == op::SMOD && a.is_none() {
+                return None;
+            }
+            match (a, b, konst(1)) {
+                (Some(a), Some((b_lo, _)), _) if b_lo > a.1 => a,
+                // A large constant divisor is above `a`, unless it is negative for `SMOD`.
+                (Some(a), None, Some(_)) if opcode == op::MOD => a,
+                _ => {
+                    let a_hi = a.map(|(_, hi)| hi);
+                    let b_hi = b.map(|(_, hi)| hi.saturating_sub(1));
+                    (0, a_hi.into_iter().chain(b_hi).min()?)
+                }
+            }
+        }
+        // `(a + b) % n` and `(a * b) % n` are computed without overflow, so they are below `n`
+        // and at most the plain result.
+        op::ADDMOD | op::MULMOD => {
+            let ab = (bounds(0), bounds(1));
+            let ab = if let (Some((a_lo, a_hi)), Some((b_lo, b_hi))) = ab {
+                Some(if opcode == op::ADDMOD {
+                    (a_lo + b_lo, a_hi + b_hi)
+                } else {
+                    (a_lo * b_lo, a_hi * b_hi)
+                })
+            } else {
+                None
+            };
+            match (ab, bounds(2)) {
+                (Some(ab), Some((n_lo, _))) if n_lo > ab.1 => ab,
+                (ab, n) => {
+                    let n_hi = n.map(|(_, hi)| hi.saturating_sub(1));
+                    (0, ab.map(|(_, hi)| hi).into_iter().chain(n_hi).min()?)
+                }
+            }
+        }
+        // `a ** b` grows with both inputs for `a >= 1`, `0 ** 0` is 1 and `0 ** b` is 0.
+        op::EXP => {
+            let ((a_lo, a_hi), (b_lo, b_hi)) = (bounds(0)?, bounds(1)?);
+            let pow = |a: u64, b: u64| a.checked_pow(b.try_into().ok()?);
+            let lo = if a_lo > 0 { pow(a_lo, b_lo)? } else { u64::from(b_hi == 0) };
+            let hi = if a_hi > 0 { pow(a_hi, b_hi)? } else { u64::from(b_lo == 0) };
+            (lo, hi)
+        }
+        // A value whose sign bit at byte `a` is clear is unchanged, as is every value for
+        // `a >= 31`.
+        op::SIGNEXTEND => {
+            let b = bounds(1)?;
+            let a_lo = bounds(0).map_or(0, |(lo, _)| lo);
+            if a_lo < 31 && b.1 >> (8 * a_lo.min(7) + 7) != 0 {
+                return None;
+            }
+            b
+        }
+        op::LT | op::GT | op::SLT | op::SGT | op::EQ => match (bounds(0), bounds(1)) {
+            (Some((a_lo, a_hi)), Some((b_lo, b_hi))) => match opcode {
+                op::LT | op::SLT => cmp(a_hi < b_lo, a_lo >= b_hi),
+                op::GT | op::SGT => cmp(a_lo > b_hi, a_hi <= b_lo),
+                _ => cmp(false, a_hi < b_lo || b_hi < a_lo),
+            },
+            _ => (0, 1),
+        },
+        op::ISZERO => match bounds(0) {
+            Some((a_lo, a_hi)) => cmp(a_hi == 0, a_lo > 0),
+            None => (0, 1),
+        },
+        // `a & b` is at most the smaller bound of either input.
+        op::AND => (0, bounds(0).into_iter().chain(bounds(1)).map(|(_, hi)| hi).min()?),
+        // `a | b` is at least either input, and neither sets bits above their highest bit.
+        op::OR => {
+            let ((a_lo, a_hi), (b_lo, b_hi)) = (bounds(0)?, bounds(1)?);
+            (a_lo.max(b_lo), mask(a_hi | b_hi))
+        }
+        op::XOR => {
+            let ((_, a_hi), (_, b_hi)) = (bounds(0)?, bounds(1)?);
+            (0, mask(a_hi | b_hi))
+        }
+        // `!a` of a value below 2^31 is close to 2^256.
+        op::NOT => return None,
+        // A byte of a constant word at an index in a range, such as a jump table packed into a
+        // `PUSH`, is between the smallest and largest bytes it can select, where indices past 31
+        // select 0. Any other byte is at most the value it is taken from.
+        op::BYTE => {
+            let (i_lo, i_hi) = bounds(0).map_or((0, 32), |(lo, hi)| (lo.min(32), hi.min(32)));
+            if let Some(w) = konst(1) {
+                let w = w.to_be_bytes::<32>();
+                let bytes = (i_lo..=i_hi).map(|i| w.get(i as usize).map_or(0, |&b| u64::from(b)));
+                (bytes.clone().min().unwrap(), bytes.max().unwrap())
+            } else {
+                (0, bounds(1).map_or(255, |(_, hi)| hi.min(255)))
+            }
+        }
+        // Shifts grow or shrink with the value and the shift. Shifts of 256 or more give 0.
+        op::SHL => {
+            let (s_lo, s_hi) = bounds(0)?;
+            if s_lo >= 256 {
+                (0, 0)
+            } else if let Some((b_lo, b_hi)) = bounds(1)
+                && s_hi < 32
+            {
+                (b_lo << s_lo, b_hi << s_hi)
+            } else {
+                return None;
+            }
+        }
+        // A large shift bounds any value. Arithmetic shifts of non-negative values are logical.
+        op::SHR | op::SAR => {
+            let (s_lo, s_hi) = bounds(0).unwrap_or((0, 256));
+            match (bounds(1), konst(1)) {
+                (Some((b_lo, b_hi)), _) => (shr(b_lo, s_hi), shr(b_hi, s_lo)),
+                (None, Some(b)) if opcode == op::SHR || !b.bit(255) => {
+                    let shift = |s: u64| if s < 256 { b >> s as usize } else { U256::ZERO };
+                    (shift(s_hi).try_into().ok()?, shift(s_lo).try_into().ok()?)
+                }
+                (None, None) if opcode == op::SHR && s_lo >= 225 => {
+                    (0, if s_lo < 256 { u64::MAX >> (s_lo - 192) } else { 0 })
+                }
+                _ => return None,
+            }
+        }
+        // The number of leading zero bits shrinks as the value grows.
+        op::CLZ => match bounds(0) {
+            Some((a_lo, a_hi)) => {
+                let clz = |v: u64| 192 + u64::from(v.leading_zeros());
+                (clz(a_hi), clz(a_lo))
+            }
+            None => (0, 256),
+        },
+
+        // Constants that `try_const_fold` folds exactly.
+        op::CODESIZE | op::PC => return None,
+
+        // Values without a known small bound. Sizes, gas and environment values depend on the
+        // transaction and the gas limit, which the bytecode does not bound.
+        op::STOP
+        | op::KECCAK256
+        | op::ADDRESS
+        | op::BALANCE
+        | op::ORIGIN
+        | op::CALLER
+        | op::CALLVALUE
+        | op::CALLDATALOAD
+        | op::CALLDATASIZE
+        | op::CALLDATACOPY
+        | op::CODECOPY
+        | op::GASPRICE
+        | op::EXTCODESIZE
+        | op::EXTCODECOPY
+        | op::RETURNDATASIZE
+        | op::RETURNDATACOPY
+        | op::EXTCODEHASH
+        | op::BLOCKHASH
+        | op::COINBASE
+        | op::TIMESTAMP
+        | op::NUMBER
+        | op::DIFFICULTY
+        | op::GASLIMIT
+        | op::CHAINID
+        | op::SELFBALANCE
+        | op::BASEFEE
+        | op::BLOBHASH
+        | op::BLOBBASEFEE
+        | op::SLOTNUM
+        | op::POP
+        | op::MLOAD
+        | op::MSTORE
+        | op::MSTORE8
+        | op::SLOAD
+        | op::SSTORE
+        | op::JUMP
+        | op::JUMPI
+        | op::MSIZE
+        | op::GAS
+        | op::JUMPDEST
+        | op::TLOAD
+        | op::TSTORE
+        | op::MCOPY
+        | op::PUSH0..=op::PUSH32
+        | op::DUP1..=op::DUP16
+        | op::SWAP1..=op::SWAP16
+        | op::LOG0..=op::LOG4
+        | op::DUPN
+        | op::SWAPN
+        | op::EXCHANGE
+        | op::CREATE
+        | op::CALL
+        | op::CALLCODE
+        | op::RETURN
+        | op::DELEGATECALL
+        | op::CREATE2
+        | op::STATICCALL
+        | op::REVERT
+        | op::INVALID
+        | op::SELFDESTRUCT => return None,
+
+        _ => {
+            assert!(
+                OpCode::new(opcode).is_none(),
+                "opcode {opcode:#04x} needs a range transfer decision"
+            );
+            return None;
+        }
+    };
+    AbsValue::range((lo..=hi).into(), interner)
 }
 
 #[cfg(test)]
@@ -225,7 +471,6 @@ mod tests {
         Bytecode,
         passes::block_analysis::tests::{Inst, analyze_asm},
     };
-    use evm2::interpreter::opcode::OpCode;
     use std::{fmt::Write, time::Instant};
 
     /// Builds bytecode that pushes operands, executes `opcode`, sinks the result
@@ -620,6 +865,207 @@ mod tests {
                  gas={gas:?}, fold={fold:?}",
                 OpCode::new(opcode).map_or("unknown", |o| o.as_str()),
             );
+        }
+    }
+
+    /// Abstract inputs for the range fold tests: ranges, small and large constants, and `Top`.
+    fn range_inputs(interner: &mut crate::bytecode::U256Interner) -> Vec<AbsValue> {
+        let ranges = [
+            (0, 3),
+            (1, 4),
+            (5, 9),
+            (28, 34),
+            (120, 130),
+            (250, 258),
+            ((1 << 31) - 4, (1 << 31) - 1),
+        ];
+        let consts = [U256::ZERO, U256::from(7), U256::from(225), U256::from(1) << 224, U256::MAX];
+        let mut inputs: Vec<_> =
+            ranges.into_iter().map(|(lo, hi)| AbsValue::Range((lo..=hi).into())).collect();
+        inputs.extend(consts.into_iter().map(|c| AbsValue::Const(U256Imm::new(c, interner))));
+        inputs.push(AbsValue::Top);
+        inputs
+    }
+
+    /// The concrete values that an abstract input may hold, with samples for `Top`.
+    fn concrete_values(value: AbsValue, interner: &crate::bytecode::U256Interner) -> Vec<U256> {
+        match value {
+            AbsValue::Const(c) => vec![c.get(interner)],
+            AbsValue::Range(r) => (r.start..=r.last).map(U256::from).collect(),
+            AbsValue::Top => [0u64, 1, 2, 7, 31, 32, 255, 256, (1 << 31) - 1, 1 << 31]
+                .into_iter()
+                .map(U256::from)
+                .chain([U256::from(1) << 224, U256::from(1) << 255, U256::MAX - U256::from(1)])
+                .chain([U256::MAX])
+                .collect(),
+            AbsValue::ConstSet(_) => unreachable!(),
+        }
+    }
+
+    /// Checks every range fold against the exact constant fold of every concrete input it
+    /// covers: each result must lie in the folded range.
+    #[test]
+    fn range_fold_soundness() {
+        let mut interner: crate::bytecode::U256Interner = crate::bytecode::Interner::new();
+        let candidates = range_inputs(&mut interner);
+        for opcode in 0..=u8::MAX {
+            let inst = crate::InstData::new(opcode);
+            let (inp, out) = inst.stack_io();
+            if out != 1
+                || !(1..=3).contains(&inp)
+                || const_fold_gas(opcode, &vec![AbsValue::Top; inp as usize], &interner).is_none()
+                    && opcode != op::EXP
+            {
+                continue;
+            }
+            let n = candidates.len();
+            for combo in 0..n.pow(u32::from(inp)) {
+                let inputs: Vec<_> =
+                    (0..inp as usize).map(|i| candidates[combo / n.pow(i as u32) % n]).collect();
+                if inputs.iter().all(|v| matches!(v, AbsValue::Const(_))) {
+                    continue;
+                }
+                let Some(folded) = try_range_fold(opcode, &inputs, &mut interner) else {
+                    continue;
+                };
+                let range = folded.bounds().expect("range folds give ranges or small constants");
+                let values: Vec<_> =
+                    inputs.iter().map(|&v| concrete_values(v, &interner)).collect();
+                let mut idx = vec![0; values.len()];
+                loop {
+                    let consts: Vec<_> = (0..values.len())
+                        .map(|i| AbsValue::Const(U256Imm::new(values[i][idx[i]], &mut interner)))
+                        .collect();
+                    let exact = try_const_fold(&inst, &consts, &mut interner, 0)
+                        .and_then(AbsValue::as_const)
+                        .unwrap()
+                        .get(&interner);
+                    assert!(
+                        exact >= U256::from(range.start) && exact <= U256::from(range.last),
+                        "{}: {inputs:?} folded to {range:?}, but {:?} gives {exact}",
+                        OpCode::new(opcode).unwrap(),
+                        (0..values.len()).map(|i| values[i][idx[i]]).collect::<Vec<_>>(),
+                    );
+                    let Some(i) = (0..idx.len()).find(|&i| idx[i] + 1 < values[i].len()) else {
+                        break;
+                    };
+                    idx[i] += 1;
+                    idx[..i].fill(0);
+                }
+            }
+        }
+    }
+
+    /// Range folds on representative inputs, including the edges where results wrap or leave
+    /// the range domain.
+    #[test]
+    fn range_fold_precision() {
+        let mut interner: crate::bytecode::U256Interner = crate::bytecode::Interner::new();
+        let r = |lo: u32, hi: u32| AbsValue::Range((lo..=hi).into());
+        let (r0_3, r1_4, r5_9, r0_39, r0_255) = (r(0, 3), r(1, 4), r(5, 9), r(0, 39), r(0, 255));
+        let mut c = |v: u64| AbsValue::Const(U256Imm::new(U256::from(v), &mut interner));
+        let (c0, c1, c2, c3, c5) = (c(0), c(1), c(2), c(3), c(5));
+        let (c16, c40, c224, c255, c256) = (c(16), c(40), c(224), c(255), c(256));
+        let (c0xffff, word) = (c(0xffff), c(0x1100_2233));
+        let mut c = |v: U256| AbsValue::Const(U256Imm::new(v, &mut interner));
+        let (c_big, c_max) = (c(U256::from(1) << 226), c(U256::MAX));
+        let top = AbsValue::Top;
+
+        // (opcode, operands in natural order, expected bounds).
+        type Case<'a> = (u8, &'a [AbsValue], Option<(u32, u32)>);
+        let cases: &[Case<'_>] = &[
+            (op::ADD, &[r0_3, r5_9], Some((5, 12))),
+            (op::ADD, &[r0_3, top], None),
+            (op::SUB, &[r5_9, r0_3], Some((2, 9))),
+            // `1 - 4` wraps.
+            (op::SUB, &[r1_4, r1_4], None),
+            (op::SUB, &[r0_3, c1], None),
+            (op::MUL, &[r0_3, c40], Some((0, 120))),
+            (op::DIV, &[r5_9, r1_4], Some((1, 9))),
+            (op::DIV, &[r5_9, r0_3], Some((0, 9))),
+            (op::DIV, &[r5_9, top], Some((0, 9))),
+            (op::DIV, &[top, c_big], Some((0, (1 << 30) - 1))),
+            (op::DIV, &[top, c224], None),
+            (op::DIV, &[top, c0], Some((0, 0))),
+            (op::SDIV, &[r5_9, r1_4], Some((1, 9))),
+            (op::SDIV, &[r5_9, top], None),
+            // Solar's selector dispatch indexes with `selector % 16`.
+            (op::MOD, &[top, c16], Some((0, 15))),
+            (op::MOD, &[r0_3, c5], Some((0, 3))),
+            (op::MOD, &[r5_9, r0_3], Some((0, 2))),
+            (op::MOD, &[r5_9, c_max], Some((5, 9))),
+            (op::MOD, &[top, c0], Some((0, 0))),
+            (op::MOD, &[top, top], None),
+            (op::SMOD, &[r5_9, c3], Some((0, 2))),
+            (op::SMOD, &[r5_9, c_max], Some((0, 9))),
+            (op::SMOD, &[top, c16], None),
+            (op::ADDMOD, &[r0_3, r0_3, c40], Some((0, 6))),
+            (op::ADDMOD, &[top, top, c40], Some((0, 39))),
+            (op::ADDMOD, &[top, top, c0], Some((0, 0))),
+            (op::MULMOD, &[r1_4, r1_4, top], Some((0, 16))),
+            (op::EXP, &[c2, r0_3], Some((1, 8))),
+            (op::EXP, &[r0_3, c2], Some((0, 9))),
+            (op::EXP, &[r0_3, r0_3], Some((0, 27))),
+            (op::EXP, &[c2, r0_39], None),
+            (op::SIGNEXTEND, &[c0, r0_3], Some((0, 3))),
+            (op::SIGNEXTEND, &[c0, r0_255], None),
+            (op::SIGNEXTEND, &[c1, r0_255], Some((0, 255))),
+            (op::SIGNEXTEND, &[top, r0_39], Some((0, 39))),
+            (op::LT, &[r0_3, r5_9], Some((1, 1))),
+            (op::LT, &[r5_9, r0_3], Some((0, 0))),
+            (op::LT, &[r0_3, r1_4], Some((0, 1))),
+            (op::GT, &[r5_9, r0_3], Some((1, 1))),
+            (op::SLT, &[top, c0], Some((0, 1))),
+            (op::SGT, &[r0_3, r5_9], Some((0, 0))),
+            (op::EQ, &[r0_3, r5_9], Some((0, 0))),
+            (op::EQ, &[top, top], Some((0, 1))),
+            (op::ISZERO, &[r1_4], Some((0, 0))),
+            (op::ISZERO, &[r0_3], Some((0, 1))),
+            (op::ISZERO, &[top], Some((0, 1))),
+            (op::AND, &[top, c0xffff], Some((0, 0xffff))),
+            (op::AND, &[r5_9, r0_3], Some((0, 3))),
+            (op::AND, &[top, c_max], None),
+            (op::OR, &[r5_9, r1_4], Some((5, 15))),
+            (op::OR, &[r0_3, top], None),
+            (op::XOR, &[r5_9, r0_3], Some((0, 15))),
+            (op::NOT, &[r0_3], None),
+            (op::BYTE, &[r(28, 31), word], Some((0x00, 0x33))),
+            (op::BYTE, &[r(30, 40), word], Some((0, 0x33))),
+            (op::BYTE, &[top, top], Some((0, 255))),
+            (op::BYTE, &[r(0, 32), r0_39], Some((0, 39))),
+            (op::SHL, &[r0_3, c1], Some((1, 8))),
+            (op::SHL, &[c256, top], Some((0, 0))),
+            (op::SHL, &[r(0, 40), c1], None),
+            (op::SHR, &[c224, top], None),
+            (op::SHR, &[r(225, 230), top], Some((0, (1 << 31) - 1))),
+            (op::SHR, &[c255, top], Some((0, 1))),
+            (op::SHR, &[r0_3, r(16, 31)], Some((2, 31))),
+            (op::SHR, &[r(0, 16), c_big], None),
+            (op::SHR, &[r(222, 230), c_big], Some((0, 16))),
+            (op::SAR, &[r0_3, r(16, 31)], Some((2, 31))),
+            (op::SAR, &[r(220, 230), c_max], None),
+            (op::CLZ, &[r1_4], Some((253, 255))),
+            (op::CLZ, &[r0_3], Some((254, 256))),
+            (op::CLZ, &[top], Some((0, 256))),
+            (op::CALLDATALOAD, &[r0_3], None),
+        ];
+        for &(opcode, operands, expected) in cases {
+            let inputs: Vec<_> = operands.iter().rev().copied().collect();
+            let folded = try_range_fold(opcode, &inputs, &mut interner).map(|v| {
+                let r = v.bounds().unwrap();
+                (r.start, r.last)
+            });
+            assert_eq!(folded, expected, "{} {operands:?}", OpCode::new(opcode).unwrap());
+        }
+    }
+
+    /// Every opcode has a range transfer decision.
+    #[test]
+    fn range_fold_exhaustive() {
+        let mut interner: crate::bytecode::U256Interner = crate::bytecode::Interner::new();
+        for opcode in 0..=u8::MAX {
+            let (inp, _) = crate::InstData::new(opcode).stack_io();
+            try_range_fold(opcode, &vec![AbsValue::Top; inp as usize], &mut interner);
         }
     }
 }

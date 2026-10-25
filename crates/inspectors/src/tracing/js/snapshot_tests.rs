@@ -89,7 +89,7 @@ fn compare(code: Bytes, child: Option<Bytes>) -> Vec<Value> {
             for (var i = 0; i < log.stack.length(); i++) stack.push(log.stack.peek(i).toString());
             this.out.push([log.getPC(), stack, toHex(log.memory.slice(0, log.memory.length())).slice(2), log.getDepth()]);
         },
-        fault: function(log) { this.step(log); },
+        fault: function() {},
         result: function() { return this.out; }
     }"#;
     let inspector = SnapshotInspector {

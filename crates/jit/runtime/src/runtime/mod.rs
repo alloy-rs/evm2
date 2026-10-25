@@ -444,7 +444,9 @@ impl JitBackend {
     /// events are still processed for stats, hotness tracking, and compilation dispatch. In
     /// out-of-process mode, the helper process group is stopped until the pause depth returns to
     /// zero, so dispatched helper requests remain buffered and resume once the helper continues.
-    /// In in-process mode, pause only tracks pause depth.
+    /// In in-process mode, pause only tracks pause depth. In
+    /// [`blocking`](RuntimeConfig::blocking) mode the helper is never stopped, because the caller
+    /// itself waits on compilation: pause only tracks pause depth there too.
     ///
     /// Pause delivery is best-effort and never blocks: callers pause around block validation on
     /// the engine's critical path. If the backend thread is not running or the command channel
@@ -479,11 +481,13 @@ impl JitBackend {
     ///   was never enabled), nothing drains the channel. Queued commands would only accumulate
     ///   until the channel fills and `send` blocks the caller forever, so the send is skipped
     ///   entirely — there is no helper to pause anyway.
+    /// - In blocking mode the caller waits on the helper, so stopping it would hang lookups until
+    ///   resume; the command is skipped.
     /// - If the channel is full, the command is dropped and recorded in
     ///   [`commands_dropped`](RuntimeStatsSnapshot::commands_dropped). Pause/resume signals are
     ///   idempotent and re-issued on the next pause cycle, so a dropped command self-heals.
     fn try_send_control(&self, cmd: Command) {
-        if !self.inner.started.load(Ordering::Relaxed) {
+        if self.inner.blocking || !self.inner.started.load(Ordering::Relaxed) {
             return;
         }
         if self.inner.tx.try_send(cmd).is_err() {
@@ -537,7 +541,7 @@ impl JitBackend {
         );
 
         // Preload AOT artifacts into the already-allocated resident map.
-        match Self::preload_aot(config.store.as_deref()) {
+        match Self::preload_aot(&config) {
             Ok(entries) => {
                 for (key, prog) in entries {
                     self.inner.shared.resident.insert(key, prog);
@@ -578,10 +582,13 @@ impl JitBackend {
     }
 
     /// Preloads AOT artifacts from the store as `Arc<CompiledProgram>`s ready to insert.
+    ///
+    /// Skips entries that do not match the key this backend would persist and probe for their
+    /// runtime key. They stay in the store, since another configuration may still use them.
     fn preload_aot(
-        store: Option<&dyn ArtifactStore>,
+        config: &RuntimeConfig,
     ) -> eyre::Result<Vec<(RuntimeCacheKey, Arc<CompiledProgram>)>> {
-        let Some(store) = store else {
+        let Some(store) = config.store.as_deref() else {
             debug!("no artifact store configured, skipping AOT preload");
             return Ok(Vec::new());
         };
@@ -592,24 +599,29 @@ impl JitBackend {
         let artifacts = store.load_all()?;
         info!(count = artifacts.len(), "loading AOT artifacts");
 
+        let config_hash = storage::compile_config_hash(config);
         let mut out: Vec<(RuntimeCacheKey, Arc<CompiledProgram>)> =
             Vec::with_capacity(artifacts.len());
-        let mut seen = alloy_primitives::map::HashSet::<RuntimeCacheKey>::default();
         let mut loaded = 0u64;
         let mut failed = 0u64;
+        let mut skipped = 0u64;
 
         for (artifact_key, stored) in artifacts {
+            let key = artifact_key.runtime;
+            let expected = ArtifactKey::llvm(key, config.tuning.aot_opt_level, config_hash);
+            if artifact_key != expected || stored.manifest.artifact_key != artifact_key {
+                debug!(
+                    ?artifact_key,
+                    manifest_key = ?stored.manifest.artifact_key,
+                    ?expected,
+                    "artifact key mismatch, skipping",
+                );
+                skipped += 1;
+                continue;
+            }
+
             match Self::load_artifact(&artifact_key, &stored) {
                 Ok(program) => {
-                    let key = artifact_key.runtime;
-                    if !seen.insert(key) {
-                        warn!(
-                            code_hash = %key.code_hash,
-                            spec_id = ?key.spec_id,
-                            "duplicate artifact key, keeping first",
-                        );
-                        continue;
-                    }
                     out.push((key, Arc::new(program)));
                     loaded += 1;
                 }
@@ -624,7 +636,7 @@ impl JitBackend {
             }
         }
 
-        info!(loaded, failed, "AOT preload complete");
+        info!(loaded, failed, skipped, "AOT preload complete");
         Ok(out)
     }
 

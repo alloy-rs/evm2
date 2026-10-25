@@ -426,6 +426,34 @@ mod tests {
     }
 
     #[test]
+    fn empty_calls_do_not_inspect_padding_stop() {
+        for nested in [false, true] {
+            let code = if nested {
+                let mut code = call_code(Address::repeat_byte(0x11));
+                code.extend([op::CALL, op::POP, op::STOP]);
+                code
+            } else {
+                Vec::new()
+            };
+            let (result, inspector, _) = run_evm_with_inspector(
+                code,
+                &MessageExt::default(),
+                100_000,
+                SharedE2eInspector::default(),
+            );
+            assert_eq!(result.stop, InstrStop::Stop);
+            assert!(result.output.is_empty());
+            assert_eq!(inspector.state.calls, if nested { 2 } else { 1 });
+            assert_eq!(inspector.state.initialized, usize::from(nested));
+            assert_eq!(inspector.state.steps, if nested { 10 } else { 0 });
+            assert_eq!(inspector.state.step_ends, inspector.state.steps);
+            if !nested {
+                assert_eq!(result.gas.remaining(), 100_000);
+            }
+        }
+    }
+
+    #[test]
     fn inspect_run_steps() {
         #[derive(Default)]
         struct StepInspector {

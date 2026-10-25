@@ -757,7 +757,8 @@ pub fn default_settle_gas<'a, T: EvmTypes>(
         let gas_remaining = gas_limit.saturating_sub(gas_used);
         let caller_refund = U256::from(gas_remaining) * gas_price;
         host.state.account(&caller)?.add_balance(caller_refund);
-        let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
+        // The base fee is burned from London on, independent of `BASE_FEE_CHECK`.
+        let beneficiary_gas_price = if host.spec_id().enables(SpecId::LONDON) {
             gas_price.saturating_sub(host.block.basefee)
         } else {
             gas_price
@@ -784,7 +785,7 @@ pub fn finalize_gas<'a, T: EvmTypes>(
         result,
     } = settlement;
 
-    let max_refund_quotient = u64::from(host.version().gas_params.get(GasId::MaxRefundQuotient));
+    let max_refund_quotient = host.version().gas_params.get(GasId::MaxRefundQuotient);
     // Self-contained gas breakdown for the result. `total_gas_spent` is defined so that
     // `TxResult::tx_gas_used` reproduces the finalized gas used. State gas is execution state gas
     // plus the upfront `initial_state_gas`, less the EIP-7702 per-authorization `state_refund`.
@@ -841,13 +842,10 @@ pub fn intrinsic_and_floor_gas(
     value: U256,
 ) -> (u64, u64) {
     let params = &version.gas_params;
-    let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
-    let zero_data_len = count_zero_bytes(input);
-    let non_zero_data_len = input.len() as u64 - zero_data_len;
-    let tokens = zero_data_len + non_zero_data_len * non_zero_multiplier;
-    let mut gas = tokens * u64::from(params.get(GasId::TxTokenCost));
-    gas += access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressCost));
-    gas += access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyCost));
+    let (tokens, floor_tokens) = params.tx_calldata_tokens(input);
+    let mut gas = tokens * params.get(GasId::TxTokenCost);
+    gas += access_list_accounts * params.get(GasId::TxAccessListAddressCost);
+    gas += access_list_storage_keys * params.get(GasId::TxAccessListStorageKeyCost);
 
     // Base + `to`-based + `value`-based charges.
     let is_create = to.is_create();
@@ -859,52 +857,28 @@ pub fn intrinsic_and_floor_gas(
     if let Some(base) = eip2780_base {
         gas += base;
     } else {
-        gas += u64::from(params.get(GasId::TxBaseStipend));
+        gas += params.get(GasId::TxBaseStipend);
         if is_create && version.feature(EvmFeatures::EIP2) {
-            gas += u64::from(params.get(GasId::TxCreateCost));
+            gas += params.get(GasId::TxCreateCost);
         }
     }
     if is_create && version.feature(EvmFeatures::EIP3860) {
-        gas += u64::from(params.get(GasId::TxInitcodeCost)) * num_words(input.len()) as u64;
+        gas += params.get(GasId::TxInitcodeCost) * num_words(input.len()) as u64;
     }
 
-    let floor_cost_per_token = u64::from(params.get(GasId::TxFloorCostPerToken));
+    let floor_cost_per_token = params.get(GasId::TxFloorCostPerToken);
     if !version.feature(EvmFeatures::EIP7623) || floor_cost_per_token == 0 {
         return (gas, 0);
     }
 
-    // tokens for access list
-    let al_multiplier = params.get(GasId::TxAccessListFloorByteMultiplier) as u64;
-    let mut floor_tokens =
-        (access_list_accounts * 20 + access_list_storage_keys * 32) * al_multiplier;
-
-    // tokens for input. EIP-7623 weights zero bytes at `TxFloorZeroByteMultiplier`
-    // (1) and non-zero bytes at `TxTokenNonZeroByteMultiplier` (4); EIP-7976
-    // raises the zero-byte weight to 4 so every byte counts uniformly.
-    let zero_multiplier = u64::from(params.get(GasId::TxFloorZeroByteMultiplier));
-    floor_tokens += zero_data_len * zero_multiplier + non_zero_data_len * non_zero_multiplier;
-
-    let floor_base = eip2780_base.unwrap_or_else(|| params.get(GasId::TxFloorCostBase) as u64);
-    (gas, floor_base + floor_tokens * floor_cost_per_token)
-}
-
-/// Counts the zero bytes in `data`.
-///
-/// Each chunk's count fits in a `u8`, so the compiler can compare and sum whole vector
-/// registers of byte lanes and widen once per chunk; a `usize` count would widen every flag
-/// to a full lane. 192 is a multiple of every power-of-two vector width up to 64 bytes, so only
-/// the last chunk runs a scalar remainder.
-///
-/// With the aarch64 dot-product extension, LLVM turns a sum of 0/1 flags into a `udot` and
-/// `addp` per vector, which ran slower than byte adds on an Apple M4. Counting 2 per zero byte
-/// in 96-byte chunks keeps byte adds, at the cost of a mask per vector; a chunk still sums to at
-/// most 192.
-fn count_zero_bytes(data: &[u8]) -> u64 {
-    const STEP: u8 = if cfg!(target_feature = "dotprod") { 2 } else { 1 };
-    data.chunks(192 / STEP as usize)
-        .map(|c| c.iter().map(|&b| if b == 0 { STEP } else { 0 }).sum::<u8>() as u64)
-        .sum::<u64>()
-        / STEP as u64
+    let floor_base = eip2780_base.unwrap_or_else(|| params.get(GasId::TxFloorCostBase));
+    let floor_gas = params.tx_floor_cost_with_base(
+        floor_base,
+        floor_tokens,
+        access_list_accounts,
+        access_list_storage_keys,
+    );
+    (gas, floor_gas)
 }
 
 /// EIP-2780: sum of the sender base, `tx.to`-based, and `tx.value`-based
@@ -922,15 +896,14 @@ fn eip2780_base_to_value_gas(
     value: U256,
 ) -> u64 {
     let params = &version.gas_params;
-    let mut gas = u64::from(params.get(GasId::TxBaseStipend));
+    let mut gas = params.get(GasId::TxBaseStipend);
     if is_create {
         // Since glamsterdam devnet-8, creates pay no value-based charge.
-        gas += u64::from(params.get(GasId::TxCreateAccessCost));
+        gas += params.get(GasId::TxCreateAccessCost);
     } else if !is_self_transfer {
-        gas += u64::from(params.get(GasId::WarmStorageReadCost))
-            + params.cold_account_additional_cost();
+        gas += params.get(GasId::WarmStorageReadCost) + params.cold_account_additional_cost();
         if !value.is_zero() {
-            gas += u64::from(params.get(GasId::TxValueCost));
+            gas += params.get(GasId::TxValueCost);
         }
     }
     gas
@@ -1164,6 +1137,15 @@ mod tests {
         london.features.remove(EvmFeatures::BASE_FEE_CHECK);
         assert_eq!(validate_gas_price(&london, U256::ZERO, U256::ONE), Ok(()));
 
+        // A configured base fee is checked before London too.
+        assert_eq!(
+            validate_gas_price(&Version::new(SpecId::BERLIN), U256::ZERO, U256::ONE),
+            Err(HandlerError::FeeCapLessThanBaseFee {
+                max_fee_per_gas: U256::ZERO,
+                base_fee: U256::ONE,
+            })
+        );
+
         let mut prague = Version::new(SpecId::PRAGUE);
         assert_eq!(
             validate_priority_fee(&prague, U256::ONE, U256::from(2)),
@@ -1190,6 +1172,48 @@ mod tests {
         assert_eq!(validate_chain_id(&version, None, true), Ok(()));
         version.features.remove(EvmFeatures::TX_CHAIN_ID_CHECK);
         assert_eq!(validate_chain_id(&version, Some(1), false), Ok(()));
+    }
+
+    #[rstest::rstest]
+    #[case::berlin(SpecId::BERLIN, true, 15)]
+    #[case::london(SpecId::LONDON, true, 5)]
+    #[case::london_without_base_fee_check(SpecId::LONDON, false, 5)]
+    fn base_fee_burn_depends_on_spec(
+        #[case] spec: SpecId,
+        #[case] base_fee_check: bool,
+        #[case] beneficiary_gas_price: u64,
+    ) {
+        let caller = Address::with_last_byte(0xaa);
+        let beneficiary = Address::with_last_byte(0xcc);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000)),
+        );
+        let mut version = Version::new(spec);
+        version.features.set(EvmFeatures::BASE_FEE_CHECK, base_fee_check);
+        let block = BlockEnvExt { basefee: U256::from(10), beneficiary, ..BlockEnvExt::default() };
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            block,
+            ethereum_tx_registry(spec),
+            database,
+            Precompiles::base(spec),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_price: 15,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
+                ..TxLegacy::default()
+            }),
+            caller,
+        );
+
+        assert!(evm.transact(&tx).unwrap().commit().status);
+        let reward = evm.state.account_info_untracked(&beneficiary).unwrap().unwrap().balance;
+        assert_eq!(reward, U256::from(21_000 * beneficiary_gas_price));
     }
 
     #[test]

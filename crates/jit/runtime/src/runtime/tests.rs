@@ -764,6 +764,32 @@ fn pause_resume_depth_tracking_with_backend_thread() {
     assert_eq!(stats.commands_dropped, 0);
 }
 
+#[test]
+#[cfg(all(unix, feature = "llvm"))]
+fn blocking_out_of_process_pause_resume_does_not_stop_helper() {
+    // The caller waits on compilation in blocking mode, so stopping the helper would hang it.
+    let tb = TestBackend::new(RuntimeConfig {
+        blocking: true,
+        jit_mode: JitMode::OutOfProcess,
+        jit_helper_path: Some("/nonexistent/evm2-jit-helper".into()),
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+        ..Default::default()
+    });
+
+    tb.pause();
+    assert!(tb.is_paused());
+    tb.resume();
+    assert!(!tb.is_paused());
+
+    // Shutdown is queued behind pause/resume and joins the backend thread, so every earlier
+    // command has been handled once the backend is dropped.
+    let shared = tb.backend.inner.shared.clone();
+    drop(tb);
+    let stats = shared.stats();
+    assert_eq!(stats.jit_helper_pause_requests, 0);
+    assert_eq!(stats.jit_helper_resume_requests, 0);
+}
+
 // ===========================================================================
 // Tests: JIT compilation (require LLVM).
 // ===========================================================================
@@ -851,6 +877,47 @@ fn jit_max_bytecode_len_prevents_promotion() {
 
     // Should be Ineligible — bytecode length exceeds jit_max_bytecode_len.
     assert!(matches!(tb.lookup(req()), LookupDecision::Unavailable(LookupMissReason::Ineligible)));
+}
+
+#[test]
+#[cfg(all(unix, feature = "llvm"))]
+fn failed_compile_is_not_retried_until_cleared() {
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        jit_mode: JitMode::OutOfProcess,
+        jit_helper_path: Some("/nonexistent/evm2-jit-helper".into()),
+        tuning: RuntimeTuning {
+            jit_worker_count: 1,
+            jit_hot_threshold: 1,
+            idle_evict_duration: None,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let lookup_rounds = || {
+        for _ in 0..10 {
+            let _ = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+
+    // Every compile fails at helper spawn, but the key is only dispatched once.
+    lookup_rounds();
+    tb.wait_stats(|s| s.compilations_failed == 1);
+    lookup_rounds();
+    tb.compile_jit(TestBackend::req_cancun(BYTECODE_RET42));
+    tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let stats = tb.stats();
+    assert_eq!(stats.compilations_dispatched, 1);
+    assert_eq!(stats.compilations_failed, 1);
+
+    // Clearing the resident map forgets the failure.
+    tb.clear_resident();
+    lookup_rounds();
+    let stats = tb.wait_stats(|s| s.compilations_failed == 2);
+    assert_eq!(stats.compilations_dispatched, 2);
 }
 
 #[test]
@@ -1424,6 +1491,151 @@ fn preload_aot_seeds_resident() {
         });
         assert_eq!(tb.stats().resident_entries, 1);
     }
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn preload_aot_skips_stale_abi_version() {
+    let store = Arc::new(RuntimeArtifactStore::new().unwrap());
+    let code_hash = alloy_primitives::keccak256(BYTECODE_RET42);
+
+    {
+        let tb = TestBackend::new(RuntimeConfig {
+            enabled: true,
+            store: Some(store.clone()),
+            tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+            ..Default::default()
+        });
+        tb.prepare_aot_sync(AotRequest {
+            code_hash,
+            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            spec_id: SpecId::CANCUN,
+        })
+        .unwrap();
+    }
+
+    let (key, stored) = store.load_all().unwrap().pop().unwrap();
+    let stale_key = ArtifactKey { abi_version: crate::ABI_VERSION - 1, ..key };
+    let stale_manifest = ArtifactManifest { artifact_key: stale_key, ..stored.manifest.clone() };
+    let stale_store = Arc::new(RuntimeArtifactStore::new().unwrap());
+    stale_store
+        .store(&stale_key, &stale_manifest, &std::fs::read(&stored.dylib_path).unwrap())
+        .unwrap();
+
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        store: Some(stale_store.clone()),
+        ..Default::default()
+    });
+    assert!(tb.get_compiled(code_hash, SpecId::CANCUN).is_none());
+    assert_eq!(tb.stats().resident_entries, 0);
+    assert_eq!(stale_store.len(), 1);
+}
+
+#[test]
+#[cfg(feature = "llvm")]
+fn preload_aot_skips_manifest_key_mismatch() {
+    let store = Arc::new(RuntimeArtifactStore::new().unwrap());
+    let code_hash = alloy_primitives::keccak256(BYTECODE_RET42);
+
+    {
+        let tb = TestBackend::new(RuntimeConfig {
+            enabled: true,
+            store: Some(store.clone()),
+            tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+            ..Default::default()
+        });
+        tb.prepare_aot_sync(AotRequest {
+            code_hash,
+            code: Bytes::copy_from_slice(BYTECODE_RET42),
+            spec_id: SpecId::CANCUN,
+        })
+        .unwrap();
+    }
+
+    let (key, stored) = store.load_all().unwrap().pop().unwrap();
+    let stale_key = ArtifactKey { abi_version: crate::ABI_VERSION - 1, ..key };
+    let manifest = ArtifactManifest { artifact_key: stale_key, ..stored.manifest.clone() };
+    let mismatched_store = Arc::new(RuntimeArtifactStore::new().unwrap());
+    mismatched_store.store(&key, &manifest, &std::fs::read(&stored.dylib_path).unwrap()).unwrap();
+
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        store: Some(mismatched_store),
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+        ..Default::default()
+    });
+    assert_eq!(tb.stats().resident_entries, 0);
+
+    // The probe rejects it too, so the artifact is recompiled.
+    tb.prepare_aot_sync(AotRequest {
+        code_hash,
+        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        spec_id: SpecId::CANCUN,
+    })
+    .unwrap();
+    assert_eq!(tb.stats().compilations_dispatched, 1);
+}
+
+#[test]
+fn compile_config_hash_covers_every_compile_input() {
+    let hash = |config: RuntimeConfig| storage::compile_config_hash(&config);
+    let base = RuntimeConfig::default();
+    let mut gas_params = evm2::Version::base(SpecId::CANCUN).gas_params;
+    let with_gas_params = RuntimeConfig { gas_params: Some(gas_params), ..Default::default() };
+    *gas_params.get_mut(evm2::version::GasId::ExpByte) += 1;
+
+    let hashes = [
+        hash(base.clone()),
+        hash(RuntimeConfig { debug_assertions: !base.debug_assertions, ..base.clone() }),
+        hash(RuntimeConfig { single_error: !base.single_error, ..base.clone() }),
+        hash(RuntimeConfig { no_dedup: !base.no_dedup, ..base.clone() }),
+        hash(RuntimeConfig { no_dse: !base.no_dse, ..base.clone() }),
+        hash(with_gas_params),
+        hash(RuntimeConfig { gas_params: Some(gas_params), ..base }),
+    ];
+    for (i, a) in hashes.iter().enumerate() {
+        assert!(hashes[i + 1..].iter().all(|b| a != b), "hash {i} collides");
+    }
+}
+
+/// An artifact compiled under one gas schedule is neither preloaded nor probed by a backend that
+/// runs another, and both artifacts coexist in the shared store.
+#[test]
+#[cfg(feature = "llvm")]
+fn artifacts_are_scoped_to_compile_config() {
+    let store = Arc::new(RuntimeArtifactStore::new().unwrap());
+    let code_hash = alloy_primitives::keccak256(BYTECODE_RET42);
+    let req = || AotRequest {
+        code_hash,
+        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        spec_id: SpecId::CANCUN,
+    };
+    let config = |gas_params| RuntimeConfig {
+        enabled: true,
+        store: Some(store.clone()),
+        gas_params,
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+        ..Default::default()
+    };
+
+    {
+        let tb = TestBackend::new(config(None));
+        tb.prepare_aot_sync(req()).unwrap();
+    }
+    assert_eq!(store.len(), 1);
+
+    let mut gas_params = evm2::Version::base(SpecId::CANCUN).gas_params;
+    *gas_params.get_mut(evm2::version::GasId::ExpByte) += 1;
+
+    let tb = TestBackend::new(config(Some(gas_params)));
+    assert!(tb.get_compiled(code_hash, SpecId::CANCUN).is_none());
+    assert_eq!(tb.stats().resident_entries, 0);
+
+    tb.prepare_aot_sync(req()).unwrap();
+    assert_eq!(tb.stats().compilations_dispatched, 1);
+    assert_eq!(store.len(), 2);
+    assert!(tb.get_compiled(code_hash, SpecId::CANCUN).is_some());
 }
 
 /// `prepare_aot()` on a key that is already persisted in the store but not resident

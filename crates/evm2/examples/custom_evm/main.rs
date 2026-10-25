@@ -49,7 +49,8 @@ fn custom_opcode() -> HandlerResult<()> {
         + u64::from(opcode::CUSTOM_OPCODE_DYNAMIC_GAS)
         + 3
         + 2100
-        + 20_000;
+        + 20_000
+        + opcode::SSTORE_SURCHARGE;
 
     println!(
         "custom opcode: tx_type=0x{:02x} expected status=true stop=Stop gas_used={expected_gas}; got status={} stop={:?} gas_used={}",
