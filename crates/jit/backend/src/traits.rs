@@ -155,6 +155,8 @@ pub enum Attribute {
     /// `dead_on_return` — the contents of the pointed-to memory are dead after the function
     /// returns, allowing the caller to elide stores to the memory.
     DeadOnReturn,
+    /// `dead_on_unwind` — the contents of the pointed-to memory are dead if the function unwinds.
+    DeadOnUnwind,
     // TODO: Range?
 }
 
