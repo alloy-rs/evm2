@@ -12,6 +12,7 @@ use core::{
     marker::PhantomData,
     mem::MaybeUninit,
     ptr::{self, NonNull},
+    sync::atomic::{Ordering, compiler_fence},
 };
 pub use evm2::interpreter::{Gas, InstrStop, Memory};
 use evm2::{
@@ -155,10 +156,10 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
     /// Resizes memory using EVM memory gas accounting.
     #[inline]
     pub fn resize_memory(&mut self, offset: usize, len: usize) -> Result<(), InstrStop> {
-        let gas_params = *self.gas_params();
+        let gas_params = self.gas_params() as *const GasParams;
         let memory = self.memory_mut() as *mut Memory;
         let gas = &mut self.gas as *mut Gas;
-        unsafe { (*memory).resize_evm(&mut *gas, &gas_params, offset, len)? };
+        unsafe { (*memory).resize_evm(&mut *gas, &*gas_params, offset, len)? };
         self.refresh_memory_cache();
         Ok(())
     }
@@ -252,8 +253,11 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
     ///
     /// Must be called after any operation that may resize memory.
     #[inline]
-    pub const fn refresh_memory_cache(&mut self) {
+    pub fn refresh_memory_cache(&mut self) {
         let mem_len = self.memory().len();
+        // Keep LLVM from merging both reads into one 16-byte load: right after a resize it
+        // overlaps the 8-byte length store and stalls on store forwarding.
+        compiler_fence(Ordering::SeqCst);
         let mem_base = self.memory_mut().as_mut_ptr();
         self.mem_base = mem_base;
         self.mem_len = mem_len;
