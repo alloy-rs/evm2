@@ -224,8 +224,8 @@ impl GasParams {
 
     /// Returns the gas cost for `id`.
     #[inline]
-    pub const fn get(&self, id: GasId) -> u32 {
-        self.table[id.as_usize()]
+    pub const fn get(&self, id: GasId) -> u64 {
+        self.table[id.as_usize()] as u64
     }
 
     /// Returns the mutable gas cost slot for `id`.
@@ -244,9 +244,9 @@ impl GasParams {
     #[inline]
     pub const fn memory_cost(&self, len: usize) -> u64 {
         let len = len as u64;
-        (self.get(GasId::MemoryLinearCost) as u64).saturating_mul(len).saturating_add(
-            len.saturating_mul(len) / self.get(GasId::MemoryQuadraticReduction) as u64,
-        )
+        self.get(GasId::MemoryLinearCost)
+            .saturating_mul(len)
+            .saturating_add(len.saturating_mul(len) / self.get(GasId::MemoryQuadraticReduction))
     }
 
     /// Calculates dynamic `EXP` gas.
@@ -255,59 +255,58 @@ impl GasParams {
         if power.const_is_zero() {
             return 0;
         }
-        (self.get(GasId::ExpByte) as u64).saturating_mul(power.bit_len().div_ceil(8) as u64)
+        self.get(GasId::ExpByte).saturating_mul(power.bit_len().div_ceil(8) as u64)
     }
 
     /// Calculates copy gas for `len` bytes.
     #[inline]
     pub const fn copy_cost(&self, len: usize) -> u64 {
-        (self.get(GasId::CopyPerWord) as u64).saturating_mul(num_words(len) as u64)
+        self.get(GasId::CopyPerWord).saturating_mul(num_words(len) as u64)
     }
 
     /// Calculates `EXTCODECOPY` copy gas for `len` bytes.
     #[inline]
     pub const fn extcodecopy_cost(&self, len: usize) -> u64 {
-        (self.get(GasId::ExtcodecopyPerWord) as u64).saturating_mul(num_words(len) as u64)
+        self.get(GasId::ExtcodecopyPerWord).saturating_mul(num_words(len) as u64)
     }
 
     /// Calculates `MCOPY` copy gas for `len` bytes.
     #[inline]
     pub const fn mcopy_cost(&self, len: usize) -> u64 {
-        (self.get(GasId::McopyPerWord) as u64).saturating_mul(num_words(len) as u64)
+        self.get(GasId::McopyPerWord).saturating_mul(num_words(len) as u64)
     }
 
     /// Calculates `KECCAK256` word gas for `len` bytes.
     #[inline]
     pub const fn keccak256_word_cost(&self, len: usize) -> u64 {
-        (self.get(GasId::Keccak256PerWord) as u64).saturating_mul(num_words(len) as u64)
+        self.get(GasId::Keccak256PerWord).saturating_mul(num_words(len) as u64)
     }
 
     /// Calculates dynamic `LOG` gas.
     #[inline]
     pub const fn log_cost(&self, n: u8, len: usize) -> u64 {
-        (self.get(GasId::Logdata) as u64)
+        self.get(GasId::Logdata)
             .saturating_mul(len as u64)
-            .saturating_add((self.get(GasId::Logtopic) as u64).saturating_mul(n as u64))
+            .saturating_add(self.get(GasId::Logtopic).saturating_mul(n as u64))
     }
 
     /// Calculates initcode word gas for `len` bytes.
     #[inline]
     pub const fn initcode_cost(&self, len: usize) -> u64 {
-        (self.get(GasId::InitcodePerWord) as u64).saturating_mul(num_words(len) as u64)
+        self.get(GasId::InitcodePerWord).saturating_mul(num_words(len) as u64)
     }
 
     /// Calculates dynamic `CREATE2` gas for `len` bytes.
     #[inline]
     pub const fn create2_cost(&self, len: usize) -> u64 {
-        (self.get(GasId::Create) as u64).saturating_add(
-            (self.get(GasId::Keccak256PerWord) as u64).saturating_mul(num_words(len) as u64),
-        )
+        self.get(GasId::Create)
+            .saturating_add(self.get(GasId::Keccak256PerWord).saturating_mul(num_words(len) as u64))
     }
 
     /// Returns `CALL` stipend reduction.
     #[inline]
     pub const fn call_stipend_reduction(&self, gas_limit: u64) -> u64 {
-        gas_limit - gas_limit / self.get(GasId::CallStipendReduction) as u64
+        gas_limit - gas_limit / self.get(GasId::CallStipendReduction)
     }
 
     /// Calculates dynamic `SSTORE` gas.
@@ -315,21 +314,21 @@ impl GasParams {
     pub fn sstore_dynamic_gas(&self, is_eip2200: bool, vals: &SStore) -> u64 {
         if !is_eip2200 {
             if vals.present_is_zero() && !vals.new_is_zero() {
-                return self.get(GasId::SstoreSetWithoutLoadCost) as u64;
+                return self.get(GasId::SstoreSetWithoutLoadCost);
             }
-            return self.get(GasId::SstoreResetWithoutColdLoadCost) as u64;
+            return self.get(GasId::SstoreResetWithoutColdLoadCost);
         }
 
         let mut gas = 0;
         if vals.is_cold {
-            gas += self.get(GasId::ColdStorageCost) as u64;
+            gas += self.get(GasId::ColdStorageCost);
         }
 
         if !vals.is_noop() && vals.is_clean() {
             gas += if vals.original_is_zero() {
-                self.get(GasId::SstoreSetWithoutLoadCost) as u64
+                self.get(GasId::SstoreSetWithoutLoadCost)
             } else {
-                self.get(GasId::SstoreResetWithoutColdLoadCost) as u64
+                self.get(GasId::SstoreResetWithoutColdLoadCost)
             };
         }
         gas
@@ -378,7 +377,7 @@ impl GasParams {
     #[inline]
     pub fn sstore_state_gas(&self, vals: &SStore) -> u64 {
         if !vals.is_noop() && vals.is_clean() && vals.original_is_zero() {
-            self.get(GasId::SstoreSetState) as u64
+            self.get(GasId::SstoreSetState)
         } else {
             0
         }
@@ -393,7 +392,7 @@ impl GasParams {
     #[inline]
     pub fn sstore_state_gas_refill(&self, vals: &SStore) -> u64 {
         if !vals.is_noop() && vals.resets_original() && vals.original_is_zero() {
-            self.get(GasId::SstoreSetState) as u64
+            self.get(GasId::SstoreSetState)
         } else {
             0
         }
@@ -402,13 +401,13 @@ impl GasParams {
     /// Returns the `CREATE`/`CREATE2` upfront state gas (EIP-8037).
     #[inline]
     pub const fn create_state_gas(&self) -> u64 {
-        self.get(GasId::CreateState) as u64
+        self.get(GasId::CreateState)
     }
 
     /// Returns the new-account creation state gas (EIP-8037).
     #[inline]
     pub const fn new_account_state_gas(&self) -> u64 {
-        self.get(GasId::NewAccountState) as u64
+        self.get(GasId::NewAccountState)
     }
 
     /// Returns the EIP-8037 state gas charged per EIP-7702 authorization: the per-account portion
@@ -416,20 +415,20 @@ impl GasParams {
     /// ([`GasId::TxEip7702PerAuthState`]). Zero before Amsterdam.
     #[inline]
     pub const fn eip7702_auth_state_gas(&self) -> u64 {
-        self.new_account_state_gas().saturating_add(self.get(GasId::TxEip7702PerAuthState) as u64)
+        self.new_account_state_gas().saturating_add(self.get(GasId::TxEip7702PerAuthState))
     }
 
     /// Calculates the code-deposit state gas for `len` bytes (EIP-8037).
     #[inline]
     pub const fn code_deposit_state_gas(&self, len: usize) -> u64 {
-        (self.get(GasId::CodeDepositState) as u64).saturating_mul(len as u64)
+        self.get(GasId::CodeDepositState).saturating_mul(len as u64)
     }
 
     /// Returns `SELFDESTRUCT` cold account cost.
     #[inline]
     pub const fn selfdestruct_cold_cost(&self) -> u64 {
-        (self.get(GasId::ColdAccountAdditionalCost) as u64)
-            .saturating_add(self.get(GasId::WarmStorageReadCost) as u64)
+        self.get(GasId::ColdAccountAdditionalCost)
+            .saturating_add(self.get(GasId::WarmStorageReadCost))
     }
 
     /// Calculates `SELFDESTRUCT` dynamic gas.
@@ -437,7 +436,7 @@ impl GasParams {
     pub const fn selfdestruct_cost(&self, should_charge_topup: bool, is_cold: bool) -> u64 {
         let mut gas = 0;
         if should_charge_topup {
-            gas += self.get(GasId::NewAccountCostForSelfdestruct) as u64;
+            gas += self.get(GasId::NewAccountCostForSelfdestruct);
         }
         if is_cold {
             gas += self.selfdestruct_cold_cost();
@@ -448,8 +447,87 @@ impl GasParams {
     /// Returns additional cold account access gas.
     #[inline]
     pub const fn cold_account_additional_cost(&self) -> u64 {
-        self.get(GasId::ColdAccountAdditionalCost) as u64
+        self.get(GasId::ColdAccountAdditionalCost)
     }
+
+    /// Returns the `(intrinsic_tokens, floor_tokens)` of transaction calldata `input`.
+    ///
+    /// Both weigh non-zero bytes at `TxTokenNonZeroByteMultiplier`. Intrinsic tokens count a zero
+    /// byte as one token; floor tokens weigh it at `TxFloorZeroByteMultiplier` (EIP-7623: one;
+    /// EIP-7976: the non-zero weight).
+    ///
+    /// Intrinsic gas is `intrinsic_tokens * TxTokenCost`. Sum the tokens over several inputs
+    /// before pricing them, and pass the summed floor tokens to
+    /// [`tx_floor_cost_with_tokens`](Self::tx_floor_cost_with_tokens).
+    #[inline]
+    pub fn tx_calldata_tokens(&self, input: &[u8]) -> (u64, u64) {
+        let zero_bytes = count_zero_bytes(input);
+        let non_zero_tokens =
+            (input.len() as u64 - zero_bytes) * self.get(GasId::TxTokenNonZeroByteMultiplier);
+        (
+            zero_bytes + non_zero_tokens,
+            zero_bytes * self.get(GasId::TxFloorZeroByteMultiplier) + non_zero_tokens,
+        )
+    }
+
+    /// Returns the EIP-7623 calldata floor gas: `TxFloorCostBase` plus `TxFloorCostPerToken` for
+    /// each of `floor_tokens` (see [`tx_calldata_tokens`](Self::tx_calldata_tokens)) and for the
+    /// access list's bytes, weighted by `TxAccessListFloorByteMultiplier`.
+    ///
+    /// The caller checks that EIP-7623 is active. Under EIP-2780 the transaction's floor is based
+    /// on its decomposed intrinsic base instead of `TxFloorCostBase`, which this function does
+    /// not know.
+    #[inline]
+    pub const fn tx_floor_cost_with_tokens(
+        &self,
+        floor_tokens: u64,
+        access_list_accounts: u64,
+        access_list_storage_keys: u64,
+    ) -> u64 {
+        self.tx_floor_cost_with_base(
+            self.get(GasId::TxFloorCostBase),
+            floor_tokens,
+            access_list_accounts,
+            access_list_storage_keys,
+        )
+    }
+
+    /// Like [`tx_floor_cost_with_tokens`](Self::tx_floor_cost_with_tokens), with an explicit base.
+    #[inline]
+    pub(crate) const fn tx_floor_cost_with_base(
+        &self,
+        base: u64,
+        floor_tokens: u64,
+        access_list_accounts: u64,
+        access_list_storage_keys: u64,
+    ) -> u64 {
+        let access_list_bytes = access_list_accounts
+            .saturating_mul(20)
+            .saturating_add(access_list_storage_keys.saturating_mul(32));
+        let tokens = floor_tokens.saturating_add(
+            access_list_bytes.saturating_mul(self.get(GasId::TxAccessListFloorByteMultiplier)),
+        );
+        base.saturating_add(tokens.saturating_mul(self.get(GasId::TxFloorCostPerToken)))
+    }
+}
+
+/// Counts the zero bytes in `data`.
+///
+/// Each chunk's count fits in a `u8`, so the compiler can compare and sum whole vector
+/// registers of byte lanes and widen once per chunk; a `usize` count would widen every flag
+/// to a full lane. 192 is a multiple of every power-of-two vector width up to 64 bytes, so only
+/// the last chunk runs a scalar remainder.
+///
+/// With the aarch64 dot-product extension, LLVM turns a sum of 0/1 flags into a `udot` and
+/// `addp` per vector, which ran slower than byte adds on an Apple M4. Counting 2 per zero byte
+/// in 96-byte chunks keeps byte adds, at the cost of a mask per vector; a chunk still sums to at
+/// most 192.
+fn count_zero_bytes(data: &[u8]) -> u64 {
+    const STEP: u8 = if cfg!(target_feature = "dotprod") { 2 } else { 1 };
+    data.chunks(192 / STEP as usize)
+        .map(|c| c.iter().map(|&b| if b == 0 { STEP } else { 0 }).sum::<u8>() as u64)
+        .sum::<u64>()
+        / STEP as u64
 }
 
 #[cfg(test)]
@@ -572,5 +650,28 @@ mod tests {
         assert_eq!(params.exp_cost(U256::ZERO), 0);
         assert_eq!(params.exp_cost(U256::from(0xff)), 10);
         assert_eq!(params.exp_cost(U256::from(0x100)), 20);
+    }
+
+    #[test]
+    fn calldata_tokens_and_floor_cost_follow_the_fork() {
+        // Zero bytes weigh 1 and non-zero bytes 4 in the intrinsic tokens.
+        let input = [0, 0, 1];
+
+        // EIP-7623: the floor weighs zero bytes like the intrinsic tokens and ignores the
+        // access list.
+        let prague = gas_params(SpecId::PRAGUE);
+        assert_eq!(prague.tx_calldata_tokens(&input), (6, 6));
+        assert_eq!(prague.tx_calldata_tokens(&[]), (0, 0));
+        assert_eq!(prague.tx_floor_cost_with_tokens(6, 0, 0), 21_000 + 6 * 10);
+        assert_eq!(prague.tx_floor_cost_with_tokens(6, 3, 4), 21_000 + 6 * 10);
+
+        // EIP-7976: the floor weighs every byte by 4. EIP-7981 adds the access list bytes.
+        let amsterdam = gas_params(SpecId::AMSTERDAM);
+        assert_eq!(amsterdam.tx_calldata_tokens(&input), (6, 12));
+        assert_eq!(amsterdam.tx_floor_cost_with_tokens(12, 0, 0), 12_000 + 12 * 16);
+        assert_eq!(
+            amsterdam.tx_floor_cost_with_tokens(12, 1, 1),
+            12_000 + (12 + (20 + 32) * 4) * 16
+        );
     }
 }

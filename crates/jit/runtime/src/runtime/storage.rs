@@ -67,7 +67,7 @@ pub(crate) fn compile_config_hash(config: &RuntimeConfig) -> B256 {
     if let Some(gas_params) = &config.gas_params {
         bytes.extend((0..GasId::COUNT).flat_map(|i| {
             let gas_id = GasId::from_usize(i).expect("gas parameter index should be valid");
-            gas_params.get(gas_id).to_le_bytes()
+            gas_params[gas_id].to_le_bytes()
         }));
     }
     keccak256(bytes)

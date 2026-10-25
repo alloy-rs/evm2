@@ -1,10 +1,13 @@
 use crate::{
     EvmFeatures, EvmTypesHost,
-    interpreter::{Host, InstrStop, InterpreterState, Result, StackMut, private::GasInstructionCx},
+    evm::SStore,
+    interpreter::{
+        Gas, Host, InstrStop, InterpreterState, Result, StackMut, Word, private::GasInstructionCx,
+    },
     utils::WordExt,
     version::GasId,
 };
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256};
 use evm2_macros::instruction;
 
 #[inline]
@@ -20,7 +23,7 @@ pub fn sload(cx: _, [key]: [Word]) -> Result<out> {
     // EIP-2929: SLOAD pays the warm read cost as static opcode gas, then only
     // charges the additional cold cost when the slot was not already warm. Avoid
     // touching the host/database if the frame cannot afford that cold surcharge.
-    let additional_cold_cost = cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into();
+    let additional_cold_cost = cx.state.gas_params().get(GasId::ColdStorageAdditionalCost);
     let skip_cold_load =
         cx.state.feature(EvmFeatures::EIP2929) && cx.gas.remaining() < additional_cold_cost;
     let destination = &cx.state.message().destination;
@@ -37,53 +40,74 @@ pub fn sload(cx: _, [key]: [Word]) -> Result<out> {
 
 #[instruction(dynamic_gas)]
 pub fn sstore(cx: _, [key, value]: [Word]) -> Result {
-    require_non_staticcall(cx.state)?;
-    let is_eip2200 = cx.state.feature(EvmFeatures::EIP2200);
+    sstore_with(cx.gas, cx.state, key, value, |_, _, _, _| Ok(()))
+}
+
+/// Executes `SSTORE` with a hook between the storage write and its dynamic gas.
+///
+/// This is the body of [`sstore`], for custom `SSTORE` instructions that need extra behavior.
+/// Use it from an `#[instruction(dynamic_gas)]` function with `cx.gas` and `cx.state`.
+///
+/// `after_write` runs right after the host write and before any dynamic gas, state gas, or refund
+/// is charged. It receives the interpreter [`Gas`], the state, the destination address, and the
+/// [`SStore`] result of the write. It may charge gas through `Gas` or fail through
+/// [`InterpreterState::fail`] and return the error. An `Err` stops the instruction and skips the
+/// remaining charges. The JIT does not run the hook.
+#[inline(always)]
+pub fn sstore_with<T: EvmTypesHost>(
+    gas: &mut Gas,
+    state: &mut InterpreterState<'_, '_, T>,
+    key: &Word,
+    value: &Word,
+    after_write: impl FnOnce(&mut Gas, &mut InterpreterState<'_, '_, T>, &Address, &SStore) -> Result,
+) -> Result {
+    require_non_staticcall(state)?;
+    let is_eip2200 = state.feature(EvmFeatures::EIP2200);
 
     // EIP-2200: SSTORE may not execute with only the value-transfer stipend left. This
     // check happens before any gas is charged or host storage is touched.
-    if is_eip2200 && cx.gas.remaining() <= cx.state.gas_params().get(GasId::CallStipend).into() {
+    if is_eip2200 && gas.remaining() <= state.gas_params().get(GasId::CallStipend) {
         return Err(InstrStop::ReentrancySentryOOG);
     }
 
     // Frontier through Petersburg charge a fixed SSTORE_RESET static cost. Istanbul
     // (EIP-2200) turns this into the SLOAD-equivalent cost, and Berlin (EIP-2929)
     // makes that the warm storage read cost.
-    cx.gas.spend(cx.state.gas_params().get(GasId::SstoreStatic).into())?;
+    gas.spend(state.gas_params().get(GasId::SstoreStatic))?;
 
     // EIP-2929: avoid performing a cold storage load if the frame cannot afford the
     // additional cold-load charge. The host performs the write and returns
     // original/present/new values for net metering.
-    let skip_cold_load = cx.state.feature(EvmFeatures::EIP2929)
-        && cx.gas.remaining() < cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into();
-    let destination = &cx.state.message().destination;
-    let state_load = cx
-        .state
+    let skip_cold_load = state.feature(EvmFeatures::EIP2929)
+        && gas.remaining() < state.gas_params().get(GasId::ColdStorageAdditionalCost);
+    let destination = &state.message().destination;
+    let state_load = state
         .host()
         .sstore(destination, key, value, skip_cold_load)
-        .map_err(|error| cx.state.fail(error))?;
+        .map_err(|error| state.fail(error))?;
+    after_write(gas, state, destination, &state_load)?;
 
     // EIP-2200 net gas metering depends on original, present, and new slot values:
     // clean slots pay set/reset costs, dirty slots generally only pay the load cost,
     // and reset-to-original transitions are handled through refunds.
-    cx.gas.spend(cx.state.gas_params().sstore_dynamic_gas(is_eip2200, &state_load))?;
+    gas.spend(state.gas_params().sstore_dynamic_gas(is_eip2200, &state_load))?;
 
     // EIP-8037 / Amsterdam: creating a new storage slot (original == present == 0,
     // new != 0) also consumes state gas from the reservoir before spilling into
     // execution gas.
-    if cx.state.feature(EvmFeatures::EIP8037) {
-        cx.gas.spend_state(cx.state.gas_params().sstore_state_gas(&state_load))?;
+    if state.feature(EvmFeatures::EIP8037) {
+        gas.spend_state(state.gas_params().sstore_state_gas(&state_load))?;
 
         // EIP-8037: a 0→x→0 storage restoration returns the state gas charged for
         // the initial 0→x transition directly to the reservoir, rather than
         // routing it through the capped refund counter below.
-        let refill = cx.state.gas_params().sstore_state_gas_refill(&state_load);
-        cx.gas.refill_reservoir(refill);
+        let refill = state.gas_params().sstore_state_gas_refill(&state_load);
+        gas.refill_reservoir(refill);
     }
 
     // EIP-2200 and EIP-3529 refund rules, including negative refund adjustments for
     // dirty nonzero slots and London's reduced clearing-slot refund via gas params.
-    cx.gas.record_refund(cx.state.gas_params().sstore_refund(is_eip2200, &state_load));
+    gas.record_refund(state.gas_params().sstore_refund(is_eip2200, &state_load));
     Ok(())
 }
 

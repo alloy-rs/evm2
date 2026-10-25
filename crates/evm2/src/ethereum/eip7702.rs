@@ -65,7 +65,7 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         access_list_storage_keys,
         tx.value,
     );
-    intrinsic += eip7702_authorization_gas(req.host, tx.authorization_list.len());
+    intrinsic += eip7702_authorization_gas(req.host.version(), tx.authorization_list.len());
     // EIP-2780 (ethereum/EIPs#11844): the per-auth state-dependent charges are applied at the
     // runtime gas phase, so no state gas is charged at the intrinsic phase (pre-Amsterdam there is
     // none either). A transaction that passes the intrinsic check but cannot afford the runtime
@@ -207,8 +207,11 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     settle(req.host, result)
 }
 
-fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations: usize) -> u64 {
-    let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
+/// Returns the EIP-7702 intrinsic gas for `authorizations` authorization tuples.
+///
+/// The caller checks that EIP-7702 is active.
+pub const fn eip7702_authorization_gas(version: &Version, authorizations: usize) -> u64 {
+    let per_auth = version.gas_params.get(GasId::TxEip7702PerEmptyAccountCost);
     (authorizations as u64).saturating_mul(per_auth)
 }
 
@@ -217,6 +220,9 @@ fn eip7702_authorization_gas<'a, T: EvmTypes>(host: &Evm<'a, T>, authorizations:
 #[derive(Clone, Copy, Debug)]
 pub struct AppliedAuth {
     /// Whether the authority account already existed when this authorization was processed.
+    ///
+    /// An account counts as existing when it is present in state or touched earlier in the
+    /// transaction, even if it is still absent.
     pub existed: bool,
     /// Whether the authority's code was a valid delegation at the start of the transaction.
     pub delegated_before_tx: bool,
@@ -233,9 +239,10 @@ pub struct AppliedAuth {
 pub fn validate_one_auth<'a, T: EvmTypes>(
     host: &mut Evm<'a, T>,
     chain_id: u64,
-    authorization: &LazyAuthorization,
+    authorization: &impl Eip7702Authorization,
 ) -> HandlerResult<Option<(Address, AppliedAuth)>> {
-    if !authorization.chain_id().is_zero() && authorization.chain_id() != &U256::from(chain_id) {
+    let auth_chain_id = authorization.chain_id();
+    if !auth_chain_id.is_zero() && auth_chain_id != U256::from(chain_id) {
         return Ok(None);
     }
     if authorization.nonce() == u64::MAX {
@@ -246,7 +253,7 @@ pub fn validate_one_auth<'a, T: EvmTypes>(
     };
     let mut account = host.state.account(&authority)?;
     account.warm();
-    let existed = account.exists();
+    let existed = account.exists() || account.is_touched();
     let authority_nonce = account.nonce();
     let code = account.load_code()?;
     // Reject an authority that already carries non-delegation code; otherwise non-empty code is
@@ -328,7 +335,7 @@ impl<'g> RuntimeAuthCharges<'g> {
                 0
             },
             delegation_bytes_state_gas: if is_eip8037 {
-                u64::from(version.gas_params.get(GasId::TxEip7702PerAuthState))
+                version.gas_params.get(GasId::TxEip7702PerAuthState)
             } else {
                 0
             },
@@ -388,12 +395,12 @@ pub struct AuthRefunds {
 
 impl AuthRefunds {
     /// Creates refund accounting with `version`'s authorization prices.
-    pub fn new(version: &Version) -> Self {
+    pub const fn new(version: &Version) -> Self {
         Self {
             is_eip8037: version.feature(EvmFeatures::EIP8037),
             new_account: version.gas_params.new_account_state_gas(),
-            auth_base: u64::from(version.gas_params.get(GasId::TxEip7702PerAuthState)),
-            execution_per_auth: u64::from(version.gas_params.get(GasId::TxEip7702AuthRefund)),
+            auth_base: version.gas_params.get(GasId::TxEip7702PerAuthState),
+            execution_per_auth: version.gas_params.get(GasId::TxEip7702AuthRefund),
             state_refund: 0,
             execution_refund: 0,
         }
@@ -452,10 +459,10 @@ impl AuthAccounting for AuthRefunds {
 /// their delegation is applied. An accounting out-of-gas aborts the list without loading the
 /// remaining authorities — keeping them out of the EIP-7928 block access list — and returns
 /// `true`; the caller is responsible for rolling back the partially applied delegations.
-pub fn apply_auth_list<'a, T: EvmTypes>(
+pub fn apply_auth_list<'a, 'b, T: EvmTypes, A: Eip7702Authorization + 'b>(
     host: &mut Evm<'a, T>,
     chain_id: u64,
-    authorizations: &[LazyAuthorization],
+    authorizations: impl IntoIterator<Item = &'b A>,
     accounting: &mut impl AuthAccounting,
 ) -> HandlerResult<bool> {
     for authorization in authorizations {
@@ -466,7 +473,56 @@ pub fn apply_auth_list<'a, T: EvmTypes>(
         if accounting.accepted(authority, &auth).is_err() {
             return Ok(true);
         }
-        host.state.account(&authority)?.set_delegation(*authorization.address());
+        host.state.account(&authority)?.set_delegation(authorization.address());
     }
     Ok(false)
+}
+
+/// An EIP-7702 authorization as consumed by [`apply_auth_list`].
+///
+/// Exposes the fields the authorization loop reads. Implement it to process authorizations that
+/// carry a different signature scheme than [`LazyAuthorization`].
+pub trait Eip7702Authorization {
+    /// Returns the chain ID the authorization is valid for; zero means any chain.
+    fn chain_id(&self) -> U256;
+
+    /// Returns the nonce the authority account must have for the authorization to apply.
+    fn nonce(&self) -> u64;
+
+    /// Returns the address the authority delegates to; the zero address clears the delegation.
+    fn address(&self) -> Address;
+
+    /// Returns the recovered authority, or `None` if the signature is invalid.
+    fn authority(&self) -> Option<Address>;
+}
+
+impl Eip7702Authorization for LazyAuthorization {
+    fn chain_id(&self) -> U256 {
+        *Self::chain_id(self)
+    }
+
+    fn nonce(&self) -> u64 {
+        Self::nonce(self)
+    }
+
+    fn address(&self) -> Address {
+        *Self::address(self)
+    }
+
+    fn authority(&self) -> Option<Address> {
+        Self::authority(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SpecId;
+
+    #[test]
+    fn authorization_gas_charges_per_authorization() {
+        assert_eq!(eip7702_authorization_gas(Version::base(SpecId::PRAGUE), 0), 0);
+        assert_eq!(eip7702_authorization_gas(Version::base(SpecId::PRAGUE), 3), 3 * 25_000);
+        assert_eq!(eip7702_authorization_gas(Version::base(SpecId::AMSTERDAM), 2), 2 * 7_816);
+    }
 }

@@ -3,12 +3,15 @@ use crate::{
     bytecode::Bytecode,
     env::{BlockEnvExt, TxEnvExt},
     ethereum::{
-        LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry, prepare_initial_frame,
+        LazyAuthorization, LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope,
+        eip7702::{AuthRefunds, Eip7702Authorization, RuntimeAuthCharges, apply_auth_list},
+        ethereum_tx_registry, prepare_initial_frame,
     },
     evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
     interpreter::{GasTracker, Host, InstrStop, MessageExt, Word, op},
     registry::TxRegistry,
     test_utils::{legacy_bytecode, push, push_address, push_all},
+    version::GasId,
 };
 use alloc::{vec, vec::Vec};
 use alloy_consensus::{TxEip7702, TxLegacy, transaction::Recovered};
@@ -288,6 +291,62 @@ fn eip2780_authorization_charges_no_state_gas_without_eip8037() {
     assert_eq!(authority.code_hash, Bytecode::new_eip7702(delegate).hash_slow());
 }
 
+fn absent_authority_evm(spec: SpecId, touched: Address) -> TestEvm {
+    let mut evm = TestEvm::new(
+        spec,
+        BlockEnvExt::default(),
+        ethereum_tx_registry(spec),
+        InMemoryDB::default(),
+        Precompiles::base(spec),
+    );
+    evm.state.account(&touched).unwrap().touch();
+    evm
+}
+
+fn auth_for(authority: Address) -> LazyAuthorization {
+    RecoveredAuthorization::new_unchecked(
+        Authorization { chain_id: U256::ZERO, address: Address::with_last_byte(0xdd), nonce: 0 },
+        RecoveredAuthority::Valid(authority),
+    )
+    .into()
+}
+
+#[test]
+fn apply_auth_list_refunds_touched_absent_authority() {
+    let touched = Address::with_last_byte(0xa1);
+    let untouched = Address::with_last_byte(0xa2);
+    let mut evm = absent_authority_evm(SpecId::PRAGUE, touched);
+    let mut refunds = AuthRefunds::new(evm.version());
+
+    apply_auth_list(&mut evm, 1, &[auth_for(touched), auth_for(untouched)], &mut refunds).unwrap();
+
+    // An authority is refunded unless it is absent and untouched.
+    let per_auth = evm.version().gas_params.get(GasId::TxEip7702AuthRefund);
+    assert_eq!(refunds.execution_refund, per_auth);
+}
+
+#[test]
+fn eip2780_touched_absent_authority_pays_no_new_account_state_gas() {
+    let authority = Address::with_last_byte(0xa1);
+    let state_gas_spent = |touched: Address| {
+        let mut evm = absent_authority_evm(SpecId::AMSTERDAM, touched);
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(1_000_000, 1_000_000);
+        let mut charges = RuntimeAuthCharges::new(
+            evm.version(),
+            &mut gas,
+            Address::with_last_byte(0xb0),
+            Address::with_last_byte(0xc0),
+            U256::ZERO,
+        );
+        assert!(!apply_auth_list(&mut evm, 1, &[auth_for(authority)], &mut charges).unwrap());
+        (gas.state_gas_spent(), evm.version().gas_params.new_account_state_gas())
+    };
+
+    let (untouched, new_account) = state_gas_spent(Address::with_last_byte(0xff));
+    let (touched, _) = state_gas_spent(authority);
+    assert_eq!(untouched - touched, i64::try_from(new_account).unwrap());
+}
+
 const LOG_CALLER: Address = Address::with_last_byte(0xa0);
 const LOG_CONTRACT: Address = Address::with_last_byte(0xa1);
 const LOG_EMITTER: Address = Address::with_last_byte(0xa2);
@@ -520,3 +579,71 @@ fn precompile_dispatch_uses_original_callee(
 // SHA-256 of the four input bytes 0x01020304.
 const SHA256_FOUR_BYTES: [u8; 32] =
     hex!("9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a");
+
+/// Authorization type that is not [`crate::ethereum::LazyAuthorization`].
+struct CustomAuthorization {
+    nonce: u64,
+    address: Address,
+    authority: Option<Address>,
+}
+
+impl Eip7702Authorization for CustomAuthorization {
+    fn chain_id(&self) -> U256 {
+        U256::ZERO
+    }
+
+    fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    fn address(&self) -> Address {
+        self.address
+    }
+
+    fn authority(&self) -> Option<Address> {
+        self.authority
+    }
+}
+
+#[test]
+fn apply_auth_list_accepts_custom_filtered_authorizations() {
+    let applied = Address::with_last_byte(0xa1);
+    let skipped = Address::with_last_byte(0xa2);
+    let delegate = Address::with_last_byte(0xdd);
+    let auth = |authority, nonce| CustomAuthorization { nonce, address: delegate, authority };
+    let list = [
+        auth(Some(applied), 1),
+        auth(Some(skipped), 1),
+        // Unrecoverable authority and stale nonce are rejected.
+        auth(None, 1),
+        auth(Some(Address::with_last_byte(0xa3)), 5),
+    ];
+    let mut database = InMemoryDB::default();
+    for address in [applied, skipped] {
+        database.insert_account_info(&address, AccountInfo::default().with_nonce(1));
+    }
+    let mut evm = TestEvm::new(
+        SpecId::PRAGUE,
+        BlockEnvExt::default(),
+        ethereum_tx_registry(SpecId::PRAGUE),
+        database,
+        Precompiles::base(SpecId::PRAGUE),
+    );
+    let mut refunds = AuthRefunds::new(evm.version());
+
+    let oog = apply_auth_list(
+        &mut evm,
+        1,
+        list.iter().filter(|auth| auth.authority != Some(skipped)),
+        &mut refunds,
+    )
+    .unwrap();
+
+    assert!(!oog);
+    let delegation = Bytecode::new_eip7702(delegate).hash_slow();
+    assert_eq!(evm.state.account(&applied).unwrap().code_hash(), delegation);
+    assert_ne!(evm.state.account(&skipped).unwrap().code_hash(), delegation);
+    // Before EIP-8037 only the existing, applied authority is refunded.
+    let per_auth = evm.version().gas_params.get(GasId::TxEip7702AuthRefund);
+    assert_eq!(refunds.execution_refund, per_auth);
+}
