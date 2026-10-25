@@ -169,6 +169,8 @@ pub(crate) struct PrepareAotRequest {
 struct EntryState {
     /// Number of observed misses.
     hotness: u32,
+    /// Whether the last compile failed only because the helper went away under it.
+    transient_failed: bool,
     /// Current phase.
     phase: EntryPhase,
     /// The bytecode for this key (captured from a miss event).
@@ -354,6 +356,7 @@ impl BackendState {
             Entry::Vacant(entry) => {
                 entry.insert(EntryState {
                     hotness: 0,
+                    transient_failed: false,
                     phase: EntryPhase::Cold,
                     bytecode,
                     last_observed_at: now,
@@ -608,7 +611,7 @@ impl BackendState {
                 self.handle_jit_object_success(result.key, success, result.compile_duration);
             }
             Err(err) => {
-                self.fail_entry(&result.key);
+                self.fail_entry(&result.key, result.transient);
                 self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
 
                 warn!(
@@ -645,7 +648,7 @@ impl BackendState {
                 );
             }
             Err(err) => {
-                self.fail_entry(&key);
+                self.fail_entry(&key, false);
                 self.inner.stats.compilations_failed.fetch_add(1, Ordering::Relaxed);
 
                 warn!(
@@ -880,10 +883,18 @@ impl BackendState {
         self.cold_tail = Some(*key);
     }
 
-    /// Marks a working entry as failed and queues it for eviction under the entry cap.
-    fn fail_entry(&mut self, key: &RuntimeCacheKey) {
+    /// Queues a failed working entry for eviction under the entry cap.
+    ///
+    /// The entry is marked failed, except after a first transient failure, which returns it to
+    /// cold: a job that crashes its helper looks the same as one that lost its helper.
+    fn fail_entry(&mut self, key: &RuntimeCacheKey, transient: bool) {
         let Some(entry) = self.entries.get_mut(key) else { return };
-        entry.phase = EntryPhase::Failed(Instant::now());
+        if transient && !mem::replace(&mut entry.transient_failed, true) {
+            entry.phase = EntryPhase::Cold;
+            entry.hotness = 0;
+        } else {
+            entry.phase = EntryPhase::Failed(Instant::now());
+        }
         self.link_cold_entry(key);
     }
 
@@ -1065,6 +1076,7 @@ mod notifier_tests {
             key,
             EntryState {
                 hotness: 1,
+                transient_failed: false,
                 phase: EntryPhase::Working,
                 bytecode: bytecode.clone(),
                 last_observed_at: Instant::now(),
@@ -1107,6 +1119,7 @@ mod notifier_tests {
             generation: 0,
             compile_duration: Duration::ZERO,
             timings: crate::CompileTimings::default(),
+            transient: false,
         });
         assert_eq!(state.pending_jobs, 0);
         assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(_)));
@@ -1127,6 +1140,7 @@ mod notifier_tests {
             key,
             EntryState {
                 hotness: 8,
+                transient_failed: false,
                 phase: EntryPhase::Working,
                 bytecode,
                 last_observed_at: Instant::now(),
@@ -1145,6 +1159,7 @@ mod notifier_tests {
             generation: 0,
             compile_duration: Duration::ZERO,
             timings: crate::CompileTimings::default(),
+            transient: false,
         });
 
         assert_eq!(state.pending_jobs, 1);
@@ -1168,6 +1183,7 @@ mod notifier_tests {
             key,
             EntryState {
                 hotness: 0,
+                transient_failed: false,
                 phase: EntryPhase::Working,
                 bytecode,
                 last_observed_at: Instant::now(),
@@ -1304,7 +1320,7 @@ mod notifier_tests {
         for key in &keys {
             state.entries.get_mut(key).unwrap().phase = EntryPhase::Working;
             state.unlink_cold_entry(key);
-            state.fail_entry(key);
+            state.fail_entry(key, false);
         }
         assert_eq!(state.cold_head, Some(keys[0]));
         assert_eq!(state.cold_tail, Some(keys[9]));
@@ -1330,7 +1346,7 @@ mod notifier_tests {
         state.entries.get_mut(&key).unwrap().phase = EntryPhase::Working;
         state.unlink_cold_entry(&key);
         state.pending_jobs = 1;
-        state.fail_entry(&key);
+        state.fail_entry(&key, false);
         state.pending_jobs = 0;
 
         let bytecode = state.entries[&key].bytecode.clone();
@@ -1348,6 +1364,41 @@ mod notifier_tests {
         assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(_)));
         assert_eq!(state.pending_jobs, 0);
         assert_eq!(state.inner.stats.compilations_dispatched.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn transient_failure_returns_to_cold_once_then_fails() {
+        let mut state = new_state(RuntimeTuning { jit_hot_threshold: 2, ..Default::default() });
+        let key = observe(&mut state, 0);
+        let fail = |state: &mut BackendState, transient: bool| {
+            let entry = state.entries.get_mut(&key).unwrap();
+            entry.phase = EntryPhase::Working;
+            entry.hotness = 2;
+            state.unlink_cold_entry(&key);
+            state.pending_jobs = 1;
+            state.handle_worker_result(WorkerResult {
+                key,
+                outcome: Err("helper went away".to_owned()),
+                kind: CompilationKind::Jit,
+                sync_notifier: SyncNotifier::none(),
+                generation: 0,
+                compile_duration: Duration::ZERO,
+                timings: crate::CompileTimings::default(),
+                transient,
+            });
+        };
+
+        // The first transient failure restarts hotness instead of failing the key.
+        fail(&mut state, true);
+        assert_eq!(state.entries[&key].phase, EntryPhase::Cold);
+        assert_eq!(state.entries[&key].hotness, 0);
+        assert_eq!(state.cold_head, Some(key));
+
+        // A second consecutive transient failure marks it failed.
+        fail(&mut state, true);
+        assert!(matches!(state.entries[&key].phase, EntryPhase::Failed(_)));
+        assert_eq!(state.cold_head, Some(key));
+        assert_eq!(state.cold_tail, Some(key));
     }
 
     #[test]
