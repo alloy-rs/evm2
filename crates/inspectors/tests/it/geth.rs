@@ -2039,6 +2039,87 @@ fn test_geth_4byte_tracer_skips_precompiles() {
     }
 }
 
+/// Moving stack snapshots preserves the borrowed builder's output and reuses their buffers.
+#[test]
+fn test_debug_default_tracer_moves_stacks() {
+    let caller = address!("1000000000000000000000000000000000000001");
+    let callee = address!("1000000000000000000000000000000000000002");
+    // Call the callee with zero arguments, then push a value.
+    let mut caller_code = hex!("6000600060006000600073").to_vec();
+    caller_code.extend_from_slice(callee.as_slice());
+    caller_code.extend_from_slice(&hex!("5af150600700"));
+
+    for disable_stack in [false, true] {
+        for limit in [None, Some(0), Some(10)] {
+            let config = GethDefaultTracingOptions {
+                disable_stack: Some(disable_stack),
+                limit,
+                ..Default::default()
+            };
+            let mut inspector =
+                DebugInspector::new(GethDebugTracingOptions { config, ..Default::default() })
+                    .unwrap();
+            let mut db = CacheDB::<EmptyDB>::default();
+            for (address, code) in
+                [(caller, caller_code.clone()), (callee, hex!("6001600201").to_vec())]
+            {
+                db.insert_account_info(
+                    &address,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(code.into())),
+                        ..Default::default()
+                    },
+                );
+            }
+            let mut evm =
+                Context::mainnet().with_db(db).build_mainnet().with_inspector(&mut inspector);
+            let res = evm
+                .inspect_tx(TxEnv {
+                    gas_limit: 100000,
+                    kind: TransactTo::Call(caller),
+                    ..Default::default()
+                })
+                .unwrap();
+            assert!(res.result.is_success());
+
+            let (ctx, inspector) = evm.ctx_inspector();
+            let DebugInspector::Default(tracer, _) = &*inspector else {
+                panic!("expected the default opcode logger");
+            };
+            let expected = tracer.geth_builder().geth_traces_with_result_gas(
+                &res.tx_result.result,
+                res.tx_result.result.output.clone(),
+                config,
+            );
+            assert!(expected.struct_logs.iter().any(|log| log.depth == 2));
+            assert!(expected.struct_logs.iter().all(|log| log.stack.is_some() != disable_stack));
+            let stack_ptr = tracer.traces().nodes()[0].trace.steps[1]
+                .stack
+                .as_ref()
+                .map(|stack| stack.as_ptr());
+
+            let tx = ctx.tx().envelope();
+            let block = *ctx.block();
+            let result =
+                inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
+            let GethTrace::Default(result) = result else {
+                panic!("expected default struct logs");
+            };
+            assert_eq!(result, expected);
+            assert_eq!(result.struct_logs[1].stack.as_ref().map(|stack| stack.as_ptr()), stack_ptr);
+            let DebugInspector::Default(tracer, _) = &*inspector else { unreachable!() };
+            assert!(
+                tracer
+                    .traces()
+                    .nodes()
+                    .iter()
+                    .flat_map(|node| &node.trace.steps)
+                    .all(|step| step.stack.is_none())
+            );
+        }
+    }
+}
+
 #[test]
 fn test_geth_failed_root_logs() {
     let contract = address!("1000000000000000000000000000000000000001");
