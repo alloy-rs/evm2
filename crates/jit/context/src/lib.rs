@@ -155,10 +155,10 @@ impl<'ctx, 'frame, 'host> EvmContext<'ctx, 'frame, 'host> {
     /// Resizes memory using EVM memory gas accounting.
     #[inline]
     pub fn resize_memory(&mut self, offset: usize, len: usize) -> Result<(), InstrStop> {
-        let gas_params = *self.gas_params();
+        let gas_params = self.gas_params() as *const GasParams;
         let memory = self.memory_mut() as *mut Memory;
         let gas = &mut self.gas as *mut Gas;
-        unsafe { (*memory).resize_evm(&mut *gas, &gas_params, offset, len)? };
+        unsafe { (*memory).resize_evm(&mut *gas, &*gas_params, offset, len)? };
         self.refresh_memory_cache();
         Ok(())
     }
