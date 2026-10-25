@@ -28,7 +28,7 @@ use std::{
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
@@ -168,7 +168,7 @@ impl HelperProcess {
 }
 
 struct HelperProcessInner {
-    path: PathBuf,
+    configured_path: Option<PathBuf>,
     init: HelperInit,
     child: Mutex<Child>,
     io: Mutex<HelperIo>,
@@ -189,9 +189,7 @@ impl HelperProcessInner {
     ) -> Result<Self, String> {
         let path = match &config.jit_helper_path {
             Some(path) => path.clone(),
-            None => {
-                std::env::current_exe().map_err(|e| format!("failed to locate current exe: {e}"))?
-            }
+            None => default_helper_path()?,
         };
         let init = helper_init(config);
         let mut command = Command::new(&path);
@@ -241,7 +239,7 @@ impl HelperProcessInner {
             }
         });
         Ok(Self {
-            path,
+            configured_path: config.jit_helper_path.clone(),
             init,
             child: Mutex::new(child),
             io: Mutex::new(HelperIo { stdin }),
@@ -256,13 +254,7 @@ impl HelperProcessInner {
     }
 
     fn matches_config(&self, config: &RuntimeConfig) -> bool {
-        if self.init != helper_init(config) {
-            return false;
-        }
-        match &config.jit_helper_path {
-            Some(path) => self.path == *path,
-            None => std::env::current_exe().map(|path| self.path == path).unwrap_or(false),
-        }
+        self.init == helper_init(config) && self.configured_path == config.jit_helper_path
     }
 
     fn compile(&self, job: &CompileJob, config: &RuntimeConfig) -> Result<HelperJobResult, String> {
@@ -873,6 +865,18 @@ fn gas_params_from_pairs(pairs: GasParamPairs) -> eyre::Result<GasParams> {
     Ok(gas_params)
 }
 
+/// Returns the path that re-executes the running binary, even after it is replaced on disk.
+fn default_helper_path() -> Result<PathBuf, String> {
+    if cfg!(target_os = "linux") {
+        return Ok(PathBuf::from("/proc/self/exe"));
+    }
+    static EXE: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    EXE.get_or_init(|| {
+        std::env::current_exe().map_err(|e| format!("failed to locate current exe: {e}"))
+    })
+    .clone()
+}
+
 fn helper_init(config: &RuntimeConfig) -> HelperInit {
     HelperInit {
         debug_assertions: config.debug_assertions,
@@ -966,5 +970,47 @@ mod tests {
         assert_eq!(snapshot.jit_helper_pause_timeouts, 0);
         assert_eq!(snapshot.jit_helper_resume_requests, 1);
         assert_eq!(snapshot.jit_helper_resume_failures, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    const REPLACE_EXE_ENV: &str = "EVM2_TEST_REPLACE_EXE";
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_helper_path_survives_exe_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("test-bin");
+        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+
+        let output = Command::new(&exe)
+            .env(REPLACE_EXE_ENV, "1")
+            .args(["--exact", "runtime::out_of_process::tests::replace_exe_child", "--ignored"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    /// Runs only as a child of `default_helper_path_survives_exe_replacement`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "child of default_helper_path_survives_exe_replacement"]
+    fn replace_exe_child() {
+        if std::env::var_os(REPLACE_EXE_ENV).is_none() {
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let original = std::fs::read(&exe).unwrap();
+
+        let replacement = exe.with_extension("new");
+        std::fs::write(&replacement, b"replacement").unwrap();
+        std::fs::rename(&replacement, &exe).unwrap();
+
+        let helper_path = default_helper_path().unwrap();
+        assert_eq!(std::fs::read(helper_path).unwrap(), original);
     }
 }
