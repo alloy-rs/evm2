@@ -1059,9 +1059,9 @@ def sample_iters(side: Side, bench: str, compile_only: tuple[int, int]) -> int:
         probe := perf_counts(side.binary, runtime_args(bench, n))[0] - compile_only[0]
     ) < compile_only[0] / 20 and n < 10**7:
         n *= 10
-    iters = RUNTIME_TARGET / RUNTIME_SAMPLES / max(probe / total_iters(n), 1)
-    # Invert `total_iters` for a run with at least 100 timed iterations.
-    return max(10, int(iters / 1.1))
+    iters = int(RUNTIME_TARGET / RUNTIME_SAMPLES / max(probe / total_iters(n), 1))
+    # Invert `total_iters`.
+    return max(10, iters - 10 if iters < 110 else int(iters / 1.1))
 
 
 def measure_runtime_bench(sides: list[Side], bench: str):
