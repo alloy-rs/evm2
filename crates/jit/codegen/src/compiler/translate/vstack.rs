@@ -121,6 +121,12 @@ impl<T: Copy> VStack<T> {
         self.slots[idx] = Some(VSlot::Virtual(value));
     }
 
+    /// Records that memory at the given operand depth holds `value`.
+    pub(super) fn set_stored(&mut self, depth: usize, value: T) {
+        let idx = self.idx(self.offset_at_depth(depth));
+        self.slots[idx] = Some(VSlot::Materialized(Some(value)));
+    }
+
     /// Sets a slot to virtual at a section-relative offset.
     pub(super) fn set_at_offset(&mut self, offset: i32, value: T) {
         let idx = self.idx(offset);

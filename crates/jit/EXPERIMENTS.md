@@ -16,6 +16,13 @@ ones here with the numbers that rejected them.
   function-wide loops irreducible: misses loops closed by internal-function
   return switches and raised compile cost by up to 50% on some contracts.
   `-sink-insts-to-avoid-spills` handles these loops instead.
+- Using the value last stored to a stack slot instead of reloading it, either
+  for every read or only where the reload is just copied to another slot (a
+  256-bit vector load that stalls store forwarding from the four 64-bit
+  stores): spills +57%, reloads +32%, JIT size +2.2% for 0.7% fewer runtime
+  instructions. It saves cycles in some Solidity loops and costs them in
+  others. Function attribute `noimplicitfloat`, which keeps those copies in
+  general-purpose registers, made the same loops 13–50% slower.
 - Dropping `relieve_vstack_pressure`, so the virtual stack only stores at
   section boundaries and builtin calls: i256 stores -23%, but JIT size +13%,
   spills ×6 and runtime instructions +9.6% (onchain_lm_v2 +13.5%).
