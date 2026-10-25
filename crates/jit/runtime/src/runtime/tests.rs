@@ -764,6 +764,32 @@ fn pause_resume_depth_tracking_with_backend_thread() {
     assert_eq!(stats.commands_dropped, 0);
 }
 
+#[test]
+#[cfg(all(unix, feature = "llvm"))]
+fn blocking_out_of_process_pause_resume_does_not_stop_helper() {
+    // The caller waits on compilation in blocking mode, so stopping the helper would hang it.
+    let tb = TestBackend::new(RuntimeConfig {
+        blocking: true,
+        jit_mode: JitMode::OutOfProcess,
+        jit_helper_path: Some("/nonexistent/evm2-jit-helper".into()),
+        tuning: RuntimeTuning { jit_worker_count: 1, ..Default::default() },
+        ..Default::default()
+    });
+
+    tb.pause();
+    assert!(tb.is_paused());
+    tb.resume();
+    assert!(!tb.is_paused());
+
+    // Shutdown is queued behind pause/resume and joins the backend thread, so every earlier
+    // command has been handled once the backend is dropped.
+    let shared = tb.backend.inner.shared.clone();
+    drop(tb);
+    let stats = shared.stats();
+    assert_eq!(stats.jit_helper_pause_requests, 0);
+    assert_eq!(stats.jit_helper_resume_requests, 0);
+}
+
 // ===========================================================================
 // Tests: JIT compilation (require LLVM).
 // ===========================================================================
@@ -851,6 +877,47 @@ fn jit_max_bytecode_len_prevents_promotion() {
 
     // Should be Ineligible — bytecode length exceeds jit_max_bytecode_len.
     assert!(matches!(tb.lookup(req()), LookupDecision::Unavailable(LookupMissReason::Ineligible)));
+}
+
+#[test]
+#[cfg(all(unix, feature = "llvm"))]
+fn failed_compile_is_not_retried_until_cleared() {
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        jit_mode: JitMode::OutOfProcess,
+        jit_helper_path: Some("/nonexistent/evm2-jit-helper".into()),
+        tuning: RuntimeTuning {
+            jit_worker_count: 1,
+            jit_hot_threshold: 1,
+            idle_evict_duration: None,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let lookup_rounds = || {
+        for _ in 0..10 {
+            let _ = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+
+    // Every compile fails at helper spawn, but the key is only dispatched once.
+    lookup_rounds();
+    tb.wait_stats(|s| s.compilations_failed == 1);
+    lookup_rounds();
+    tb.compile_jit(TestBackend::req_cancun(BYTECODE_RET42));
+    tb.compile_jit_sync(TestBackend::req_cancun(BYTECODE_RET42)).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let stats = tb.stats();
+    assert_eq!(stats.compilations_dispatched, 1);
+    assert_eq!(stats.compilations_failed, 1);
+
+    // Clearing the resident map forgets the failure.
+    tb.clear_resident();
+    lookup_rounds();
+    let stats = tb.wait_stats(|s| s.compilations_failed == 2);
+    assert_eq!(stats.compilations_dispatched, 2);
 }
 
 #[test]

@@ -2100,6 +2100,11 @@ fn init_() -> Result<()> {
         // every machine instruction.
         c"-disable-x86-domain-reassignment".as_ptr(),
         c"-disable-postra-machine-licm".as_ptr(),
+        // Capture tracking gives up after 100 uses and then treats the pointer as captured.
+        // Every stack slot access is a use of the stack argument, so in all but the smallest
+        // functions alias analysis lets EVM memory and builtin calls alias the stack, and LICM
+        // cannot promote loop-carried stack slots to registers.
+        c"-capture-tracking-max-uses-to-explore=1000000".as_ptr(),
     ];
     args.extend(extra.iter().map(|s| s.as_ptr()));
     unsafe {
@@ -2222,6 +2227,7 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::ArgMemOnly => ("memory", AttrValue::Enum(3)),
         // `u64::MAX` marks all reachable memory as dead; `0` would mark zero bytes.
         OurAttr::DeadOnReturn => ("dead_on_return", AttrValue::Enum(u64::MAX)),
+        OurAttr::DeadOnUnwind => ("dead_on_unwind", AttrValue::Enum(0)),
 
         OurAttr::Initializes(size) => {
             return cpp::create_initializes_attr(bcx.cx, 0, size as i64);

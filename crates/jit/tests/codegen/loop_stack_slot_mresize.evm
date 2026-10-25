@@ -1,0 +1,155 @@
+    PUSH1 0x00
+    CALLDATALOAD
+    PUSH1 0x01
+    CALLDATALOAD
+    PUSH1 0x02
+    CALLDATALOAD
+    PUSH1 0x03
+    CALLDATALOAD
+    PUSH1 0x04
+    CALLDATALOAD
+    PUSH1 0x05
+    CALLDATALOAD
+    PUSH1 0x06
+    CALLDATALOAD
+    PUSH1 0x07
+    CALLDATALOAD
+    PUSH1 0x08
+    CALLDATALOAD
+    PUSH1 0x09
+    CALLDATALOAD
+    PUSH1 0x0a
+    CALLDATALOAD
+    PUSH1 0x0b
+    CALLDATALOAD
+    PUSH1 0x0c
+    CALLDATALOAD
+    PUSH1 0x0d
+    CALLDATALOAD
+    PUSH1 0x0e
+    CALLDATALOAD
+    PUSH1 0x0f
+    CALLDATALOAD
+    PUSH1 0x10
+    CALLDATALOAD
+    PUSH1 0x11
+    CALLDATALOAD
+    PUSH1 0x12
+    CALLDATALOAD
+    PUSH1 0x13
+    CALLDATALOAD
+    PUSH1 0x14
+    CALLDATALOAD
+    PUSH1 0x15
+    CALLDATALOAD
+    PUSH1 0x16
+    CALLDATALOAD
+    PUSH1 0x17
+    CALLDATALOAD
+    PUSH1 0x18
+    CALLDATALOAD
+    PUSH1 0x19
+    CALLDATALOAD
+    PUSH1 0x1a
+    CALLDATALOAD
+    PUSH1 0x1b
+    CALLDATALOAD
+    PUSH1 0x1c
+    CALLDATALOAD
+    PUSH1 0x1d
+    CALLDATALOAD
+    PUSH1 0x1e
+    CALLDATALOAD
+    PUSH1 0x1f
+    CALLDATALOAD
+    PUSH1 0x20
+    CALLDATALOAD
+    PUSH1 0x21
+    CALLDATALOAD
+    PUSH1 0x22
+    CALLDATALOAD
+    PUSH1 0x23
+    CALLDATALOAD
+    PUSH1 0x24
+    CALLDATALOAD
+    PUSH1 0x25
+    CALLDATALOAD
+    PUSH1 0x26
+    CALLDATALOAD
+    PUSH1 0x27
+    CALLDATALOAD
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    XOR
+    PUSH0
+    CALLDATALOAD
+    PUSH0
+loop:
+    JUMPDEST
+    DUP2
+    ISZERO
+    PUSH %done
+    JUMPI
+    DUP2
+    DUP2
+    MSTORE
+    PUSH1 0x20
+    ADD
+    SWAP1
+    PUSH1 0x01
+    SWAP1
+    SUB
+    SWAP1
+    PUSH %loop
+    JUMP
+done:
+    JUMPDEST
+    ADD
+    ADD
+    PUSH0
+    MSTORE
+    PUSH1 0x20
+    PUSH0
+    RETURN
+
+; The loop calls `mresize` and stores to EVM memory, and the function has more than 100 stack
+; accesses. The offset and counter slots still stay in registers and are stored once on exit.
+; CHECK: [[HEADER:bb1\.[a-zA-Z0-9.]*]]:
+; CHECK-NOT: {{(load|store) i256.*ptr %(sp[0-9]*|arg\.stack\.addr),}}
+; CHECK: label %[[HEADER]]

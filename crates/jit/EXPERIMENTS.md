@@ -16,6 +16,9 @@ ones here with the numbers that rejected them.
   function-wide loops irreducible: misses loops closed by internal-function
   return switches and raised compile cost by up to 50% on some contracts.
   `-sink-insts-to-avoid-spills` handles these loops instead.
+- Dropping `relieve_vstack_pressure`, so the virtual stack only stores at
+  section boundaries and builtin calls: i256 stores -23%, but JIT size +13%,
+  spills ×6 and runtime instructions +9.6% (onchain_lm_v2 +13.5%).
 
 ## Optimization passes
 
