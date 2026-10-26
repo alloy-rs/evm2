@@ -2165,8 +2165,9 @@ const fn convert_intcc(cond: IntCC) -> IntPredicate {
     }
 }
 
-/// Maps to the codegen level. `Less` skips the post-RA scheduler, which costs about 5% of
-/// compile instructions for no runtime gain; keep it in sync with the JIT compiler in `lib.cpp`.
+/// Maps to the codegen level of the target machine, used for AOT and dumps. `Less` skips the
+/// post-RA scheduler, which costs about 5% of compile instructions for no runtime gain. The JIT
+/// compiler in `lib.cpp` always uses `Less`, whatever the level.
 const fn convert_opt_level(level: OptimizationLevel) -> inkwell::OptimizationLevel {
     match level {
         OptimizationLevel::None => inkwell::OptimizationLevel::None,
