@@ -373,9 +373,14 @@ extern "C" void evm2_jit_llvm_set_dso_local(LLVMValueRef Val, bool Local) {
 /// LSR runs after the pipeline expands wide divisions, and rewriting an exit
 /// value through an `i256` trip count can emit `udiv i256`, which has no libcall
 /// on x86-64, so instruction selection aborts.
+///
+/// The registration is leaked so that no destructor edits LLVM's global
+/// callback list at process exit while a compile thread may still read it.
 extern "C" void evm2_jit_llvm_expand_ir_insts_after_lsr() {
-  static RegisterTargetPassConfigCallback Callback(
+  static auto *Callback = new RegisterTargetPassConfigCallback(
       [](TargetMachine &, legacy::PassManagerBase &, TargetPassConfig *PC) {
+        // Only the IDs matter: the pipeline builds the inserted pass with its default
+        // constructor, which uses `CodeGenOptLevel::None`.
         static const auto IDs = [] {
           std::unique_ptr<Pass> LSR(createLoopStrengthReducePass());
           std::unique_ptr<Pass> Expand(

@@ -3927,10 +3927,10 @@ fn binary_choice_chain(stages: usize) -> String {
     s
 }
 
-// A countdown loop from zero wraps through an `i256` trip count. Loop strength reduction rewrites
-// its exit value with `udiv i256`, after the codegen pipeline has already expanded wide divisions.
-// Without a second expansion right after LSR, x86-64 instruction selection aborts the process.
-// Uses the production compiler options.
+/// A countdown loop from zero wraps through an `i256` trip count. Loop strength reduction rewrites
+/// its exit value with `udiv i256`, after the codegen pipeline has already expanded wide divisions.
+/// Without a second expansion right after LSR, x86-64 instruction selection aborts the process.
+/// Uses the production compiler options.
 #[cfg(feature = "llvm")]
 #[test]
 fn lsr_wrapping_countdown_compiles() {
