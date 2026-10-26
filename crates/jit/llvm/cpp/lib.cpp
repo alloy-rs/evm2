@@ -53,7 +53,7 @@ evm2_jit_llvm_jit_dylib_add_to_link_order(LLVMOrcJITDylibRef JD,
 /// while keeping the default InPlaceTaskDispatcher (no background threads).
 ///
 /// Sets the codegen optimization level to Less (O1), which skips the post-RA
-/// scheduler. The IR optimization passes are run separately with their own
+/// scheduler on CPUs that enable it. The IR optimization passes are run separately with their own
 /// level.
 ///
 /// setSupportConcurrentCompilation(true) would also switch the dispatcher to
