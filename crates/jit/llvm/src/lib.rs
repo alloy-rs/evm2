@@ -674,9 +674,7 @@ impl EvmLlvmBackend {
         let mut flags = Vec::new();
         flags.push(match opt_level {
             OptimizationLevel::None => "-O0",
-            OptimizationLevel::Less => "-O1",
             OptimizationLevel::Default => "-O2",
-            OptimizationLevel::Aggressive => "-O3",
         });
         flags.push(if self.aot { "--aot" } else { "--jit" });
         let flags = flags.join(" ");
@@ -1024,14 +1022,13 @@ impl Backend for EvmLlvmBackend {
         let passes = PASSES_OVERRIDE.get_or_init(|| std::env::var("EVM2_JIT_PASSES").ok());
         let passes = passes.as_deref().unwrap_or_else(|| match self.backend_config.opt_level {
             OptimizationLevel::None => "default<O0>",
-            OptimizationLevel::Less | OptimizationLevel::Default => {
+            OptimizationLevel::Default => {
                 let total_bbs: u32 =
                     self.module.get_functions().map(|f| f.count_basic_blocks()).sum();
                 let with_licm = total_bbs <= 4000;
                 let passes = if with_licm { &PASSES_WITH_LICM } else { &PASSES };
                 passes.get_or_init(|| build_pass_pipeline(with_licm))
             }
-            OptimizationLevel::Aggressive => "default<O3>",
         });
         let opts = PassBuilderOptions::create();
         self.module().run_passes(passes, &self.machine, opts).map_err(error_msg)
@@ -2171,9 +2168,7 @@ const fn convert_intcc(cond: IntCC) -> IntPredicate {
 const fn convert_opt_level(level: OptimizationLevel) -> inkwell::OptimizationLevel {
     match level {
         OptimizationLevel::None => inkwell::OptimizationLevel::None,
-        OptimizationLevel::Less => inkwell::OptimizationLevel::Less,
         OptimizationLevel::Default => inkwell::OptimizationLevel::Default,
-        OptimizationLevel::Aggressive => inkwell::OptimizationLevel::Aggressive,
     }
 }
 

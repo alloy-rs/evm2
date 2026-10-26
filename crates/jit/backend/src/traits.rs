@@ -61,16 +61,9 @@ impl Default for BackendConfig {
 pub enum OptimizationLevel {
     /// No optimizations.
     None,
-    /// Less optimizations.
-    Less,
-    /// Default optimizations. Highly recommended.
+    /// Optimizations tuned for EVM code. Highly recommended.
     #[default]
     Default,
-    /// Aggressive optimizations.
-    ///
-    /// Not recommended, since it's generally a lot slower and doesn't really produce better code
-    /// than the default level.
-    Aggressive,
 }
 
 impl std::str::FromStr for OptimizationLevel {
@@ -79,9 +72,7 @@ impl std::str::FromStr for OptimizationLevel {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
             "0" | "none" => Self::None,
-            "1" | "less" => Self::Less,
             "2" | "default" => Self::Default,
-            "3" | "aggressive" => Self::Aggressive,
             _ => return Err(format!("unknown optimization level: {s}")),
         })
     }
@@ -531,7 +522,7 @@ mod tests {
     #[test]
     fn backend_config_is_cloneable_and_comparable() {
         let config = BackendConfig {
-            opt_level: OptimizationLevel::Aggressive,
+            opt_level: OptimizationLevel::None,
             is_dumping: true,
             debug_assertions: true,
             debug_support: false,
@@ -548,12 +539,8 @@ mod tests {
         for (input, expected) in [
             ("0", OptimizationLevel::None),
             ("none", OptimizationLevel::None),
-            ("1", OptimizationLevel::Less),
-            ("less", OptimizationLevel::Less),
             ("2", OptimizationLevel::Default),
             ("default", OptimizationLevel::Default),
-            ("3", OptimizationLevel::Aggressive),
-            ("aggressive", OptimizationLevel::Aggressive),
         ] {
             assert_eq!(OptimizationLevel::from_str(input), Ok(expected));
         }

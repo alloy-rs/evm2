@@ -841,18 +841,14 @@ fn is_unexpected_eof(err: &eyre::Report) -> bool {
 const fn opt_level_to_u8(level: OptimizationLevel) -> u8 {
     match level {
         OptimizationLevel::None => 0,
-        OptimizationLevel::Less => 1,
-        OptimizationLevel::Default => 2,
-        OptimizationLevel::Aggressive => 3,
+        OptimizationLevel::Default => 1,
     }
 }
 
 fn opt_level_from_u8(level: u8) -> eyre::Result<OptimizationLevel> {
     Ok(match level {
         0 => OptimizationLevel::None,
-        1 => OptimizationLevel::Less,
-        2 => OptimizationLevel::Default,
-        3 => OptimizationLevel::Aggressive,
+        1 => OptimizationLevel::Default,
         _ => {
             eyre::bail!("invalid optimization level");
         }
