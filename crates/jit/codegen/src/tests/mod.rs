@@ -3907,3 +3907,20 @@ fn binary_choice_chain(stages: usize) -> String {
     s += "done:\n JUMPDEST PUSH1 0x20 PUSH0 RETURN\n";
     s
 }
+
+// A countdown loop from zero wraps through an `i256` trip count. With LLVM's loop strength
+// reduction enabled, this emitted `udiv i256` after wide-division expansion and x86-64 instruction
+// selection aborted the process. Uses the production compiler options.
+#[cfg(feature = "llvm")]
+#[test]
+fn lsr_wrapping_countdown_compiles() {
+    init_tracing();
+    let code = alloy_primitives::hex!(
+        "5f5f525f5b60019003806004575b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5f5f52602156"
+    );
+    let mut compiler = EvmCompiler::new_llvm(false).unwrap();
+    compiler.set_opt_level(evm2_jit_backend::OptimizationLevel::default());
+    compiler.set_single_error(true);
+    compiler.set_inspect_stack(false);
+    unsafe { compiler.jit("lsr_wrapping_countdown", &code[..], DEF_SPEC) }.unwrap();
+}

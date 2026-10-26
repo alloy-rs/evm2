@@ -87,6 +87,10 @@ ones here with the numbers that rejected them.
   +8% and runtime +3.9%. On the function-wide loops LSR mostly adds
   loop-simplify blocks and LCSSA phis. `-lsr-drop-solution`,
   `-lsr-insns-cost=false`, `-lsr-exp-narrow`, and the LSR limits change little.
+  Now enabled for correctness: LSR runs after wide-division
+  expansion, and rewriting a gas IV's exit value through a wrapping `i256` trip
+  count emits `udiv i256`, which has no x86-64 libcall, so instruction selection
+  aborts the process at -O1/-O2 (test `lsr_wrapping_countdown_compiles`).
 - `-disable-constant-hoisting`: ConstantHoisting keeps the saturated memory
   offset 2^63-1, which needs `movabs`, in a register across much of the
   function. Turning it off saves 0.8% of llc instructions and 0.1% of JIT

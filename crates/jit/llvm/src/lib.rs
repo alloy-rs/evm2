@@ -2105,6 +2105,11 @@ fn init_() -> Result<()> {
         // functions alias analysis lets EVM memory and builtin calls alias the stack, and LICM
         // cannot promote loop-carried stack slots to registers.
         c"-capture-tracking-max-uses-to-explore=1000000".as_ptr(),
+        // Loop strength reduction runs after the codegen pipeline expands wide divisions, and
+        // rewriting a gas IV's exit value through an i256 trip count (an EVM counter that wraps)
+        // emits `udiv i256`, which has no libcall on x86-64: instruction selection aborts the
+        // process with "unsupported library call operation" at -O1/-O2.
+        c"-disable-lsr".as_ptr(),
     ];
     args.extend(extra.iter().map(|s| s.as_ptr()));
     unsafe {
