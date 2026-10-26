@@ -437,8 +437,13 @@ impl<'a> State<'a> {
     }
 
     /// Returns the pre-warmed set mutably.
+    ///
+    /// This lets callers replace the set (`*state.prewarm_set_mut() = set`) or edit it in place,
+    /// for example with [`PrewarmSet::remove`] to cool an address for a simulated transaction
+    /// boundary. Changes are not journaled and leave the runtime warmth of loaded accounts and
+    /// slots unchanged.
     #[inline]
-    pub(crate) const fn prewarm_set_mut(&mut self) -> &mut PrewarmSet {
+    pub const fn prewarm_set_mut(&mut self) -> &mut PrewarmSet {
         &mut self.inner.prewarm_set
     }
 
@@ -1464,5 +1469,31 @@ mod tests {
 
         assert_eq!(parent.account(&address).unwrap().nonce(), 1);
         assert_eq!(parent.storage_slot_untracked(&address, &key).unwrap(), Word::from(9));
+    }
+
+    #[test]
+    fn replaced_prewarm_set_keeps_runtime_warmth_and_journal() {
+        let old_base = Address::with_last_byte(41);
+        let new_base = Address::with_last_byte(42);
+        let key = Word::ONE;
+        let mut state = State::new(EmptyDB::default());
+        state.prewarm_storage_slot(&old_base, key);
+        state.account(&new_base).unwrap().set_balance(Word::from(7));
+        let journal = state.journal().to_vec();
+        let mut prewarm_set = PrewarmSet::new();
+        prewarm_set.warm_storage(&new_base, [key]);
+        *state.prewarm_set_mut() = prewarm_set.clone();
+
+        assert_eq!(state.prewarm_set(), &prewarm_set);
+        assert_eq!(state.journal(), journal);
+        assert!(!state.account(&old_base).unwrap().is_warm());
+        assert!(!state.storage_slot(&old_base, key).unwrap().is_warm());
+        assert!(state.account(&new_base).unwrap().is_warm());
+        assert!(state.storage_slot(&new_base, key).unwrap().is_warm());
+
+        let cooled = Address::with_last_byte(43);
+        state.prewarm(&cooled);
+        state.prewarm_set_mut().remove(&cooled);
+        assert!(!state.account(&cooled).unwrap().is_warm());
     }
 }
