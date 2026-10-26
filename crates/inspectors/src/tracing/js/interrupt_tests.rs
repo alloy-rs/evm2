@@ -278,3 +278,36 @@ fn transaction(kind: TxKind) -> Recovered<TxEnvelope> {
         Address::ZERO,
     )
 }
+
+#[test]
+fn hook_error_takes_precedence_over_a_later_interrupt() {
+    let script = "{step:function(){throw new Error('boom')},fault:function(){},result:function(){return 42}}";
+    let (mut inspector, result) =
+        run(interruptible(script), &hex!("60015000"), TxKind::Call(TARGET));
+    let result = result.unwrap();
+    assert!(result.result.status);
+    inspector.interrupt.as_ref().unwrap().interrupt();
+    let error = inspector
+        .json_result(
+            &result,
+            &transaction(TxKind::Call(TARGET)),
+            &BlockEnvExt::default(),
+            &mut EmptyDB::default(),
+        )
+        .unwrap_err();
+    let JsInspectorError::JsError(error) = error else { panic!("unexpected error: {error}") };
+    assert_eq!(
+        error.as_native().unwrap().message(),
+        "boom    in server-side tracer function 'step'"
+    );
+}
+
+#[test]
+fn hook_error_skips_all_later_callbacks() {
+    let script = "{setup:function(){globalThis.callbacks=0},step:function(){callbacks++;throw new Error('first')},enter:function(){callbacks++},exit:function(){callbacks++},fault:function(){callbacks++},result:function(){callbacks++}}";
+    let (mut inspector, result) =
+        run(interruptible(script), &hex!("5f5f5f5f5f600461fffff150fe"), TxKind::Call(TARGET));
+    assert_eq!(result.unwrap().result.stop, InstrStop::InvalidFEOpcode);
+    let count = inspector.ctx.eval(Source::from_bytes("callbacks")).unwrap();
+    assert_eq!(count.as_number(), Some(1.0));
+}

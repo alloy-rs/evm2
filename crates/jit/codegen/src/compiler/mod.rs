@@ -836,6 +836,16 @@ impl<B: Backend> EvmCompiler<B> {
         // that don't. This lets LICM promote stack slots whose stores only some paths through a
         // loop execute, and store them once on loop exit.
         bcx.add_function_attribute(None, Attribute::Writable, FunctionAttributeLocation::Param(1));
+        // LICM treats calls that may not return, such as builtins without `willreturn`, as unwind
+        // points, and keeps every promoted stack slot store inside the loop unless the stack is
+        // dead on unwind. Nothing unwinds out of compiled code, and a builtin that does not return
+        // leaves through `evm2_jit_exit` with a halt, after which nothing reads the stack;
+        // `DoReturn` and `SelfDestruct` write the stack before their call.
+        bcx.add_function_attribute(
+            None,
+            Attribute::DeadOnUnwind,
+            FunctionAttributeLocation::Param(1),
+        );
 
         // The stack argument's contents are dead after return when the stack is not observed,
         // so the caller can elide any stores to the buffer.

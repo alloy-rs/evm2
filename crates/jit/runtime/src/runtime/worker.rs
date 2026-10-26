@@ -110,6 +110,9 @@ pub(crate) struct WorkerResult {
     pub(crate) compile_duration: Duration,
     /// Per-phase timing breakdown from the compiler.
     pub(crate) timings: CompileTimings,
+    /// Whether the failure came from the out-of-process helper going away under the job, rather
+    /// than from the job itself.
+    pub(crate) transient: bool,
 }
 
 /// Successful compilation output.
@@ -444,6 +447,7 @@ fn compile_out_of_process_job(
         generation: job.generation,
         compile_duration: Duration::ZERO,
         timings: CompileTimings::default(),
+        transient: false,
     }
 }
 
@@ -498,6 +502,7 @@ pub(super) fn compile_with_state(
                     generation: job.generation,
                     compile_duration: t0.elapsed(),
                     timings: CompileTimings::default(),
+                    transient: false,
                 };
             }
         }
@@ -551,6 +556,7 @@ pub(super) fn compile_with_state(
         generation: job.generation,
         compile_duration: t0.elapsed(),
         timings,
+        transient: false,
     }
 }
 
@@ -788,6 +794,7 @@ fn compile_job(
         generation,
         compile_duration: Duration::ZERO,
         timings: CompileTimings::default(),
+        transient: false,
     }
 }
 

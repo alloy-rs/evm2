@@ -51,7 +51,7 @@ fn struct_log_errors_exclude_reverts() {
     ] {
         let mut step = test_step(0, op::REVERT);
         step.status = status;
-        let log = step.convert_to_geth_struct_log(&Default::default(), 1);
+        let log = step.convert_to_geth_struct_log(&Default::default(), 1, None);
         assert_eq!(log.error.is_some(), has_error, "{status:?}");
     }
 }

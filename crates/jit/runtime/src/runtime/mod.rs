@@ -501,7 +501,9 @@ impl JitBackend {
     /// events are still processed for stats, hotness tracking, and compilation dispatch. In
     /// out-of-process mode, the helper process group is stopped until the pause depth returns to
     /// zero, so dispatched helper requests remain buffered and resume once the helper continues.
-    /// In in-process mode, pause only tracks pause depth.
+    /// In in-process mode, pause only tracks pause depth. In
+    /// [`blocking`](RuntimeConfig::blocking) mode the helper is never stopped, because the caller
+    /// itself waits on compilation: pause only tracks pause depth there too.
     ///
     /// Pause delivery is best-effort and never blocks: callers pause around block validation on
     /// the engine's critical path. If the backend thread is not running or the command channel
@@ -536,11 +538,13 @@ impl JitBackend {
     ///   was never enabled), nothing drains the channel. Queued commands would only accumulate
     ///   until the channel fills and `send` blocks the caller forever, so the send is skipped
     ///   entirely — there is no helper to pause anyway.
+    /// - In blocking mode the caller waits on the helper, so stopping it would hang lookups until
+    ///   resume; the command is skipped.
     /// - If the channel is full, the command is dropped and recorded in
     ///   [`commands_dropped`](RuntimeStatsSnapshot::commands_dropped). Pause/resume signals are
     ///   idempotent and re-issued on the next pause cycle, so a dropped command self-heals.
     fn try_send_control(&self, cmd: Command) {
-        if !self.inner.started.load(Ordering::Relaxed) {
+        if self.inner.blocking || !self.inner.started.load(Ordering::Relaxed) {
             return;
         }
         if self.inner.tx.try_send(cmd).is_err() {

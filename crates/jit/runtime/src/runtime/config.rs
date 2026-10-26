@@ -110,7 +110,7 @@ pub struct RuntimeConfig {
     /// Helper executable used when [`jit_mode`](Self::jit_mode)
     /// is [`JitMode::OutOfProcess`].
     ///
-    /// When `None`, the runtime spawns `std::env::current_exe()` and expects it
+    /// When `None`, the runtime spawns the running executable and expects it
     /// to call [`super::maybe_run_jit_helper`] during startup.
     ///
     /// Defaults to `None`.
