@@ -101,8 +101,8 @@ ones here with the numbers that rejected them.
 - Codegen level, with the IR pipeline fixed: `-O1` gives the same code as
   `-post-RA-scheduler=false` and is what `Default` uses. Against `-O3` it cuts
   compile instructions by 5.5% and spills by 0.4% for 0.3% more JIT size and
-  flat runtime (instructions -0.1%, cycles within 0.1% over three runs), but
-  the JIT size of push0_proxy grows 6.4%. `-O2` and `-O3` produce the same
+  flat runtime (instructions -0.1%, cycles +1.6% on a loaded machine, then
+  +0.1% and -0.1%), but the JIT size of push0_proxy grows 6.4%. `-O2` and `-O3` produce the same
   code to 0.1% in JIT size and compile instructions, so the post-RA scheduler
   is the whole difference and `-O3` buys nothing. `-O0` grows JIT size by 71%,
   spills ×27, and runtime instructions by 16%, for 41% fewer compile
