@@ -52,8 +52,9 @@ evm2_jit_llvm_jit_dylib_add_to_link_order(LLVMOrcJITDylibRef JD,
 /// Use ConcurrentIRCompiler (thread-safe, fresh TargetMachine per compilation)
 /// while keeping the default InPlaceTaskDispatcher (no background threads).
 ///
-/// Sets the codegen optimization level to Aggressive (O3) for best JIT code
-/// quality. The IR optimization passes are run separately with their own level.
+/// Sets the codegen optimization level to Less (O1), which skips the post-RA
+/// scheduler. The IR optimization passes are run separately with their own
+/// level.
 ///
 /// setSupportConcurrentCompilation(true) would also switch the dispatcher to
 /// DynamicThreadPoolTaskDispatcher, spawning background threads. We only want
@@ -64,7 +65,7 @@ extern "C" void evm2_jit_llvm_lljit_builder_set_concurrent_compiler(
   B->setCompileFunctionCreator(
       [](orc::JITTargetMachineBuilder JTMB)
           -> Expected<std::unique_ptr<orc::IRCompileLayer::IRCompiler>> {
-        JTMB.setCodeGenOptLevel(CodeGenOptLevel::Aggressive);
+        JTMB.setCodeGenOptLevel(CodeGenOptLevel::Less);
         return std::make_unique<orc::ConcurrentIRCompiler>(std::move(JTMB));
       });
 }
