@@ -84,7 +84,7 @@ impl TransferInspector {
         };
 
         // skip top level transfers
-        if self.internal_only && message.depth == 0 {
+        if self.internal_only && message.depth == host.version().initial_call_depth {
             return;
         }
         // skip zero transfers
