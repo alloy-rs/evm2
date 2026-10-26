@@ -113,42 +113,42 @@ macro_rules! builtins {
 
 builtins! {
 
-    pub unsafe extern "C" fn __revmc_builtin_panic<T: EvmTypesHost>(data: *const u8, len: usize) -> ! {
-let msg = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(data, len)) };
-panic!("{msg}");
-    }
-
-    pub unsafe extern "C" fn __revmc_builtin_div<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
-let divisor = b.to_u256();
-*b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_div(divisor) }.into();
-    }
-
-    pub unsafe extern "C" fn __revmc_builtin_sdiv<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
-*b = i256::i256_div(a.to_u256(), b.to_u256()).into();
-    }
-
-    pub unsafe extern "C" fn __revmc_builtin_mod<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
-let divisor = b.to_u256();
-*b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_rem(divisor) }.into();
-    }
-
-    pub unsafe extern "C" fn __revmc_builtin_smod<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
-*b = i256::i256_mod(a.to_u256(), b.to_u256()).into();
-    }
-
-    pub unsafe extern "C" fn __revmc_builtin_addmod<T: EvmTypesHost>(rev![a, b, c]: &mut [EvmWord; 3]) {
-*c = a.to_u256().add_mod(b.to_u256(), c.to_u256()).into();
-    }
-
-    pub unsafe extern "C" fn __revmc_builtin_mulmod<T: EvmTypesHost>(rev![a, b, c]: &mut [EvmWord; 3]) {
-*c = a.to_u256().mul_mod(b.to_u256(), c.to_u256()).into();
-    }
+pub unsafe extern "C" fn __revmc_builtin_panic<T: EvmTypesHost>(data: *const u8, len: usize) -> ! {
+    let msg = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(data, len)) };
+    panic!("{msg}");
+}
 
 pub unsafe extern "C" fn __revmc_builtin_assert_spec_id<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, expected: u32) {
     assert_eq!(
         u32::from(ecx.spec_id()), expected,
         "evm2_jit panic: runtime spec_id does not match compilation spec_id"
     );
+}
+
+pub unsafe extern "C" fn __revmc_builtin_div<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
+    let divisor = b.to_u256();
+    *b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_div(divisor) }.into();
+}
+
+pub unsafe extern "C" fn __revmc_builtin_sdiv<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
+    *b = i256::i256_div(a.to_u256(), b.to_u256()).into();
+}
+
+pub unsafe extern "C" fn __revmc_builtin_mod<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
+    let divisor = b.to_u256();
+    *b = if divisor.is_zero() { U256::ZERO } else { a.to_u256().wrapping_rem(divisor) }.into();
+}
+
+pub unsafe extern "C" fn __revmc_builtin_smod<T: EvmTypesHost>(rev![a, b]: &mut [EvmWord; 2]) {
+    *b = i256::i256_mod(a.to_u256(), b.to_u256()).into();
+}
+
+pub unsafe extern "C" fn __revmc_builtin_addmod<T: EvmTypesHost>(rev![a, b, c]: &mut [EvmWord; 3]) {
+    *c = a.to_u256().add_mod(b.to_u256(), c.to_u256()).into();
+}
+
+pub unsafe extern "C" fn __revmc_builtin_mulmod<T: EvmTypesHost>(rev![a, b, c]: &mut [EvmWord; 3]) {
+    *c = a.to_u256().mul_mod(b.to_u256(), c.to_u256()).into();
 }
 
 pub unsafe extern "C" fn __revmc_builtin_exp<T: EvmTypesHost>(
@@ -381,8 +381,7 @@ pub unsafe extern "C" fn __revmc_builtin_mresize<T: EvmTypesHost>(ecx: &mut EvmC
     ensure_memory(ecx, min_size as usize, 0)
 }
 
-
-    pub unsafe extern "C" fn __revmc_builtin_sload<T: EvmTypesHost>(
+pub unsafe extern "C" fn __revmc_builtin_sload<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     index: &mut EvmWord,
 ) -> BuiltinResult {
@@ -411,8 +410,7 @@ pub unsafe extern "C" fn __revmc_builtin_sload_c<T: EvmTypesHost>(
     Ok(())
 }
 
-
-    pub unsafe extern "C" fn __revmc_builtin_sstore<T: EvmTypesHost>(
+pub unsafe extern "C" fn __revmc_builtin_sstore<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: &mut [EvmWord; 2],
 ) -> BuiltinResult {
@@ -546,8 +544,7 @@ pub unsafe extern "C" fn __revmc_builtin_log<T: EvmTypesHost>(
     Ok(())
 }
 
-
-    pub unsafe extern "C" fn __revmc_builtin_create<T: EvmTypesHost>(
+pub unsafe extern "C" fn __revmc_builtin_create<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     sp: *mut EvmWord,
     create_kind: CreateKind,
@@ -925,8 +922,7 @@ pub unsafe extern "C" fn __revmc_builtin_do_return_cc<T: EvmTypesHost>(
     Err(result.into())
 }
 
-
-    pub unsafe extern "C" fn __revmc_builtin_selfdestruct<T: EvmTypesHost>(
+pub unsafe extern "C" fn __revmc_builtin_selfdestruct<T: EvmTypesHost>(
     ecx: &mut EvmContext<'_, '_, '_, T>,
     target: &mut EvmWord,
 ) -> BuiltinResult {
