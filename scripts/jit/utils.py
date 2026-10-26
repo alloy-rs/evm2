@@ -197,6 +197,10 @@ def fixed_stack_env(binary: str, args: list[str], extra: dict[str, str]) -> dict
     return env
 
 
+class NoBenchCounts(Exception):
+    """The binary ran without counting a benchmark loop: it predates ``EVM2_PERF_CONTROL``."""
+
+
 def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
     """Run ``evm2 run`` under ``perf stat``; return ``(instructions, cycles)`` of its bench loop.
 
@@ -247,7 +251,5 @@ def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
         for fd in fds:
             os.close(fd)
     if not stats.get("instructions:u"):
-        raise subprocess.CalledProcessError(
-            0, binary, stderr="no benchmark loop counted; the binary predates EVM2_PERF_CONTROL"
-        )
+        raise NoBenchCounts(binary)
     return int(stats["instructions:u"]), int(stats["cycles:u"])

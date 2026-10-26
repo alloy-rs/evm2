@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from tabulate import tabulate
 from tqdm import tqdm
 from utils import (
+    NoBenchCounts,
     cargo_build,
     cargo_env,
     eprint,
@@ -1061,14 +1062,17 @@ def sample_iters(side: Side, bench: str) -> int:
     return max(10, iters - 10 if iters < 110 else int(iters / 1.1))
 
 
-def measure_runtime_bench(sides: list[Side], bench: str):
+def measure_runtime_bench(sides: list[Side], bench: str, skipped: set[str]):
     """Measure execution instructions and cycles per iteration of one bench.
 
     Cycles move by several percent between runs of the same binary, so each side runs
     `RUNTIME_SAMPLES` shorter samples, interleaved across sides with the order alternating
     every round, and keeps the fewest cycles: noise only adds to them.
+
+    A side whose binary cannot count the benchmark loop is added to `skipped` and left without
+    runtime data.
     """
-    live = [side for side in sides if bench not in side.failures]
+    live = [side for side in sides if bench not in side.failures and side.label not in skipped]
     iters = {}
     samples = {side.label: [] for side in live}
     for side in live[:]:
@@ -1076,6 +1080,12 @@ def measure_runtime_bench(sides: list[Side], bench: str):
             iters[side.label] = sample_iters(side, bench)
         except subprocess.CalledProcessError as e:
             side.failures[bench] = last_line(e.stderr)
+            live.remove(side)
+        except NoBenchCounts:
+            eprint(
+                f"warning: {side.label} binary cannot count its benchmark loop; skipping runtime"
+            )
+            skipped.add(side.label)
             live.remove(side)
     for i in range(RUNTIME_SAMPLES):
         for side in live[:] if i % 2 == 0 else live[::-1]:
@@ -1098,8 +1108,9 @@ def measure_runtime(sides: list[Side], benches: list[str]):
     if not perf_available():
         eprint("warning: `perf stat` is unavailable; skipping runtime")
         return
+    skipped = set()
     for bench in tqdm(benches, desc="Runtime", unit="bench"):
-        measure_runtime_bench(sides, bench)
+        measure_runtime_bench(sides, bench, skipped)
 
 
 def last_line(s: str | None) -> str:
