@@ -96,6 +96,12 @@ impl<'a> Bytecode<'a> {
                 continue;
             }
 
+            // Skip blocks with a dead instruction inside. Their compiled code stops at the dead
+            // instruction, so a duplicate redirected to them would not run the rest of its own.
+            if block.insts().any(|i| self.insts[i].is_dead_code()) {
+                continue;
+            }
+
             // Skip unresolved dynamic jumps — any target is possible at runtime.
             if term.is_jump() && !term.flags.contains(InstFlags::STATIC_JUMP) {
                 continue;
