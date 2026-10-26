@@ -4463,6 +4463,84 @@ mod tests {
         let _ = evm.transact(&test_tx(0));
     }
 
+    #[test]
+    fn transaction_touches_survive_output_but_not_child_revert_or_next_transaction() {
+        let caller = Address::repeat_byte(0xaa);
+        let target = Address::repeat_byte(0x11);
+        let read = Address::repeat_byte(0x22);
+        let child = Address::repeat_byte(0x33);
+        let leaf = Address::repeat_byte(0x44);
+        let mut code = vec![op::PUSH20];
+        code.extend_from_slice(read.as_slice());
+        code.extend([op::BALANCE, op::POP]);
+        let call = |code: &mut Vec<u8>, address: Address| {
+            code.extend([op::PUSH0; 5]);
+            code.push(op::PUSH20);
+            code.extend_from_slice(address.as_slice());
+            code.extend([op::GAS, op::CALL, op::POP]);
+        };
+        call(&mut code, child);
+        code.push(op::STOP);
+        let mut child_code = Vec::new();
+        call(&mut child_code, leaf);
+        child_code.extend([op::PUSH0, op::PUSH0, op::REVERT]);
+        let mut read_code = vec![op::PUSH20];
+        read_code.extend_from_slice(target.as_slice());
+        read_code.extend([op::BALANCE, op::POP, op::STOP]);
+        let mut database = InMemoryDB::default();
+        for (address, code) in
+            [(target, code), (child, child_code), (read, read_code), (leaf, vec![])]
+        {
+            database.insert_account_info(
+                &address,
+                AccountInfo::default().with_nonce(1).with_code(legacy_bytecode(code)),
+            );
+        }
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            database,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(target),
+                gas_limit: 500_000,
+                ..Default::default()
+            }),
+            caller,
+        );
+        let executed = evm.transact(&tx).unwrap();
+        assert!(executed.result().status);
+        for (address, touched) in [(target, true), (read, false), (child, false), (leaf, false)] {
+            let changes = executed.account_changes().find(|c| c.address == address).unwrap();
+            assert_eq!(changes.touched, touched, "{address}");
+            assert!(!changes.is_changed());
+        }
+        let pending = executed.detach().pending_state;
+        for (address, touched) in [(target, true), (read, false), (child, false), (leaf, false)] {
+            assert_eq!(
+                pending.account_changes().find(|c| c.address == address).unwrap().touched,
+                touched
+            );
+        }
+        evm.state.set_pending_state(pending);
+        evm.state.commit_transaction();
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                nonce: 1,
+                to: TxKind::Call(read),
+                gas_limit: 100_000,
+                ..Default::default()
+            }),
+            caller,
+        );
+        let next = evm.transact(&tx).unwrap();
+        assert!(next.result().status);
+        assert!(!next.account_changes().find(|c| c.address == target).unwrap().touched);
+    }
+
     #[derive(Default)]
     struct CallCounter {
         calls: usize,
