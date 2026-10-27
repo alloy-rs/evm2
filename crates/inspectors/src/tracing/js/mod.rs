@@ -585,6 +585,31 @@ impl JsInspector {
             self.record_hook_error(if fault { "fault" } else { "step" }, err);
         }
     }
+
+    /// Ends the parent's call-like step before its child runs, like geth.
+    ///
+    /// Invoked on [Inspector::call] and [Inspector::create], where the parent has charged the step,
+    /// including the gas forwarded to the child, and the child has not returned any gas yet.
+    /// `step_end` then skips the step. A `step` error is recorded like on any other step and does
+    /// not affect the child.
+    fn end_call_step<T: EvmTypes>(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &Message<T>,
+    ) {
+        // The top-level message has no parent step.
+        if self.step_fn.is_none()
+            || self.hook_errored()
+            || message.depth != interp.message().depth + 1
+        {
+            return;
+        }
+        if let Some(pending) = self.pending_steps.get_mut(usize::from(interp.message().depth))
+            && core::mem::take(&mut pending.active)
+        {
+            self.invoke_step_hook(interp, false, None);
+        }
+    }
 }
 
 impl<T: EvmTypes> Inspector<T> for JsInspector {
@@ -663,6 +688,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return None;
         }
         self.register_precompiles(interp.host());
+        self.end_call_step(interp, message);
 
         // determine contract and caller based on the call scheme
         let (caller, contract) = match message.kind {
@@ -728,6 +754,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return None;
         }
         self.register_precompiles(interp.host());
+        self.end_call_step(interp, message);
         self.push_call(
             Contract {
                 caller: message.caller,

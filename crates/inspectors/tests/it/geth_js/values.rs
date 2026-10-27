@@ -112,12 +112,12 @@ fn refund_includes_ancestors_and_negative_child_counters() {
         steps,
         json!([
             [0, "SSTORE", 4800],
+            [0, "CALL", 4800],
             [1, "SSTORE", 9600],
+            [1, "DELEGATECALL", 9600],
             [2, "SSTORE", 7600],
             [2, "STOP", 7600],
-            [1, "DELEGATECALL", 9600],
             [1, "STOP", 7600],
-            [0, "CALL", 4800],
             [0, "STOP", 7600]
         ])
     );
@@ -132,7 +132,7 @@ fn test_get_refund_drops_a_reverted_frame() {
     );
     assert_eq!(
         steps,
-        json!([[0, "SSTORE", 4800], [1, "SSTORE", 9600], [0, "CALL", 4800], [0, "STOP", 4800]])
+        json!([[0, "SSTORE", 4800], [0, "CALL", 4800], [1, "SSTORE", 9600], [0, "STOP", 4800]])
     );
 }
 
@@ -148,10 +148,10 @@ fn test_get_refund_at_create_excludes_the_unfinished_child() {
         steps,
         json!([
             [0, "SSTORE", 4800],
+            [0, "CREATE", 4800],
             [1, "SSTORE", 4800],
             [1, "SSTORE", 24700],
             [1, "STOP", 24700],
-            [0, "CREATE", 4800],
             [0, "STOP", 24700]
         ])
     );

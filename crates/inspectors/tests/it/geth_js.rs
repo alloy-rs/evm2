@@ -230,7 +230,7 @@ fn test_geth_jstracer_proxy_contract() {
 }
 
 #[test]
-fn test_geth_jstracer_records_call_step_after_nested_execution() {
+fn test_geth_jstracer_records_call_step_before_nested_execution() {
     let child = address!("0000000000000000000000000000000000001234");
     let parent = address!("0000000000000000000000000000000000000022");
 
@@ -282,13 +282,147 @@ fn test_geth_jstracer_records_call_step_after_nested_execution() {
     let ops = result.as_array().unwrap();
     let call = ops.iter().position(|step| step["op"] == "CALL").expect("missing CALL step");
     let add = ops.iter().position(|step| step["op"] == "ADD").expect("missing child ADD step");
-    assert!(add < call, "CALL step_end should be observed after child execution: {ops:?}");
+    assert!(call < add, "CALL step should be observed before child execution: {ops:?}");
 
     let parent_stop = ops
         .iter()
         .find(|step| step["op"] == "STOP" && step["depth"].as_u64() == Some(0))
         .expect("missing parent STOP step");
     assert_eq!(parent_stop["mem"].as_u64(), Some(32));
+}
+
+#[test]
+fn test_geth_jstracer_call_step_cost() {
+    let leaf = address!("0000000000000000000000000000000000001111");
+    let mid = address!("0000000000000000000000000000000000002222");
+    let reverter = address!("0000000000000000000000000000000000003333");
+    let main = address!("0000000000000000000000000000000000004444");
+
+    // PUSH1 1, PUSH1 1, ADD, STOP
+    let leaf_code = hex!("600160010100");
+    // CALL(0x4000, leaf, 0, 0, 0, 0, 0), POP, STOP
+    let mid_code = hex!("5f5f5f5f5f611111614000f15000");
+    // REVERT(0, 0)
+    let reverter_code = hex!("5f5ffd");
+    let main_code = hex!(
+        // CALL(0xffff, mid, 0, 0, 0, 0, 0), POP
+        "5f5f5f5f5f61222261fffff150"
+        // CALL(0xffff, 0xdead, 0, 0, 0, 0, 0) to an account without code, POP
+        "5f5f5f5f5f61dead61fffff150"
+        // STATICCALL(0xffff, reverter, 0, 0, 0, 0), POP
+        "5f5f5f5f61333361fffffa50"
+        // MSTORE(0, 0x5f5ff3), CREATE(0, 29, 3) with initcode RETURN(0, 0), POP
+        "625f5ff35f526003601d5ff050"
+        // CREATE2(0, 29, 3, 1), POP
+        "60016003601d5ff550"
+        // DELEGATECALL(0xffff, leaf, 0, 0, 0, 0), POP
+        "5f5f5f5f61111161fffff450"
+        // CALLCODE(0xffff, leaf, 0, 0, 0, 0, 0), POP
+        "5f5f5f5f5f61111161fffff250"
+        // STATICCALL(0xffff, identity precompile, 0, 0, 0, 0), POP
+        "5f5f5f5f600461fffffa50"
+        // CALL(0xffff, leaf, 1, 0, 0, 0, 0) without the funds to transfer, POP, STOP
+        "5f5f5f5f600161111161fffff15000"
+    );
+
+    let context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            for (address, code) in [
+                (leaf, &leaf_code[..]),
+                (mid, &mid_code[..]),
+                (reverter, &reverter_code[..]),
+                (main, &main_code[..]),
+            ] {
+                let code = Some(Bytecode::new_legacy(code.to_vec().into()));
+                db.insert_account_info(&address, AccountInfo { code, ..Default::default() });
+            }
+        });
+
+    let code = r#"
+{
+    events: [],
+    step: function(log) {
+        var op = log.op.toString();
+        if (op.indexOf("CALL") >= 0 || op.indexOf("CREATE") >= 0) {
+            this.events.push([op, log.getDepth(), log.getGas(), log.getCost(), log.stack.peek(1).toString(16)]);
+        } else if (op == "ADD") {
+            this.events.push([op, log.getDepth()]);
+        }
+    },
+    enter: function(frame) { this.events.push(["enter", frame.getType()]); },
+    exit: function() { this.events.push(["exit"]); },
+    fault: function(log) { this.events.push(["fault", log.getDepth()]); },
+    result: function() { return this.events; }
+}"#;
+    let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
+    let mut evm = context.build_mainnet().with_inspector(insp);
+    let res = evm
+        .inspect_tx(TxEnv {
+            caller: Address::ZERO,
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(main),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let (context, insp) = evm.ctx_inspector();
+    let mut events = js_result(insp, &res, context);
+    // A call step costs the account access plus any value transfer (9000) plus the gas forwarded
+    // to the child: 2600 for a cold account, 100 for a warm one or a precompile.
+    let cold_call = 2600 + 0xffff;
+    let warm_call = 100 + 0xffff;
+    // A create step costs its base, then forwards all but 1/64 of the remaining gas. The base is
+    // 32000 plus 2 per initcode word, and CREATE2 adds 6 per word to hash the initcode.
+    let mut create_costs = Vec::new();
+    for event in events.as_array_mut().unwrap().iter_mut().filter(|event| event[2].is_u64()) {
+        let gas = event[2].take().as_u64().unwrap();
+        let base = match event[0].as_str() {
+            Some("CREATE") => 32002,
+            Some("CREATE2") => 32008,
+            _ => continue,
+        };
+        create_costs.push(gas - (gas - base) / 64);
+    }
+    assert_eq!(
+        events,
+        json!([
+            ["CALL", 0, null, cold_call, "2222"],
+            ["enter", "CALL"],
+            ["CALL", 1, null, 2600 + 0x4000, "1111"],
+            ["enter", "CALL"],
+            ["ADD", 2],
+            ["exit"],
+            ["exit"],
+            ["CALL", 0, null, cold_call, "dead"],
+            ["enter", "CALL"],
+            ["exit"],
+            ["STATICCALL", 0, null, cold_call, "3333"],
+            ["enter", "STATICCALL"],
+            ["fault", 1],
+            ["exit"],
+            ["CREATE", 0, null, create_costs[0], "1d"],
+            ["enter", "CREATE"],
+            ["exit"],
+            ["CREATE2", 0, null, create_costs[1], "1d"],
+            ["enter", "CREATE2"],
+            ["exit"],
+            ["DELEGATECALL", 0, null, warm_call, "1111"],
+            ["enter", "DELEGATECALL"],
+            ["ADD", 1],
+            ["exit"],
+            ["CALLCODE", 0, null, warm_call, "1111"],
+            ["enter", "CALLCODE"],
+            ["ADD", 1],
+            ["exit"],
+            ["STATICCALL", 0, null, warm_call, "4"],
+            ["enter", "STATICCALL"],
+            ["exit"],
+            ["CALL", 0, null, 9000 + warm_call, "1111"],
+            ["enter", "CALL"],
+            ["exit"],
+        ])
+    );
 }
 
 #[test]

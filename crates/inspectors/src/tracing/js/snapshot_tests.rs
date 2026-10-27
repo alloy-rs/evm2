@@ -14,23 +14,24 @@ use serde_json::{Value, json};
 
 struct SnapshotInspector {
     js: JsInspector,
-    pending: Vec<Value>,
+    /// Steps that have started, taken when a child message ends them before `step_end`.
+    pending: Vec<Option<Value>>,
     expected: Vec<Value>,
 }
 
 impl Inspector<BaseEvmTypes> for SnapshotInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
-        self.pending.push(json!([
+        self.pending.push(Some(json!([
             interp.pc(),
             interp.stack().iter().rev().map(ToString::to_string).collect::<Vec<_>>(),
             hex::encode(interp.memory().as_slice()),
             interp.message().depth,
-        ]));
+        ])));
         self.js.step(interp);
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
-        self.expected.push(self.pending.pop().unwrap());
+        self.expected.extend(self.pending.pop().unwrap());
         self.js.step_end(interp);
     }
 
@@ -39,6 +40,7 @@ impl Inspector<BaseEvmTypes> for SnapshotInspector {
         interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &mut Message<BaseEvmTypes>,
     ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.expected.extend(self.pending.last_mut().and_then(Option::take));
         self.js.call(interp, message)
     }
 
@@ -56,6 +58,7 @@ impl Inspector<BaseEvmTypes> for SnapshotInspector {
         interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &mut Message<BaseEvmTypes>,
     ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.expected.extend(self.pending.last_mut().and_then(Option::take));
         self.js.create(interp, message)
     }
 
