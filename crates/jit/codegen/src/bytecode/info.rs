@@ -275,12 +275,21 @@ const HOST_INSTRUCTIONS: &[u8] = &[
     op::LOG4,
 ];
 
+/// How a host's opcode table treats one opcode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OpcodeEntry {
+    /// The static gas the table charges.
+    pub gas: u16,
+    /// Whether the table has an instruction for the opcode.
+    pub defined: bool,
+    /// Whether the host's own instruction runs the opcode instead of the base one.
+    pub host: bool,
+}
+
 /// A host's opcode table as compiled code sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpcodeTable {
-    gas: [u16; 256],
-    defined: [bool; 256],
-    host: [bool; 256],
+    entries: [OpcodeEntry; 256],
 }
 
 impl OpcodeTable {
@@ -294,28 +303,26 @@ impl OpcodeTable {
         // opcode, so every opcode counts as the host's.
         let comparable = opcodes.origin_spec() == config.base_spec_id();
         let base = OpcodeConfig::<T>::base_for_spec(opcodes.origin_spec());
-        let mut table = Self { gas: [0; 256], defined: [false; 256], host: [false; 256] };
-        for op in 0..=u8::MAX {
-            let i = op as usize;
-            table.gas[i] = opcodes.static_gas(op);
-            table.defined[i] = opcodes.is_defined(op);
-            table.host[i] = table.defined[i]
+        Self::from_entries(core::array::from_fn(|i| {
+            let op = i as u8;
+            let defined = opcodes.is_defined(op);
+            let host = defined
                 && (!comparable
                     || opcodes.is_overridden(base, op)
                     || (contains(FULLY_DYNAMIC, op)
                         && opcodes.static_gas(op) != base.static_gas(op)));
-        }
-        table
+            OpcodeEntry { gas: opcodes.static_gas(op), defined, host }
+        }))
     }
 
-    /// Returns the static gas, defined and host flags of every opcode.
-    pub const fn to_parts(&self) -> ([u16; 256], [bool; 256], [bool; 256]) {
-        (self.gas, self.defined, self.host)
+    /// Creates a table from the entry of every opcode.
+    pub const fn from_entries(entries: [OpcodeEntry; 256]) -> Self {
+        Self { entries }
     }
 
-    /// Rebuilds a table from [`to_parts`](Self::to_parts).
-    pub const fn from_parts(gas: [u16; 256], defined: [bool; 256], host: [bool; 256]) -> Self {
-        Self { gas, defined, host }
+    /// Returns the entry of every opcode.
+    pub const fn entries(&self) -> &[OpcodeEntry; 256] {
+        &self.entries
     }
 
     /// Returns the opcode info map for `spec_id` under this table.
@@ -324,8 +331,9 @@ impl OpcodeTable {
         let mut map = *base;
         for op in 0..=u8::MAX {
             let i = op as usize;
+            let entry = self.entries[i];
             let base_known = !base[i].is_unknown() && !base[i].is_disabled();
-            if !self.defined[i] {
+            if !entry.defined {
                 // The interpreter halts on an opcode that the table leaves out with
                 // `NotActivated`. `INVALID` is never in a table and keeps its own stop reason.
                 if base_known && op != op::INVALID {
@@ -335,13 +343,13 @@ impl OpcodeTable {
                 }
                 continue;
             }
-            let host = self.host[i];
+            let host = entry.host;
             if !base_known || (host && !contains(HOST_INSTRUCTIONS, op)) {
                 map[i] = OpcodeInfo(OpcodeInfo::UNSUPPORTED_HOST);
                 continue;
             }
             let mut info = base[i];
-            info.set_gas(if contains(FULLY_DYNAMIC, op) && !host { 0 } else { self.gas[i] });
+            info.set_gas(if contains(FULLY_DYNAMIC, op) && !host { 0 } else { entry.gas });
             if host {
                 info.set_host();
                 info.set_dynamic();

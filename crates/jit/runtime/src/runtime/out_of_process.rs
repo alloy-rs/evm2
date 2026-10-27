@@ -18,7 +18,7 @@ use evm2::{
     BaseEvmTypes, SpecId, Version,
     version::{GasId, GasParams},
 };
-use evm2_jit_codegen::{HostLayout, OpcodeTable};
+use evm2_jit_codegen::{HostLayout, OpcodeEntry, OpcodeTable};
 use rayon::ThreadPoolBuilder;
 use std::{
     cell::RefCell,
@@ -532,35 +532,37 @@ struct HelperInit {
     compiler_recycle_threshold: usize,
 }
 
-/// Static gas, defined and host flags of every opcode.
+/// The entry of every opcode of an opcode table.
 #[derive(Clone, PartialEq, Eq, SchemaWrite, SchemaRead)]
-struct OpcodeTableWire {
-    gas: Vec<u16>,
-    /// Bit 0: defined. Bit 1: implemented by the host.
-    flags: Vec<u8>,
+struct OpcodeTableWire(Vec<OpcodeEntryWire>);
+
+#[derive(Clone, PartialEq, Eq, SchemaWrite, SchemaRead)]
+struct OpcodeEntryWire {
+    gas: u16,
+    defined: bool,
+    host: bool,
 }
 
 impl OpcodeTableWire {
     fn new(table: &OpcodeTable) -> Self {
-        let (gas, defined, host) = table.to_parts();
-        Self {
-            gas: gas.to_vec(),
-            flags: defined
+        Self(
+            table
+                .entries()
                 .iter()
-                .zip(host)
-                .map(|(&d, h)| u8::from(d) | (u8::from(h) << 1))
+                .map(|e| OpcodeEntryWire { gas: e.gas, defined: e.defined, host: e.host })
                 .collect(),
-        }
+        )
     }
 
     fn into_table(self) -> eyre::Result<OpcodeTable> {
-        let Ok(gas) = <[u16; 256]>::try_from(self.gas) else {
-            eyre::bail!("invalid opcode table gas length");
+        let Ok(entries) = <[_; 256]>::try_from(self.0) else {
+            eyre::bail!("invalid opcode table length");
         };
-        let Ok(flags) = <[u8; 256]>::try_from(self.flags) else {
-            eyre::bail!("invalid opcode table flags length");
-        };
-        Ok(OpcodeTable::from_parts(gas, flags.map(|f| f & 1 != 0), flags.map(|f| f & 2 != 0)))
+        Ok(OpcodeTable::from_entries(entries.map(|e| OpcodeEntry {
+            gas: e.gas,
+            defined: e.defined,
+            host: e.host,
+        })))
     }
 }
 
@@ -1021,7 +1023,8 @@ mod tests {
 
     #[test]
     fn helper_init_carries_the_host_layout_and_opcode_table() {
-        let table = OpcodeTable::from_parts([7; 256], [true; 256], [false; 256]);
+        let table =
+            OpcodeTable::from_entries([OpcodeEntry { gas: 7, defined: true, host: false }; 256]);
         let mut host = HostConfig::for_types::<BaseEvmTypes>();
         host.opcodes = Some(HostOpcodes { table: Arc::new(table.clone()), config: 0 });
         let mut words = host.layout.to_words();
