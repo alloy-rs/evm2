@@ -170,7 +170,7 @@ macro_rules! builtins {
             /// Returns the address of the builtin instantiated for the host types `T`.
             pub fn addr<T: evm2::EvmTypesHost>(self) -> usize {
                 match self {
-                    $(Self::$ident => crate::$name::<T> as *const () as usize,)*
+                    $(Self::$ident => crate::abi::$name::<T> as *const () as usize,)*
                 }
             }
 
