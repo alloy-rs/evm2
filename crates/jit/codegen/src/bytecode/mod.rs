@@ -4,7 +4,7 @@ use crate::FxHashMap;
 use alloy_primitives::U256;
 use bitvec::vec::BitVec;
 use evm2::{
-    SpecId,
+    OpcodeView, SpecId,
     interpreter::{op, opcode::OpCode},
     version::GasParams,
 };
@@ -216,9 +216,9 @@ impl<'a> Bytecode<'a> {
         code: impl Into<Cow<'a, [u8]>>,
         spec_id: SpecId,
         gas_params: Option<GasParams>,
-        table: Option<&OpcodeTable>,
+        opcodes: Option<&OpcodeView>,
     ) -> Self {
-        Self::new_mono(code.into(), spec_id, gas_params, table)
+        Self::new_mono(code.into(), spec_id, gas_params, opcodes)
     }
 
     #[cfg(test)]
@@ -231,7 +231,7 @@ impl<'a> Bytecode<'a> {
         code: Cow<'a, [u8]>,
         spec_id: SpecId,
         gas_params: Option<GasParams>,
-        table: Option<&OpcodeTable>,
+        opcodes: Option<&OpcodeView>,
     ) -> Self {
         let gas_params = gas_params.unwrap_or(evm2::Version::base(spec_id).gas_params);
         let mut insts = IndexVec::with_capacity(code.len() + 8);
@@ -244,7 +244,7 @@ impl<'a> Bytecode<'a> {
         let jumpdests = legacy_jumpdests(&code);
         let mut pc_to_inst = FxHashMap::with_capacity_and_hasher(code.len(), Default::default());
         let mut u256_interner = U256Interner::new();
-        let owned_infos = table.map(|table| table.op_infos(spec_id));
+        let owned_infos = opcodes.map(|opcodes| opcode_infos(opcodes, spec_id));
         let op_infos = owned_infos.as_ref().unwrap_or_else(|| op_info_map(spec_id));
         let mut iter = OpcodesIter::with_infos(&code, op_infos).with_pc();
         while let Some((pc, Opcode { opcode, immediate })) = iter.next() {

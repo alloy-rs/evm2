@@ -1,11 +1,11 @@
 //! EVM bytecode compiler implementation.
 
 use crate::{
-    Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, OpcodeTable,
-    Result, bytecode::AnalysisConfig,
+    Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, Result,
+    bytecode::AnalysisConfig,
 };
 use alloy_primitives::Bytes;
-use evm2::{SpecId, version::GasParams};
+use evm2::{OpcodeView, SpecId, version::GasParams};
 use evm2_jit_backend::{
     Attribute, BackendConfig, FunctionAttributeLocation, Linkage, OptimizationLevel, eyre::ensure,
     format_bytes,
@@ -96,7 +96,7 @@ pub struct EvmCompiler<B: Backend> {
     builtins: Builtins<B>,
     #[debug(skip)]
     gas_params: Option<GasParams>,
-    opcode_table: Option<OpcodeTable>,
+    opcode_view: Option<OpcodeView>,
 
     dedup: bool,
     dse: bool,
@@ -132,7 +132,7 @@ impl<B: Backend> EvmCompiler<B> {
             config: FcxConfig::default(),
             builtins: Builtins::new(),
             gas_params: None,
-            opcode_table: None,
+            opcode_view: None,
             dedup: true,
             dse: true,
             dump_assembly: true,
@@ -541,11 +541,11 @@ impl<B: Backend> EvmCompiler<B> {
         self.config.layout = layout;
     }
 
-    /// Sets the host's opcode table.
+    /// Sets the host's opcode view.
     ///
     /// Without one, programs use the base opcode table of their spec.
-    pub const fn set_opcode_table(&mut self, table: OpcodeTable) {
-        self.opcode_table = Some(table);
+    pub const fn set_opcode_view(&mut self, view: OpcodeView) {
+        self.opcode_view = Some(view);
     }
 
     /// Returns custom gas parameters, if set.
@@ -694,7 +694,7 @@ impl<B: Backend> EvmCompiler<B> {
         let EvmCompilerInput::Code(bytecode) = input;
 
         let mut bytecode =
-            Bytecode::new(bytecode, spec_id, self.gas_params, self.opcode_table.as_ref());
+            Bytecode::new(bytecode, spec_id, self.gas_params, self.opcode_view.as_ref());
         bytecode.compiler_gas_limit = self.compiler_gas_limit;
         bytecode.config.set(AnalysisConfig::INSPECT_STACK, self.config.inspect_stack);
         bytecode.config.set(AnalysisConfig::DEDUP, self.dedup);

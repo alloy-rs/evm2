@@ -1,6 +1,6 @@
 use evm2::{
-    BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypesHost,
-    ExecutionConfig, OpcodeConfig, SpecId,
+    BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, OpcodeChange, OpcodeView,
+    SpecId,
     interpreter::{op, opcode::OpCode},
 };
 
@@ -275,113 +275,41 @@ const HOST_INSTRUCTIONS: &[u8] = &[
     op::LOG4,
 ];
 
-/// How a host's opcode table treats one opcode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OpcodeEntry {
-    gas: u16,
-    defined: bool,
-    host: bool,
-}
-
-impl OpcodeEntry {
-    /// Creates an entry from the static gas the table charges, whether it has an instruction for
-    /// the opcode, and whether the host's own instruction runs the opcode instead of the base one.
-    #[inline]
-    pub const fn new(gas: u16, defined: bool, host: bool) -> Self {
-        Self { gas, defined, host }
-    }
-
-    /// Returns the static gas the table charges.
-    #[inline]
-    pub const fn gas(self) -> u16 {
-        self.gas
-    }
-
-    /// Returns `true` if the table has an instruction for the opcode.
-    #[inline]
-    pub const fn is_defined(self) -> bool {
-        self.defined
-    }
-
-    /// Returns `true` if the host's own instruction runs the opcode instead of the base one.
-    #[inline]
-    pub const fn is_host(self) -> bool {
-        self.host
-    }
-}
-
-/// A host's opcode table as compiled code sees it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OpcodeTable {
-    entries: [OpcodeEntry; 256],
-}
-
-impl OpcodeTable {
-    /// Reads the opcode table of `config`.
-    ///
-    /// An opcode is implemented by the host when its instruction differs from the base one, or
-    /// when its static gas differs and the base builtin pays its whole cost.
-    pub fn from_execution_config<T: EvmTypesHost>(config: &ExecutionConfig<T>) -> Self {
-        let opcodes = config.opcode_config();
-        // A table that started from another spec's base table cannot be compared opcode by
-        // opcode, so every opcode counts as the host's.
-        let comparable = opcodes.origin_spec() == config.base_spec_id();
-        let base = OpcodeConfig::<T>::base_for_spec(opcodes.origin_spec());
-        Self::from_entries(core::array::from_fn(|i| {
-            let op = i as u8;
-            let defined = opcodes.is_defined(op);
-            let host = defined
-                && (!comparable
-                    || opcodes.is_overridden(base, op)
-                    || (contains(FULLY_DYNAMIC, op)
-                        && opcodes.static_gas(op) != base.static_gas(op)));
-            OpcodeEntry::new(opcodes.static_gas(op), defined, host)
-        }))
-    }
-
-    /// Creates a table from the entry of every opcode.
-    pub const fn from_entries(entries: [OpcodeEntry; 256]) -> Self {
-        Self { entries }
-    }
-
-    /// Returns the entry of every opcode.
-    pub const fn entries(&self) -> &[OpcodeEntry; 256] {
-        &self.entries
-    }
-
-    /// Returns the opcode info map for `spec_id` under this table.
-    pub(crate) fn op_infos(&self, spec_id: SpecId) -> [OpcodeInfo; 256] {
-        let base = op_info_map(spec_id);
-        let mut map = *base;
-        for op in 0..=u8::MAX {
-            let i = op as usize;
-            let entry = self.entries[i];
-            let base_known = !base[i].is_unknown() && !base[i].is_disabled();
-            if !entry.is_defined() {
-                // The interpreter halts on an opcode that the table leaves out with
-                // `NotActivated`. `INVALID` is never in a table and keeps its own stop reason.
-                if base_known && op != op::INVALID {
-                    let mut info = OpcodeInfo::new(0);
-                    info.set_disabled();
-                    map[i] = info;
-                }
-                continue;
+/// Returns the opcode info map for `spec_id` under the host's opcode `view`.
+pub(crate) fn opcode_infos(view: &OpcodeView, spec_id: SpecId) -> [OpcodeInfo; 256] {
+    let base = op_info_map(spec_id);
+    let mut map = *base;
+    for op in 0..=u8::MAX {
+        let i = op as usize;
+        let change = view.change(op);
+        let base_known = !base[i].is_unknown() && !base[i].is_disabled();
+        if change == OpcodeChange::Undefined {
+            // The interpreter halts on an opcode that the table leaves out with
+            // `NotActivated`. `INVALID` is never in a table and keeps its own stop reason.
+            if base_known && op != op::INVALID {
+                let mut info = OpcodeInfo::new(0);
+                info.set_disabled();
+                map[i] = info;
             }
-            let host = entry.is_host();
-            if !base_known || (host && !contains(HOST_INSTRUCTIONS, op)) {
-                map[i] = OpcodeInfo(OpcodeInfo::UNSUPPORTED_HOST);
-                continue;
-            }
-            let mut info = base[i];
-            info.set_gas(if contains(FULLY_DYNAMIC, op) && !host { 0 } else { entry.gas() });
-            if host {
-                info.set_host();
-                info.set_dynamic();
-            }
-            map[i] = info;
+            continue;
         }
-        map
+        // The host runs its own instruction when it overrides the base one, or when it only
+        // changes the static gas of an opcode whose base builtin pays its whole cost.
+        let host = change == OpcodeChange::Instruction
+            || (change == OpcodeChange::Gas && contains(FULLY_DYNAMIC, op));
+        if !base_known || (host && !contains(HOST_INSTRUCTIONS, op)) {
+            map[i] = OpcodeInfo(OpcodeInfo::UNSUPPORTED_HOST);
+            continue;
+        }
+        let mut info = base[i];
+        info.set_gas(if contains(FULLY_DYNAMIC, op) && !host { 0 } else { view.static_gas(op) });
+        if host {
+            info.set_host();
+            info.set_dynamic();
+        }
+        map[i] = info;
     }
+    map
 }
 
 #[cfg(test)]

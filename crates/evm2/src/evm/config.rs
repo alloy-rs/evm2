@@ -1,7 +1,7 @@
 //! EVM configuration.
 
 use crate::{
-    Evm, OpcodeConfig, SpecId,
+    Evm, OpcodeConfig, OpcodeView, SpecId,
     ethereum::TxEnvelope,
     interpreter::{
         Host,
@@ -215,6 +215,17 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
     /// [`base_spec_id`](Self::base_spec_id).
     pub fn has_base_opcode_table(&self) -> bool {
         self.opcode_config.same_table(OpcodeConfig::base_for_spec(self.base_spec_id))
+    }
+
+    /// Returns a type-independent view of the opcode config, compared with the base table of the
+    /// spec it started from.
+    ///
+    /// A config that started from another spec than [`base_spec_id`](Self::base_spec_id) cannot be
+    /// compared opcode by opcode, so every defined opcode counts as changed.
+    pub fn opcode_view(&self) -> OpcodeView {
+        let origin = self.opcode_config.origin_spec();
+        self.opcode_config
+            .view((origin == self.base_spec_id).then(|| OpcodeConfig::base_for_spec(origin)))
     }
 }
 

@@ -16,7 +16,7 @@ mod features;
 pub use features::EvmFeatures;
 
 mod opcode_config;
-pub use opcode_config::OpcodeConfig;
+pub use opcode_config::{OpcodeChange, OpcodeConfig, OpcodeView};
 
 /// Runtime configuration data.
 ///

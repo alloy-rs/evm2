@@ -15,10 +15,10 @@ use crate::{
 use alloy_primitives::{B256, Bytes};
 use crossbeam_channel as chan;
 use evm2::{
-    BaseEvmTypes, SpecId, Version,
+    BaseEvmTypes, OpcodeView, SpecId, Version,
     version::{GasId, GasParams},
 };
-use evm2_jit_codegen::{HostLayout, OpcodeEntry, OpcodeTable};
+use evm2_jit_codegen::HostLayout;
 use rayon::ThreadPoolBuilder;
 use std::{
     cell::RefCell,
@@ -525,45 +525,11 @@ struct HelperInit {
     gas_params: Option<GasParamPairs>,
     /// Words of the host layout, see [`HostLayout::to_words`].
     layout: Vec<u64>,
-    opcode_table: Option<OpcodeTableWire>,
+    opcode_view: Option<Box<OpcodeView>>,
     /// Makes the helper's builtin symbols unique to the host's resolver.
     symbol_suffix: Option<u64>,
     jit_worker_count: usize,
     compiler_recycle_threshold: usize,
-}
-
-/// The entry of every opcode of an opcode table.
-#[derive(Clone, PartialEq, Eq, SchemaWrite, SchemaRead)]
-struct OpcodeTableWire(Vec<OpcodeEntryWire>);
-
-#[derive(Clone, PartialEq, Eq, SchemaWrite, SchemaRead)]
-struct OpcodeEntryWire {
-    gas: u16,
-    defined: bool,
-    host: bool,
-}
-
-impl OpcodeTableWire {
-    fn new(table: &OpcodeTable) -> Self {
-        Self(
-            table
-                .entries()
-                .iter()
-                .map(|e| OpcodeEntryWire {
-                    gas: e.gas(),
-                    defined: e.is_defined(),
-                    host: e.is_host(),
-                })
-                .collect(),
-        )
-    }
-
-    fn into_table(self) -> eyre::Result<OpcodeTable> {
-        let Ok(entries) = <[_; 256]>::try_from(self.0) else {
-            eyre::bail!("invalid opcode table length");
-        };
-        Ok(OpcodeTable::from_entries(entries.map(|e| OpcodeEntry::new(e.gas, e.defined, e.host))))
-    }
 }
 
 #[derive(SchemaWrite, SchemaRead)]
@@ -977,11 +943,7 @@ fn helper_init(config: &RuntimeConfig) -> HelperInit {
         dump_dir: config.dump_dir.as_ref().map(|path| path.to_string_lossy().into_owned()),
         gas_params: config.gas_params.as_ref().map(gas_params_to_pairs),
         layout: config.host.layout.to_words().into_iter().map(|word| word as u64).collect(),
-        opcode_table: config
-            .host
-            .opcodes
-            .as_ref()
-            .map(|opcodes| OpcodeTableWire::new(&opcodes.table)),
+        opcode_view: config.host.opcodes.as_ref().map(|opcodes| Box::new((*opcodes.view).clone())),
         symbol_suffix: config.host.resolver.map(|resolver| resolver as usize as u64),
         jit_worker_count: config.tuning.jit_worker_count,
         compiler_recycle_threshold: config.tuning.compiler_recycle_threshold,
@@ -997,11 +959,7 @@ fn runtime_config_from_init(init: HelperInit) -> eyre::Result<RuntimeConfig> {
     };
     host.layout = HostLayout::from_words(words.map(|word| word as usize));
     host.symbol_suffix = init.symbol_suffix.map(|suffix| suffix as usize);
-    host.opcodes = init
-        .opcode_table
-        .map(|table| table.into_table())
-        .transpose()?
-        .map(|table| HostOpcodes { table: Arc::new(table), config: 0 });
+    host.opcodes = init.opcode_view.map(|view| HostOpcodes { view: Arc::new(*view), config: 0 });
     let mut config = RuntimeConfig {
         host,
         dump_dir: init.dump_dir.map(PathBuf::from),
@@ -1020,19 +978,20 @@ fn runtime_config_from_init(init: HelperInit) -> eyre::Result<RuntimeConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use evm2::OpcodeConfig;
 
     #[test]
-    fn helper_init_carries_the_host_layout_and_opcode_table() {
-        let table = OpcodeTable::from_entries([OpcodeEntry::new(7, true, false); 256]);
+    fn helper_init_carries_the_host_layout_and_opcode_view() {
+        let view = OpcodeConfig::<BaseEvmTypes>::base_for_spec(SpecId::CANCUN).view(None);
         let mut host = HostConfig::for_types::<BaseEvmTypes>();
-        host.opcodes = Some(HostOpcodes { table: Arc::new(table.clone()), config: 0 });
+        host.opcodes = Some(HostOpcodes { view: Arc::new(view.clone()), config: 0 });
         let mut words = host.layout.to_words();
         words[1] += 8;
         host.layout = HostLayout::from_words(words);
         let config = RuntimeConfig { host: host.clone(), ..Default::default() };
         let helper = runtime_config_from_init(helper_init(&config)).unwrap();
         assert_eq!(helper.host.layout, host.layout);
-        assert_eq!(helper.host.opcodes.as_ref().map(|o| &*o.table), Some(&table));
+        assert_eq!(helper.host.opcodes.as_ref().map(|o| &*o.view), Some(&view));
     }
 
     #[test]

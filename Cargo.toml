@@ -129,7 +129,7 @@ tracing-tracy = "0.11"
 triomphe = { version = "0.1.16", default-features = false }
 walkdir = { version = "2.5", default-features = false }
 wait-timeout = "0.2"
-wincode = { version = "0.6.0", features = ["derive"] }
+wincode = { version = "0.6.0", default-features = false, features = ["derive"] }
 zstd = "0.14"
 
 # Precompiles

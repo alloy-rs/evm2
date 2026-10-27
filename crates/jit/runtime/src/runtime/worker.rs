@@ -586,7 +586,7 @@ struct CompilerProfile {
     layout: evm2_jit_codegen::HostLayout,
     resolver: Option<usize>,
     symbol_suffix: Option<usize>,
-    opcode_table: Option<std::sync::Arc<evm2_jit_codegen::OpcodeTable>>,
+    opcode_view: Option<std::sync::Arc<evm2::OpcodeView>>,
     opt_level: crate::OptimizationLevel,
     gas_params: Option<evm2::version::GasParams>,
     debug_assertions: bool,
@@ -604,7 +604,7 @@ impl CompilerProfile {
             layout: config.host.layout,
             resolver: config.host.resolver.map(|resolver| resolver as usize),
             symbol_suffix: config.host.symbol_suffix,
-            opcode_table: config.host.opcodes.as_ref().map(|opcodes| opcodes.table.clone()),
+            opcode_view: config.host.opcodes.as_ref().map(|opcodes| opcodes.view.clone()),
             opt_level: if target.is_aot_backend() {
                 config.tuning.aot_opt_level
             } else {
@@ -656,7 +656,7 @@ pub(super) fn create_compiler(
         }
     }
     if let Some(opcodes) = &config.host.opcodes {
-        compiler.set_opcode_table((*opcodes.table).clone());
+        compiler.set_opcode_view((*opcodes.view).clone());
     }
     Ok(compiler)
 }

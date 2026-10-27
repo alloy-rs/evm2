@@ -100,6 +100,32 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
                 })
     }
 
+    /// Returns a type-independent view of this config.
+    ///
+    /// `base` is the base config the opcodes are compared with, which must derive from the same
+    /// base spec. Without one, every defined opcode counts as [`OpcodeChange::Instruction`].
+    pub fn view(&self, base: Option<&Self>) -> OpcodeView {
+        OpcodeView {
+            static_gas: core::array::from_fn(|op| self.static_gas(op as u8)),
+            changes: core::array::from_fn(|op| {
+                let op = op as u8;
+                if !self.is_defined(op) {
+                    OpcodeChange::Undefined
+                } else if let Some(base) = base {
+                    if self.is_overridden(base, op) {
+                        OpcodeChange::Instruction
+                    } else if self.static_gas(op) != base.static_gas(op) {
+                        OpcodeChange::Gas
+                    } else {
+                        OpcodeChange::Unchanged
+                    }
+                } else {
+                    OpcodeChange::Instruction
+                }
+            }),
+        }
+    }
+
     /// Returns the dispatch-table revision for `opcode`.
     #[inline(always)]
     pub(crate) const fn revision(&self, opcode: u8) -> u8 {
@@ -144,6 +170,43 @@ impl<T: EvmTypesHost> OpcodeConfig<T> {
     #[inline(always)]
     const fn bump_revision(&mut self, opcode: u8) {
         self.revisions[opcode as usize] += 1;
+    }
+}
+
+/// How an opcode of an [`OpcodeConfig`] differs from the base config it is compared with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wincode", derive(wincode::SchemaWrite, wincode::SchemaRead))]
+pub enum OpcodeChange {
+    /// The config has no instruction for the opcode.
+    Undefined,
+    /// The instruction and static gas are those of the base config.
+    Unchanged,
+    /// Only the static gas differs from the base config.
+    Gas,
+    /// The instruction differs from the base config.
+    Instruction,
+}
+
+/// A type-independent view of an [`OpcodeConfig`], for consumers that cannot be generic over the
+/// host types.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wincode", derive(wincode::SchemaWrite, wincode::SchemaRead))]
+pub struct OpcodeView {
+    static_gas: [u16; 256],
+    changes: [OpcodeChange; 256],
+}
+
+impl OpcodeView {
+    /// Returns the static gas cost for `opcode`.
+    #[inline]
+    pub const fn static_gas(&self, opcode: u8) -> u16 {
+        self.static_gas[opcode as usize]
+    }
+
+    /// Returns how `opcode` differs from the base config.
+    #[inline]
+    pub const fn change(&self, opcode: u8) -> OpcodeChange {
+        self.changes[opcode as usize]
     }
 }
 
@@ -233,5 +296,27 @@ mod tests {
     fn invalid_instruction_cannot_be_overridden() {
         let mut tables = OpcodeConfig::<BaseEvmTypes>::empty(SpecId::default());
         tables.set_instruction::<instr::stop<BaseEvmTypes>>(op::INVALID, 0);
+    }
+
+    #[test]
+    fn view_compares_with_the_base_config() {
+        let mut base = OpcodeConfig::<BaseEvmTypes>::empty(SpecId::default());
+        base.set_instruction::<instr::add<BaseEvmTypes>>(op::ADD, 3);
+        base.set_instruction::<instr::mul<BaseEvmTypes>>(op::MUL, 5);
+        let mut config = OpcodeConfig::<BaseEvmTypes>::empty(SpecId::default());
+        config.set_instruction::<instr::add<BaseEvmTypes>>(op::ADD, 3);
+        config.set_instruction::<instr::mul<BaseEvmTypes>>(op::MUL, 7);
+        config.set_instruction::<instr::stop<BaseEvmTypes>>(op::STOP, 0);
+
+        let view = config.view(Some(&base));
+        assert_eq!(view.change(op::ADD), OpcodeChange::Unchanged);
+        assert_eq!(view.change(op::MUL), OpcodeChange::Gas);
+        assert_eq!(view.static_gas(op::MUL), 7);
+        assert_eq!(view.change(op::STOP), OpcodeChange::Instruction);
+        assert_eq!(view.change(op::SUB), OpcodeChange::Undefined);
+
+        let view = config.view(None);
+        assert_eq!(view.change(op::ADD), OpcodeChange::Instruction);
+        assert_eq!(view.change(op::SUB), OpcodeChange::Undefined);
     }
 }

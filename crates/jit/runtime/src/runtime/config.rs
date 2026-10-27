@@ -2,9 +2,12 @@
 
 use crate::{CompileTimings, eyre, runtime::storage::ArtifactStore};
 use alloy_primitives::B256;
-use evm2::{BaseEvmTypes, EvmTypesHost, ExecutionConfig, OpcodeConfig, SpecId, version::GasParams};
+use evm2::{
+    BaseEvmTypes, EvmTypesHost, ExecutionConfig, OpcodeConfig, OpcodeView, SpecId,
+    version::GasParams,
+};
 use evm2_jit_builtins::Builtin;
-use evm2_jit_codegen::{HostLayout, OpcodeTable};
+use evm2_jit_codegen::HostLayout;
 use std::{any::TypeId, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 const JIT_MODE_ENV: &str = "EVM2_JIT_MODE";
@@ -418,7 +421,7 @@ fn env_path(name: &str) -> Option<PathBuf> {
 /// Opcode table of the host's execution config, which compiled code must match.
 #[derive(Clone, Debug)]
 pub(crate) struct HostOpcodes {
-    pub(crate) table: Arc<OpcodeTable>,
+    pub(crate) view: Arc<OpcodeView>,
     /// Address of the `&'static OpcodeConfig<T>` the table was read from.
     pub(crate) config: usize,
 }
@@ -458,7 +461,7 @@ impl HostConfig {
     pub fn for_config<T: EvmTypesHost>(config: &ExecutionConfig<T>) -> Self {
         let mut host = Self::for_types::<T>();
         host.opcodes = Some(HostOpcodes {
-            table: Arc::new(OpcodeTable::from_execution_config(config)),
+            view: Arc::new(config.opcode_view()),
             config: config.opcode_config() as *const OpcodeConfig<T> as usize,
         });
         host
