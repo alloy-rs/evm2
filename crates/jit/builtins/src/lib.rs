@@ -87,14 +87,6 @@ fn fail<T: EvmTypesHost>(ecx: &mut EvmContext<'_, '_, '_, T>, e: BuiltinError) -
     unsafe { evm2_jit_context::evm2_jit_exit(ecx) }
 }
 
-// Keeps rustfmt from reflowing the definitions.
-macro_rules! builtins {
-    ($($item:item)*) => { $($item)* };
-}
-
-builtins! {
-
-
 #[inline]
 pub unsafe fn __revmc_builtin_panic<T: EvmTypesHost>(data: *const u8, len: usize) -> ! {
     let msg = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(data, len)) };
@@ -102,9 +94,13 @@ pub unsafe fn __revmc_builtin_panic<T: EvmTypesHost>(data: *const u8, len: usize
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_assert_spec_id<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, expected: u32) {
+pub unsafe fn __revmc_builtin_assert_spec_id<T: EvmTypesHost>(
+    ecx: &EvmContext<'_, '_, '_, T>,
+    expected: u32,
+) {
     assert_eq!(
-        u32::from(ecx.spec_id()), expected,
+        u32::from(ecx.spec_id()),
+        expected,
         "evm2_jit panic: runtime spec_id does not match compilation spec_id"
     );
 }
@@ -217,7 +213,11 @@ pub unsafe fn __revmc_builtin_calldataload_c<T: EvmTypesHost>(
     do_calldataload(ecx, offset_ptr, offset as usize);
 }
 
-fn do_calldataload<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, out: &mut EvmWord, offset: usize) {
+fn do_calldataload<T: EvmTypesHost>(
+    ecx: &EvmContext<'_, '_, '_, T>,
+    out: &mut EvmWord,
+    offset: usize,
+) {
     *out = EvmWord::from_be_bytes(read_word_padded(ecx.input(), offset));
 }
 
@@ -277,7 +277,8 @@ pub unsafe fn __revmc_builtin_extcodecopy<T: EvmTypesHost>(
     let account = load_account(ecx, &address.to_address(), true)?;
     let code = account.code.original_bytes();
 
-    let code_offset_usize = core::cmp::min(word_to_usize_saturated(code_offset.to_u256()), code.len());
+    let code_offset_usize =
+        core::cmp::min(word_to_usize_saturated(code_offset.to_u256()), code.len());
     ecx.memory_mut().set_data(memory_offset_usize, code_offset_usize, len, &code);
     Ok(())
 }
@@ -343,7 +344,10 @@ pub unsafe fn __revmc_builtin_blockhash<T: EvmTypesHost>(
     }
 
     if diff <= BLOCK_HASH_HISTORY {
-        let hash = ecx.host().block_hash(&requested_number).map_err(|error| ecx.interpreter_mut().fail(error))?;
+        let hash = ecx
+            .host()
+            .block_hash(&requested_number)
+            .map_err(|error| ecx.interpreter_mut().fail(error))?;
         *number_ptr = EvmWord::from_be_bytes(hash);
     } else {
         // Too old, return 0
@@ -369,7 +373,10 @@ pub unsafe fn __revmc_builtin_self_balance<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_difficulty<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, slot: &mut EvmWord) {
+pub unsafe fn __revmc_builtin_difficulty<T: EvmTypesHost>(
+    ecx: &EvmContext<'_, '_, '_, T>,
+    slot: &mut EvmWord,
+) {
     let block_env = ecx.block_env();
     let value =
         if ecx.enables(EvmFeatures::EIP4399) { block_env.prevrandao } else { block_env.difficulty };
@@ -377,14 +384,20 @@ pub unsafe fn __revmc_builtin_difficulty<T: EvmTypesHost>(ecx: &EvmContext<'_, '
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_blob_hash<T: EvmTypesHost>(ecx: &EvmContext<'_, '_, '_, T>, index_ptr: &mut EvmWord) {
+pub unsafe fn __revmc_builtin_blob_hash<T: EvmTypesHost>(
+    ecx: &EvmContext<'_, '_, '_, T>,
+    index_ptr: &mut EvmWord,
+) {
     let index = index_ptr.to_u256();
     let index_usize = word_to_usize_saturated(index);
     *index_ptr = ecx.tx_env().blob_hashes.get(index_usize).copied().unwrap_or_default().into();
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_mresize<T: EvmTypesHost>(ecx: &mut EvmContext<'_, '_, '_, T>, min_size: u64) -> BuiltinResult {
+pub unsafe fn __revmc_builtin_mresize<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    min_size: u64,
+) -> BuiltinResult {
     ensure_memory(ecx, min_size as usize, 0)
 }
 
@@ -396,10 +409,11 @@ pub unsafe fn __revmc_builtin_sload<T: EvmTypesHost>(
     let address = &ecx.message().destination;
     let key = index.to_u256();
     let additional_cold_cost = ecx.gas_params().get(GasId::ColdStorageAdditionalCost);
-    let skip_cold =
-        ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
-    let storage =
-        ecx.host().sload(address, &key, skip_cold).map_err(|stop| ecx.interpreter_mut().fail(stop))?;
+    let skip_cold = ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
+    let storage = ecx
+        .host()
+        .sload(address, &key, skip_cold)
+        .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
     if storage.is_cold {
         ecx.gas.spend(additional_cold_cost)?;
     }
@@ -437,8 +451,7 @@ pub unsafe fn __revmc_builtin_sstore<T: EvmTypesHost>(
     ecx.gas.spend(ecx.gas_params().get(GasId::SstoreStatic))?;
 
     let additional_cold_cost = ecx.gas_params().get(GasId::ColdStorageAdditionalCost);
-    let skip_cold =
-        ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
+    let skip_cold = ecx.enables(EvmFeatures::EIP2929) && ecx.gas.remaining() < additional_cold_cost;
     let index = index.to_u256();
     let value = value.to_u256();
     let state_load = ecx
@@ -463,7 +476,10 @@ pub unsafe fn __revmc_builtin_sstore<T: EvmTypesHost>(
 }
 
 #[inline]
-pub unsafe fn __revmc_builtin_tload<T: EvmTypesHost>(ecx: &mut EvmContext<'_, '_, '_, T>, key: &mut EvmWord) {
+pub unsafe fn __revmc_builtin_tload<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
+    key: &mut EvmWord,
+) {
     let target = &ecx.message().destination;
     let key_word = key.to_u256();
     *key = ecx.host().tload(target, &key_word).into();
@@ -616,7 +632,11 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     let caller_info = if is_create2 && !ecx.enables(EvmFeatures::EIP8037) {
         None
     } else {
-        Some(ecx.host().load_account(&caller, false, false).map_err(|error| ecx.interpreter_mut().fail(error))?)
+        Some(
+            ecx.host()
+                .load_account(&caller, false, false)
+                .map_err(|error| ecx.interpreter_mut().fail(error))?,
+        )
     };
     let destination = derive_create_destination(
         kind,
@@ -645,7 +665,11 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
 
         // The destination is loaded here and made warm. Balance, nonce, and depth pre-access
         // failures return above before the destination is accessed.
-        if ecx.host().target_is_empty_for_new_account_gas(&destination, version.features).map_err(|error| ecx.interpreter_mut().fail(error))? {
+        if ecx
+            .host()
+            .target_is_empty_for_new_account_gas(&destination, version.features)
+            .map_err(|error| ecx.interpreter_mut().fail(error))?
+        {
             ecx.gas.spend_state(version.gas_params.create_state_gas())?;
             charged_create_state_gas = true;
         }
@@ -675,7 +699,10 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         ext: T::MessageExt::default(),
         _non_exhaustive: (),
     };
-    let mut result = ecx.host().execute_message(tx_env, &mut message).map_err(|error| ecx.interpreter_mut().fail(error))?;
+    let mut result = ecx
+        .host()
+        .execute_message(tx_env, &mut message)
+        .map_err(|error| ecx.interpreter_mut().fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop.into());
     }
@@ -752,7 +779,13 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
     };
 
     let (gas_limit, new_account_state_gas, loaded_code, resolved_code_address) =
-        load_acc_and_calc_gas(ecx, to, transfers_value, call_kind == CallKind::Call, local_gas_limit)?;
+        load_acc_and_calc_gas(
+            ecx,
+            to,
+            transfers_value,
+            call_kind == CallKind::Call,
+            local_gas_limit,
+        )?;
 
     let current = ecx.message();
     let (destination, caller, call_value, code_address) = match call_kind {
@@ -784,7 +817,10 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
     };
 
     let tx_env = ecx.tx_env();
-    let mut result = ecx.host().execute_message(tx_env, &mut message).map_err(|error| ecx.interpreter_mut().fail(error))?;
+    let mut result = ecx
+        .host()
+        .execute_message(tx_env, &mut message)
+        .map_err(|error| ecx.interpreter_mut().fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop.into());
     }
@@ -957,8 +993,11 @@ pub unsafe fn __revmc_builtin_selfdestruct<T: EvmTypesHost>(
         .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
 
     // EIP-161: State trie clearing (invariant-preserving alternative)
-    let should_charge_topup =
-        should_charge_new_account_gas(ecx.enables(EvmFeatures::EIP161), res.had_value, res.target_is_empty);
+    let should_charge_topup = should_charge_new_account_gas(
+        ecx.enables(EvmFeatures::EIP161),
+        res.had_value,
+        res.target_is_empty,
+    );
 
     ecx.gas.spend(ecx.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
 
@@ -972,8 +1011,6 @@ pub unsafe fn __revmc_builtin_selfdestruct<T: EvmTypesHost>(
     }
 
     Err(InstrStop::SelfDestruct.into())
-}
-
 }
 
 /// Defines the `extern "C"` entry point `abi::$name::<T>` of every builtin, and exports the one
