@@ -276,14 +276,38 @@ const HOST_INSTRUCTIONS: &[u8] = &[
 ];
 
 /// How a host's opcode table treats one opcode.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpcodeEntry {
-    /// The static gas the table charges.
-    pub gas: u16,
-    /// Whether the table has an instruction for the opcode.
-    pub defined: bool,
-    /// Whether the host's own instruction runs the opcode instead of the base one.
-    pub host: bool,
+    gas: u16,
+    defined: bool,
+    host: bool,
+}
+
+impl OpcodeEntry {
+    /// Creates an entry from the static gas the table charges, whether it has an instruction for
+    /// the opcode, and whether the host's own instruction runs the opcode instead of the base one.
+    #[inline]
+    pub const fn new(gas: u16, defined: bool, host: bool) -> Self {
+        Self { gas, defined, host }
+    }
+
+    /// Returns the static gas the table charges.
+    #[inline]
+    pub const fn gas(self) -> u16 {
+        self.gas
+    }
+
+    /// Returns `true` if the table has an instruction for the opcode.
+    #[inline]
+    pub const fn is_defined(self) -> bool {
+        self.defined
+    }
+
+    /// Returns `true` if the host's own instruction runs the opcode instead of the base one.
+    #[inline]
+    pub const fn is_host(self) -> bool {
+        self.host
+    }
 }
 
 /// A host's opcode table as compiled code sees it.
@@ -311,7 +335,7 @@ impl OpcodeTable {
                     || opcodes.is_overridden(base, op)
                     || (contains(FULLY_DYNAMIC, op)
                         && opcodes.static_gas(op) != base.static_gas(op)));
-            OpcodeEntry { gas: opcodes.static_gas(op), defined, host }
+            OpcodeEntry::new(opcodes.static_gas(op), defined, host)
         }))
     }
 
@@ -333,7 +357,7 @@ impl OpcodeTable {
             let i = op as usize;
             let entry = self.entries[i];
             let base_known = !base[i].is_unknown() && !base[i].is_disabled();
-            if !entry.defined {
+            if !entry.is_defined() {
                 // The interpreter halts on an opcode that the table leaves out with
                 // `NotActivated`. `INVALID` is never in a table and keeps its own stop reason.
                 if base_known && op != op::INVALID {
@@ -343,13 +367,13 @@ impl OpcodeTable {
                 }
                 continue;
             }
-            let host = entry.host;
+            let host = entry.is_host();
             if !base_known || (host && !contains(HOST_INSTRUCTIONS, op)) {
                 map[i] = OpcodeInfo(OpcodeInfo::UNSUPPORTED_HOST);
                 continue;
             }
             let mut info = base[i];
-            info.set_gas(if contains(FULLY_DYNAMIC, op) && !host { 0 } else { entry.gas });
+            info.set_gas(if contains(FULLY_DYNAMIC, op) && !host { 0 } else { entry.gas() });
             if host {
                 info.set_host();
                 info.set_dynamic();

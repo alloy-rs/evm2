@@ -549,7 +549,11 @@ impl OpcodeTableWire {
             table
                 .entries()
                 .iter()
-                .map(|e| OpcodeEntryWire { gas: e.gas, defined: e.defined, host: e.host })
+                .map(|e| OpcodeEntryWire {
+                    gas: e.gas(),
+                    defined: e.is_defined(),
+                    host: e.is_host(),
+                })
                 .collect(),
         )
     }
@@ -558,11 +562,7 @@ impl OpcodeTableWire {
         let Ok(entries) = <[_; 256]>::try_from(self.0) else {
             eyre::bail!("invalid opcode table length");
         };
-        Ok(OpcodeTable::from_entries(entries.map(|e| OpcodeEntry {
-            gas: e.gas,
-            defined: e.defined,
-            host: e.host,
-        })))
+        Ok(OpcodeTable::from_entries(entries.map(|e| OpcodeEntry::new(e.gas, e.defined, e.host))))
     }
 }
 
@@ -1023,8 +1023,7 @@ mod tests {
 
     #[test]
     fn helper_init_carries_the_host_layout_and_opcode_table() {
-        let table =
-            OpcodeTable::from_entries([OpcodeEntry { gas: 7, defined: true, host: false }; 256]);
+        let table = OpcodeTable::from_entries([OpcodeEntry::new(7, true, false); 256]);
         let mut host = HostConfig::for_types::<BaseEvmTypes>();
         host.opcodes = Some(HostOpcodes { table: Arc::new(table.clone()), config: 0 });
         let mut words = host.layout.to_words();
