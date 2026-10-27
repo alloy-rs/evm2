@@ -556,7 +556,8 @@ impl JsInspector {
         let info = StepInfo {
             cost: interp.gas().spent().saturating_sub(pending.gas_spent_before),
             refund: refund.max(0) as u64,
-            depth: depth as u64,
+            // Geth reports the depth starting at 1 for the top-level call.
+            depth: depth as u64 + 1,
             error,
             caller: interp.message().caller,
             contract: interp.message().destination,

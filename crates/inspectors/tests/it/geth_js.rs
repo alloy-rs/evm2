@@ -286,13 +286,13 @@ fn test_geth_jstracer_records_call_step_before_nested_execution() {
 
     let parent_stop = ops
         .iter()
-        .find(|step| step["op"] == "STOP" && step["depth"].as_u64() == Some(0))
+        .find(|step| step["op"] == "STOP" && step["depth"].as_u64() == Some(1))
         .expect("missing parent STOP step");
     assert_eq!(parent_stop["mem"].as_u64(), Some(32));
 }
 
 #[test]
-fn test_geth_jstracer_call_step_cost() {
+fn test_geth_jstracer_call_step_cost_and_depth() {
     let leaf = address!("0000000000000000000000000000000000001111");
     let mid = address!("0000000000000000000000000000000000002222");
     let reverter = address!("0000000000000000000000000000000000003333");
@@ -387,38 +387,38 @@ fn test_geth_jstracer_call_step_cost() {
     assert_eq!(
         events,
         json!([
-            ["CALL", 0, null, cold_call, "2222"],
+            ["CALL", 1, null, cold_call, "2222"],
             ["enter", "CALL"],
-            ["CALL", 1, null, 2600 + 0x4000, "1111"],
+            ["CALL", 2, null, 2600 + 0x4000, "1111"],
             ["enter", "CALL"],
-            ["ADD", 2],
+            ["ADD", 3],
             ["exit"],
             ["exit"],
-            ["CALL", 0, null, cold_call, "dead"],
+            ["CALL", 1, null, cold_call, "dead"],
             ["enter", "CALL"],
             ["exit"],
-            ["STATICCALL", 0, null, cold_call, "3333"],
+            ["STATICCALL", 1, null, cold_call, "3333"],
             ["enter", "STATICCALL"],
-            ["fault", 1],
+            ["fault", 2],
             ["exit"],
-            ["CREATE", 0, null, create_costs[0], "1d"],
+            ["CREATE", 1, null, create_costs[0], "1d"],
             ["enter", "CREATE"],
             ["exit"],
-            ["CREATE2", 0, null, create_costs[1], "1d"],
+            ["CREATE2", 1, null, create_costs[1], "1d"],
             ["enter", "CREATE2"],
             ["exit"],
-            ["DELEGATECALL", 0, null, warm_call, "1111"],
+            ["DELEGATECALL", 1, null, warm_call, "1111"],
             ["enter", "DELEGATECALL"],
-            ["ADD", 1],
+            ["ADD", 2],
             ["exit"],
-            ["CALLCODE", 0, null, warm_call, "1111"],
+            ["CALLCODE", 1, null, warm_call, "1111"],
             ["enter", "CALLCODE"],
-            ["ADD", 1],
+            ["ADD", 2],
             ["exit"],
-            ["STATICCALL", 0, null, warm_call, "4"],
+            ["STATICCALL", 1, null, warm_call, "4"],
             ["enter", "STATICCALL"],
             ["exit"],
-            ["CALL", 0, null, 9000 + warm_call, "1111"],
+            ["CALL", 1, null, 9000 + warm_call, "1111"],
             ["enter", "CALL"],
             ["exit"],
         ])

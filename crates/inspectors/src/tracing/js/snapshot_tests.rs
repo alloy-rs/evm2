@@ -25,7 +25,7 @@ impl Inspector<BaseEvmTypes> for SnapshotInspector {
             interp.pc(),
             interp.stack().iter().rev().map(ToString::to_string).collect::<Vec<_>>(),
             hex::encode(interp.memory().as_slice()),
-            interp.message().depth,
+            interp.message().depth + 1,
         ])));
         self.js.step(interp);
     }
@@ -157,7 +157,7 @@ fn parent_snapshot_survives_calls_and_return_data() {
             let mut child = hex!("60aa60005260206000").to_vec();
             child.push(stop);
             let steps = compare(parent.into(), Some(child.into()));
-            assert!(steps.iter().any(|step| step[3] == 1), "child must execute");
+            assert!(steps.iter().any(|step| step[3] == 2), "child must execute");
         }
     }
 }
@@ -173,6 +173,6 @@ fn parent_snapshot_survives_create() {
         code.extend_from_slice(&hex!("600a60166000"));
         code.extend_from_slice(&[opcode, op::POP, op::STOP]);
         let steps = compare(code.into(), None);
-        assert!(steps.iter().any(|step| step[3] == 1), "initcode must execute");
+        assert!(steps.iter().any(|step| step[3] == 2), "initcode must execute");
     }
 }
