@@ -2114,6 +2114,7 @@ fn init_() -> Result<()> {
             std::ptr::null(),
         )
     }
+    // TODO: https://github.com/llvm/llvm-project/issues/235937
     unsafe { cpp::evm2_jit_llvm_expand_ir_insts_after_lsr() };
 
     let config = InitializationConfig {
