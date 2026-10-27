@@ -97,9 +97,18 @@ ones here with the numbers that rejected them.
 - `-enable-machine-outliner`: JIT size -11.5%, runtime +1.2% geomean and
   onchain_lm_v2 +8.4%.
 - `-fast-isel` grows JIT size by 4.5%, `-global-isel` falls back to
-  SelectionDAG, and `-regalloc=basic` grows JIT size by 19%. Codegen `-O1`
-  gives the same code as turning off the post-RA scheduler, which we keep;
-  `-O3` grows code by 0.2%.
+  SelectionDAG, and `-regalloc=basic` grows JIT size by 19%.
+- Codegen level, with the IR pipeline fixed: `-O1` differs from `-O2` only by
+  the post-RA scheduler, which X86 enables for some CPUs. On znver5 `-O1` gives
+  the same code as `-post-RA-scheduler=false` and is what `Default` uses.
+  Against `-O3` it cuts compile instructions by 5.5% and spills by 0.4% for
+  0.3% more JIT size and flat runtime (instructions -0.1%, cycles +1.6% on a
+  loaded machine, then +0.1% and -0.1%), but the JIT size of push0_proxy grows
+  6.4%. On graniterapids, the CI runner, `-O1` and `-O2` give identical
+  assembly. `-O2` and `-O3` produce the same code to 0.1% in JIT size and
+  compile instructions, so `-O3` buys nothing. `-O0` grows JIT size by 71%,
+  spills ×27, and runtime instructions by 16%, for 41% fewer compile
+  instructions.
 - `-enable-ext-tsp-block-placement`: JIT size -0.3% for 56% more llc time.
   `-combiner-global-alias-analysis`: llc +3.4% for no smaller code.
 - Turning off `machine-cse`, `branch-fold`, block placement, `machine-cp`, the
