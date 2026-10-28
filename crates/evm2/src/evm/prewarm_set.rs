@@ -73,7 +73,7 @@ pub struct PrewarmSet {
     /// its bit here for faster access; precompiles and other low-numbered addresses land here.
     short_addresses: ShortAddresses,
     /// The first [`INLINE_CAP`] non-short warm addresses added via [`Self::warm`]. Only the first
-    /// `inline_len` entries are meaningful; the rest are zero.
+    /// `inline_len` entries are meaningful.
     inline: [Address; INLINE_CAP],
     /// Number of occupied entries in `inline`.
     inline_len: usize,
@@ -175,7 +175,6 @@ impl PrewarmSet {
         if let Some(index) = self.inline().iter().position(|a| a == address) {
             self.inline_len -= 1;
             self.inline.swap(index, self.inline_len);
-            self.inline[self.inline_len] = Address::ZERO;
         }
         // `has_storage` may stay set; it only lets lookups skip the map.
         self.access_list.remove(address);
