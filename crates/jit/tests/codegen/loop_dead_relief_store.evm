@@ -1,0 +1,35 @@
+    PUSH0
+    CALLDATALOAD
+    PUSH0
+loop:
+    JUMPDEST
+    DUP2
+    DUP2
+    LT
+    ISZERO
+    PUSH %done
+    JUMPI
+    DUP1
+    MLOAD
+    PUSH1 0x40
+    DUP3
+    ADD
+    MSTORE8
+    PUSH1 0x01
+    ADD
+    PUSH %loop
+    JUMP
+done:
+    JUMPDEST
+    BALANCE
+    STOP
+
+; Pressure relief stores the loaded word to its stack slot, and `MSTORE8` pops it before anything
+; reads the slot. The store is removed, so LICM no longer carries the word around the loop to store
+; it on exit; only the counter that `BALANCE` reads is stored.
+; CHECK: [[HEADER:bb1\.[a-zA-Z0-9.]*]]:
+; CHECK-NOT: store i256
+; CHECK: label %[[HEADER]]
+; CHECK: store i256
+; CHECK-NOT: store i256
+; CHECK: ret

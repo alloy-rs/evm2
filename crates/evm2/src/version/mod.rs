@@ -3,7 +3,8 @@
 use crate::{
     EvmConfig, EvmTypesHost, SpecId,
     constants::{
-        MAX_CODE_SIZE, MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
+        CALL_DEPTH_LIMIT, MAX_CODE_SIZE, MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE,
+        MAX_INITCODE_SIZE_AMSTERDAM,
     },
     interpreter::{instructions as instr, op},
 };
@@ -16,7 +17,7 @@ mod features;
 pub use features::EvmFeatures;
 
 mod opcode_config;
-pub use opcode_config::OpcodeConfig;
+pub use opcode_config::{OpcodeChange, OpcodeConfig, OpcodeView};
 
 /// Runtime configuration data.
 ///
@@ -44,6 +45,14 @@ pub struct Version {
     pub max_initcode_size: usize,
     /// Maximum blobs allowed in a single blob transaction.
     pub max_blobs_per_tx: usize,
+    /// Inspector-visible depth of the transaction root. Defaults to zero.
+    ///
+    /// Nested transaction roots can retain their outer call depth while receiving a fresh
+    /// [`CALL_DEPTH_LIMIT`]-descendant budget. This must leave room in `u16` for that budget
+    /// and the attempted-too-deep message: at most `u16::MAX - CALL_DEPTH_LIMIT - 1` (64510).
+    /// Installing a version with a larger value through
+    /// [`ExecutionConfig::with_version`](crate::ExecutionConfig::with_version) panics.
+    pub initial_call_depth: u16,
 
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
@@ -92,6 +101,15 @@ impl Version {
             (self.tx_gas_limit_cap, u64::MAX)
         }
     }
+
+    /// Returns the deepest permitted inspector-visible call depth.
+    ///
+    /// [`ExecutionConfig::with_version`](crate::ExecutionConfig::with_version) validates
+    /// [`Self::initial_call_depth`], so this cannot overflow for an installed version.
+    #[inline]
+    pub const fn max_call_depth(&self) -> u16 {
+        self.initial_call_depth + CALL_DEPTH_LIMIT
+    }
 }
 
 const fn base_tx_gas_limit_cap(spec_id: SpecId) -> u64 {
@@ -130,6 +148,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_code_size: MAX_CODE_SIZE,
             max_initcode_size: MAX_INITCODE_SIZE,
             max_blobs_per_tx: MAX_BLOBS_PER_BLOCK_DENCUN,
+            initial_call_depth: 0,
             _non_exhaustive: (),
         }
     }; SpecId::COUNT];
@@ -145,6 +164,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_code_size: base_max_code_size(spec_id),
             max_initcode_size: base_max_initcode_size(spec_id),
             max_blobs_per_tx: base_max_blobs_per_tx(spec_id),
+            initial_call_depth: 0,
             _non_exhaustive: (),
         };
         i += 1;
@@ -228,7 +248,7 @@ macro_rules! evm_versions {
             use crate::interpreter::gas::*;
 
             let spec_id = Cfg::BASE_SPEC_ID;
-            let mut v = OpcodeConfig::empty();
+            let mut v = OpcodeConfig::empty(spec_id);
 
             $(
                 if spec_id.enables(SpecId::$spec) {
@@ -374,6 +394,14 @@ mod tests {
         let mut amsterdam_without_eip8037 = Version::new(SpecId::AMSTERDAM);
         amsterdam_without_eip8037.features.remove(EvmFeatures::EIP8037);
         assert_eq!(amsterdam_without_eip8037.tx_gas_caps(), (MAX_TX_GAS_LIMIT_OSAKA, u64::MAX));
+    }
+
+    #[test]
+    #[should_panic(expected = "initial call depth must leave room")]
+    fn execution_config_rejects_unrepresentable_call_budget() {
+        let mut version = Version::new(SpecId::CANCUN);
+        version.initial_call_depth = u16::MAX - CALL_DEPTH_LIMIT;
+        crate::ExecutionConfig::<BaseEvmTypes>::for_spec_and_version(SpecId::CANCUN, version);
     }
 }
 

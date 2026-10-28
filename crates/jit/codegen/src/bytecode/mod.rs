@@ -4,11 +4,11 @@ use crate::FxHashMap;
 use alloy_primitives::U256;
 use bitvec::vec::BitVec;
 use evm2::{
-    SpecId,
+    OpcodeView, SpecId,
     interpreter::{op, opcode::OpCode},
     version::GasParams,
 };
-use evm2_jit_backend::Result;
+use evm2_jit_backend::{Result, eyre::bail};
 use oxc_index::IndexVec;
 use smallvec::SmallVec;
 use std::{borrow::Cow, cell::RefCell};
@@ -216,17 +216,23 @@ impl<'a> Bytecode<'a> {
         code: impl Into<Cow<'a, [u8]>>,
         spec_id: SpecId,
         gas_params: Option<GasParams>,
+        opcodes: Option<&OpcodeView>,
     ) -> Self {
-        Self::new_mono(code.into(), spec_id, gas_params)
+        Self::new_mono(code.into(), spec_id, gas_params, opcodes)
     }
 
     #[cfg(test)]
     pub(crate) fn test(code: impl Into<Cow<'a, [u8]>>) -> Self {
-        Self::new(code, crate::tests::DEF_SPEC, None)
+        Self::new(code, crate::tests::DEF_SPEC, None, None)
     }
 
     #[instrument(name = "Bytecode::new", level = "debug", skip_all)]
-    fn new_mono(code: Cow<'a, [u8]>, spec_id: SpecId, gas_params: Option<GasParams>) -> Self {
+    fn new_mono(
+        code: Cow<'a, [u8]>,
+        spec_id: SpecId,
+        gas_params: Option<GasParams>,
+        opcodes: Option<&OpcodeView>,
+    ) -> Self {
         let gas_params = gas_params.unwrap_or(evm2::Version::base(spec_id).gas_params);
         let mut insts = IndexVec::with_capacity(code.len() + 8);
         let mut inst_to_pc = IndexVec::with_capacity(code.len() + 8);
@@ -238,8 +244,9 @@ impl<'a> Bytecode<'a> {
         let jumpdests = legacy_jumpdests(&code);
         let mut pc_to_inst = FxHashMap::with_capacity_and_hasher(code.len(), Default::default());
         let mut u256_interner = U256Interner::new();
-        let op_infos = op_info_map(spec_id);
-        let mut iter = OpcodesIter::new(&code, spec_id).with_pc();
+        let owned_infos = opcodes.map(|opcodes| opcode_infos(opcodes, spec_id));
+        let op_infos = owned_infos.as_ref().unwrap_or_else(|| op_info_map(spec_id));
+        let mut iter = OpcodesIter::with_infos(&code, op_infos).with_pc();
         while let Some((pc, Opcode { opcode, immediate })) = iter.next() {
             let inst: Inst = insts.next_idx();
             pc_to_inst.insert(pc as u32, inst);
@@ -253,11 +260,20 @@ impl<'a> Bytecode<'a> {
             if info.is_disabled() {
                 flags |= InstFlags::DISABLED;
             }
-            let (base_gas, stack_io) = if info.is_unknown() || info.is_disabled() {
-                (0, (0, 0))
-            } else {
-                (info.base_gas(), compute_stack_io(opcode, immediate))
-            };
+            if info.is_host() {
+                flags |= InstFlags::HOST;
+            }
+            if info.is_unsupported_host() {
+                // Analysis treats it as an unknown opcode; `analyze` rejects the program if one
+                // is reachable.
+                flags |= InstFlags::UNKNOWN | InstFlags::UNSUPPORTED_HOST;
+            }
+            let (base_gas, stack_io) =
+                if info.is_unknown() || info.is_disabled() || info.is_unsupported_host() {
+                    (0, (0, 0))
+                } else {
+                    (info.base_gas(), compute_stack_io(opcode, immediate))
+                };
 
             let data = match opcode {
                 op::PUSH0..=op::PUSH32 | op::DUPN | op::SWAPN | op::EXCHANGE => {
@@ -309,7 +325,7 @@ impl<'a> Bytecode<'a> {
             // bytes: every desynchronizing immediate is an invalid DUPN/SWAPN/EXCHANGE
             // encoding, so the opcode preceding them halts at runtime.
             // A truncated immediate at the end of the code consumes the remaining bytes.
-            let imm_len = if info.is_unknown() || info.is_disabled() {
+            let imm_len = if info.is_unknown() || info.is_disabled() || info.is_unsupported_host() {
                 0
             } else {
                 min_imm_len(opcode) as usize
@@ -455,6 +471,12 @@ impl<'a> Bytecode<'a> {
         if tracing::enabled!(tracing::Level::TRACE) {
             self.log_ir_stats();
             self.log_const_input_stats();
+        }
+
+        if let Some((_, data)) =
+            self.iter_insts().find(|(_, data)| data.flags.contains(InstFlags::UNSUPPORTED_HOST))
+        {
+            bail!("host opcode {:#04x} is not supported by compiled code", data.opcode);
         }
 
         Ok(())
@@ -719,7 +741,7 @@ impl<'a> Bytecode<'a> {
         inst: Inst,
     ) -> [Option<(Option<u64>, Option<u64>)>; 2] {
         let data = self.inst(inst);
-        if data.flags.intersects(InstFlags::DISABLED | InstFlags::UNKNOWN) {
+        if data.flags.intersects(InstFlags::DISABLED | InstFlags::UNKNOWN | InstFlags::HOST) {
             return [None, None];
         }
 
@@ -1159,6 +1181,10 @@ impl InstData {
     /// reads `gasleft()`, but it is pure, so it adds back the gas charged ahead of it instead.
     #[inline]
     pub(crate) const fn ends_sections(&self) -> bool {
+        // The host's instruction may read the remaining gas.
+        if self.flags.contains(InstFlags::HOST) {
+            return true;
+        }
         match self.opcode {
             // Calls and contract creation cap the gas forwarded based on the remaining gas, and
             // the callee can return a value transfer's stipend, leaving more gas than before.
@@ -1243,6 +1269,11 @@ bitflags::bitflags! {
         /// `stack_section` holds only the bounds that the previous sections have not checked;
         /// the virtual stack already tracks the checked range.
         const CONTINUES_STACK_SECTION = 1 << 10;
+        /// The host's own instruction implementation executes this opcode, through a builtin.
+        const HOST = 1 << 11;
+        /// The host implements this opcode in a way compiled code cannot reproduce, so a
+        /// program where it is reachable is not compiled.
+        const UNSUPPORTED_HOST = 1 << 12;
     }
 }
 

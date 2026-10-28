@@ -1,7 +1,8 @@
 //! EVM configuration.
 
 use crate::{
-    Evm, OpcodeConfig, SpecId,
+    Evm, OpcodeConfig, OpcodeView, SpecId,
+    constants::CALL_DEPTH_LIMIT,
     ethereum::TxEnvelope,
     interpreter::{
         Host,
@@ -132,6 +133,8 @@ pub struct ExecutionConfig<T: EvmTypesHost> {
     base_spec_id: SpecId,
     pub(crate) version: Version,
     #[derive_where(skip)]
+    opcode_config: &'static OpcodeConfig<T>,
+    #[derive_where(skip)]
     pub(crate) instructions: &'static InstrTable<T>,
     #[derive_where(skip)]
     pub(crate) inspect_instructions: &'static InstrTable<T>,
@@ -156,6 +159,7 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
         Self {
             base_spec_id,
             version: Version::new(base_spec_id),
+            opcode_config: SelectorOpcodeConfig::<T, F, CUSTOM_SPEC_ID>::OPCODE_CONFIG[i],
             instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
             inspect_instructions:
                 &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSPECT_INSTRUCTIONS[i],
@@ -169,6 +173,7 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
         Self {
             base_spec_id,
             version: Version::new(base_spec_id),
+            opcode_config: C::OPCODE_CONFIG,
             instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
             inspect_instructions: ConfigInstrTables::<T, C>::INSPECT_INSTRUCTIONS,
         }
@@ -183,8 +188,18 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
     }
 
     /// Replaces the runtime version data while keeping the same dispatch table.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Version::initial_call_depth`] leaves no room for the full call budget and
+    /// the attempted-too-deep message, i.e. if it exceeds `u16::MAX - CALL_DEPTH_LIMIT - 1`
+    /// (64510).
     #[inline]
     pub const fn with_version(mut self, version: Version) -> Self {
+        assert!(
+            version.initial_call_depth < u16::MAX - CALL_DEPTH_LIMIT,
+            "initial call depth must leave room for 1024 descendants and the rejected attempt"
+        );
         self.version = version;
         self
     }
@@ -199,6 +214,29 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
     #[inline]
     pub const fn version(&self) -> &Version {
         &self.version
+    }
+
+    /// Returns the active opcode config.
+    #[inline]
+    pub const fn opcode_config(&self) -> &'static OpcodeConfig<T> {
+        self.opcode_config
+    }
+
+    /// Returns whether the opcode config matches the base table for
+    /// [`base_spec_id`](Self::base_spec_id).
+    pub fn has_base_opcode_table(&self) -> bool {
+        self.opcode_config.same_table(OpcodeConfig::base_for_spec(self.base_spec_id))
+    }
+
+    /// Returns a type-independent view of the opcode config, compared with the base table of the
+    /// spec it started from.
+    ///
+    /// A config that started from another spec than [`base_spec_id`](Self::base_spec_id) cannot be
+    /// compared opcode by opcode, so every defined opcode counts as changed.
+    pub fn opcode_view(&self) -> OpcodeView {
+        let origin = self.opcode_config.origin_spec();
+        self.opcode_config
+            .view((origin == self.base_spec_id).then(|| OpcodeConfig::base_for_spec(origin)))
     }
 }
 
