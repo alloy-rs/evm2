@@ -186,7 +186,7 @@ type BasePrecompileCache<T> = [OnceLock<PrecompileMap<T>>; 7];
 struct BasePrecompileNode {
     type_id: TypeId,
     cache: Box<dyn Any + Send + Sync>,
-    next: OnceLock<Box<BasePrecompileNode>>,
+    next: OnceLock<Box<Self>>,
 }
 
 #[cfg(feature = "std")]
