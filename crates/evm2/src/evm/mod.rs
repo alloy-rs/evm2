@@ -229,6 +229,9 @@ pub struct Evm<'a, T: EvmTypesHost> {
     /// This is passed to the inspector call and create hooks as the parent frame.
     #[derive_where(skip)]
     current_frame: Option<NonNull<Interpreter<'static, 'static, T>>>,
+    /// The checkpoint the currently running interpreter frame rolls back to if it fails.
+    #[derive_where(skip)]
+    frame_checkpoint: Option<StateCheckpoint>,
     #[derive_where(skip)]
     running: bool,
     #[cfg(feature = "async")]
@@ -349,6 +352,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             inspector: None,
             interpreter_runner: None,
             current_frame: None,
+            frame_checkpoint: None,
             running: false,
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
@@ -748,6 +752,16 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     #[inline]
     pub fn into_db(self) -> Box<dyn DynDatabase + 'a> {
         self.state.into_db()
+    }
+
+    /// Returns the checkpoint the currently running interpreter frame rolls back to if it fails,
+    /// or `None` outside a frame.
+    ///
+    /// For a create frame, the checkpoint follows the creator's nonce bump and precedes the
+    /// account creation and endowment transfer.
+    #[inline]
+    pub const fn frame_checkpoint(&self) -> Option<&StateCheckpoint> {
+        self.frame_checkpoint.as_ref()
     }
 
     /// Returns the mutable EVM state.
@@ -1379,7 +1393,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         }
         message.code_address = message.destination;
         let input = core::mem::take(&mut message.input);
-        let result = self.run_interpreter(tx_env, message);
+        let result = self.run_frame(tx_env, message, checkpoint.clone());
         message.input = input;
         let stop = result?;
         self.finish_create_message_run(checkpoint, &message.destination, stop)
@@ -1555,7 +1569,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 ..MessageResultExt::default()
             });
         }
-        let stop = self.run_interpreter(tx_env, message)?;
+        let stop = self.run_frame(tx_env, message, checkpoint.clone())?;
         Ok(self.finish_call_message_run(checkpoint, stop))
     }
 
@@ -1634,6 +1648,20 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             gas: GasTracker::new_with_execution_gas_and_reservoir(gas_remaining, reservoir),
             ..MessageResultExt::default()
         }
+    }
+
+    /// Runs `message`'s interpreter frame, which rolls back to `checkpoint` if it fails.
+    #[inline]
+    fn run_frame(
+        &mut self,
+        tx_env: &TxEnv<T>,
+        message: &Message<T>,
+        checkpoint: StateCheckpoint,
+    ) -> Result<InstrStop, ExecutionError> {
+        let previous = self.frame_checkpoint.replace(checkpoint);
+        let stop = self.run_interpreter(tx_env, message);
+        self.frame_checkpoint = previous;
+        stop
     }
 
     #[inline(never)]
