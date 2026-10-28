@@ -190,10 +190,15 @@ pub(crate) struct Account {
     pub(crate) is_warm: bool,
     /// Whether this account is touched for transaction-finalization account-lifetime rules.
     pub(crate) is_touched: bool,
+    /// Touch metadata retained after finalization consumes `is_touched`.
+    pub(crate) finalized_touched: bool,
     /// Whether this account has been self-destructed in the current transaction.
     pub(crate) is_destroyed: bool,
     /// Whether the present overlay account was created in the current transaction.
     pub(crate) just_created: bool,
+    /// Whether a created account keeps its storage baseline, see
+    /// [`AccountHandle::mark_created_keeping_storage`]. Meaningful only while `just_created`.
+    pub(crate) keeps_storage: bool,
     /// Whether the present overlay account's code has been modified.
     pub(crate) code_changed: bool,
     /// Persistent transaction storage owned by this account.
@@ -219,10 +224,22 @@ impl Account {
     }
 
     /// Marks the account as created during the transaction, which also flags its code as changed.
+    ///
+    /// The first creation mark decides whether the account keeps its storage baseline.
     #[inline]
     pub(crate) const fn mark_created(&mut self) {
+        if !self.just_created {
+            self.keeps_storage = false;
+        }
         self.just_created = true;
         self.code_changed = true;
+    }
+
+    /// Returns whether the account's creation discarded its storage baseline, so its unloaded
+    /// slots read as zero and committing it drops cached slots.
+    #[inline]
+    pub(crate) const fn discards_storage(&self) -> bool {
+        self.just_created && !self.keeps_storage
     }
 
     /// Returns whether the account was created during the transaction.
@@ -272,6 +289,7 @@ impl Account {
             current: self.present.as_ref(),
             created: self.is_created(),
             selfdestructed,
+            touched: self.finalized_touched,
             code: self.changed_code(),
             storage: &self.storage,
         }
@@ -347,12 +365,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if self.tracked.storage.slots.capacity() == 0 {
             self.tracked.storage.slots = self.storage_pool.take();
         }
-        StorageHandle::new(
-            &self.address,
-            &mut self.tracked.storage,
-            self.tracked.just_created,
-            self.inner,
-        )
+        let discards_storage = self.tracked.discards_storage();
+        StorageHandle::new(&self.address, &mut self.tracked.storage, discards_storage, self.inner)
     }
 
     /// Records the pre-mutation revert entry the first time a change is made through this handle.
@@ -637,10 +651,36 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Marks the present overlay account as created in the current transaction, also flagging its
     /// code as changed. The creation/code-change status is reverted together with the rest of the
     /// overlay by the [`JournalEntry::AccountChange`] snapshot recorded for this handle.
+    ///
+    /// Created accounts follow the EIP-6780 rules for `SELFDESTRUCT` and are emitted as created by
+    /// [`PendingState`](super::PendingState).
+    ///
+    /// The account must be present, for example through [`Self::get_or_insert`].
     #[inline]
-    pub(crate) fn mark_created(&mut self) {
+    pub fn mark_created(&mut self) {
         self.record_change();
         self.tracked.mark_created();
+    }
+
+    /// Marks the present overlay account as created in the current transaction, like
+    /// [`Self::mark_created`], but keeps its storage baseline: unloaded slots read from the
+    /// database and committing the account does not drop its cached slots.
+    ///
+    /// For embedders that continue a transaction on a fresh overlay whose database already holds
+    /// the account's creation and storage writes, such as after suspending the transaction. The
+    /// account stays eligible for EIP-6780 `SELFDESTRUCT`. An account already created in this
+    /// overlay keeps reading its old storage as zero.
+    ///
+    /// Slots load with the database values as their transaction originals, so `SSTORE` gas and
+    /// refunds can differ from an uninterrupted run, where a created account's originals are zero.
+    /// This matches resuming any other account on a fresh overlay.
+    #[inline]
+    pub fn mark_created_keeping_storage(&mut self) {
+        let first = !self.tracked.just_created;
+        self.mark_created();
+        if first {
+            self.tracked.keeps_storage = true;
+        }
     }
 
     /// Records a revert snapshot and returns the live account, materializing an empty one when it

@@ -2,8 +2,13 @@
 
 use crate::{CompileTimings, eyre, runtime::storage::ArtifactStore};
 use alloy_primitives::B256;
-use evm2::{SpecId, version::GasParams};
-use std::{path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use evm2::{
+    BaseEvmTypes, EvmTypesHost, ExecutionConfig, OpcodeConfig, OpcodeView, SpecId,
+    version::GasParams,
+};
+use evm2_jit_builtins::Builtin;
+use evm2_jit_codegen::HostLayout;
+use std::{any::TypeId, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 const JIT_MODE_ENV: &str = "EVM2_JIT_MODE";
 const JIT_HELPER_PATH_ENV: &str = "EVM2_JIT_HELPER_PATH";
@@ -88,6 +93,9 @@ pub struct RuntimeConfig {
     ///
     /// Defaults to `None`.
     pub gas_params: Option<GasParams>,
+
+    /// Host ABI used by in-process compiled code.
+    pub host: HostConfig,
 
     /// AOT mode: observed misses are promoted to AOT compilation instead of JIT.
     ///
@@ -218,6 +226,7 @@ impl Default for RuntimeConfig {
             no_dedup: false,
             no_dse: false,
             gas_params: None,
+            host: HostConfig::for_types::<BaseEvmTypes>(),
             aot: false,
             jit_mode: JitMode::default(),
             jit_helper_path: None,
@@ -281,8 +290,9 @@ pub struct RuntimeTuning {
 
     /// Timeout for a single out-of-process JIT compilation job.
     ///
-    /// When exceeded, the helper process is killed and a fresh helper is spawned for
-    /// the next job. Only applies to [`JitMode::OutOfProcess`].
+    /// Time while the helper is paused does not count. When exceeded, the helper process is killed
+    /// and a fresh helper is spawned for the next job. Only applies to
+    /// [`JitMode::OutOfProcess`].
     ///
     /// Defaults to `5s`.
     pub jit_timeout: Duration,
@@ -406,4 +416,67 @@ fn env_path(name: &str) -> Option<PathBuf> {
         let path = PathBuf::from(path);
         path.canonicalize().unwrap_or(path)
     })
+}
+
+/// Opcode table of the host's execution config, which compiled code must match.
+#[derive(Clone, Debug)]
+pub(crate) struct HostOpcodes {
+    pub(crate) view: Arc<OpcodeView>,
+    /// Address of the `&'static OpcodeConfig<T>` the table was read from.
+    pub(crate) config: usize,
+}
+
+/// Immutable type identity and layout for an in-process JIT host.
+#[derive(Clone, Debug)]
+pub struct HostConfig {
+    pub(crate) type_id: TypeId,
+    pub(crate) layout: HostLayout,
+    /// `None` for the base opcode table of the executing spec.
+    pub(crate) opcodes: Option<HostOpcodes>,
+    /// Suffix of the builtin symbols in objects an out-of-process helper compiles.
+    pub(crate) symbol_suffix: Option<usize>,
+    /// `None` for the base host, whose builtins are the exported `__revmc_builtin_*` symbols.
+    pub(crate) resolver: Option<fn(Builtin) -> usize>,
+}
+
+impl HostConfig {
+    /// Selects the interpreter layout and builtins for `T`.
+    pub fn for_types<T: EvmTypesHost>() -> Self {
+        let type_id = TypeId::of::<T>();
+        Self {
+            type_id,
+            layout: HostLayout::for_types::<T>(),
+            opcodes: None,
+            symbol_suffix: None,
+            resolver: (type_id != TypeId::of::<BaseEvmTypes>()).then_some(Builtin::addr::<T>),
+        }
+    }
+
+    /// Selects the interpreter layout and builtins for `T`, and the opcode table of `config`.
+    ///
+    /// Compiled code runs only frames whose execution config has this opcode table: it charges
+    /// the table's static gas, and runs the host's own instruction for overridden `SSTORE`,
+    /// `SLOAD` and other builtin-backed opcodes. Contracts that use opcodes the host adds or
+    /// overrides in any other way stay on the interpreter.
+    pub fn for_config<T: EvmTypesHost>(config: &ExecutionConfig<T>) -> Self {
+        let mut host = Self::for_types::<T>();
+        host.opcodes = Some(HostOpcodes {
+            view: Arc::new(config.opcode_view()),
+            config: config.opcode_config() as *const OpcodeConfig<T> as usize,
+        });
+        host
+    }
+
+    pub(crate) const fn is_default(&self) -> bool {
+        self.resolver.is_none() && self.opcodes.is_none()
+    }
+
+    /// Replaces builtin addresses for a chain-specific instruction implementation.
+    ///
+    /// # Safety
+    /// Every address must match the selected host type and the corresponding builtin's C ABI.
+    pub unsafe fn with_resolver(mut self, resolver: fn(Builtin) -> usize) -> Self {
+        self.resolver = Some(resolver);
+        self
+    }
 }

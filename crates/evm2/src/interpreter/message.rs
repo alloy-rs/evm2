@@ -36,7 +36,8 @@ pub type Message<T = BaseEvmTypes> = MessageExt<<T as EvmTypesHost>::MessageExt>
 pub struct MessageExt<E = ()> {
     /// Message kind.
     pub kind: MessageKind,
-    /// Current call depth.
+    /// Inspector-visible call depth, starting at
+    /// [`Version::initial_call_depth`](crate::Version::initial_call_depth).
     pub depth: u16,
     /// Gas available to this message.
     pub gas_limit: u64,
