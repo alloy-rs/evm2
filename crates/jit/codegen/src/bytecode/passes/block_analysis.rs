@@ -489,7 +489,7 @@ impl ContextMode {
     fn budget(self, num_blocks: usize, num_insts: usize) -> Budget {
         match self {
             Self::Full | Self::Folded => Budget {
-                block_parts: 2048,
+                block_parts: 8192,
                 parts: (num_blocks * 32).min(1 << 17),
                 pops: num_blocks * 128,
                 pop_work: 64,
@@ -3948,7 +3948,7 @@ mod tests_edge_cases {
     /// converge, leaving the return jump dynamic.
     #[test]
     fn insensitive_fixpoint_work_is_bounded() {
-        let callers = 2100;
+        let callers = 8200;
         let depth = 64;
         let mut lines = vec!["CALLDATASIZE".to_string(); depth];
         lines.push("PUSH %caller0".to_string());

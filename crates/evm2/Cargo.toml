@@ -22,6 +22,7 @@ alloy-eip7928.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 auto_impl.workspace = true
+bitflags.workspace = true
 derive-where.workspace = true
 thiserror.workspace = true
 typeid.workspace = true
@@ -131,6 +132,7 @@ std = [
     "ark-serialize/std",
     "ark-std/std",
     "aurora-engine-modexp/std",
+    "bitflags/std",
     "k256/std",
     "once_cell/std",
     "p256/std",
@@ -155,6 +157,7 @@ serde = [
     "alloy-eips/serde",
     "alloy-primitives/serde",
     "ark-serialize/serde",
+    "bitflags/serde",
     "derive-where/serde",
     "k256/serde",
     "p256/serde",

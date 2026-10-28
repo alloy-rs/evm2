@@ -17,7 +17,7 @@ use core::cmp::min;
 use evm2::{
     BaseEvmTypes, EvmTypesHost,
     bytecode::Bytecode,
-    constants::{BLOCK_HASH_HISTORY, CALL_DEPTH_LIMIT},
+    constants::BLOCK_HASH_HISTORY,
     interpreter::{Host, MessageExt, MessageKind, Word, derive_create_destination, i256},
     utils::read_word_padded,
     version::{EvmFeatures, GasId},
@@ -654,7 +654,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
         if let Some(caller_info) = caller_info.as_ref()
             && (caller_info.balance < value
                 || caller_info.nonce == u64::MAX
-                || depth > CALL_DEPTH_LIMIT)
+                || depth > ecx.version().max_call_depth())
         {
             unsafe {
                 sp.write(EvmWord::ZERO);
@@ -1106,6 +1106,7 @@ mod tests {
     use alloy_primitives::Address;
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId,
+        constants::CALL_DEPTH_LIMIT,
         env::{BlockEnvExt, TxEnvExt},
         ethereum::ethereum_tx_registry,
         evm::{AccountInfo, EmptyDB, InMemoryDB, inspector::Inspector},

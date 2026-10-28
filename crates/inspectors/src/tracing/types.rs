@@ -49,9 +49,9 @@ pub struct DecodedCallTrace {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CallTrace {
-    /// The depth of the call.
+    /// The inspector-visible depth of the call.
     ///
-    /// Zero represents the root trace node.
+    /// The root starts at [`evm2::Version::initial_call_depth`], normally zero.
     ///
     /// The depth of a call's steps is the depth of the call plus one.
     pub depth: usize,
