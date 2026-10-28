@@ -11,8 +11,6 @@ use alloc::{borrow::Cow, vec::Vec};
 use alloy_primitives::Address;
 #[cfg(feature = "std")]
 use core::any::{Any, TypeId};
-#[cfg(feature = "std")]
-use std::{collections::HashMap, sync::RwLock};
 
 pub mod blake2;
 pub mod bls12_381;
@@ -178,13 +176,26 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
 #[cfg(feature = "std")]
 type BasePrecompileCache<T> = [OnceLock<PrecompileMap<T>>; 7];
 
+/// Append-only list of the leaked [`BasePrecompileCache`] of each host type.
+///
+/// There are only a handful of host types per process, so a linear walk is cheap. Nodes are never
+/// removed or replaced, and each link is set once, so readers only load: unlike a read lock, a hit
+/// writes no shared cache line.
 #[cfg(feature = "std")]
-static BASE_PRECOMPILES: RwLock<Option<HashMap<TypeId, &'static (dyn Any + Send + Sync)>>> =
-    RwLock::new(None);
+type BasePrecompileLink = OnceLock<&'static BasePrecompileNode>;
+
+#[cfg(feature = "std")]
+struct BasePrecompileNode {
+    type_id: TypeId,
+    cache: &'static (dyn Any + Send + Sync),
+    next: BasePrecompileLink,
+}
+
+#[cfg(feature = "std")]
+static BASE_PRECOMPILES: BasePrecompileLink = OnceLock::new();
 
 #[cfg(feature = "std")]
 fn cached_base_precompiles<T: EvmTypesHost>(spec: SpecId) -> &'static PrecompileMap<T> {
-    let type_id = TypeId::of::<T>();
     let index = match spec {
         SpecId::FRONTIER | SpecId::HOMESTEAD | SpecId::TANGERINE | SpecId::SPURIOUS_DRAGON => 0,
         SpecId::BYZANTIUM | SpecId::PETERSBURG => 1,
@@ -195,29 +206,31 @@ fn cached_base_precompiles<T: EvmTypesHost>(spec: SpecId) -> &'static Precompile
         SpecId::OSAKA | SpecId::AMSTERDAM => 6,
     };
 
-    {
-        let cache = BASE_PRECOMPILES.read().expect("base precompile cache poisoned");
-        if let Some(precompiles) = cache.as_ref().and_then(|cache| cache.get(&type_id)) {
-            return precompiles
-                .downcast_ref::<BasePrecompileCache<T>>()
-                .expect("base precompile cache type mismatch")[index]
-                .get_or_init(|| base_precompiles::<T>(spec));
+    shared_base_precompiles::<T>()
+        .downcast_ref::<BasePrecompileCache<T>>()
+        .expect("base precompile cache type mismatch")[index]
+        .get_or_init(|| base_precompiles::<T>(spec))
+}
+
+/// Returns the cache of `T`, appending it to [`BASE_PRECOMPILES`] on first use.
+#[cfg(feature = "std")]
+fn shared_base_precompiles<T: EvmTypesHost>() -> &'static (dyn Any + Send + Sync) {
+    let type_id = TypeId::of::<T>();
+    let mut link = &BASE_PRECOMPILES;
+    loop {
+        // Only an empty link is initialized, and racing creators agree on the winner's node.
+        let node = link.get_or_init(|| {
+            Box::leak(Box::new(BasePrecompileNode {
+                type_id,
+                cache: Box::leak(Box::new(BasePrecompileCache::<T>::default())),
+                next: OnceLock::new(),
+            }))
+        });
+        if node.type_id == type_id {
+            return node.cache;
         }
+        link = &node.next;
     }
-
-    let mut cache = BASE_PRECOMPILES.write().expect("base precompile cache poisoned");
-    let cache = cache.get_or_insert_with(HashMap::new);
-
-    if let Some(precompiles) = cache.get(&type_id) {
-        return precompiles
-            .downcast_ref::<BasePrecompileCache<T>>()
-            .expect("base precompile cache type mismatch")[index]
-            .get_or_init(|| base_precompiles::<T>(spec));
-    }
-
-    let precompiles = Box::leak(Box::new([const { OnceLock::new() }; 7]));
-    cache.insert(type_id, precompiles);
-    precompiles[index].get_or_init(|| base_precompiles::<T>(spec))
 }
 
 fn base_precompiles<T: EvmTypesHost>(spec: SpecId) -> PrecompileMap<T> {
