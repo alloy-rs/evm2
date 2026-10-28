@@ -17,7 +17,7 @@ mod features;
 pub use features::EvmFeatures;
 
 mod opcode_config;
-pub use opcode_config::OpcodeConfig;
+pub use opcode_config::{OpcodeChange, OpcodeConfig, OpcodeView};
 
 /// Runtime configuration data.
 ///
@@ -248,7 +248,7 @@ macro_rules! evm_versions {
             use crate::interpreter::gas::*;
 
             let spec_id = Cfg::BASE_SPEC_ID;
-            let mut v = OpcodeConfig::empty();
+            let mut v = OpcodeConfig::empty(spec_id);
 
             $(
                 if spec_id.enables(SpecId::$spec) {
