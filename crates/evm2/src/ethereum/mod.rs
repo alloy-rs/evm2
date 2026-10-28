@@ -1312,6 +1312,57 @@ mod tests {
     }
 
     #[test]
+    fn tx_origin_override_reaches_nested_frames() {
+        let caller = Address::with_last_byte(0xaa);
+        let origin = Address::with_last_byte(0xbb);
+        let target = Address::with_last_byte(0x55);
+        let inner = Address::with_last_byte(0x33);
+        let return_origin =
+            [op::ORIGIN, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH0, op::RETURN];
+        // Stores `ORIGIN` at 0, the inner frame's `ORIGIN` at 0x20, and returns both.
+        let mut code = vec![op::ORIGIN, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH1, 0x20];
+        code.extend([op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH20]);
+        code.extend(inner.0);
+        code.extend([op::GAS, op::CALL, op::POP, op::PUSH1, 0x40, op::PUSH0, op::RETURN]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &target,
+            AccountInfo::default().with_code(Bytecode::new_legacy(code.into())),
+        );
+        database.insert_account_info(
+            &inner,
+            AccountInfo::default().with_code(Bytecode::new_legacy(return_origin.to_vec().into())),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::PRAGUE,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::PRAGUE),
+        );
+        evm.set_tx_origin(Some(origin));
+
+        let mut tx_gas = GasTracker::new_with_execution_gas_and_reservoir(100_000, 0);
+        let InitialFrame { mut message, .. } = prepare_initial_frame(
+            &mut evm,
+            caller,
+            0,
+            TxKind::Call(target),
+            &Bytes::new(),
+            U256::ZERO,
+            &mut tx_gas,
+        )
+        .unwrap()
+        .unwrap();
+        let tx_env = TxEnvExt { origin: caller, ..TxEnvExt::default() };
+        let result = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
+
+        assert_eq!(result.stop, InstrStop::Return);
+        let expected = [origin.into_word().0, origin.into_word().0].concat();
+        assert_eq!(result.output.as_ref(), expected.as_slice());
+    }
+
+    #[test]
     fn initial_delegated_call_uses_delegated_code_address() {
         let caller = Address::with_last_byte(0xaa);
         let target = Address::with_last_byte(0x55);

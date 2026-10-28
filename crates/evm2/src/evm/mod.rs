@@ -238,6 +238,8 @@ pub struct Evm<'a, T: EvmTypesHost> {
     #[derive_where(skip)]
     async_stack: r#async::FiberStack,
     evm_send: bool,
+    /// Transaction origin that replaces the one the transaction handler sets, if any.
+    tx_origin: Option<Address>,
 }
 
 impl<'a, T: EvmTypes> Evm<'a, T> {
@@ -357,6 +359,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
             evm_send: false,
+            tx_origin: None,
         }
     }
 
@@ -929,6 +932,17 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         {
             self.log(log);
         }
+    }
+
+    /// Sets the transaction origin of every message this EVM executes, such as the value
+    /// `ORIGIN` reads, instead of the one the transaction handler derives from the sender, or
+    /// clears it with `None`.
+    ///
+    /// This lets a host run a transaction on behalf of an enclosing one whose origin differs from
+    /// the nested transaction's sender. Validation, fees and nonces still use the sender.
+    #[inline]
+    pub const fn set_tx_origin(&mut self, origin: Option<Address>) {
+        self.tx_origin = origin;
     }
 
     /// Sets the active execution inspector.
@@ -1861,6 +1875,12 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         tx_env: &TxEnv<T>,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
+        if let Some(origin) = self.tx_origin
+            && tx_env.origin != origin
+        {
+            let tx_env = TxEnv::<T> { origin, ..tx_env.clone() };
+            return self.execute_message(&tx_env, message);
+        }
         let checkpoint = self.state.checkpoint();
         let result = if self.inspector.is_some() {
             self.execute_message_inspected(tx_env, message)
