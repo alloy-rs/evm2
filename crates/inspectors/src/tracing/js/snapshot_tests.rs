@@ -15,23 +15,24 @@ use serde_json::{Value, json};
 
 struct SnapshotInspector {
     js: JsInspector,
-    pending: Vec<Value>,
+    /// Steps that have started, taken when a child message ends them before `step_end`.
+    pending: Vec<Option<Value>>,
     expected: Vec<Value>,
 }
 
 impl Inspector<BaseEvmTypes> for SnapshotInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
-        self.pending.push(json!([
+        self.pending.push(Some(json!([
             interp.pc(),
             interp.stack().iter().rev().map(ToString::to_string).collect::<Vec<_>>(),
             hex::encode(interp.memory().as_slice()),
-            interp.message().depth,
-        ]));
+            interp.message().depth + 1,
+        ])));
         self.js.step(interp);
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
-        self.expected.push(self.pending.pop().unwrap());
+        self.expected.extend(self.pending.pop().unwrap());
         self.js.step_end(interp);
     }
 
@@ -40,6 +41,7 @@ impl Inspector<BaseEvmTypes> for SnapshotInspector {
         interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &mut Message<BaseEvmTypes>,
     ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.expected.extend(self.pending.last_mut().and_then(Option::take));
         self.js.call(interp, message)
     }
 
@@ -57,6 +59,7 @@ impl Inspector<BaseEvmTypes> for SnapshotInspector {
         interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
         message: &mut Message<BaseEvmTypes>,
     ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.expected.extend(self.pending.last_mut().and_then(Option::take));
         self.js.create(interp, message)
     }
 
@@ -124,10 +127,7 @@ fn compare(code: Bytes, child: Option<Bytes>, initial_call_depth: u16) -> Vec<Va
     assert_eq!(actual, json!(inspector.expected), "bytecode: {code}");
     // Pending steps are indexed relative to the transaction root, not by absolute depth.
     let deepest = inspector.expected.iter().map(|step| step[3].as_u64().unwrap()).max().unwrap();
-    assert_eq!(
-        inspector.js.pending_steps.len() as u64,
-        deepest - u64::from(initial_call_depth) + 1
-    );
+    assert_eq!(inspector.js.pending_steps.len() as u64, deepest - u64::from(initial_call_depth));
     inspector.expected
 }
 
@@ -164,7 +164,7 @@ fn parent_snapshot_survives_calls_and_return_data() {
             let mut child = hex!("60aa60005260206000").to_vec();
             child.push(stop);
             let steps = compare(parent.into(), Some(child.into()), 0);
-            assert!(steps.iter().any(|step| step[3] == 1), "child must execute");
+            assert!(steps.iter().any(|step| step[3] == 2), "child must execute");
         }
     }
 }
@@ -180,7 +180,7 @@ fn parent_snapshot_survives_create() {
         code.extend_from_slice(&hex!("600a60166000"));
         code.extend_from_slice(&[opcode, op::POP, op::STOP]);
         let steps = compare(code.into(), None, 0);
-        assert!(steps.iter().any(|step| step[3] == 1), "initcode must execute");
+        assert!(steps.iter().any(|step| step[3] == 2), "initcode must execute");
     }
 }
 
@@ -193,8 +193,8 @@ fn nested_root_steps_keep_visible_depth() {
         let steps = compare(parent.into(), Some(child.clone()), depth);
         let depths = steps.iter().map(|step| step[3].as_u64().unwrap()).collect::<Vec<_>>();
         let depth = u64::from(depth);
-        let mut expected = vec![depth; 7];
-        expected.extend([depth + 1, depth, depth]);
+        let mut expected = vec![depth + 1; 8];
+        expected.extend([depth + 2, depth + 1]);
         assert_eq!(depths, expected);
         // Apart from the shifted depth, the trace matches the one rooted at depth zero.
         let mut shifted = root_steps.clone();

@@ -175,3 +175,23 @@ fn hook_errors_preserve_execution() {
         assert_eq!(actual.state, expected.state);
     }
 }
+
+#[test]
+fn call_step_errors_preserve_execution() {
+    let mut call = hex!("6000600060006000600073").to_vec();
+    call.extend_from_slice(CHILD.as_slice());
+    call.extend_from_slice(&hex!("61fffff100"));
+    let baseline = "{fault:function(){},result:function(){return 42}}";
+    let script = "{fault:function(){},result:function(){return 42},step:function(l){var o=l.op.toString();if(o=='CALL'||o=='CREATE')throw new Error('boom')}}";
+    // The step ends before the child runs, which must still run with the gas it was given.
+    for code in [&call[..], &hex!("5f5f5ff000")[..]] {
+        let (_, expected) = execute(baseline, code, 1_000_000);
+        let (output, actual) = execute(script, code, 1_000_000);
+        assert_eq!(
+            error_message(output.unwrap_err()),
+            "Error: boom    in server-side tracer function 'step'"
+        );
+        assert_eq!(actual.tx_result.result, expected.tx_result.result);
+        assert_eq!(actual.state, expected.state);
+    }
+}
