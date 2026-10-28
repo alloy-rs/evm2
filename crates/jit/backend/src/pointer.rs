@@ -67,9 +67,7 @@ impl<B: Builder> Pointer<B> {
     /// Stores the value to the pointer.
     pub fn store(&self, bcx: &mut B, value: B::Value) {
         match self.base {
-            PointerBase::Address(ptr) => {
-                bcx.store(value, ptr);
-            }
+            PointerBase::Address(ptr) => bcx.store(value, ptr),
             PointerBase::StackSlot(slot) => bcx.stack_store(value, slot),
         }
     }
