@@ -1,11 +1,11 @@
 //! Internal transfer inspector.
 
-use alloc::{borrow::Cow, vec, vec::Vec};
-use alloy_primitives::{Address, B256, U256, address, b256};
+use alloc::{vec, vec::Vec};
+use alloy_primitives::{Address, B256, Log, U256, address, b256};
 use alloy_sol_types::SolValue;
 use evm2::{
-    EvmTypesHost, Inspector,
-    interpreter::{Host, Interpreter, Message, MessageKind, MessageResult},
+    Evm, EvmTypes, Inspector,
+    interpreter::{Interpreter, Message, MessageKind, MessageResult},
 };
 
 /// Sender of ETH transfer log per `eth_simulateV1` spec.
@@ -19,12 +19,17 @@ pub const TRANSFER_EVENT_TOPIC: B256 =
 
 /// An [Inspector] that collects internal ETH transfers.
 ///
+/// Transfers made by a call or create that fails, including transfers in its subcalls, are
+/// discarded together with their logs.
+///
 /// This can be used to construct an `eth_simulateV1` response. For `ots_getInternalOperations`,
 /// use [InternalOperationsInspector](crate::otterscan::InternalOperationsInspector).
 #[derive(Debug, Default, Clone)]
 pub struct TransferInspector {
     internal_only: bool,
     transfers: Vec<TransferOperation>,
+    /// Checkpoints of the call and create frames currently executing.
+    checkpoints: Vec<TransferCheckpoint>,
     /// If enabled, will insert ERC20-style transfer logs emitted by [TRANSFER_LOG_EMITTER] for
     /// each ETH transfer.
     ///
@@ -38,7 +43,7 @@ impl TransferInspector {
     /// If `internal_only` is set to `true`, only internal transfers are collected, in other words,
     /// the top level call is ignored.
     pub const fn new(internal_only: bool) -> Self {
-        Self { internal_only, transfers: Vec::new(), insert_logs: false }
+        Self { internal_only, transfers: Vec::new(), checkpoints: Vec::new(), insert_logs: false }
     }
 
     /// Creates a new transfer inspector that only collects internal transfers.
@@ -67,7 +72,10 @@ impl TransferInspector {
         self.transfers.iter()
     }
 
-    fn on_transfer<T: EvmTypesHost>(&mut self, message: &Message<T>, host: &mut T::Host<'_>) {
+    fn on_transfer<T: EvmTypes>(&mut self, message: &Message<T>, host: &mut Evm<'_, T>) {
+        self.checkpoints
+            .push(TransferCheckpoint { transfers: self.transfers.len(), logs: host.logs().len() });
+
         let kind = match message.kind {
             MessageKind::Call | MessageKind::CallCode => TransferKind::Call,
             MessageKind::Create => TransferKind::Create,
@@ -76,7 +84,7 @@ impl TransferInspector {
         };
 
         // skip top level transfers
-        if self.internal_only && message.depth == 0 {
+        if self.internal_only && message.depth == host.version().initial_call_depth {
             return;
         }
         // skip zero transfers
@@ -94,16 +102,25 @@ impl TransferInspector {
             let to = B256::from_slice(&to.abi_encode());
             let data = value.abi_encode();
 
-            host.log(
-                &TRANSFER_LOG_EMITTER,
-                Cow::Owned(vec![TRANSFER_EVENT_TOPIC, from, to]),
-                Cow::Owned(data),
-            );
+            host.log(Log::new_unchecked(
+                TRANSFER_LOG_EMITTER,
+                vec![TRANSFER_EVENT_TOPIC, from, to],
+                data.into(),
+            ));
+        }
+    }
+
+    fn on_transfer_end<T: EvmTypes>(&mut self, failed: bool, host: &mut Evm<'_, T>) {
+        if let Some(checkpoint) = self.checkpoints.pop()
+            && failed
+        {
+            self.transfers.truncate(checkpoint.transfers);
+            host.logs_mut().truncate(checkpoint.logs);
         }
     }
 }
 
-impl<T: EvmTypesHost> Inspector<T> for TransferInspector {
+impl<T: EvmTypes> Inspector<T> for TransferInspector {
     fn call(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,
@@ -113,6 +130,15 @@ impl<T: EvmTypesHost> Inspector<T> for TransferInspector {
         None
     }
 
+    fn call_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        _message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        self.on_transfer_end::<T>(!result.is_success(), interp.host());
+    }
+
     fn create(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,
@@ -120,6 +146,18 @@ impl<T: EvmTypesHost> Inspector<T> for TransferInspector {
     ) -> Option<MessageResult<T>> {
         self.on_transfer::<T>(message, interp.host());
         None
+    }
+
+    fn create_end(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        _message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        // A create that stops early without a created address, such as on nonce overflow, also
+        // counts as failed even though its stop is `Return`.
+        let failed = !result.is_success() || result.created_address.is_none();
+        self.on_transfer_end::<T>(failed, interp.host());
     }
 
     fn selfdestruct(
@@ -163,4 +201,13 @@ pub enum TransferKind {
     Create2,
     /// A SELFDESTRUCT operation
     SelfDestruct,
+}
+
+/// Transfer state at the start of a call or create frame.
+#[derive(Clone, Copy, Debug)]
+struct TransferCheckpoint {
+    /// Number of transfers recorded before the frame.
+    transfers: usize,
+    /// Number of logs emitted before the frame.
+    logs: usize,
 }

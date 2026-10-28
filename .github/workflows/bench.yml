@@ -259,13 +259,13 @@ jobs:
           cache-on-failure: true
           cache-bin: false
       - name: Install cargo-codspeed
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-codspeed
       - name: Build the benchmark target
         run: cargo codspeed build --profile profiling -p evm2-cli --features jit --bench evm
       - name: Run the benchmarks
-        uses: CodSpeedHQ/action@f842b9a3ffe213dbb81768fd7f7eeb4dfcf1c369 # v5.4.2
+        uses: CodSpeedHQ/action@821a40cd6c80e3cfe387caf55668287addd808da # v5.5.0
         with:
           run: cargo codspeed run -p evm2-cli --bench evm
           mode: simulation

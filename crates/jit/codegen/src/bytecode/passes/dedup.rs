@@ -92,7 +92,16 @@ impl<'a> Bytecode<'a> {
 
             // Skip blocks containing PC — it returns the current program counter,
             // so identical bytecode at different positions produces different results.
-            if block.insts().any(|i| self.insts[i].opcode == op::PC) {
+            // A host instruction can observe its position too.
+            if block.insts().any(|i| {
+                self.insts[i].opcode == op::PC || self.insts[i].flags.contains(InstFlags::HOST)
+            }) {
+                continue;
+            }
+
+            // Skip blocks with a dead instruction inside. Their compiled code stops at the dead
+            // instruction, so a duplicate redirected to them would not run the rest of its own.
+            if block.insts().any(|i| self.insts[i].is_dead_code()) {
                 continue;
             }
 
@@ -139,6 +148,7 @@ impl<'a> Bytecode<'a> {
 
                 let dup_first_inst = dup_block.insts.start;
                 self.redirects.insert(dup_first_inst, canonical_first_inst);
+                self.insts[canonical_first_inst].flags |= InstFlags::REDIRECT_TARGET;
 
                 // If the duplicate was a reachable JUMPDEST, the canonical must be too
                 // so that sections/gas-checks treat it as a jump target entry point.

@@ -1,5 +1,6 @@
 """Shared utilities for evm2-jit analysis scripts."""
 
+import functools
 import os
 import re
 import shutil
@@ -161,22 +162,94 @@ def time_cli(binary: str, args: list[str], perf: bool) -> tuple[int | None, int 
     return int(stats["instructions:u"]), int(stats["cycles:u"]), stats["task-clock"] / 1e3
 
 
-def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
-    """Run the CLI under ``perf stat`` and return user-space ``(instructions, cycles)``."""
-    with tempfile.NamedTemporaryFile("r") as out:
-        subprocess.run(
-            ["perf", "stat", "-x,", "-e", RUNTIME_EVENTS, "-o", out.name, binary, *args],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True,
+# Size of the strings the kernel puts at the top of a new process's stack: arguments, environment
+# and the executable path.
+STACK_STRINGS = 32768
+
+
+@functools.cache
+def no_aslr() -> list[str]:
+    """Command prefix that disables address space randomization, empty where that is denied."""
+    try:
+        ok = (
+            subprocess.run(["setarch", "-R", "true"], capture_output=True, check=False).returncode
+            == 0
         )
-        stats = {}
-        for line in out:
-            parts = line.strip().split(",")
-            if len(parts) > 2:
-                try:
-                    stats[parts[2]] = float(parts[0])
-                except ValueError:
-                    pass
+    except FileNotFoundError:
+        ok = False
+    if not ok:
+        eprint("warning: cannot disable address space randomization; runtime cycles will be noisy")
+    return ["setarch", "-R"] if ok else []
+
+
+def fixed_stack_env(binary: str, args: list[str], extra: dict[str, str]) -> dict[str, str]:
+    """Return an environment that makes the process's stack strings ``STACK_STRINGS`` bytes.
+
+    Where the stack starts depends on the length of the binary path, the arguments and the
+    environment, and the starting offset changes cycles by several percent (4K aliasing, cache
+    sets and the alignment of hot data). A fixed total puts the stack in the same place for
+    every revision and bench size.
+    """
+    env = {**os.environ, **extra, "EVM2_BENCH_PAD": ""}
+    strings = [binary, binary, *args, *(f"{k}={v}" for k, v in env.items())]
+    used = sum(len(os.fsencode(s)) + 1 for s in strings)
+    env["EVM2_BENCH_PAD"] = "x" * max(STACK_STRINGS - used, 0)
+    return env
+
+
+class NoBenchCounts(Exception):
+    """The binary ran without counting a benchmark loop: it predates ``EVM2_PERF_CONTROL``."""
+
+
+def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
+    """Run ``evm2 run`` under ``perf stat``; return ``(instructions, cycles)`` of its bench loop.
+
+    The counters start disabled and the CLI enables them around the loop through
+    ``EVM2_PERF_CONTROL``, so the compile cost, which is large and noisy, is not counted.
+
+    Runs without address space randomization and with a fixed stack layout, so the same binary
+    gives the same counts from run to run and two revisions are compared on equal terms.
+    """
+    ctl_read, ctl_write = os.pipe()
+    ack_read, ack_write = os.pipe()
+    fds = [ctl_read, ctl_write, ack_read, ack_write]
+    try:
+        with tempfile.NamedTemporaryFile("r") as out:
+            subprocess.run(
+                [
+                    *no_aslr(),
+                    "perf",
+                    "stat",
+                    "-x,",
+                    "-e",
+                    RUNTIME_EVENTS,
+                    "-o",
+                    out.name,
+                    "--control",
+                    f"fd:{ctl_read},{ack_write}",
+                    "-D",
+                    "-1",
+                    binary,
+                    *args,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+                env=fixed_stack_env(binary, args, {"EVM2_PERF_CONTROL": f"{ctl_write},{ack_read}"}),
+                pass_fds=fds,
+            )
+            stats = {}
+            for line in out:
+                parts = line.strip().split(",")
+                if len(parts) > 2:
+                    try:
+                        stats[parts[2]] = float(parts[0])
+                    except ValueError:
+                        pass
+    finally:
+        for fd in fds:
+            os.close(fd)
+    if not stats.get("instructions:u"):
+        raise NoBenchCounts(binary)
     return int(stats["instructions:u"]), int(stats["cycles:u"])

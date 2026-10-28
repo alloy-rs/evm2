@@ -326,6 +326,8 @@ fn execute_case(
         }
     }
 
+    resources.check_compilations().map_err(|err| TestError::case(path, name, err.into()))?;
+
     let final_block_hash = parent_block_hash.expect("genesis block hash should be available");
     if final_block_hash != test_case.lastblockhash {
         return Err(TestError::case(

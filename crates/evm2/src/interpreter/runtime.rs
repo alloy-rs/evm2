@@ -1,6 +1,6 @@
 use super::{
-    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking,
-    StackMut, StackRef, Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, Pc, Result, StackBacking, StackMut,
+    StackRef, Word,
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
@@ -105,7 +105,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
         let bytecode = message.code.clone();
         let gas_limit = message.gas_limit;
-        let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
+        let is_static = message.is_static();
         self.pc = bytecode.bytes_slice().as_ptr();
         self.bytecode_ref = None;
         self.bytecode = bytecode;
@@ -440,6 +440,53 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.features = version.features;
         self.host = Some(NonNull::from(host));
         self.inspector = None;
+    }
+
+    /// Runs the host's instruction implementation for the opcode at `pc` on the interpreter
+    /// stack, which holds `stack_len` words, and returns the new stack length.
+    ///
+    /// Gas is read from and written to this interpreter, so the caller must keep it current.
+    ///
+    /// # Safety
+    ///
+    /// The first `stack_len` words of the stack must be initialized.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`prepare_run`](Self::prepare_run) has not run, or if `pc` or `stack_len` is out
+    /// of bounds.
+    #[doc(hidden)]
+    pub unsafe fn run_external_instruction(
+        &mut self,
+        pc: usize,
+        stack_len: usize,
+    ) -> core::result::Result<usize, InstrStop> {
+        let bytecode = self.bytecode_ref.expect("`prepare_run` must precede external instructions");
+        assert!(pc < self.bytecode.original_byte_slice().len(), "pc out of bounds");
+        assert!(stack_len <= StackMut::CAPACITY, "stack length out of bounds");
+        let host = self.host.expect("`prepare_run` must precede external instructions");
+        // SAFETY: `prepare_run` installed the host, which outlives the run.
+        let config = unsafe { host.as_ref() }.execution_config();
+        // SAFETY: `pc` is in bounds.
+        let mut pc = Pc::new(unsafe { bytecode.as_ptr().add(pc) });
+        let instr = config.opcode_config().instruction(pc.op()).instr;
+        self.stack_len = stack_len;
+        let this: *mut Self = self;
+        // SAFETY: Instructions must not access the stack through `InterpreterState` while the
+        // separate stack view is live, as in the dispatch loop.
+        let (state, mut stack) = unsafe {
+            (
+                InterpreterState::wrap_mut(&mut *this),
+                StackMut { stack: &mut (*this).stack, len: &mut (*this).stack_len },
+            )
+        };
+        let start = pc.as_ptr();
+        instr(&mut pc, stack.reborrow(), state)?;
+        // Compiled code continues at the next instruction.
+        if pc.as_ptr() != start {
+            return Err(InstrStop::FatalExternalError);
+        }
+        Ok(self.stack_len)
     }
 
     #[inline(never)]

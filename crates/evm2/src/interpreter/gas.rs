@@ -321,6 +321,19 @@ impl GasTracker {
         }
     }
 
+    /// Spends execution gas, leaving the tracker unchanged on failure.
+    ///
+    /// Unlike [`Self::spend`], a failed spend does not wrap `remaining`.
+    #[inline]
+    pub const fn try_spend(&mut self, cost: u64) -> Result {
+        if self.remaining < cost {
+            cold_path();
+            return Err(InstrStop::OutOfGas);
+        }
+        self.remaining -= cost;
+        Ok(())
+    }
+
     /// Spends state gas.
     #[doc(alias = "record_state_cost")]
     #[inline]
@@ -338,6 +351,18 @@ impl GasTracker {
         self.state_gas_spilled = self.state_gas_spilled.saturating_add(spill);
         self.reservoir = 0;
         Ok(())
+    }
+
+    /// Spends state gas, leaving the tracker unchanged on failure.
+    ///
+    /// Unlike [`Self::spend_state`], a failed spend does not wrap `remaining`.
+    #[inline]
+    pub fn try_spend_state(&mut self, cost: u64) -> Result {
+        if self.remaining < cost.saturating_sub(self.reservoir) {
+            cold_path();
+            return Err(InstrStop::OutOfGas);
+        }
+        self.spend_state(cost)
     }
 
     /// Rolls back this frame's state-gas charges on revert or exceptional halt
@@ -938,5 +963,53 @@ mod tests {
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spent()), (0, 0, 500));
 
         assert_matches!(gas.spend_state(1), Err(InstrStop::OutOfGas));
+    }
+
+    #[test]
+    fn try_spend_fails_without_changing_tracker() {
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(100, 7);
+        assert!(gas.try_spend(60).is_ok());
+        assert_eq!(gas.remaining(), 40);
+
+        let before = gas;
+        assert_matches!(gas.try_spend(41), Err(InstrStop::OutOfGas));
+        assert_eq!(gas, before);
+
+        assert!(gas.try_spend(40).is_ok());
+        assert_eq!(gas.remaining(), 0);
+    }
+
+    #[test]
+    fn try_spend_state_fails_without_changing_tracker() {
+        // Reservoir covers part of the cost; the spill is one above `remaining`.
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(30, 20);
+        let before = gas;
+        assert_matches!(gas.try_spend_state(51), Err(InstrStop::OutOfGas));
+        assert_eq!(gas, before);
+
+        // The spill exactly fits `remaining`.
+        assert!(gas.try_spend_state(50).is_ok());
+        assert_eq!(
+            (gas.reservoir(), gas.remaining(), gas.state_gas_spent(), gas.state_gas_spilled()),
+            (0, 0, 50, 30)
+        );
+
+        // No reservoir.
+        let mut gas = GasTracker::new(10);
+        let before = gas;
+        assert_matches!(gas.try_spend_state(11), Err(InstrStop::OutOfGas));
+        assert_eq!(gas, before);
+
+        // Non-zero spent and spilled state gas survive a failed spend.
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(100, 10);
+        assert!(gas.try_spend_state(40).is_ok());
+        let before = gas;
+        assert_matches!(gas.try_spend_state(71), Err(InstrStop::OutOfGas));
+        assert_eq!(gas, before);
+
+        // The reservoir alone covers the cost.
+        let mut gas = GasTracker::new_with_execution_gas_and_reservoir(0, 5);
+        assert!(gas.try_spend_state(5).is_ok());
+        assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spent()), (0, 0, 5));
     }
 }

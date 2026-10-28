@@ -1,6 +1,7 @@
 use super::{EXIT_RESULT_OFFSET, EXIT_SP_OFFSET};
 use crate::{EvmContext, EvmStack, InstrStop, RawEvmCompilerFn};
 use core::ptr::NonNull;
+use evm2::EvmTypesHost;
 
 /// Entry trampoline: saves callee-saved registers, stores SP into
 /// `ecx.exit_sp`, and calls the JIT function.
@@ -9,8 +10,8 @@ use core::ptr::NonNull;
 /// On abnormal exit (builtin error), [`evm2_jit_exit`] restores SP and
 /// returns the `exit_result` stored in `EvmContext`.
 #[unsafe(naked)]
-pub(crate) unsafe extern "C" fn evm2_jit_entry(
-    ecx: NonNull<EvmContext<'_, '_, '_>>,
+pub(crate) unsafe extern "C" fn evm2_jit_entry<T: EvmTypesHost>(
+    ecx: NonNull<EvmContext<'_, '_, '_, T>>,
     stack: NonNull<EvmStack>,
     stack_len: NonNull<usize>,
     f: RawEvmCompilerFn,
@@ -68,7 +69,9 @@ pub(crate) unsafe extern "C" fn evm2_jit_entry(
 ///
 /// Must only be called from a builtin that was invoked through `evm2_jit_entry`.
 #[unsafe(naked)]
-pub unsafe extern "C" fn evm2_jit_exit(ecx: *const EvmContext<'_, '_, '_>) -> ! {
+pub unsafe extern "C" fn evm2_jit_exit<T: EvmTypesHost>(
+    ecx: *const EvmContext<'_, '_, '_, T>,
+) -> ! {
     core::arch::naked_asm!(
         // Restore the saved SP (must read before clobbering x0).
         "ldr x9, [x0, {exit_sp}]",

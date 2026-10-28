@@ -66,6 +66,9 @@ impl Bytecode<'_> {
                     first.stack_section.inputs, first.stack_section.max_growth,
                 )
                 .unwrap();
+                if first.continues_stack_section() {
+                    comment.push_str(" cont");
+                }
             }
             if !comment.is_empty() {
                 comment.push(' ');
@@ -535,7 +538,7 @@ mod tests {
             op::POP,
             op::STOP,
         ];
-        let mut bytecode = Bytecode::new(code, SpecId::OSAKA, None);
+        let mut bytecode = Bytecode::new(code, SpecId::OSAKA, None, None);
         bytecode.analyze().unwrap();
         bytecode
     }
@@ -563,7 +566,7 @@ bb1:           ; stack_in=0 max_growth=2 predecessors=bb0,bb1
   PUSH1 0x03   ; ic= 7 pc=10 noop
   JUMPI %bb1   ; ic= 8 pc=12
 
-bb2:           ; stack_in=0 max_growth=7 predecessors=bb1
+bb2:           ; stack_in=0 max_growth=7 cont predecessors=bb1
   PUSH1 0x00   ; ic= 9 pc=13 gas=121 noop
   PUSH1 0x00   ; ic=10 pc=15 noop
   PUSH1 0x00   ; ic=11 pc=17 noop

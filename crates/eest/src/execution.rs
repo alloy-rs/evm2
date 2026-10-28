@@ -87,6 +87,27 @@ impl ExecutionResources {
         }
     }
 
+    /// Fails if a compilation failed, since the runtime then silently runs the interpreter and
+    /// the test would pass without exercising compiled code.
+    #[cfg(feature = "jit")]
+    pub(crate) fn check_compilations(&self) -> Result<(), ExecutionResourceError> {
+        let failed = self.backend.as_ref().map_or(0, |backend| backend.stats().compilations_failed);
+        if failed == 0 {
+            return Ok(());
+        }
+        Err(ExecutionResourceError(format!(
+            "{failed} compilation(s) failed in this run and fell back to the interpreter; \
+             rerun with RUST_LOG=warn for the cause"
+        )))
+    }
+
+    #[cfg(not(feature = "jit"))]
+    #[inline]
+    pub(crate) const fn check_compilations(&self) -> Result<(), ExecutionResourceError> {
+        let _ = self;
+        Ok(())
+    }
+
     #[cfg(feature = "jit")]
     pub(crate) fn print_runtime_stats(&self) {
         if let Some(backend) = &self.backend {

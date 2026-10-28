@@ -44,7 +44,7 @@ pub(crate) mod trustme;
 pub(crate) mod test_utils;
 
 pub mod version;
-pub use version::{EvmFeatures, OpcodeConfig, Version};
+pub use version::{EvmFeatures, OpcodeChange, OpcodeConfig, OpcodeView, Version};
 
 mod spec_id;
 pub use spec_id::SpecId;
