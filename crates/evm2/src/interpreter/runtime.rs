@@ -16,9 +16,6 @@ use alloy_primitives::{Address, B256, Bytes};
 use core::{fmt, hint::cold_path, ops::Range, ptr::NonNull};
 use derive_where::derive_where;
 
-/// Bytecode borrowed by interpreters that are not running a frame.
-static EMPTY_BYTECODE: Bytecode = Bytecode::new();
-
 /// EVM interpreter.
 #[derive_where(Debug)]
 pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
@@ -81,7 +78,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     ///
     /// Must call `init` before use.
     unsafe fn uninit() -> Self {
-        let bytecode = &EMPTY_BYTECODE;
+        let bytecode = <&Bytecode>::default();
         Self {
             pc: bytecode.original_byte_slice().as_ptr(),
             bytecode,
@@ -133,8 +130,8 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.bytecode = bytecode;
     }
 
-    pub(crate) const fn clear_frame_refs(&mut self) {
-        self.bytecode = &EMPTY_BYTECODE;
+    pub(crate) fn clear_frame_refs(&mut self) {
+        self.bytecode = Default::default();
         self.bytecode_ref = None;
         self.tx_env = None;
         self.message = None;
