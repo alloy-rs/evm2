@@ -1115,19 +1115,16 @@ impl Bytecode<'_> {
         // frames of calls that share a jump target without a recursion, so their result
         // only counts when it resolves every jump.
         let has_top = |targets: &[(Inst, JumpResolution)]| targets.iter().any(|(_, t)| t.is_top());
-        let gas_used = self.compiler_gas_used;
         let mut fixpoint = self.run_fixpoint(ContextMode::Full);
         let mut jump_targets = self.resolve_jumps(&jump_insts, &fixpoint);
         if !fixpoint.converged || has_top(&jump_targets) {
             let full_snapshots = std::mem::replace(&mut self.snapshots, local_snapshots.clone());
-            let full_gas_used = std::mem::replace(&mut self.compiler_gas_used, gas_used);
             let folded = self.run_fixpoint(ContextMode::Folded);
             let folded_targets = self.resolve_jumps(&jump_insts, &folded);
             if folded.converged && !has_top(&folded_targets) {
                 (fixpoint, jump_targets) = (folded, folded_targets);
             } else {
                 self.snapshots = full_snapshots;
-                self.compiler_gas_used = full_gas_used;
                 for mode in [ContextMode::Coarse, ContextMode::Insensitive] {
                     if fixpoint.converged {
                         break;
