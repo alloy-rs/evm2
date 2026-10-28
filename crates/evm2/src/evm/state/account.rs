@@ -190,6 +190,8 @@ pub(crate) struct Account {
     pub(crate) is_warm: bool,
     /// Whether this account is touched for transaction-finalization account-lifetime rules.
     pub(crate) is_touched: bool,
+    /// Touch metadata retained after finalization consumes `is_touched`.
+    pub(crate) finalized_touched: bool,
     /// Whether this account has been self-destructed in the current transaction.
     pub(crate) is_destroyed: bool,
     /// Whether the present overlay account was created in the current transaction.
@@ -287,6 +289,7 @@ impl Account {
             current: self.present.as_ref(),
             created: self.is_created(),
             selfdestructed,
+            touched: self.finalized_touched,
             code: self.changed_code(),
             storage: &self.storage,
         }

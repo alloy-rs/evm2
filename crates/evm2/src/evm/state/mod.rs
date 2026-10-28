@@ -903,6 +903,7 @@ impl<'a> State<'a> {
             if !mem::take(&mut entry.is_touched) {
                 continue;
             }
+            entry.finalized_touched = true;
             // EIP-161 deletes touched dead accounts at transaction finalization. Before EIP-161,
             // touching a non-existent account materializes it as empty.
             let needs_finalization = if eip161 {
