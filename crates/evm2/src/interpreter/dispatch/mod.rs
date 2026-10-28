@@ -219,6 +219,10 @@ const fn instruction_changed<T: EvmTypesHost>(
 trait InspectMode<T: EvmTypesHost> {
     const INSPECT: bool;
 
+    /// Whether the frame has an inspector that does not want steps yet, so the frame leaves the
+    /// loop to resume with steps when a child message makes it want them.
+    const LAZY: bool = false;
+
     fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
 
     fn step_end(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
@@ -234,6 +238,30 @@ impl<T: EvmTypesHost> InspectMode<T> for NoInspector {
 
     #[inline(always)]
     fn step_end(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}
+}
+
+/// An inspector that does not want steps: no step hooks, but the frame checks after each child
+/// message whether it now wants them.
+struct LazyInspector;
+
+impl<T: EvmTypesHost> InspectMode<T> for LazyInspector {
+    const INSPECT: bool = false;
+    const LAZY: bool = true;
+
+    #[inline(always)]
+    fn step(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}
+
+    #[inline(always)]
+    fn step_end(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}
+}
+
+/// Returns whether `op` executes a child message.
+#[inline(always)]
+const fn is_message_op(op: u8) -> bool {
+    matches!(
+        op,
+        op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CREATE2
+    )
 }
 
 struct DynInspector;

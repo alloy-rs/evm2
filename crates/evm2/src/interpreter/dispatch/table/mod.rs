@@ -1,4 +1,6 @@
-use super::{DynInspector, InspectMode, NoInspector, inc_pc, run_state};
+use super::{
+    DynInspector, InspectMode, LazyInspector, NoInspector, inc_pc, is_message_op, run_state,
+};
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut},
@@ -144,6 +146,9 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
     if state.is_inspecting() {
         return run_inner::<T, DynInspector>(state, pc, stack, instructions);
     }
+    if state.has_inspector() {
+        return run_inner::<T, LazyInspector>(state, pc, stack, instructions);
+    }
     run_inner::<T, NoInspector>(state, pc, stack, instructions)
 }
 
@@ -182,6 +187,13 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
                 return finish_run(state, cursor, loop_state);
             }
         } else if cursor.pc().as_ptr().is_null() {
+            return finish_run(state, cursor, loop_state);
+        } else if M::LAZY
+            && is_message_op(op)
+            && let Err(stop) = state.resume_stepping()
+        {
+            // Continue after the instruction, now with steps.
+            state.set_result(Err(stop));
             return finish_run(state, cursor, loop_state);
         }
     }
