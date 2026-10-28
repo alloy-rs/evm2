@@ -114,11 +114,11 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
 
     fn call_end(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        if message.depth == 0 {
+        if message.depth == interp.version().initial_call_depth {
             // skip the root call
             return;
         }
@@ -139,11 +139,11 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
 
     fn create_end(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        if message.depth == 0 {
+        if message.depth == interp.version().initial_call_depth {
             // skip the root create
             return;
         }

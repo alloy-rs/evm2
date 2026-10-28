@@ -3,7 +3,7 @@
 use crate::{
     CompileTimings, OptimizationLevel, eyre,
     runtime::{
-        config::{CompilationKind, RuntimeConfig},
+        config::{CompilationKind, HostConfig, HostOpcodes, RuntimeConfig},
         stats::RuntimeStats,
         storage::RuntimeCacheKey,
         worker::{
@@ -15,9 +15,10 @@ use crate::{
 use alloy_primitives::{B256, Bytes};
 use crossbeam_channel as chan;
 use evm2::{
-    SpecId, Version,
+    BaseEvmTypes, OpcodeView, SpecId, Version,
     version::{GasId, GasParams},
 };
+use evm2_jit_codegen::HostLayout;
 use rayon::ThreadPoolBuilder;
 use std::{
     cell::RefCell,
@@ -40,6 +41,7 @@ use wincode::{SchemaRead, SchemaWrite};
 const HELPER_ENV: &str = "EVM2_JIT_HELPER";
 const GAS_PARAM_COUNT: usize = GasId::COUNT;
 const HELPER_PAUSE_TIMEOUT: Duration = Duration::from_millis(100);
+const RECV_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 type GasParamPairs = Vec<(u8, u32)>;
 type PendingResponses = Arc<Mutex<HashMap<u64, chan::Sender<Result<HelperJobResult, String>>>>>;
@@ -300,35 +302,28 @@ impl HelperProcessInner {
             }
         }
 
-        loop {
-            match rx.recv_timeout(config.tuning.jit_timeout) {
-                // An error here comes from the reader draining jobs after the helper died.
-                Ok(result) => return result.map_err(HelperFailure::transient),
-                Err(chan::RecvTimeoutError::Timeout) if self.paused.load(Ordering::Relaxed) => {
-                    continue;
-                }
-                Err(chan::RecvTimeoutError::Timeout) => {
-                    warn!(timeout = ?config.tuning.jit_timeout, "JIT helper timed out");
-                    self.pending.lock().unwrap().remove(&id);
-                    self.stats.jit_helper_timeouts.fetch_add(1, Ordering::Relaxed);
-                    self.kill();
-                    return Err(HelperFailure::deterministic(format!(
-                        "JIT helper timed out after {:?}; helper will be restarted",
-                        config.tuning.jit_timeout
-                    )));
-                }
-                Err(chan::RecvTimeoutError::Disconnected) => {
-                    let status = self.child.lock().unwrap().try_wait().ok().flatten();
-                    let message = match status {
-                        Some(status) => format!("JIT helper exited with {status}"),
-                        None => "JIT helper disconnected".into(),
-                    };
-                    warn!(message, "JIT helper disconnected");
-                    self.stats.jit_helper_disconnects.fetch_add(1, Ordering::Relaxed);
-                    return Err(HelperFailure::transient(format!(
-                        "{message}; helper will be restarted"
-                    )));
-                }
+        match recv_unpaused(&rx, config.tuning.jit_timeout, &self.paused) {
+            // An error here comes from the reader draining jobs after the helper died.
+            Ok(result) => result.map_err(HelperFailure::transient),
+            Err(chan::RecvTimeoutError::Timeout) => {
+                warn!(timeout = ?config.tuning.jit_timeout, "JIT helper timed out");
+                self.pending.lock().unwrap().remove(&id);
+                self.stats.jit_helper_timeouts.fetch_add(1, Ordering::Relaxed);
+                self.kill();
+                Err(HelperFailure::deterministic(format!(
+                    "JIT helper timed out after {:?}; helper will be restarted",
+                    config.tuning.jit_timeout
+                )))
+            }
+            Err(chan::RecvTimeoutError::Disconnected) => {
+                let status = self.child.lock().unwrap().try_wait().ok().flatten();
+                let message = match status {
+                    Some(status) => format!("JIT helper exited with {status}"),
+                    None => "JIT helper disconnected".into(),
+                };
+                warn!(message, "JIT helper disconnected");
+                self.stats.jit_helper_disconnects.fetch_add(1, Ordering::Relaxed);
+                Err(HelperFailure::transient(format!("{message}; helper will be restarted")))
             }
         }
     }
@@ -528,6 +523,11 @@ struct HelperInit {
     no_dse: bool,
     dump_dir: Option<String>,
     gas_params: Option<GasParamPairs>,
+    /// Words of the host layout, see [`HostLayout::to_words`].
+    layout: Vec<u64>,
+    opcode_view: Option<Box<OpcodeView>>,
+    /// Makes the helper's builtin symbols unique to the host's resolver.
+    symbol_suffix: Option<u64>,
     jit_worker_count: usize,
     compiler_recycle_threshold: usize,
 }
@@ -659,6 +659,32 @@ impl From<HelperTimings> for CompileTimings {
 
 fn duration_to_nanos(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// Receives from `rx`, failing with [`chan::RecvTimeoutError::Timeout`] once `timeout` of time
+/// spent unpaused has passed. A stopped helper makes no progress, so time under pause does not
+/// count.
+fn recv_unpaused<T>(
+    rx: &chan::Receiver<T>,
+    timeout: Duration,
+    paused: &AtomicBool,
+) -> Result<T, chan::RecvTimeoutError> {
+    let mut remaining = timeout;
+    loop {
+        let paused_before = paused.load(Ordering::Relaxed);
+        let start = Instant::now();
+        match rx.recv_timeout(remaining.min(RECV_POLL_INTERVAL)) {
+            Err(chan::RecvTimeoutError::Timeout) => {
+                if !paused_before && !paused.load(Ordering::Relaxed) {
+                    remaining = remaining.saturating_sub(start.elapsed());
+                    if remaining.is_zero() {
+                        return Err(chan::RecvTimeoutError::Timeout);
+                    }
+                }
+            }
+            result => return result,
+        }
+    }
 }
 
 thread_local! {
@@ -916,13 +942,26 @@ fn helper_init(config: &RuntimeConfig) -> HelperInit {
         no_dse: config.no_dse,
         dump_dir: config.dump_dir.as_ref().map(|path| path.to_string_lossy().into_owned()),
         gas_params: config.gas_params.as_ref().map(gas_params_to_pairs),
+        layout: config.host.layout.to_words().into_iter().map(|word| word as u64).collect(),
+        opcode_view: config.host.opcodes.as_ref().map(|opcodes| Box::new((*opcodes.view).clone())),
+        symbol_suffix: config.host.resolver.map(|resolver| resolver as usize as u64),
         jit_worker_count: config.tuning.jit_worker_count,
         compiler_recycle_threshold: config.tuning.compiler_recycle_threshold,
     }
 }
 
 fn runtime_config_from_init(init: HelperInit) -> eyre::Result<RuntimeConfig> {
+    // The helper only compiles: builtins stay symbolic and the parent links them to the
+    // addresses of its own host type.
+    let mut host = HostConfig::for_types::<BaseEvmTypes>();
+    let Ok(words) = <[u64; HostLayout::WORDS]>::try_from(init.layout) else {
+        eyre::bail!("invalid host layout length");
+    };
+    host.layout = HostLayout::from_words(words.map(|word| word as usize));
+    host.symbol_suffix = init.symbol_suffix.map(|suffix| suffix as usize);
+    host.opcodes = init.opcode_view.map(|view| HostOpcodes { view: Arc::new(*view), config: 0 });
     let mut config = RuntimeConfig {
+        host,
         dump_dir: init.dump_dir.map(PathBuf::from),
         debug_assertions: init.debug_assertions,
         single_error: init.single_error,
@@ -939,6 +978,45 @@ fn runtime_config_from_init(init: HelperInit) -> eyre::Result<RuntimeConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use evm2::OpcodeConfig;
+
+    #[test]
+    fn helper_init_carries_the_host_layout_and_opcode_view() {
+        let view = OpcodeConfig::<BaseEvmTypes>::base_for_spec(SpecId::CANCUN).view(None);
+        let mut host = HostConfig::for_types::<BaseEvmTypes>();
+        host.opcodes = Some(HostOpcodes { view: Arc::new(view.clone()), config: 0 });
+        let mut words = host.layout.to_words();
+        words[1] += 8;
+        host.layout = HostLayout::from_words(words);
+        let config = RuntimeConfig { host: host.clone(), ..Default::default() };
+        let helper = runtime_config_from_init(helper_init(&config)).unwrap();
+        assert_eq!(helper.host.layout, host.layout);
+        assert_eq!(helper.host.opcodes.as_ref().map(|o| &*o.view), Some(&view));
+    }
+
+    #[test]
+    fn job_timeout_does_not_count_paused_time() {
+        let paused = Arc::new(AtomicBool::new(true));
+        let (tx, rx) = chan::bounded(1);
+        let thread = std::thread::spawn({
+            let paused = Arc::clone(&paused);
+            move || {
+                std::thread::sleep(Duration::from_millis(300));
+                paused.store(false, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(400));
+                tx.send(()).unwrap();
+            }
+        });
+        // 700ms elapse, but only 400ms of them unpaused.
+        assert!(recv_unpaused(&rx, Duration::from_millis(500), &paused).is_ok());
+        thread.join().unwrap();
+
+        let (_tx, rx) = chan::bounded::<()>(1);
+        let start = Instant::now();
+        let result = recv_unpaused(&rx, Duration::from_millis(100), &paused);
+        assert_eq!(result, Err(chan::RecvTimeoutError::Timeout));
+        assert!(start.elapsed() >= Duration::from_millis(100));
+    }
 
     #[test]
     fn helper_pause_state_blocks_until_resume() {

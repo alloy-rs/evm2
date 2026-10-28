@@ -127,6 +127,10 @@ impl Bytecode<'_> {
                     inst,
                     self.foldable_output(inst).is_some(),
                 );
+                // The host's instruction can read any word of the stack.
+                if data.flags.contains(InstFlags::HOST) {
+                    live[..h_before].fill(true);
+                }
             }
         }
 

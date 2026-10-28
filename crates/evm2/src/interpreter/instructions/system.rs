@@ -3,7 +3,6 @@
 use crate::{
     EvmFeatures, EvmTypesHost,
     bytecode::Bytecode,
-    constants::CALL_DEPTH_LIMIT,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Result, StackMut,
         Word, derive_create_destination,
@@ -349,7 +348,7 @@ fn create_inner<T: EvmTypesHost>(
         if let Some(caller_info) = caller_info.as_ref()
             && (caller_info.balance < value
                 || caller_info.nonce == u64::MAX
-                || depth > CALL_DEPTH_LIMIT)
+                || depth > state.version().max_call_depth())
         {
             state.clear_return_data();
             stack.push_u64(0)?;
@@ -454,7 +453,7 @@ mod tests {
     use super::*;
     use crate::{
         ExecutionError, SpecId,
-        constants::MAX_INITCODE_SIZE,
+        constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
         interpreter::{MessageResultExt, op},
         test_utils::{RunConfig, TestHost, push, push_all, run},
         utils::address_to_word,

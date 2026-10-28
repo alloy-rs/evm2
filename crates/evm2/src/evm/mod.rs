@@ -120,7 +120,7 @@ use crate::{
     DatabaseError, EvmConfigSelector, EvmTypes, EvmTypesHost, ExecutionConfig, ExecutionError,
     HostError, LoadError, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
-    constants::{CALL_DEPTH_LIMIT, EIP7708_TRANSFER_TOPIC},
+    constants::EIP7708_TRANSFER_TOPIC,
     env::{BlockEnv, TxEnv},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
@@ -1366,7 +1366,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         tx_env: &TxEnv<T>,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
-        if message.depth > CALL_DEPTH_LIMIT {
+        if message.depth > self.version().max_call_depth() {
             return Ok(Self::error_message_result(
                 InstrStop::CallTooDeep,
                 message.gas_limit,
@@ -1401,7 +1401,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline(never)]
     fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), HostError> {
-        let info = if message.value > 0 || message.depth > 0 {
+        let nested = message.depth > self.version().initial_call_depth;
+        let info = if message.value > 0 || nested {
             self.state.account_info_untracked(&message.caller).map_err(HostError::from)?
         } else {
             None
@@ -1413,7 +1414,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
         // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero instead of
         // wrapping or saturating the creator nonce.
-        if message.depth > 0 && info.as_ref().is_some_and(|info| info.nonce == u64::MAX) {
+        if nested && info.as_ref().is_some_and(|info| info.nonce == u64::MAX) {
             return Err(InstrStop::Return.into());
         }
 
@@ -1421,8 +1422,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // constructed); warm it before running the initcode.
         self.state.account(&message.destination)?.warm();
 
-        if message.depth > 0
-            && let Err(code) = self.state.account(&message.caller).map(|mut a| a.bump_nonce())
+        if nested && let Err(code) = self.state.account(&message.caller).map(|mut a| a.bump_nonce())
         {
             return Err(code.into());
         }
@@ -1533,7 +1533,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         tx_env: &TxEnv<T>,
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError> {
-        if message.depth > CALL_DEPTH_LIMIT {
+        if message.depth > self.version().max_call_depth() {
             return Ok(Self::error_message_result(
                 InstrStop::CallTooDeep,
                 message.gas_limit,
@@ -4489,6 +4489,127 @@ mod tests {
         );
 
         let _ = evm.transact(&test_tx(0));
+    }
+
+    #[rstest::rstest]
+    #[case(SpecId::CANCUN, 0, 3)]
+    #[case(SpecId::CANCUN, 7, 3)]
+    #[case(SpecId::CANCUN, 7, u64::MAX - 1)]
+    #[case(SpecId::AMSTERDAM, 7, u64::MAX - 1)]
+    fn nested_root_create_bumps_transaction_sender_nonce_once(
+        #[case] spec: SpecId,
+        #[case] initial_call_depth: u16,
+        #[case] nonce: u64,
+    ) {
+        let caller = Address::repeat_byte(0xaa);
+        let created = caller.create(nonce);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_nonce(nonce));
+        let mut version = Version::new(spec);
+        version.initial_call_depth = initial_call_depth;
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(spec),
+            database,
+            Precompiles::base(spec),
+        );
+        // The nested transaction root also creates a child, which must still bump its creator.
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                nonce,
+                to: TxKind::Create,
+                gas_limit: 1_000_000,
+                input: Bytes::from_static(&[op::PUSH0, op::PUSH0, op::PUSH0, op::CREATE, op::STOP]),
+                ..Default::default()
+            }),
+            caller,
+        );
+        let executed = evm.transact(&tx).unwrap();
+        assert!(executed.result().status);
+        let pending = executed.detach().pending_state;
+        assert_eq!(pending.account_info(&caller).unwrap().nonce, nonce + 1);
+        assert_eq!(pending.account_info(&created).unwrap().nonce, 2);
+        assert_eq!(pending.account_info(&created.create(1)).unwrap().nonce, 1);
+    }
+
+    #[test]
+    fn transaction_touches_survive_output_but_not_child_revert_or_next_transaction() {
+        let caller = Address::repeat_byte(0xaa);
+        let target = Address::repeat_byte(0x11);
+        let read = Address::repeat_byte(0x22);
+        let child = Address::repeat_byte(0x33);
+        let leaf = Address::repeat_byte(0x44);
+        let mut code = vec![op::PUSH20];
+        code.extend_from_slice(read.as_slice());
+        code.extend([op::BALANCE, op::POP]);
+        let call = |code: &mut Vec<u8>, address: Address| {
+            code.extend([op::PUSH0; 5]);
+            code.push(op::PUSH20);
+            code.extend_from_slice(address.as_slice());
+            code.extend([op::GAS, op::CALL, op::POP]);
+        };
+        call(&mut code, child);
+        code.push(op::STOP);
+        let mut child_code = Vec::new();
+        call(&mut child_code, leaf);
+        child_code.extend([op::PUSH0, op::PUSH0, op::REVERT]);
+        let mut read_code = vec![op::PUSH20];
+        read_code.extend_from_slice(target.as_slice());
+        read_code.extend([op::BALANCE, op::POP, op::STOP]);
+        let mut database = InMemoryDB::default();
+        for (address, code) in
+            [(target, code), (child, child_code), (read, read_code), (leaf, vec![])]
+        {
+            database.insert_account_info(
+                &address,
+                AccountInfo::default().with_nonce(1).with_code(legacy_bytecode(code)),
+            );
+        }
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            database,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(target),
+                gas_limit: 500_000,
+                ..Default::default()
+            }),
+            caller,
+        );
+        let executed = evm.transact(&tx).unwrap();
+        assert!(executed.result().status);
+        for (address, touched) in [(target, true), (read, false), (child, false), (leaf, false)] {
+            let changes = executed.account_changes().find(|c| c.address == address).unwrap();
+            assert_eq!(changes.touched, touched, "{address}");
+            assert!(!changes.is_changed());
+        }
+        let pending = executed.detach().pending_state;
+        for (address, touched) in [(target, true), (read, false), (child, false), (leaf, false)] {
+            assert_eq!(
+                pending.account_changes().find(|c| c.address == address).unwrap().touched,
+                touched
+            );
+        }
+        evm.state.set_pending_state(pending);
+        evm.state.commit_transaction();
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                nonce: 1,
+                to: TxKind::Call(read),
+                gas_limit: 100_000,
+                ..Default::default()
+            }),
+            caller,
+        );
+        let next = evm.transact(&tx).unwrap();
+        assert!(next.result().status);
+        assert!(!next.account_changes().find(|c| c.address == target).unwrap().touched);
     }
 
     #[derive(Default)]

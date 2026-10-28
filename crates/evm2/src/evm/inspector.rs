@@ -141,9 +141,10 @@ impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn Inspector<T> + 'a {
 
 #[cfg(test)]
 mod tests {
-    use super::Inspector;
+    use super::*;
     use crate::{
-        BaseEvmTypes, DatabaseError, Evm, EvmTypesHost, Precompiles, SpecId,
+        BaseEvmTypes, DatabaseError, Evm, EvmTypesHost, ExecutionConfig, Precompiles, SpecId,
+        Version,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnvExt, TxEnvExt},
@@ -750,16 +751,32 @@ mod tests {
         let mut code = call_code(target);
         code.extend([op::CALL, op::STOP]);
 
-        let (result, inspector, _) = run_evm_with_inspector(
-            code,
-            &MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() },
-            50_000,
-            HookInspector::default(),
-        );
-
-        assert_matches!(result.stop, InstrStop::Stop);
-        assert_eq!(inspector.call_depths, [CALL_DEPTH_LIMIT, CALL_DEPTH_LIMIT + 1]);
-        assert_eq!(inspector.call_end_stops, [InstrStop::CallTooDeep, InstrStop::Stop]);
+        for initial_call_depth in [0, 7] {
+            let mut version = Version::new(SpecId::OSAKA);
+            version.initial_call_depth = initial_call_depth;
+            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+                SpecId::OSAKA,
+                BlockEnvExt::default(),
+                TxRegistry::new(),
+                InMemoryDB::default(),
+                Precompiles::base(SpecId::OSAKA),
+            );
+            evm.set_inspector(HookInspector::default());
+            let depth = initial_call_depth + CALL_DEPTH_LIMIT;
+            let mut message = MessageExt {
+                depth,
+                gas_limit: 50_000,
+                code: legacy_bytecode(code.clone()),
+                ..Default::default()
+            };
+            let result =
+                Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+            let inspector = evm.clear_inspector_as::<HookInspector>().unwrap();
+            assert_matches!(result.stop, InstrStop::Stop);
+            assert_eq!(inspector.call_depths, [depth, depth + 1]);
+            assert_eq!(inspector.call_end_stops, [InstrStop::CallTooDeep, InstrStop::Stop]);
+        }
     }
 
     #[test]

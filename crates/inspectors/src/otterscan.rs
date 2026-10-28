@@ -32,8 +32,8 @@ impl InternalOperationsInspector {
         self.operations
     }
 
-    fn on_operation<T: EvmTypesHost>(&mut self, message: &Message<T>) {
-        if message.depth == 0 {
+    fn on_operation<T: EvmTypesHost>(&mut self, message: &Message<T>, initial_call_depth: u16) {
+        if message.depth == initial_call_depth {
             return;
         }
         let r#type = match message.kind {
@@ -54,19 +54,19 @@ impl InternalOperationsInspector {
 impl<T: EvmTypesHost> Inspector<T> for InternalOperationsInspector {
     fn call(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.on_operation::<T>(message);
+        self.on_operation::<T>(message, interp.version().initial_call_depth);
         None
     }
 
     fn create(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.on_operation::<T>(message);
+        self.on_operation::<T>(message, interp.version().initial_call_depth);
         None
     }
 
