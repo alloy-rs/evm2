@@ -63,6 +63,8 @@ unsafe extern "C" {
     );
 
     fn evm2_jit_llvm_set_dso_local(val: LLVMValueRef, local: bool);
+
+    pub(crate) fn evm2_jit_llvm_expand_ir_insts_after_lsr();
 }
 
 pub(crate) fn set_dso_local(f: inkwell::values::FunctionValue<'_>) {
