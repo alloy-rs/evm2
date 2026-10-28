@@ -141,14 +141,15 @@ impl<'a, T: EvmTypesHost> core::ops::DerefMut for dyn Inspector<T> + 'a {
 
 #[cfg(test)]
 mod tests {
-    use super::Inspector;
+    use super::*;
     use crate::{
-        BaseEvmTypes, DatabaseError, Evm, EvmTypesHost, Precompiles, SpecId,
+        BaseEvmTypes, DatabaseError, Evm, EvmTypesHost, ExecutionConfig, Precompiles, SpecId,
+        Version,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnvExt, TxEnvExt},
         ethereum::{TxEnvelope, ethereum_tx_registry},
-        evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State},
+        evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State, StateCheckpoint},
         interpreter::{
             GasTracker, Host, InstrStop, Interpreter, Message, MessageExt, MessageResult,
             MessageResultExt, Word, op,
@@ -750,16 +751,32 @@ mod tests {
         let mut code = call_code(target);
         code.extend([op::CALL, op::STOP]);
 
-        let (result, inspector, _) = run_evm_with_inspector(
-            code,
-            &MessageExt { depth: CALL_DEPTH_LIMIT, ..Default::default() },
-            50_000,
-            HookInspector::default(),
-        );
-
-        assert_matches!(result.stop, InstrStop::Stop);
-        assert_eq!(inspector.call_depths, [CALL_DEPTH_LIMIT, CALL_DEPTH_LIMIT + 1]);
-        assert_eq!(inspector.call_end_stops, [InstrStop::CallTooDeep, InstrStop::Stop]);
+        for initial_call_depth in [0, 7] {
+            let mut version = Version::new(SpecId::OSAKA);
+            version.initial_call_depth = initial_call_depth;
+            let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+                ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+                SpecId::OSAKA,
+                BlockEnvExt::default(),
+                TxRegistry::new(),
+                InMemoryDB::default(),
+                Precompiles::base(SpecId::OSAKA),
+            );
+            evm.set_inspector(HookInspector::default());
+            let depth = initial_call_depth + CALL_DEPTH_LIMIT;
+            let mut message = MessageExt {
+                depth,
+                gas_limit: 50_000,
+                code: legacy_bytecode(code.clone()),
+                ..Default::default()
+            };
+            let result =
+                Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+            let inspector = evm.clear_inspector_as::<HookInspector>().unwrap();
+            assert_matches!(result.stop, InstrStop::Stop);
+            assert_eq!(inspector.call_depths, [depth, depth + 1]);
+            assert_eq!(inspector.call_end_stops, [InstrStop::CallTooDeep, InstrStop::Stop]);
+        }
     }
 
     #[test]
@@ -1346,6 +1363,180 @@ mod tests {
         assert_eq!(state.step_ends, 1);
         assert_eq!(state.calls, 0);
         assert_eq!(state.creates, 1);
+    }
+
+    #[test]
+    fn frame_checkpoint_precedes_value_transfer_and_creation() {
+        // Records, at a call from the running frame, the running frame's checkpoint and the
+        // caller's balance and target's existence once a copy of the state rolls back to it.
+        #[derive(Default)]
+        struct CheckpointInspector {
+            observed: Option<(bool, Option<U256>, bool)>,
+        }
+        impl Inspector<BaseEvmTypes> for CheckpointInspector {
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.destination != Address::with_last_byte(0x44) {
+                    return None;
+                }
+                let target = interp.message().destination;
+                let caller = interp.message().caller;
+                let evm = interp.host();
+                let checkpoint = evm.frame_checkpoint().cloned().unwrap();
+                let before_hook = checkpoint != evm.state().checkpoint();
+                let features = evm.version().features;
+                let mut state = evm.state().clone();
+                state.rollback(checkpoint, features);
+                let caller_balance =
+                    state.account_info_untracked(&caller).unwrap().map(|a| a.balance);
+                let target_exists = state.account_info_untracked(&target).unwrap().is_some();
+                self.observed = Some((before_hook, caller_balance, target_exists));
+                Some(MessageResultExt {
+                    stop: InstrStop::Return,
+                    gas: GasTracker::new(message.gas_limit),
+                    ..Default::default()
+                })
+            }
+        }
+
+        let caller = Address::from([0xaa; 20]);
+        let target = Address::from([0xbb; 20]);
+        // CALL(gas, 0x44, 0, 0, 0, 0, 0), then STOP.
+        let code = vec![
+            op::PUSH0,
+            op::PUSH0,
+            op::PUSH0,
+            op::PUSH0,
+            op::PUSH0,
+            op::PUSH1,
+            0x44,
+            op::PUSH2,
+            0xff,
+            0xff,
+            op::CALL,
+            op::STOP,
+        ];
+        for to in [TxKind::Call(target), TxKind::Create] {
+            let mut database = InMemoryDB::default();
+            database.insert_account_info(
+                &caller,
+                AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
+            );
+            database.insert_account_info(
+                &target,
+                AccountInfo::default().with_code(legacy_bytecode(code.clone())),
+            );
+            let mut evm = Evm::<BaseEvmTypes>::new(
+                SpecId::OSAKA,
+                BlockEnvExt::default(),
+                ethereum_tx_registry(SpecId::OSAKA),
+                database,
+                Precompiles::base(SpecId::OSAKA),
+            );
+            evm.set_inspector(CheckpointInspector::default());
+            let tx = Recovered::new_unchecked(
+                TxEnvelope::Legacy(TxLegacy {
+                    to,
+                    value: U256::from(5),
+                    input: if to.is_create() { code.clone().into() } else { Bytes::new() },
+                    gas_limit: 100_000,
+                    ..Default::default()
+                }),
+                caller,
+            );
+
+            let result = evm.transact(&tx).expect("transaction should execute").discard();
+            assert!(result.status);
+            let inspector = evm.inspector().unwrap().downcast_ref::<CheckpointInspector>().unwrap();
+            let (before_hook, caller_balance, target_exists) = inspector.observed.unwrap();
+            // The value transfer, and for a create the account creation, follow the checkpoint.
+            assert!(before_hook);
+            assert_eq!(caller_balance, Some(U256::from(1_000_000_000_u64)));
+            assert_eq!(target_exists, to.is_call());
+        }
+    }
+
+    #[test]
+    fn nested_create_frame_checkpoint_follows_nonce_bump_and_restores_parent() {
+        // Records the top-level frame's checkpoint, the creator's nonce and the created account's
+        // existence once a copy of the state rolls back to the create frame's checkpoint, and
+        // whether the top-level frame's checkpoint is restored after the create frame.
+        #[derive(Default)]
+        struct CheckpointInspector {
+            parent: Option<StateCheckpoint>,
+            child: Option<(u64, bool)>,
+            restored: Option<bool>,
+        }
+        impl Inspector<BaseEvmTypes> for CheckpointInspector {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                let depth = interp.message().depth;
+                let creator = interp.message().caller;
+                let created = interp.message().destination;
+                let evm = interp.host();
+                let checkpoint = evm.frame_checkpoint().cloned().unwrap();
+                if depth == 0 {
+                    self.parent = Some(checkpoint);
+                    return;
+                }
+                let features = evm.version().features;
+                let mut state = evm.state().clone();
+                state.rollback(checkpoint, features);
+                let nonce = state.account_info_untracked(&creator).unwrap().unwrap().nonce;
+                let created_exists = state.account_info_untracked(&created).unwrap().is_some();
+                self.child = Some((nonce, created_exists));
+            }
+
+            fn create_end(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _message: &Message<BaseEvmTypes>,
+                _result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                self.restored = Some(interp.host().frame_checkpoint() == self.parent.as_ref());
+            }
+        }
+
+        let caller = Address::from([0xaa; 20]);
+        let target = Address::from([0xbb; 20]);
+        // CREATE(0, 0, 0), then STOP.
+        let code = vec![op::PUSH0, op::PUSH0, op::PUSH0, op::CREATE, op::STOP];
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
+        );
+        database.insert_account_info(
+            &target,
+            AccountInfo::default().with_nonce(1).with_code(legacy_bytecode(code)),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::OSAKA),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(CheckpointInspector::default());
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(target),
+                gas_limit: 200_000,
+                ..Default::default()
+            }),
+            caller,
+        );
+
+        let result = evm.transact(&tx).expect("transaction should execute").discard();
+        assert!(result.status);
+        let inspector = evm.inspector().unwrap().downcast_ref::<CheckpointInspector>().unwrap();
+        // The create frame's checkpoint follows the creator's nonce bump and precedes the
+        // account creation.
+        assert_eq!(inspector.child, Some((2, false)));
+        // The top-level frame's checkpoint is restored once the create frame returns.
+        assert_eq!(inspector.restored, Some(true));
     }
 
     #[test]

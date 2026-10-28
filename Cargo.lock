@@ -2591,6 +2591,7 @@ dependencies = [
  "aurora-engine-modexp",
  "auto_impl",
  "aws-lc-rs",
+ "bitflags 2.13.2",
  "blst",
  "c-kzg",
  "corosensei",

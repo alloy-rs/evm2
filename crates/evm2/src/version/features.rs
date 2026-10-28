@@ -124,13 +124,6 @@ evm_features! {
     ///
     /// Default: on
     BALANCE_CHECK,
-    /// Tops up the sender's native balance when [`Self::BALANCE_CHECK`] is disabled.
-    ///
-    /// This preserves Ethereum simulation behavior while allowing custom fee systems to disable
-    /// native-balance validation without minting a synthetic native balance.
-    ///
-    /// Default: on
-    BALANCE_TOP_UP,
     /// Checks that transaction gas limits do not exceed the block gas limit.
     ///
     /// Default: on
@@ -143,6 +136,34 @@ evm_features! {
     ///
     /// Default: on
     PRIORITY_FEE_CHECK,
+    /// Checks deployed contract bytecode sizes against the active size limit.
+    ///
+    /// Default: on since Spurious Dragon
+    CODE_SIZE_CHECK,
+    /// Checks [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559) transaction fee caps against the block base fee.
+    ///
+    /// Default: on
+    BASE_FEE_CHECK,
+    /// Checks [EIP-4844](https://eips.ethereum.org/EIPS/eip-4844) blob fee caps against the block
+    /// blob base fee, independently of [`Self::BASE_FEE_CHECK`].
+    ///
+    /// With the check off, the caller balance check still uses the transaction's
+    /// `max_fee_per_blob_gas`, but the blob fee is charged at the actual block blob base fee, as in
+    /// geth's simulate path. The upfront charge saturates, so a cap below the block blob base fee
+    /// can be exceeded by the charge. Blob-list validation is unchanged.
+    ///
+    /// Disabling the flag skips the comparison for every cap, while geth skips it only for a zero
+    /// cap; embedders choose that policy by disabling the flag only for the calls they relax.
+    ///
+    /// Default: on
+    BLOB_BASE_FEE_CHECK,
+    /// Tops up the sender's native balance when [`Self::BALANCE_CHECK`] is disabled.
+    ///
+    /// This preserves Ethereum simulation behavior while allowing custom fee systems to disable
+    /// native-balance validation without minting a synthetic native balance.
+    ///
+    /// Default: on
+    BALANCE_TOP_UP,
     /// Charges transaction fees.
     ///
     /// Default: on
@@ -167,10 +188,6 @@ evm_features! {
     ///
     /// Default: on since Spurious Dragon
     EIP161,
-    /// Checks deployed contract bytecode sizes against the active size limit.
-    ///
-    /// Default: on since Spurious Dragon
-    CODE_SIZE_CHECK,
     /// Applies [EIP-2028](https://eips.ethereum.org/EIPS/eip-2028) transaction calldata repricing.
     ///
     /// Default: on since Istanbul
@@ -191,10 +208,6 @@ evm_features! {
     ///
     /// Default: on since London
     EIP3541,
-    /// Checks [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559) transaction fee caps against the block base fee.
-    ///
-    /// Default: on
-    BASE_FEE_CHECK,
     /// Applies [EIP-4399](https://eips.ethereum.org/EIPS/eip-4399) PREVRANDAO opcode semantics.
     ///
     /// Default: on since Merge

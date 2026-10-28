@@ -91,9 +91,10 @@ mod tests {
     #[cfg(feature = "llvm")]
     use evm2::{
         EvmFeatures, ExecutionConfig, Version,
+        constants::CALL_DEPTH_LIMIT,
         env::BlockEnv,
-        evm::{AccountInfo, InMemoryDB},
-        interpreter::{Host, Word},
+        evm::{AccountInfo, InMemoryDB, JournalEntry},
+        interpreter::{Host, MessageKind, Word},
         version::GasId,
     };
 
@@ -732,6 +733,114 @@ mod tests {
         assert_eq!(interpreted.0, InstrStop::Stop);
         assert_eq!(interpreted.2, 1806);
         assert_eq!(run(true), interpreted);
+    }
+
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn nested_root_call_and_create_depth_boundaries_match_interpreter() {
+        let creator = Address::repeat_byte(0x31);
+        let callee = Address::repeat_byte(0x32);
+        let backend = blocking_backend();
+        for spec in [SpecId::CANCUN, SpecId::AMSTERDAM] {
+            for kind in [MessageKind::Call, MessageKind::Create, MessageKind::Create2] {
+                let mut code = Vec::new();
+                let destination = if kind == MessageKind::Call {
+                    code.extend([op::PUSH0; 5]);
+                    push20(&mut code, callee);
+                    code.extend([op::GAS, op::CALL]);
+                    callee
+                } else {
+                    code.extend([op::PUSH0; 3]);
+                    if kind == MessageKind::Create2 {
+                        code.push(op::PUSH0);
+                    }
+                    code.push(if kind == MessageKind::Create { op::CREATE } else { op::CREATE2 });
+                    if kind == MessageKind::Create {
+                        creator.create(1)
+                    } else {
+                        creator.create2_from_code([0; 32], [])
+                    }
+                };
+                code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
+                let code = Bytecode::new_legacy(code.into());
+                assert!(matches!(
+                    backend.lookup(LookupRequest {
+                        key: RuntimeCacheKey { code_hash: code.hash_slow(), spec_id: spec },
+                        code: code.original_bytes(),
+                    }),
+                    LookupDecision::Compiled(_)
+                ));
+                for (initial_call_depth, descendants) in [0, 7, u16::MAX - CALL_DEPTH_LIMIT - 1]
+                    .into_iter()
+                    .flat_map(|depth| [(depth, 1023), (depth, 1024)])
+                {
+                    let run = |with_jit| {
+                        let mut database = InMemoryDB::default();
+                        database
+                            .insert_account_info(&creator, AccountInfo::default().with_nonce(1));
+                        database.insert_account_info(&callee, AccountInfo::default().with_nonce(1));
+                        let mut version = Version::new(spec);
+                        version.initial_call_depth = initial_call_depth;
+                        let mut host = Evm::<BaseEvmTypes>::new_with_execution_config(
+                            ExecutionConfig::for_spec_and_version(spec, version),
+                            spec,
+                            BlockEnvExt::default(),
+                            ethereum_tx_registry(spec),
+                            database,
+                            Precompiles::base(spec),
+                        );
+                        if with_jit {
+                            host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
+                        }
+                        let mut message = MessageExt {
+                            depth: initial_call_depth + descendants,
+                            gas_limit: 1_000_000,
+                            reservoir: 1_000_000,
+                            destination: creator,
+                            code: code.clone(),
+                            ..Default::default()
+                        };
+                        let result =
+                            Host::execute_message(&mut host, &TxEnvExt::default(), &mut message)
+                                .unwrap();
+                        let destination_journaled =
+                            host.state_mut().journal().iter().any(|entry| {
+                                matches!(
+                                    entry,
+                                    JournalEntry::AccountChange { address, .. }
+                                        if *address == destination
+                                )
+                            });
+                        let nonce = host.state_mut().account(&creator).unwrap().nonce();
+                        (result, destination_journaled, nonce)
+                    };
+                    let interpreted = run(false);
+                    let compiled = run(true);
+                    assert_eq!(compiled, interpreted, "{spec:?} {kind:?} {descendants}");
+                    assert_eq!(compiled.0.stop, InstrStop::Return);
+                    let returned = Word::from_be_slice(&compiled.0.output);
+                    if descendants == 1023 {
+                        let expected = if kind == MessageKind::Call {
+                            Word::from(1)
+                        } else {
+                            Word::from_be_slice(destination.as_slice())
+                        };
+                        assert_eq!(returned, expected);
+                        assert!(compiled.1);
+                        assert_eq!(compiled.2, if kind.is_create() { 2 } else { 1 });
+                    } else {
+                        assert_eq!(returned, Word::ZERO);
+                        assert_eq!(compiled.2, 1);
+                        if spec == SpecId::AMSTERDAM && kind.is_create() {
+                            assert!(
+                                !compiled.1,
+                                "EIP-8037 must reject before touching the destination"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

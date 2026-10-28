@@ -6,6 +6,7 @@ use super::{
 };
 use crate::{EvmFeatures, bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256};
+use bitflags::bitflags;
 use derive_where::derive_where;
 
 /// Account information loaded from the backing database or emitted in a state
@@ -165,6 +166,29 @@ impl AccountInfo {
     }
 }
 
+bitflags! {
+    /// Per-account lifecycle flags tracked by the transaction overlay.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub struct AccountFlags: u8 {
+        /// The account is warm in the current transaction.
+        const WARM = 1 << 0;
+        /// The account is touched for transaction-finalization account-lifetime rules.
+        const TOUCHED = 1 << 1;
+        /// Touch metadata retained after finalization consumes [`Self::TOUCHED`].
+        const FINALIZED_TOUCHED = 1 << 2;
+        /// The account has been self-destructed in the current transaction.
+        const DESTROYED = 1 << 3;
+        /// The present overlay account was created in the current transaction.
+        const CREATED = 1 << 4;
+        /// A created account keeps its storage baseline, see
+        /// [`AccountHandle::mark_created_keeping_storage`]. Meaningful only while
+        /// [`Self::CREATED`] is set.
+        const KEEPS_STORAGE = 1 << 5;
+        /// The present overlay account's code has been modified.
+        const CODE_CHANGED = 1 << 6;
+    }
+}
+
 /// Current-transaction account overlay and EIP-2929/account-lifetime metadata.
 ///
 /// An entry exists in the overlay only because it was loaded, so `original` and `present` are
@@ -173,9 +197,9 @@ impl AccountInfo {
 /// [`State`](super::State) emit the transaction's account transition without re-reading the backing
 /// database. `present` is `None` for an account that was loaded as non-existent or deleted.
 ///
-/// `just_created` and `code_changed` track creation and code-modification state of the present
-/// overlay account, driving transaction-finalization and change-emission rules. They are meaningful
-/// only while `present` is `Some`.
+/// [`AccountFlags::CREATED`] and [`AccountFlags::CODE_CHANGED`] track creation and
+/// code-modification state of the present overlay account, driving transaction-finalization and
+/// change-emission rules. They are meaningful only while `present` is `Some`.
 ///
 /// Detached from the EVM as part of a [`PendingState`](super::PendingState), the entry describes
 /// the account's transaction transition: `original` against `present`, with
@@ -186,16 +210,9 @@ pub(crate) struct Account {
     pub(crate) original: Option<AccountInfo>,
     /// Present account overlay after mutations. `None` means the account is absent/deleted.
     pub(crate) present: Option<AccountInfo>,
-    /// Whether this account is warm in the current transaction.
-    pub(crate) is_warm: bool,
-    /// Whether this account is touched for transaction-finalization account-lifetime rules.
-    pub(crate) is_touched: bool,
-    /// Whether this account has been self-destructed in the current transaction.
-    pub(crate) is_destroyed: bool,
-    /// Whether the present overlay account was created in the current transaction.
-    pub(crate) just_created: bool,
-    /// Whether the present overlay account's code has been modified.
-    pub(crate) code_changed: bool,
+    /// Lifecycle flags: warm, touched, finalized-touched, destroyed, created, keeps-storage, and
+    /// code changed.
+    pub(crate) flags: AccountFlags,
     /// Persistent transaction storage owned by this account.
     pub(crate) storage: StorageOverlay,
 }
@@ -211,18 +228,20 @@ impl Account {
     #[cfg(test)]
     pub(crate) fn merge_isolated(&mut self, child: Self) {
         self.present = child.present;
-        self.is_touched |= child.is_touched;
-        self.is_destroyed |= child.is_destroyed;
-        self.just_created |= child.just_created;
-        self.code_changed |= child.code_changed;
+        self.flags |= child.flags - AccountFlags::WARM - AccountFlags::FINALIZED_TOUCHED;
         self.storage.merge_isolated(child.storage);
     }
 
     /// Marks the account as created during the transaction, which also flags its code as changed.
+    ///
+    /// The first creation mark decides whether the account keeps its storage baseline.
     #[inline]
     pub(crate) const fn mark_created(&mut self) {
-        self.just_created = true;
-        self.code_changed = true;
+        let mut flags = self.flags;
+        if !flags.contains(AccountFlags::CREATED) {
+            flags = flags.difference(AccountFlags::KEEPS_STORAGE);
+        }
+        self.flags = flags.union(AccountFlags::CREATED.union(AccountFlags::CODE_CHANGED));
     }
 
     /// Returns whether the account was created during the transaction.
@@ -231,7 +250,15 @@ impl Account {
     /// were created and then destroyed in the same transaction.
     #[inline]
     pub(crate) const fn is_created(&self) -> bool {
-        self.just_created
+        self.flags.contains(AccountFlags::CREATED)
+    }
+
+    /// Returns whether the account's creation discarded its storage baseline, so its unloaded
+    /// slots read as zero and committing it drops cached slots.
+    #[inline]
+    pub(crate) const fn discards_storage(&self) -> bool {
+        self.flags.contains(AccountFlags::CREATED)
+            && !self.flags.contains(AccountFlags::KEEPS_STORAGE)
     }
 
     /// Returns whether the account's info changed during the transaction.
@@ -256,7 +283,7 @@ impl Account {
         let account = self.present.as_ref()?;
         let code = account.code.as_ref()?;
         let code_hash = account.code_hash;
-        ((self.code_changed
+        ((self.flags.contains(AccountFlags::CODE_CHANGED)
             || self.original.as_ref().map(|original| original.code_hash) != Some(code_hash))
             && !code.is_empty()
             && !code_hash.is_zero()
@@ -272,6 +299,7 @@ impl Account {
             current: self.present.as_ref(),
             created: self.is_created(),
             selfdestructed,
+            touched: self.flags.contains(AccountFlags::FINALIZED_TOUCHED),
             code: self.changed_code(),
             storage: &self.storage,
         }
@@ -347,12 +375,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if self.tracked.storage.slots.capacity() == 0 {
             self.tracked.storage.slots = self.storage_pool.take();
         }
-        StorageHandle::new(
-            &self.address,
-            &mut self.tracked.storage,
-            self.tracked.just_created,
-            self.inner,
-        )
+        let discards_storage = self.tracked.discards_storage();
+        StorageHandle::new(&self.address, &mut self.tracked.storage, discards_storage, self.inner)
     }
 
     /// Records the pre-mutation revert entry the first time a change is made through this handle.
@@ -364,11 +388,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
             self.snapshot = Some(JournalEntry::AccountChange {
                 address: self.address,
                 previous: self.tracked.present.clone(),
-                previous_is_warm: self.tracked.is_warm,
-                previous_is_touched: self.tracked.is_touched,
-                previous_is_destroyed: self.tracked.is_destroyed,
-                previous_just_created: self.tracked.just_created,
-                previous_code_changed: self.tracked.code_changed,
+                previous_flags: self.tracked.flags,
             });
         }
     }
@@ -421,7 +441,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// warmth recorded during execution.
     #[inline]
     pub fn is_warm(&self) -> bool {
-        self.tracked.is_warm || self.inner.prewarm_set.is_warm(&self.address)
+        self.tracked.flags.contains(AccountFlags::WARM)
+            || self.inner.prewarm_set.is_warm(&self.address)
     }
 
     /// Returns whether the account has been marked self-destructed in the current transaction.
@@ -433,13 +454,13 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Returns whether the account is touched for transaction-finalization account-lifetime rules.
     #[inline]
     pub const fn is_touched(&self) -> bool {
-        self.tracked.is_touched
+        self.tracked.flags.contains(AccountFlags::TOUCHED)
     }
 
     /// Returns whether the account was created in the current transaction.
     #[inline]
     pub const fn is_created(&self) -> bool {
-        self.tracked.present.is_some() && self.tracked.just_created
+        self.tracked.present.is_some() && self.tracked.is_created()
     }
 
     /// Returns whether the account is dead by the EIP-161 definition while existing in the overlay.
@@ -461,7 +482,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if features.contains(EvmFeatures::EIP161) {
             return self.tracked.present.as_ref().is_none_or(AccountInfo::is_empty);
         }
-        self.tracked.present.is_none() && !self.tracked.is_touched
+        self.tracked.present.is_none() && !self.tracked.flags.contains(AccountFlags::TOUCHED)
     }
 
     /// Loads the account's bytecode, reading it from the backing database by code hash when it is
@@ -514,9 +535,9 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// finalization even when no field changes.
     #[inline]
     pub fn touch(&mut self) {
-        if !self.tracked.is_touched {
+        if !self.tracked.flags.contains(AccountFlags::TOUCHED) {
             self.record_change();
-            self.tracked.is_touched = true;
+            self.tracked.flags.insert(AccountFlags::TOUCHED);
         }
     }
 
@@ -527,9 +548,9 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// membership is undone by [`State::rollback`](super::State::rollback).
     #[inline]
     pub fn mark_destructed(&mut self) {
-        if !self.tracked.is_destroyed {
+        if !self.tracked.flags.contains(AccountFlags::DESTROYED) {
             self.record_change();
-            self.tracked.is_destroyed = true;
+            self.tracked.flags.insert(AccountFlags::DESTROYED);
             self.inner.selfdestructs.insert(self.address);
         }
         self.touch();
@@ -542,11 +563,13 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// base warm set stay warm across rollback, so warming them again records nothing.
     #[inline]
     pub fn warm(&mut self) -> bool {
-        if self.tracked.is_warm || self.inner.prewarm_set.is_warm(&self.address) {
+        if self.tracked.flags.contains(AccountFlags::WARM)
+            || self.inner.prewarm_set.is_warm(&self.address)
+        {
             return false;
         }
         self.record_change();
-        self.tracked.is_warm = true;
+        self.tracked.flags.insert(AccountFlags::WARM);
         true
     }
 
@@ -600,7 +623,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         let account = self.present_mut();
         account.code_hash = code_hash;
         account.code = Some(code);
-        self.tracked.code_changed = true;
+        self.tracked.flags.insert(AccountFlags::CODE_CHANGED);
     }
 
     /// Sets the account code, computing its hash, touching the account and recording a revert
@@ -637,10 +660,36 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Marks the present overlay account as created in the current transaction, also flagging its
     /// code as changed. The creation/code-change status is reverted together with the rest of the
     /// overlay by the [`JournalEntry::AccountChange`] snapshot recorded for this handle.
+    ///
+    /// Created accounts follow the EIP-6780 rules for `SELFDESTRUCT` and are emitted as created by
+    /// [`PendingState`](super::PendingState).
+    ///
+    /// The account must be present, for example through [`Self::get_or_insert`].
     #[inline]
-    pub(crate) fn mark_created(&mut self) {
+    pub fn mark_created(&mut self) {
         self.record_change();
         self.tracked.mark_created();
+    }
+
+    /// Marks the present overlay account as created in the current transaction, like
+    /// [`Self::mark_created`], but keeps its storage baseline: unloaded slots read from the
+    /// database and committing the account does not drop its cached slots.
+    ///
+    /// For embedders that continue a transaction on a fresh overlay whose database already holds
+    /// the account's creation and storage writes, such as after suspending the transaction. The
+    /// account stays eligible for EIP-6780 `SELFDESTRUCT`. An account already created in this
+    /// overlay keeps reading its old storage as zero.
+    ///
+    /// Slots load with the database values as their transaction originals, so `SSTORE` gas and
+    /// refunds can differ from an uninterrupted run, where a created account's originals are zero.
+    /// This matches resuming any other account on a fresh overlay.
+    #[inline]
+    pub fn mark_created_keeping_storage(&mut self) {
+        let first = !self.tracked.is_created();
+        self.mark_created();
+        if first {
+            self.tracked.flags.insert(AccountFlags::KEEPS_STORAGE);
+        }
     }
 
     /// Records a revert snapshot and returns the live account, materializing an empty one when it
@@ -678,7 +727,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     #[inline]
     pub(crate) fn reset_selfdestructed_for_finalization(&mut self) {
         let balance = self.balance();
-        self.tracked.is_destroyed = false;
+        self.tracked.flags.remove(AccountFlags::DESTROYED);
         self.tracked.present = Some(AccountInfo::default().with_balance(balance));
     }
 
@@ -902,7 +951,7 @@ mod tests {
             assert!(!account.is_warm());
             assert!(!account.is_created());
             assert!(!account.is_destructed());
-            assert!(!account.tracked.code_changed);
+            assert!(!account.tracked.flags.contains(AccountFlags::CODE_CHANGED));
         }
     }
 

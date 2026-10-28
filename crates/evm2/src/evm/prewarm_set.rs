@@ -73,7 +73,7 @@ pub struct PrewarmSet {
     /// its bit here for faster access; precompiles and other low-numbered addresses land here.
     short_addresses: ShortAddresses,
     /// The first [`INLINE_CAP`] non-short warm addresses added via [`Self::warm`]. Only the first
-    /// `inline_len` entries are meaningful; the rest are zero.
+    /// `inline_len` entries are meaningful.
     inline: [Address; INLINE_CAP],
     /// Number of occupied entries in `inline`.
     inline_len: usize,
@@ -158,6 +158,26 @@ impl PrewarmSet {
         } else {
             false
         }
+    }
+
+    /// Removes an address and its warm storage slots, so it is cold unless warmed again.
+    ///
+    /// This cools a pre-warmed address, such as the recipient or an EIP-7702 authority, for
+    /// example at a simulated transaction boundary.
+    ///
+    /// Like [`Self::warm`], this is not journaled and survives [`crate::evm::State::rollback`].
+    /// The set does not record why an address is warm, so callers that keep precompiles, the
+    /// coinbase, or access-list entries warm must warm them again.
+    pub fn remove(&mut self, address: &Address) {
+        if let Some(short_address) = short_address(address) {
+            self.short_addresses.unset(short_address);
+        }
+        if let Some(index) = self.inline().iter().position(|a| a == address) {
+            self.inline_len -= 1;
+            self.inline.swap(index, self.inline_len);
+        }
+        // `has_storage` may stay set; it only lets lookups skip the map.
+        self.access_list.remove(address);
     }
 
     /// Clears the per-transaction warm entries, leaving an empty set.
@@ -300,6 +320,44 @@ mod tests {
         prewarm_set.clear();
         assert!(!prewarm_set.is_warm(&short_addr));
         assert!(!prewarm_set.is_warm(&regular_addr));
+    }
+
+    #[test]
+    fn test_remove() {
+        let mut prewarm_set = PrewarmSet::new();
+        let short = Address::with_last_byte(1);
+        let inline = [0x10, 0x11, 0x12].map(Address::repeat_byte);
+        let mapped = Address::repeat_byte(0x13);
+        let key = Word::from(7);
+        prewarm_set.warm(&short);
+        inline.iter().for_each(|address| prewarm_set.warm(address));
+        prewarm_set.warm_storage(&mapped, [key]);
+
+        prewarm_set.remove(&short);
+        prewarm_set.remove(&inline[0]);
+        prewarm_set.remove(&mapped);
+        assert!(!prewarm_set.is_warm(&short));
+        assert!(!prewarm_set.is_warm(&inline[0]));
+        assert!(!prewarm_set.is_warm(&mapped));
+        assert!(!prewarm_set.is_storage_warm(&mapped, &key));
+        assert!(prewarm_set.is_warm(&inline[1]) && prewarm_set.is_warm(&inline[2]));
+
+        // The freed inline entry is reused.
+        prewarm_set.warm(&mapped);
+        assert!(prewarm_set.access_list.is_empty());
+        assert!(prewarm_set.is_warm(&mapped));
+
+        // Inline and short addresses that also carry warm storage lose their slots.
+        prewarm_set.clear();
+        prewarm_set.warm(&inline[0]);
+        prewarm_set.warm_storage(&inline[0], [key]);
+        prewarm_set.warm_storage(&short, [key]);
+        prewarm_set.remove(&inline[0]);
+        prewarm_set.remove(&short);
+        for address in [inline[0], short] {
+            assert!(!prewarm_set.is_warm(&address));
+            assert!(!prewarm_set.is_storage_warm(&address, &key));
+        }
     }
 
     #[test]

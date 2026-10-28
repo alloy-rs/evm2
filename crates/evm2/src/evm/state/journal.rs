@@ -1,6 +1,6 @@
 //! Revert journal and checkpoint types.
 
-use super::AccountInfo;
+use super::{AccountFlags, AccountInfo};
 use crate::interpreter::Word;
 use alloy_primitives::Address;
 
@@ -46,16 +46,8 @@ pub enum JournalEntry {
         address: Address,
         /// Previous present account value.
         previous: Option<AccountInfo>,
-        /// Previous warm flag.
-        previous_is_warm: bool,
-        /// Previous touched flag.
-        previous_is_touched: bool,
-        /// Previous self-destructed flag.
-        previous_is_destroyed: bool,
-        /// Previous created-in-transaction flag.
-        previous_just_created: bool,
-        /// Previous code-changed flag.
-        previous_code_changed: bool,
+        /// Previous lifecycle flags.
+        previous_flags: AccountFlags,
     },
     /// Persistent storage changed.
     StorageChange {
@@ -142,8 +134,13 @@ mod tests {
         assert_eq!(state.logs(), &[kept]);
     }
 
-    #[test]
-    fn spurious_dragon_rollback_preserves_precompile3_touch() {
+    #[rstest::rstest]
+    #[case(SpecId::HOMESTEAD, false)]
+    #[case(SpecId::SPURIOUS_DRAGON, true)]
+    fn rollback_preserves_precompile3_touch_only_after_eip161(
+        #[case] spec: SpecId,
+        #[case] touched: bool,
+    ) {
         let precompile3 = Address::with_last_byte(3);
         let other = Address::with_last_byte(4);
         let mut database = CacheDB::default();
@@ -155,9 +152,19 @@ mod tests {
         state.account(&precompile3).unwrap().touch();
         state.account(&other).unwrap().touch();
 
-        state.rollback(checkpoint, Version::base(SpecId::SPURIOUS_DRAGON).features);
-        assert!(state.account(&precompile3).unwrap().is_touched());
+        state.rollback(checkpoint, Version::base(spec).features);
+        assert_eq!(state.account(&precompile3).unwrap().is_touched(), touched);
         assert!(!state.account(&other).unwrap().is_touched());
+
+        // Finalization consumes the touch but keeps it in the reported changes, also when run
+        // twice.
+        state.finalize_transaction(Version::base(spec)).unwrap();
+        state.finalize_transaction(Version::base(spec)).unwrap();
+        let pending = state.take_pending_state();
+        let change = pending.account_changes_for(&precompile3).unwrap();
+        assert_eq!(change.touched, touched);
+        assert_eq!(change.current.is_none(), touched);
+        assert!(!pending.account_changes_for(&other).unwrap().touched);
     }
 
     #[test]
