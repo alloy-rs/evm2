@@ -208,12 +208,12 @@ fn cached_base_precompiles<T: EvmTypesHost>(spec: SpecId) -> &'static Precompile
         SpecId::OSAKA | SpecId::AMSTERDAM => 6,
     };
 
-    let local = LOCAL_BASE_PRECOMPILES.with_borrow(|local| {
-        local.iter().find(|(id, _)| *id == type_id).map(|(_, precompiles)| *precompiles)
-    });
-    let precompiles = local.unwrap_or_else(|| {
+    let precompiles = LOCAL_BASE_PRECOMPILES.with_borrow_mut(|local| {
+        if let Some(&(_, precompiles)) = local.iter().find(|(id, _)| *id == type_id) {
+            return precompiles;
+        }
         let precompiles = shared_base_precompiles::<T>(type_id);
-        LOCAL_BASE_PRECOMPILES.with_borrow_mut(|local| local.push((type_id, precompiles)));
+        local.push((type_id, precompiles));
         precompiles
     });
     precompiles
