@@ -1668,6 +1668,11 @@ impl Bytecode<'_> {
                                 AbsValue::ConstSet(_) => false,
                                 AbsValue::Range(_) | AbsValue::Top => true,
                             };
+                            if let AbsValue::Const(imm) = operand
+                                && !self.fits_switch_case(imm)
+                            {
+                                state.failed = true;
+                            }
                         }
                     }
                     None => state.failed = true,
@@ -1855,10 +1860,22 @@ impl Bytecode<'_> {
                         targets.push(tb);
                     }
                 }
-                None => invalid = true,
+                None => {
+                    let AbsValue::Const(imm) = target else { return None };
+                    if !self.fits_switch_case(imm) {
+                        return None;
+                    }
+                    invalid = true;
+                }
             }
         }
         Some(invalid)
+    }
+
+    /// Returns whether a switch on the low 64 bits of a jump operand tells `imm` from the valid
+    /// jump targets, which it does unless `imm` has bits above them.
+    fn fits_switch_case(&self, imm: U256Imm) -> bool {
+        u64::try_from(imm.get(&self.u256_interner.borrow())).is_ok()
     }
 
     /// Returns what the condition of the `JUMPI` that ends `bid` shows about its successors.
@@ -4943,6 +4960,40 @@ mod tests_edge_cases {
 
         // A static jump to the only target would skip that failure.
         let bytecode = analyze_asm(&src("STOP", "0x001c001c001a"));
+        assert!(bytecode.has_dynamic_jumps);
+
+        // The switch compares only the low 64 bits of the operand, so an invalid target above
+        // them could take a valid one.
+        let wide = |entry2: &str| {
+            format!(
+                "
+                PUSH0
+                CALLDATALOAD
+                PUSH1 0xe0
+                SHR
+                PUSH1 0x03
+                DUP2
+                MOD
+                PUSH1 0x48
+                MUL                 ; 72 * (selector % 3)
+                PUSH27 0x{entry2}000000000000000038000000000000000036
+                SWAP1
+                SHR
+                PUSH9 0xffffffffffffffffff
+                AND
+                JUMP
+                JUMPDEST            ; 0x36
+                STOP
+                JUMPDEST            ; 0x38
+                STOP
+                JUMPDEST            ; 0x3a
+                STOP
+                "
+            )
+        };
+        let bytecode = analyze_asm(&wide("00000000000000003a"));
+        assert!(!bytecode.has_dynamic_jumps);
+        let bytecode = analyze_asm(&wide("01000000000000003a"));
         assert!(bytecode.has_dynamic_jumps);
 
         // A narrow range that is not the index of the jump operand.
