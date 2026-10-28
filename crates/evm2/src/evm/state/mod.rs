@@ -377,6 +377,17 @@ impl<'a> State<'a> {
         self.accounts.get(address)?.storage.slots.get(key).map(|slot| slot.value.current)
     }
 
+    /// Returns the accounts in the transaction overlay, each with the keys of its loaded storage
+    /// slots.
+    ///
+    /// This includes accounts loaded as absent and slots that were only read. Overlay entries
+    /// survive [`Self::rollback`], so reads in reverted frames are included, as access-list
+    /// builders need. Accounts installed by [`Self::set_pending_state`] are included; entries of
+    /// the accepted-state overlay that the transaction did not load are not.
+    pub fn loaded_accounts(&self) -> impl Iterator<Item = (&Address, impl Iterator<Item = &Word>)> {
+        self.accounts.iter().map(|(address, account)| (address, account.storage.slots.keys()))
+    }
+
     /// Sets the warmth of an already-loaded storage slot without journaling the change.
     ///
     /// Does nothing for unloaded slots and leaves values and the pre-warmed set unchanged.
@@ -1049,6 +1060,7 @@ impl<'a> State<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn storage_loads_account_without_touching_or_warming_it() {
@@ -1553,5 +1565,54 @@ mod tests {
 
         assert_eq!(parent.account(&address).unwrap().nonce(), 1);
         assert_eq!(parent.storage_slot_untracked(&address, &key).unwrap(), Word::from(9));
+    }
+
+    fn sorted_loaded_accounts(state: &State<'_>) -> Vec<(Address, Vec<Word>)> {
+        let mut loaded = state
+            .loaded_accounts()
+            .map(|(address, slots)| {
+                let mut slots = slots.copied().collect::<Vec<_>>();
+                slots.sort_unstable();
+                (*address, slots)
+            })
+            .collect::<Vec<_>>();
+        loaded.sort_unstable();
+        loaded
+    }
+
+    #[test]
+    fn loaded_accounts_include_reads_and_absent_accounts() {
+        let read = Address::from([0x74; 20]);
+        let absent = Address::from([0x75; 20]);
+        let accepted = Address::from([0x76; 20]);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&read, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_storage(&read, &Word::from(1), &Word::from(10));
+        let mut state = State::new(database);
+        state.account(&accepted).unwrap().set_balance(Word::from(1));
+        state.commit_transaction();
+
+        state.storage_slot(&read, Word::from(1)).unwrap();
+        state.storage_slot(&read, Word::from(2)).unwrap();
+        state.account(&absent).unwrap();
+
+        assert_eq!(
+            sorted_loaded_accounts(&state),
+            [(read, vec![Word::from(1), Word::from(2)]), (absent, vec![])]
+        );
+    }
+
+    #[test]
+    fn loaded_accounts_include_reads_in_reverted_frames() {
+        let read = Address::with_last_byte(0x77);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&read, AccountInfo::default().with_balance(Word::from(1)));
+        let mut state = State::new(database);
+
+        let checkpoint = state.checkpoint();
+        state.storage_slot(&read, Word::ONE).unwrap();
+        state.rollback(checkpoint, EvmFeatures::empty());
+
+        assert_eq!(sorted_loaded_accounts(&state), [(read, vec![Word::ONE])]);
     }
 }
