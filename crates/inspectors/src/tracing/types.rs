@@ -674,7 +674,7 @@ pub struct CallTraceStep {
     /// Gas cost that structured logs report instead of `gas_cost`, if it differs.
     ///
     /// Only set on out-of-gas steps, where the consumed gas is the frame remainder but geth
-    /// reports the upfront cost of the opcode.
+    /// reports the cost it computed for the opcode before halting.
     pub geth_gas_cost: Option<u64>,
     /// Net state-gas change caused by this step.
     pub state_gas_cost: Option<i64>,
