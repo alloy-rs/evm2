@@ -127,6 +127,35 @@ impl State<'_> {
     pub fn clone_with<'a>(&self, db: impl DynDatabase + 'a) -> State<'a> {
         self.snapshot().into_state(db)
     }
+
+    /// Returns a state over `db` whose accepted overlay is this state's accepted overlay with the
+    /// current transaction's writes committed, and whose transaction scratch is empty.
+    ///
+    /// This is `clone_with` followed by [`Self::commit_transaction`] and
+    /// [`Self::clear_transaction_state`], without copying the journal, logs, transient storage or
+    /// pre-warmed set, so its cost does not grow with the running transaction's journal. Use it as
+    /// the base state of a transaction nested in the running one.
+    pub fn committed_copy<'a>(&self, db: impl DynDatabase + 'a) -> State<'a> {
+        let mut database = CacheDB {
+            cache: self.database.cache.clone(),
+            db: boxed_dyn_database(db),
+            bal_context: self.database.bal_context.clone(),
+            _non_exhaustive: (),
+        };
+        database.commit(&self.accounts);
+        State {
+            accounts: AddressMap::default(),
+            storage_pool: storage_pool::StoragePool::default(),
+            transient_storage: StorageKeyMap::default(),
+            inner: StateInner {
+                database,
+                journal: Vec::new(),
+                logs: Vec::new(),
+                selfdestructs: AddressSet::default(),
+                prewarm_set: PrewarmSet::new(),
+            },
+        }
+    }
 }
 
 impl<'a> Deref for State<'a> {
@@ -1066,6 +1095,49 @@ impl<'a> State<'a> {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn committed_copy_matches_committed_clone() {
+        let (written, read, absent) =
+            (Address::with_last_byte(1), Address::with_last_byte(2), Address::with_last_byte(3));
+        let mut db = CacheDB::default();
+        db.insert_account_info(&read, AccountInfo::default().with_nonce(3));
+        let mut state = State::new(db);
+        state.account(&written).unwrap().set_balance(Word::from(5));
+        state.storage_slot(&written, Word::ONE).unwrap().set(Word::from(6));
+        state.commit_transaction();
+        // The running transaction overwrites accepted values, reads others, and leaves scratch.
+        state.storage_slot(&written, Word::ONE).unwrap().set(Word::from(7));
+        state.storage_slot(&written, Word::from(2)).unwrap().set(Word::from(8));
+        state.account(&read).unwrap();
+        state.prewarm(&absent);
+        state.tstore(&written, &Word::ZERO, &Word::from(9));
+        state.log(Log::default());
+
+        let mut expected = state.clone_with(EmptyDB::default());
+        expected.commit_transaction();
+        expected.clear_transaction_state();
+        let mut copy = state.committed_copy(EmptyDB::default());
+
+        assert!(copy.journal().is_empty() && copy.logs().is_empty());
+        assert_eq!(copy.checkpoint(), expected.checkpoint());
+        for state in [&mut expected, &mut copy] {
+            assert_eq!(
+                state.account_info_untracked(&written).unwrap().unwrap().balance,
+                Word::from(5)
+            );
+            assert_eq!(state.account_info_untracked(&read).unwrap().unwrap().nonce, 3);
+            assert_eq!(state.storage_slot_untracked(&written, &Word::ONE).unwrap(), Word::from(7));
+            assert_eq!(
+                state.storage_slot_untracked(&written, &Word::from(2)).unwrap(),
+                Word::from(8)
+            );
+            assert_eq!(state.tload(&written, &Word::ZERO), Word::ZERO);
+            assert!(!state.account(&absent).unwrap().is_warm());
+            let slot = state.storage_slot(&written, Word::ONE).unwrap();
+            assert_eq!((slot.original(), slot.current()), (Word::from(7), Word::from(7)));
+        }
+    }
 
     #[test]
     fn storage_loads_account_without_touching_or_warming_it() {
