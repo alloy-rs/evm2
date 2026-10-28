@@ -1637,8 +1637,8 @@ impl Bytecode<'_> {
                                 let copy = stack_buf.len().min(MAX_ABS_STACK_DEPTH);
                                 work += self.cfg.blocks[bid].insts().len() as u64
                                     + values * (rest + copy) as u64;
-                                // The runs repeat folds that `work` already bounds, so they must
-                                // not drain the budget of the folds that the analysis keeps.
+                                // The runs repeat folds that the analysis keeps, so they must not
+                                // drain that budget, but their cost counts as work.
                                 let gas = self.compiler_gas_used;
                                 let found = self.enumerate_jump(
                                     bid,
@@ -1648,6 +1648,7 @@ impl Bytecode<'_> {
                                     &mut enumerate_buf,
                                     &mut targets,
                                 );
+                                work += self.compiler_gas_used - gas;
                                 self.compiler_gas_used = gas;
                                 found
                             });
