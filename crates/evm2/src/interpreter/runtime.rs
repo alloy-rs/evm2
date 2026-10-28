@@ -109,12 +109,9 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.
     fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
-        let bytecode = &message.code;
         let gas_limit = message.gas_limit;
         let is_static = message.is_static();
-        self.pc = bytecode.bytes_slice().as_ptr();
-        self.bytecode_ref = None;
-        self.bytecode = bytecode;
+        self.set_bytecode(&message.code);
         self.stack_len = 0;
         self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
         self.memory.clear();
@@ -127,6 +124,13 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.message = Some(message);
         self.is_static = is_static;
         self.return_data = Bytes::new();
+    }
+
+    /// Points the interpreter at `bytecode` and resets the program counter and the cached view.
+    pub(crate) fn set_bytecode(&mut self, bytecode: &'frame Bytecode) {
+        self.pc = bytecode.bytes_slice().as_ptr();
+        self.bytecode_ref = None;
+        self.bytecode = bytecode;
     }
 
     pub(crate) const fn clear_frame_refs(&mut self) {
