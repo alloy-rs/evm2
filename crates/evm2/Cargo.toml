@@ -34,6 +34,9 @@ phf = { workspace = true, features = ["macros"], optional = true }
 # "serde"
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
+# "wincode"
+wincode = { workspace = true, optional = true }
+
 # "async"
 corosensei = { workspace = true, optional = true }
 
@@ -136,11 +139,14 @@ std = [
     "c-kzg?/std",
     "secp256k1?/std",
     "serde?/std",
+    "wincode?/std",
     "triomphe?/std",
     "ruint?/std",
 ]
 
 async = ["std", "dep:corosensei"]
+
+wincode = ["dep:wincode"]
 
 serde = [
     "dep:serde",

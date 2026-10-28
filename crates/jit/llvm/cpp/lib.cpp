@@ -2,6 +2,8 @@
 #include <llvm-c/LLJITUtils.h>
 #include <llvm-c/Orc.h>
 #include <llvm-c/TargetMachine.h>
+#include <llvm/CodeGen/Passes.h>
+#include <llvm/CodeGen/TargetPassConfig.h>
 #include <llvm/ExecutionEngine/JITLink/JITLink.h>
 #include <llvm/ExecutionEngine/Orc/AbsoluteSymbols.h>
 #include <llvm/ExecutionEngine/Orc/CompileUtils.h>
@@ -14,7 +16,9 @@
 #include <llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderPerf.h>
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/GlobalValue.h>
+#include <llvm/Target/RegisterTargetPassConfigCallback.h>
 #include <llvm/Target/TargetMachine.h>
+#include <llvm/Transforms/Scalar.h>
 
 #include <atomic>
 #include <fstream>
@@ -52,8 +56,9 @@ evm2_jit_llvm_jit_dylib_add_to_link_order(LLVMOrcJITDylibRef JD,
 /// Use ConcurrentIRCompiler (thread-safe, fresh TargetMachine per compilation)
 /// while keeping the default InPlaceTaskDispatcher (no background threads).
 ///
-/// Sets the codegen optimization level to Aggressive (O3) for best JIT code
-/// quality. The IR optimization passes are run separately with their own level.
+/// Sets the codegen optimization level to Less (O1), which skips the post-RA
+/// scheduler on CPUs that enable it. The IR optimization passes are run separately with their own
+/// level.
 ///
 /// setSupportConcurrentCompilation(true) would also switch the dispatcher to
 /// DynamicThreadPoolTaskDispatcher, spawning background threads. We only want
@@ -64,7 +69,7 @@ extern "C" void evm2_jit_llvm_lljit_builder_set_concurrent_compiler(
   B->setCompileFunctionCreator(
       [](orc::JITTargetMachineBuilder JTMB)
           -> Expected<std::unique_ptr<orc::IRCompileLayer::IRCompiler>> {
-        JTMB.setCodeGenOptLevel(CodeGenOptLevel::Aggressive);
+        JTMB.setCodeGenOptLevel(CodeGenOptLevel::Less);
         return std::make_unique<orc::ConcurrentIRCompiler>(std::move(JTMB));
       });
 }
@@ -361,4 +366,28 @@ evm2_jit_llvm_target_machine_set_opt_level(LLVMTargetMachineRef TM,
 
 extern "C" void evm2_jit_llvm_set_dso_local(LLVMValueRef Val, bool Local) {
   unwrap<GlobalValue>(Val)->setDSOLocal(Local);
+}
+
+/// Run wide-division expansion again right after loop strength reduction in
+/// every codegen pipeline (AOT objects and ORC JIT alike).
+///
+/// LSR runs after the pipeline expands wide divisions, and rewriting an exit
+/// value through an `i256` trip count can emit `udiv i256`, which has no libcall
+/// on x86-64, so instruction selection aborts.
+///
+/// The registration is leaked so that no destructor edits LLVM's global
+/// callback list at process exit while a compile thread may still read it.
+extern "C" void evm2_jit_llvm_expand_ir_insts_after_lsr() {
+  static auto *Callback = new RegisterTargetPassConfigCallback(
+      [](TargetMachine &, legacy::PassManagerBase &, TargetPassConfig *PC) {
+        // Only the IDs matter: the pipeline builds the inserted pass with its default
+        // constructor, which uses `CodeGenOptLevel::None`.
+        static const auto IDs = [] {
+          std::unique_ptr<Pass> LSR(createLoopStrengthReducePass());
+          std::unique_ptr<Pass> Expand(
+              createExpandIRInstsPass(CodeGenOptLevel::None));
+          return std::pair(LSR->getPassID(), Expand->getPassID());
+        }();
+        PC->insertPass(IDs.first, IDs.second);
+      });
 }

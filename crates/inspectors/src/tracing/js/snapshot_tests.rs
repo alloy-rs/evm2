@@ -4,8 +4,9 @@ use super::*;
 use alloy_consensus::TxLegacy;
 use alloy_primitives::hex;
 use evm2::{
-    BaseEvmTypes, Precompiles, SpecId,
+    BaseEvmTypes, ExecutionConfig, Precompiles, SpecId, Version,
     bytecode::Bytecode,
+    constants::CALL_DEPTH_LIMIT,
     ethereum::{TxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo, CacheDB, EmptyDB},
     interpreter::Host,
@@ -72,7 +73,7 @@ impl Inspector<BaseEvmTypes> for SnapshotInspector {
     }
 }
 
-fn compare(code: Bytes, child: Option<Bytes>) -> Vec<Value> {
+fn compare(code: Bytes, child: Option<Bytes>, initial_call_depth: u16) -> Vec<Value> {
     let address = Address::repeat_byte(0x11);
     let mut db = CacheDB::new(EmptyDB::default());
     db.insert_account_info(
@@ -100,7 +101,10 @@ fn compare(code: Bytes, child: Option<Bytes>) -> Vec<Value> {
         pending: Vec::new(),
         expected: Vec::new(),
     };
-    let mut evm = Evm::<BaseEvmTypes>::new(
+    let mut version = Version::new(SpecId::CANCUN);
+    version.initial_call_depth = initial_call_depth;
+    let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+        ExecutionConfig::for_spec_and_version(SpecId::CANCUN, version),
         SpecId::CANCUN,
         evm2::env::BlockEnvExt::default(),
         ethereum_tx_registry(SpecId::CANCUN),
@@ -121,6 +125,9 @@ fn compare(code: Bytes, child: Option<Bytes>) -> Vec<Value> {
     let block = *evm.block_env();
     let actual = inspector.js.json_result(&res, &tx, &block, evm.database_mut()).unwrap();
     assert_eq!(actual, json!(inspector.expected), "bytecode: {code}");
+    // Pending steps are indexed relative to the transaction root, not by absolute depth.
+    let deepest = inspector.expected.iter().map(|step| step[3].as_u64().unwrap()).max().unwrap();
+    assert_eq!(inspector.js.pending_steps.len() as u64, deepest - u64::from(initial_call_depth));
     inspector.expected
 }
 
@@ -133,7 +140,7 @@ fn reconstructed_steps_match_all_opcode_bytes() {
             code.extend_from_slice(&[op::PUSH1, value]);
         }
         code.extend_from_slice(&[opcode, op::STOP]);
-        compare(code.into(), None);
+        compare(code.into(), None, 0);
     }
 }
 
@@ -156,7 +163,7 @@ fn parent_snapshot_survives_calls_and_return_data() {
             parent.push(op::STOP);
             let mut child = hex!("60aa60005260206000").to_vec();
             child.push(stop);
-            let steps = compare(parent.into(), Some(child.into()));
+            let steps = compare(parent.into(), Some(child.into()), 0);
             assert!(steps.iter().any(|step| step[3] == 2), "child must execute");
         }
     }
@@ -172,7 +179,28 @@ fn parent_snapshot_survives_create() {
         }
         code.extend_from_slice(&hex!("600a60166000"));
         code.extend_from_slice(&[opcode, op::POP, op::STOP]);
-        let steps = compare(code.into(), None);
+        let steps = compare(code.into(), None, 0);
         assert!(steps.iter().any(|step| step[3] == 2), "initcode must execute");
+    }
+}
+
+#[test]
+fn nested_root_steps_keep_visible_depth() {
+    let parent = hex!("5f5f5f5f5f7322222222222222222222222222222222222222225af100");
+    let child = Bytes::from_static(&[op::STOP]);
+    let root_steps = compare(parent.into(), Some(child.clone()), 0);
+    for depth in [0, 7, u16::MAX - CALL_DEPTH_LIMIT - 1] {
+        let steps = compare(parent.into(), Some(child.clone()), depth);
+        let depths = steps.iter().map(|step| step[3].as_u64().unwrap()).collect::<Vec<_>>();
+        let depth = u64::from(depth);
+        let mut expected = vec![depth + 1; 8];
+        expected.extend([depth + 2, depth + 1]);
+        assert_eq!(depths, expected);
+        // Apart from the shifted depth, the trace matches the one rooted at depth zero.
+        let mut shifted = root_steps.clone();
+        for step in &mut shifted {
+            step[3] = json!(step[3].as_u64().unwrap() + depth);
+        }
+        assert_eq!(steps, shifted);
     }
 }

@@ -122,6 +122,9 @@ pub trait Host<T: EvmTypesHost> {
     fn execution_config(&self) -> &ExecutionConfig<T>;
 
     /// Returns the block environment.
+    ///
+    /// Compiled code keeps a pointer to the returned environment for the whole run, so the host
+    /// must keep it at a stable address and unchanged while the interpreter runs.
     fn block_env(&mut self) -> &BlockEnv<T>;
 
     /// Loads account information.

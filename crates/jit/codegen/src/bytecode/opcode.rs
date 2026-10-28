@@ -59,7 +59,7 @@ impl std::iter::FusedIterator for OpcodesIterWithPc<'_> {}
 #[derive(Clone, Debug)]
 pub struct OpcodesIter<'a> {
     iter: slice::Iter<'a, u8>,
-    info: &'static [OpcodeInfo; 256],
+    info: &'a [OpcodeInfo; 256],
 }
 
 impl fmt::Display for OpcodesIter<'_> {
@@ -79,6 +79,12 @@ impl<'a> OpcodesIter<'a> {
     #[inline]
     pub fn new(slice: &'a [u8], spec_id: SpecId) -> Self {
         Self { iter: slice.iter(), info: op_info_map(spec_id) }
+    }
+
+    /// Create a new iterator over the given bytecode slice with the given opcode infos.
+    #[inline]
+    pub(crate) fn with_infos(slice: &'a [u8], info: &'a [OpcodeInfo; 256]) -> Self {
+        Self { iter: slice.iter(), info }
     }
 
     /// Returns a new iterator that also yields the program counter alongside the opcode and
@@ -130,7 +136,7 @@ impl<'a> Iterator for OpcodesIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         self.iter.next().map(|&opcode| {
             let info = self.info[opcode as usize];
-            if info.is_unknown() || info.is_disabled() {
+            if info.is_unknown() || info.is_disabled() || info.is_unsupported_host() {
                 return Opcode { opcode, immediate: None };
             }
 
