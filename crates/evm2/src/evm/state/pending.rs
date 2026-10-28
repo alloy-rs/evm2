@@ -65,7 +65,6 @@ impl PendingState {
             present: current,
             flags,
             storage: core::mem::take(&mut account.storage),
-            ..Account::default()
         };
     }
 
