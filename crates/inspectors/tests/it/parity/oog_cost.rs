@@ -15,7 +15,8 @@ fn inspect_child(child: &[u8], gas: u16) -> TracingInspector {
 #[test]
 fn cold_load_guards_consume_the_remaining_step_gas() {
     // Each child reaches its final opcode with 642 gas. The cold-load guard fails after
-    // the warm base (and, for EXTCODECOPY, copy/memory gas), without a failed deduction.
+    // the warm base (and, for EXTCODECOPY, copy/memory gas), without a failed deduction, and
+    // the halt consumes the remainder.
     for (code, gas, opcode) in [
         (&hex!("604431")[..], 645, "BALANCE"),
         (&hex!("60443b")[..], 645, "EXTCODESIZE"),
@@ -41,7 +42,6 @@ fn cold_load_guards_consume_the_remaining_step_gas() {
         let failed =
             geth.struct_logs.iter().find(|log| log.depth == 2 && log.opcode() == opcode).unwrap();
         assert_eq!(failed.gas, 642, "{opcode}");
-        assert_eq!(failed.gas_cost, 642, "{opcode}");
 
         let trace = inspector.into_parity_builder().vm_trace();
         let failed = trace.ops[7].sub.as_ref().unwrap().ops.last().unwrap();
@@ -52,20 +52,29 @@ fn cold_load_guards_consume_the_remaining_step_gas() {
 }
 
 #[test]
-fn attempted_charges_and_uncharged_sentry_are_preserved() {
-    for (code, gas, remaining, cost, status) in [
-        (&hex!("6001")[..], 0, 0, 3, InstrStop::OutOfGas),
-        (&hex!("602a5f55")[..], 5005, 5000, 22100, InstrStop::OutOfGas),
-        (&hex!("5f5f55")[..], 100, 96, 0, InstrStop::ReentrancySentryOOG),
+fn failed_charges_report_consumed_gas_in_parity_and_attempted_cost_in_geth() {
+    for (code, gas, remaining, parity_cost, geth_cost, status) in [
+        (&hex!("6001")[..], 0, 0, 0, 3, InstrStop::OutOfGas),
+        (&hex!("602a5f55")[..], 5005, 5000, 5000, 22100, InstrStop::OutOfGas),
+        (&hex!("5f5f55")[..], 100, 96, 0, 0, InstrStop::ReentrancySentryOOG),
     ] {
         let inspector = inspect_child(code, gas);
         let step = inspector.traces().nodes()[1].trace.steps.last().unwrap();
         assert_eq!(step.status, Some(status));
         assert_eq!(step.gas_remaining, remaining);
-        assert_eq!(step.gas_cost, cost);
+        assert_eq!(step.gas_cost, parity_cost);
+
+        let geth = inspector.geth_builder().geth_traces(
+            0,
+            Bytes::new(),
+            GethDefaultTracingOptions::default(),
+        );
+        let failed = geth.struct_logs.iter().rfind(|log| log.depth == 2).unwrap();
+        assert_eq!(failed.gas_cost, geth_cost);
+
         let trace = inspector.into_parity_builder().vm_trace();
         let failed = trace.ops[7].sub.as_ref().unwrap().ops.last().unwrap();
-        assert_eq!(failed.cost, cost);
+        assert_eq!(failed.cost, parity_cost);
         assert!(failed.ex.is_none());
     }
 }

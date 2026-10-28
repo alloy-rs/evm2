@@ -668,7 +668,14 @@ pub struct CallTraceStep {
     pub gas_used: u64,
     // Fields filled in `step_end`
     /// Gas cost of step execution
+    ///
+    /// This is the gas the step actually consumed.
     pub gas_cost: u64,
+    /// Gas cost that structured logs report instead of `gas_cost`, if it differs.
+    ///
+    /// Only set on out-of-gas steps, where the consumed gas is the frame remainder but geth
+    /// reports the upfront cost of the opcode.
+    pub geth_gas_cost: Option<u64>,
     /// Net state-gas change caused by this step.
     pub state_gas_cost: Option<i64>,
     /// State-gas reservoir before this step.
@@ -702,7 +709,7 @@ impl CallTraceStep {
             depth,
             error: self.as_error(),
             gas: self.gas_remaining,
-            gas_cost: self.gas_cost,
+            gas_cost: self.geth_gas_cost.unwrap_or(self.gas_cost),
             state_gas_cost: self.state_gas_cost,
             state_gas_reservoir: self.state_gas_reservoir,
             op: if self.op.is_valid() {
