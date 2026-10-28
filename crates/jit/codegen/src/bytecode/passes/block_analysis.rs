@@ -1968,8 +1968,12 @@ impl Bytecode<'_> {
             op::POP => {
                 stack.pop();
             }
-            // Disabled, or an invalid immediate.
-            op::DUPN | op::SWAPN | op::EXCHANGE if inp == 0 => return false,
+            // Unknown, disabled, or an invalid immediate.
+            op::DUP1..=op::DUP16 | op::SWAP1..=op::SWAP16 | op::DUPN | op::SWAPN | op::EXCHANGE
+                if inp == 0 =>
+            {
+                return false;
+            }
             op::DUP1..=op::DUP16 | op::DUPN => {
                 stack.push(stack[stack.len() - inp]);
             }
@@ -2610,6 +2614,7 @@ pub(crate) mod tests {
 #[cfg(test)]
 mod tests_edge_cases {
     use super::{tests::*, *};
+    use evm2::{BaseEvmTypes, OpcodeConfig};
 
     /// Three callers to the same internal function. The return JUMP should
     /// resolve to Multi with three targets.
@@ -4712,5 +4717,17 @@ mod tests_edge_cases {
             "{jumpdests} PUSH0 CALLDATALOAD PUSH0 CALLDATALOAD PUSH2 0x03ff AND JUMPI {jump}"
         ));
         assert!(bytecode.has_dynamic_jumps);
+    }
+
+    /// A view that overrides every opcode leaves the stack opcodes unsupported, without stack
+    /// inputs. Analysis must reject them rather than read the stack.
+    #[test]
+    fn overridden_stack_opcodes_are_rejected() {
+        let view = OpcodeConfig::<BaseEvmTypes>::base_for_spec(crate::tests::DEF_SPEC).view(None);
+        for opcode in [op::DUP1, op::DUP16, op::SWAP1, op::SWAP16] {
+            let code = vec![opcode, op::STOP];
+            let mut bytecode = Bytecode::new(code, crate::tests::DEF_SPEC, None, Some(&view));
+            assert!(bytecode.analyze().is_err(), "opcode {opcode:#04x}");
+        }
     }
 }
