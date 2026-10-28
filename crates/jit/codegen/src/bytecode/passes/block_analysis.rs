@@ -1490,6 +1490,11 @@ impl Bytecode<'_> {
                     operand = stack_buf.last().copied();
                     condition = stack_buf.iter().rev().nth(1).copied().unwrap_or_default();
                 }
+                // A host instruction may write any stack word, including the entries in segments.
+                if !below_buf.is_empty() && self.insts[i].flags.contains(InstFlags::HOST) {
+                    converged = false;
+                    break 'fixpoint;
+                }
                 if self.interpret_inst(i, &mut stack_buf, truncated, &mut mem_buf, Record::Skip) {
                     continue;
                 }
