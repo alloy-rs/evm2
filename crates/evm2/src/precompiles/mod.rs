@@ -176,25 +176,35 @@ impl<T: EvmTypesHost> PrecompileProvider<T> for Precompiles<T> {
 #[cfg(feature = "std")]
 type BasePrecompileCache<T> = [OnceLock<PrecompileMap<T>>; 7];
 
-/// Append-only list of the leaked [`BasePrecompileCache`] of each host type.
+/// Append-only list of the [`BasePrecompileCache`] of each host type, starting at
+/// [`BASE_PRECOMPILES`].
 ///
 /// There are only a handful of host types per process, so a linear walk is cheap. Nodes are never
 /// removed or replaced, and each link is set once, so readers only load: unlike a read lock, a hit
 /// writes no shared cache line.
 #[cfg(feature = "std")]
-type BasePrecompileLink = OnceLock<&'static BasePrecompileNode>;
-
-#[cfg(feature = "std")]
 struct BasePrecompileNode {
     type_id: TypeId,
-    cache: &'static (dyn Any + Send + Sync),
-    next: BasePrecompileLink,
+    cache: Box<dyn Any + Send + Sync>,
+    next: OnceLock<Box<BasePrecompileNode>>,
 }
 
 #[cfg(feature = "std")]
-static BASE_PRECOMPILES: BasePrecompileLink = OnceLock::new();
+impl BasePrecompileNode {
+    fn new<T: EvmTypesHost>() -> Self {
+        Self {
+            type_id: TypeId::of::<T>(),
+            cache: Box::new(BasePrecompileCache::<T>::default()),
+            next: OnceLock::new(),
+        }
+    }
+}
 
 #[cfg(feature = "std")]
+static BASE_PRECOMPILES: OnceLock<BasePrecompileNode> = OnceLock::new();
+
+#[cfg(feature = "std")]
+#[inline]
 fn cached_base_precompiles<T: EvmTypesHost>(spec: SpecId) -> &'static PrecompileMap<T> {
     let index = match spec {
         SpecId::FRONTIER | SpecId::HOMESTEAD | SpecId::TANGERINE | SpecId::SPURIOUS_DRAGON => 0,
@@ -216,21 +226,12 @@ fn cached_base_precompiles<T: EvmTypesHost>(spec: SpecId) -> &'static Precompile
 #[cfg(feature = "std")]
 fn shared_base_precompiles<T: EvmTypesHost>() -> &'static (dyn Any + Send + Sync) {
     let type_id = TypeId::of::<T>();
-    let mut link = &BASE_PRECOMPILES;
-    loop {
-        // Only an empty link is initialized, and racing creators agree on the winner's node.
-        let node = link.get_or_init(|| {
-            Box::leak(Box::new(BasePrecompileNode {
-                type_id,
-                cache: Box::leak(Box::new(BasePrecompileCache::<T>::default())),
-                next: OnceLock::new(),
-            }))
-        });
-        if node.type_id == type_id {
-            return node.cache;
-        }
-        link = &node.next;
+    // Only an empty link is initialized, and racing creators agree on the winner's node.
+    let mut node = BASE_PRECOMPILES.get_or_init(BasePrecompileNode::new::<T>);
+    while node.type_id != type_id {
+        node = node.next.get_or_init(|| Box::new(BasePrecompileNode::new::<T>()));
     }
+    &*node.cache
 }
 
 fn base_precompiles<T: EvmTypesHost>(spec: SpecId) -> PrecompileMap<T> {
