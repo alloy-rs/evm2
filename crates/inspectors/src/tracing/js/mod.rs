@@ -122,6 +122,10 @@ pub struct JsInspector {
     precompiles_registered: bool,
     /// Pre-execution states captured in `step()` to be processed in `step_end()`.
     pending_steps: Vec<PendingStep>,
+    /// Depth of the root frame, which can be non-zero for a nested transaction root.
+    ///
+    /// Pending steps are indexed relative to it.
+    root_depth: u16,
     /// Retained until `fuse`; result collection prioritizes it over cancellation.
     hook_error: Option<JsError>,
     /// Optional cancellation signal shared with the caller.
@@ -217,6 +221,7 @@ impl JsInspector {
             next_call_id: 1,
             precompiles_registered: false,
             pending_steps: Vec::new(),
+            root_depth: 0,
             hook_error: None,
             interrupt: None,
         })
@@ -270,6 +275,7 @@ impl JsInspector {
         self.call_stack.clear();
         self.precompiles_registered = false;
         self.pending_steps.clear();
+        self.root_depth = 0;
         self.hook_error = None;
 
         Ok(())
@@ -425,11 +431,15 @@ impl JsInspector {
     /// Pushes a new call to the stack
     fn push_call(
         &mut self,
+        depth: u16,
         contract: Contract,
         kind: CallKind,
         gas_limit: u64,
         frame_refund: i64,
     ) -> &CallStackItem {
+        if self.call_stack.is_empty() {
+            self.root_depth = depth;
+        }
         let enclosing_refund =
             self.call_stack.last().map_or(0, |parent| parent.enclosing_refund + frame_refund);
         let call =
@@ -514,7 +524,8 @@ impl JsInspector {
         if !self.check_interrupt(interp) {
             return false;
         }
-        if let Some(pending) = self.pending_steps.get_mut(usize::from(interp.message().depth)) {
+        let index = self.pending_step_index(interp);
+        if let Some(pending) = self.pending_steps.get_mut(index) {
             pending.active = false;
         }
         // Step hooks must set the stop as well as record the fatal execution error.
@@ -539,8 +550,9 @@ impl JsInspector {
         fault: bool,
         error: Option<String>,
     ) {
-        let depth = usize::from(interp.message().depth);
-        let pending = &mut self.pending_steps[depth];
+        let depth = interp.message().depth;
+        let index = self.pending_step_index(interp);
+        let pending = &mut self.pending_steps[index];
         let call = self.call_stack.last().expect("call stack is empty");
         // evm2's CALL/CREATE step_end runs after the child has returned and merged its refund.
         let frame_refund = if matches!(
@@ -556,7 +568,8 @@ impl JsInspector {
         let info = StepInfo {
             cost: interp.gas().spent().saturating_sub(pending.gas_spent_before),
             refund: refund.max(0) as u64,
-            depth: depth as u64,
+            // Geth reports the depth starting at 1 for the top-level call.
+            depth: u64::from(depth) + 1,
             error,
             caller: interp.message().caller,
             contract: interp.message().destination,
@@ -585,6 +598,38 @@ impl JsInspector {
             self.record_hook_error(if fault { "fault" } else { "step" }, err);
         }
     }
+
+    /// Ends the parent's call-like step before its child runs, like geth.
+    ///
+    /// Invoked on [Inspector::call] and [Inspector::create], where the parent has charged the step,
+    /// including the gas forwarded to the child, and the child has not returned any gas yet.
+    /// `step_end` then skips the step. A `step` error is recorded like on any other step and does
+    /// not affect the child.
+    fn end_call_step<T: EvmTypes>(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &Message<T>,
+    ) {
+        // The top-level message has no parent step.
+        if self.step_fn.is_none()
+            || self.hook_errored()
+            || message.depth != interp.message().depth + 1
+        {
+            return;
+        }
+        let index = self.pending_step_index(interp);
+        if let Some(pending) = self.pending_steps.get_mut(index)
+            && core::mem::take(&mut pending.active)
+        {
+            self.invoke_step_hook(interp, false, None);
+        }
+    }
+
+    /// Returns the pending-step slot of the current frame, relative to the root frame.
+    #[inline]
+    fn pending_step_index<T: EvmTypes>(&self, interp: &Interpreter<'_, '_, T>) -> usize {
+        usize::from(interp.message().depth - self.root_depth)
+    }
 }
 
 impl<T: EvmTypes> Inspector<T> for JsInspector {
@@ -592,11 +637,11 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         if self.check_and_halt(interp) || self.hook_errored() {
             return;
         }
-        let depth = usize::from(interp.message().depth);
-        if self.pending_steps.len() <= depth {
-            self.pending_steps.resize_with(depth + 1, PendingStep::default);
+        let index = self.pending_step_index(interp);
+        if self.pending_steps.len() <= index {
+            self.pending_steps.resize_with(index + 1, PendingStep::default);
         }
-        let pending = &mut self.pending_steps[depth];
+        let pending = &mut self.pending_steps[index];
         pending.gas_spent_before = interp.gas().spent();
         pending.frame_refund = interp.gas().refunded();
         pending.instruction = FaultStep {
@@ -620,8 +665,8 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         if self.check_and_halt(interp) || self.hook_errored() {
             return;
         }
-        let depth = usize::from(interp.message().depth);
-        let Some(pending) = self.pending_steps.get_mut(depth) else {
+        let index = self.pending_step_index(interp);
+        let Some(pending) = self.pending_steps.get_mut(index) else {
             return;
         };
         if !core::mem::take(&mut pending.active) {
@@ -663,6 +708,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return None;
         }
         self.register_precompiles(interp.host());
+        self.end_call_step(interp, message);
 
         // determine contract and caller based on the call scheme
         let (caller, contract) = match message.kind {
@@ -673,6 +719,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
         };
 
         self.push_call(
+            message.depth,
             Contract { caller, contract, value: message.value, input: message.input.clone() },
             message.kind.into(),
             message.gas_limit,
@@ -728,7 +775,9 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return None;
         }
         self.register_precompiles(interp.host());
+        self.end_call_step(interp, message);
         self.push_call(
+            message.depth,
             Contract {
                 caller: message.caller,
                 contract: message.destination,

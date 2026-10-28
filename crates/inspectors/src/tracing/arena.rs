@@ -59,18 +59,18 @@ impl CallTraceArena {
     /// node children set if `attach_to_parent` is `true`. E.g. if calls to precompiles should
     /// not be included in the call graph this should be called with [PushTraceKind::PushOnly].
     ///
-    /// If the new trace is the root call (depth 0), it replaces the root node instead.
+    /// If there is no parent, the trace replaces the root node, regardless of its visible depth.
     pub(crate) fn push_trace(
         &mut self,
-        parent: usize,
+        parent: Option<usize>,
         kind: PushTraceKind,
         new_trace: CallTrace,
     ) -> usize {
         // The entry node, just update it.
-        if new_trace.depth == 0 {
+        let Some(parent) = parent else {
             self.arena[0].trace = new_trace;
             return 0;
-        }
+        };
 
         debug_assert_eq!(
             self.arena[parent].trace.depth + 1,

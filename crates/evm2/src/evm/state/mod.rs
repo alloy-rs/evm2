@@ -584,7 +584,8 @@ impl<'a> State<'a> {
         if account.storage.slots.capacity() == 0 {
             account.storage.slots = storage_pool.take();
         }
-        Ok(StorageHandle::new(address, &mut account.storage, account.just_created, inner))
+        let discards_storage = account.discards_storage();
+        Ok(StorageHandle::new(address, &mut account.storage, discards_storage, inner))
     }
 
     /// Loads a single persistent storage slot and returns a journaled mutation handle.
@@ -624,7 +625,7 @@ impl<'a> State<'a> {
             if let Some(slot) = account.storage.slots.get(key) {
                 return Ok(slot.value.current);
             }
-            if account.storage.wiped || account.just_created {
+            if account.storage.wiped || account.discards_storage() {
                 return Ok(Word::ZERO);
             }
         }
@@ -880,20 +881,22 @@ impl<'a> State<'a> {
             // EIP-8246: a self-destructed account that still holds balance is preserved as a
             // balance-only account instead of being burned. One with no balance is removed. The
             // handle is scoped so its `AccountChange` flushes on drop before the storage wipe.
-            let keeps_storage = {
+            let survives = {
                 let mut account = self.account(address)?;
-                if eip8246 && !account.balance().is_zero() {
+                let survives = eip8246 && !account.balance().is_zero();
+                if survives {
                     account.reset_selfdestructed_for_finalization();
-                    // Like revm, a created survivor keeps its unloaded old storage, which later
-                    // transactions read as zero.
-                    account.is_created()
                 } else {
                     account.delete_for_finalization();
-                    false
                 }
+                survives
             };
+            // Like revm, a created survivor keeps its unloaded old storage, which later
+            // transactions read as zero. One that keeps its storage baseline has no such reads,
+            // so its storage is wiped.
+            let zero_loaded_only = survives && self.accounts[address].discards_storage();
             let mut storage = self.storage(address)?;
-            if keeps_storage { storage.zero_loaded() } else { storage.wipe() }
+            if zero_loaded_only { storage.zero_loaded() } else { storage.wipe() }
         }
 
         // Finalization never touches accounts, so clearing touches in the same pass that selects
@@ -905,6 +908,7 @@ impl<'a> State<'a> {
             if !mem::take(&mut entry.is_touched) {
                 continue;
             }
+            entry.finalized_touched = true;
             // EIP-161 deletes touched dead accounts at transaction finalization. Before EIP-161,
             // touching a non-existent account materializes it as empty.
             let needs_finalization = if eip161 {
@@ -1105,6 +1109,49 @@ mod tests {
     }
 
     #[test]
+    fn created_account_keeping_storage_reads_and_commits_its_baseline() {
+        let caller = Address::with_last_byte(1);
+        let address = Address::with_last_byte(2);
+        let (written, unwritten) = (Word::from(1), Word::from(2));
+        let features = EvmFeatures::empty();
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_nonce(1));
+        db.insert_account_storage(&address, &written, &Word::from(5));
+        db.insert_account_storage(&address, &unwritten, &Word::from(6));
+        let mut state = State::new(db);
+
+        let mut account = state.account(&address).unwrap();
+        account.mark_created_keeping_storage();
+        // Still created for EIP-6780 `SELFDESTRUCT`.
+        assert!(account.is_created());
+        drop(account);
+        assert_eq!(state.storage_slot_untracked(&address, &unwritten).unwrap(), Word::from(6));
+        let mut slot = state.storage_slot(&address, written).unwrap();
+        assert_eq!((slot.original(), slot.current()), (Word::from(5), Word::from(5)));
+        slot.write(Word::from(9));
+
+        // Committing keeps the slots the transaction did not write.
+        state.commit_transaction();
+        assert_eq!(state.storage_slot(&address, written).unwrap().current(), Word::from(9));
+        assert_eq!(state.storage_slot(&address, unwritten).unwrap().current(), Word::from(6));
+
+        // Rolling back the mark forgets the kept baseline, and an account already created in the
+        // overlay keeps reading its old storage as zero.
+        let other = Address::with_last_byte(3);
+        state
+            .overlay_db_mut()
+            .insert_account_info(&other, AccountInfo::default().with_balance(Word::from(1)));
+        state.overlay_db_mut().insert_account_storage(&other, &unwritten, &Word::from(6));
+        let checkpoint = state.checkpoint();
+        state.account(&other).unwrap().mark_created_keeping_storage();
+        state.rollback(checkpoint, features);
+        state.create_account(&caller, &other, &Word::ZERO, features).unwrap().unwrap();
+        assert_eq!(state.storage_slot_untracked(&other, &unwritten).unwrap(), Word::ZERO);
+        state.account(&other).unwrap().mark_created_keeping_storage();
+        assert_eq!(state.storage_slot(&other, unwritten).unwrap().current(), Word::ZERO);
+    }
+
+    #[test]
     fn finalization_keeps_storage_of_prefunded_created_account() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
@@ -1147,6 +1194,48 @@ mod tests {
         for key in [written, old] {
             assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
         }
+    }
+
+    #[test]
+    fn eip8246_survivor_keeping_storage_wipes_it() {
+        let address = Address::with_last_byte(2);
+        let (written, earlier) = (Word::from(1), Word::from(2));
+        let version = Version::base(crate::SpecId::AMSTERDAM);
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        // A slot the account's creation wrote before the transaction was suspended.
+        db.insert_account_storage(&address, &earlier, &Word::from(6));
+        let mut state = State::new(db);
+
+        state.account(&address).unwrap().mark_created_keeping_storage();
+        state.storage_slot(&address, written).unwrap().write(Word::from(9));
+        state.account(&address).unwrap().mark_destructed();
+        state.finalize_transaction_(version);
+
+        assert!(state.accounts[&address].storage.wiped);
+        state.commit_transaction();
+        for key in [written, earlier] {
+            assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
+        }
+    }
+
+    #[test]
+    fn rollback_of_later_creation_mark_keeps_storage_baseline() {
+        let address = Address::with_last_byte(2);
+        let key = Word::from(1);
+        let features = Version::base(crate::SpecId::CANCUN).features;
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_storage(&address, &key, &Word::from(6));
+        let mut state = State::new(db);
+
+        state.account(&address).unwrap().mark_created_keeping_storage();
+        let checkpoint = state.checkpoint();
+        state.account(&address).unwrap().mark_created();
+        state.rollback(checkpoint, features);
+
+        assert!(!state.accounts[&address].discards_storage());
+        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::from(6));
     }
 
     #[test]
