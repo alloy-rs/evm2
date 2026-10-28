@@ -1060,6 +1060,7 @@ impl<'a> State<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn storage_loads_account_without_touching_or_warming_it() {
