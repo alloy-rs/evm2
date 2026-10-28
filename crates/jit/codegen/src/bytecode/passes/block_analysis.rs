@@ -280,15 +280,15 @@ const MAX_CONTEXT_DEPTH: usize = 128;
 /// Maximum number of values in a range that a jump resolves to the jump targets in it.
 const MAX_RANGE_JUMP_WIDTH: usize = 4096;
 
-/// Maximum number of values in a range that [`Bytecode::enumerate_jump`] runs the rest of a block
-/// on.
-const MAX_ENUMERATED_VALUES: u32 = 256;
-
 /// Maximum total number of jump targets that the range jumps of one bytecode resolve to.
 ///
 /// Each resolved range jump becomes its own switch, so later range jumps stay dynamic to bound
 /// compile time.
 const MAX_RANGE_JUMP_TARGETS: usize = 1024;
+
+/// Number of values below which [`Bytecode::enumerate_jump`] runs the rest of a block on each value
+/// of a range. Ranges of two values are conditions, which no table indexes.
+const MAX_ENUMERATED_VALUES: u32 = 256;
 
 /// Maximum number of segments that may continue a stack, beyond which the stack is truncated
 /// instead, so that the joins and the runs of a block on each segment stay cheap.
@@ -1220,14 +1220,13 @@ impl Bytecode<'_> {
                         discovered[bid].iter().map(|&tb| self.cfg.blocks[tb].insts.start).collect();
                     targets.sort_unstable();
                     // As for a range, a single target would skip the invalid jump check.
-                    if (targets.len() > 1 && targets.len() <= range_budget)
-                        || (targets.len() == 1 && !invalid)
-                    {
-                        if targets.len() > 1 {
-                            range_budget -= targets.len();
-                        }
-                        target = JumpResolution::resolved(targets).with_condition(target.condition);
+                    let count = targets.len();
+                    if count > 1 && count <= range_budget {
+                        range_budget -= count;
+                    } else if count != 1 || invalid {
+                        return (jump_inst, target);
                     }
+                    target = JumpResolution::resolved(targets).with_condition(target.condition);
                 }
                 (jump_inst, target)
             })
@@ -1638,14 +1637,19 @@ impl Bytecode<'_> {
                                 let copy = stack_buf.len().min(MAX_ABS_STACK_DEPTH);
                                 work += self.cfg.blocks[bid].insts().len() as u64
                                     + values * (rest + copy) as u64;
-                                self.enumerate_jump(
+                                // The runs repeat folds that `work` already bounds, so they must
+                                // not drain the budget of the folds that the analysis keeps.
+                                let gas = self.compiler_gas_used;
+                                let found = self.enumerate_jump(
                                     bid,
                                     &parts.states[pid].1,
                                     split,
                                     range,
                                     &mut enumerate_buf,
                                     &mut targets,
-                                )
+                                );
+                                self.compiler_gas_used = gas;
+                                found
                             });
                             match found {
                                 Some(invalid) => {
@@ -1660,9 +1664,7 @@ impl Bytecode<'_> {
                         } else {
                             // Sets only hold valid targets, and a range may hold others.
                             state.invalid |= match operand {
-                                AbsValue::Const(imm) => imm
-                                    .get_inline()
-                                    .is_none_or(|pc| !self.is_valid_jump(pc as usize)),
+                                AbsValue::Const(_) => self.jump_target_pc(operand).is_none(),
                                 AbsValue::ConstSet(_) => false,
                                 AbsValue::Range(_) | AbsValue::Top => true,
                             };
@@ -1844,8 +1846,9 @@ impl Bytecode<'_> {
             if !reaches_jump {
                 continue;
             }
-            let AbsValue::Const(target) = *values.last()? else { return None };
-            match target.get_inline().filter(|&pc| self.is_valid_jump(pc as usize)) {
+            let target = *values.last()?;
+            let AbsValue::Const(_) = target else { return None };
+            match self.jump_target_pc(target) {
                 Some(pc) => {
                     let tb = self.cfg.inst_to_block[self.pc_to_inst(pc as usize)]?;
                     if !targets.contains(&tb) {
@@ -4881,12 +4884,28 @@ mod tests_edge_cases {
         assert_eq!(multi_jump_target_pcs(&bytecode), [0x20, 0x22, 0x24, 0x26]);
     }
 
+    /// Range jumps resolve to at most [`MAX_RANGE_JUMP_TARGETS`] targets in total, since each
+    /// becomes its own switch.
+    #[test]
+    fn range_jump_budget() {
+        let jumpdests = "JUMPDEST ".repeat(600);
+        let jump = "PUSH0 CALLDATALOAD PUSH2 0x03ff AND JUMP";
+        let bytecode = analyze_asm(&format!("{jumpdests} {jump}"));
+        assert!(!bytecode.has_dynamic_jumps);
+        assert_eq!(multi_jump_target_pcs(&bytecode).len(), 600);
+
+        let bytecode = analyze_asm(&format!(
+            "{jumpdests} PUSH0 CALLDATALOAD PUSH0 CALLDATALOAD PUSH2 0x03ff AND JUMPI {jump}"
+        ));
+        assert!(bytecode.has_dynamic_jumps);
+    }
+
     /// Solar's `-Ogas` dispatcher shifts a packed table of `u16` targets right by `16 * (selector %
     /// n)`. The shift of a constant by a range is not a range, so only enumerating the values of
     /// the index finds the targets.
     #[test]
     fn packed_jump_table() {
-        let src = |entry1: &str| {
+        let src = |entry1: &str, table: &str| {
             format!(
                 "
                 PUSH0
@@ -4898,7 +4917,7 @@ mod tests_edge_cases {
                 MOD
                 PUSH1 0x04
                 SHL                 ; 16 * (selector % 3)
-                PUSH6 0x001e001c001a
+                PUSH6 {table}
                 SWAP1
                 SHR
                 PUSH2 0xffff
@@ -4913,16 +4932,37 @@ mod tests_edge_cases {
                 "
             )
         };
-        let bytecode = analyze_asm(&src("JUMPDEST"));
+        let bytecode = analyze_asm(&src("JUMPDEST", "0x001e001c001a"));
         assert!(!bytecode.has_dynamic_jumps);
         assert_eq!(multi_jump_target_pcs(&bytecode), [0x1a, 0x1c, 0x1e]);
 
         // An entry that is not a jump target fails at runtime, in the switch's default case.
-        let bytecode = analyze_asm(&src("STOP"));
+        let bytecode = analyze_asm(&src("STOP", "0x001e001c001a"));
         assert!(!bytecode.has_dynamic_jumps);
         assert_eq!(multi_jump_target_pcs(&bytecode), [0x1a, 0x1e]);
 
-        // A narrow range below the jump operand is not its index.
+        // A static jump to the only target would skip that failure.
+        let bytecode = analyze_asm(&src("STOP", "0x001c001c001a"));
+        assert!(bytecode.has_dynamic_jumps);
+
+        // A narrow range that is not the index of the jump operand.
+        let bytecode = analyze_asm(
+            "
+            JUMPDEST
+            JUMPDEST
+            JUMPDEST
+            PUSH0
+            CALLDATALOAD
+            PUSH1 0x03
+            AND
+            PUSH0
+            CALLDATALOAD
+            JUMP
+            ",
+        );
+        assert!(bytecode.has_dynamic_jumps);
+
+        // A narrow range below the jump operand, which the jump leaves on top of the stack.
         let bytecode = analyze_asm(
             "
             JUMPDEST
@@ -4944,22 +4984,6 @@ mod tests_edge_cases {
             STOP
             ",
         );
-        assert!(bytecode.has_dynamic_jumps);
-    }
-
-    /// Range jumps resolve to at most [`MAX_RANGE_JUMP_TARGETS`] targets in total, since each
-    /// becomes its own switch.
-    #[test]
-    fn range_jump_budget() {
-        let jumpdests = "JUMPDEST ".repeat(600);
-        let jump = "PUSH0 CALLDATALOAD PUSH2 0x03ff AND JUMP";
-        let bytecode = analyze_asm(&format!("{jumpdests} {jump}"));
-        assert!(!bytecode.has_dynamic_jumps);
-        assert_eq!(multi_jump_target_pcs(&bytecode).len(), 600);
-
-        let bytecode = analyze_asm(&format!(
-            "{jumpdests} PUSH0 CALLDATALOAD PUSH0 CALLDATALOAD PUSH2 0x03ff AND JUMPI {jump}"
-        ));
         assert!(bytecode.has_dynamic_jumps);
     }
 
