@@ -353,12 +353,8 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
         if self.tracked.storage.slots.capacity() == 0 {
             self.tracked.storage.slots = self.storage_pool.take();
         }
-        StorageHandle::new(
-            &self.address,
-            &mut self.tracked.storage,
-            self.tracked.flags.contains(AccountFlags::CREATED),
-            self.inner,
-        )
+        let created = self.tracked.is_created();
+        StorageHandle::new(&self.address, &mut self.tracked.storage, created, self.inner)
     }
 
     /// Records the pre-mutation revert entry the first time a change is made through this handle.
@@ -442,7 +438,7 @@ impl<'a, 'db> AccountHandle<'a, 'db> {
     /// Returns whether the account was created in the current transaction.
     #[inline]
     pub const fn is_created(&self) -> bool {
-        self.tracked.present.is_some() && self.tracked.flags.contains(AccountFlags::CREATED)
+        self.tracked.present.is_some() && self.tracked.is_created()
     }
 
     /// Returns whether the account is dead by the EIP-161 definition while existing in the overlay.

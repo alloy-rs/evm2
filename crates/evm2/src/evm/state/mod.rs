@@ -517,9 +517,9 @@ impl<'a> State<'a> {
         match accounts.entry(*address) {
             hash_map::Entry::Occupied(entry) => {
                 // An already-loaded account has no cold database read to skip, so the skip only
-                // signals an unaffordable *cold* access. Runtime warmth (`is_warm`, seeded from
-                // the prewarm set on load) decides coldness: an account warmed earlier this
-                // execution is a cheap warm access and must not be forced out of gas.
+                // signals an unaffordable *cold* access. Runtime warmth (`AccountFlags::WARM`,
+                // seeded from the prewarm set on load) decides coldness: an account warmed earlier
+                // this execution is a cheap warm access and must not be forced out of gas.
                 let account = entry.into_mut();
                 if skip_cold
                     && !account.flags.contains(AccountFlags::WARM)
@@ -587,12 +587,8 @@ impl<'a> State<'a> {
         if account.storage.slots.capacity() == 0 {
             account.storage.slots = storage_pool.take();
         }
-        Ok(StorageHandle::new(
-            address,
-            &mut account.storage,
-            account.flags.contains(AccountFlags::CREATED),
-            inner,
-        ))
+        let created = account.is_created();
+        Ok(StorageHandle::new(address, &mut account.storage, created, inner))
     }
 
     /// Loads a single persistent storage slot and returns a journaled mutation handle.
@@ -632,7 +628,7 @@ impl<'a> State<'a> {
             if let Some(slot) = account.storage.slots.get(key) {
                 return Ok(slot.value.current);
             }
-            if account.storage.wiped || account.flags.contains(AccountFlags::CREATED) {
+            if account.storage.wiped || account.is_created() {
                 return Ok(Word::ZERO);
             }
         }
@@ -811,9 +807,11 @@ impl<'a> State<'a> {
                         // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
                         let keep_touch = features.contains(EvmFeatures::EIP161)
                             && address == Address::with_last_byte(3);
-                        let touched = if keep_touch { entry.flags } else { previous_flags }
-                            & AccountFlags::TOUCHED;
-                        entry.flags = (previous_flags - AccountFlags::TOUCHED) | touched;
+                        let touched = entry.flags.contains(AccountFlags::TOUCHED);
+                        entry.flags = previous_flags;
+                        if keep_touch {
+                            entry.flags.set(AccountFlags::TOUCHED, touched);
+                        }
                     }
                 }
                 JournalEntry::StorageChange { address, key, previous } => {

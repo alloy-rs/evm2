@@ -7,7 +7,7 @@ use crate::{
     evm::{
         bal::BalContext,
         state::{
-            Account, AccountChangeRef, AccountFlags, AccountInfo, PendingState, StateChangeSink,
+            Account, AccountChangeRef, AccountInfo, PendingState, StateChangeSink,
             StateChangeSource, StorageChange,
         },
     },
@@ -165,7 +165,7 @@ impl<ExtDB> CacheDB<ExtDB> {
             let overlay = &entry.storage;
             // Like revm's in-block cache, later transactions read the unchanged slots of a created
             // account as zero, without a storage wipe reaching the state stream.
-            let wiped = overlay.wiped || entry.flags.contains(AccountFlags::CREATED);
+            let wiped = overlay.wiped || entry.is_created();
             let mut changed_slots = overlay.changed_slots().peekable();
             if wiped || changed_slots.peek().is_some() {
                 let storage = self.cache.storage.entry(address).or_default();
