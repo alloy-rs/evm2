@@ -20,7 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 workspace = true
 
 [dependencies]
-evm2 = { workspace = true, features = ["std"] }
+evm2 = { workspace = true, features = ["std", "wincode"] }
 evm2-jit-backend.workspace = true
 evm2-jit-codegen.workspace = true
 evm2-jit-context.workspace = true
@@ -41,9 +41,10 @@ quanta.workspace = true
 rayon.workspace = true
 tracing.workspace = true
 wait-timeout.workspace = true
-wincode.workspace = true
+wincode = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
+evm2-macros.workspace = true
 paste.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 

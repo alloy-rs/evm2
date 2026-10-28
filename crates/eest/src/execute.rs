@@ -222,6 +222,9 @@ fn execute_unit(
                 config.dump_state,
                 if config.db_stats { Some(&mut *db_stats_counts) } else { None },
             );
+            resources
+                .check_compilations()
+                .map_err(|err| TestError::case(path, name, err.into()))?;
             validate_result(path, name, &unit, post, result, spec, config)?;
         }
     }

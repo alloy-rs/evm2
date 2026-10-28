@@ -3690,6 +3690,25 @@ tests! {
             expected_stack: &[11_U256],
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
+
+        // Capping the memory words tracked by block analysis made it non-monotone and left a
+        // live `JUMPDEST` after a dead instruction inside one CFG block. Dedup then redirected
+        // a reachable identical block into it, so compiled code ran into the dead instruction:
+        // a wrong halt when optimized, a crash when not. The runtime default
+        // `inspect_stack = false` is needed to reproduce it.
+        mem_words_dedup_into_dead_gap(@raw {
+            bytecode: &hex!("6020356100935760006100205260006100405260006100605260006100805260006100a05260006100c05260006100e05260006101005260006101205260006101405260006101605260006101805260006101a05260006101c05260006101e0526000610200525f3561008957610071565b60015f52610200516100875760405161008657505b5b005b6001602053610071565b60016040356100a157505b5b005b00"),
+            spec_id: SpecId::AMSTERDAM,
+            modify_message: Some(|message| {
+                let mut input = [0; 96];
+                input[63] = 1;
+                message.input = Bytes::copy_from_slice(&input);
+            }),
+            inspect_stack: Some(false),
+            expected_return: InstrStop::Stop,
+            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+        }),
     }
 }
 
@@ -3906,4 +3925,22 @@ fn binary_choice_chain(stages: usize) -> String {
     }
     s += "done:\n JUMPDEST PUSH1 0x20 PUSH0 RETURN\n";
     s
+}
+
+/// A countdown loop from zero wraps through an `i256` trip count. Loop strength reduction rewrites
+/// its exit value with `udiv i256`, after the codegen pipeline has already expanded wide divisions.
+/// Without a second expansion right after LSR, x86-64 instruction selection aborts the process.
+/// Uses the production compiler options.
+#[cfg(feature = "llvm")]
+#[test]
+fn lsr_wrapping_countdown_compiles() {
+    init_tracing();
+    let code = alloy_primitives::hex!(
+        "5f5f525f5b60019003806004575b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5f5f52602156"
+    );
+    let mut compiler = EvmCompiler::new_llvm(false).unwrap();
+    compiler.set_opt_level(evm2_jit_backend::OptimizationLevel::default());
+    compiler.set_single_error(true);
+    compiler.set_inspect_stack(false);
+    unsafe { compiler.jit("lsr_wrapping_countdown", &code[..], DEF_SPEC) }.unwrap();
 }

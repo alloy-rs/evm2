@@ -287,14 +287,14 @@ const MAX_RANGE_JUMP_TARGETS: usize = 1024;
 /// instead, so that the joins and the runs of a block on each segment stay cheap.
 const MAX_SEGS_BELOW: usize = 64;
 
-/// Maximum number of memory words tracked by [`MemWords`].
-const MAX_MEM_WORDS: usize = 16;
-
 /// Memory words at constant offsets whose values are known, sorted by offset and disjoint.
 ///
 /// Only words written by `MSTORE` are tracked, so memory already covers a word that `MLOAD`
 /// folds and the load needs no memory expansion. Every instruction that writes memory clears
-/// the words it may overlap, and joins keep only the words known on every path.
+/// the words it may overlap, and joins keep only the words known on every path. The number of
+/// words is not capped: dropping a word to make room for another would make the transfer
+/// non-monotone (a more precise state could forget a word that a less precise one keeps), which
+/// lets the fixpoint reach a block that the committed jump resolutions no longer justify.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct MemWords(SmallVec<[(u32, AbsValue); 4]>);
 
@@ -322,7 +322,6 @@ impl MemWords {
                 {
                     let i = self.0.partition_point(|&(o, _)| o < offset);
                     self.0.insert(i, (offset, value));
-                    self.0.truncate(MAX_MEM_WORDS);
                 }
             }
             op::MSTORE8 => self.clobber(bounds(0), Some(1)),
@@ -1987,6 +1986,11 @@ impl Bytecode<'_> {
                 // Disabled opcodes halt and have no stack inputs.
                 let loaded = if inst.flags.contains(InstFlags::DISABLED) {
                     None
+                } else if inst.flags.contains(InstFlags::HOST) {
+                    // The host's instruction may write any memory and any stack word.
+                    mem.0.clear();
+                    stack.fill(AbsValue::Top);
+                    None
                 } else {
                     mem.transfer(inst.opcode, &stack[stack.len() - inp..])
                 };
@@ -2071,7 +2075,7 @@ pub(crate) mod tests {
         crate::tests::init_tracing();
 
         eprintln!("{}", hex::encode(&code));
-        let mut bytecode = Bytecode::new(code, spec_id, None);
+        let mut bytecode = Bytecode::new(code, spec_id, None, None);
         bytecode.analyze().unwrap();
         eprintln!("{bytecode}");
         bytecode
@@ -2526,6 +2530,54 @@ pub(crate) mod tests {
                 bytecode.pc(inst),
             );
         }
+    }
+
+    /// Asserts that no live instruction directly follows a dead one inside a CFG block, and
+    /// that no dedup redirect targets a block that contains a dead instruction.
+    fn assert_no_dead_gap_in_blocks(bytecode: &Bytecode<'_>) {
+        for block in &bytecode.cfg.blocks {
+            for (a, b) in block.insts().zip(block.insts().skip(1)) {
+                assert!(
+                    !(bytecode.inst(a).is_dead_code() && !bytecode.inst(b).is_dead_code()),
+                    "live inst={b} pc={} follows dead inst={a} pc={} inside block {:?}",
+                    bytecode.pc(b),
+                    bytecode.pc(a),
+                    block.insts,
+                );
+            }
+        }
+        for (&from, &to) in &bytecode.redirects {
+            let Some(bid) = bytecode.cfg.inst_to_block[to] else { continue };
+            let block = &bytecode.cfg.blocks[bid];
+            assert!(
+                !block.insts().any(|i| bytecode.inst(i).is_dead_code()),
+                "redirect {from} -> {to} targets block {:?}, which contains dead code",
+                block.insts,
+            );
+        }
+    }
+
+    /// Regression test: capping [`MemWords`] by count made the transfer non-monotone. The
+    /// fixpoint reached a `JUMPDEST` that the committed jumps no longer justify, which left it
+    /// live right after a dead instruction inside one CFG block.
+    #[test]
+    fn mem_words_no_dead_gap() {
+        let bytecode = analyze_code_spec(
+            hex::decode("60006100205260006100405260006100605260006100805260006100a05260006100c05260006100e05260006101005260006101205260006101405260006101605260006101805260006101a05260006101c05260006101e0526000610200525f356100825761006a565b60015f52610200516100805760405161007f57505b5b005b600160205361006a56").unwrap(),
+            SpecId::AMSTERDAM,
+        );
+        assert_no_dead_gap_in_blocks(&bytecode);
+    }
+
+    /// Regression test: the dead gap left by the [`MemWords`] cap let dedup redirect a
+    /// reachable block into a copy that runs into an untranslated dead instruction.
+    #[test]
+    fn mem_words_no_dedup_into_dead_gap() {
+        let bytecode = analyze_code_spec(
+            hex::decode("6020356100935760006100205260006100405260006100605260006100805260006100a05260006100c05260006100e05260006101005260006101205260006101405260006101605260006101805260006101a05260006101c05260006101e0526000610200525f3561008957610071565b60015f52610200516100875760405161008657505b5b005b6001602053610071565b60016040356100a157505b5b005b00").unwrap(),
+            SpecId::AMSTERDAM,
+        );
+        assert_no_dead_gap_in_blocks(&bytecode);
     }
 
     #[test]

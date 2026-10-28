@@ -16,6 +16,14 @@ ones here with the numbers that rejected them.
   function-wide loops irreducible: misses loops closed by internal-function
   return switches and raised compile cost by up to 50% on some contracts.
   `-sink-insts-to-avoid-spills` handles these loops instead.
+- Storing the value last stored to a stack slot where codegen reloads the slot
+  only to copy it to another slot, which LLVM does with a 256-bit vector load
+  that stalls store forwarding from the four 64-bit stores: spills +57%,
+  reloads +32%, JIT size +2.2% for 0.7% fewer runtime instructions. Using the
+  stored value for every read of the slot also adds instructions; both save
+  cycles in some Solidity loops and cost them in others. The `noimplicitfloat`
+  function attribute, which keeps those copies in general-purpose registers,
+  made a Solady string loop 13–50% slower in cycles.
 - Dropping `relieve_vstack_pressure`, so the virtual stack only stores at
   section boundaries and builtin calls: i256 stores -23%, but JIT size +13%,
   spills ×6 and runtime instructions +9.6% (onchain_lm_v2 +13.5%).
@@ -89,9 +97,18 @@ ones here with the numbers that rejected them.
 - `-enable-machine-outliner`: JIT size -11.5%, runtime +1.2% geomean and
   onchain_lm_v2 +8.4%.
 - `-fast-isel` grows JIT size by 4.5%, `-global-isel` falls back to
-  SelectionDAG, and `-regalloc=basic` grows JIT size by 19%. Codegen `-O1`
-  gives the same code as turning off the post-RA scheduler, which we keep;
-  `-O3` grows code by 0.2%.
+  SelectionDAG, and `-regalloc=basic` grows JIT size by 19%.
+- Codegen level, with the IR pipeline fixed: `-O1` differs from `-O2` only by
+  the post-RA scheduler, which X86 enables for some CPUs. On znver5 `-O1` gives
+  the same code as `-post-RA-scheduler=false` and is what every level above
+  `None` uses. Against `-O3` it cuts compile instructions by 5.5% and spills
+  by 0.4% for 0.3% more JIT size and flat runtime (instructions -0.1%, cycles
+  +1.6% on a loaded machine, then +0.1% and -0.1%), but the JIT size of
+  push0_proxy grows 6.4%. On graniterapids, the CI runner, `-O1` and `-O2`
+  give identical assembly. `-O2` and `-O3` produce the same code to 0.1% in
+  JIT size and compile instructions, so `-O3` buys nothing. `-O0` grows JIT
+  size by 71%, spills ×27, and runtime instructions by 16%, for 41% fewer
+  compile instructions.
 - `-enable-ext-tsp-block-placement`: JIT size -0.3% for 56% more llc time.
   `-combiner-global-alias-analysis`: llc +3.4% for no smaller code.
 - Turning off `machine-cse`, `branch-fold`, block placement, `machine-cp`, the

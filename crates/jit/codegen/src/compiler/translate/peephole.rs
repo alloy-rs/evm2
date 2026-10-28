@@ -5,7 +5,7 @@
 //! LLVM operations that it can optimize further (e.g. pow2 udiv → lshr, pow2 urem → and).
 
 use super::FunctionCx;
-use crate::{Backend, Builder, InstData, IntCC};
+use crate::{Backend, Builder, InstData, IntCC, bytecode::InstFlags};
 use alloy_primitives::U256;
 use evm2::{
     interpreter::{InstrStop, op},
@@ -22,6 +22,9 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     /// Returns `true` if the peephole fired and code was emitted, `false` to fall through to the
     /// normal translation.
     pub(super) fn try_peephole(&mut self, data: &InstData) -> bool {
+        if data.flags.contains(InstFlags::HOST) {
+            return false;
+        }
         match data.opcode {
             op::DIV => self.peephole_div(),
             op::SDIV => self.peephole_sdiv(),
@@ -337,10 +340,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             } else {
                 self.call_fallible_builtin(builtin, args);
             }
-            // Builtin wrote output to sp; reload into virtual stack.
+            // The builtin wrote its output to `sp`; reload it.
             let off = self.section_len_offset - 1;
             let value = self.load_word(sp, "builtin.out");
-            self.vstack.set_at_offset(off, value);
+            self.vstack.set_stored_at_offset(off, value);
             true
         } else {
             false

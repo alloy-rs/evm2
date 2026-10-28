@@ -7,7 +7,7 @@ use crate::{
 };
 use alloy_primitives::U256;
 use evm2::{
-    BaseEvmTypes,
+    BaseEvmTypes, EvmTypesHost,
     env::{BlockEnv, TxEnv},
     interpreter::{InstrStop, Interpreter, Message, op},
 };
@@ -40,6 +40,7 @@ pub(super) struct FcxConfig {
     pub(super) stack_bound_checks: bool,
     pub(super) gas_metering: bool,
     pub(super) single_error: bool,
+    pub(super) layout: HostLayout,
 }
 
 impl Default for FcxConfig {
@@ -54,6 +55,107 @@ impl Default for FcxConfig {
             stack_bound_checks: true,
             gas_metering: true,
             single_error: true,
+            layout: HostLayout::for_types::<BaseEvmTypes>(),
+        }
+    }
+}
+
+/// Offsets read directly by generated code for a concrete interpreter host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostLayout {
+    interpreter_message: usize,
+    destination: usize,
+    caller: usize,
+    value: usize,
+    tx_origin: usize,
+    tx_gas_price: usize,
+    tx_chain_id: usize,
+    block_beneficiary: usize,
+    block_timestamp: usize,
+    block_number: usize,
+    block_gas_limit: usize,
+    block_basefee: usize,
+    block_blob_basefee: usize,
+    block_slot_num: usize,
+}
+
+impl HostLayout {
+    /// Number of words in the serialized layout.
+    pub const WORDS: usize = 14;
+
+    /// Returns the offsets as words, in field order.
+    pub const fn to_words(&self) -> [usize; Self::WORDS] {
+        [
+            self.interpreter_message,
+            self.destination,
+            self.caller,
+            self.value,
+            self.tx_origin,
+            self.tx_gas_price,
+            self.tx_chain_id,
+            self.block_beneficiary,
+            self.block_timestamp,
+            self.block_number,
+            self.block_gas_limit,
+            self.block_basefee,
+            self.block_blob_basefee,
+            self.block_slot_num,
+        ]
+    }
+
+    /// Rebuilds a layout from [`to_words`](Self::to_words).
+    pub const fn from_words(words: [usize; Self::WORDS]) -> Self {
+        let [
+            interpreter_message,
+            destination,
+            caller,
+            value,
+            tx_origin,
+            tx_gas_price,
+            tx_chain_id,
+            block_beneficiary,
+            block_timestamp,
+            block_number,
+            block_gas_limit,
+            block_basefee,
+            block_blob_basefee,
+            block_slot_num,
+        ] = words;
+        Self {
+            interpreter_message,
+            destination,
+            caller,
+            value,
+            tx_origin,
+            tx_gas_price,
+            tx_chain_id,
+            block_beneficiary,
+            block_timestamp,
+            block_number,
+            block_gas_limit,
+            block_basefee,
+            block_blob_basefee,
+            block_slot_num,
+        }
+    }
+
+    /// Computes offsets without assuming that custom message extensions preserve Rust layout.
+    pub const fn for_types<T: EvmTypesHost>() -> Self {
+        Self {
+            interpreter_message: Interpreter::<T>::message_field_offset_for_jit(),
+            destination: mem::offset_of!(Message<T>, destination),
+            caller: mem::offset_of!(Message<T>, caller),
+            value: mem::offset_of!(Message<T>, value),
+            tx_origin: mem::offset_of!(TxEnv<T>, origin),
+            tx_gas_price: mem::offset_of!(TxEnv<T>, gas_price),
+            tx_chain_id: mem::offset_of!(TxEnv<T>, chain_id),
+            block_beneficiary: mem::offset_of!(BlockEnv<T>, beneficiary),
+            block_timestamp: mem::offset_of!(BlockEnv<T>, timestamp),
+            block_number: mem::offset_of!(BlockEnv<T>, number),
+            block_gas_limit: mem::offset_of!(BlockEnv<T>, gas_limit),
+            block_basefee: mem::offset_of!(BlockEnv<T>, basefee),
+            block_blob_basefee: mem::offset_of!(BlockEnv<T>, blob_basefee),
+            block_slot_num: mem::offset_of!(BlockEnv<T>, slot_num),
         }
     }
 }
@@ -125,6 +227,12 @@ pub(super) struct FunctionCx<'a, B: Backend> {
     /// Values in the current stack section known to equal another value plus a small constant,
     /// as `(value, base, addend)`: `ADD` results and reloads of materialized stack slots.
     value_offsets: Vec<(B::Value, B::Value, u64)>,
+    /// Stores from [`relieve_vstack_pressure`](Self::relieve_vstack_pressure) that nothing has
+    /// read yet, as `(offset, store, joins)`. Popping such a slot makes its store dead.
+    relief_stores: Vec<(i32, B::Inst, u32)>,
+    /// Number of join blocks built so far. A popped relief store's value is used instead of a
+    /// reload only before the next join, so its live range stays short.
+    joins: u32,
 
     /// The bytecode being translated.
     bytecode: &'a Bytecode<'a>,
@@ -264,6 +372,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             unchecked_gas: 0,
             ensured_memory: Vec::new(),
             value_offsets: Vec::new(),
+            relief_stores: Vec::new(),
+            joins: 0,
             bcx,
 
             bytecode,
@@ -503,6 +613,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.cached_mem_base = None;
                 self.ensured_memory.clear();
                 self.value_offsets.clear();
+                self.relief_stores.clear();
                 self.vstack.reset(section.inputs as usize, section.max_growth.max(0) as usize);
             }
         }
@@ -553,7 +664,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             // real stack diff. For DUP (out = inp+1) this is 0; for ADD (out = 1)
             // this equals inp.
             let drop_count = (inp + 1 - out) as usize;
-            self.vstack.drop_top(drop_count);
+            self.drop_top(drop_count);
             self.len_offset -= drop_count as i8;
             let value = self.bcx.iconst_256(const_out);
             self.push(value);
@@ -596,20 +707,20 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }};
         }
 
-        /// Gets the pointer to a field via chained `offset_of!`.
+        /// Gets the pointer to a field at a byte offset from `base`.
         macro_rules! field {
             // Gets the pointer to a field, named `<base>.<field>.addr`.
-            (@get $base:ident, $($paths:path),*; $($spec:tt).*) => {
+            (@get $base:ident, $offset:expr; $($spec:tt).*) => {
                 self.get_field(
                     $base,
-                    0 $(+ mem::offset_of!($paths, $spec))*,
+                    $offset,
                     concat!(stringify!($base), ".", stringify!($($spec).*), ".addr"),
                 )
             };
             // Loads a field.
             // `@[endian]` is the endianness of the stored value. If native, omit it.
-            (@load $(@[endian = $endian:tt])? $ty:expr, $base:ident, $($paths:path),*; $($spec:tt).*) => {{
-                let ptr = field!(@get $base, $($paths),*; $($spec).*);
+            (@load $(@[endian = $endian:tt])? $ty:expr, $base:ident, $offset:expr; $($spec:tt).*) => {{
+                let ptr = field!(@get $base, $offset; $($spec).*);
                 #[allow(unused_mut)]
                 let mut value = self.bcx.load_aligned(
                     $ty,
@@ -636,6 +747,25 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         }
 
         match data.opcode {
+            _ if data.flags.contains(InstFlags::HOST) => {
+                // The host runs on the interpreter's own stack.
+                evm2_jit_backend::eyre::ensure!(
+                    !self.config.local_stack,
+                    "host opcodes need the interpreter stack"
+                );
+                // The host instruction sees the whole stack.
+                self.materialize_live_stack();
+                let sp = self.sp_after_inputs();
+                let (inputs, outputs) = data.stack_io();
+                let pc = self.bcx.iconst(self.isize_type, self.bytecode.pc(inst) as i64);
+                let io =
+                    self.bcx.iconst(self.isize_type, (i64::from(inputs) << 8) | i64::from(outputs));
+                self.call_fallible_builtin(Builtin::HostInstruction, &[self.ecx, sp, pc, io]);
+                // It may have rewritten any stack word.
+                let live_start = self.vstack.live_range().start;
+                self.vstack.forget_stored_from(live_start);
+            }
+
             op::STOP => goto_return!(build InstrStop::Stop),
 
             op::ADD => {
@@ -767,7 +897,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
             op::ADDRESS => {
                 let message = self.load_message_ptr();
-                field!(@push @[endian = "big"] self.address_type, message, Message<BaseEvmTypes>; destination);
+                field!(@push @[endian = "big"] self.address_type, message, self.config.layout.destination; destination);
             }
             op::BALANCE => {
                 let sp = self.sp_after_inputs();
@@ -775,15 +905,15 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::ORIGIN => {
                 let tx_env = self.load_tx_env_ptr();
-                field!(@push @[endian = "big"] self.address_type, tx_env, TxEnv<BaseEvmTypes>; origin);
+                field!(@push @[endian = "big"] self.address_type, tx_env, self.config.layout.tx_origin; origin);
             }
             op::CALLER => {
                 let message = self.load_message_ptr();
-                field!(@push @[endian = "big"] self.address_type, message, Message<BaseEvmTypes>; caller);
+                field!(@push @[endian = "big"] self.address_type, message, self.config.layout.caller; caller);
             }
             op::CALLVALUE => {
                 let message = self.load_message_ptr();
-                field!(@push self.word_type, message, Message<BaseEvmTypes>; value);
+                field!(@push self.word_type, message, self.config.layout.value; value);
             }
             op::CALLDATALOAD => {
                 let sp = self.sp_after_inputs();
@@ -791,7 +921,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::CALLDATASIZE => {
                 let ecx = self.ecx;
-                field!(@push self.isize_type, ecx, EvmContext<'_, '_, '_>; calldatasize);
+                field!(@push self.isize_type, ecx, mem::offset_of!(EvmContext<'_, '_, '_>, calldatasize); calldatasize);
             }
             op::CALLDATACOPY => {
                 let sp = self.sp_after_inputs();
@@ -808,7 +938,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
             op::GASPRICE => {
                 let tx_env = self.load_tx_env_ptr();
-                field!(@push self.word_type, tx_env, TxEnv<BaseEvmTypes>; gas_price);
+                field!(@push self.word_type, tx_env, self.config.layout.tx_gas_price; gas_price);
             }
             op::EXTCODESIZE => {
                 let sp = self.sp_after_inputs();
@@ -820,7 +950,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::RETURNDATASIZE => {
                 let ecx = self.ecx;
-                field!(@push self.isize_type, ecx, EvmContext<'_, '_, '_>; return_data_len);
+                field!(@push self.isize_type, ecx, mem::offset_of!(EvmContext<'_, '_, '_>, return_data_len); return_data_len);
             }
             op::RETURNDATACOPY => {
                 let sp = self.sp_after_inputs();
@@ -836,15 +966,15 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::COINBASE => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push @[endian = "big"] self.address_type, block_env, BlockEnv<BaseEvmTypes>; beneficiary);
+                field!(@push @[endian = "big"] self.address_type, block_env, self.config.layout.block_beneficiary; beneficiary);
             }
             op::TIMESTAMP => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; timestamp);
+                field!(@push self.word_type, block_env, self.config.layout.block_timestamp; timestamp);
             }
             op::NUMBER => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; number);
+                field!(@push self.word_type, block_env, self.config.layout.block_number; number);
             }
             op::DIFFICULTY => {
                 let slot = self.sp_at_top();
@@ -852,11 +982,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::GASLIMIT => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; gas_limit);
+                field!(@push self.word_type, block_env, self.config.layout.block_gas_limit; gas_limit);
             }
             op::CHAINID => {
                 let tx_env = self.load_tx_env_ptr();
-                field!(@push self.word_type, tx_env, TxEnv<BaseEvmTypes>; chain_id);
+                field!(@push self.word_type, tx_env, self.config.layout.tx_chain_id; chain_id);
             }
             op::SELFBALANCE => {
                 let slot = self.sp_at_top();
@@ -864,7 +994,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::BASEFEE => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; basefee);
+                field!(@push self.word_type, block_env, self.config.layout.block_basefee; basefee);
             }
             op::BLOBHASH => {
                 let sp = self.sp_after_inputs();
@@ -872,11 +1002,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::BLOBBASEFEE => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; blob_basefee);
+                field!(@push self.word_type, block_env, self.config.layout.block_blob_basefee; blob_basefee);
             }
             op::SLOTNUM => {
                 let block_env = self.load_block_env_ptr();
-                field!(@push self.word_type, block_env, BlockEnv<BaseEvmTypes>; slot_num);
+                field!(@push self.word_type, block_env, self.config.layout.block_slot_num; slot_num);
             }
 
             op::POP => {
@@ -1140,7 +1270,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         }
         let delta = expected_top - current_top;
         if delta < 0 {
-            self.vstack.drop_top((-delta) as usize);
+            self.drop_top((-delta) as usize);
         } else {
             // For NOOP instructions that push values, use the known constant output
             // if available. This ensures the value can be materialized later.
@@ -1223,7 +1353,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             );
         }
         if delta < 0 {
-            self.vstack.drop_top((-delta) as usize);
+            self.drop_top((-delta) as usize);
         } else {
             for _ in 0..delta {
                 self.vstack.push_mem();
@@ -1270,8 +1400,23 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
     /// Consumes the topmost `n` elements from the stack without loading them.
     fn pop_ignore(&mut self, n: usize) {
-        self.vstack.drop_top(n);
+        self.drop_top(n);
         self.len_offset -= n as i8;
+    }
+
+    /// Drops the topmost `n` slots from the virtual stack and removes the relief stores to
+    /// them that nothing read.
+    fn drop_top(&mut self, n: usize) {
+        self.vstack.drop_top(n);
+        let top = self.vstack.top_offset();
+        let bcx = &mut self.bcx;
+        self.relief_stores.retain(|&(off, store, _)| {
+            let live = off < top;
+            if !live {
+                bcx.remove_inst(store);
+            }
+            live
+        });
     }
 
     /// Removes the topmost element from the stack and returns it.
@@ -1283,9 +1428,18 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     fn popn<const N: usize>(&mut self) -> [B::Value; N] {
         assert_ne!(N, 0);
 
+        let inst = self.current_inst.unwrap();
         let operand_depth_base = (-self.len_offset) as usize;
         let values = std::array::from_fn(|i| {
             let operand_depth = operand_depth_base + i;
+            // Using the value of a relief store made since the last join instead of reloading
+            // it leaves the store unread, so the pop below removes it.
+            if self.bytecode.const_operand(inst, operand_depth).is_none()
+                && let VSlot::Materialized(Some(stored)) = self.vstack.get(i)
+                && self.is_recent_relief_store(self.vstack.offset_at_depth(i))
+            {
+                return stored;
+            }
             let name = b'a' + i as u8;
             self.stack_value_at_depth(operand_depth, i, std::str::from_utf8(&[name]).unwrap())
         });
@@ -1374,7 +1528,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let interpreter = self.load_interpreter_ptr();
         let field = self.get_field(
             interpreter,
-            Interpreter::<BaseEvmTypes>::message_field_offset_for_jit(),
+            self.config.layout.interpreter_message,
             "interpreter.message.addr",
         );
         self.bcx.load(ptr_type, field, "interpreter.message")
@@ -1522,9 +1676,12 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.gep(self.i8_type, ptr, &[stack_bytes], "sp")
     }
 
-    /// Returns the stack pointer at `n` from the top (`&stack[len - n]`).
+    /// Returns the stack pointer at `n` from the top (`&stack[len - n]`) for a builtin, which may
+    /// read the slots above it.
     fn sp_from_top(&mut self, n: usize) -> B::Value {
-        self.sp_from_section(self.section_len_offset as i64 - n as i64)
+        let top = self.section_len_offset;
+        self.observe_slots(top - n as i32..top);
+        self.sp_from_section(top as i64 - n as i64)
     }
 
     /// Resolves a stack value at the given depth via the virtual stack.
@@ -1548,13 +1705,15 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             VSlot::Virtual(v) => v,
             VSlot::Materialized(stored) => {
                 let off = self.vstack.offset_at_depth(live_depth);
+                self.observe_slots(off..off + 1);
                 let sp = self.sp_from_section(off as i64);
                 let value = self.load_word(sp, name);
                 if let Some(stored) = stored {
                     let (base, addend) = self.memory_offset_parts(stored);
                     self.value_offsets.push((value, base, addend));
                 }
-                self.vstack.set(live_depth, value);
+                // Memory still holds the reloaded value, so don't store it back.
+                self.vstack.set_stored_at_offset(off, value);
                 value
             }
         }
@@ -1587,8 +1746,26 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // Materialize everything below the hot window.
         let cold_end = (self.vstack.top_offset() - KEEP_HOT as i32).max(live.start);
         if cold_end > live.start {
-            self.materialize_range(live.start, cold_end);
+            let range = live.start..cold_end;
+            let pending: Vec<_> = self.vstack.pending_stores(range.clone()).collect();
+            for (off, value) in pending {
+                self.observe_slots(off..off + 1);
+                let sp = self.sp_from_section(off as i64);
+                let store = self.bcx.store(value, sp);
+                self.relief_stores.push((off, store, self.joins));
+            }
+            self.vstack.mark_stored_range(range);
         }
+    }
+
+    /// Returns whether the slot at `offset` holds a relief store made since the last join.
+    fn is_recent_relief_store(&self, offset: i32) -> bool {
+        self.relief_stores.iter().any(|&(off, _, joins)| off == offset && joins == self.joins)
+    }
+
+    /// Keeps the relief stores to the given slots, which something may read.
+    fn observe_slots(&mut self, range: Range<i32>) {
+        self.relief_stores.retain(|(off, ..)| !range.contains(off));
     }
 
     /// Materializes all virtual slots in the given section-relative offset range.
@@ -1600,6 +1777,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     /// Stores all virtual slots in the given section-relative offset range without marking
     /// them materialized.
     fn store_range(&mut self, range: Range<i32>) {
+        self.observe_slots(range.clone());
         let pending: Vec<_> = self.vstack.pending_stores(range).collect();
         for (off, value) in pending {
             let sp = self.sp_from_section(off as i64);
@@ -2103,6 +2281,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         self.bcx.br(done_block);
 
         self.bcx.switch_to_block(done_block);
+        self.joins += 1;
     }
 
     /// Returns the current block.
