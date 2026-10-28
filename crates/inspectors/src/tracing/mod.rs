@@ -40,8 +40,6 @@ pub use config::{OpcodeFilter, StackSnapshotType, TracingInspectorConfig};
 mod fourbyte;
 pub use fourbyte::FourByteInspector;
 
-mod geth_gas;
-
 mod limits;
 use limits::TraceBudget;
 pub use limits::{TraceLimitBehavior, TraceLimits};
@@ -547,7 +545,6 @@ impl TracingInspector {
             // These fields will be populated in `step_end`.
             push_stack: None,
             gas_cost: 0,
-            geth_gas_cost: None,
             state_gas_cost: None,
             state_gas_reservoir: interp
                 .version()
@@ -662,7 +659,6 @@ impl TracingInspector {
         } else {
             step.gas_remaining.saturating_sub(interp.gas().remaining())
         };
-        step.geth_gas_cost = geth_gas::oog_gas_cost(interp);
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
             step.state_gas_cost = Some(state_gas_delta);

@@ -19,7 +19,6 @@ fn test_step(pc: usize, op: u8) -> CallTraceStep {
         gas_refund_counter: 0,
         gas_used: pc as u64,
         gas_cost: 1,
-        geth_gas_cost: None,
         state_gas_cost: None,
         state_gas_reservoir: None,
         state_gas_spent: 0,
