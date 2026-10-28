@@ -174,12 +174,14 @@ bitflags! {
         const WARM = 1 << 0;
         /// The account is touched for transaction-finalization account-lifetime rules.
         const TOUCHED = 1 << 1;
+        /// Touch metadata retained after finalization consumes [`Self::TOUCHED`].
+        const FINALIZED_TOUCHED = 1 << 2;
         /// The account has been self-destructed in the current transaction.
-        const DESTROYED = 1 << 2;
+        const DESTROYED = 1 << 3;
         /// The present overlay account was created in the current transaction.
-        const CREATED = 1 << 3;
+        const CREATED = 1 << 4;
         /// The present overlay account's code has been modified.
-        const CODE_CHANGED = 1 << 4;
+        const CODE_CHANGED = 1 << 5;
     }
 }
 
@@ -204,7 +206,7 @@ pub(crate) struct Account {
     pub(crate) original: Option<AccountInfo>,
     /// Present account overlay after mutations. `None` means the account is absent/deleted.
     pub(crate) present: Option<AccountInfo>,
-    /// Lifecycle flags: warm, touched, destroyed, created, and code changed.
+    /// Lifecycle flags: warm, touched, finalized-touched, destroyed, created, and code changed.
     pub(crate) flags: AccountFlags,
     /// Persistent transaction storage owned by this account.
     pub(crate) storage: StorageOverlay,
@@ -221,7 +223,7 @@ impl Account {
     #[cfg(test)]
     pub(crate) fn merge_isolated(&mut self, child: Self) {
         self.present = child.present;
-        self.flags |= child.flags - AccountFlags::WARM;
+        self.flags |= child.flags - AccountFlags::WARM - AccountFlags::FINALIZED_TOUCHED;
         self.storage.merge_isolated(child.storage);
     }
 
@@ -278,6 +280,7 @@ impl Account {
             current: self.present.as_ref(),
             created: self.is_created(),
             selfdestructed,
+            touched: self.flags.contains(AccountFlags::FINALIZED_TOUCHED),
             code: self.changed_code(),
             storage: &self.storage,
         }

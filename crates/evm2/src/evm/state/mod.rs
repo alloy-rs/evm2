@@ -807,11 +807,12 @@ impl<'a> State<'a> {
                         // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
                         let keep_touch = features.contains(EvmFeatures::EIP161)
                             && address == Address::with_last_byte(3);
-                        let touched = entry.flags.contains(AccountFlags::TOUCHED);
-                        entry.flags = previous_flags;
+                        // The finalized touch is not journaled, so rollback never restores it.
+                        let mut kept = AccountFlags::FINALIZED_TOUCHED;
                         if keep_touch {
-                            entry.flags.set(AccountFlags::TOUCHED, touched);
+                            kept |= AccountFlags::TOUCHED;
                         }
+                        entry.flags = (previous_flags - kept) | (entry.flags & kept);
                     }
                 }
                 JournalEntry::StorageChange { address, key, previous } => {
@@ -903,6 +904,7 @@ impl<'a> State<'a> {
                 continue;
             }
             entry.flags.remove(AccountFlags::TOUCHED);
+            entry.flags.insert(AccountFlags::FINALIZED_TOUCHED);
             // EIP-161 deletes touched dead accounts at transaction finalization. Before EIP-161,
             // touching a non-existent account materializes it as empty.
             let needs_finalization = if eip161 {

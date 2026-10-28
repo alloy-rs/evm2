@@ -568,7 +568,8 @@ impl JsInspector {
         let info = StepInfo {
             cost: interp.gas().spent().saturating_sub(pending.gas_spent_before),
             refund: refund.max(0) as u64,
-            depth: u64::from(depth),
+            // Geth reports the depth starting at 1 for the top-level call.
+            depth: u64::from(depth) + 1,
             error,
             caller: interp.message().caller,
             contract: interp.message().destination,
@@ -595,6 +596,32 @@ impl JsInspector {
         });
         if let Err(err) = res {
             self.record_hook_error(if fault { "fault" } else { "step" }, err);
+        }
+    }
+
+    /// Ends the parent's call-like step before its child runs, like geth.
+    ///
+    /// Invoked on [Inspector::call] and [Inspector::create], where the parent has charged the step,
+    /// including the gas forwarded to the child, and the child has not returned any gas yet.
+    /// `step_end` then skips the step. A `step` error is recorded like on any other step and does
+    /// not affect the child.
+    fn end_call_step<T: EvmTypes>(
+        &mut self,
+        interp: &mut Interpreter<'_, '_, T>,
+        message: &Message<T>,
+    ) {
+        // The top-level message has no parent step.
+        if self.step_fn.is_none()
+            || self.hook_errored()
+            || message.depth != interp.message().depth + 1
+        {
+            return;
+        }
+        let index = self.pending_step_index(interp);
+        if let Some(pending) = self.pending_steps.get_mut(index)
+            && core::mem::take(&mut pending.active)
+        {
+            self.invoke_step_hook(interp, false, None);
         }
     }
 
@@ -681,6 +708,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return None;
         }
         self.register_precompiles(interp.host());
+        self.end_call_step(interp, message);
 
         // determine contract and caller based on the call scheme
         let (caller, contract) = match message.kind {
@@ -747,6 +775,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             return None;
         }
         self.register_precompiles(interp.host());
+        self.end_call_step(interp, message);
         self.push_call(
             message.depth,
             Contract {
