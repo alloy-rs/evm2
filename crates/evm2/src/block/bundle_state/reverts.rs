@@ -359,6 +359,7 @@ impl RevertToSlot {
 #[cfg(test)]
 mod test {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn content_eq_ignores_order_of_same_address() {

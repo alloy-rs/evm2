@@ -851,6 +851,7 @@ impl BundleState {
 mod tests {
     use super::*;
     use crate::block::bundle_state::{StorageWithOriginalValues, TransitionAccount};
+    use alloc::vec;
 
     #[test]
     fn transition_states() {
