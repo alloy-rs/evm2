@@ -2,6 +2,7 @@ use super::*;
 use crate::tracing::types::{
     CallTrace, CallTraceStep, RecordedMemory, StorageChange, StorageChangeReason,
 };
+use alloc::string::String;
 use evm2::{
     evm::EmptyDB,
     interpreter::{InstrStop, opcode::OpCode},
