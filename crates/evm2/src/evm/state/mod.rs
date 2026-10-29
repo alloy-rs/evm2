@@ -17,7 +17,7 @@ pub use block::BlockStateAccumulator;
 #[cfg(feature = "account-ext")]
 pub use extension::AccountExtension;
 pub use journal::{JournalEntry, StateCheckpoint};
-pub use pending::PendingState;
+pub use pending::{PendingState, TxStateChanges};
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
 pub use stream::{
     AccountChangeRef, AccountChanges, NoopChangeSink, StateChangeSink, StateChangeSource,
@@ -981,29 +981,10 @@ impl<'a> State<'a> {
         Ok(())
     }
 
-    /// Visits transaction state changes in database application order: each account's bytecode
-    /// and storage precede its metadata.
-    ///
-    /// This borrows changes directly from the transaction layer without detaching it and does not
-    /// mutate the accepted overlay.
-    pub(crate) fn visit_transaction_changes<S: StateChangeSink>(
-        &self,
-        sink: &mut S,
-    ) -> Result<(), S::Error> {
-        for changes in self.transaction_account_changes() {
-            changes.visit(sink)?;
-        }
-        Ok(())
-    }
-
-    /// Returns each account loaded by the transaction with its changes, in an unspecified order.
-    ///
-    /// This borrows the transaction layer without detaching it.
+    /// Returns a borrowed view of the transaction layer's changes, without detaching it.
     #[inline]
-    pub(crate) fn transaction_account_changes(&self) -> impl Iterator<Item = AccountChanges<'_>> {
-        self.accounts.iter().map(|(&address, account)| {
-            account.changes(address, self.selfdestructs.contains(&address))
-        })
+    pub(crate) fn transaction_changes(&self) -> TxStateChanges<'_> {
+        TxStateChanges::new(&self.accounts, &self.selfdestructs)
     }
 
     /// Detaches the transaction overlay into an owned [`PendingState`].

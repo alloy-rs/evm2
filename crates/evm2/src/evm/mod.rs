@@ -180,7 +180,7 @@ pub use state::{
     AccountChangeRef, AccountChanges, AccountFlags, AccountHandle, AccountInfo,
     BlockStateAccumulator, JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink,
     StateChangeSource, StateCheckpoint, StateInner, StateSnapshot, StorageChange, StorageHandle,
-    StorageOverlay, StorageSlot, StorageSlotHandle, Tee, Tracked,
+    StorageOverlay, StorageSlot, StorageSlotHandle, Tee, Tracked, TxStateChanges,
 };
 
 pub(crate) mod prewarm_set;
@@ -4618,6 +4618,56 @@ mod tests {
         let next = evm.transact(&tx).unwrap();
         assert!(next.result().status);
         assert!(!next.account_changes().find(|c| c.address == target).unwrap().touched);
+    }
+
+    #[test]
+    fn changes_inspect_transaction_state_before_commit_or_discard() {
+        let caller = Address::repeat_byte(0xaa);
+        let target = Address::repeat_byte(0x11);
+        // SSTORE(0, 1)
+        let code = vec![op::PUSH1, 1, op::PUSH0, op::SSTORE, op::STOP];
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &target,
+            AccountInfo::default().with_nonce(1).with_code(legacy_bytecode(code)),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            database,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(target),
+                gas_limit: 100_000,
+                ..Default::default()
+            }),
+            caller,
+        );
+
+        let executed = evm.transact(&tx).unwrap();
+        assert!(executed.result().status);
+        let changes = executed.changes();
+        assert!(!changes.is_empty());
+        assert_eq!(changes.account_info(&caller).unwrap().nonce, 1);
+        let slot = changes.account_changes_for(&target).unwrap().storage.slots[&Word::ZERO].value;
+        assert_eq!(slot.current, Word::from(1));
+        let mut in_place = changes.account_changes().map(|c| c.address).collect::<Vec<_>>();
+        in_place.sort();
+        let _ = executed.discard();
+
+        // Discarding after inspection leaves the accepted state unchanged, so the same transaction
+        // executes again, and its detached state reports the same accounts.
+        let executed = evm.transact(&tx).unwrap();
+        assert!(executed.result().status);
+        let pending = executed.detach().pending_state;
+        let mut detached =
+            pending.changes().account_changes().map(|c| c.address).collect::<Vec<_>>();
+        detached.sort();
+        assert_eq!(in_place, detached);
+        assert_eq!(pending.changes().account_info(&caller).unwrap().nonce, 1);
     }
 
     #[derive(Default)]
