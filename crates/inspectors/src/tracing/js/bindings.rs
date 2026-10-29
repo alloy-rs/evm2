@@ -575,8 +575,10 @@ impl EvmDbReader for ChangesDbReader<'_> {
             if let Some(slot) = account.storage.get(slot) {
                 return Ok(slot.current);
             }
-            // A deleted account has no storage, and a wiped one only what it wrote afterwards.
-            if account.current.is_none() || account.wiped {
+            // A deleted or wiped account, or one the transaction created, has only the storage it
+            // wrote. Creating discards the old storage, except for an embedder resuming the
+            // account on a fresh overlay, which a traced transaction does not do.
+            if account.current.is_none() || account.wiped || account.created {
                 return Ok(Word::ZERO);
             }
         }
@@ -1236,9 +1238,10 @@ mod tests {
 
     #[test]
     fn changes_reader_reads_final_storage() {
-        let [plain, wiped, deleted, untouched] = [1, 2, 3, 4].map(Address::with_last_byte);
+        let [plain, wiped, deleted, created, untouched] =
+            [1, 2, 3, 5, 4].map(Address::with_last_byte);
         let mut db = CacheDB::new(EmptyDB::default());
-        for address in [plain, wiped, deleted, untouched] {
+        for address in [plain, wiped, deleted, created, untouched] {
             db.insert_account_info(&address, AccountInfo::default());
             db.insert_account_storage(&address, &U256::from(1), &U256::from(9));
             db.insert_account_storage(&address, &U256::from(2), &U256::from(8));
@@ -1254,8 +1257,11 @@ mod tests {
         };
         let alive = Some(AccountInfo::default());
         state.accounts.insert(plain, account(false, alive.clone(), U256::from(1), 5));
-        state.accounts.insert(wiped, account(true, alive, U256::from(1), 6));
+        state.accounts.insert(wiped, account(true, alive.clone(), U256::from(1), 6));
         state.accounts.insert(deleted, account(false, None, U256::from(1), 0));
+        let created_account =
+            TxAccount { created: true, ..account(false, alive, U256::from(1), 4) };
+        state.accounts.insert(created, created_account);
 
         let mut reader = ChangesDbReader { changes: &state, db: &mut db };
         for (address, slot, expected) in [
@@ -1268,6 +1274,9 @@ mod tests {
             // A deleted account has no storage.
             (deleted, 1, 0),
             (deleted, 2, 0),
+            // A created account only has the storage it wrote.
+            (created, 1, 4),
+            (created, 2, 0),
             (untouched, 1, 9),
         ] {
             let value = reader.read_state(&address, &U256::from(slot)).unwrap();
