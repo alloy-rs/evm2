@@ -2263,3 +2263,19 @@ fn keccak256_preimage_tracer_runs_standalone_and_in_a_mux() {
     let GethTrace::JS(preimages) = &frame.0[&key] else { panic!("expected a JSON object") };
     assert_eq!(preimages.as_object().unwrap().len(), 1);
 }
+
+#[test]
+fn keccak256_preimage_tracer_skips_operations_that_run_out_of_gas() {
+    // KECCAK256 of 512 KiB at offset 0.
+    let code = hex!("620800005f20");
+    for (gas_limit, recorded) in [(200_000, 0), (10_000_000, 1)] {
+        let (contract, db) = contract_with_code(&code);
+        let mut inspector = Keccak256PreimageInspector::default();
+        Context::mainnet()
+            .with_db(db)
+            .build_mainnet_with_inspector(&mut inspector)
+            .inspect_tx(TxEnv { gas_limit, kind: TransactTo::Call(contract), ..Default::default() })
+            .unwrap();
+        assert_eq!(inspector.json_result().as_object().unwrap().len(), recorded);
+    }
+}
