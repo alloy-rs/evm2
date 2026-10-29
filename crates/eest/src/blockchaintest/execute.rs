@@ -210,8 +210,7 @@ fn execute_suite_with_resources(
     let mut summary = ExecuteSummary::default();
     for (name, test_case) in &suite.0 {
         if !test_filter.matches(name)
-            || fork_schedule(test_case.network)
-                .is_none_or(|schedule| is_blockchain_fork_skipped(schedule.last_spec()))
+            || fork_schedule(test_case.network).is_none_or(|schedule| schedule.is_skipped())
         {
             summary.skipped += 1;
             continue;
@@ -1375,15 +1374,16 @@ impl ForkSchedule {
         }
     }
 
-    /// Returns the spec that the last block runs.
-    fn last_spec(&self) -> SpecId {
-        self.transition.map_or(self.initial, |(_, spec)| spec)
+    /// Returns whether any spec of the fork is skipped.
+    fn is_skipped(&self) -> bool {
+        is_blockchain_fork_skipped(self.initial)
+            || self.transition.is_some_and(|(_, spec)| is_blockchain_fork_skipped(spec))
     }
 }
 
 /// Returns the specs of a fork, or `None` for the transitions that the runner does not support:
 /// the DAO fork, and the BPO blob schedule forks, which share a spec.
-fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
+const fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
     use Activation::{Block, Timestamp};
     const AT_5: Activation = Block(5);
     const AT_15K: Activation = Timestamp(15_000);
