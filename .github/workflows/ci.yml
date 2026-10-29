@@ -107,22 +107,12 @@ jobs:
         if: ${{ matrix.kind == 'eest' }}
       - name: Download EEST fixtures
         if: ${{ matrix.kind == 'eest' }}
-        shell: bash
-        env:
-          INPUT_FIXTURE: ${{ matrix.fixture }}
-        run: |
-          if [[ "${INPUT_FIXTURE}" == "devnet" ]]; then
-            export DEVNET_VERSION="tests-glamsterdam-devnet%40v8.1.4"
-            export DEVNET_TAR="fixtures_glamsterdam-devnet.tar.gz"
-            export EVM2_STATETEST_DEVNET_ONLY=1
-          fi
-          ./scripts/setup_test_fixtures.py
+        run: ./scripts/setup_test_fixtures.py
       - name: ${{ matrix.kind }}
         if: ${{ !matrix.command || matrix.command == 'nextest' }}
         shell: bash
         env:
           INPUT_CXX: ${{ matrix.cxx }}
-          INPUT_FIXTURE: ${{ matrix.fixture }}
           INPUT_FLAGS: ${{ matrix.flags }}
           INPUT_KIND: ${{ matrix.kind }}
           INPUT_OS: ${{ matrix.os }}
@@ -143,10 +133,6 @@ jobs:
               --exclude evm2-jit
               --exclude evm2-jit-*
             )
-          fi
-          if [[ "${INPUT_FIXTURE}" == "devnet" ]]; then
-            export EVM2_STATETEST_ROOT="test-fixtures/devnet/state_tests"
-            export EVM2_BLOCKCHAINTEST_ROOT="test-fixtures/devnet/blockchain_tests"
           fi
           cargo nextest --profile ci run "${package_flags[@]}" --no-fail-fast "${matrix_flags[@]}" "${extra_flags[@]}"
       # Fetch on the protected host; cross containers do not inherit Aegis routing.

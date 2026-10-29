@@ -35,6 +35,7 @@ pub(crate) struct TestHost {
     pub(crate) spec_id: SpecId,
     pub(crate) execution_config: ExecutionConfig<TestTypes>,
     pub(crate) block: BlockEnv<TestTypes>,
+    pub(crate) tx_env: TxEnv<TestTypes>,
     pub(crate) code_hash: B256,
     pub(crate) code: Bytes,
     pub(crate) exists: bool,
@@ -64,6 +65,7 @@ impl Default for TestHost {
                 SpecId::OSAKA,
             ),
             block: BlockEnvExt::default(),
+            tx_env: TxEnvExt::default(),
             code_hash: B256::ZERO,
             code: Bytes::new(),
             exists: true,
@@ -101,6 +103,10 @@ impl Host<TestTypes> for TestHost {
 
     fn block_env(&mut self) -> &BlockEnv<TestTypes> {
         &self.block
+    }
+
+    fn tx_env(&mut self) -> &TxEnv<TestTypes> {
+        &self.tx_env
     }
 
     fn load_account(
@@ -204,7 +210,6 @@ impl Host<TestTypes> for TestHost {
 
     fn execute_message(
         &mut self,
-        _tx_env: &TxEnv<TestTypes>,
         message: &mut Message<TestTypes>,
     ) -> Result<MessageResult<TestTypes>, crate::ExecutionError> {
         // Mimics the depth limit enforced by the real host.
@@ -341,10 +346,11 @@ impl Default for RunConfig<'_> {
 pub(crate) fn run(config: RunConfig<'_>) -> TestInterpreter {
     let RunConfig { code, host, spec_id, tx_env, message, gas_limit, return_data } = config;
     let message = Message::<TestTypes> { code: legacy_bytecode(code), gas_limit, ..message };
-    let mut inner = Interpreter::<TestTypes>::new(&tx_env, &message);
+    let mut inner = Interpreter::<TestTypes>::new(&message);
     *inner.return_data_mut() = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
+    host.tx_env = tx_env;
     host.spec_id = spec_id;
     host.execution_config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(spec_id);
     let (err, execution_error) = match inner.run(host) {

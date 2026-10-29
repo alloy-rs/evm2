@@ -1047,10 +1047,8 @@ pub(crate) struct JsEvmContext {
     pub(crate) gas: u64,
     /// Number, amount of gas used in executing the transaction (excludes txdata costs)
     pub(crate) gas_used: u64,
-    /// Number, gas price configured in the transaction being executed
-    pub(crate) gas_price: u64,
-    /// Number, intrinsic gas for the transaction being executed
-    pub(crate) intrinsic_gas: u64,
+    /// big.int, effective gas tip of the transaction being executed
+    pub(crate) gas_price: U256,
     /// big.int Amount to be transferred in wei
     pub(crate) value: U256,
     /// Number, block number
@@ -1058,8 +1056,6 @@ pub(crate) struct JsEvmContext {
     /// Address, miner of the block
     pub(crate) coinbase: Address,
     pub(crate) output: Bytes,
-    /// Number, block timestamp
-    pub(crate) time: String,
     pub(crate) transaction_ctx: TransactionContext,
     /// returns information about the error if one occurred, otherwise returns undefined
     pub(crate) error: Option<String>,
@@ -1075,12 +1071,10 @@ impl JsEvmContext {
             gas,
             gas_used,
             gas_price,
-            intrinsic_gas,
             value,
             block,
             coinbase,
             output,
-            time,
             transaction_ctx,
             error,
         } = self;
@@ -1099,21 +1093,19 @@ impl JsEvmContext {
         obj.set(js_string!("input"), to_uint8_array(input, ctx)?, false, ctx)?;
         obj.set(js_string!("gas"), gas, false, ctx)?;
         obj.set(js_string!("gasUsed"), gas_used, false, ctx)?;
-        obj.set(js_string!("gasPrice"), gas_price, false, ctx)?;
-        obj.set(js_string!("intrinsicGas"), intrinsic_gas, false, ctx)?;
+        obj.set(js_string!("gasPrice"), to_bigint(gas_price), false, ctx)?;
         obj.set(js_string!("value"), to_bigint(value), false, ctx)?;
         obj.set(js_string!("block"), block, false, ctx)?;
         obj.set(js_string!("coinbase"), address_to_uint8_array(coinbase, ctx)?, false, ctx)?;
         obj.set(js_string!("output"), to_uint8_array(output, ctx)?, false, ctx)?;
-        obj.set(js_string!("time"), js_string!(time), false, ctx)?;
-        if let Some(block_hash) = transaction_ctx.block_hash {
+        // Like geth, the transaction fields are only set for a non-zero block and transaction hash.
+        if let Some(block_hash) = transaction_ctx.block_hash.filter(|hash| !hash.is_zero()) {
             obj.set(js_string!("blockHash"), to_uint8_array(block_hash, ctx)?, false, ctx)?;
-        }
-        if let Some(tx_index) = transaction_ctx.tx_index {
-            obj.set(js_string!("txIndex"), tx_index as u64, false, ctx)?;
-        }
-        if let Some(tx_hash) = transaction_ctx.tx_hash {
-            obj.set(js_string!("txHash"), to_uint8_array(tx_hash, ctx)?, false, ctx)?;
+            if let Some(tx_hash) = transaction_ctx.tx_hash.filter(|hash| !hash.is_zero()) {
+                let tx_index = transaction_ctx.tx_index.unwrap_or_default();
+                obj.set(js_string!("txIndex"), tx_index as u64, false, ctx)?;
+                obj.set(js_string!("txHash"), to_uint8_array(tx_hash, ctx)?, false, ctx)?;
+            }
         }
         if let Some(error) = error {
             obj.set(js_string!("error"), js_string!(error), false, ctx)?;

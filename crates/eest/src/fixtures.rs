@@ -10,8 +10,8 @@ pub(crate) const TEST_FIXTURES_ENV: &str = "EVM2_TEST_FIXTURES";
 /// Generic EEST stable selector.
 pub(crate) const EEST_STABLE_ENV: &str = "EVM2_EEST_STABLE";
 
-/// Selector for devnet-only runs, where the setup script skips the legacy fixtures.
-pub(crate) const DEVNET_ONLY_ENV: &str = "EVM2_STATETEST_DEVNET_ONLY";
+/// Selector for execution-specs-only runs, where the setup script skips the legacy fixtures.
+pub(crate) const EEST_ONLY_ENV: &str = "EVM2_STATETEST_EEST_ONLY";
 
 /// Repo-relative fixture root used by the setup script and CI.
 pub(crate) const DEFAULT_FIXTURES_PATH: &str = "test-fixtures";

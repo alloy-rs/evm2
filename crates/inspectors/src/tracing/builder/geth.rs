@@ -128,7 +128,7 @@ impl<'a> GethTraceBuilder<'a> {
                 log.storage = Some(contract_storage.clone());
             }
 
-            if opts.is_return_data_enabled() {
+            if opts.is_return_data_enabled() && !step.returndata.is_empty() {
                 log.return_data = Some(step.returndata.clone());
             }
 

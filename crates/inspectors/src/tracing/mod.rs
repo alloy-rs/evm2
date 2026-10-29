@@ -40,6 +40,12 @@ pub use config::{OpcodeFilter, StackSnapshotType, TracingInspectorConfig};
 mod fourbyte;
 pub use fourbyte::FourByteInspector;
 
+mod keccak;
+pub use keccak::{
+    DEFAULT_MAX_RECORDED_BYTES, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector,
+    LimitExceeded as Keccak256PreimageLimitExceeded, MEMORY_PAD_LIMIT,
+};
+
 mod limits;
 use limits::TraceBudget;
 pub use limits::{TraceLimitBehavior, TraceLimits};
