@@ -72,7 +72,6 @@ pub fn prepare_with_hooks<T: EvmTypes, H: TxHandlerHooks<T>>(
         caller,
         tx.nonce,
         max_gas_cost.saturating_add(tx.value),
-        tx.to,
     )?;
 
     warm_base_accounts(req.host, tx.to);
