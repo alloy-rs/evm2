@@ -2054,6 +2054,8 @@ impl Bytecode<'_> {
                 break;
             }
             enumeration.truncated = *truncated;
+            let insts = enumeration.path.iter().map(|&bid| self.cfg.blocks[bid].insts().len());
+            *enumeration.work += insts.sum::<usize>() as u64;
             let (mut stack, mut mem) = (stack.clone(), mem.clone());
             found = self.enumerate_run(enumeration, 0, None, &mut stack, &mut mem, 0);
             if found.is_none() {
@@ -2158,12 +2160,7 @@ impl Bytecode<'_> {
             }
             return Some(());
         }
-        let start = start?;
-        if depth == 0 && !splits.is_empty() {
-            let insts = enumeration.path.iter().map(|&bid| self.cfg.blocks[bid].insts().len());
-            *enumeration.work += insts.sum::<usize>() as u64;
-        }
-        self.enumerate_splits(enumeration, start, splits, depth)
+        self.enumerate_splits(enumeration, start?, splits, depth)
     }
 
     /// Runs the blocks of `enumeration.path` on each value of the first of `splits` that
