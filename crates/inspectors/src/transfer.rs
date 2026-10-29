@@ -4,7 +4,7 @@ use alloc::{vec, vec::Vec};
 use alloy_primitives::{Address, B256, Log, U256, address, b256};
 use alloy_sol_types::SolValue;
 use evm2::{
-    Evm, EvmTypes, Inspector,
+    Evm, EvmFeatures, EvmTypes, Inspector,
     interpreter::{Interpreter, Message, MessageKind, MessageResult},
 };
 
@@ -72,8 +72,8 @@ impl TransferInspector {
 
     /// Sets whether to collect the emitted logs and the ERC20-style transfer logs.
     ///
-    /// Once EIP-7708 is active the EVM emits the transfer logs itself, so this must be disabled
-    /// to report each transfer once, as `eth_simulateV1` does.
+    /// Once EIP-7708 is active the EVM emits the transfer logs itself, so only those are
+    /// collected, as in `eth_simulateV1`.
     pub const fn with_logs(mut self, collect_logs: bool) -> Self {
         self.collect_logs = collect_logs;
         self
@@ -117,7 +117,7 @@ impl TransferInspector {
             return;
         }
 
-        self.record_transfer(kind, message.caller, message.destination, message.value);
+        self.record_transfer(kind, message.caller, message.destination, message.value, host);
     }
 
     fn on_transfer_end(&mut self, failed: bool) {
@@ -136,7 +136,14 @@ impl TransferInspector {
         }
     }
 
-    fn record_transfer(&mut self, kind: TransferKind, from: Address, to: Address, value: U256) {
+    fn record_transfer<T: EvmTypes>(
+        &mut self,
+        kind: TransferKind,
+        from: Address,
+        to: Address,
+        value: U256,
+        host: &Evm<'_, T>,
+    ) {
         // skip zero transfers
         if value.is_zero() {
             return;
@@ -144,7 +151,9 @@ impl TransferInspector {
 
         self.transfers.push(TransferOperation { kind, from, to, value });
 
+        // Once EIP-7708 is active the EVM emits the transfer logs itself.
         if self.collect_logs
+            && !host.feature(EvmFeatures::EIP7708)
             && let Some(frame) = self.frames.last_mut()
         {
             let from = B256::from_slice(&from.abi_encode());
@@ -213,9 +222,9 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector {
         contract: &Address,
         target: &Address,
         value: &U256,
-        _host: &mut T::Host<'_>,
+        host: &mut T::Host<'_>,
     ) {
-        self.record_transfer(TransferKind::SelfDestruct, *contract, *target, *value);
+        self.record_transfer(TransferKind::SelfDestruct, *contract, *target, *value, host);
     }
 }
 

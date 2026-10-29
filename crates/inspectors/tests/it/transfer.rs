@@ -397,6 +397,44 @@ fn simulate_transfer_logs_match_geth() {
     }
 }
 
+/// Once EIP-7708 is active the EVM logs the transfers itself, and `go-ethereum` stops tracing them.
+#[test]
+fn simulate_transfer_logs_use_eip7708_logs() {
+    let sender = a(0x1001);
+    let contract = a(0xc6);
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.load_account(sender).info.balance = U256::from(10u128.pow(18));
+    db.insert_account_info(
+        &contract,
+        AccountInfo {
+            balance: U256::from(7),
+            code: Some(Bytecode::new_legacy(
+                hex!("73000000000000000000000000000000000000a002ff").into(),
+            )),
+            ..Default::default()
+        },
+    );
+
+    let context = Context::mainnet().with_db(db).modify_cfg_chained(|c| c.spec = SpecId::AMSTERDAM);
+    let mut evm =
+        context.build_mainnet_with_inspector(TransferInspector::new(false).with_logs(true));
+    let res = evm
+        .inspect_tx(TxEnv {
+            caller: sender,
+            gas_limit: 5_000_000,
+            kind: TransactTo::Call(contract),
+            value: U256::from(5),
+            nonce: 0,
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert!(res.result.is_success());
+    assert_eq!(evm.inspector().transfers().len(), 2);
+    assert_eq!(res.tx_result.result.logs.len(), 2);
+    assert_eq!(evm.inspector().logs(), res.tx_result.result.logs);
+}
+
 const CASES: &[TransferCase] = &[
     TransferCase {
         name: "tx_value",
