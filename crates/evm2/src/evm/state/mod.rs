@@ -672,9 +672,11 @@ impl<'a> State<'a> {
     pub fn storage_slot_untracked(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         if let Some(account) = self.accounts.get(address) {
             if let Some(slot) = account.storage.slots.get(key) {
-                return Ok(slot.value.current);
-            }
-            if account.storage.wiped || account.discards_storage() {
+                // A slot a failed rollback reload left at its cached zero reads the database.
+                if !slot.created_zero || account.discards_storage() {
+                    return Ok(slot.value.current);
+                }
+            } else if account.storage.wiped || account.discards_storage() {
                 self.database.check_bal_storage(address, key)?;
                 return Ok(Word::ZERO);
             }
@@ -1421,18 +1423,18 @@ mod tests {
         state.set_bal_index(BlockAccessIndex::new(1));
         state.rollback(checkpoint, features);
 
-        // The slot stays loaded, so its read reaches the BAL, and the next rollback retries it.
-        let slot = state.accounts[&address].storage.slots[&key];
-        assert!(slot.created_zero);
-        assert_eq!((slot.value.original, slot.value.current), (Word::ZERO, Word::ZERO));
-        state.storage_slot(&address, key).unwrap().set(Word::from(9));
+        // The slot stays loaded, so its read reaches the BAL, and later loads report the failure
+        // instead of serving the zero.
+        assert!(state.accounts[&address].storage.slots[&key].created_zero);
+        assert!(state.storage_slot(&address, key).is_err());
+        assert!(state.storage_slot_untracked(&address, &key).is_err());
+        assert!(state.accounts[&address].storage.slots[&key].created_zero);
+
         state.clear_bal();
-        let checkpoint = state.checkpoint();
-        state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
-        state.rollback(checkpoint, features);
-        let slot = state.accounts[&address].storage.slots[&key];
-        assert!(!slot.created_zero);
-        assert_eq!((slot.value.original, slot.value.current), (Word::from(6), Word::from(9)));
+        assert_eq!(state.storage_slot_untracked(&address, &key).unwrap(), Word::from(6));
+        let slot = state.storage_slot(&address, key).unwrap();
+        assert_eq!((slot.original(), slot.current()), (Word::from(6), Word::from(6)));
+        assert!(!state.accounts[&address].storage.slots[&key].created_zero);
     }
 
     #[test]

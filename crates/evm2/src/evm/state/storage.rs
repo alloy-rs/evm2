@@ -63,21 +63,12 @@ impl StorageOverlay {
     /// back.
     ///
     /// Such a slot cached zero instead of its backing value, and the rollback restores its zero
-    /// current value. A slot that fails to reload keeps its zero, so its read stays in the overlay
-    /// for the BAL, and is retried by the next rolled-back creation, which keeps any write made
-    /// to the slot in between.
+    /// current value. A slot that fails to reload keeps its zero and its marker, so its read stays
+    /// in the overlay for the BAL and its next load rereads it and reports the error.
     pub(super) fn reload_zeroed(&mut self, address: &Address, database: &mut dyn DynDatabase) {
         for (key, slot) in &mut self.slots {
-            if slot.created_zero
-                && let Ok(value) = database.get_storage(address, key)
-            {
-                // A retry can find a slot written since a failed reload; keep that write.
-                let unchanged = !slot.value.is_changed();
-                slot.value.original = value;
-                if unchanged {
-                    slot.value.current = value;
-                }
-                slot.created_zero = false;
+            if slot.created_zero {
+                let _ = slot.reload_created_zero(address, key, database);
             }
         }
     }
@@ -106,6 +97,19 @@ impl StorageSlot {
     #[inline]
     pub(super) fn is_changed(&self, wiped: bool) -> bool {
         if wiped { !self.value.current.is_zero() } else { self.value.is_changed() }
+    }
+
+    /// Rereads a zero cached under a creation that was rolled back.
+    #[cold]
+    pub(super) fn reload_created_zero(
+        &mut self,
+        address: &Address,
+        key: &Word,
+        database: &mut dyn DynDatabase,
+    ) -> DbResult<()> {
+        self.value = Tracked::new(database.get_storage(address, key)?);
+        self.created_zero = false;
+        Ok(())
     }
 
     /// Creates a freshly loaded slot whose original and current values are `value`, with the given
@@ -251,6 +255,10 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 // the prewarm set on load) decides coldness: a slot warmed earlier this execution
                 // is a cheap warm access and must not be forced out of gas.
                 let slot = entry.into_mut();
+                // A rollback that failed to reload the slot leaves it for this load to retry.
+                if slot.created_zero && !created {
+                    slot.reload_created_zero(address, &key, &mut inner.database)?;
+                }
                 let is_cold = if WARM || skip_cold_load {
                     !slot.is_warm && !inner.prewarm_set.is_storage_warm(address, &key)
                 } else {
