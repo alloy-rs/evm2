@@ -7,7 +7,7 @@ use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Log, U256};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
-    CallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
+    CallConfig, FlatCallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
     GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace, NoopFrame, PreStateConfig,
     StateGasTrace, erc7562::Erc7562Config, mux::MuxConfig,
 };
@@ -45,7 +45,7 @@ pub enum DebugInspector {
     /// Mux tracer
     Mux(MuxInspector, MuxConfig),
     /// FlatCallTracer
-    FlatCallTracer(TracingInspector),
+    FlatCallTracer(TracingInspector, FlatCallConfig),
     /// Erc7562Tracer
     Erc7562Tracer(TracingInspector, Erc7562Config),
     /// Default tracer
@@ -67,7 +67,9 @@ impl DebugInspector {
             Self::Noop(inspector) => Self::Noop(inspector.clone()),
             Self::StateGasTracer(inspector) => Self::StateGasTracer(inspector.clone()),
             Self::Mux(inspector, config) => Self::Mux(inspector.clone(), config.clone()),
-            Self::FlatCallTracer(inspector) => Self::FlatCallTracer(inspector.clone()),
+            Self::FlatCallTracer(inspector, config) => {
+                Self::FlatCallTracer(inspector.clone(), *config)
+            }
             Self::Erc7562Tracer(inspector, config) => {
                 Self::Erc7562Tracer(inspector.clone(), config.clone())
             }
@@ -133,9 +135,10 @@ impl DebugInspector {
                             .into_flat_call_config()
                             .map_err(|_| DebugInspectorError::InvalidTracerConfig)?;
 
-                        Self::FlatCallTracer(TracingInspector::new(
-                            TracingInspectorConfig::from_flat_call_config(&flat_call_config),
-                        ))
+                        Self::FlatCallTracer(
+                            TracingInspector::new(TracingInspectorConfig::default_parity()),
+                            flat_call_config,
+                        )
                     }
                     GethDebugBuiltInTracerType::Erc7562Tracer => {
                         let config = if tracer_config.is_null() {
@@ -193,7 +196,7 @@ impl DebugInspector {
             }
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
-            | Self::FlatCallTracer(inspector)
+            | Self::FlatCallTracer(inspector, _)
             | Self::Erc7562Tracer(inspector, _)
             | Self::Default(inspector, _) => inspector.fuse(),
             Self::Noop(_) | Self::StateGasTracer(_) => {}
@@ -213,7 +216,7 @@ impl DebugInspector {
         match self {
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
-            | Self::FlatCallTracer(inspector)
+            | Self::FlatCallTracer(inspector, _)
             | Self::Erc7562Tracer(inspector, _)
             | Self::Default(inspector, _) => inspector.set_next_log_index(index),
             Self::Mux(inspector, _) => inspector.set_next_log_index(index),
@@ -281,13 +284,13 @@ impl DebugInspector {
                     .map_err(DebugInspectorError::Database)?
                     .into()
             }
-            Self::FlatCallTracer(inspector) => {
+            Self::FlatCallTracer(inspector, config) => {
                 inspector.recover_runtime_oog_root(tx, &res.result);
                 inspector.set_transaction_gas_limit(tx.gas_limit());
                 inspector.set_transaction_caller(tx.signer());
                 inspector
                     .clone()
-                    .into_parity_builder()
+                    .into_flat_call_builder(config)
                     .with_transaction_gas_used(res.result.tx_gas_used())
                     .into_localized_transaction_traces(tx_info)
                     .into()
@@ -349,7 +352,7 @@ macro_rules! delegate {
             Self::FourByte($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::CallTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::PreStateTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
-            Self::FlatCallTracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
+            Self::FlatCallTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Erc7562Tracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Default($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Noop($insp) => Inspector::<T>::$method($insp, $($arg),*),

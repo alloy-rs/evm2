@@ -79,8 +79,7 @@ impl MuxInspector {
                     let flatcall_config =
                         tracer_config.unwrap_or_default().into_flat_call_config()?;
 
-                    inspector_config
-                        .merge(TracingInspectorConfig::from_flat_call_config(&flatcall_config));
+                    inspector_config.merge(TracingInspectorConfig::default_parity());
                     configs.push((builtin, TraceConfig::FlatCall(flatcall_config)));
                 }
                 GethDebugBuiltInTracerType::MuxTracer => {
@@ -137,11 +136,11 @@ impl MuxInspector {
                         continue;
                     }
                 }
-                TraceConfig::FlatCall(_flatcall_config) => {
+                TraceConfig::FlatCall(flatcall_config) => {
                     if let Some(inspector) = &self.tracing {
                         inspector
                             .clone()
-                            .into_parity_builder()
+                            .into_flat_call_builder(flatcall_config)
                             .with_transaction_gas_used(result.result.tx_gas_used())
                             .into_localized_transaction_traces(tx_info)
                             .into()

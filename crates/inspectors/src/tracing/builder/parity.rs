@@ -1,7 +1,7 @@
 use crate::tracing::{
     TracingInspectorConfig,
     tx_state::TxState,
-    types::{CallTraceNode, CallTraceStep, StepDelta, TraceMemberOrder},
+    types::{CallKind, CallTraceNode, CallTraceStep, StepDelta, TraceMemberOrder},
     utils::load_account_code,
 };
 use alloc::{string::ToString, vec, vec::Vec};
@@ -18,23 +18,82 @@ use evm2::{
     interpreter::InstrStop,
 };
 
+/// Which calls to precompiles a [`ParityTraceBuilder`] leaves out of its traces.
+///
+/// A call is only left out if the inspector recorded it as a call to a precompile, see
+/// [`TracingInspectorConfig::record_precompile_calls`], and it is not the root call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrecompileExclusion {
+    /// Keeps every call to a precompile.
+    None,
+    /// Leaves out calls of any kind that transfer no value, as Parity does.
+    ZeroValue,
+    /// Leaves out `CALL` and `STATICCALL` regardless of value and keeps `DELEGATECALL` and
+    /// `CALLCODE`, as geth's flatCallTracer does.
+    CallAndStaticCall,
+}
+
+impl PrecompileExclusion {
+    fn excludes(self, node: &CallTraceNode) -> bool {
+        node.parent.is_some()
+            && node.is_precompile()
+            && match self {
+                Self::None => false,
+                Self::ZeroValue => node.trace.value.is_zero(),
+                Self::CallAndStaticCall => {
+                    matches!(node.kind(), CallKind::Call | CallKind::StaticCall)
+                }
+            }
+    }
+}
+
 /// A type for creating parity style traces
 ///
-/// Note: Parity style traces always ignore calls to precompiles.
+/// Note: Parity style traces ignore calls to precompiles without value, see
+/// [`PrecompileExclusion::ZeroValue`].
 #[derive(Clone, Debug)]
 pub struct ParityTraceBuilder {
     /// Recorded trace nodes
     nodes: Vec<CallTraceNode>,
+    /// The calls to precompiles left out of the traces; their parents no longer list them as
+    /// children.
+    exclusion: PrecompileExclusion,
 }
 
 impl ParityTraceBuilder {
     /// Returns a new instance of the builder
-    pub const fn new(
+    pub fn new(
         nodes: Vec<CallTraceNode>,
         _spec_id: Option<SpecId>,
         _config: TracingInspectorConfig,
     ) -> Self {
-        Self { nodes }
+        Self::with_precompile_exclusion(nodes, PrecompileExclusion::ZeroValue)
+    }
+
+    /// Returns a new instance of the builder that leaves out the calls to precompiles selected by
+    /// `exclusion`.
+    pub fn with_precompile_exclusion(
+        mut nodes: Vec<CallTraceNode>,
+        exclusion: PrecompileExclusion,
+    ) -> Self {
+        let excluded: Vec<_> = nodes.iter().map(|node| exclusion.excludes(node)).collect();
+
+        for node in &mut nodes {
+            // Calls appear in `ordering` in the order of `children`.
+            let mut kept = 0;
+            node.ordering.retain_mut(|member| {
+                let TraceMemberOrder::Call(position) = member else { return true };
+                let keep = !excluded[node.children[*position]];
+                if keep {
+                    *position = kept;
+                    kept += 1;
+                }
+                keep
+            });
+            node.children.retain(|&child| !excluded[child]);
+        }
+
+        Self { nodes, exclusion }
     }
 
     /// Returns a list of all addresses that appeared as callers.
@@ -70,8 +129,8 @@ impl ParityTraceBuilder {
     /// Each entry in the returned vector represents the trace address of the corresponding node in
     /// the nodes set.
     ///
-    /// CAUTION: This also includes precompiles, which have an empty trace address, as they are not
-    /// tracked as children of their parent.
+    /// CAUTION: This also includes excluded precompile calls, which have an empty trace address, as
+    /// they are not tracked as children of their parent.
     fn trace_addresses(&self) -> Vec<Vec<usize>> {
         let mut all_addresses = vec![Vec::new(); self.nodes.len()];
         // Parents always precede their children in the arena, so a single forward pass can derive
@@ -92,7 +151,7 @@ impl ParityTraceBuilder {
     ///
     /// This excludes nodes that represent calls to precompiles.
     fn iter_traceable_nodes(&self) -> impl Iterator<Item = &CallTraceNode> {
-        self.nodes.iter().filter(|node| !node.is_precompile())
+        self.nodes.iter().filter(|node| !self.exclusion.excludes(node))
     }
 
     /// Returns an iterator over all recorded traces  for `trace_transaction`
@@ -256,13 +315,14 @@ impl ParityTraceBuilder {
     /// Returns an iterator over all recorded traces  for `trace_transaction`
     pub fn into_transaction_traces_iter(self) -> impl Iterator<Item = TransactionTrace> {
         let trace_addresses = self.trace_addresses();
+        let exclusion = self.exclusion;
         TransactionTraceIter {
             next_selfdestructs: Default::default(),
             iter: self
                 .nodes
                 .into_iter()
                 .zip(trace_addresses)
-                .filter(|(node, _)| !node.is_precompile())
+                .filter(move |(node, _)| !exclusion.excludes(node))
                 .map(|(node, trace_address)| (node.parity_transaction_trace(trace_address), node))
                 .peekable(),
         }
@@ -287,10 +347,9 @@ impl ParityTraceBuilder {
         let mut child_idx_stack = Vec::with_capacity(self.nodes.len());
         let mut sub_stack = Vec::with_capacity(self.nodes.len());
 
-        // Excluded precompile calls are recorded without being attached to their parent, in call
-        // order.
+        // Excluded precompile calls are not attached to their parent; collect them in call order.
         let mut precompiles = HashMap::<usize, Vec<&CallTraceNode>>::default();
-        for node in self.nodes.iter().filter(|node| node.is_precompile()) {
+        for node in self.nodes.iter().filter(|node| self.exclusion.excludes(node)) {
             if let Some(parent) = node.parent {
                 precompiles.entry(parent).or_default().push(node);
             }
