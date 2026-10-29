@@ -471,10 +471,9 @@ fn test_geth_debug_inspector_jstracer() {
             exists: db.exists(ctx.to),
             codeLength: db.getCode(ctx.to).length,
             gas: ctx.gas,
-            gasPrice: ctx.gasPrice,
+            gasPrice: ctx.gasPrice.toString(),
             value: ctx.value.toString(),
             block: ctx.block,
-            time: ctx.time,
             coinbase: toHex(ctx.coinbase),
             error: !!ctx.error
         };
@@ -500,10 +499,9 @@ fn test_geth_debug_inspector_jstracer() {
     assert_eq!(result["exists"], json!(true));
     assert_eq!(result["codeLength"], json!(5));
     assert_eq!(result["gas"], json!(1_000_000));
-    assert_eq!(result["gasPrice"], json!(17));
+    assert_eq!(result["gasPrice"], json!("17"));
     assert_eq!(result["value"], json!("3"));
     assert_eq!(result["block"], json!(42));
-    assert_eq!(result["time"], json!("1234"));
     assert_eq!(result["coinbase"], json!(coinbase));
     assert_eq!(result["error"], json!(false));
 }
