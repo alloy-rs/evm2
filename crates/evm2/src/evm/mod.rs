@@ -223,6 +223,7 @@ pub struct Evm<'a, T: EvmTypesHost> {
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
     inspector: Option<InspectorSlot<'a, T>>,
+    inspect_system_calls: bool,
     #[derive_where(skip)]
     interpreter_runner: Option<Arc<dyn InterpreterRunner<T>>>,
     /// The currently running interpreter frame, if any.
@@ -352,6 +353,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
+            inspect_system_calls: false,
             interpreter_runner: None,
             current_frame: None,
             frame_checkpoint: None,
@@ -994,6 +996,20 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         })?;
         let InspectorSlot::Owned(i) = slot else { unreachable!("borrowed slot was filtered out") };
         Some(unsafe { Box::from_raw(Box::into_raw(i).cast::<I>()) })
+    }
+
+    /// Returns whether [`Self::system_call`] runs with the active inspector installed.
+    #[inline]
+    pub const fn inspects_system_calls(&self) -> bool {
+        self.inspect_system_calls
+    }
+
+    /// Sets whether [`Self::system_call`] runs with the active inspector installed.
+    ///
+    /// Defaults to `false`: system calls are not inspected.
+    #[inline]
+    pub const fn set_inspect_system_calls(&mut self, inspect: bool) {
+        self.inspect_system_calls = inspect;
     }
 
     /// Sets the optional external interpreter runner.
