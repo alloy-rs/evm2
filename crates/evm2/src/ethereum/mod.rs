@@ -537,7 +537,8 @@ pub fn initial_gas_and_reservoir(
 /// The first frame of a transaction, prepared by [`prepare_initial_frame`].
 #[derive(Clone, Debug)]
 pub struct InitialFrame<T: EvmTypes> {
-    /// Top-level call or create message, carrying the resolved bytecode to run.
+    /// Top-level call or create message, carrying the resolved bytecode to run unless
+    /// [`runtime_oog`](Self::runtime_oog).
     pub message: Message<T>,
     /// EIP-8037 state gas charged on the transaction-level tracker for the account leaf this
     /// frame creates (the call recipient's new-account charge or the create target's
@@ -689,7 +690,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
 ///
 /// The message names the call or create the transaction would have run, with the `budget` the
 /// runtime gas phase started with and no resolved bytecode, and it reads no account state: the
-/// recipient of an unaffordable charge stays out of the EIP-7928 block access list.
+/// recipient of an unaffordable authorization charge stays out of the EIP-7928 block access list.
 /// [`execute_initial_frame`] halts it with out-of-gas, reporting the frame to the inspector.
 pub fn halted_initial_frame<T: EvmTypes>(
     host: &Evm<'_, T>,
@@ -762,10 +763,12 @@ pub fn execute_initial_frame<T: EvmTypes>(
 ) -> Result<MessageResult<T>, crate::ExecutionError> {
     let InitialFrame { mut message, charged_state_gas, runtime_oog } = frame;
     if runtime_oog {
-        return host.execute_halted_message(
-            &mut message,
-            runtime_oog_result(execution_gas_limit, reservoir),
-        );
+        // The hooks see the frame burn the budget it was given; the transaction itself burns all
+        // its execution gas and returns the reservoir, dropping the phase's partial charges.
+        let halted = runtime_oog_result(message.gas_limit, message.reservoir);
+        let mut result = host.execute_halted_message(&mut message, halted)?;
+        result.gas = runtime_oog_result::<()>(execution_gas_limit, reservoir).gas;
+        return Ok(result);
     }
 
     // Failed execution has already been rolled back to the message's own checkpoint inside
