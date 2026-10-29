@@ -536,6 +536,12 @@ impl TracingInspector {
 
         self.last_journal_len = interp.host().state().journal().len();
 
+        let storage_slot = if self.config.record_state_diff {
+            storage_slot(interp.stack().as_slice(), op.get())
+        } else {
+            None
+        };
+
         let step_idx = node.trace.steps.len();
         node.trace.steps.push(CallTraceStep {
             pc: interp.pc(),
@@ -558,6 +564,7 @@ impl TracingInspector {
                 .then_some(interp.gas().reservoir()),
             state_gas_spent: interp.gas().state_gas_spent(),
             storage_change: None,
+            storage_slot,
             status: None,
 
             // This is never populated in `TracingInspector`.
@@ -622,6 +629,7 @@ impl TracingInspector {
             );
         }
 
+        let address = interp.message().destination;
         let host = interp.host();
         let journal = host.state().journal();
 
@@ -657,6 +665,13 @@ impl TracingInspector {
             };
         }
 
+        // The slot an SLOAD read is loaded now, and the SLOAD did not change it.
+        if let Some(slot) = &mut step.storage_slot
+            && step.op.get() == op::SLOAD
+        {
+            slot.1 = host.state().get_storage(&address, &slot.0).unwrap_or_default();
+        }
+
         // An out-of-gas step consumes the whole remainder, except the reentrancy sentry, which
         // halts before any charge.
         step.gas_cost = if interp.result() == Err(InstrStop::ReentrancySentryOOG) {
@@ -675,11 +690,13 @@ impl TracingInspector {
         if step.status.is_some_and(|status| status.is_halt()) {
             return;
         }
-        // The gas a child returns and gas credits cannot be recovered from the step cost, so
-        // record the balance after the step even without memory and storage deltas.
+        // The gas a child returns, gas credits and state gas drawn from the remaining gas cannot be
+        // recovered from the step cost, so record the balance after the step even without memory
+        // and storage deltas.
+        let remaining = interp.gas().remaining();
         let gas_remaining_after = (step.is_call_like_op()
-            || interp.gas().remaining() > step.gas_remaining)
-            .then_some(interp.gas().remaining());
+            || remaining != step.gas_remaining.saturating_sub(step.gas_cost))
+        .then_some(remaining);
         if gas_remaining_after.is_some()
             && node.trace.step_deltas.last().is_none_or(|delta| delta.step != step_idx)
         {
@@ -874,22 +891,11 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
 
     fn create_end(
         &mut self,
-        interp: &mut Interpreter<'_, '_, T>,
-        message: &Message<T>,
+        _interp: &mut Interpreter<'_, '_, T>,
+        _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        let trace_idx = self.last_trace_idx();
         self.fill_trace_on_call_end(result);
-        // A nested CREATE whose creator nonce cannot be incremented returns successfully but
-        // without an address, leaving its gas unspent.
-        if message.depth > interp.version().initial_call_depth
-            && result.created_address.is_none()
-            && result.stop == InstrStop::Return
-        {
-            let trace = &mut self.traces.arena[trace_idx].trace;
-            trace.status = Some(InstrStop::NonceOverflow);
-            trace.success = false;
-        }
     }
 
     fn selfdestruct(
@@ -951,6 +957,19 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
             tx_index: tx_info.index.map(|idx| idx as usize),
             tx_hash: tx_info.hash,
         }
+    }
+}
+
+/// Returns the key and value of the storage slot an SSTORE is about to write, or the key of the
+/// slot an SLOAD is about to read, with a zero value that `step_end` replaces.
+fn storage_slot(stack: &[U256], op: u8) -> Option<Box<(U256, U256)>> {
+    match op {
+        op::SLOAD => Some(Box::new((*stack.last()?, U256::ZERO))),
+        op::SSTORE => {
+            let [.., value, key] = stack else { return None };
+            Some(Box::new((*key, *value)))
+        }
+        _ => None,
     }
 }
 
