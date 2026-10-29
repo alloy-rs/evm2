@@ -1502,8 +1502,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         if self.feature(EvmFeatures::EIP3541) && output.first().is_some_and(|byte| *byte == 0xef) {
             return Err(InstrStop::CreateContractStartingWithEF);
         }
-        // The code deposit gas is charged before the size check, except with EIP-8037.
-        if oversized && self.feature(EvmFeatures::EIP8037) {
+        // The code deposit gas is charged before the size check, except with EIP-8037. Without
+        // EIP-2 a failed deposit creates the contract with empty code, so the size check cannot
+        // wait for it.
+        if oversized && (self.feature(EvmFeatures::EIP8037) || !self.feature(EvmFeatures::EIP2)) {
             return Err(InstrStop::CreateContractSizeLimit);
         }
 
