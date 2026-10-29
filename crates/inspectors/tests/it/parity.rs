@@ -1053,7 +1053,7 @@ fn failed_frames_use_parity_labels() {
             &hex!("646160015ff35f526005601b5ff000")[..],
             &[][..],
             SpecId::PRAGUE,
-            ["Out of gas", "max code size exceeded: code size 24577 limit 24576"],
+            ["Out of gas", "contract creation code storage out of gas"],
         ),
         (
             &hex!("6760ef5f5360015ff35f52600860185ff000")[..],

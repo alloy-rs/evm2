@@ -26,9 +26,10 @@ pub(crate) struct StepContext {
     pub(crate) op: OpCode,
     /// The stack length before the opcode ran.
     pub(crate) stack_len: usize,
-    /// The immediate byte of `DUPN`, `SWAPN` and `EXCHANGE`, or the initcode size of `CREATE` and
-    /// `CREATE2`.
-    pub(crate) operand: usize,
+    /// The immediate byte of `DUPN`, `SWAPN` and `EXCHANGE`.
+    pub(crate) immediate: u8,
+    /// The initcode size of `CREATE` and `CREATE2`.
+    pub(crate) initcode_size: usize,
 }
 
 /// An opcode halt as geth reports it.
@@ -147,37 +148,47 @@ pub(crate) fn fmt_error_msg(res: InstrStop, kind: TraceStyle) -> Option<String> 
 ///
 /// Returns `None` if [`InstrStop::is_success`].
 ///
-/// See <https://github.com/ethereum/go-ethereum/blob/v1.17.10/core/vm/interpreter.go#L214-L287> and
-/// <https://github.com/ethereum/go-ethereum/blob/v1.17.10/core/vm/errors.go>.
+/// See <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/core/vm/interpreter.go#L214-L287> and
+/// <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/core/vm/errors.go>.
 pub(crate) fn fmt_geth_halt(
     stop: InstrStop,
     ctx: StepContext,
     version: &Version,
 ) -> Option<GethHalt> {
-    let StepContext { op, stack_len, operand } = ctx;
+    let StepContext { op, stack_len, immediate, initcode_size } = ctx;
     let min_stack = min_stack(op);
+    let max_stack = (STACK_LIMIT + usize::from(op.inputs())).saturating_sub(op.outputs().into());
+    // geth validates the stack of a defined opcode before anything else, while evm2 runs some
+    // checks first.
+    if !matches!(
+        stop,
+        InstrStop::OpcodeNotFound | InstrStop::NotActivated | InstrStop::InvalidFEOpcode
+    ) {
+        if stack_len < min_stack {
+            return Some(GethHalt {
+                msg: format!("stack underflow ({stack_len} <=> {min_stack})"),
+                before_body: true,
+            });
+        }
+        if stack_len > max_stack {
+            return Some(GethHalt {
+                msg: format!("stack limit reached {stack_len} ({max_stack})"),
+                before_body: true,
+            });
+        }
+    }
     let (msg, before_body) = match stop {
-        // geth checks the stack of `DUPN`, `SWAPN` and `EXCHANGE` against the table minimum before
-        // the opcode runs, and again against the decoded immediate inside the opcode.
-        InstrStop::StackUnderflow | InstrStop::InvalidImmediateEncoding
-            if stack_len < min_stack =>
-        {
-            (format!("stack underflow ({stack_len} <=> {min_stack})"), true)
-        }
+        // `DUPN`, `SWAPN` and `EXCHANGE` check the stack again against the decoded immediate inside
+        // the opcode.
         InstrStop::StackUnderflow => {
-            let required = required_stack(op, operand).unwrap_or(min_stack);
+            let required = required_stack(op, immediate).unwrap_or(min_stack);
             (format!("stack underflow ({stack_len} <=> {required})"), false)
-        }
-        InstrStop::StackOverflow => {
-            let limit =
-                (STACK_LIMIT + usize::from(op.inputs())).saturating_sub(op.outputs().into());
-            (format!("stack limit reached {stack_len} ({limit})"), true)
         }
         InstrStop::OpcodeNotFound | InstrStop::NotActivated | InstrStop::InvalidFEOpcode => {
             (format!("invalid opcode: {}", geth_op_name(op)), false)
         }
         InstrStop::InvalidImmediateEncoding => {
-            (format!("invalid opcode: {} (operand: 0x{operand:02x})", geth_op_name(op)), false)
+            (format!("invalid opcode: {} (operand: 0x{immediate:02x})", geth_op_name(op)), false)
         }
         // The gas functions of these opcodes check for write protection, and geth wraps the errors
         // of gas functions in `out of gas`. `LOG` and `TSTORE` check inside the opcode.
@@ -191,7 +202,7 @@ pub(crate) fn fmt_geth_halt(
         }
         InstrStop::CreateInitCodeSizeLimit => (
             format!(
-                "out of gas: max initcode size exceeded: code size {operand} limit {}",
+                "out of gas: max initcode size exceeded: code size {initcode_size} limit {}",
                 version.max_initcode_size
             ),
             true,
@@ -212,7 +223,7 @@ pub(crate) fn fmt_geth_halt(
 /// `code_len` is the length of the code the initcode returned. Returns `None` for stops geth
 /// reports like [`fmt_error_msg`] does.
 ///
-/// See <https://github.com/ethereum/go-ethereum/blob/v1.17.10/core/vm/evm.go#L653-L700>.
+/// See <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/core/vm/evm.go#L656-L710>.
 pub(crate) fn fmt_geth_create_end(
     stop: InstrStop,
     code_len: usize,
@@ -231,7 +242,7 @@ pub(crate) fn fmt_geth_create_end(
 
 /// Returns geth's name for an opcode, including the opcodes evm2 does not define.
 ///
-/// See <https://github.com/ethereum/go-ethereum/blob/v1.17.10/core/vm/opcodes.go#L395-L453>.
+/// See <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/core/vm/opcodes.go#L395-L453>.
 pub(crate) fn geth_op_name(op: OpCode) -> Cow<'static, str> {
     if op.is_valid() {
         return Cow::Borrowed(op.as_str());
@@ -268,8 +279,7 @@ fn min_stack(op: OpCode) -> usize {
 }
 
 /// Returns the stack length that `DUPN`, `SWAPN` and `EXCHANGE` need for their immediate.
-fn required_stack(op: OpCode, immediate: usize) -> Option<usize> {
-    let immediate = immediate as u8;
+fn required_stack(op: OpCode, immediate: u8) -> Option<usize> {
     match op.get() {
         op::DUPN => decode_single(immediate),
         op::SWAPN => decode_single(immediate).map(|n| n + 1),
@@ -438,13 +448,35 @@ mod tests {
                 true,
             ),
             (InstrStop::OutOfGas, op::ADD, 2, 0, "out of gas", true),
+            (InstrStop::OutOfGas, op::ADD, 1, 0, "stack underflow (1 <=> 2)", true),
+            (
+                InstrStop::StateChangeDuringStaticCall,
+                op::CREATE,
+                0,
+                0,
+                "stack underflow (0 <=> 3)",
+                true,
+            ),
+            (
+                InstrStop::InvalidImmediateEncoding,
+                op::DUPN,
+                1024,
+                0x5b,
+                "stack limit reached 1024 (1023)",
+                true,
+            ),
             (InstrStop::MemoryOOG, op::MSTORE, 2, 0, "out of gas", true),
             (InstrStop::MemoryLimitOOG, op::MSTORE, 2, 0, "out of gas: gas uint64 overflow", true),
             (InstrStop::InvalidOperandOOG, op::MSTORE, 2, 0, "gas uint64 overflow", true),
             (InstrStop::InvalidJump, op::JUMP, 1, 0, "invalid jump destination", false),
             (InstrStop::OutOfOffset, op::RETURNDATACOPY, 3, 0, "return data out of bounds", false),
         ] {
-            let ctx = StepContext { op: OpCode::new_or_unknown(op), stack_len, operand };
+            let ctx = StepContext {
+                op: OpCode::new_or_unknown(op),
+                stack_len,
+                immediate: operand as u8,
+                initcode_size: operand,
+            };
             let halt = fmt_geth_halt(stop, ctx, &version).unwrap();
             assert_eq!((halt.msg.as_str(), halt.before_body), (msg, before_body), "{stop:?}");
         }

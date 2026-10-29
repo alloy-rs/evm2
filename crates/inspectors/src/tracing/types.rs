@@ -163,12 +163,10 @@ impl CallTrace {
 
     /// Returns the error message if it is an erroneous result.
     pub(crate) fn as_error_msg(&self, kind: TraceStyle) -> Option<String> {
-        if !kind.is_parity()
-            && let Some(error) = &self.geth_error
-        {
-            return Some(error.clone());
-        }
-        self.status.and_then(|status| utils::fmt_error_msg(status, kind))
+        self.geth_error
+            .clone()
+            .filter(|_| !kind.is_parity())
+            .or_else(|| self.status.and_then(|status| utils::fmt_error_msg(status, kind)))
     }
 
     /// Gets the decoded call trace.
