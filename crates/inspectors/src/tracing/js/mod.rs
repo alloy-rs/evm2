@@ -120,8 +120,6 @@ pub struct JsInspector {
     next_call_id: u64,
     /// The precompiles read by `isPrecompiled`, set on the first call hook of a transaction.
     precompiles: PrecompileList,
-    /// Marker to track whether the precompiles have been set.
-    precompiles_registered: bool,
     /// Pre-execution states captured in `step()` to be processed in `step_end()`.
     pending_steps: Vec<PendingStep>,
     /// Depth of the root frame, which can be non-zero for a nested transaction root.
@@ -156,8 +154,8 @@ impl JsInspector {
     /// Optional functions are invoked during inspection:
     /// - `setup`: a function that will be called before the inspection starts, with the config as a
     ///   JSON string.
-    /// - `enter`: a function that will be called when the execution enters a new call.
-    /// - `exit`: a function that will be called when the execution exits a call.
+    /// - `enter` and `exit`: functions that will be called when the execution enters and exits a
+    ///   call. Both must be present or both absent.
     /// - `step`: a function that will be called when the execution steps to the next instruction.
     ///
     /// This also accepts a sender half of a channel to communicate with the database service so the
@@ -225,7 +223,6 @@ impl JsInspector {
             call_stack: Default::default(),
             next_call_id: 1,
             precompiles,
-            precompiles_registered: false,
             pending_steps: Vec::new(),
             root_depth: 0,
             hook_error: None,
@@ -255,7 +252,7 @@ impl JsInspector {
     pub fn fuse(&mut self) -> Result<(), JsInspectorError> {
         self.ensure_not_interrupted()?;
         // `setup` of the fresh tracer must not see the previous transaction's precompiles.
-        self.precompiles.set([]);
+        self.precompiles.clear();
         let JsTracerObject { obj, result_fn, fault_fn, enter_fn, exit_fn, step_fn } =
             JsTracerObject::evaluate(&self.script, &self.config, &mut self.ctx)?;
         // Callback objects are mutable JS objects: replacing their Rust state does not remove
@@ -281,7 +278,6 @@ impl JsInspector {
         self.exit_fn = exit_fn;
         self.step_fn = step_fn;
         self.call_stack.clear();
-        self.precompiles_registered = false;
         self.pending_steps.clear();
         self.root_depth = 0;
         self.hook_error = None;
@@ -458,11 +454,9 @@ impl JsInspector {
 
     /// Sets the active precompiles read by `isPrecompiled`.
     fn register_precompiles<T: EvmTypes>(&mut self, host: &Evm<'_, T>) {
-        if self.precompiles_registered {
-            return;
+        if !self.precompiles.is_set() {
+            self.precompiles.set(host.precompiles().addresses());
         }
-        self.precompiles.set(host.precompiles().addresses());
-        self.precompiles_registered = true
     }
 
     /// Sets a shared handle that cooperatively interrupts JavaScript tracing.
@@ -1187,7 +1181,8 @@ mod tests {
         };
         JsInspector::new(code(r#"{"a":1}"#), json!({"a": 1})).unwrap();
         JsInspector::new(code("{}"), serde_json::Value::Null).unwrap();
-        assert!(JsInspector::new(code("{}"), json!({"a": 1})).is_err());
+        let result = JsInspector::new(code("{}"), json!({"a": 1}));
+        assert!(matches!(result, Err(JsInspectorError::SetupCallFailed(_))));
     }
 
     #[test]
@@ -1209,17 +1204,22 @@ mod tests {
                 return [ctx.gasPrice.toString(), ctx.intrinsicGas, ctx.time];
             }
         }"#;
-        let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
-        let tx = TxEnvelope::Eip1559(TxEip1559 {
-            chain_id: 1,
-            gas_limit: 1_000_000,
-            max_fee_per_gas: 10_000_000_000,
-            max_priority_fee_per_gas: 1_000_000_000,
-            to: TxKind::Call(Address::repeat_byte(0x01)),
-            ..Default::default()
-        });
-        let res = try_run_tx(insp, None, true, U256::from(5_000_000_000u64), tx).unwrap();
-        assert_eq!(res, json!(["1000000000", null, null]));
+        // The tip is min(max_priority_fee, max_fee - base_fee).
+        for (max_fee, expected) in
+            [(10_000_000_000u128, "1000000000"), (5_500_000_000, "500000000")]
+        {
+            let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
+            let tx = TxEnvelope::Eip1559(TxEip1559 {
+                chain_id: 1,
+                gas_limit: 1_000_000,
+                max_fee_per_gas: max_fee,
+                max_priority_fee_per_gas: 1_000_000_000,
+                to: TxKind::Call(Address::repeat_byte(0x01)),
+                ..Default::default()
+            });
+            let res = try_run_tx(insp, None, true, U256::from(5_000_000_000u64), tx).unwrap();
+            assert_eq!(res, json!([expected, null, null]));
+        }
     }
 
     #[test]
@@ -1230,49 +1230,25 @@ mod tests {
                 return [ctx.blockHash !== undefined, ctx.txIndex, ctx.txHash !== undefined];
             }
         }"#;
-        let block_hash = B256::repeat_byte(1);
-        let tx_hash = B256::repeat_byte(2);
-        for (tx_context, expected) in [
-            (TransactionContext::default(), json!([false, null, false])),
-            (
-                TransactionContext::default().with_block_hash(block_hash).with_tx_index(3),
-                json!([true, null, false]),
-            ),
-            (
-                TransactionContext::default()
-                    .with_block_hash(B256::ZERO)
-                    .with_tx_index(3)
-                    .with_tx_hash(tx_hash),
-                json!([false, null, false]),
-            ),
-            (
-                TransactionContext::default()
-                    .with_block_hash(block_hash)
-                    .with_tx_index(3)
-                    .with_tx_hash(B256::ZERO),
-                json!([true, null, false]),
-            ),
-            (
-                TransactionContext::default()
-                    .with_block_hash(block_hash)
-                    .with_tx_index(3)
-                    .with_tx_hash(tx_hash),
-                json!([true, 3, true]),
-            ),
+        let hash = Some(B256::repeat_byte(1));
+        let zero = Some(B256::ZERO);
+        for (block_hash, tx_hash, tx_index, expected) in [
+            (None, None, None, json!([false, null, false])),
+            (hash, None, Some(3), json!([true, null, false])),
+            (zero, hash, Some(3), json!([false, null, false])),
+            (hash, zero, Some(3), json!([true, null, false])),
+            (hash, hash, Some(3), json!([true, 3, true])),
+            (hash, hash, None, json!([true, 0, true])),
         ] {
+            let tx_context = TransactionContext { block_hash, tx_index, tx_hash };
             let insp = JsInspector::with_transaction_context(
                 code.to_string(),
                 serde_json::Value::Null,
                 tx_context,
             )
             .unwrap();
-            let tx = TxEnvelope::Legacy(TxLegacy {
-                gas_price: 1024,
-                gas_limit: 1_000_000,
-                to: TxKind::Call(Address::repeat_byte(0x01)),
-                ..Default::default()
-            });
-            assert_eq!(try_run_tx(insp, None, true, U256::ZERO, tx).unwrap(), expected);
+            let res = try_run_tx(insp, None, true, U256::ZERO, legacy_tx(1024)).unwrap();
+            assert_eq!(res, expected);
         }
     }
 
@@ -1287,12 +1263,7 @@ mod tests {
         let mut insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
         insp.precompiles.set([Address::with_last_byte(1)]);
         insp.fuse().unwrap();
-        let tx = TxEnvelope::Legacy(TxLegacy {
-            gas_limit: 1_000_000,
-            to: TxKind::Call(Address::repeat_byte(0x01)),
-            ..Default::default()
-        });
-        assert_eq!(try_run_tx(insp, None, true, U256::ZERO, tx).unwrap(), json!(false));
+        assert_eq!(try_run_tx(insp, None, true, U256::ZERO, legacy_tx(0)).unwrap(), json!(false));
     }
 
     fn run_trace(code: &str, contract: Option<Bytes>, success: bool) -> serde_json::Value {
@@ -1305,13 +1276,16 @@ mod tests {
         success: bool,
     ) -> Result<serde_json::Value, JsInspectorError> {
         let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
-        let tx = TxEnvelope::Legacy(TxLegacy {
-            gas_price: 1024,
+        try_run_tx(insp, contract, success, U256::ZERO, legacy_tx(1024))
+    }
+
+    fn legacy_tx(gas_price: u128) -> TxEnvelope {
+        TxEnvelope::Legacy(TxLegacy {
+            gas_price,
             gas_limit: 1_000_000,
             to: TxKind::Call(Address::repeat_byte(0x01)),
             ..Default::default()
-        });
-        try_run_tx(insp, contract, success, U256::ZERO, tx)
+        })
     }
 
     fn try_run_tx(

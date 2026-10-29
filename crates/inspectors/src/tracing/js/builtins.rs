@@ -449,9 +449,9 @@ pub(crate) fn slice(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResul
 
 /// The active precompile addresses behind the `isPrecompiled` global callable.
 ///
-/// Empty until the transaction starts, like geth's list of active precompiles.
+/// Unset until the transaction starts, like geth's list of active precompiles.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PrecompileList(Rc<RefCell<HashSet<Address>>>);
+pub(crate) struct PrecompileList(Rc<RefCell<Option<HashSet<Address>>>>);
 
 impl PrecompileList {
     /// Registers the global callable `isPrecompiled`, which reads this list.
@@ -461,7 +461,8 @@ impl PrecompileList {
                 let val = args.get_or_undefined(0).clone();
                 let buf = bytes_from_value(val, ctx)?;
                 let addr = bytes_to_address(&buf);
-                Ok(RefCell::borrow(&precompiles.0).contains(&addr).into())
+                let precompiles = RefCell::borrow(&precompiles.0);
+                Ok(precompiles.as_ref().is_some_and(|list| list.contains(&addr)).into())
             },
             self.clone(),
         );
@@ -471,11 +472,19 @@ impl PrecompileList {
         Ok(())
     }
 
-    /// Replaces the active precompile addresses.
+    /// Returns true if the active precompile addresses have been set.
+    pub(crate) fn is_set(&self) -> bool {
+        RefCell::borrow(&self.0).is_some()
+    }
+
+    /// Sets the active precompile addresses.
     pub(crate) fn set(&self, addresses: impl IntoIterator<Item = Address>) {
-        let mut precompiles = self.0.borrow_mut();
-        precompiles.clear();
-        precompiles.extend(addresses);
+        *self.0.borrow_mut() = Some(addresses.into_iter().collect());
+    }
+
+    /// Unsets the active precompile addresses.
+    pub(crate) fn clear(&self) {
+        *self.0.borrow_mut() = None;
     }
 }
 
