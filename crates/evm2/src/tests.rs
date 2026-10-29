@@ -1,7 +1,7 @@
 use crate::{
     BaseEvmTypes, Evm, EvmFeatures, ExecutionConfig, Inspector, Precompiles, SpecId, Version,
     bytecode::Bytecode,
-    env::{BlockEnvExt, TxEnvExt},
+    env::BlockEnvExt,
     ethereum::{
         LazyAuthorization, LazyTxEip7702, RecoveredTxEnvelope, TxEnvelope,
         eip7702::{AuthRefunds, Eip7702Authorization, RuntimeAuthCharges, apply_auth_list},
@@ -28,7 +28,7 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
         code: legacy_bytecode(code),
         ..Default::default()
     };
-    let result = Host::execute_message(evm, &TxEnvExt::default(), &mut message).unwrap();
+    let result = Host::execute_message(evm, &mut message).unwrap();
     assert!(result.stop.is_success());
 }
 
@@ -136,7 +136,7 @@ fn evm_propagates_child_sstore_negative_refund() {
         code: legacy_bytecode(parent_code),
         ..Default::default()
     };
-    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+    let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
     assert!(result.stop.is_success());
     assert_eq!(result.gas.refunded(), 0);
@@ -159,7 +159,7 @@ fn evm_reports_invalid_transaction_execution() {
         code: legacy_bytecode([op::PUSH1, 0x01, op::SSTORE]),
         ..Default::default()
     };
-    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+    let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
     assert_eq!(result.stop, InstrStop::StackUnderflow);
 }
@@ -562,7 +562,7 @@ fn precompile_dispatch_uses_original_callee(
         &mut gas,
     )
     .unwrap();
-    let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut frame.message).unwrap();
+    let result = Host::execute_message(&mut evm, &mut frame.message).unwrap();
 
     assert!(result.stop.is_success(), "{:?}", result.stop);
     assert_eq!(result.output.as_ref(), expected_output);

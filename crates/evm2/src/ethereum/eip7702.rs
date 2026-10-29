@@ -108,7 +108,7 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     let tx = req.tx.inner();
     let envelope = req.envelope;
     let chain_id = req.host.version().chain_id;
-    let tx_env = TxEnvExt {
+    *req.host.tx_env_mut() = TxEnvExt {
         origin: caller,
         gas_price,
         chain_id: U256::from(chain_id),
@@ -205,14 +205,8 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     // applied delegations, which stay) inside `execute_message`. The settle merges the frame gas
     // into `tx_gas`, which carries the authorization state gas into the block state-gas
     // accounting.
-    let result = execute_initial_frame(
-        req.host,
-        &tx_env,
-        frame,
-        &mut tx_gas,
-        execution_gas_limit,
-        reservoir,
-    )?;
+    let result =
+        execute_initial_frame(req.host, frame, &mut tx_gas, execution_gas_limit, reservoir)?;
     settle(req.host, result)
 }
 
