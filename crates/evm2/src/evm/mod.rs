@@ -1613,10 +1613,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             }
             Ok(output) => (InstrStop::Return, output.into_bytes()),
             Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
-            // EIP-7823 modexp inputs over the size limit cost all gas.
-            Err(PrecompileError::Halt(
-                PrecompileHalt::OutOfGas | PrecompileHalt::ModexpEip7823LimitSize,
-            )) => (InstrStop::PrecompileOOG, Bytes::new()),
+            Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
+                (InstrStop::PrecompileOOG, Bytes::new())
+            }
             Err(PrecompileError::Halt(_)) => (InstrStop::PrecompileError, Bytes::new()),
             Err(PrecompileError::Database(error)) => {
                 self.state.rollback(checkpoint, self.features);
@@ -2382,27 +2381,6 @@ mod tests {
             assert_eq!(result.stop, InstrStop::PrecompileOOG);
             assert_eq!(result.gas.remaining(), 0);
         }
-    }
-
-    #[test]
-    fn oversized_modexp_input_runs_out_of_gas() {
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnvExt::default(),
-            TxRegistry::new(),
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
-        );
-        let mut input = [0; 99];
-        input[30..32].copy_from_slice(&1025u16.to_be_bytes());
-        input[63] = 1;
-        input[95] = 1;
-        let mut message = precompile_message(Address::with_last_byte(5));
-        message.input = Bytes::copy_from_slice(&input);
-        let result = Host::execute_message(&mut evm, &mut message).unwrap();
-
-        assert_eq!(result.stop, InstrStop::PrecompileOOG);
-        assert_eq!(result.gas.remaining(), 0);
     }
 
     fn lifecycle_evm() -> Evm<'static, BaseEvmTypes> {
