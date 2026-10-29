@@ -44,6 +44,8 @@ pub(crate) struct TxAccount {
     pub(crate) created: bool,
     /// Whether the account was selfdestructed during the transaction.
     pub(crate) selfdestructed: bool,
+    /// Whether the transaction wiped the account's storage, so slots it did not load read zero.
+    pub(crate) wiped: bool,
     /// Storage slots loaded during the transaction, changed and unchanged.
     pub(crate) storage: U256Map<Tracked<Word>>,
 }
@@ -72,6 +74,11 @@ impl StateChangeSink for TxState {
         clone_account_info(&mut entry.current, change.current);
         entry.created = change.created;
         entry.selfdestructed = change.selfdestructed;
+        Ok(())
+    }
+
+    fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
+        self.accounts.entry(address).or_default().wiped = true;
         Ok(())
     }
 

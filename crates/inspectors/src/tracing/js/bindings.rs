@@ -575,8 +575,8 @@ impl EvmDbReader for ChangesDbReader<'_> {
             if let Some(slot) = account.storage.get(slot) {
                 return Ok(slot.current);
             }
-            // A deleted account has no storage.
-            if account.current.is_none() {
+            // A deleted account has no storage, and a wiped one only what it wrote afterwards.
+            if account.current.is_none() || account.wiped {
                 return Ok(Word::ZERO);
             }
         }
@@ -1126,13 +1126,14 @@ impl JsEvmContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracing::js::builtins::{
-        bytes_from_value, json_stringify, register_builtins, to_serde_value,
+    use crate::tracing::{
+        js::builtins::{bytes_from_value, json_stringify, register_builtins, to_serde_value},
+        tx_state::TxAccount,
     };
     use alloc::vec;
     use boa_engine::{Source, object::builtins::JsUint8Array};
     use core::convert::Infallible;
-    use evm2::evm::{CacheDB, Database, Db, EmptyDB};
+    use evm2::evm::{CacheDB, Database, Db, EmptyDB, Tracked};
 
     /// Records and enters a step with the given pre- and post-execution stack.
     fn with_step<'a, R>(
@@ -1231,6 +1232,47 @@ mod tests {
             let buf = bytes_from_value(res, &mut ctx).unwrap();
             assert_eq!(buf, contract.input);
         });
+    }
+
+    #[test]
+    fn changes_reader_reads_final_storage() {
+        let [plain, wiped, deleted, untouched] = [1, 2, 3, 4].map(Address::with_last_byte);
+        let mut db = CacheDB::new(EmptyDB::default());
+        for address in [plain, wiped, deleted, untouched] {
+            db.insert_account_info(&address, AccountInfo::default());
+            db.insert_account_storage(&address, &U256::from(1), &U256::from(9));
+            db.insert_account_storage(&address, &U256::from(2), &U256::from(8));
+        }
+        let mut state = TxState::default();
+        let account = |wiped, current: Option<AccountInfo>, slot: Word, value: u64| TxAccount {
+            current,
+            wiped,
+            storage: [(slot, Tracked::from_parts(U256::from(9), U256::from(value)))]
+                .into_iter()
+                .collect(),
+            ..TxAccount::default()
+        };
+        let alive = Some(AccountInfo::default());
+        state.accounts.insert(plain, account(false, alive.clone(), U256::from(1), 5));
+        state.accounts.insert(wiped, account(true, alive, U256::from(1), 6));
+        state.accounts.insert(deleted, account(false, None, U256::from(1), 0));
+
+        let mut reader = ChangesDbReader { changes: &state, db: &mut db };
+        for (address, slot, expected) in [
+            // A written slot reads its final value, an unloaded one the database.
+            (plain, 1, 5),
+            (plain, 2, 8),
+            // A wiped account only keeps what it wrote afterwards.
+            (wiped, 1, 6),
+            (wiped, 2, 0),
+            // A deleted account has no storage.
+            (deleted, 1, 0),
+            (deleted, 2, 0),
+            (untouched, 1, 9),
+        ] {
+            let value = reader.read_state(&address, &U256::from(slot)).unwrap();
+            assert_eq!(value, U256::from(expected), "{address} slot {slot}");
+        }
     }
 
     #[test]
