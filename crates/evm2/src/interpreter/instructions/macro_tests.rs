@@ -80,10 +80,11 @@ fn run(config: RunConfig<'_>) -> TestInterpreter {
     let execution_config = ExecutionConfig::<TestTypes>::for_config::<MacroConfig>();
     let RunConfig { code, host, spec_id, tx_env, message, gas_limit, return_data } = config;
     let message = Message::<TestTypes> { code: legacy_bytecode(code), gas_limit, ..message };
-    let mut inner = Interpreter::<TestTypes>::new(&tx_env, &message);
+    let mut inner = Interpreter::<TestTypes>::new(&message);
     *inner.return_data_mut() = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
+    host.tx_env = tx_env;
     host.spec_id = spec_id;
     host.execution_config = execution_config;
     let err = inner.run(host).unwrap();
