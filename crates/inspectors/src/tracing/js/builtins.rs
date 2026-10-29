@@ -1,7 +1,7 @@
 //! Builtin functions
 
 use crate::tracing::types::CallKind;
-use alloc::{borrow::Cow, format, vec::Vec};
+use alloc::{borrow::Cow, format, rc::Rc, vec::Vec};
 use alloy_primitives::{Address, B256, FixedBytes, U256, hex, map::HashSet};
 use boa_engine::{
     Context, JsArgs, JsBigInt, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
@@ -15,7 +15,7 @@ use boa_engine::{
     property::Attribute,
 };
 use boa_gc::{Finalize, Trace, empty_trace};
-use core::borrow::Borrow;
+use core::{borrow::Borrow, cell::RefCell};
 
 /// Converts the given `JsValue` to a `serde_json::Value`.
 ///
@@ -66,7 +66,7 @@ pub(crate) fn json_stringify(val: JsValue, ctx: &mut Context) -> JsResult<JsStri
 /// Registers all the builtin functions.
 ///
 /// Note: this does not register the `isPrecompiled` builtin, as this requires the precompile
-/// addresses, see [PrecompileList::register_callable].
+/// list, see [PrecompileList::register_callable].
 pub(crate) fn register_builtins(ctx: &mut Context) -> JsResult<()> {
     let big_int = ctx.global_object().get(js_string!("BigInt"), ctx)?;
     // Add toJSON method and geth-compatible polyfill shims to BigInt prototype.
@@ -447,26 +447,35 @@ pub(crate) fn slice(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResul
     }
 }
 
-/// A container for all precompile addresses used for the `isPrecompiled` global callable.
-#[derive(Clone, Debug)]
-pub(crate) struct PrecompileList(pub(crate) HashSet<Address>);
+/// The active precompile addresses behind the `isPrecompiled` global callable.
+///
+/// Empty until the transaction starts, like geth's list of active precompiles.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PrecompileList(Rc<RefCell<HashSet<Address>>>);
 
 impl PrecompileList {
-    /// Registers the global callable `isPrecompiled`
-    pub(crate) fn register_callable(self, ctx: &mut Context) -> JsResult<()> {
+    /// Registers the global callable `isPrecompiled`, which reads this list.
+    pub(crate) fn register_callable(&self, ctx: &mut Context) -> JsResult<()> {
         let is_precompiled = NativeFunction::from_copy_closure_with_captures(
             move |_this, args, precompiles, ctx| {
                 let val = args.get_or_undefined(0).clone();
                 let buf = bytes_from_value(val, ctx)?;
                 let addr = bytes_to_address(&buf);
-                Ok(precompiles.0.contains(&addr).into())
+                Ok(RefCell::borrow(&precompiles.0).contains(&addr).into())
             },
-            self,
+            self.clone(),
         );
 
         ctx.register_global_callable(js_string!("isPrecompiled"), 1, is_precompiled)?;
 
         Ok(())
+    }
+
+    /// Replaces the active precompile addresses.
+    pub(crate) fn set(&self, addresses: impl IntoIterator<Item = Address>) {
+        let mut precompiles = self.0.borrow_mut();
+        precompiles.clear();
+        precompiles.extend(addresses);
     }
 }
 

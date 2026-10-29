@@ -22,7 +22,7 @@ use alloc::{
     vec::Vec,
 };
 use alloy_consensus::{Transaction, transaction::Recovered};
-use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
+use alloy_primitives::{Address, Bytes, TxKind, U256};
 use boa_engine::{
     Context, JsError, JsNativeError, JsObject, JsResult, JsValue, Script, Source,
     builtins::error::Error, error::EngineError, js_string, object::builtins::JsArray,
@@ -118,7 +118,9 @@ pub struct JsInspector {
     call_stack: Vec<CallStackItem>,
     /// Monotonically increasing ID used to refresh callback contract input.
     next_call_id: u64,
-    /// Marker to track whether the precompiles have been registered.
+    /// The precompiles read by `isPrecompiled`, set on the first call hook of a transaction.
+    precompiles: PrecompileList,
+    /// Marker to track whether the precompiles have been set.
     precompiles_registered: bool,
     /// Pre-execution states captured in `step()` to be processed in `step_end()`.
     pending_steps: Vec<PendingStep>,
@@ -152,7 +154,8 @@ impl JsInspector {
     ///  - `fault`: a function that will be called when the transaction fails.
     ///
     /// Optional functions are invoked during inspection:
-    /// - `setup`: a function that will be called before the inspection starts.
+    /// - `setup`: a function that will be called before the inspection starts, with the config as a
+    ///   JSON string.
     /// - `enter`: a function that will be called when the execution enters a new call.
     /// - `exit`: a function that will be called when the execution exits a call.
     /// - `step`: a function that will be called when the execution steps to the next instruction.
@@ -181,6 +184,8 @@ impl JsInspector {
         ctx.runtime_limits_mut().set_recursion_limit(RECURSION_LIMIT);
 
         register_builtins(&mut ctx)?;
+        let precompiles = PrecompileList::default();
+        precompiles.register_callable(&mut ctx)?;
 
         // parse the code
         let wrapped = format!("({code})");
@@ -219,6 +224,7 @@ impl JsInspector {
             reusable_db,
             call_stack: Default::default(),
             next_call_id: 1,
+            precompiles,
             precompiles_registered: false,
             pending_steps: Vec::new(),
             root_depth: 0,
@@ -248,6 +254,8 @@ impl JsInspector {
     /// wrappers are recreated so their own properties do not carry over between transactions.
     pub fn fuse(&mut self) -> Result<(), JsInspectorError> {
         self.ensure_not_interrupted()?;
+        // `setup` of the fresh tracer must not see the previous transaction's precompiles.
+        self.precompiles.set([]);
         let JsTracerObject { obj, result_fn, fault_fn, enter_fn, exit_fn, step_fn } =
             JsTracerObject::evaluate(&self.script, &self.config, &mut self.ctx)?;
         // Callback objects are mutable JS objects: replacing their Rust state does not remove
@@ -351,6 +359,7 @@ impl JsInspector {
         });
 
         let base_fee = block.basefee.try_into().unwrap_or(u64::MAX);
+        let gas_tip = tx.effective_tip_per_gas(base_fee).unwrap_or_default();
 
         let ctx = JsEvmContext {
             r#type: match kind {
@@ -363,13 +372,11 @@ impl JsInspector {
             input: tx.input().clone(),
             gas: tx.gas_limit(),
             gas_used: result.tx_gas_used(),
-            gas_price: tx.effective_gas_price(Some(base_fee)).try_into().unwrap_or(u64::MAX),
+            gas_price: U256::from(gas_tip),
             value: tx.value(),
             block: block.number.try_into().unwrap_or(u64::MAX),
             coinbase: block.beneficiary,
             output: output_bytes.unwrap_or_default(),
-            time: block.timestamp.to_string(),
-            intrinsic_gas: 0,
             transaction_ctx: self.transaction_context,
             error,
         };
@@ -449,15 +456,12 @@ impl JsInspector {
         self.active_call()
     }
 
-    /// Registers the precompiles in the JS context
+    /// Sets the active precompiles read by `isPrecompiled`.
     fn register_precompiles<T: EvmTypes>(&mut self, host: &Evm<'_, T>) {
         if self.precompiles_registered {
             return;
         }
-        let precompiles = PrecompileList(HashSet::from_iter(host.precompiles().addresses()));
-
-        let _ = precompiles.register_callable(&mut self.ctx);
-
+        self.precompiles.set(host.precompiles().addresses());
         self.precompiles_registered = true
     }
 
@@ -969,17 +973,21 @@ impl JsTracerObject {
         let exit_fn = obj.get(js_string!("exit"), ctx)?.as_object().filter(|o| o.is_callable());
         let step_fn = obj.get(js_string!("step"), ctx)?.as_object().filter(|o| o.is_callable());
 
-        let js_config_value =
-            JsValue::from_json(config, ctx).map_err(JsInspectorError::InvalidJsonConfig)?;
+        if enter_fn.is_some() != exit_fn.is_some() {
+            return Err(JsInspectorError::EnterExitMismatch);
+        }
 
-        if let Some(setup_fn) = obj.get(js_string!("setup"), ctx)?.as_object() {
-            if !setup_fn.is_callable() {
-                return Err(JsInspectorError::SetupFunctionNotCallable);
-            }
-
-            // call setup()
+        // Like geth, `setup` receives the config as a JSON string, `{}` if there is none, and a
+        // non-callable `setup` is ignored.
+        if let Some(setup_fn) = obj.get(js_string!("setup"), ctx)?.as_object()
+            && setup_fn.is_callable()
+        {
+            let config = match config {
+                serde_json::Value::Null => js_string!("{}"),
+                config => js_string!(config.to_string()),
+            };
             setup_fn
-                .call(&(obj.clone().into()), core::slice::from_ref(&js_config_value), ctx)
+                .call(&(obj.clone().into()), &[config.into()], ctx)
                 .map_err(JsInspectorError::SetupCallFailed)?;
         }
 
@@ -1022,17 +1030,13 @@ pub enum JsInspectorError {
     #[error("trace object must expose a function fault()")]
     FaultFunctionMissing,
 
-    /// The setup object must be a callable function.
-    #[error("setup object must be a function")]
-    SetupFunctionNotCallable,
+    /// The trace object must expose either both or none of `enter()` and `exit()`.
+    #[error("trace object must expose either both or none of enter() and exit()")]
+    EnterExitMismatch,
 
     /// Failure during the invocation of the `setup()` function.
     #[error("failed to call setup(): {0}")]
     SetupCallFailed(JsError),
-
-    /// Invalid JSON configuration encountered.
-    #[error("invalid JSON config: {0}")]
-    InvalidJsonConfig(JsError),
 
     /// Tracing was cancelled through the shared interrupt flag.
     #[error("JavaScript tracing interrupted")]
@@ -1127,8 +1131,8 @@ fn with_message_suffix(err: JsError, suffix: &str, ctx: &mut Context) -> JsError
 mod tests {
     use super::*;
     use alloc::{string::ToString, vec, vec::Vec};
-    use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
+    use alloy_consensus::{TxEip1559, TxLegacy, transaction::Recovered};
+    use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
     use boa_engine::error::{EngineError, RuntimeLimitError};
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId, Version,
@@ -1166,6 +1170,131 @@ mod tests {
         assert!(matches!(result, Err(JsInspectorError::FaultFunctionMissing)));
     }
 
+    #[test]
+    fn test_setup_receives_config_json_string() {
+        let code = |expected: &str| {
+            format!(
+                r#"{{
+                    setup: function(config) {{
+                        if (typeof config !== "string" || config !== '{expected}') {{
+                            throw new Error(typeof config + ":" + config);
+                        }}
+                    }},
+                    fault: function() {{}},
+                    result: function() {{}}
+                }}"#
+            )
+        };
+        JsInspector::new(code(r#"{"a":1}"#), json!({"a": 1})).unwrap();
+        JsInspector::new(code("{}"), serde_json::Value::Null).unwrap();
+        assert!(JsInspector::new(code("{}"), json!({"a": 1})).is_err());
+    }
+
+    #[test]
+    fn test_enter_exit_must_come_together() {
+        for functions in ["enter: function() {},", "exit: function() {},"] {
+            let code = format!("{{{functions} fault: function() {{}}, result: function() {{}}}}");
+            let result = JsInspector::new(code, serde_json::Value::Null);
+            assert!(matches!(result, Err(JsInspectorError::EnterExitMismatch)));
+        }
+        let code = "{enter: function() {}, exit: function() {}, fault: function() {}, result: function() {}}";
+        JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
+    }
+
+    #[test]
+    fn test_ctx_matches_geth() {
+        let code = r#"{
+            fault: function() {},
+            result: function(ctx) {
+                return [ctx.gasPrice.toString(), ctx.intrinsicGas, ctx.time];
+            }
+        }"#;
+        let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
+        let tx = TxEnvelope::Eip1559(TxEip1559 {
+            chain_id: 1,
+            gas_limit: 1_000_000,
+            max_fee_per_gas: 10_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: TxKind::Call(Address::repeat_byte(0x01)),
+            ..Default::default()
+        });
+        let res = try_run_tx(insp, None, true, U256::from(5_000_000_000u64), tx).unwrap();
+        assert_eq!(res, json!(["1000000000", null, null]));
+    }
+
+    #[test]
+    fn test_ctx_transaction_fields_need_non_zero_hashes() {
+        let code = r#"{
+            fault: function() {},
+            result: function(ctx) {
+                return [ctx.blockHash !== undefined, ctx.txIndex, ctx.txHash !== undefined];
+            }
+        }"#;
+        let block_hash = B256::repeat_byte(1);
+        let tx_hash = B256::repeat_byte(2);
+        for (tx_context, expected) in [
+            (TransactionContext::default(), json!([false, null, false])),
+            (
+                TransactionContext::default().with_block_hash(block_hash).with_tx_index(3),
+                json!([true, null, false]),
+            ),
+            (
+                TransactionContext::default()
+                    .with_block_hash(B256::ZERO)
+                    .with_tx_index(3)
+                    .with_tx_hash(tx_hash),
+                json!([false, null, false]),
+            ),
+            (
+                TransactionContext::default()
+                    .with_block_hash(block_hash)
+                    .with_tx_index(3)
+                    .with_tx_hash(B256::ZERO),
+                json!([true, null, false]),
+            ),
+            (
+                TransactionContext::default()
+                    .with_block_hash(block_hash)
+                    .with_tx_index(3)
+                    .with_tx_hash(tx_hash),
+                json!([true, 3, true]),
+            ),
+        ] {
+            let insp = JsInspector::with_transaction_context(
+                code.to_string(),
+                serde_json::Value::Null,
+                tx_context,
+            )
+            .unwrap();
+            let tx = TxEnvelope::Legacy(TxLegacy {
+                gas_price: 1024,
+                gas_limit: 1_000_000,
+                to: TxKind::Call(Address::repeat_byte(0x01)),
+                ..Default::default()
+            });
+            assert_eq!(try_run_tx(insp, None, true, U256::ZERO, tx).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn test_is_precompiled_is_false_in_setup() {
+        let code = r#"{
+            before: false,
+            setup: function() { this.before = isPrecompiled("0x01"); },
+            fault: function() {},
+            result: function() { return this.before; }
+        }"#;
+        let mut insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
+        insp.precompiles.set([Address::with_last_byte(1)]);
+        insp.fuse().unwrap();
+        let tx = TxEnvelope::Legacy(TxLegacy {
+            gas_limit: 1_000_000,
+            to: TxKind::Call(Address::repeat_byte(0x01)),
+            ..Default::default()
+        });
+        assert_eq!(try_run_tx(insp, None, true, U256::ZERO, tx).unwrap(), json!(false));
+    }
+
     fn run_trace(code: &str, contract: Option<Bytes>, success: bool) -> serde_json::Value {
         try_run_trace(code, contract, success).unwrap()
     }
@@ -1174,6 +1303,23 @@ mod tests {
         code: &str,
         contract: Option<Bytes>,
         success: bool,
+    ) -> Result<serde_json::Value, JsInspectorError> {
+        let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
+        let tx = TxEnvelope::Legacy(TxLegacy {
+            gas_price: 1024,
+            gas_limit: 1_000_000,
+            to: TxKind::Call(Address::repeat_byte(0x01)),
+            ..Default::default()
+        });
+        try_run_tx(insp, contract, success, U256::ZERO, tx)
+    }
+
+    fn try_run_tx(
+        insp: JsInspector,
+        contract: Option<Bytes>,
+        success: bool,
+        basefee: U256,
+        tx: TxEnvelope,
     ) -> Result<serde_json::Value, JsInspectorError> {
         let addr = Address::repeat_byte(0x01);
         let mut db = CacheDB::new(EmptyDB::default());
@@ -1195,25 +1341,16 @@ mod tests {
             },
         );
 
-        let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::CANCUN,
-            evm2::env::BlockEnvExt::default(),
+            evm2::env::BlockEnvExt { basefee, ..Default::default() },
             ethereum_tx_registry(SpecId::CANCUN),
             db,
             Precompiles::base(SpecId::CANCUN),
         );
         evm.set_inspector(insp);
 
-        let tx = Recovered::new_unchecked(
-            TxEnvelope::Legacy(TxLegacy {
-                gas_price: 1024,
-                gas_limit: 1_000_000,
-                to: TxKind::Call(addr),
-                ..Default::default()
-            }),
-            Address::ZERO,
-        );
+        let tx = Recovered::new_unchecked(tx, Address::ZERO);
         let res = evm.transact(&tx).expect("pass without error").detach();
 
         assert_eq!(res.result.status, success);
@@ -1729,8 +1866,6 @@ mod tests {
         let code = r#"{
             counts: { log: 0, db: 0, enter: 0, exit: 0 },
             setup: function(config) {
-                if (config.used) throw new Error("config was reused");
-                config.used = true;
                 this.ready = true;
             },
             mark: function(object, kind) {
