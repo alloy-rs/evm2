@@ -33,9 +33,12 @@ use alloy_primitives::{Address, B256, Bytes, Log, U256, map::AddressMap};
 use alloy_sol_types::{SolEvent, sol};
 use core::any::Any;
 
-const DEPOSIT_BYTES_SIZE: usize = 48 + 32 + 8 + 96 + 8;
-const BUILDER_DEPOSIT_REQUEST_TYPE: u8 = 0x03;
-const BUILDER_EXIT_REQUEST_TYPE: u8 = 0x04;
+/// Size of one encoded EIP-6110 deposit request.
+pub const DEPOSIT_BYTES_SIZE: usize = 48 + 32 + 8 + 96 + 8;
+/// EIP-8282 builder deposit request type.
+pub const BUILDER_DEPOSIT_REQUEST_TYPE: u8 = 0x03;
+/// EIP-8282 builder exit request type.
+pub const BUILDER_EXIT_REQUEST_TYPE: u8 = 0x04;
 
 sol! {
     #[allow(missing_docs)]
