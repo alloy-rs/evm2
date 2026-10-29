@@ -452,16 +452,8 @@ impl ReusableEvmDb {
     }
 
     /// Borrows the in-flight state only for the duration of a callback.
-    ///
-    /// `pre_write` is the storage slot a running `SSTORE` is about to overwrite, which reads as
-    /// its value before the write.
-    pub(crate) fn with_state_scope<R>(
-        &self,
-        state: &mut State<'_>,
-        pre_write: Option<PreWrite>,
-        f: impl FnOnce() -> R,
-    ) -> R {
-        self.with_scope(&mut StateDbReader { state, pre_write }, f)
+    pub(crate) fn with_state_scope<R>(&self, state: &mut State<'_>, f: impl FnOnce() -> R) -> R {
+        self.with_scope(&mut StateDbReader { state }, f)
     }
 
     /// Borrows a transaction's materialized changes and backing database during a callback.
@@ -527,7 +519,6 @@ impl core::fmt::Debug for dyn EvmDbReader {
 
 struct StateDbReader<'a, 'db> {
     state: &'a mut State<'db>,
-    pre_write: Option<PreWrite>,
 }
 
 impl EvmDbReader for StateDbReader<'_, '_> {
@@ -540,12 +531,6 @@ impl EvmDbReader for StateDbReader<'_, '_> {
     }
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-        if let Some(write) = &self.pre_write
-            && write.address == *address
-            && write.slot == *slot
-        {
-            return Ok(write.value);
-        }
         self.state.storage_slot_untracked(address, slot)
     }
 }
@@ -590,8 +575,8 @@ impl EvmDbReader for ChangesDbReader<'_> {
             if let Some(slot) = account.storage.get(slot) {
                 return Ok(slot.current);
             }
-            // A deleted or created account has no storage besides the slots it loaded.
-            if account.current.is_none() || account.created {
+            // A deleted account has no storage.
+            if account.current.is_none() {
                 return Ok(Word::ZERO);
             }
         }
@@ -630,14 +615,6 @@ impl EvmDbState {
     }
 }
 
-/// A persistent storage slot with its value before a write.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct PreWrite {
-    pub(crate) address: Address,
-    pub(crate) slot: Word,
-    pub(crate) value: Word,
-}
-
 /// Pre-execution data retained independently for each active call depth.
 #[derive(Debug, Default)]
 pub(crate) struct StepSnapshot {
@@ -646,8 +623,6 @@ pub(crate) struct StepSnapshot {
     gas_remaining: u64,
     stack: StackView,
     memory: MemoryView,
-    /// The slot an `SSTORE` overwrites, with its value before the write.
-    pub(crate) pre_write: Option<PreWrite>,
 }
 
 impl StepSnapshot {
@@ -660,7 +635,6 @@ impl StepSnapshot {
         state.gas_remaining = gas_remaining;
         state.stack.record(op, stack);
         state.memory.record(op, stack, memory);
-        state.pre_write = None;
     }
 }
 

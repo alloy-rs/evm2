@@ -6,8 +6,8 @@ use crate::tracing::{
     js::{
         bindings::{
             CallFrame, Contract, FrameKind, FrameResult, JsEvmContext, OpcodeNames, PreStep,
-            PreWrite, ReusableCallFrame, ReusableEvmDb, ReusableFrameResult, ReusableStepLog,
-            StepInfo, StepSnapshot,
+            ReusableCallFrame, ReusableEvmDb, ReusableFrameResult, ReusableStepLog, StepInfo,
+            StepSnapshot,
         },
         builtins::{PrecompileList, register_builtins, to_serde_value},
     },
@@ -576,8 +576,7 @@ impl JsInspector {
             call_id: call.id,
         };
         let (stack, memory, host) = interp.stack_memory_host();
-        let pre_write = pending.snapshot.pre_write;
-        let res = self.reusable_db.with_state_scope(host.state_mut(), pre_write, || {
+        let res = self.reusable_db.with_state_scope(host.state_mut(), || {
             self.reusable_step_log.with_scope(
                 &mut pending.snapshot,
                 stack.as_slice(),
@@ -657,15 +656,6 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 stack: interp.stack().as_slice(),
                 memory: interp.memory().as_slice(),
             });
-            if pending.instruction.op == op::SSTORE
-                && let Some(&slot) = interp.stack().as_slice().last()
-            {
-                let address = interp.message().destination;
-                if let Ok(value) = interp.host().state_mut().storage_slot_untracked(&address, &slot)
-                {
-                    pending.snapshot.pre_write = Some(PreWrite { address, slot, value });
-                }
-            }
         }
     }
 
@@ -1504,9 +1494,10 @@ mod tests {
                 return this.res;
             }
         }"#;
-        // SSTORE(0, 1), SSTORE(0, 2), STOP
+        // SSTORE(0, 1), SSTORE(0, 2), STOP. The SSTORE steps run after their opcode, so they read
+        // their own write, where geth reads the value before it.
         let res = run_trace(code, Some(bytes!("0x60016000556002600055")), true);
-        assert_eq!(res, json!([["SSTORE", 0], ["SSTORE", 1], ["STOP", 2], ["result", 2]]));
+        assert_eq!(res, json!([["SSTORE", 1], ["SSTORE", 2], ["STOP", 2], ["result", 2]]));
     }
 
     #[test]
