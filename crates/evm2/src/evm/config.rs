@@ -138,6 +138,8 @@ pub struct ExecutionConfig<T: EvmTypesHost> {
     pub(crate) instructions: &'static InstrTable<T>,
     #[derive_where(skip)]
     pub(crate) inspect_instructions: &'static InstrTable<T>,
+    #[derive_where(skip)]
+    pub(crate) lazy_instructions: &'static InstrTable<T>,
 }
 
 impl<T: EvmTypesHost> ExecutionConfig<T> {
@@ -163,6 +165,7 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
             inspect_instructions:
                 &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSPECT_INSTRUCTIONS[i],
+            lazy_instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::LAZY_INSTRUCTIONS[i],
         }
     }
 
@@ -176,6 +179,7 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             opcode_config: C::OPCODE_CONFIG,
             instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
             inspect_instructions: ConfigInstrTables::<T, C>::INSPECT_INSTRUCTIONS,
+            lazy_instructions: ConfigInstrTables::<T, C>::LAZY_INSTRUCTIONS,
         }
     }
 

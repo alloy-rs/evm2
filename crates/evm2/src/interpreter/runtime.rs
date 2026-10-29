@@ -511,15 +511,17 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             // SAFETY: `prepare_run` initialized the host, and the config is only read here.
             let config = unsafe { self.execution_config_detached() };
             // SAFETY: The inspector pointer is valid for this run.
-            #[cfg(not(tco))]
             let mut stepping =
                 inspector.is_some_and(|inspector| unsafe { inspector.as_ref() }.wants_steps());
-            #[cfg(tco)]
-            let mut stepping = inspector.is_some();
             loop {
                 self.stepping = stepping;
-                let instructions =
-                    if stepping { config.inspect_instructions } else { config.instructions };
+                let instructions = if stepping {
+                    config.inspect_instructions
+                } else if inspector.is_some() {
+                    config.lazy_instructions
+                } else {
+                    config.instructions
+                };
                 let stop = dispatch::run(self, instructions);
                 if stop != InstrStop::ResumeStepping {
                     break stop;
@@ -602,7 +604,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     /// inspector now wants them, such as after a child message enabled a hook.
     #[inline]
     pub(crate) fn resume_stepping(&self) -> Result {
-        #[cfg(not(tco))]
         if !self.0.stepping
             && let Some(inspector) = self.0.inspector
             // SAFETY: The inspector pointer is valid while the frame executes.

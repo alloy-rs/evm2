@@ -685,12 +685,35 @@ mod tests {
         assert_eq!((lazy.stop, lazy.gas.remaining()), (eager.stop, eager.gas.remaining()));
         assert_eq!(lazy_inspector.stack_after_call, Some(Word::ONE));
         assert!(eager_inspector.stepped.ends_with(&[op::CALL, op::GAS, op::POP, op::STOP]));
-        if cfg!(tco) {
-            // The tail-call backend steps every frame that has an inspector.
-            assert_eq!(lazy_inspector.stepped, eager_inspector.stepped);
-        } else {
-            // The frame resumes after the CALL, which pushed its success flag, and steps the rest.
-            assert_eq!(lazy_inspector.stepped, [op::GAS, op::POP, op::STOP]);
+        // The frame resumes after the CALL, which pushed its success flag, and steps the rest.
+        assert_eq!(lazy_inspector.stepped, [op::GAS, op::POP, op::STOP]);
+    }
+
+    #[test]
+    fn frame_without_steps_keeps_the_spec_opcode_set() {
+        struct NoSteps;
+
+        impl Inspector<BaseEvmTypes> for NoSteps {
+            fn wants_steps(&self) -> bool {
+                false
+            }
+        }
+
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO, Word::ZERO]);
+        code.extend([op::CREATE2, op::STOP]);
+        for (spec_id, expected) in
+            [(SpecId::FRONTIER, InstrStop::NotActivated), (SpecId::PETERSBURG, InstrStop::Stop)]
+        {
+            let (result, _, _) = run_evm_with_inspector_db_spec(
+                spec_id,
+                InMemoryDB::default(),
+                code.clone(),
+                &MessageExt::default(),
+                100_000,
+                NoSteps,
+            );
+            assert_eq!(result.stop, expected, "{spec_id:?}");
         }
     }
 

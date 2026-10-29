@@ -161,6 +161,50 @@ where
     crate::for_each_spec!([] make_selector_tables)
 }
 
+/// Returns `plain` with the message instructions replaced by handlers that ask the inspector
+/// again whether it wants steps once the child message has returned.
+#[cfg(tco)]
+const fn make_lazy_table<T, C>(plain: &InstrTable<T>) -> InstrTable<T>
+where
+    T: EvmTypesHost,
+    C: EvmConfig<T>,
+{
+    let mut table = *plain;
+    macro_rules! assign_message_entries {
+        ($($op:ident),*) => {
+            $(
+                if !C::OPCODE_CONFIG.is_unknown_opcode(op::$op) {
+                    table[op::$op as usize] =
+                        imp::dispatch::<T, C, LazyInspector, { op::$op }> as imp::RawInstrFn<T>;
+                }
+            )*
+        };
+    }
+    assign_message_entries!(CALL, CALLCODE, DELEGATECALL, STATICCALL, CREATE, CREATE2);
+    table
+}
+
+#[cfg(tco)]
+const fn make_lazy_selector_tables<T, F, const CUSTOM_SPEC_ID: u32>(
+    plain: &[InstrTable<T>; crate::SpecId::COUNT],
+) -> [InstrTable<T>; crate::SpecId::COUNT]
+where
+    T: EvmTypesHost,
+    F: EvmConfigSelector<T>,
+{
+    macro_rules! make_lazy_selector_tables {
+        ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {
+            [$(
+                make_lazy_table::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>>(
+                    &plain[crate::SpecId::$spec as usize],
+                ),
+            )*]
+        };
+    }
+
+    crate::for_each_spec!([] make_lazy_selector_tables)
+}
+
 pub(crate) struct ConfigInstrTables<T, C>(core::marker::PhantomData<fn() -> (T, C)>);
 
 impl<T, C> ConfigInstrTables<T, C>
@@ -178,6 +222,13 @@ where
                 [C::BASE_SPEC_ID as usize],
         ),
     );
+    /// Instructions for a frame whose inspector does not want steps yet.
+    #[cfg(tco)]
+    pub(crate) const LAZY_INSTRUCTIONS: &'static InstrTable<T> =
+        &make_lazy_table::<T, C>(Self::INSTRUCTIONS);
+    /// The plain instructions: the loop backends check for resuming steps in the loop.
+    #[cfg(not(tco))]
+    pub(crate) const LAZY_INSTRUCTIONS: &'static InstrTable<T> = Self::INSTRUCTIONS;
     pub(crate) const INSPECT_INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, DynInspector>(
         Some(
             &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSPECT_INSTRUCTIONS
@@ -201,6 +252,14 @@ where
 {
     pub(crate) const INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
         &make_selector_tables::<T, F, NoInspector, CUSTOM_SPEC_ID>();
+    /// Instructions for a frame whose inspector does not want steps yet.
+    #[cfg(tco)]
+    pub(crate) const LAZY_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
+        &make_lazy_selector_tables::<T, F, CUSTOM_SPEC_ID>(Self::INSTRUCTIONS);
+    /// The plain instructions: the loop backends check for resuming steps in the loop.
+    #[cfg(not(tco))]
+    pub(crate) const LAZY_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
+        Self::INSTRUCTIONS;
     pub(crate) const INSPECT_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
         &make_selector_tables::<T, F, DynInspector, CUSTOM_SPEC_ID>();
 }
@@ -219,8 +278,8 @@ const fn instruction_changed<T: EvmTypesHost>(
 trait InspectMode<T: EvmTypesHost> {
     const INSPECT: bool;
 
-    /// Whether the frame has an inspector that does not want steps yet, so the frame leaves the
-    /// loop to resume with steps when a child message makes it want them.
+    /// Whether the frame has an inspector that does not want steps yet, so the frame stops to
+    /// resume with steps when a child message makes it want them.
     const LAZY: bool = false;
 
     fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
@@ -241,7 +300,8 @@ impl<T: EvmTypesHost> InspectMode<T> for NoInspector {
 }
 
 /// An inspector that does not want steps: no step hooks, but the frame checks after each child
-/// message whether it now wants them.
+/// message whether it now wants them. The loop backends check in the loop, the tail-call backend
+/// in the handlers of the message instructions.
 struct LazyInspector;
 
 impl<T: EvmTypesHost> InspectMode<T> for LazyInspector {
@@ -256,6 +316,7 @@ impl<T: EvmTypesHost> InspectMode<T> for LazyInspector {
 }
 
 /// Returns whether `op` executes a child message.
+#[cfg(not(tco))]
 #[inline(always)]
 const fn is_message_op(op: u8) -> bool {
     matches!(
