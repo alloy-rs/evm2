@@ -1020,13 +1020,15 @@ mod tests {
         push(&mut code, address_to_word(&target));
         code.push(op::SELFDESTRUCT);
 
-        // The gas covers the PUSH but not the cold beneficiary charge.
+        // The gas covers the PUSH and the static cost, but not the cold beneficiary charge.
         let interp = run(RunConfig::new(code)
             .host(&mut host)
             .spec(SpecId::BERLIN)
             .message(MessageExt { destination: contract, ..Default::default() })
-            .gas_limit(100));
+            .gas_limit(5_200));
         assert_matches!(interp.err, InstrStop::OutOfGas);
+        // The beneficiary lookup ran, so the failure came from the charge that follows it.
+        assert_eq!(host.selfdestructs, [(contract, target, true)]);
         assert!(host.finished_selfdestructs.is_empty());
     }
 }
