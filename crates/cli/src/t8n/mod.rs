@@ -35,7 +35,7 @@ use evm2_eest::{
     system_contract_has_code,
 };
 use evm2_inspectors::tracing::DebugInspector;
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 /// Transaction gas limit cap of EIP-7825, the cap of the execution dimension per transaction.
 const MAX_TX_GAS: u64 = 1 << 24;
@@ -184,13 +184,28 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
             account.storage.iter().map(|(&key, &value)| (key, value)),
         );
     }
-    let block_hashes = env.block_hashes.as_ref();
-    for (number, hash) in block_hashes.into_iter().flatten() {
-        let number = number
-            .parse::<u64>()
-            .map_err(|_| Error::Execution(format!("invalid block hash number `{number}`")))?;
-        post.insert_block_hash(&U256::from(number), hash);
+    let block_hashes = env
+        .block_hashes
+        .as_ref()
+        .map(|hashes| {
+            hashes
+                .iter()
+                .map(|(number, hash)| {
+                    let parsed = match number.strip_prefix("0x") {
+                        Some(hex) => u64::from_str_radix(hex, 16),
+                        None => number.parse(),
+                    };
+                    parsed.map(|number| (number, *hash)).map_err(|_| {
+                        Error::Execution(format!("invalid block hash number `{number}`"))
+                    })
+                })
+                .collect::<Result<HashMap<_, _>, _>>()
+        })
+        .transpose()?;
+    for (number, hash) in block_hashes.iter().flatten() {
+        post.insert_block_hash(&U256::from(*number), hash);
     }
+    check_env(env, spec)?;
     if env.current_base_fee.is_none() && env.parent_base_fee.is_some() {
         return Err(Error::Unsupported(
             "set `currentBaseFee`: deriving it from the parent is not supported".into(),
@@ -218,10 +233,9 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
             system_call(spec, block, &mut post, &mut bal, 0, BEACON_ROOTS_ADDRESS, root.0.into());
     }
     if spec.enables(SpecId::PRAGUE)
-        && let Some(hashes) = block_hashes
+        && let Some(hashes) = &block_hashes
     {
-        let parent = number.wrapping_sub(1).to_string();
-        let hash = hashes.get(&parent).copied().unwrap_or_default();
+        let hash = hashes.get(&number.wrapping_sub(1)).copied().unwrap_or_default();
         let _ = system_call(
             spec,
             block,
@@ -240,6 +254,9 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
     let mut gas_used = 0u64;
     let (mut execution_used, mut state_used) = (0u64, 0u64);
     let mut blob_gas_used = 0u64;
+    // go-ethereum numbers trace files by the transactions that reach its state transition, which
+    // includes the ones it rejects there.
+    let mut applied = 0;
     let block_gas_limit = u64::try_from(env.current_gas_limit).unwrap_or(u64::MAX);
     for (index, tx) in txs.iter().enumerate() {
         let signed = match tx.sign() {
@@ -274,8 +291,11 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
         } else {
             gas_limit <= block_gas_limit - gas_used
         };
+        let trace_index = applied;
+        applied += 1;
         if !fits {
             output.reject(index, "gas limit reached".to_string());
+            output.traces.extend(tracing.empty(trace_index, tx_hash));
             continue;
         }
 
@@ -287,14 +307,26 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
             Ok(result) => result,
             Err(error) => {
                 output.reject(index, error.to_string());
+                output.traces.extend(tracing.empty(trace_index, tx_hash));
                 continue;
             }
         };
+        // go-ethereum aborts when BLOCKHASH reads a block the environment does not list.
+        for number in evm.overlay_db().cache.block_hashes.keys() {
+            let listed = u64::try_from(*number).ok().is_some_and(|number| {
+                block_hashes.as_ref().is_some_and(|h| h.contains_key(&number))
+            });
+            if !listed {
+                return Err(Error::Execution(format!(
+                    "getHash({number}) invoked, blockhash for that block not provided"
+                )));
+            }
+        }
         let tx_index = receipts.len();
         if let Some(inspector) = &mut inspector {
             let trace = tracing.collect(
                 inspector,
-                (tx_index, tx_hash),
+                (trace_index, tx_hash),
                 &signed.recovered,
                 &block,
                 &result,
@@ -519,6 +551,36 @@ fn deposit_requests(logs: &[Log]) -> Result<Bytes, Error> {
         }
     }
     Ok(requests.into())
+}
+
+/// The checks `evm t8n` makes of the environment, in its order and wording.
+fn check_env(env: &Env, spec: SpecId) -> Result<(), Error> {
+    let config = |message: &str| Err(Error::Execution(message.into()));
+    if spec.enables(SpecId::LONDON)
+        && env.current_base_fee.is_none()
+        && env.parent_base_fee.is_none()
+    {
+        return config("EIP-1559 config but missing 'parentBaseFee' in env section");
+    }
+    if spec.enables(SpecId::SHANGHAI) && env.withdrawals.is_none() {
+        return config("Shanghai config but missing 'withdrawals' in env section");
+    }
+    if spec.enables(SpecId::MERGE) {
+        if env.current_random.is_none() {
+            return config("post-merge requires currentRandom to be defined in env");
+        }
+        if env.current_difficulty.is_some_and(|difficulty| !difficulty.is_zero()) {
+            return config("post-merge difficulty must be zero (or omitted) in env");
+        }
+    } else if env.current_difficulty.is_none() {
+        return Err(Error::Unsupported(
+            "set `currentDifficulty`: deriving it from the parent is not supported".into(),
+        ));
+    }
+    if spec.enables(SpecId::CANCUN) && env.parent_beacon_block_root.is_none() {
+        return config("post-cancun env requires parentBeaconBlockRoot to be set");
+    }
+    Ok(())
 }
 
 fn block_env(env: &Env, spec: SpecId) -> BlockEnv {

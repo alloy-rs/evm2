@@ -15,6 +15,10 @@ path = "src/main.rs"
 # Avoid a rustdoc output-filename collision with the `evm2` library crate.
 doc = false
 
+[[test]]
+name = "geth_parity"
+required-features = ["js-tracer"]
+
 [lints]
 workspace = true
 

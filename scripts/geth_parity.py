@@ -353,7 +353,10 @@ def run_tool(tool, fork, inputs, workdir, tracer):
     """Runs one tool's t8n for one tracer; returns (outputs, error)."""
     out = workdir / tool.name / tracer
     out.mkdir(parents=True, exist_ok=True)
-    proc = tool.t8n(fork, inputs, out, evm2_flags(tracer))
+    try:
+        proc = tool.t8n(fork, inputs, out, evm2_flags(tracer))
+    except subprocess.TimeoutExpired:
+        return None, f"{tool.name} t8n timed out"
     if proc.returncode != 0:
         lines = [l for l in (proc.stderr or proc.stdout).splitlines() if l.strip()]
         return None, " | ".join(lines[-3:])[:600] or f"exit status {proc.returncode}"

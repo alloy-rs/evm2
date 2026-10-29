@@ -33,6 +33,8 @@ pub enum TraceKind {
 pub struct Tracing {
     kind: Option<TraceKind>,
     options: GethDebugTracingOptions,
+    /// Whether the JSON lines carry the memory; the logger always records it for `memSize`.
+    memory: bool,
 }
 
 impl Tracing {
@@ -44,13 +46,14 @@ impl Tracing {
     /// EIP-3155 lines, or the default struct logger frame when `structlog` is set.
     pub fn struct_logger(kind: TraceKind, memory: bool, no_stack: bool, return_data: bool) -> Self {
         let config = GethDefaultTracingOptions {
-            enable_memory: Some(memory),
+            enable_memory: Some(memory || kind == TraceKind::Jsonl),
             disable_stack: Some(no_stack),
             disable_storage: Some(kind == TraceKind::Jsonl),
             enable_return_data: Some(return_data),
             ..Default::default()
         };
-        Self { kind: Some(kind), options: GethDebugTracingOptions { config, ..Default::default() } }
+        let options = GethDebugTracingOptions { config, ..Default::default() };
+        Self { kind: Some(kind), options, memory }
     }
 
     /// A geth tracer by name or JavaScript source, with its JSON configuration.
@@ -62,7 +65,7 @@ impl Tracing {
         }
         let options =
             serde_json::from_value(options).map_err(|err| Error::Tracer(err.to_string()))?;
-        Ok(Self { kind: Some(TraceKind::Tracer), options })
+        Ok(Self { kind: Some(TraceKind::Tracer), options, memory: false })
     }
 
     pub(super) fn from_args(args: &Args) -> Result<Self, Error> {
@@ -84,6 +87,13 @@ impl Tracing {
             .map_err(|err| Error::Tracer(err.to_string()))
     }
 
+    /// The empty trace file go-ethereum leaves for a transaction it rejects after starting it.
+    pub(super) fn empty(&self, index: usize, hash: B256) -> Option<TxTrace> {
+        let kind = self.kind?;
+        let extension = if kind == TraceKind::Jsonl { "jsonl" } else { "json" };
+        Some(TxTrace { index, hash, extension, content: String::new() })
+    }
+
     /// Renders the finished transaction's trace.
     pub(super) fn collect(
         &self,
@@ -102,7 +112,7 @@ impl Tracing {
                 let GethTrace::Default(frame) = trace else {
                     return Err(Error::Tracer("struct logger returned another frame".into()));
                 };
-                ("jsonl", jsonl(inspector, &frame))
+                ("jsonl", jsonl(inspector, &frame, self.memory))
             }
             _ => ("json", serde_json::to_string(&trace).expect("trace serializes")),
         };
@@ -116,7 +126,7 @@ impl Tracing {
 /// opcode that fails while it runs (but not for one that fails its stack or gas checks, which has
 /// a single line with the error), and an end line with output, gas used and error for every call
 /// frame. The lines come from the steps and frames the inspector recorded.
-fn jsonl(inspector: &DebugInspector, frame: &DefaultFrame) -> String {
+fn jsonl(inspector: &DebugInspector, frame: &DefaultFrame, memory: bool) -> String {
     let DebugInspector::Default(tracing, _) = inspector else { return String::new() };
     let nodes = tracing.traces().nodes();
     let mut errors = Vec::new();
@@ -128,6 +138,7 @@ fn jsonl(inspector: &DebugInspector, frame: &DefaultFrame) -> String {
         opcodes: (0..=u8::MAX).map(|byte| (OpCode::new_or_unknown(byte).as_str(), byte)).collect(),
         // Only EIP-8037 frames report the execution and state gas split.
         amsterdam: frame.execution_gas_used.is_some(),
+        memory,
         out: String::new(),
     };
     if !nodes.is_empty() {
@@ -150,6 +161,7 @@ struct JsonlWriter<'a> {
     logs: std::slice::Iter<'a, StructLog>,
     opcodes: HashMap<&'static str, u8>,
     amsterdam: bool,
+    memory: bool,
     out: String,
 }
 
@@ -166,7 +178,7 @@ impl JsonlWriter<'_> {
         let last = node.trace.steps.len().saturating_sub(1);
         for (position, step) in node.trace.steps.iter().enumerate() {
             let Some(log) = self.logs.next() else { break };
-            let mut line = step_line(log, &self.opcodes);
+            let mut line = step_line(log, &self.opcodes, self.memory);
             let op = step.op.get();
             let fault = match &log.error {
                 // Stack and gas checks fail before the opcode is logged: one line, with the error.
@@ -184,8 +196,11 @@ impl JsonlWriter<'_> {
             };
             self.line(line);
             if let Some(error) = fault {
-                let mut line =
-                    step_line(&fault_log(log, op, error.contains("OutOfGas")), &self.opcodes);
+                let mut line = step_line(
+                    &fault_log(log, op, error.contains("OutOfGas")),
+                    &self.opcodes,
+                    self.memory,
+                );
                 line["error"] = json!(error);
                 self.line(line);
             }
@@ -226,7 +241,7 @@ fn opcode_number(name: &str, opcodes: &HashMap<&str, u8>) -> u8 {
     })
 }
 
-fn step_line(log: &StructLog, opcodes: &HashMap<&str, u8>) -> Value {
+fn step_line(log: &StructLog, opcodes: &HashMap<&str, u8>, memory: bool) -> Value {
     let mut line = json!({
         "pc": log.pc,
         "op": opcode_number(&log.op, opcodes),
@@ -234,13 +249,14 @@ fn step_line(log: &StructLog, opcodes: &HashMap<&str, u8>) -> Value {
         "gasCost": format!("{:#x}", log.gas_cost),
     });
     line["memSize"] = json!(log.memory.as_ref().map_or(0, |memory| memory.len() * 32));
-    if let Some(memory) = &log.memory
-        && !memory.is_empty()
+    if memory
+        && let Some(words) = &log.memory
+        && !words.is_empty()
     {
-        let words = memory.iter().map(|word| word.trim_start_matches("0x")).collect::<String>();
+        let words = words.iter().map(|word| word.trim_start_matches("0x")).collect::<String>();
         line["memory"] = json!(format!("0x{words}"));
     }
-    line["stack"] = json!(log.stack.as_deref().unwrap_or_default());
+    line["stack"] = json!(log.stack);
     if let Some(return_data) = &log.return_data
         && !return_data.is_empty()
     {
@@ -273,7 +289,7 @@ fn fault_log(log: &StructLog, op: u8, out_of_gas: bool) -> StructLog {
     let word = |back: usize| stack.len().checked_sub(back).map(|at| stack[at]);
     // Memory range [offset, offset + size) of the opcodes that fail after growing the memory.
     let range = match op {
-        op::REVERT => word(1).zip(word(2)),
+        op::REVERT | op::LOG0..=op::LOG4 => word(1).zip(word(2)),
         op::RETURNDATACOPY => word(1).zip(word(3)),
         op::CREATE | op::CREATE2 if out_of_gas => word(2).zip(word(3)),
         _ => None,

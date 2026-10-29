@@ -313,6 +313,8 @@ fn check(
             let traces = output
                 .traces
                 .iter()
+                // go-ethereum leaves an empty file for a transaction it rejects.
+                .filter(|trace| !trace.content.trim().is_empty())
                 .map(|trace| {
                     let value = match trace.extension {
                         "jsonl" => Value::Array(
@@ -426,6 +428,7 @@ fn matches_geth_except_known_diffs() {
     });
 
     let ran = ran.into_inner().unwrap();
+    assert!(ran.len() >= jobs.len(), "only {} tracer runs for {} jobs", ran.len(), jobs.len());
     let mut failures = failures.into_inner().unwrap();
     failures.sort();
     for atom in &atoms {

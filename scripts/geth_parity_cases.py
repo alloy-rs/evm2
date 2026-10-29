@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["eth-keys>=0.5", "eth-utils>=5"]
+# dependencies = ["eth-keys>=0.5", "eth-utils>=5", "pycryptodome>=3.20"]
 # ///
 """Generates the seed cases of the geth parity harness.
 
@@ -577,6 +577,12 @@ def build():
     c.account(A1, asm(*lines, "STOP"), balance=1)
     c.tx(A1)
 
+    c = case("static_log_memory", "LOG0 and LOG2 with data inside a STATICCALL fail after growing the memory.")
+    c.account(A2, asm("PUSH 0x20", "PUSH 0x40", "LOG0"))
+    c.account(A3, asm("PUSH 1", "PUSH 2", "PUSH 0x10", "PUSH 0x60", "LOG2"))
+    c.account(A1, asm(call_args("STATICCALL", A2), "POP", call_args("STATICCALL", A3), "POP", "STOP"))
+    c.tx(A1)
+
     # --- selfdestruct
     c = case("selfdestruct_existing", "SELFDESTRUCT of a contract that existed before the transaction.")
     c.account(A2, asm(f"PUSH20 {A4}", "SELFDESTRUCT"), balance=9, storage={1: 1})
@@ -620,6 +626,15 @@ def build():
     c.tx(A5, value=ETHER * 1000, nonce=1)
     c.tx(A5, gas=0x2000000, nonce=1)
     c.tx(A5, gas=21000, nonce=1, gasPrice="0x1")
+
+    c = case("tx_rejected_underfunded_value", "A sender that can pay for gas but not for the value: the create and the call are rejected, a smaller create after them runs.", node=False)
+    poor_key = keys.PrivateKey(bytes([0x42]) * 32)
+    poor = poor_key.public_key.to_checksum_address().lower()
+    c.account(poor, balance=300_000 * 0x600 + 1000)
+    secret = "0x" + poor_key.to_bytes().hex()
+    c.tx(None, data=initcode(RUNTIME_42), value=2000, gas=300_000, nonce=0, key=secret)
+    c.tx(A5, value=2000, gas=300_000, nonce=0, key=secret)
+    c.tx(None, data=initcode(RUNTIME_42), value=500, gas=300_000, nonce=0, key=secret)
 
     c = case("tx_multi", "Several transactions in one block with state dependencies and cumulative gas.")
     c.account(A1, asm("PUSH0", "SLOAD", "PUSH 1", "ADD", "DUP1", "PUSH0", "SSTORE", "PUSH0", "MSTORE", "PUSH 0x20", "PUSH0", "RETURN"))

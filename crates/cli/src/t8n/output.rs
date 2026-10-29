@@ -11,7 +11,7 @@ use std::{io::Write, path::Path};
 /// The trace of one executed transaction.
 #[derive(Clone, Debug)]
 pub struct TxTrace {
-    /// Index among the executed transactions.
+    /// Index among the transactions that reached the state transition, rejected ones included.
     pub index: usize,
     /// Transaction hash.
     pub hash: B256,
@@ -193,13 +193,36 @@ impl Output {
             std::fs::create_dir_all(base)
                 .map_err(|source| Error::Write { path: base.clone(), source })?;
         }
-        write_to(base, &args.output_result, &to_pretty(&self.result))?;
-        write_to(base, &args.output_alloc, &self.alloc.to_string())?;
-        if let Some(body) = &args.output_body {
-            write_to(base, body, &json!(self.body).to_string())?;
+        // Outputs sent to stdout or stderr share one object, keyed by output name.
+        let (mut stdout, mut stderr) = (Map::new(), Map::new());
+        let body = json!(self.body);
+        let outputs = [
+            ("result", &args.output_result, &self.result),
+            ("alloc", &args.output_alloc, &self.alloc),
+        ]
+        .into_iter()
+        .chain(args.output_body.as_ref().map(|name| ("body", name, &body)));
+        for (key, name, value) in outputs {
+            let stream = match name.as_str() {
+                "stdout" => Some(&mut stdout),
+                "stderr" => Some(&mut stderr),
+                _ => None,
+            };
+            if let Some(stream) = stream {
+                stream.insert(key.into(), value.clone());
+            } else {
+                let content = if key == "result" { to_pretty(value) } else { value.to_string() };
+                write_file(base, name, &content)?;
+            }
+        }
+        if !stdout.is_empty() {
+            write_all(std::io::stdout(), &to_pretty(&Value::Object(stdout)), Path::new("stdout"))?;
+        }
+        if !stderr.is_empty() {
+            write_all(std::io::stderr(), &to_pretty(&Value::Object(stderr)), Path::new("stderr"))?;
         }
         for trace in &self.traces {
-            write_to(base, &trace.file_name(), &trace.content)?;
+            write_file(base, &trace.file_name(), &trace.content)?;
         }
         Ok(())
     }
@@ -209,15 +232,9 @@ fn to_pretty(value: &Value) -> String {
     serde_json::to_string_pretty(value).expect("JSON values serialize")
 }
 
-fn write_to(base: &Path, name: &str, content: &str) -> Result<(), Error> {
-    match name {
-        "stdout" => write_all(std::io::stdout(), content, Path::new("stdout")),
-        "stderr" => write_all(std::io::stderr(), content, Path::new("stderr")),
-        name => {
-            let path = base.join(name);
-            std::fs::write(&path, content).map_err(|source| Error::Write { path, source })
-        }
-    }
+fn write_file(base: &Path, name: &str, content: &str) -> Result<(), Error> {
+    let path = base.join(name);
+    std::fs::write(&path, content).map_err(|source| Error::Write { path, source })
 }
 
 fn write_all(mut out: impl Write, content: &str, path: &Path) -> Result<(), Error> {
