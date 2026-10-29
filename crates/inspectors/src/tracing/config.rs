@@ -307,12 +307,6 @@ impl TracingInspectorConfig {
         self
     }
 
-    /// Configure whether to record which calls target a precompile.
-    pub const fn set_record_precompile_calls(mut self, record_precompile_calls: bool) -> Self {
-        self.record_precompile_calls = record_precompile_calls;
-        self
-    }
-
     /// Disable recording of individual opcode level steps
     pub const fn disable_steps(self) -> Self {
         self.set_steps(false)

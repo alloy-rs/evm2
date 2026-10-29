@@ -9,10 +9,13 @@ use crate::utils::{
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
-use alloy_rpc_types_trace::geth::{
-    CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
-    GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace,
-    PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
+use alloy_rpc_types_trace::{
+    geth::{
+        CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
+        GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace,
+        PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
+    },
+    parity::{Action, CallType},
 };
 use evm2::{
     BaseEvmTypes, Evm, EvmFeatures, ExecutionConfig, Precompiles, Version,
@@ -2191,4 +2194,107 @@ fn test_geth_failed_root_logs() {
             }
         }
     }
+}
+
+fn precompile_call_contract(code: &[u8]) -> (Address, CacheDB<EmptyDB>) {
+    let contract = Address::with_last_byte(0x42);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo::default()
+            .with_balance(U256::from(2))
+            .with_code(Bytecode::new_raw(code.to_vec().into())),
+    );
+    (contract, db)
+}
+
+#[test]
+fn flat_call_tracer_excludes_call_and_staticcall_to_precompiles() {
+    // CALL 0x04 with value 1, STATICCALL 0x04, CALLCODE 0x04 with value 1, DELEGATECALL 0x02.
+    let (contract, db) = precompile_call_contract(&hex!(
+        "5f5f5f5f600160045af1505f5f5f5f60045afa505f5f5f5f600160045af2505f5f5f5f60025af45000"
+    ));
+    let mut evm = Context::mainnet().with_db(db).build_mainnet_with_inspector(
+        TracingInspector::new(TracingInspectorConfig::default_parity()),
+    );
+    evm.inspect_tx(TxEnv {
+        gas_limit: 1_000_000,
+        kind: TransactTo::Call(contract),
+        ..Default::default()
+    })
+    .unwrap();
+
+    for (include_precompiles, expected) in [
+        (None, vec![CallType::Call, CallType::CallCode, CallType::DelegateCall]),
+        (
+            Some(true),
+            vec![
+                CallType::Call,
+                CallType::Call,
+                CallType::StaticCall,
+                CallType::CallCode,
+                CallType::DelegateCall,
+            ],
+        ),
+    ] {
+        let config = FlatCallConfig { include_precompiles, ..Default::default() };
+        let traces = evm
+            .inspector
+            .clone()
+            .into_flat_call_builder(&config)
+            .into_localized_transaction_traces(TransactionInfo::default());
+        let call_types: Vec<_> = traces
+            .iter()
+            .map(|trace| match &trace.trace.action {
+                Action::Call(call) => call.call_type,
+                action => panic!("unexpected action {action:?}"),
+            })
+            .collect();
+        assert_eq!(call_types, expected);
+        assert_eq!(traces[0].trace.subtraces, expected.len() - 1);
+    }
+}
+
+#[test]
+fn mux_flat_call_tracer_does_not_shift_call_tracer_log_positions() {
+    // CALL 0x01, then LOG0.
+    let (contract, db) = precompile_call_contract(&hex!("5f5f5f5f5f60015af1505f5fa000"));
+    let call_config = CallConfig { only_top_call: Some(false), with_log: Some(true) };
+    let config = MuxConfig(HashMap::from_iter([
+        (
+            GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer),
+            Some(GethDebugTracerConfig(serde_json::to_value(call_config).unwrap())),
+        ),
+        (GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::FlatCallTracer), None),
+    ]));
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(MuxInspector::try_from_config(config).unwrap());
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let (ctx, inspector) = evm.ctx_inspector();
+    let frame = inspector
+        .try_into_mux_frame(&res.tx_result, ctx.db_mut(), TransactionInfo::default())
+        .unwrap();
+
+    let GethTrace::CallTracer(call_frame) =
+        &frame.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer)]
+    else {
+        panic!("expected a call tracer frame");
+    };
+    assert_eq!(call_frame.calls.len(), 1);
+    assert_eq!(call_frame.logs[0].position, Some(1));
+
+    let GethTrace::FlatCallTracer(traces) =
+        &frame.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::FlatCallTracer)]
+    else {
+        panic!("expected a flat call tracer frame");
+    };
+    assert_eq!(traces.len(), 1);
 }

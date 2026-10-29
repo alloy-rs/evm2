@@ -18,35 +18,6 @@ use evm2::{
     interpreter::InstrStop,
 };
 
-/// Which calls to precompiles a [`ParityTraceBuilder`] leaves out of its traces.
-///
-/// A call is only left out if the inspector recorded it as a call to a precompile, see
-/// [`TracingInspectorConfig::record_precompile_calls`], and it is not the root call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PrecompileExclusion {
-    /// Keeps every call to a precompile.
-    None,
-    /// Leaves out calls of any kind that transfer no value, as Parity does.
-    ZeroValue,
-    /// Leaves out `CALL` and `STATICCALL` regardless of value and keeps `DELEGATECALL` and
-    /// `CALLCODE`, as geth's flatCallTracer does.
-    CallAndStaticCall,
-}
-
-impl PrecompileExclusion {
-    fn excludes(self, node: &CallTraceNode) -> bool {
-        node.parent.is_some()
-            && node.is_precompile()
-            && match self {
-                Self::None => false,
-                Self::ZeroValue => node.trace.value.is_zero(),
-                Self::CallAndStaticCall => {
-                    matches!(node.kind(), CallKind::Call | CallKind::StaticCall)
-                }
-            }
-    }
-}
-
 /// A type for creating parity style traces
 ///
 /// Note: Parity style traces ignore calls to precompiles without value, see
@@ -77,6 +48,9 @@ impl ParityTraceBuilder {
         exclusion: PrecompileExclusion,
     ) -> Self {
         let excluded: Vec<_> = nodes.iter().map(|node| exclusion.excludes(node)).collect();
+        if !excluded.contains(&true) {
+            return Self { nodes, exclusion };
+        }
 
         for node in &mut nodes {
             // Calls appear in `ordering` in the order of `children`.
@@ -149,7 +123,7 @@ impl ParityTraceBuilder {
 
     /// Returns an iterator over all nodes to trace
     ///
-    /// This excludes nodes that represent calls to precompiles.
+    /// This excludes the calls to precompiles selected by the builder's [`PrecompileExclusion`].
     fn iter_traceable_nodes(&self) -> impl Iterator<Item = &CallTraceNode> {
         self.nodes.iter().filter(|node| !self.exclusion.excludes(node))
     }
@@ -454,6 +428,35 @@ impl ParityTraceBuilder {
             op: Some(step.op.to_string()),
             idx: None,
         }
+    }
+}
+
+/// Which calls to precompiles a [`ParityTraceBuilder`] leaves out of its traces.
+///
+/// A call is only left out if the inspector recorded it as a call to a precompile, see
+/// [`TracingInspectorConfig::record_precompile_calls`], and it is not the root call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrecompileExclusion {
+    /// Keeps every call to a precompile.
+    None,
+    /// Leaves out calls of any kind that transfer no value, as Parity does.
+    ZeroValue,
+    /// Leaves out `CALL` and `STATICCALL` regardless of value and keeps `DELEGATECALL` and
+    /// `CALLCODE`, as geth's flatCallTracer does.
+    CallAndStaticCall,
+}
+
+impl PrecompileExclusion {
+    fn excludes(self, node: &CallTraceNode) -> bool {
+        node.parent.is_some()
+            && node.is_precompile()
+            && match self {
+                Self::None => false,
+                Self::ZeroValue => node.trace.value.is_zero(),
+                Self::CallAndStaticCall => {
+                    matches!(node.kind(), CallKind::Call | CallKind::StaticCall)
+                }
+            }
     }
 }
 
