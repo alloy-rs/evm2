@@ -122,6 +122,49 @@ impl MuxInspector {
         Ok((tracer_type, DebugInspector::new(options).map_err(Box::new)?))
     }
 
+    /// Creates a copy of this inspector, with copies of the inspectors of its nested tracers.
+    ///
+    /// A JavaScript tracer shares its interrupt handle with its copy.
+    pub fn try_clone(&self) -> Result<Self, Error> {
+        let children = self
+            .children
+            .iter()
+            .map(|(tracer_type, child)| {
+                Ok((tracer_type.clone(), child.try_clone().map_err(Box::new)?))
+            })
+            .collect::<Result<_, Error>>()?;
+        Ok(Self {
+            four_byte: self.four_byte.clone(),
+            tracing: self.tracing.clone(),
+            configs: self.configs.clone(),
+            children,
+        })
+    }
+
+    /// Prepares the inspector for executing the next transaction. This removes any state from the
+    /// previous transaction.
+    pub fn fuse(&mut self) -> Result<(), Error> {
+        if let Some(inspector) = &mut self.four_byte {
+            core::mem::take(inspector);
+        }
+        if let Some(inspector) = &mut self.tracing {
+            inspector.fuse();
+        }
+        for (_, child) in &mut self.children {
+            child.fuse().map_err(Box::new)?;
+        }
+        Ok(())
+    }
+
+    /// Sets the handle that interrupts the JavaScript tracers of this mux, including those of
+    /// nested mux tracers, see [`JsInspector::with_interrupt`](crate::tracing::js::JsInspector).
+    #[cfg(feature = "js-tracer")]
+    pub fn set_js_interrupt(&mut self, interrupt: &crate::tracing::js::JsInspectorInterrupt) {
+        for (_, child) in &mut self.children {
+            child.set_js_interrupt(interrupt);
+        }
+    }
+
     /// Sets the index the next recorded log receives, see
     /// [`TracingInspector::set_next_log_index`].
     pub fn set_next_log_index(&mut self, index: usize) {

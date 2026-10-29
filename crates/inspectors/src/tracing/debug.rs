@@ -68,9 +68,7 @@ impl DebugInspector {
             }
             Self::Noop(inspector) => Self::Noop(inspector.clone()),
             Self::StateGasTracer(inspector) => Self::StateGasTracer(inspector.clone()),
-            Self::Mux(_, config) => {
-                Self::Mux(MuxInspector::try_from_config(config.clone())?, config.clone())
-            }
+            Self::Mux(inspector, config) => Self::Mux(inspector.try_clone()?, config.clone()),
             Self::FlatCallTracer(inspector) => Self::FlatCallTracer(inspector.clone()),
             Self::Erc7562Tracer(inspector, config) => {
                 Self::Erc7562Tracer(inspector.clone(), config.clone())
@@ -207,14 +205,23 @@ impl DebugInspector {
             | Self::Default(inspector, _) => inspector.fuse(),
             Self::Keccak256Preimage(inspector) => inspector.clear(),
             Self::Noop(_) | Self::StateGasTracer(_) => {}
-            Self::Mux(inspector, config) => {
-                *inspector = MuxInspector::try_from_config(config.clone())?;
-            }
+            Self::Mux(inspector, _) => inspector.fuse()?,
             #[cfg(feature = "js-tracer")]
             Self::Js(inspector) => inspector.fuse()?,
         }
 
         Ok(())
+    }
+
+    /// Sets the handle that interrupts the JavaScript tracers of this inspector, including those
+    /// in a mux tracer, see [`JsInspector::with_interrupt`](crate::tracing::js::JsInspector).
+    #[cfg(feature = "js-tracer")]
+    pub fn set_js_interrupt(&mut self, interrupt: &crate::tracing::js::JsInspectorInterrupt) {
+        match self {
+            Self::Js(inspector) => inspector.set_interrupt(interrupt.clone()),
+            Self::Mux(inspector, _) => inspector.set_js_interrupt(interrupt),
+            _ => {}
+        }
     }
 
     /// Sets the index the next recorded log receives, see

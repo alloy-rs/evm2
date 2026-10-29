@@ -489,8 +489,14 @@ impl JsInspector {
     /// ```
     #[must_use]
     pub fn with_interrupt(mut self, interrupt: JsInspectorInterrupt) -> Self {
-        self.interrupt = Some(interrupt);
+        self.set_interrupt(interrupt);
         self
+    }
+
+    /// Sets the shared handle that cooperatively interrupts JavaScript tracing, see
+    /// [`Self::with_interrupt`].
+    pub fn set_interrupt(&mut self, interrupt: JsInspectorInterrupt) {
+        self.interrupt = Some(interrupt);
     }
 
     #[inline]

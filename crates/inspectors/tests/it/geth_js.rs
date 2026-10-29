@@ -12,7 +12,10 @@ use alloy_rpc_types_trace::geth::{
     GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingOptions, GethTrace,
     mux::MuxConfig,
 };
-use evm2_inspectors::tracing::{DebugInspector, MuxInspector, js::JsInspector};
+use evm2_inspectors::tracing::{
+    DebugInspector, MuxInspector,
+    js::{JsInspector, JsInspectorInterrupt},
+};
 use serde_json::json;
 
 fn js_result(
@@ -541,4 +544,32 @@ fn mux_runs_a_js_tracer_next_to_a_built_in_tracer() {
     let GethTrace::JS(steps) = &frame.0[&js_key] else { panic!("expected a JS result") };
     assert_eq!(steps.as_u64(), Some(3));
     assert!(matches!(frame.0[&call_key], GethTrace::CallTracer(_)));
+}
+
+#[test]
+fn mux_interrupts_its_js_tracers() {
+    let code = "{ fault: function() {}, result: function() { return 1; } }";
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(&Address::ZERO, AccountInfo::default());
+    let config =
+        MuxConfig(HashMap::from_iter([(GethDebugTracerType::JsTracer(code.into()), None)]));
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(MuxInspector::try_from_config(config).unwrap());
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(Address::ZERO),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let interrupt = JsInspectorInterrupt::new();
+    let (ctx, inspector) = evm.ctx_inspector();
+    inspector.set_js_interrupt(&interrupt);
+    let (tx, block) = (ctx.tx().envelope(), *ctx.block());
+    assert!(inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).is_ok());
+
+    interrupt.interrupt();
+    assert!(inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).is_err());
 }
