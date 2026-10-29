@@ -342,6 +342,24 @@ fn struct_log_json_len_matches_geth() {
 }
 
 #[test]
+fn struct_log_json_len_skips_the_fields_geth_omits() {
+    let log = StructLog {
+        pc: 1,
+        op: "STOP".into(),
+        gas: 5,
+        depth: 1,
+        error: Some(String::new()),
+        return_data: Some(Bytes::new()),
+        memory: Some(vec![]),
+        storage: Some(BTreeMap::new()),
+        refund_counter: Some(0),
+        ..Default::default()
+    };
+    let json = r#"{"pc":1,"op":"STOP","gas":5,"gasCost":0,"depth":1}"#;
+    assert_eq!(struct_log_json_len(&log), json.len());
+}
+
+#[test]
 fn struct_log_limit_counts_json_bytes() {
     let steps = [op::PUSH1, op::PUSH1, op::SSTORE, op::STOP]
         .iter()

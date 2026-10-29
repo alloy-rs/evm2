@@ -29,8 +29,8 @@ pub(crate) const MIN_STRUCT_LOG_JSON_LEN: u64 = 48;
 ///
 /// geth counts these bytes against the `limit` option. The JSON is compact, orders the fields as
 /// `pc`, `op`, `gas`, `gasCost`, `depth`, `error`, `stack`, `returnData`, `memory`, `storage` and
-/// `refund`, and omits the optional ones that are unset. It escapes `<`, `>` and `&` in strings as
-/// `\u00xx`.
+/// `refund`, and omits the optional ones that are unset, empty or zero. It escapes `<`, `>` and `&`
+/// in strings as `\u00xx`.
 ///
 /// See <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/eth/tracers/logger/logger.go#L145-L155>
 fn struct_log_json_len(log: &StructLog) -> usize {
@@ -40,34 +40,34 @@ fn struct_log_json_len(log: &StructLog) -> usize {
             None => 1,
         }
     }
-    // A `0x`-prefixed quoted hex string of `bytes` bytes, or of the minimal hex of a word.
+    // The quoted `0x`-prefixed minimal hex of a word.
     fn word(value: &U256) -> usize {
         2 + 2 + value.bit_len().div_ceil(4).max(1)
     }
-    /// A `"0x…"` word of 32 bytes.
+    // The quoted `0x`-prefixed hex of a 32-byte hash.
     const HASH: usize = 2 + 2 + 64;
 
     // `{"pc":`, `,"op":"`, `","gas":`, `,"gasCost":`, `,"depth":` and `}`.
     let mut len = 6 + digits(log.pc) + 7 + log.op.len() + 1 + 7 + digits(log.gas);
     len += 11 + digits(log.gas_cost) + 9 + digits(log.depth) + 1;
-    if let Some(error) = &log.error {
+    if let Some(error) = log.error.as_ref().filter(|error| !error.is_empty()) {
         let escaped = error.bytes().filter(|byte| matches!(byte, b'<' | b'>' | b'&')).count();
         len += 10 + error.len() + 5 * escaped + 1;
     }
     if let Some(stack) = &log.stack {
         len += 10 + stack.iter().map(word).sum::<usize>() + stack.len().saturating_sub(1) + 1;
     }
-    if let Some(return_data) = &log.return_data {
+    if let Some(return_data) = log.return_data.as_ref().filter(|data| !data.is_empty()) {
         len += 15 + 2 + 2 * return_data.len() + 1;
     }
-    if let Some(memory) = &log.memory {
+    if let Some(memory) = log.memory.as_ref().filter(|memory| !memory.is_empty()) {
         len += 11 + memory.iter().map(|chunk| chunk.len() + 2).sum::<usize>();
         len += memory.len().saturating_sub(1) + 1;
     }
-    if let Some(storage) = &log.storage {
+    if let Some(storage) = log.storage.as_ref().filter(|storage| !storage.is_empty()) {
         len += 12 + storage.len() * (HASH + 1 + HASH) + storage.len().saturating_sub(1) + 1;
     }
-    if let Some(refund) = log.refund_counter {
+    if let Some(refund) = log.refund_counter.filter(|refund| *refund != 0) {
         len += 10 + digits(refund);
     }
     len

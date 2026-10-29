@@ -1720,7 +1720,7 @@ fn test_geth_opcode_limit_end_to_end() {
         // The limit counts bytes of JSON across call frames, including a cap inside the child.
         // geth logs a step while the JSON written so far is within the limit, so the bytes of the
         // first `steps - 1` steps let `steps` steps through.
-        let sizes: Vec<_> = steps.iter().map(|step| step.to_string().len()).collect();
+        let sizes: Vec<_> = steps.iter().map(geth_json_len).collect();
         for steps in [2, 9, 12] {
             let limit: usize = sizes[..steps - 1].iter().sum();
             let (limited, limited_gas) = run(json!({ "limit": limit }));
@@ -1736,6 +1736,24 @@ fn test_geth_opcode_limit_end_to_end() {
         assert_eq!(calls["calls"].as_array().unwrap().len(), 1);
         assert_eq!(run(json!({ "tracer": "callTracer", "limit": 2 })).0, calls);
     }
+}
+
+/// Returns the bytes of the JSON geth writes for a struct log, which leaves out a zero refund and
+/// empty return data, memory and storage.
+fn geth_json_len(log: &serde_json::Value) -> usize {
+    let mut log = log.clone();
+    let fields = log.as_object_mut().unwrap();
+    for (name, empty) in [
+        ("refund", serde_json::json!(0)),
+        ("returnData", serde_json::json!("0x")),
+        ("memory", serde_json::json!([])),
+        ("storage", serde_json::json!({})),
+    ] {
+        if fields.get(name) == Some(&empty) {
+            fields.remove(name);
+        }
+    }
+    log.to_string().len()
 }
 
 /// Execute real bytecode and compare capped capture with the complete execution.
@@ -1790,8 +1808,11 @@ fn test_geth_opcode_limit() {
         );
         // Includes caps before CALL, on CALL, in the child, and after returning to the parent. The
         // limit counts bytes of JSON, and the first `steps - 1` steps let `steps` steps through.
-        let sizes: Vec<_> =
-            full.struct_logs.iter().map(|log| serde_json::to_string(log).unwrap().len()).collect();
+        let sizes: Vec<_> = full
+            .struct_logs
+            .iter()
+            .map(|log| geth_json_len(&serde_json::to_value(log).unwrap()))
+            .collect();
         let step_limit = |steps: usize| sizes[..steps - 1].iter().sum::<usize>() as u64;
         for limit in [
             None,
