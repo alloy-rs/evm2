@@ -681,7 +681,6 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     }
     ecx.gas.spend(gas_limit)?;
 
-    let tx_env = ecx.tx_env();
     let mut message = MessageExt {
         kind,
         depth,
@@ -701,7 +700,7 @@ pub unsafe fn __revmc_builtin_create<T: EvmTypesHost>(
     };
     let mut result = ecx
         .host()
-        .execute_message(tx_env, &mut message)
+        .execute_message(&mut message)
         .map_err(|error| ecx.interpreter_mut().fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop.into());
@@ -816,10 +815,9 @@ pub unsafe fn __revmc_builtin_call<T: EvmTypesHost>(
         _non_exhaustive: (),
     };
 
-    let tx_env = ecx.tx_env();
     let mut result = ecx
         .host()
-        .execute_message(tx_env, &mut message)
+        .execute_message(&mut message)
         .map_err(|error| ecx.interpreter_mut().fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop.into());
@@ -1107,7 +1105,7 @@ mod tests {
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId,
         constants::CALL_DEPTH_LIMIT,
-        env::{BlockEnvExt, TxEnvExt},
+        env::BlockEnvExt,
         ethereum::ethereum_tx_registry,
         evm::{AccountInfo, EmptyDB, InMemoryDB, inspector::Inspector},
         interpreter::{GasTracker, Message, MessageResult, MessageResultExt, op},
@@ -1222,15 +1220,13 @@ mod tests {
             },
             ..MessageInspector::default()
         });
-        let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 1_000_000,
             destination: caller,
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let mut interpreter =
-            evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&message);
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
@@ -1275,7 +1271,6 @@ mod tests {
         let stack_value = Word::from(0x12);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector::default());
-        let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 1_000_000,
             destination,
@@ -1284,8 +1279,7 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let mut interpreter =
-            evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&message);
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
@@ -1315,7 +1309,6 @@ mod tests {
         let current_value = Word::from(0x99);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector::default());
-        let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 1_000_000,
             destination,
@@ -1324,8 +1317,7 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let mut interpreter =
-            evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&message);
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
@@ -1354,7 +1346,6 @@ mod tests {
         let caller = Address::from([0x11; 20]);
         let mut host = base_evm(SpecId::CANCUN);
         host.set_inspector(MessageInspector::default());
-        let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 1_000_000,
             destination,
@@ -1363,8 +1354,7 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let mut interpreter =
-            evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&message);
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
@@ -1400,14 +1390,12 @@ mod tests {
             },
             ..MessageInspector::default()
         });
-        let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 1_000_000,
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let mut interpreter =
-            evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&message);
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
@@ -1445,14 +1433,12 @@ mod tests {
             },
             ..MessageInspector::default()
         });
-        let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 1_000_000,
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..MessageExt::default()
         };
-        let mut interpreter =
-            evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&message);
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
@@ -1499,7 +1485,6 @@ mod tests {
                     Precompiles::base(SpecId::AMSTERDAM),
                 );
                 host.set_inspector(MessageInspector::default());
-                let tx_env = TxEnvExt::default();
                 let message = MessageExt {
                     depth,
                     gas_limit: 100_000,
@@ -1507,8 +1492,7 @@ mod tests {
                     code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
                     ..MessageExt::default()
                 };
-                let mut interpreter =
-                    evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+                let mut interpreter = evm2::interpreter::Interpreter::<BaseEvmTypes>::new(&message);
 
                 {
                     let mut frame = prepare_frame(&mut interpreter, &mut host);

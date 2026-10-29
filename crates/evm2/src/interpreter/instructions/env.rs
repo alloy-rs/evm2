@@ -56,7 +56,7 @@ pub fn balance(cx: _, [addr]: [Word]) -> Result<out> {
 
 #[instruction]
 pub fn origin(cx: _) -> out {
-    out.write(address_to_word(&cx.state.tx().origin));
+    out.write(address_to_word(&cx.state.host().tx_env().origin));
 }
 
 #[instruction]
@@ -107,7 +107,7 @@ pub fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
 
 #[instruction]
 pub fn gasprice(cx: _) -> out {
-    *out = cx.state.tx().gas_price;
+    *out = cx.state.host().tx_env().gas_price;
 }
 
 #[instruction(dynamic_gas)]
