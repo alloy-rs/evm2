@@ -1,9 +1,9 @@
 use super::{
-    DynInspector, InspectMode, NoInspector, inc_pc, is_message_op, run_state,
+    DynInspector, InspectMode, NoInspector, WatchInspector, inc_pc, is_message_op, run_state,
     stop_if_config_changed,
 };
 use crate::{
-    EvmConfig, EvmTypesHost,
+    EvmConfig, EvmTypesHost, OpcodeSet,
     interpreter::{InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut},
 };
 use core::hint::cold_path;
@@ -72,12 +72,6 @@ trait DispatchGas: Copy {
         state: &mut InterpreterState<'_, '_, T>,
         dynamic_gas: bool,
     );
-
-    /// Publishes the gas to `state`, for inspector hooks.
-    fn publish<T: EvmTypesHost>(&self, state: &mut InterpreterState<'_, '_, T>);
-
-    /// Reloads the gas from `state`, after inspector hooks.
-    fn reload<T: EvmTypesHost>(&mut self, state: &mut InterpreterState<'_, '_, T>);
 }
 
 impl DispatchGas for () {
@@ -105,12 +99,6 @@ impl DispatchGas for () {
         _dynamic_gas: bool,
     ) {
     }
-
-    #[inline(always)]
-    fn publish<T: EvmTypesHost>(&self, _state: &mut InterpreterState<'_, '_, T>) {}
-
-    #[inline(always)]
-    fn reload<T: EvmTypesHost>(&mut self, _state: &mut InterpreterState<'_, '_, T>) {}
 }
 
 #[cold] // Not cold, but avoids MIR inlining.
@@ -125,15 +113,6 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
     let instruction = C::OPCODE_CONFIG.instruction(op);
     let instr = instruction.instr;
     let dynamic_gas = instruction.dynamic_gas;
-    if M::INSPECT {
-        gas.publish(state);
-        M::step(state, pc, stack.len());
-        gas.reload(state);
-        if state.result().is_err() {
-            cold_path();
-            return (pc, gas);
-        }
-    }
     let r;
     match gas.pre_step::<T, C>(state, op) {
         Ok(()) => {
@@ -151,18 +130,10 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
     }
     if M::INSPECT {
         state.set_result(r);
-        gas.publish(state);
-        M::step_end(state, pc, stack.len());
-        gas.reload(state);
-        if is_message_op(op) && state.result().is_ok() {
-            stop_if_config_changed(state);
-        }
     } else if let Err(e) = r {
         state.set_result(Err(e));
         cold_path();
         return (Pc::new(core::ptr::null()), gas);
-    } else if M::WATCH && is_message_op(op) {
-        stop_if_config_changed(state);
     }
     (pc, gas)
 }
@@ -174,6 +145,9 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
 ) -> InstrStop {
     let (state, pc, stack) = run_state(interpreter);
     if state.is_inspecting() {
+        if state.steps() == OpcodeSet::EMPTY {
+            return run_inner::<T, WatchInspector>(state, pc, stack, instructions);
+        }
         return run_inner::<T, DynInspector>(state, pc, stack, instructions);
     }
     run_inner::<T, NoInspector>(state, pc, stack, instructions)
@@ -188,8 +162,25 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
 ) -> InstrStop {
     let mut loop_state = imp::loop_state(state.gas_mut());
     let mut cursor = imp::Cursor::new(pc, stack.len());
+    // The hooks run here, outside the stack borrow, because a hook may access the stack through
+    // the interpreter and no handler may hold the borrow meanwhile.
+    let steps = if M::INSPECT { state.steps() } else { OpcodeSet::EMPTY };
     loop {
         let op = cursor.pc().op();
+        let step = M::INSPECT && steps.contains(op);
+        if (M::INSPECT || M::WATCH) && is_message_op(op) {
+            // The message hooks see the message opcode, even if the hooks do not step it.
+            state.set_pc_stack_len(cursor.pc().as_ptr(), cursor.stack_len());
+        }
+        if step {
+            imp::sync_loop_state(state, loop_state);
+            M::step(state, cursor.pc(), cursor.stack_len());
+            loop_state = imp::loop_state(state.gas_mut());
+            if state.result().is_err() {
+                return finish_run(state, cursor, loop_state);
+            }
+        }
+
         let instr = instructions[op as usize];
         cursor = {
             // SAFETY: This is the only stack borrow outside inspector callbacks.
@@ -197,10 +188,20 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
             imp::dispatch_loop_call(instr, cursor, stack_view.stack, state, &mut loop_state)
         };
 
-        // Inspected frames also stop through handlers that set the result without a NULL `pc`.
-        let stopped =
-            if M::INSPECT { state.result().is_err() } else { cursor.pc().as_ptr().is_null() };
-        if stopped {
+        if M::INSPECT {
+            if step {
+                imp::sync_loop_state(state, loop_state);
+                M::step_end(state, cursor.pc(), cursor.stack_len());
+                loop_state = imp::loop_state(state.gas_mut());
+            }
+            if state.result().is_err() {
+                return finish_run(state, cursor, loop_state);
+            }
+        } else if cursor.pc().as_ptr().is_null() {
+            return finish_run(state, cursor, loop_state);
+        }
+        if (M::INSPECT || M::WATCH) && is_message_op(op) && stop_if_config_changed(state) {
+            // Continue after the instruction on the table for the new config.
             return finish_run(state, cursor, loop_state);
         }
     }

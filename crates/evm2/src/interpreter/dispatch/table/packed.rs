@@ -48,6 +48,14 @@ pub(super) const fn finish_loop(gas: &mut Gas, remaining_gas: LoopState) {
     gas.set_remaining(remaining_gas.get());
 }
 
+#[inline(always)]
+pub(super) const fn sync_loop_state<T: EvmTypesHost>(
+    state: &mut InterpreterState<'_, '_, T>,
+    loop_state: LoopState,
+) {
+    state.gas_mut().set_remaining(loop_state.get());
+}
+
 impl super::DispatchGas for RemainingGas {
     #[inline(always)]
     fn pre_step<T: EvmTypesHost, C: EvmConfig<T>>(
@@ -78,16 +86,6 @@ impl super::DispatchGas for RemainingGas {
         if dynamic_gas {
             self.set(state.gas_mut().remaining());
         }
-    }
-
-    #[inline(always)]
-    fn publish<T: EvmTypesHost>(&self, state: &mut InterpreterState<'_, '_, T>) {
-        state.gas_mut().set_remaining(self.get());
-    }
-
-    #[inline(always)]
-    fn reload<T: EvmTypesHost>(&mut self, state: &mut InterpreterState<'_, '_, T>) {
-        self.set(state.gas_mut().remaining());
     }
 }
 

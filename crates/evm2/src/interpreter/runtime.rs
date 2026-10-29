@@ -601,6 +601,13 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.inspector.is_some()
     }
 
+    /// Returns the opcodes the inspector steps in this frame.
+    #[inline]
+    #[cfg(not(tco))]
+    pub(crate) const fn steps(&self) -> OpcodeSet {
+        self.0.steps
+    }
+
     /// Returns whether the inspector's config no longer matches the table this frame runs on.
     #[inline]
     pub(crate) fn inspector_config_changed(&self) -> bool {

@@ -10,9 +10,13 @@ use crate::{
     },
     version::Version,
 };
-use alloc::{sync::Arc, vec::Vec};
-use core::{cell::RefCell, fmt::Debug, ops::Deref};
+use core::fmt::Debug;
 use derive_where::derive_where;
+
+#[cfg(tco)]
+use alloc::{sync::Arc, vec::Vec};
+#[cfg(tco)]
+use core::{cell::RefCell, ops::Deref};
 
 /// Runtime EVM type family.
 ///
@@ -137,10 +141,12 @@ pub struct ExecutionConfig<T: EvmTypesHost> {
     opcode_config: &'static OpcodeConfig<T>,
     #[derive_where(skip)]
     pub(crate) instructions: &'static InstrTable<T>,
+    #[cfg(tco)]
     #[derive_where(skip)]
-    pub(crate) watch_instructions: &'static InstrTable<T>,
+    watch_instructions: &'static InstrTable<T>,
     #[derive_where(skip)]
     pub(crate) inspect_instructions: &'static InstrTable<T>,
+    #[cfg(tco)]
     #[derive_where(skip)]
     inspect_tables: InspectTables<T>,
 }
@@ -166,9 +172,11 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             version: Version::new(base_spec_id),
             opcode_config: SelectorOpcodeConfig::<T, F, CUSTOM_SPEC_ID>::OPCODE_CONFIG[i],
             instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
+            #[cfg(tco)]
             watch_instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::WATCH_INSTRUCTIONS[i],
             inspect_instructions:
                 &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSPECT_INSTRUCTIONS[i],
+            #[cfg(tco)]
             inspect_tables: InspectTables::new(),
         }
     }
@@ -182,8 +190,10 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             version: Version::new(base_spec_id),
             opcode_config: C::OPCODE_CONFIG,
             instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
+            #[cfg(tco)]
             watch_instructions: ConfigInstrTables::<T, C>::WATCH_INSTRUCTIONS,
             inspect_instructions: ConfigInstrTables::<T, C>::INSPECT_INSTRUCTIONS,
+            #[cfg(tco)]
             inspect_tables: InspectTables::new(),
         }
     }
@@ -216,8 +226,10 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
     /// Returns the instruction table for an inspected frame whose inspector steps the opcodes in
     /// `steps`.
     ///
-    /// Sparse sets get a table of the watch table's handlers with the inspect table's handlers
-    /// at the opcodes in `steps`. It is built on first use and cached until the config is dropped.
+    /// The tail-call backend runs hook-free handlers for opcodes outside `steps`: sparse sets get
+    /// a table of the watch table's handlers with the inspect table's handlers at the opcodes in
+    /// `steps`, built on first use and cached until the config is dropped.
+    #[cfg(tco)]
     pub(crate) fn inspect_instructions_for(&self, steps: OpcodeSet) -> InspectTable<T> {
         if steps == OpcodeSet::EMPTY {
             return InspectTable::Static(self.watch_instructions);
@@ -234,6 +246,16 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             }
             table
         }))
+    }
+
+    /// Returns the instruction table for an inspected frame whose inspector steps the opcodes in
+    /// `steps`.
+    ///
+    /// The dispatch loop calls the step hooks, for the opcodes in `steps` only, so every
+    /// non-empty set runs on the inspect table.
+    #[cfg(not(tco))]
+    pub(crate) fn inspect_instructions_for(&self, steps: OpcodeSet) -> &InstrTable<T> {
+        if steps == OpcodeSet::EMPTY { self.instructions } else { self.inspect_instructions }
     }
 
     /// Returns the active base specification ID.
@@ -272,12 +294,14 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
     }
 }
 
-/// Instruction tables built per opcode set that inspectors step on.
+/// Instruction tables built per opcode set that inspectors step on, for the tail-call backend.
 ///
 /// Tables are only ever added and are shared, so a frame running on one keeps it alive even if the
 /// cache is dropped with its [`ExecutionConfig`].
+#[cfg(tco)]
 struct InspectTables<T: EvmTypesHost>(RefCell<Vec<(OpcodeSet, Arc<InstrTable<T>>)>>);
 
+#[cfg(tco)]
 impl<T: EvmTypesHost> InspectTables<T> {
     const fn new() -> Self {
         Self(RefCell::new(Vec::new()))
@@ -298,6 +322,7 @@ impl<T: EvmTypesHost> InspectTables<T> {
     }
 }
 
+#[cfg(tco)]
 impl<T: EvmTypesHost> Clone for InspectTables<T> {
     fn clone(&self) -> Self {
         Self::new()
@@ -305,11 +330,13 @@ impl<T: EvmTypesHost> Clone for InspectTables<T> {
 }
 
 /// Instruction table of an inspected frame.
+#[cfg(tco)]
 pub(crate) enum InspectTable<T: EvmTypesHost> {
     Static(&'static InstrTable<T>),
     Mixed(Arc<InstrTable<T>>),
 }
 
+#[cfg(tco)]
 impl<T: EvmTypesHost> Deref for InspectTable<T> {
     type Target = InstrTable<T>;
 

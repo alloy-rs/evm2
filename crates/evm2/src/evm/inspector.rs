@@ -594,6 +594,8 @@ mod tests {
         calls: usize,
         creates: usize,
         logs: Vec<Log>,
+        /// The opcode and stack length the interpreter shows to the call hook of a child message.
+        call_sites: Vec<(u8, usize)>,
     }
 
     impl ConfigInspector {
@@ -634,10 +636,13 @@ mod tests {
 
         fn call(
             &mut self,
-            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.calls += 1;
+            if message.depth > 0 {
+                self.call_sites.push((interp.opcode(), interp.stack().len()));
+            }
             // Like a cheatcode that changes what its caller's inspector wants to see.
             self.switched |= message.depth > 0;
             None
@@ -739,6 +744,26 @@ mod tests {
             assert_eq!(sparse.steps, filter(&full.steps));
             assert_eq!(sparse.step_ends, filter(&full.step_ends));
             assert_eq!((sparse.calls, sparse.creates), (full.calls, full.creates));
+        }
+    }
+
+    #[test]
+    fn message_hooks_see_the_message_opcode_without_steps() {
+        let (db, code) = config_test_code();
+        let run = |steps| {
+            run_evm_with_inspector_db(
+                db.clone(),
+                code.clone(),
+                &MessageExt::default(),
+                1_000_000,
+                ConfigInspector::new(steps),
+            )
+            .1
+        };
+        let full = run(OpcodeSet::ALL);
+        assert_eq!(full.call_sites, [(op::CALL, 7)]);
+        for steps in [OpcodeSet::EMPTY, opcode_set([op::SLOAD]), opcode_set([op::CALL])] {
+            assert_eq!(run(steps).call_sites, full.call_sites);
         }
     }
 

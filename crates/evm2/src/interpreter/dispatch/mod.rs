@@ -208,6 +208,7 @@ where
                     [C::BASE_SPEC_ID as usize],
             ),
         );
+    #[cfg(tco)]
     pub(crate) const WATCH_INSTRUCTIONS: &'static InstrTable<T> =
         &make_table::<T, C, NoInspector, WatchInspector>(
             Some(
@@ -247,6 +248,7 @@ where
 {
     pub(crate) const INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
         &make_selector_tables::<T, F, NoInspector, NoInspector, CUSTOM_SPEC_ID>();
+    #[cfg(tco)]
     pub(crate) const WATCH_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
         &make_selector_tables::<T, F, NoInspector, WatchInspector, CUSTOM_SPEC_ID>();
     pub(crate) const INSPECT_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
@@ -289,8 +291,10 @@ impl<T: EvmTypesHost> InspectMode<T> for NoInspector {
     fn step_end(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}
 }
 
-/// Mode of the message opcodes of the watch table, which inspected frames run on when the
-/// inspector wants no steps.
+/// Mode that checks the inspector's config after message opcodes without calling step hooks. The
+/// tail-call backend uses it for the message opcodes of the watch table, which inspected frames
+/// run on for opcodes outside the inspector's steps; the other backends run their loop in this
+/// mode when the inspector wants no steps.
 struct WatchInspector;
 
 impl<T: EvmTypesHost> InspectMode<T> for WatchInspector {

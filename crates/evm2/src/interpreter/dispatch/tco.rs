@@ -53,6 +53,10 @@ extern_table! {
         instructions: *const (),
     ) {
         let instruction = C::OPCODE_CONFIG.instruction(OP);
+        if M::WATCH {
+            // The message hooks see the message opcode, even though the hooks do not step it.
+            state.set_pc_stack_len(pc.as_ptr(), stack.len());
+        }
         let instr: InstructionImplFn<T> = instruction.instr;
         let dynamic_gas = instruction.dynamic_gas;
         if M::INSPECT {
