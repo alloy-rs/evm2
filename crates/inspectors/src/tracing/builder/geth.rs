@@ -387,7 +387,6 @@ impl<'a> GethTraceBuilder<'a> {
     ) -> DbResult<PreStateFrame> {
         let mut state_diff = DiffMode::default();
         let mut empty_before = AddressSet::default();
-        let mut selfdestructed = AddressSet::default();
         for (addr, changed_acc) in state.accounts.iter() {
             let addr = *addr;
             let db_acc = db.get_account(&addr)?.unwrap_or_default();
@@ -420,10 +419,6 @@ impl<'a> GethTraceBuilder<'a> {
                 post_state.code = Some(Bytes::new());
             }
 
-            if changed_acc.selfdestructed {
-                selfdestructed.insert(addr);
-            }
-
             // handle storage changes
             if storage_enabled {
                 // Geth keeps the pre state of a selfdestructed account as it looked it up, with
@@ -434,8 +429,12 @@ impl<'a> GethTraceBuilder<'a> {
                     }
                 } else {
                     for (key, slot) in changed_acc.changed_storage() {
-                        pre_state.storage.insert((*key).into(), slot.original.into());
-                        post_state.storage.insert((*key).into(), slot.current.into());
+                        if !slot.original.is_zero() {
+                            pre_state.storage.insert((*key).into(), slot.original.into());
+                        }
+                        if !slot.current.is_zero() {
+                            post_state.storage.insert((*key).into(), slot.current.into());
+                        }
                     }
                 }
             }
@@ -458,11 +457,6 @@ impl<'a> GethTraceBuilder<'a> {
 
         // ensure we're only keeping changed entries
         state_diff.retain_changed();
-        for (addr, state) in state_diff.pre.iter_mut().chain(state_diff.post.iter_mut()) {
-            if !selfdestructed.contains(addr) {
-                state.storage.retain(|_, value| *value != B256::ZERO);
-            }
-        }
 
         self.diff_traces(&mut state_diff.pre, &mut state_diff.post, &empty_before);
         Ok(PreStateFrame::Diff(state_diff))
