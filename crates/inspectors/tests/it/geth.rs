@@ -1854,7 +1854,8 @@ fn test_geth_struct_log_out_of_gas_cost() {
     let mut insp = TracingInspector::new(TracingInspectorConfig::default_geth());
     let mut evm = context.build_mainnet().with_inspector(&mut insp);
 
-    // Leaves 5000 gas for the cold zero-to-nonzero SSTORE, which costs 22100.
+    // Leaves 5000 gas for the cold zero-to-nonzero SSTORE, which would cost 22100. The step
+    // consumes the 5000 left.
     let res = evm
         .inspect_tx(TxEnv {
             caller,
@@ -1876,7 +1877,7 @@ fn test_geth_struct_log_out_of_gas_cost() {
     let sstore = frame.struct_logs.last().unwrap();
     assert_eq!(sstore.opcode(), "SSTORE");
     assert_eq!(sstore.gas, 5_000);
-    assert_eq!(sstore.gas_cost, 22_100);
+    assert_eq!(sstore.gas_cost, 5_000);
 }
 
 /// EIP-7708: a transfer log of a reverted call is rolled back and does not consume an index.
