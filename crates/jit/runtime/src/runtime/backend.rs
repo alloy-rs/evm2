@@ -152,7 +152,6 @@ impl JitObjectLinker {
         key: RuntimeCacheKey,
         stored: &StoredArtifact,
     ) -> eyre::Result<CompiledProgram> {
-        debug_assert!(self.resolver.is_none(), "AOT artifacts are only linked for the base host");
         let object = fs::read(&stored.object_path)
             .wrap_err_with(|| format!("read {:?}", stored.object_path))?;
         // The object may reference any builtin of the base host.
