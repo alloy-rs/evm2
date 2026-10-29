@@ -2,10 +2,10 @@ use crate::fixture::Suites;
 use alloy_primitives::Log;
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
-    BaseEvmTypes, Evm, Precompiles, SpecId,
+    BaseEvmTypes, Evm, Inspector, Precompiles, SpecId,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::{InMemoryDB, inspector::Inspector},
+    evm::InMemoryDB,
     interpreter::{Interpreter, Message, MessageResult},
 };
 use evm2_cli::evm_bench::BenchCase;
@@ -43,31 +43,25 @@ impl PreparedBench {
         });
     }
 
-    /// Checks that inspecting the transaction neither changes its result nor goes unnoticed by
-    /// the inspector.
-    pub(crate) fn sanity_check_inspected(&self, kind: InspectorKind) {
+    /// Checks that inspecting the transaction neither changes its result nor leaves hooks unused.
+    fn sanity_check_inspected(&self, kind: InspectorKind) {
         let expected = Runner::new(self, None).run();
         let mut runner = Runner::new(self, Some(kind));
         let actual = runner.run();
         assert_eq!(actual, expected, "{} {} result must match the plain run", self.name, kind.id());
-        assert!(
-            runner.inspector_events() > 0,
-            "{} {} inspector must observe the transaction",
-            self.name,
-            kind.id()
-        );
+        runner.assert_observed(&self.name);
     }
 
     pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
         self.bench_with(group, self.name.to_string(), None);
     }
 
-    pub(crate) fn bench_inspected(
-        &self,
-        group: &mut BenchmarkGroup<'_, WallTime>,
-        kind: InspectorKind,
-    ) {
-        self.bench_with(group, format!("{}/{}", self.name, kind.id()), Some(kind));
+    /// Benchmarks the transaction with each [`InspectorKind`], after checking it.
+    pub(crate) fn bench_inspected(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
+        for kind in [InspectorKind::Hooks, InspectorKind::Steps] {
+            self.sanity_check_inspected(kind);
+            self.bench_with(group, format!("{}/{}", self.name, kind.id()), Some(kind));
+        }
     }
 
     fn bench_with(
@@ -90,17 +84,19 @@ impl PreparedBench {
     }
 }
 
-/// Which inspector hooks an inspected benchmark installs.
+/// Which inspector an inspected benchmark installs.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum InspectorKind {
-    /// Message and log hooks only, like an always-installed inspector stack that is not tracing.
+enum InspectorKind {
+    /// Cheap message and log hooks with the default no-op `step` and `step_end`, like an
+    /// always-installed inspector stack that is not tracing. Any inspector makes the interpreter
+    /// dispatch through its per-instruction hooks, so this still pays for the no-op calls.
     Hooks,
-    /// Per-instruction `step` and `step_end` hooks, standing in for a tracer.
+    /// Cheap `step` and `step_end` hooks, standing in for a tracer.
     Steps,
 }
 
 impl InspectorKind {
-    pub(crate) const fn id(self) -> &'static str {
+    const fn id(self) -> &'static str {
         match self {
             Self::Hooks => "inspect-hooks",
             Self::Steps => "inspect-steps",
@@ -200,20 +196,22 @@ impl Runner {
         self.evm.transact(&self.tx).map(evm2::ExecutedTx::commit)
     }
 
-    /// Returns how many events the installed inspector observed.
-    fn inspector_events(&mut self) -> u64 {
+    /// Asserts that the installed inspector saw the transaction's messages or instructions.
+    fn assert_observed(&mut self, name: &str) {
         match self.kind {
             Some(InspectorKind::Hooks) => {
                 let hooks =
                     self.evm.clear_inspector_as::<HooksInspector>().expect("hooks inspector");
-                hooks.messages + hooks.message_ends + hooks.logs
+                assert!(hooks.messages > 0, "{name} hooks inspector must see a message");
+                assert_eq!(hooks.messages, hooks.message_ends, "{name} messages must end");
             }
             Some(InspectorKind::Steps) => {
                 let steps =
                     self.evm.clear_inspector_as::<StepsInspector>().expect("steps inspector");
-                steps.steps + steps.step_ends
+                assert!(steps.steps > 0, "{name} steps inspector must see an instruction");
+                assert_eq!(steps.steps, steps.step_ends, "{name} instructions must end");
             }
-            None => 0,
+            None => {}
         }
     }
 }

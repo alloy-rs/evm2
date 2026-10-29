@@ -90,6 +90,11 @@ fn evm(c: &mut Criterion) {
     let suites =
         fixture::Suites::load(benches.iter().filter_map(|bench| bench.transaction_fixture_path()));
     let cases = expand_cases(&benches, &suites);
+    assert!(
+        !bench_interpreter
+            || INSPECTED_CASES.iter().all(|name| cases.iter().any(|case| case.name == *name)),
+        "every inspected case must be a benchmark case"
+    );
 
     let bench_revm = bench_interpreter && env::var_os("EVM2_BENCH_REVM").is_some();
 
@@ -105,10 +110,7 @@ fn evm(c: &mut Criterion) {
                     prepared.bench(&mut group);
 
                     if INSPECTED_CASES.contains(&bench.name.as_ref()) {
-                        for kind in [support::InspectorKind::Hooks, support::InspectorKind::Steps] {
-                            prepared.sanity_check_inspected(kind);
-                            prepared.bench_inspected(&mut group, kind);
-                        }
+                        prepared.bench_inspected(&mut group);
                     }
                 }
 
