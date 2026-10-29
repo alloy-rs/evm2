@@ -96,6 +96,20 @@ extern_table! {
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         super::inc_pc(&mut pc, OP);
+        if state.needs_code_chunk_advance(pc) {
+            state.gas_mut().set_remaining(remaining_gas.get());
+            if let Err(e) = state.advance_code_chunk(&mut pc) {
+                remaining_gas.set(state.gas_mut().remaining());
+                cold_path();
+                state.set_result(Err(e));
+                if M::INSPECT {
+                    M::step_end(state, pc, stack.len());
+                    remaining_gas.set(state.gas_mut().remaining());
+                }
+                tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
+            }
+            remaining_gas.set(state.gas_mut().remaining());
+        }
         if M::INSPECT {
             M::step_end(state, pc, stack.len());
             remaining_gas.set(state.gas_mut().remaining());

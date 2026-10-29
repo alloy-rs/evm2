@@ -429,6 +429,8 @@ fn try_range_fold(
         | op::SSTORE
         | op::JUMP
         | op::JUMPI
+        | op::RJUMP
+        | op::RJUMPI
         | op::MSIZE
         | op::GAS
         | op::JUMPDEST

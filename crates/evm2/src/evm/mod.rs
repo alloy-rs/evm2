@@ -117,8 +117,8 @@ use self::{
     precompile::{PrecompileOutput, PrecompileProvider, boxed_precompile_provider},
 };
 use crate::{
-    DatabaseError, EvmConfigSelector, EvmTypes, EvmTypesHost, ExecutionConfig, ExecutionError,
-    HostError, LoadError, PrecompileError, PrecompileHalt, SpecId,
+    CodeChunkLoadError, DatabaseError, EvmConfigSelector, EvmTypes, EvmTypesHost, ExecutionConfig,
+    ExecutionError, HostError, LoadError, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
     constants::EIP7708_TRANSFER_TOPIC,
     env::{BlockEnv, TxEnv},
@@ -133,7 +133,7 @@ use crate::{
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec, vec::Vec};
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, Log, LogData};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData};
 #[cfg(feature = "async")]
 use core::future::Future;
 use core::ptr::NonNull;
@@ -157,6 +157,8 @@ pub use system::{
 mod any;
 pub use any::NonStaticAny;
 
+mod account_code;
+
 pub mod bal;
 pub use bal::{
     AccountBal, AccountInfoBal, Bal, BalAccountLookup, BalChange, BalChanges, BalCodeChange,
@@ -174,14 +176,15 @@ mod tx;
 pub use tx::{ExecutedTx, TxResult, TxResultExt, TxResultWithState};
 
 mod state;
-#[cfg(feature = "account-ext")]
-pub use state::AccountExtension;
 pub use state::{
     AccountChangeRef, AccountChanges, AccountFlags, AccountHandle, AccountInfo,
-    BlockStateAccumulator, JournalEntry, NoopChangeSink, PendingState, State, StateChangeSink,
-    StateChangeSource, StateCheckpoint, StateInner, StateSnapshot, StorageChange, StorageHandle,
-    StorageOverlay, StorageSlot, StorageSlotHandle, Tee, Tracked,
+    BlockStateAccumulator, CodeChunkHandle, JournalEntry, NoopChangeSink, PendingState, State,
+    StateChangeSink, StateChangeSource, StateCheckpoint, StateInner, StateSnapshot, StorageChange,
+    StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle, Tee, Tracked,
 };
+
+#[cfg(feature = "account-ext")]
+pub use state::AccountExtension;
 
 pub(crate) mod prewarm_set;
 pub use prewarm_set::PrewarmSet;
@@ -1329,7 +1332,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 // stay valid even if a hook replaces `message.code`. It is declared before
                 // `top_frame` and dropped after the frame is returned to the pool, which resets
                 // its bytecode borrow.
-                frame.set_bytecode(unsafe { trustme::decouple_lt(&top_code) });
+                frame.set_code(unsafe { trustme::decouple_lt(&top_code) });
                 frame.prepare_run(guard.evm);
                 frame
             }
@@ -1409,6 +1412,16 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
 
     #[inline(never)]
     fn prepare_create_message(&mut self, message: &mut Message<T>) -> Result<(), HostError> {
+        if self.feature(EvmFeatures::TIP1143) {
+            let bytes = message.code.as_bytecode().original_bytes();
+            if bytes.len() > self.version().max_initcode_size {
+                return Err(InstrStop::CreateInitCodeSizeLimit.into());
+            }
+            // Creation executes the complete input, never an account chunk.
+            if message.code.is_account() {
+                message.code = Bytecode::new_legacy(bytes).into();
+            }
+        }
         let nested = message.depth > self.version().initial_call_depth;
         let info = if message.value > 0 || nested {
             self.state.account_info_untracked(&message.caller).map_err(HostError::from)?
@@ -1459,27 +1472,46 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let mut gas = interp.gas();
         let output = if stop.is_success() {
             let mut output = Bytes::copy_from_slice(interp.output());
-            if let Err(stop) = self.validate_create_output(&mut gas, &mut output) {
-                self.state.rollback(checkpoint, self.features);
-                return Ok(MessageResultExt {
-                    stop,
-                    gas: *gas.tracker(),
-                    output: Bytes::new(),
-                    created_address: None,
-                    ext: T::MessageResultExt::default(),
-                    _non_exhaustive: (),
-                });
-            }
-
-            if let Err(code) = self
-                .state
-                .account(address)
-                .map(|mut a| a.set_code_slow(Bytecode::new_legacy(output.clone())))
-            {
+            let prepared = match self.validate_create_output(&mut gas, &mut output) {
+                Ok(prepared) => prepared,
+                Err(stop) => {
+                    self.state.rollback(checkpoint, self.features);
+                    return Ok(MessageResultExt {
+                        stop,
+                        gas: *gas.tracker(),
+                        output: Bytes::new(),
+                        created_address: None,
+                        ext: T::MessageResultExt::default(),
+                        _non_exhaustive: (),
+                    });
+                }
+            };
+            let code = Bytecode::new_legacy(output.clone());
+            let code_hash = prepared
+                .as_ref()
+                .and_then(|(manifest, _)| manifest.code_hash())
+                .unwrap_or_else(|| code.hash_slow());
+            if let Err(code) = self.state.account(address).map(|mut a| {
+                a.set_code(code_hash, code);
+                if let Some((manifest, chunks)) = &prepared {
+                    a.cache_code_artifacts(manifest.clone(), chunks);
+                }
+            }) {
                 self.state.rollback(checkpoint, self.features);
                 return Err(code.into());
             }
 
+            if let Some((manifest, chunks)) = prepared {
+                if manifest.is_chunked() {
+                    self.state.overlay_db_mut().cache.contracts.insert(
+                        code_hash,
+                        manifest.bytecode().expect("chunked manifest has storage encoding"),
+                    );
+                }
+                for (hash, chunk) in manifest.chunk_hashes().iter().copied().zip(chunks) {
+                    self.state.overlay_db_mut().cache.contracts.insert(hash, chunk.bytecode());
+                }
+            }
             output
         } else {
             self.state.rollback(checkpoint, self.features);
@@ -1496,8 +1528,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         })
     }
 
-    fn validate_create_output(&self, gas: &mut Gas, output: &mut Bytes) -> Result<(), InstrStop> {
-        if self.feature(EvmFeatures::CODE_SIZE_CHECK) && output.len() > self.version().max_code_size
+    fn validate_create_output(
+        &self,
+        gas: &mut Gas,
+        output: &mut Bytes,
+    ) -> Result<Option<(crate::bytecode::CodeManifest, Vec<crate::bytecode::CodeChunk>)>, InstrStop>
+    {
+        if (self.feature(EvmFeatures::CODE_SIZE_CHECK) || self.feature(EvmFeatures::TIP1143))
+            && output.len() > self.version().max_code_size
         {
             return Err(InstrStop::CreateContractSizeLimit);
         }
@@ -1516,8 +1554,13 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 return Err(InstrStop::OutOfGas);
             }
             *output = Bytes::new();
-            return Ok(());
+            return Ok(None);
         }
+        let prepared = if self.feature(EvmFeatures::TIP1143) && !output.is_empty() {
+            Some(crate::bytecode::build_code_artifacts(output).map_err(map_code_chunk_error)?)
+        } else {
+            None
+        };
         gas.spend(code_deposit_gas)?;
 
         // EIP-8037: hashing the deployed bytecode to compute its code_hash costs
@@ -1532,7 +1575,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 gas.spend_state(code_deposit_state_gas)?;
             }
         }
-        Ok(())
+        Ok(prepared)
     }
 
     #[inline(never)]
@@ -1567,7 +1610,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return self.execute_call_precompile(checkpoint, message);
         }
         // Empty accounts complete the call without executing the bytecode's padding STOP.
-        if message.code.is_empty() {
+        if message.code.as_bytecode().is_empty() {
             return Ok(MessageResultExt {
                 stop: InstrStop::Stop,
                 gas: GasTracker::new_with_execution_gas_and_reservoir(
@@ -1695,7 +1738,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         let interpreter_runner = guard.evm.interpreter_runner.clone();
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(guard.evm, inspector)
-        } else if let Some(runner) = interpreter_runner
+        } else if !guard.evm.feature(EvmFeatures::TIP1143)
+            && let Some(runner) = interpreter_runner
             && let Some(stop) = runner.run(interp_ref, guard.evm)
         {
             interp_ref.finish_run(stop)
@@ -1720,6 +1764,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     }
 }
 
+const fn map_code_chunk_error(error: crate::bytecode::CodeChunkError) -> InstrStop {
+    match error {
+        crate::bytecode::CodeChunkError::CodeTooLarge => InstrStop::CreateContractSizeLimit,
+        crate::bytecode::CodeChunkError::InvalidManifest
+        | crate::bytecode::CodeChunkError::InvalidPreparation => InstrStop::InvalidCodeChunk,
+    }
+}
+
 impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
     fn spec_id(&self) -> SpecId {
         self.spec_id()
@@ -1733,12 +1785,17 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         &self.block
     }
 
+    fn is_precompile(&self, address: &Address) -> bool {
+        self.precompiles.contains(address)
+    }
+
     fn load_account(
         &mut self,
         address: &Address,
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, HostError> {
+        let tip1143 = self.feature(EvmFeatures::TIP1143);
         let mut account = match self.state.account_with_skip(address, skip_cold_load) {
             Ok(account) => account,
             Err(LoadError::ColdLoadSkipped) => return Err(InstrStop::OutOfGas.into()),
@@ -1750,14 +1807,35 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             Some(info) => (info.balance, info.nonce, info.code_hash, true, info.is_empty()),
             None => (Word::ZERO, 0, B256::ZERO, false, true),
         };
+        let manifest =
+            if tip1143 && load_code && !code_hash.is_zero() && code_hash != KECCAK256_EMPTY {
+                Some(account.load_code_manifest().map_err(HostError::from)?.ok_or_else(|| {
+                    DatabaseError::new(CodeChunkLoadError::Missing(code_hash), true)
+                })?)
+            } else {
+                None
+            };
 
         // load code
-        let code = if load_code {
+        let code = if load_code && manifest.as_ref().is_none_or(|manifest| !manifest.is_chunked()) {
             account.load_code().map_err(HostError::from)?
         } else {
             Bytecode::default()
         };
+        let code_info = if code_hash.is_zero() || code_hash == KECCAK256_EMPTY {
+            AccountCodeInfo::Empty
+        } else if let Some(manifest) = manifest {
+            if manifest.is_chunked() {
+                AccountCodeInfo::Chunked { size: manifest.code_size() }
+            } else {
+                AccountCodeInfo::Legacy { size: Some(manifest.code_size()) }
+            }
+        } else {
+            let known_size = account.code_size().or_else(|| load_code.then_some(code.len() as u32));
+            AccountCodeInfo::Legacy { size: known_size }
+        };
         Ok(AccountLoad {
+            code_info,
             balance,
             nonce,
             code_hash,
@@ -1767,6 +1845,18 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
             is_cold,
             _non_exhaustive: (),
         })
+    }
+
+    fn load_code_chunk(
+        &mut self,
+        address: &Address,
+        index: u32,
+        skip_cold: bool,
+    ) -> Result<Option<CodeChunkLoad>, HostError> {
+        Ok(self.state.load_code_chunk(address, index, skip_cold)?.map(|mut chunk| {
+            let is_cold = chunk.warm();
+            CodeChunkLoad { chunk: chunk.get().clone(), is_cold }
+        }))
     }
 
     fn target_is_empty_for_new_account_gas(
@@ -1937,6 +2027,8 @@ pub struct AccountLoad {
     pub code_hash: B256,
     /// Account bytecode.
     pub code: Bytecode,
+    /// Validated account code representation and logical size information.
+    pub code_info: AccountCodeInfo,
     /// Whether the account exists in state.
     pub exists: bool,
     /// Whether the account is empty.
@@ -1945,6 +2037,49 @@ pub struct AccountLoad {
     pub is_cold: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
+}
+
+/// Account code representation returned by [`Host::load_account`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AccountCodeInfo {
+    /// Empty account code.
+    #[default]
+    Empty,
+    /// Complete legacy code. The size is absent until its bytes have been loaded.
+    Legacy {
+        /// Complete logical size when its bytes have been loaded.
+        size: Option<u32>,
+    },
+    /// Multi-chunk runtime with a committed complete logical size.
+    Chunked {
+        /// Complete committed logical size.
+        size: u32,
+    },
+}
+
+impl AccountCodeInfo {
+    /// Complete logical size when known.
+    pub const fn size(self) -> Option<u32> {
+        match self {
+            Self::Empty => Some(0),
+            Self::Legacy { size } => size,
+            Self::Chunked { size } => Some(size),
+        }
+    }
+
+    /// Whether the runtime uses multiple committed chunks.
+    pub const fn is_chunked(self) -> bool {
+        matches!(self, Self::Chunked { .. })
+    }
+}
+
+/// Result of a code chunk host load, including its warmth before access.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeChunkLoad {
+    /// Shared runtime chunk.
+    pub chunk: crate::bytecode::CodeChunk,
+    /// Whether this access warmed a cold chunk.
+    pub is_cold: bool,
 }
 
 /// Result of an `SLOAD` host operation.
@@ -2051,6 +2186,9 @@ fn eip7708_transfer_log(from: &Address, to: &Address, value: &Word) -> Option<Lo
 }
 
 #[cfg(test)]
+mod code_loading_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
@@ -2071,6 +2209,10 @@ mod tests {
         error::Error,
         fmt,
         sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    use crate::bytecode::{
+        CODE_CHUNK_SIZE, LEGACY_CODE_CHUNK_SIZE, MAX_CODE_SIZE, MAX_INITCODE_SIZE,
     };
 
     const TEST_TX_TYPE: u8 = 0x00;
@@ -2154,7 +2296,7 @@ mod tests {
         let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 30_000,
-            code: Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
+            code: (Bytecode::new_legacy(Bytes::copy_from_slice(bytecode))).into(),
             ..Default::default()
         };
 
@@ -2224,7 +2366,7 @@ mod tests {
             caller: Address::ZERO,
             input: Bytes::new(),
             value: U256::ZERO,
-            code: Bytecode::default(),
+            code: (Bytecode::default()).into(),
             code_address: address,
             caller_is_static: false,
             salt: B256::ZERO,
@@ -2530,7 +2672,7 @@ mod tests {
             destination: contract,
             code_address: contract,
             gas_limit: 200_000,
-            code: bytecode,
+            code: (bytecode).into(),
             ..MessageExt::default()
         };
 
@@ -2588,7 +2730,7 @@ mod tests {
             destination: contract,
             code_address: contract,
             gas_limit: 200_000,
-            code: bytecode,
+            code: (bytecode).into(),
             ..MessageExt::default()
         };
 
@@ -2896,7 +3038,7 @@ mod tests {
         );
         evm.set_inspector(AccessingInspector { access });
         let message = MessageExt {
-            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            code: (Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))).into(),
             ..MessageExt::default()
         };
         let tx_env = TxEnvExt::default();
@@ -2922,7 +3064,7 @@ mod tests {
         );
         evm.set_inspector(ReadingInspector {});
         let message = MessageExt {
-            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            code: (Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))).into(),
             ..MessageExt::default()
         };
         let tx_env = TxEnvExt::default();
@@ -2980,7 +3122,7 @@ mod tests {
         );
         evm.set_inspector(BlockReplacingInspector);
         let message = MessageExt {
-            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            code: (Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))).into(),
             ..MessageExt::default()
         };
         let tx_env = TxEnvExt::default();
@@ -3015,7 +3157,7 @@ mod tests {
         );
         evm.set_inspector(ConfigReplacingInspector);
         let message = MessageExt {
-            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            code: (Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))).into(),
             ..MessageExt::default()
         };
         let tx_env = TxEnvExt::default();
@@ -3129,7 +3271,7 @@ mod tests {
             caller: Address::with_last_byte(0x7a),
             input: Bytes::from_static(b"message input"),
             value: U256::from(99),
-            code: Bytecode::default(),
+            code: (Bytecode::default()).into(),
             code_address: address,
             caller_is_static: false,
             salt: B256::ZERO,
@@ -3587,7 +3729,7 @@ mod tests {
             destination: contract,
             code_address: contract,
             gas_limit: 50_000,
-            code: bytecode,
+            code: (bytecode).into(),
             ..MessageExt::default()
         };
 
@@ -3652,7 +3794,7 @@ mod tests {
             destination: contract,
             code_address: contract,
             gas_limit: 50_000,
-            code: bytecode,
+            code: (bytecode).into(),
             ..MessageExt::default()
         };
 
@@ -3664,7 +3806,7 @@ mod tests {
         assert!(error.is_fatal());
         assert!(error.downcast_ref::<FailingDbError>().is_some());
         assert_eq!(error.to_string(), "storage read failed");
-        message.code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        message.code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP])).into();
         assert_eq!(
             Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap().stop,
             InstrStop::Stop
@@ -3689,7 +3831,7 @@ mod tests {
             destination: contract,
             code_address: contract,
             gas_limit: 500,
-            code: bytecode,
+            code: (bytecode).into(),
             ..MessageExt::default()
         };
 
@@ -3772,7 +3914,7 @@ mod tests {
             destination: contract,
             code_address: contract,
             gas_limit: 6_000,
-            code: selfdestruct_to_code(&target),
+            code: (selfdestruct_to_code(&target)).into(),
             ..MessageExt::default()
         };
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
@@ -3801,7 +3943,7 @@ mod tests {
             destination: created,
             caller,
             gas_limit: 50,
-            code,
+            code: (code).into(),
             ..MessageExt::default()
         };
 
@@ -3853,7 +3995,7 @@ mod tests {
             destination: created,
             caller,
             gas_limit: 50,
-            code,
+            code: (code).into(),
             ..MessageExt::default()
         };
 
@@ -3896,7 +4038,7 @@ mod tests {
             destination: created,
             caller,
             gas_limit: 50_000,
-            code,
+            code: (code).into(),
             ..MessageExt::default()
         };
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
@@ -3931,7 +4073,7 @@ mod tests {
             destination: created,
             caller,
             gas_limit: 100_000,
-            code,
+            code: (code).into(),
             ..MessageExt::default()
         };
         let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
@@ -4383,6 +4525,215 @@ mod tests {
         }
     }
 
+    fn large_initcode_evm() -> Evm<'static, BaseEvmTypes> {
+        let mut version = Version::base(SpecId::OSAKA).with_tip1143(true).with_rjump(true);
+        version.max_code_size = MAX_CODE_SIZE;
+        version.max_initcode_size = MAX_INITCODE_SIZE;
+        Evm::new_with_execution_config(
+            ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA)
+                .with_version(version),
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::OSAKA),
+            DbStats::new(InMemoryDB::default()),
+            Precompiles::base(SpecId::OSAKA),
+        )
+    }
+
+    fn large_initcode(stop: u8, runtime_size: usize) -> Bytes {
+        let target = MAX_INITCODE_SIZE - 32;
+        let mut code = vec![op::STOP; MAX_INITCODE_SIZE];
+        code[..5].copy_from_slice(&[
+            op::PUSH3,
+            (target >> 16) as u8,
+            (target >> 8) as u8,
+            target as u8,
+            op::JUMP,
+        ]);
+        let constructor = [
+            op::JUMPDEST,
+            op::PUSH1,
+            42,
+            op::PUSH0,
+            op::SSTORE,
+            op::PUSH3,
+            (runtime_size >> 16) as u8,
+            (runtime_size >> 8) as u8,
+            runtime_size as u8,
+            op::PUSH1,
+            32,
+            op::PUSH0,
+            op::CODECOPY,
+            op::PUSH3,
+            (runtime_size >> 16) as u8,
+            (runtime_size >> 8) as u8,
+            runtime_size as u8,
+            op::PUSH0,
+            stop,
+        ];
+        code[target..target + constructor.len()].copy_from_slice(&constructor);
+        code.into()
+    }
+
+    #[test]
+    fn large_initcode_creation_commits_only_on_success() {
+        for (stop, gas_limit, expected) in [
+            (op::RETURN, 10_000_000, InstrStop::Return),
+            (op::REVERT, 10_000_000, InstrStop::Revert),
+            (op::INVALID, 10_000_000, InstrStop::InvalidFEOpcode),
+            (op::RETURN, 100_000, InstrStop::OutOfGas),
+        ] {
+            let mut evm = large_initcode_evm();
+            let address = Address::with_last_byte(0x71);
+            let initcode = large_initcode(stop, LEGACY_CODE_CHUNK_SIZE + 1);
+            let mut message = MessageExt {
+                kind: MessageKind::Create,
+                destination: address,
+                gas_limit,
+                code: Bytecode::new_legacy(initcode).into(),
+                ..Default::default()
+            };
+            let result =
+                Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+            assert_eq!(result.stop, expected);
+            assert_eq!(result.created_address, (expected == InstrStop::Return).then_some(address));
+            let account = evm.state.account(&address).unwrap();
+            if expected == InstrStop::Return {
+                let code_hash = account.get().unwrap().code_hash;
+                drop(account);
+                let manifest = crate::bytecode::CodeManifest::from_bytecode(
+                    &evm.state.overlay_db().cache.contracts[&code_hash],
+                )
+                .unwrap();
+                assert_eq!(manifest.code_size() as usize, LEGACY_CODE_CHUNK_SIZE + 1);
+                assert_eq!(
+                    manifest.last_chunk_size() as usize,
+                    LEGACY_CODE_CHUNK_SIZE + 1 - CODE_CHUNK_SIZE
+                );
+                assert_eq!(manifest.chunk_count(), 2);
+            } else {
+                assert!(account.get().is_none());
+                drop(account);
+            }
+            assert_eq!(
+                evm.state.storage_slot_untracked(&address, &Word::ZERO).unwrap(),
+                Word::from(if expected == InstrStop::Return { 42 } else { 0 })
+            );
+            let counts = evm.database().downcast_ref::<DbStats<InMemoryDB>>().unwrap().counts();
+            assert_eq!(counts.get_code_by_hash, 0);
+        }
+    }
+
+    #[test]
+    fn large_initcode_factory_create_and_create2_rollback() {
+        let factory = Address::with_last_byte(0x72);
+        let initcode = large_initcode(op::RETURN, 1);
+        for is_create2 in [false, true] {
+            for revert_parent in [false, true] {
+                let mut evm = large_initcode_evm();
+                evm.overlay_db_mut()
+                    .insert_account_info(&factory, AccountInfo::default().with_nonce(1));
+                let len = initcode.len();
+                let mut code = vec![
+                    op::PUSH3,
+                    (len >> 16) as u8,
+                    (len >> 8) as u8,
+                    len as u8,
+                    op::PUSH0,
+                    op::PUSH0,
+                    op::CALLDATACOPY,
+                ];
+                if is_create2 {
+                    code.push(op::PUSH0);
+                }
+                code.extend([
+                    op::PUSH3,
+                    (len >> 16) as u8,
+                    (len >> 8) as u8,
+                    len as u8,
+                    op::PUSH0,
+                    op::PUSH0,
+                    if is_create2 { op::CREATE2 } else { op::CREATE },
+                    op::PUSH0,
+                    op::MSTORE,
+                    op::PUSH1,
+                    32,
+                    op::PUSH0,
+                    if revert_parent { op::REVERT } else { op::RETURN },
+                ]);
+                let address = if is_create2 {
+                    factory.create2_from_code(B256::ZERO, &initcode)
+                } else {
+                    factory.create(1)
+                };
+                let mut message = MessageExt {
+                    destination: factory,
+                    code_address: factory,
+                    input: initcode.clone(),
+                    gas_limit: 20_000_000,
+                    code: Bytecode::new_legacy(code.into()).into(),
+                    ..Default::default()
+                };
+                let result =
+                    Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+                assert_eq!(
+                    result.stop,
+                    if revert_parent { InstrStop::Revert } else { InstrStop::Return }
+                );
+                assert_eq!(result.output.as_ref(), address.into_word().as_slice());
+                let account = evm.state.account(&address).unwrap();
+                if revert_parent {
+                    assert!(account.get().is_none());
+                } else {
+                    assert_eq!(account.code_hash(), alloy_primitives::keccak256([op::STOP]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn large_initcode_enforces_complete_input_limit() {
+        let mut evm = large_initcode_evm();
+        let mut message = MessageExt {
+            kind: MessageKind::Create,
+            gas_limit: 100_000,
+            code: Bytecode::new_legacy(vec![op::STOP; MAX_INITCODE_SIZE + 1].into()).into(),
+            ..Default::default()
+        };
+        let result = Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+        assert_eq!(result.stop, InstrStop::CreateInitCodeSizeLimit);
+        assert_eq!(result.created_address, None);
+    }
+
+    #[test]
+    fn large_initcode_creation_transaction() {
+        let mut evm = large_initcode_evm();
+        // A 2 MiB input exceeds Osaka's default transaction cap under the data gas floor.
+        // The chunking feature preserves both rules; configure a larger cap for this test.
+        let mut version = *evm.version();
+        version.tx_gas_limit_cap = 30_000_000;
+        evm.set_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            ethereum_tx_registry(SpecId::OSAKA),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let caller = Address::with_last_byte(0x73);
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                gas_limit: 30_000_000,
+                to: TxKind::Create,
+                input: large_initcode(op::RETURN, 1),
+                ..Default::default()
+            }),
+            caller,
+        );
+        let result = evm.transact(&tx).unwrap().commit();
+        assert!(result.status);
+        let account = evm.state.account(&caller.create(0)).unwrap();
+        assert_eq!(account.code_hash(), alloy_primitives::keccak256([op::STOP]));
+    }
+
     #[rstest::rstest]
     #[case(InspectorAccess::Mut)]
     #[case(InspectorAccess::Set)]
@@ -4654,7 +5005,7 @@ mod tests {
                 |_| Ok(()),
                 |req: TxRequest<'_, '_, BaseEvmTypes, TxLegacy>, ()| {
                     let mut message = MessageExt {
-                        code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+                        code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])).into(),
                         ..MessageExt::default()
                     };
                     Host::execute_message(req.host, &TxEnvExt::default(), &mut message)?;
@@ -4772,7 +5123,7 @@ mod tests {
                     req.host.log(Log { address: TEST_PRECOMPILE, data: LogData::default() });
                     assert!(!req.host.logs().is_empty());
                     let mut message = MessageExt {
-                        code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+                        code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])).into(),
                         ..MessageExt::default()
                     };
                     Host::execute_message(req.host, &TxEnvExt::default(), &mut message)?;

@@ -424,7 +424,7 @@ pub trait AsyncDatabase: NonStaticAny {
         address: Address,
     ) -> impl Future<Output = Result<Option<AccountInfo>, Self::Error>> + Send + '_;
 
-    /// Loads bytecode by code hash.
+    /// Loads bytecode by commitment.
     fn get_code_by_hash(
         &mut self,
         code_hash: B256,

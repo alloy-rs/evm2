@@ -541,17 +541,9 @@ struct ChangesDbReader<'a> {
 }
 
 impl ChangesDbReader<'_> {
-    fn code_from_info(&mut self, mut info: AccountInfo) -> DbResult<Bytecode> {
-        // Note: the changed account from the state output always holds the code.
-        if let Some(code) = info.code.take()
-            && !code.is_empty()
-        {
-            return Ok(code);
-        }
-        if info.is_empty_code_hash() {
-            return Ok(Bytecode::default());
-        }
-        self.db.get_code_by_hash(&info.code_hash)
+    fn code_from_info(&mut self, info: AccountInfo) -> DbResult<Bytecode> {
+        crate::tracing::utils::load_account_code(self.db, &info)
+            .map(|code| code.map(Bytecode::new_raw).unwrap_or_default())
     }
 }
 

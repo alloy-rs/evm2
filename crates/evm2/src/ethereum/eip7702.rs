@@ -251,21 +251,32 @@ pub fn validate_one_auth<'a, T: EvmTypes>(
     let Some(authority) = authorization.authority() else {
         return Ok(None);
     };
+    let chunked = host.feature(EvmFeatures::TIP1143);
     let mut account = host.state.account(&authority)?;
     account.warm();
     let existed = account.exists() || account.is_touched();
     let authority_nonce = account.nonce();
-    let code = account.load_code()?;
-    // Reject an authority that already carries non-delegation code; otherwise non-empty code is
-    // necessarily a valid delegation.
-    let delegated_now = !code.is_empty();
-    if delegated_now && !code.is_eip7702() {
-        return Ok(None);
-    }
+    let delegated_now = if chunked {
+        let delegated = account.code_is_eip7702()?;
+        if account.code_size() != Some(0) && !delegated {
+            return Ok(None);
+        }
+        delegated
+    } else {
+        let code = account.load_code()?;
+        if !code.is_empty() && !code.is_eip7702() {
+            return Ok(None);
+        }
+        !code.is_empty()
+    };
     if authorization.nonce() != authority_nonce {
         return Ok(None);
     }
-    let delegated_before_tx = account.original_code()?.is_eip7702();
+    let delegated_before_tx = if chunked {
+        account.original_code_is_eip7702()?
+    } else {
+        account.original_code()?.is_eip7702()
+    };
     let clearing = authorization.address().is_zero();
     Ok(Some((authority, AppliedAuth { existed, delegated_before_tx, delegated_now, clearing })))
 }

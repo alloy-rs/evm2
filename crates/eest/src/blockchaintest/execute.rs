@@ -1156,10 +1156,10 @@ fn validate_post_state(
 
         let actual_code = info
             .code
-            .as_ref()
-            .or_else(|| database.cache.contracts.get(&info.code_hash))
-            .map(|code| code.original_byte_slice())
+            .clone()
+            .or_else(|| database.cache.complete_code(&info.code_hash))
             .unwrap_or_default();
+        let actual_code = actual_code.original_byte_slice();
         if actual_code != expected_account.code.as_ref() {
             return Err(TestErrorKind::UnexpectedFailure(format!(
                 "code mismatch for {address}: got 0x{}, expected 0x{}",

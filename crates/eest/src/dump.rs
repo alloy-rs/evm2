@@ -25,9 +25,9 @@ pub(crate) fn dump_state<W: Write>(out: &mut W, db: &InMemoryDB, state_root: B25
 
         let code_len = info
             .code
-            .as_ref()
-            .or_else(|| db.cache.contracts.get(&info.code_hash))
-            .map(|code| code.original_byte_slice().len())
+            .clone()
+            .or_else(|| db.cache.complete_code(&info.code_hash))
+            .map(|code| code.len())
             .unwrap_or_default();
         if code_len != 0 {
             let _ =

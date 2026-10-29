@@ -3,7 +3,7 @@
 use super::{DbResult, DynDatabase, EmptyDB};
 use crate::{
     DatabaseError,
-    bytecode::Bytecode,
+    bytecode::{Bytecode, CodeManifest},
     evm::{
         bal::BalContext,
         state::{
@@ -13,6 +13,7 @@ use crate::{
     },
     interpreter::Word,
 };
+use alloc::vec::Vec;
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
     map::{AddressMap, B256Map, U256Map, hash_map::Entry},
@@ -44,15 +45,15 @@ impl AccountStorageCache {
 
 /// Cache used by [`CacheDB`].
 ///
-/// Accounts and code are stored separately: accounts carry the code hash, and bytecode is keyed by
-/// that hash in [`Self::contracts`]. Account and storage entries are authoritative for this cache
-/// layer: a cached `None` account or wiped per-account storage cache shadows the wrapped database
-/// instead of falling through to it.
+/// Accounts and code are stored separately: accounts carry the code commitment, and bytecode
+/// values are keyed by that commitment in [`Self::contracts`]. Account and storage entries are
+/// authoritative for this cache layer: a cached `None` account or wiped per-account storage cache
+/// shadows the wrapped database instead of falling through to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cache {
     /// Accounts keyed by address. `None` means the account is known to be absent/deleted.
     pub accounts: AddressMap<Option<AccountInfo>>,
-    /// Contracts keyed by code hash.
+    /// Legacy code, encoded chunk manifests, and prepared chunks keyed by their commitment.
     pub contracts: B256Map<Bytecode>,
     /// Persistent storage keyed by account, then slot.
     pub storage: AddressMap<AccountStorageCache>,
@@ -79,6 +80,53 @@ impl Cache {
                 target.wipe();
             }
             target.slots.extend(storage.slots);
+        }
+    }
+
+    /// Reconstructs complete account bytecode from legacy code or an encoded manifest and chunks.
+    pub fn complete_code(&self, code_hash: &B256) -> Option<Bytecode> {
+        let code = self.contracts.get(code_hash)?;
+        let Ok(manifest) = CodeManifest::from_bytecode(code) else {
+            return Some(code.clone());
+        };
+        if manifest.code_hash() != Some(*code_hash) {
+            return Some(code.clone());
+        }
+        let mut bytes = Vec::with_capacity(manifest.code_size() as usize);
+        for (index, chunk_hash) in manifest.chunk_hashes().iter().copied().enumerate() {
+            let chunk = crate::bytecode::CodeChunk::from_chunked(
+                self.contracts.get(&chunk_hash)?.clone(),
+                manifest.code_size(),
+                index.try_into().ok()?,
+            )
+            .ok()?;
+            if chunk.as_bytecode().hash_slow() != chunk_hash {
+                return None;
+            }
+            bytes.extend_from_slice(&chunk.bytes()[..chunk.payload_len()]);
+        }
+        (bytes.len() == manifest.code_size() as usize).then(|| Bytecode::new_legacy(bytes.into()))
+    }
+
+    fn insert_bytecode(&mut self, code_hash: B256, code: &Bytecode) {
+        self.contracts.insert(code_hash, code.clone());
+    }
+
+    fn insert_complete_code(&mut self, code_hash: B256, code: &Bytecode) {
+        self.insert_bytecode(code_hash, code);
+        let bytes = code.original_bytes();
+        if let Ok((manifest, chunks)) = crate::bytecode::build_code_artifacts(&bytes) {
+            for (hash, chunk) in manifest.chunk_hashes().iter().copied().zip(chunks) {
+                self.contracts.insert(hash, chunk.bytecode());
+            }
+            if let Some(manifest_hash) = manifest.code_hash()
+                && manifest_hash == code_hash
+            {
+                self.contracts.insert(
+                    code_hash,
+                    manifest.bytecode().expect("chunked manifest has storage encoding"),
+                );
+            }
         }
     }
 }
@@ -176,7 +224,7 @@ impl<ExtDB> CacheDB<ExtDB> {
             }
 
             if let Some((code_hash, code)) = entry.changed_code() {
-                self.cache.contracts.insert(code_hash, code.clone());
+                self.cache.insert_complete_code(code_hash, code);
             }
             if !entry.is_changed() {
                 continue;
@@ -194,18 +242,18 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// Inserts account code into the contract cache.
     #[inline]
     pub fn insert_contract(&mut self, info: &mut AccountInfo) {
-        Self::insert_contract_inner(&mut self.cache.contracts, info);
+        Self::insert_contract_inner(&mut self.cache, info);
     }
 
     #[inline]
-    fn insert_contract_inner(contracts: &mut B256Map<Bytecode>, info: &mut AccountInfo) {
+    fn insert_contract_inner(cache: &mut Cache, info: &mut AccountInfo) {
         if let Some(code) = &info.code
             && !code.is_empty()
         {
             if info.is_empty_code_hash() {
                 info.code_hash = code.hash_slow();
             }
-            contracts.entry(info.code_hash).or_insert_with(|| code.clone());
+            cache.insert_complete_code(info.code_hash, code);
         }
         if info.code_hash.is_zero() {
             info.code_hash = KECCAK256_EMPTY;
@@ -333,19 +381,16 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
         // Resolve the raw account from the cache or backing database. The cache always stores the
         // raw value; any attached BAL is layered onto the returned value only.
-        let mut account = {
-            let Cache { accounts, contracts, .. } = &mut self.cache;
-            match accounts.entry(*address) {
-                Entry::Occupied(entry) => entry.get().clone(),
-                Entry::Vacant(entry) => match self.db.get_account(address)? {
-                    Some(mut info) => {
-                        Self::insert_contract_inner(contracts, &mut info);
-                        info.code = None;
-                        entry.insert(Some(info)).clone()
-                    }
-                    None => entry.insert(None).clone(),
-                },
+        let mut account = if let Some(account) = self.cache.accounts.get(address) {
+            account.clone()
+        } else {
+            let mut account = self.db.get_account(address)?;
+            if let Some(info) = &mut account {
+                Self::insert_contract_inner(&mut self.cache, info);
+                info.code = None;
             }
+            self.cache.accounts.insert(*address, account.clone());
+            account
         };
 
         // Apply the resolved BAL account's info at the current block access index.

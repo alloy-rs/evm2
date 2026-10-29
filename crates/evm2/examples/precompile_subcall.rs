@@ -22,7 +22,7 @@ fn main() {
         gas_limit: 200_000,
         destination: PARENT,
         call_target: PARENT,
-        code: Bytecode::new_legacy(parent_code()),
+        code: (Bytecode::new_legacy(parent_code())).into(),
         code_address: PARENT,
         ..MessageExt::default()
     };
@@ -79,7 +79,7 @@ fn staticcall_precompile(
         caller: message.destination,
         input: message.input.clone(),
         value: U256::ZERO,
-        code: loaded.code,
+        code: (loaded.code).into(),
         code_address: SUBCALL_TARGET,
         caller_is_static: message.caller_is_static
             || matches!(message.kind, MessageKind::StaticCall),

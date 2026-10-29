@@ -2,7 +2,7 @@
 
 use crate::runtime::{JitBackend, LookupDecision, LookupRequest, RuntimeCacheKey};
 use evm2::{
-    EvmTypesHost, InterpreterRunner,
+    EvmFeatures, EvmTypesHost, InterpreterRunner,
     interpreter::{Host, InstrStop, Interpreter},
 };
 
@@ -48,8 +48,11 @@ pub fn run_interpreter<'frame, 'host, T: EvmTypesHost>(
     host: &mut T::Host<'host>,
 ) -> Option<InstrStop> {
     // Disabled runners must not hash code merely to discover that lookup is unavailable.
+    // JIT builtins do not implement chunk loading or relative jumps.
     // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
     if !backend.enabled()
+        || host.execution_config().version().feature(EvmFeatures::TIP1143)
+        || host.execution_config().version().feature(EvmFeatures::RJUMP)
         || interpreter.gas().remaining() > i64::MAX as u64
         || !backend.supports_host::<T>(host.execution_config())
     {
@@ -135,7 +138,7 @@ mod tests {
         );
         let message = MessageExt {
             gas_limit,
-            code: Bytecode::new_legacy(Bytes::copy_from_slice(code)),
+            code: Bytecode::new_legacy(Bytes::copy_from_slice(code)).into(),
             ..MessageExt::default()
         };
         let tx_env = TxEnvExt::default();
@@ -257,7 +260,7 @@ mod tests {
         let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 1_000_000,
-            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            code: (Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))).into(),
             ..Default::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
@@ -278,7 +281,7 @@ mod tests {
         let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: i64::MAX as u64 + 1,
-            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])).into(),
             ..Default::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
@@ -336,7 +339,7 @@ mod tests {
         let message = MessageExt {
             gas_limit: 1_000_000,
             destination: caller,
-            code: Bytecode::new_legacy(code.into()),
+            code: (Bytecode::new_legacy(code.into())).into(),
             ..MessageExt::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
@@ -394,7 +397,7 @@ mod tests {
         let message = MessageExt {
             gas_limit: 1_000_000,
             destination: creator,
-            code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            code: (Bytecode::new_legacy(Bytes::copy_from_slice(&code))).into(),
             ..MessageExt::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
@@ -455,7 +458,7 @@ mod tests {
             gas_limit: 1_000_000,
             destination: caller,
             value: Word::from(30),
-            code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            code: (Bytecode::new_legacy(Bytes::copy_from_slice(&code))).into(),
             ..MessageExt::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
@@ -525,7 +528,7 @@ mod tests {
             gas_limit: 1_000_000,
             destination: caller,
             value: Word::from(30),
-            code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            code: (Bytecode::new_legacy(Bytes::copy_from_slice(&code))).into(),
             ..MessageExt::default()
         };
         let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
@@ -551,7 +554,7 @@ mod tests {
             caller,
             input: Bytes::copy_from_slice(&input),
             value: Word::from(10),
-            code: Bytecode::new_legacy(Bytes::copy_from_slice(&outer_code)),
+            code: (Bytecode::new_legacy(Bytes::copy_from_slice(&outer_code))).into(),
             code_address: outer,
             ..MessageExt::default()
         };
@@ -642,7 +645,7 @@ mod tests {
                     code_address: parent,
                     caller,
                     input: hex!("01020304").into(),
-                    code: Bytecode::new_legacy(code.into()),
+                    code: Bytecode::new_legacy(code.into()).into(),
                     ..Default::default()
                 };
                 let run = |with_jit| {
@@ -797,7 +800,7 @@ mod tests {
                             gas_limit: 1_000_000,
                             reservoir: 1_000_000,
                             destination: creator,
-                            code: code.clone(),
+                            code: code.clone().into(),
                             ..Default::default()
                         };
                         let result =
@@ -925,7 +928,8 @@ mod custom_host_tests {
                 160,
                 op::PUSH0,
                 op::RETURN,
-            ])),
+            ]))
+            .into(),
             ..Default::default()
         };
         let mut interpreted = Interpreter::<CustomTypes>::new(&tx, &message);
@@ -1073,7 +1077,7 @@ mod custom_host_tests {
         let message = Box::leak(Box::new(MessageExt {
             gas_limit: 100_000,
             caller: Address::repeat_byte(0x11),
-            code: Bytecode::new_legacy(Bytes::from_static(code)),
+            code: Bytecode::new_legacy(Bytes::from_static(code)).into(),
             ..Default::default()
         }));
         let mut interpreted = Interpreter::<TableTypes>::new(tx, message);

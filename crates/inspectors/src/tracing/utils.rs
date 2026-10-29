@@ -8,7 +8,8 @@ use alloc::{
 use alloy_primitives::{Bytes, hex};
 use alloy_sol_types::{ContractError, GenericRevertReason};
 use evm2::{
-    AccountInfo, SpecId,
+    AccountInfo, CodeChunkLoadError, DatabaseError, SpecId,
+    bytecode::{CodeChunk, CodeManifest},
     evm::{DbResult, DynDatabase},
     interpreter::InstrStop,
 };
@@ -148,7 +149,24 @@ pub(crate) fn load_account_code(
     if let Some(code) = &account.code {
         return Ok(Some(code.original_bytes()));
     }
-    db.get_code_by_hash(&account.code_hash).map(|code| Some(code.original_bytes()))
+    let code = db.get_code_by_hash(&account.code_hash)?;
+    let Ok(manifest) = CodeManifest::from_bytecode(&code) else {
+        return Ok(Some(code.original_bytes()));
+    };
+    if manifest.code_hash() != Some(account.code_hash) {
+        return Ok(Some(code.original_bytes()));
+    }
+    let mut bytes = Vec::with_capacity(manifest.code_size() as usize);
+    for (index, hash) in manifest.chunk_hashes().iter().copied().enumerate() {
+        let code = db.get_code_by_hash(&hash)?;
+        let chunk = CodeChunk::from_chunked(code, manifest.code_size(), index as u32)
+            .map_err(|_| DatabaseError::new(CodeChunkLoadError::Invalid(hash), true))?;
+        if chunk.as_bytecode().hash_slow() != hash {
+            return Err(DatabaseError::new(CodeChunkLoadError::Invalid(hash), true));
+        }
+        bytes.extend_from_slice(&chunk.bytes()[..chunk.payload_len()]);
+    }
+    Ok(Some(bytes.into()))
 }
 
 /// Returns a non-empty revert reason if the output is a revert/error.

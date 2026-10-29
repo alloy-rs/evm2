@@ -62,7 +62,7 @@ impl BlockStateAccumulator {
         })
     }
 
-    /// Returns bytecode entries in arbitrary map order.
+    /// Returns complete code and prepared chunk entries in arbitrary map order.
     #[inline]
     pub fn code(&self) -> impl Iterator<Item = (&B256, &Bytecode)> {
         self.code.iter()
@@ -89,7 +89,7 @@ impl BlockStateAccumulator {
         storage
     }
 
-    /// Returns bytecode entries sorted by code hash.
+    /// Returns bytecode values sorted by commitment.
     ///
     /// The counterpart to [`Self::accounts_sorted`], [`Self::storage_sorted`], and
     /// [`Self::storage_wipes_sorted`]: [`Self::code`] iterates a map, so a consumer
@@ -284,12 +284,12 @@ mod tests {
         let mut block = BlockStateAccumulator::new();
         // Inserted descending, so map order cannot be mistaken for sorted order.
         for byte in [0xcc_u8, 0x11, 0x77] {
-            block
-                .bytecode(
-                    B256::repeat_byte(byte),
-                    &Bytecode::new_raw_checked(Bytes::from(vec![byte])).unwrap(),
-                )
-                .unwrap();
+            StateChangeSink::bytecode(
+                &mut block,
+                B256::repeat_byte(byte),
+                &Bytecode::new_raw_checked(Bytes::from(vec![byte])).unwrap(),
+            )
+            .unwrap();
         }
 
         let hashes: Vec<_> = block.code_sorted().iter().map(|(hash, _)| **hash).collect();
@@ -334,7 +334,7 @@ mod tests {
         let mut accumulator = BlockStateAccumulator::new();
         let code_hash = B256::with_last_byte(1);
         let bytecode = Bytecode::new_raw_checked(vec![0x60, 0x00].into()).unwrap();
-        accumulator.bytecode(code_hash, &bytecode).unwrap();
+        StateChangeSink::bytecode(&mut accumulator, code_hash, &bytecode).unwrap();
 
         let encoded = postcard::to_allocvec(&accumulator).unwrap();
         let deserialized: BlockStateAccumulator = postcard::from_bytes(&encoded).unwrap();

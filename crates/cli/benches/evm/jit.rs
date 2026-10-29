@@ -2,7 +2,7 @@ use crate::fixture::Suites;
 use alloy_primitives::{B256, hex};
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
-    BaseEvmTypes, Evm, InterpreterRunner, Precompiles, SpecId,
+    BaseEvmTypes, Evm, EvmFeatures, InterpreterRunner, Precompiles, SpecId,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::InMemoryDB,
@@ -208,6 +208,10 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
         interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
+        // Compiled calls do not implement chunk loading or relative jumps.
+        if host.feature(EvmFeatures::TIP1143) || host.feature(EvmFeatures::RJUMP) {
+            return None;
+        }
         // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
         if interpreter.gas().remaining() > i64::MAX as u64 {
             return None;

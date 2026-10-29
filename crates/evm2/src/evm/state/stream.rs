@@ -1,7 +1,10 @@
 //! Borrowed state-change streaming traits and adapters.
 
-use super::{AccountInfo, StorageOverlay};
-use crate::{bytecode::Bytecode, interpreter::Word};
+use super::{AccountInfo, CodeChunkSlot, StorageOverlay};
+use crate::{
+    bytecode::{Bytecode, CodeManifest},
+    interpreter::Word,
+};
 use alloy_primitives::{Address, B256};
 use auto_impl::auto_impl;
 use core::convert::Infallible;
@@ -53,6 +56,10 @@ pub struct AccountChanges<'a> {
     pub code: Option<(B256, &'a Bytecode)>,
     /// The account's loaded storage slots and wipe marker.
     pub storage: &'a StorageOverlay,
+    /// Cached immutable layout record for the current code.
+    pub(crate) code_manifest: Option<&'a CodeManifest>,
+    /// Cached runtime chunks associated with the account's current code.
+    pub(crate) code_chunks: &'a [CodeChunkSlot],
 }
 
 impl<'a> AccountChanges<'a> {
@@ -73,7 +80,44 @@ impl<'a> AccountChanges<'a> {
     /// reads, then the metadata as a change or a read.
     pub fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
         if let Some((code_hash, code)) = self.code {
-            sink.bytecode(code_hash, code)?;
+            if let Ok((built_manifest, built_chunks)) =
+                crate::bytecode::build_code_artifacts(&code.original_bytes())
+            {
+                let manifest = self
+                    .code_manifest
+                    .filter(|manifest| **manifest == built_manifest)
+                    .unwrap_or(&built_manifest);
+                let chunked = manifest.code_hash() == Some(code_hash);
+                if chunked {
+                    sink.bytecode(
+                        code_hash,
+                        &manifest.bytecode().expect("chunked manifest has storage encoding"),
+                    )?;
+                } else {
+                    sink.bytecode(code_hash, code)?;
+                }
+                let cached = chunked
+                    && self.code_chunks.len() == manifest.chunk_count()
+                    && self.code_chunks.iter().all(|slot| slot.chunk.is_some());
+                if cached {
+                    for (chunk_hash, slot) in
+                        manifest.chunk_hashes().iter().copied().zip(self.code_chunks)
+                    {
+                        sink.bytecode(
+                            chunk_hash,
+                            &slot.chunk.as_ref().expect("checked cached chunk").bytecode(),
+                        )?;
+                    }
+                } else if chunked {
+                    for (chunk_hash, chunk) in
+                        manifest.chunk_hashes().iter().copied().zip(built_chunks.iter())
+                    {
+                        sink.bytecode(chunk_hash, &chunk.bytecode())?;
+                    }
+                }
+            } else {
+                sink.bytecode(code_hash, code)?;
+            }
         }
         let address = self.address;
         let storage = self.storage;
@@ -126,7 +170,7 @@ pub trait StateChangeSink {
     /// Error returned by this sink.
     type Error;
 
-    /// Observes bytecode keyed by code hash.
+    /// Observes bytecode keyed by its commitment.
     #[inline]
     fn bytecode(&mut self, _code_hash: B256, _code: &Bytecode) -> Result<(), Self::Error> {
         Ok(())

@@ -2,7 +2,7 @@ use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, hex, keccak256};
 use clap::ValueEnum;
 use evm2::{
-    BaseEvmTypes, Evm, InterpreterRunner, Precompiles, SpecId, Version,
+    BaseEvmTypes, Evm, EvmFeatures, InterpreterRunner, Precompiles, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnv, BlockEnvExt},
     ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
@@ -667,6 +667,10 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
         interpreter: &mut Interpreter<'frame, 'host, BaseEvmTypes>,
         host: &mut Evm<'host, BaseEvmTypes>,
     ) -> Option<InstrStop> {
+        // Compiled calls do not implement chunk loading or relative jumps.
+        if host.feature(EvmFeatures::TIP1143) || host.feature(EvmFeatures::RJUMP) {
+            return None;
+        }
         // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
         if interpreter.gas().remaining() > i64::MAX as u64 {
             return None;

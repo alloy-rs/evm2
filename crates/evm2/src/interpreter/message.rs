@@ -1,4 +1,4 @@
-use crate::{BaseEvmTypes, EvmTypesHost, bytecode::Bytecode};
+use crate::{BaseEvmTypes, EvmTypesHost, bytecode::CodeChunk};
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 
 /// EVM message kind.
@@ -67,12 +67,11 @@ pub struct MessageExt<E = ()> {
     pub input: Bytes,
     /// Value transferred with the message.
     pub value: U256,
-    /// Bytecode resolved for this frame: the code at [`MessageExt::code_address`] (the resolved
-    /// delegate's code for an EIP-7702 delegated call), or the initcode for create messages.
+    /// Complete bytecode for direct execution, an account's entry chunk, or creation input.
     ///
     /// Resolved by the message's producer when it is constructed, so frames never load accounts
     /// for code. Native precompile dispatch at [`MessageExt::call_target`] takes precedence.
-    pub code: Bytecode,
+    pub code: CodeChunk,
     /// Address from which bytecode was resolved. This can differ from `destination` for
     /// `CALLCODE`, `DELEGATECALL`, and EIP-7702 delegated-code execution.
     pub code_address: Address,

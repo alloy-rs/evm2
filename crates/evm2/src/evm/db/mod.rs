@@ -28,7 +28,7 @@ pub trait Database: NonStaticAny {
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
 
-    /// Loads bytecode by code hash.
+    /// Loads bytecode by commitment.
     fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error>;
 
     /// Loads a persistent storage slot.
@@ -120,7 +120,7 @@ pub trait DynDatabase: NonStaticAny {
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
 
-    /// Loads bytecode by code hash.
+    /// Loads bytecode by commitment.
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode>;
 
     /// Loads a persistent storage slot.
@@ -312,7 +312,7 @@ impl<T: Database + DatabaseRef> DatabaseRef for Db<T> {
 pub struct DbStatsCounts {
     /// Number of account loads.
     pub get_account: u64,
-    /// Number of bytecode loads by hash.
+    /// Number of bytecode loads by commitment.
     pub get_code_by_hash: u64,
     /// Number of storage slot loads.
     pub get_storage: u64,

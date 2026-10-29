@@ -103,6 +103,22 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_code_update_preserves_raw_extension() {
+        let extension = AccountExtension::copy_from_slice(&[2; 21]);
+        let mut account = AccountInfo { extension: extension.clone(), ..Default::default() };
+        account.set_code(crate::bytecode::Bytecode::new_legacy(Bytes::from_static(&[0x00])));
+        assert_eq!(account.extension, extension);
+        account.set_code(crate::bytecode::Bytecode::new_eip7702(Address::repeat_byte(7)));
+        assert_eq!(account.extension, extension);
+        assert!(
+            AccountInfo::default()
+                .with_code(crate::bytecode::Bytecode::new_eip7702(Address::repeat_byte(7)))
+                .extension
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn extension_changes_are_journaled_and_accumulated() {
         let address = Address::repeat_byte(1);
         let original = AccountInfo {

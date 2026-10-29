@@ -15,14 +15,14 @@ const WEIGHTS: uint8x16_t = unsafe {
     core::mem::transmute::<[u8; 16], _>([1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128])
 };
 
-pub(super) fn analyze(code: &[u8], table: &mut [u8]) -> usize {
+pub(super) fn analyze(code: &[u8], table: &mut [u8], start_offset: usize) -> usize {
     // SAFETY: NEON is always available on aarch64.
-    unsafe { analyze_neon(code, table) }
+    unsafe { analyze_neon(code, table, start_offset) }
 }
 
 #[target_feature(enable = "neon")]
-unsafe fn analyze_neon(code: &[u8], table: &mut [u8]) -> usize {
-    let state = unsafe { analyze_blocks::<Neonx4>(code, table, (0, 0)) };
+unsafe fn analyze_neon(code: &[u8], table: &mut [u8], start_offset: usize) -> usize {
+    let state = unsafe { analyze_blocks::<Neonx4>(code, table, (0, start_offset)) };
     let (pc, entry) = unsafe { analyze_blocks::<Neon>(code, table, state) };
     pc + entry
 }

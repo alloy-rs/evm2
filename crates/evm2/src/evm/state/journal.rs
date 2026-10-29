@@ -2,7 +2,8 @@
 
 use super::{AccountFlags, AccountInfo};
 use crate::interpreter::Word;
-use alloy_primitives::Address;
+use alloc::vec::Vec;
+use alloy_primitives::{Address, B256};
 
 /// State checkpoint for reverting state changes.
 #[allow(missing_copy_implementations)]
@@ -48,6 +49,17 @@ pub enum JournalEntry {
         previous: Option<AccountInfo>,
         /// Previous lifecycle flags.
         previous_flags: AccountFlags,
+        /// Previous complete-code hash governing cached slots.
+        previous_code_hash: Option<B256>,
+        /// Previous transaction-local warmth indexed by chunk number.
+        previous_code_warmth: Vec<bool>,
+    },
+    /// A successful cold code access warmed an account's payload.
+    CodeChunkWarmed {
+        /// Resolved code owner.
+        address: Address,
+        /// Original payload index.
+        index: u32,
     },
     /// Persistent storage changed.
     StorageChange {

@@ -44,7 +44,7 @@ pub fn exchange(cx: _) -> Result {
     stack.exchange(n, m)
 }
 
-const fn decode_single(x: u8) -> Option<usize> {
+pub(crate) const fn decode_single(x: u8) -> Option<usize> {
     if x <= 90 || x >= 128 { Some(x.wrapping_add(145) as usize) } else { None }
 }
 

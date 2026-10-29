@@ -48,38 +48,38 @@ macro_rules! detected {
     };
 }
 
-pub(super) fn analyze(code: &[u8], table: &mut [u8]) -> usize {
+pub(super) fn analyze(code: &[u8], table: &mut [u8], start_offset: usize) -> usize {
     // SAFETY: the required target features are available.
     unsafe {
         if detected!("avx512f", "avx512bw", "avx512vbmi") {
-            analyze_avx512vbmi(code, table)
+            analyze_avx512vbmi(code, table, start_offset)
         } else if detected!("avx2") {
-            analyze_avx2(code, table)
+            analyze_avx2(code, table, start_offset)
         } else if detected!("sse4.1") {
-            analyze_sse41(code, table)
+            analyze_sse41(code, table, start_offset)
         } else {
-            0
+            start_offset
         }
     }
 }
 
 #[target_feature(enable = "sse4.1")]
-unsafe fn analyze_sse41(code: &[u8], table: &mut [u8]) -> usize {
-    let state = unsafe { analyze_blocks::<Sse41x4>(code, table, (0, 0)) };
+unsafe fn analyze_sse41(code: &[u8], table: &mut [u8], start_offset: usize) -> usize {
+    let state = unsafe { analyze_blocks::<Sse41x4>(code, table, (0, start_offset)) };
     let (pc, entry) = unsafe { analyze_blocks::<Sse41>(code, table, state) };
     pc + entry
 }
 
 #[target_feature(enable = "avx2")]
-unsafe fn analyze_avx2(code: &[u8], table: &mut [u8]) -> usize {
-    let state = unsafe { analyze_blocks::<Avx2>(code, table, (0, 0)) };
+unsafe fn analyze_avx2(code: &[u8], table: &mut [u8], start_offset: usize) -> usize {
+    let state = unsafe { analyze_blocks::<Avx2>(code, table, (0, start_offset)) };
     let (pc, entry) = unsafe { analyze_blocks::<Sse41>(code, table, state) };
     pc + entry
 }
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
-unsafe fn analyze_avx512vbmi(code: &[u8], table: &mut [u8]) -> usize {
-    let state = unsafe { analyze_blocks::<Avx512Vbmix2>(code, table, (0, 0)) };
+unsafe fn analyze_avx512vbmi(code: &[u8], table: &mut [u8], start_offset: usize) -> usize {
+    let state = unsafe { analyze_blocks::<Avx512Vbmix2>(code, table, (0, start_offset)) };
     let state = unsafe { analyze_blocks::<Avx512Vbmi>(code, table, state) };
     let (pc, entry) = unsafe { analyze_blocks::<Sse41>(code, table, state) };
     pc + entry
@@ -396,21 +396,21 @@ mod tests {
     #[test]
     fn test_sse41() {
         if detected!("sse4.1") {
-            check_simd(|code, table| unsafe { analyze_sse41(code, table) });
+            check_simd(|code, table, offset| unsafe { analyze_sse41(code, table, offset) });
         }
     }
 
     #[test]
     fn test_avx2() {
         if detected!("avx2") {
-            check_simd(|code, table| unsafe { analyze_avx2(code, table) });
+            check_simd(|code, table, offset| unsafe { analyze_avx2(code, table, offset) });
         }
     }
 
     #[test]
     fn test_avx512vbmi() {
         if detected!("avx512f", "avx512bw", "avx512vbmi") {
-            check_simd(|code, table| unsafe { analyze_avx512vbmi(code, table) });
+            check_simd(|code, table, offset| unsafe { analyze_avx512vbmi(code, table, offset) });
         }
     }
 }

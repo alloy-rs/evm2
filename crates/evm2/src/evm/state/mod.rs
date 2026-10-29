@@ -2,8 +2,8 @@
 
 mod account;
 mod block;
-#[cfg(feature = "account-ext")]
-mod extension;
+mod code_chunks;
+pub use code_chunks::CodeChunkHandle;
 mod journal;
 mod pending;
 mod storage;
@@ -11,11 +11,9 @@ mod storage_pool;
 mod stream;
 mod tracked;
 
-pub(crate) use account::Account;
+pub(crate) use account::{Account, CodeChunkSlot};
 pub use account::{AccountFlags, AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
-#[cfg(feature = "account-ext")]
-pub use extension::AccountExtension;
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use pending::PendingState;
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
@@ -24,6 +22,11 @@ pub use stream::{
     StorageChange, Tee,
 };
 pub use tracked::Tracked;
+
+#[cfg(feature = "account-ext")]
+mod extension;
+#[cfg(feature = "account-ext")]
+pub use extension::AccountExtension;
 
 use super::{
     PrewarmSet,
@@ -513,7 +516,7 @@ impl<'a> State<'a> {
             accounts,
             storage_pool,
             transient_storage,
-            inner: StateInner { prewarm_set, journal, selfdestructs, logs, database: _ },
+            inner: StateInner { prewarm_set, journal, selfdestructs, logs, .. },
             ..
         } = self;
         for account in accounts.values_mut() {
@@ -749,7 +752,7 @@ impl<'a> State<'a> {
         let balance = target.balance().wrapping_add(*value);
         #[cfg(feature = "account-ext")]
         let extension = target.get().map(|info| info.extension.clone()).unwrap_or_default();
-        *target.get_or_insert() = AccountInfo {
+        target.set_info(AccountInfo {
             nonce: u64::from(features.contains(EvmFeatures::EIP161)),
             balance,
             code_hash: KECCAK256_EMPTY,
@@ -757,7 +760,7 @@ impl<'a> State<'a> {
             _non_exhaustive: (),
             #[cfg(feature = "account-ext")]
             extension,
-        };
+        });
         target.mark_created();
         target.touch();
         Ok(Ok(()))
@@ -835,7 +838,13 @@ impl<'a> State<'a> {
                 unreachable!("journal length is checked above")
             };
             match entry {
-                JournalEntry::AccountChange { address, previous, previous_flags } => {
+                JournalEntry::AccountChange {
+                    address,
+                    previous,
+                    previous_flags,
+                    previous_code_hash,
+                    previous_code_warmth,
+                } => {
                     // Reconcile the self-destruct set with the restored destroyed flag.
                     let was_destroyed = self
                         .accounts
@@ -860,6 +869,33 @@ impl<'a> State<'a> {
                             kept |= AccountFlags::TOUCHED;
                         }
                         entry.flags = (previous_flags - kept) | (entry.flags & kept);
+                        if entry.code_chunks.code_hash == previous_code_hash {
+                            entry
+                                .code_chunks
+                                .slots
+                                .resize_with(previous_code_warmth.len(), CodeChunkSlot::default);
+                            for (slot, is_warm) in
+                                entry.code_chunks.slots.iter_mut().zip(previous_code_warmth)
+                            {
+                                slot.is_warm = is_warm;
+                            }
+                        } else {
+                            entry.code_chunks.code_hash = previous_code_hash;
+                            entry.code_chunks.manifest = None;
+                            entry.code_chunks.slots = previous_code_warmth
+                                .into_iter()
+                                .map(|is_warm| CodeChunkSlot { chunk: None, is_warm })
+                                .collect();
+                        }
+                    }
+                }
+                JournalEntry::CodeChunkWarmed { address, index } => {
+                    if let Some(warm) = self
+                        .accounts
+                        .get_mut(&address)
+                        .and_then(|account| account.code_chunks.slots.get_mut(index as usize))
+                    {
+                        warm.is_warm = false;
                     }
                 }
                 JournalEntry::StorageChange { address, key, previous } => {

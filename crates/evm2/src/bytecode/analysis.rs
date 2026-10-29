@@ -1,6 +1,6 @@
 //! Legacy bytecode padding and jump destination analysis.
 
-use super::JumpTable;
+use super::{JumpTable, chunk_payload_len, chunk_start_offset};
 use crate::interpreter::op;
 use alloc::vec::Vec;
 use alloy_primitives::Bytes;
@@ -15,8 +15,19 @@ mod x86;
 pub(super) fn analyze_legacy(bytecode: &[u8]) -> JumpTable {
     let mut jumps = JumpTable::new(bytecode.len());
     let table = jumps.as_mut_slice();
-    let pc = analyze_simd(bytecode, table);
+    let pc = analyze_simd(bytecode, table, 0);
     analyze_scalar(bytecode, table, pc);
+    jumps
+}
+
+/// Analyzes the logical payload of a prepared chunk from its stored offset.
+/// Layout validation is done by `Bytecode::new_chunk`; no account size or index is needed.
+pub(super) fn analyze_chunk(bytecode: &[u8]) -> JumpTable {
+    let mut jumps = JumpTable::new(bytecode.len());
+    let table = jumps.as_mut_slice();
+    let payload = &bytecode[..chunk_payload_len(bytecode)];
+    let pc = analyze_simd(payload, table, chunk_start_offset(bytecode));
+    analyze_scalar(payload, table, pc);
     jumps
 }
 
@@ -55,16 +66,16 @@ fn analyze_scalar(code: &[u8], table: &mut [u8], pc: usize) {
 
 /// Marks the jump destinations of full SIMD blocks and returns the offset of the next instruction.
 #[inline]
-fn analyze_simd(code: &[u8], table: &mut [u8]) -> usize {
+fn analyze_simd(code: &[u8], table: &mut [u8], start_offset: usize) -> usize {
     if code.len() < 16 {
-        return 0;
+        return start_offset;
     }
     core::cfg_select! {
-        any(target_arch = "x86", target_arch = "x86_64") => x86::analyze(code, table),
-        target_arch = "aarch64" => aarch64::analyze(code, table),
+        any(target_arch = "x86", target_arch = "x86_64") => x86::analyze(code, table, start_offset),
+        target_arch = "aarch64" => aarch64::analyze(code, table, start_offset),
         _ => {
             let _ = table;
-            0
+            start_offset
         }
     }
 }
@@ -189,9 +200,9 @@ mod tests {
     use rand::{RngExt, SeedableRng, rngs::StdRng};
 
     /// Returns the jump table of `code`, one instruction at a time.
-    fn reference(code: &[u8]) -> Vec<u8> {
+    fn reference(code: &[u8], start_offset: usize) -> Vec<u8> {
         let mut table = vec![0; code.len().div_ceil(8)];
-        let mut pc = 0;
+        let mut pc = start_offset;
         while pc < code.len() {
             let last = code[pc];
             if last == op::JUMPDEST {
@@ -257,12 +268,17 @@ mod tests {
 
     /// Checks that `simd`, followed by the scalar loop, matches [`reference`] on bytecode ending
     /// in PUSH instructions, and on random bytecode.
-    pub(super) fn check_simd(simd: impl Fn(&[u8], &mut [u8]) -> usize) {
-        let check = |code: &[u8]| {
+    pub(super) fn check_simd(simd: impl Fn(&[u8], &mut [u8], usize) -> usize) {
+        let check = |code: &[u8], start_offset| {
             let mut table = vec![0; code.len().div_ceil(8)];
-            let pc = simd(code, &mut table);
+            let pc = simd(code, &mut table, start_offset);
             analyze_scalar(code, &mut table, pc);
-            assert_eq!(table, reference(code), "{}", alloy_primitives::hex::encode(code));
+            assert_eq!(
+                table,
+                reference(code, start_offset),
+                "{}",
+                alloy_primitives::hex::encode(code)
+            );
         };
 
         // Every PUSH near the end, with several trailing opcode patterns.
@@ -274,7 +290,7 @@ mod tests {
                         let mut code = vec![op::JUMPDEST; len];
                         code[at] = push;
                         code[len - ending.len()..].copy_from_slice(ending);
-                        check(&code);
+                        check(&code, 0);
                     }
                 }
             }
@@ -284,7 +300,10 @@ mod tests {
         for i in 0..600 {
             let len = if i < 400 { i } else { rng.random_range(400..5000) };
             for _ in 0..8 {
-                check(&random_code(&mut rng, len));
+                let code = random_code(&mut rng, len);
+                for start_offset in 0..=32 {
+                    check(&code, start_offset);
+                }
             }
         }
     }
