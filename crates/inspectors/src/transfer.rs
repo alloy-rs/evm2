@@ -100,6 +100,10 @@ impl TransferInspector {
     }
 
     fn on_transfer<T: EvmTypes>(&mut self, message: &Message<T>, host: &mut Evm<'_, T>) {
+        // A transaction that stopped on an execution error never ran its end hooks.
+        if message.depth == host.version().initial_call_depth {
+            self.frames.clear();
+        }
         self.frames.push(TransferFrame { transfers: self.transfers.len(), logs: Vec::new() });
 
         let kind = match message.kind {
