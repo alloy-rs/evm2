@@ -54,7 +54,7 @@ of both tools. `--bless` stores geth's outputs as case/expected/<Fork>.json so t
 `cargo nextest run -p evm2-cli --test geth_parity` and `--offline` work without geth.
 
 EEST mode: `--eest PATH` converts state test fixtures (a file, or a directory searched for *.json,
-for example test-fixtures/devnet/state_tests; see scripts/setup_test_fixtures.py, or symlink the
+for example test-fixtures/eest/state_tests; see scripts/setup_test_fixtures.py, or symlink the
 test-fixtures directory of another worktree) into one t8n input per test, fork and index, and
 checks them. It compares the block result and post state, and the tracers named with `--tracer`.
 Names are <file>::<test>::<fork>::<indexes>, filtered by the same positional patterns. EEST

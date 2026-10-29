@@ -470,6 +470,23 @@ def build():
     c.tx(None, data=asm("PUSH0", "PUSH0", "REVERT"))
     c.tx(None, data=asm("INVALID"))
 
+    c = case("create_empty_initcode", "A create transaction with empty data, then CREATE and CREATE2 with size 0: the frame has no code, so no step runs in it.")
+    c.account(A1, asm("PUSH0", "PUSH0", "PUSH0", "CREATE", "PUSH0", "SSTORE", "PUSH0", "PUSH0", "PUSH0", "PUSH0", "CREATE2", "PUSH 1", "SSTORE", "STOP"), balance=1)
+    c.tx(None, data=b"")
+    c.tx(A1)
+
+    c = case("keccak_preimage", "KECCAK256 over memory, nothing, zero padding, a range past memory and a range too far past it, for the keccak256PreimageTracer.")
+    c.account(A1, asm(
+        "PUSH 0x1122334455667788", "PUSH0", "MSTORE",
+        "PUSH 0x20", "PUSH0", "KECCAK256", "POP",
+        "PUSH0", "PUSH0", "KECCAK256", "POP",
+        "PUSH 0x40", "PUSH 0x10", "KECCAK256", "POP",
+        "PUSH 0x20", "PUSH 0x10000", "KECCAK256", "POP",
+        "PUSH 0x20", "PUSH 0x200000", "KECCAK256", "POP",
+        "STOP",
+    ))
+    c.tx(A1, gas=12_000_000)
+
     c = case("create_init_revert", "Init code reverts with a reason and with no data.")
     c.account(A1, factory("CREATE", REVERT_REASON), balance=5)
     c.account(A2, factory("CREATE2", asm("PUSH0", "PUSH0", "REVERT")), balance=5)

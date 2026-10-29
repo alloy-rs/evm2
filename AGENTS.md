@@ -77,7 +77,7 @@ scripts/geth_parity.py                                  # all cases, forks and t
 scripts/geth_parity.py call_nested --fork Cancun --tracer jsonl   # one case, fork and tracer, with a diff
 scripts/geth_parity.py --offline                        # compare with the stored geth output
 scripts/geth_parity.py --bless                          # store geth's output for the selected cases
-scripts/geth_parity.py --eest test-fixtures/devnet/state_tests   # check EEST state tests at scale
+scripts/geth_parity.py --eest test-fixtures/eest/state_tests   # check EEST state tests at scale
 cargo nextest run -p evm2-cli --test geth_parity        # runs `--offline` in CI, without geth (needs python3)
 ```
 
