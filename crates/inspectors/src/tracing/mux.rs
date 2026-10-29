@@ -12,7 +12,8 @@ use alloy_rpc_types_trace::geth::{
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
-    DatabaseError, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, OpcodeSet, TxResultExt, TxResultWithState,
+    DatabaseError, EvmTypes, EvmTypesHost, Inspector, InspectorConfig, OpcodeSet, TxResultExt,
+    TxResultWithState,
     evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -220,6 +221,9 @@ impl<T: EvmTypes> Inspector<T> for MuxInspector {
     fn config(&self) -> InspectorConfig {
         let mut config = InspectorConfig::new().with_steps(OpcodeSet::EMPTY);
         if let Some(inspector) = &self.four_byte {
+            config = config.union(Inspector::<T>::config(inspector));
+        }
+        if let Some(inspector) = &self.keccak256_preimage {
             config = config.union(Inspector::<T>::config(inspector));
         }
         if let Some(inspector) = &self.tracing {
