@@ -204,6 +204,13 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     "london/validation/test_invalid_header.json",
     "shanghai/eip4895_withdrawals/test_withdrawals_root.json",
 
+    // These check which header fields a block carries on either side of a fork, which is
+    // consensus-level block validation.
+    "eip7843_slotnum/fork_transition/invalid_post_fork_block_without_slot_number.json",
+    "eip7843_slotnum/fork_transition/invalid_pre_fork_block_with_slot_number.json",
+    "eip7928_block_level_access_lists/fork_transition/invalid_post_fork_block_without_bal_hash_field.json",
+    "eip7928_block_level_access_lists/fork_transition/invalid_pre_fork_block_with_bal_hash_field.json",
+
     // Prague request/deposit fixtures validate EL request extraction and system-contract block processing.
     "prague/eip6110_deposits",
     "prague/eip7002_el_triggerable_withdrawals",
