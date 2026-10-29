@@ -248,7 +248,7 @@ const CASES: &[AccessListCase] = &[
         expected: &[],
     },
     AccessListCase {
-        name: "call_underflow_5",
+        name: "call_underflow_6",
         accounts: &[(
             a(0xc1),
             &hex!("600060006000600073000000000000000000000000000000000000b0016000f1"),
@@ -261,7 +261,7 @@ const CASES: &[AccessListCase] = &[
         expected: &[(a(0xb001), &[])],
     },
     AccessListCase {
-        name: "call_underflow_5b",
+        name: "call_underflow_5",
         accounts: &[(
             a(0xc1),
             &hex!("60006000600073000000000000000000000000000000000000b0016000f1"),
@@ -532,26 +532,17 @@ const CASES: &[AccessListCase] = &[
         expected: &[(a(0xb001), &[])],
     },
     AccessListCase {
-        name: "sload_excluded_addr",
-        accounts: &[
-            (
-                a(0xc1),
-                &hex!("60006000600060007300000000000000000000000000000000000000c261fffff450"),
-                0,
-            ),
-            (a(0xc2), &hex!("60045400"), 0),
-        ],
+        name: "callcode_underflow_5",
+        accounts: &[(
+            a(0xc1),
+            &hex!("60006000600073000000000000000000000000000000000000b0016000f2"),
+            0,
+        )],
         to: Some(a(0xc1)),
         input: &hex!(""),
         gas_limit: 5000000,
         seed: &[],
-        expected: &[
-            (
-                a(0xc1),
-                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000004")],
-            ),
-            (a(0xc2), &[]),
-        ],
+        expected: &[(a(0xb001), &[])],
     },
     AccessListCase {
         name: "create_tx_sload",
