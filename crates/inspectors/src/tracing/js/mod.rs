@@ -6,8 +6,8 @@ use crate::tracing::{
     js::{
         bindings::{
             CallFrame, Contract, FrameKind, FrameResult, JsEvmContext, OpcodeNames, PreStep,
-            ReusableCallFrame, ReusableEvmDb, ReusableFrameResult, ReusableStepLog, StepInfo,
-            StepSnapshot,
+            ReusableCallFrame, ReusableEvmDb, ReusableFrameResult, ReusableStepLog, SlotWrite,
+            StepInfo, StepSnapshot,
         },
         builtins::{PrecompileList, register_builtins, to_serde_value},
     },
@@ -576,7 +576,8 @@ impl JsInspector {
             call_id: call.id,
         };
         let (stack, memory, host) = interp.stack_memory_host();
-        let res = self.reusable_db.with_state_scope(host.state_mut(), || {
+        let pre_write = pending.snapshot.pre_write();
+        let res = self.reusable_db.with_state_scope(host.state_mut(), pre_write, || {
             self.reusable_step_log.with_scope(
                 &mut pending.snapshot,
                 stack.as_slice(),
@@ -656,6 +657,15 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 stack: interp.stack().as_slice(),
                 memory: interp.memory().as_slice(),
             });
+            if pending.instruction.op == op::SSTORE
+                && let Some(&slot) = interp.stack().as_slice().last()
+            {
+                let address = interp.message().destination;
+                if let Ok(value) = interp.host().state_mut().storage_slot_untracked(&address, &slot)
+                {
+                    pending.snapshot.record_pre_write(SlotWrite { address, slot, value });
+                }
+            }
         }
     }
 
@@ -1475,6 +1485,28 @@ mod tests {
         }"#;
         let err = try_run_trace(code, None, true).unwrap_err();
         assert!(matches!(err, JsInspectorError::JsError(_)));
+    }
+
+    #[test]
+    fn test_db_get_state_reads_current_storage() {
+        let code = r#"{
+            res: [],
+            read: function(log, db) {
+                return Number(BigInt(toHex(db.getState(log.contract.getAddress(), toWord('0x00')))));
+            },
+            step: function(log, db) {
+                var op = log.op.toString();
+                if (op === 'SSTORE' || op === 'STOP') { this.res.push([op, this.read(log, db)]); }
+            },
+            fault: function() {},
+            result: function(ctx, db) {
+                this.res.push(['result', Number(BigInt(toHex(db.getState(ctx.to, toWord('0x00')))))]);
+                return this.res;
+            }
+        }"#;
+        // SSTORE(0, 1), SSTORE(0, 2), STOP
+        let res = run_trace(code, Some(bytes!("0x60016000556002600055")), true);
+        assert_eq!(res, json!([["SSTORE", 0], ["SSTORE", 1], ["STOP", 2], ["result", 2]]));
     }
 
     #[test]
