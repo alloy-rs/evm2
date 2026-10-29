@@ -57,6 +57,21 @@ fn struct_log_errors_exclude_reverts() {
 }
 
 #[test]
+fn struct_log_omits_zero_refund_and_empty_memory() {
+    let opts = GethDefaultTracingOptions::default().enable_memory();
+    let mut step = test_step(0, op::PUSH0);
+    step.memory = Some(RecordedMemory::new(&[]));
+    let log = step.convert_to_geth_struct_log(&opts, 1, None);
+    assert_eq!((log.refund_counter, log.memory), (None, None));
+
+    step.gas_refund_counter = 4800;
+    step.memory = Some(RecordedMemory::new(&[1]));
+    let log = step.convert_to_geth_struct_log(&opts, 1, None);
+    assert_eq!(log.refund_counter, Some(4800));
+    assert_eq!(log.memory.map(|memory| memory.len()), Some(1));
+}
+
+#[test]
 fn erc7562_keccak_preimages_require_successful_steps() {
     for status in [
         None,

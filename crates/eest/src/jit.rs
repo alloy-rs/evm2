@@ -22,6 +22,10 @@ pub(crate) fn make_backend(aot: bool) -> Result<JitBackend, String> {
             jit_worker_count: cpus,
             jit_opt_level: OptimizationLevel::None,
             aot_opt_level: OptimizationLevel::None,
+            // Every resident program holds memory mappings, and the full corpus compiles more
+            // distinct programs than a default `vm.max_map_count` allows. A small budget evicts old
+            // programs.
+            resident_code_cache_bytes: 8 * 1024 * 1024,
             ..Default::default()
         },
         ..Default::default()
