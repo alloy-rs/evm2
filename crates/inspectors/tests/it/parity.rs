@@ -524,21 +524,23 @@ fn vmtrace_reports_remaining_gas_after_execution() {
 #[test]
 fn vmtrace_reports_remaining_gas_after_storage_credit() {
     // Restore a newly written slot to zero, crediting gas spilled from the state gas reservoir.
-    let inspector = inspect_code(
-        &hex!("60015f555f5f5500"),
-        &[],
-        SpecId::AMSTERDAM,
-        TracingInspectorConfig::parity_vm_trace(),
-    );
-    let steps = &inspector.traces().nodes()[0].trace.steps;
-    let gas_after = steps[6].gas_remaining;
-    assert!(gas_after > steps[5].gas_remaining);
-    let trace = inspector.into_parity_builder().vm_trace();
-    assert_eq!(trace.ops[5].ex.as_ref().unwrap().used, gas_after);
+    for deltas in [false, true] {
+        let inspector = inspect_code(
+            &hex!("60015f555f5f5500"),
+            &[],
+            SpecId::AMSTERDAM,
+            TracingInspectorConfig::parity_vm_trace().set_step_deltas(deltas),
+        );
+        let steps = &inspector.traces().nodes()[0].trace.steps;
+        let gas_after = steps[6].gas_remaining;
+        assert!(gas_after > steps[5].gas_remaining);
+        let trace = inspector.into_parity_builder().vm_trace();
+        assert_eq!(trace.ops[5].ex.as_ref().unwrap().used, gas_after);
+    }
 }
 
 #[test]
-fn non_vm_traces_do_not_record_step_deltas() {
+fn non_vm_traces_only_record_gas_deltas() {
     // Exercise a memory write, a call and a storage gas credit.
     let code = hex!("602a5f525f5f5f5f5f604361fffff15060015f555f5f5500");
     for config in [
@@ -547,7 +549,20 @@ fn non_vm_traces_do_not_record_step_deltas() {
         TracingInspectorConfig::from_geth_call_config(&Default::default()),
     ] {
         let inspector = inspect_code(&code, &hex!("00"), SpecId::AMSTERDAM, config);
-        assert!(inspector.traces().nodes().iter().all(|node| node.trace.step_deltas.is_empty()));
+        for node in inspector.traces().nodes() {
+            for delta in &node.trace.step_deltas {
+                assert!(delta.gas_remaining_after.is_some());
+                assert!(delta.memory.is_none());
+                assert!(delta.store.is_none());
+            }
+        }
+        if config.record_steps {
+            assert_eq!(inspector.traces().nodes()[0].trace.step_deltas.len(), 2);
+        } else {
+            assert!(
+                inspector.traces().nodes().iter().all(|node| node.trace.step_deltas.is_empty())
+            );
+        }
     }
 }
 
@@ -1145,10 +1160,8 @@ struct CallStep {
     child_gas_limit: Option<u64>,
     /// Parity cost, which equals the geth cost.
     cost: u64,
-    /// Parity used gas with step deltas.
+    /// Parity used gas, with and without step deltas.
     used: u64,
-    /// Parity used gas without step deltas.
-    used_without_deltas: u64,
 }
 
 fn call_step(code: &[u8], child: &[u8], spec: SpecId) -> CallStep {
@@ -1164,13 +1177,14 @@ fn call_step(code: &[u8], child: &[u8], spec: SpecId) -> CallStep {
     let (step, cost, used) = vm_trace(TracingInspectorConfig::parity_vm_trace());
     let (_, cost_without_deltas, used_without_deltas) =
         vm_trace(TracingInspectorConfig::parity_vm_trace().set_step_deltas(false));
+    assert_eq!(used_without_deltas, used);
     let geth = inspect_code(code, child, spec, TracingInspectorConfig::default_geth())
         .geth_builder()
         .geth_traces(0, Default::default(), Default::default());
     let log = geth.struct_logs.iter().rev().find(|log| log.gas == step.0).unwrap();
     assert_eq!(cost_without_deltas, cost);
     assert_eq!(log.gas_cost, cost);
-    CallStep { gas_remaining: step.0, child_gas_limit: step.1, cost, used, used_without_deltas }
+    CallStep { gas_remaining: step.0, child_gas_limit: step.1, cost, used }
 }
 
 #[test]
@@ -1183,7 +1197,6 @@ fn call_cost_includes_forwarded_gas() {
             let step = call_step(&code, child, SpecId::PRAGUE);
             assert_eq!(step.cost, 2_600 + 65_535);
             assert_eq!(step.used, step.gas_remaining - step.cost + 65_535 - spent);
-            assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
         }
     }
 }
@@ -1201,7 +1214,6 @@ fn precompile_call_cost_includes_forwarded_gas() {
     let step = call_step(&hex!("5f5f5f5f5f600461fffff100"), &[], SpecId::PRAGUE);
     assert_eq!(step.cost, 100 + 65_535);
     assert_eq!(step.used, step.gas_remaining - step.cost + 65_535 - 15);
-    assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
 }
 
 #[test]
@@ -1214,7 +1226,6 @@ fn unfunded_call_cost_includes_forwarded_gas() {
         assert_eq!(step.child_gas_limit, Some(1_000 + 2_300));
         assert_eq!(step.cost, cost);
         assert_eq!(step.used, step.gas_remaining - cost + 3_300);
-        assert_eq!(step.used_without_deltas, step.gas_remaining - cost);
     }
 }
 
@@ -1226,7 +1237,6 @@ fn create_cost_excludes_forwarded_gas() {
         assert_eq!(step.cost, 32_000);
         assert_eq!(step.child_gas_limit, Some(available - available / 64));
         assert_eq!(step.used, available);
-        assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
     }
 }
 
@@ -1256,7 +1266,6 @@ fn create_cost_counts_initcode_memory_and_hash_words() {
     }
     let step = call_step(&hex!("645f5f5f5f005f526005601b5ff000"), &[], SpecId::PRAGUE);
     assert_eq!(step.used, step.gas_remaining - step.cost - 8);
-    assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
 }
 
 #[test]
@@ -1266,7 +1275,6 @@ fn unfunded_create_cost_excludes_forwarded_gas() {
     let step = call_step(&code, &[], SpecId::PRAGUE);
     assert_eq!(step.cost, 32_000);
     assert_eq!(step.used, step.gas_remaining - 32_000);
-    assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
 }
 
 #[test]
