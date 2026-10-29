@@ -1400,11 +1400,22 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             };
         }
         message.code_address = message.destination;
-        let input = core::mem::take(&mut message.input);
-        let result = self.run_frame(tx_env, message, checkpoint.clone());
-        message.input = input;
-        let stop = result?;
-        self.finish_create_message_run(checkpoint, &message.destination, stop)
+        // Empty initcode deploys an empty contract without executing the bytecode's padding STOP.
+        let (stop, gas, output) = if message.code.is_empty() {
+            (
+                InstrStop::Stop,
+                Gas::new_with_execution_gas_and_reservoir(message.gas_limit, message.reservoir),
+                Bytes::new(),
+            )
+        } else {
+            let input = core::mem::take(&mut message.input);
+            let result = self.run_frame(tx_env, message, checkpoint.clone());
+            message.input = input;
+            let stop = result?;
+            let interp = self.interpreter_pool.last_mut().unwrap();
+            (stop, interp.gas(), Bytes::copy_from_slice(interp.output()))
+        };
+        self.finish_create_message_run(checkpoint, &message.destination, stop, gas, output)
     }
 
     #[inline(never)]
@@ -1454,11 +1465,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         checkpoint: StateCheckpoint,
         address: &Address,
         stop: InstrStop,
+        mut gas: Gas,
+        mut output: Bytes,
     ) -> Result<MessageResult<T>, ExecutionError> {
-        let interp = self.interpreter_pool.last_mut().unwrap();
-        let mut gas = interp.gas();
-        let output = if stop.is_success() {
-            let mut output = Bytes::copy_from_slice(interp.output());
+        if stop.is_success() {
             if let Err(stop) = self.validate_create_output(&mut gas, &mut output) {
                 self.state.rollback(checkpoint, self.features);
                 return Ok(MessageResultExt {
@@ -1479,12 +1489,9 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 self.state.rollback(checkpoint, self.features);
                 return Err(code.into());
             }
-
-            output
         } else {
             self.state.rollback(checkpoint, self.features);
-            Bytes::copy_from_slice(interp.output())
-        };
+        }
 
         Ok(MessageResultExt {
             stop,
