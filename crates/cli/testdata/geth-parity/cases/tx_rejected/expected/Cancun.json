@@ -11,7 +11,7 @@
   "js-frames": [{"error":"none","frames":[],"from":"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b","gas":1000000,"gasPrice":"1529","gasUsed":21000,"input":"0x","output":"0x","to":"0x0000000000000000000000000000000001000005","type":"CALL","value":"1"}],
   "js-opcount": [{}],
   "js-steps": [{"faults":[],"steps":[]}],
-  "jsonl": [{"steps":[],"summary":{"gasUsed":"0x0","output":""}}],
+  "jsonl": [[{"gasUsed":"0x0","output":""}]],
   "mux": [{"4byteTracer":{},"callTracer":{"from":"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b","gas":"0xf4240","gasUsed":"0x5208","input":"0x","to":"0x0000000000000000000000000000000001000005","type":"CALL","value":"0x1"},"prestateTracer":{"post":{"0x0000000000000000000000000000000001000005":{"balance":"0x1"},"0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba":{"balance":"0x1e9f1c8"},"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b":{"balance":"0x56bc75e2d6123cfff","nonce":1}},"pre":{"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b":{"balance":"0x56bc75e2d63100000"}}}}],
   "noop": [{}],
   "prestate": [{"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b":{"balance":"0x56bc75e2d63100000"}}],

@@ -85,7 +85,9 @@ cargo nextest run -p evm2-cli --test geth_parity        # the same comparison in
 `crates/cli/testdata/geth-parity/known-diffs.json` lists the differences that exist today, each with
 a reason. A fix deletes its entries; the script and the test fail on a difference that is not listed
 and on an entry that no longer occurs. Never add an entry to make a failure go away without a reason
-that names the geth behavior.
+that names the geth behavior. An entry with `"kind": "geth-gap"` marks something geth does not
+implement (for example netting BAL changes over a block access index, go-ethereum
+`tests/block_test.go:94-96`); the script counts these apart and fix PRs leave them.
 
 ## Rust
 

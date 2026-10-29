@@ -38,6 +38,7 @@ pub(super) struct ReceiptContext {
     pub(super) block_timestamp: u64,
     pub(super) first_log_index: usize,
     pub(super) blob_base_fee: U256,
+    pub(super) success: bool,
 }
 
 /// What `evm2 t8n` produces.
@@ -74,6 +75,7 @@ impl Output {
             block_timestamp,
             first_log_index,
             blob_base_fee,
+            success,
         } = *context;
         let logs = receipt
             .logs()
@@ -94,10 +96,12 @@ impl Output {
                 })
             })
             .collect::<Vec<_>>();
-        let (root, status) = match receipt.status_or_post_state() {
-            alloy_consensus::Eip658Value::Eip658(status) => (json!("0x"), quantity(status.into())),
-            alloy_consensus::Eip658Value::PostState(root) => (json!(root), quantity(0)),
+        // Before Byzantium a receipt carries the post-state root and still reports the status.
+        let root = match receipt.status_or_post_state() {
+            alloy_consensus::Eip658Value::Eip658(_) => json!("0x"),
+            alloy_consensus::Eip658Value::PostState(root) => json!(root),
         };
+        let status = quantity(success.into());
         let mut value = json!({
             "root": root,
             "status": status,

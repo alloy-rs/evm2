@@ -638,6 +638,42 @@ def build():
     c.tx(A1, type="0x3", chainId="0x1", maxFeePerGas="0x600", maxPriorityFeePerGas="0x100", maxFeePerBlobGas="0x10",
          blobVersionedHashes=["0x01" + "ab" * 31], accessList=[])
 
+    # --- block level rules
+    def rich_sender(c, n):
+        """Adds a funded account that signs with the key made of the byte `n`."""
+        key = keys.PrivateKey(bytes([n]) * 32)
+        c.account(key.public_key.to_checksum_address().lower(), balance=100 * ETHER)
+        return "0x" + key.to_bytes().hex()
+
+    c = case("blob_block_limit", "Blob transactions past the block's blob gas limit are rejected.", node=False)
+    for n in range(1, 6):
+        c.tx(A5, type="0x3", chainId="0x1", maxFeePerGas="0x600", maxPriorityFeePerGas="0x100", maxFeePerBlobGas="0x10",
+             blobVersionedHashes=["0x01" + f"{n:02x}" * 31] * 6, accessList=[], nonce=0, key=rich_sender(c, n))
+
+    c = case("withdrawals", "Withdrawals credit existing and new accounts; an amount of zero must not create an account.")
+    c.account(A1, STOP, balance=1)
+    c.account(A2, b"", balance=0)
+    c.env["withdrawals"] = [
+        {"index": hex(i), "validatorIndex": hex(i), "address": address, "amount": hex(amount)}
+        for i, (address, amount) in enumerate(((A1, 5), (A2, 0), (A3, 0), (A4, 7), (A4, 1)))
+    ]
+    c.tx(A5, value=1)
+
+    c = case("deposit_request", "A log of the deposit contract becomes an EIP-6110 request.", forks=PRAGUE)
+    deposit = "0x00000000219ab540356cbb839cbe05303d7705fa"
+    c.account(deposit, asm("CALLDATASIZE", "PUSH0", "PUSH0", "CALLDATACOPY",
+                           "PUSH 0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5", "CALLDATASIZE", "PUSH0", "LOG1", "STOP"))
+    event = bytearray(576)
+    for offset, size, fill in ((192, 48, 0xA1), (288, 32, 0xB2), (352, 8, 0xC3), (416, 96, 0xD4), (544, 8, 0xE5)):
+        event[offset : offset + size] = bytes([fill]) * size
+    c.tx(deposit, data=bytes(event))
+
+    c = case("system_call_revert", "The beacon roots system call fails and the failure is ignored.")
+    c.account("0x000f3df6d732807ef1319fb7b8bb8522d0beac02", asm("PUSH0", "PUSH0", "REVERT"))
+    c.env["parentBeaconBlockRoot"] = "0x" + "11" * 32
+    c.account(A1, STOP)
+    c.tx(A1, value=1)
+
     # --- EIP-7702
     auth_key = keys.PrivateKey(bytes.fromhex("22" * 32))
     authority = auth_key.public_key.to_checksum_address().lower()

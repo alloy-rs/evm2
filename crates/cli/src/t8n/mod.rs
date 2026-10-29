@@ -18,7 +18,7 @@ use alloy_consensus::{
     proofs::{calculate_receipt_root, calculate_transaction_root, calculate_withdrawals_root},
 };
 use alloy_eips::eip7685::Requests;
-use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, Log, U256, address, b256, keccak256};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId, TxResultWithState,
     env::{BlockEnv, BlockEnvExt},
@@ -39,6 +39,11 @@ use std::path::PathBuf;
 
 /// Transaction gas limit cap of EIP-7825, the cap of the execution dimension per transaction.
 const MAX_TX_GAS: u64 = 1 << 24;
+
+/// The deposit contract and the topic of its `DepositEvent`.
+const DEPOSIT_CONTRACT: Address = address!("00000000219ab540356cBB839Cbe05303d7705Fa");
+const DEPOSIT_TOPIC: B256 =
+    b256!("649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5");
 
 /// Hash of the block that contains the transactions, as in `evm t8n`.
 const BLOCK_HASH: B256 = B256::new({
@@ -107,6 +112,10 @@ pub struct Args {
     /// Hardfork to execute under, by go-ethereum's name (for example `Cancun`).
     #[arg(long = "state.fork", default_value = "GrayGlacier", value_name = "NAME")]
     pub fork: String,
+    /// Block reward in wei for the coinbase, or -1 to leave it alone. A reward of 0 still creates
+    /// the coinbase account before Spurious Dragon and deletes it when empty after.
+    #[arg(long = "state.reward", default_value_t = 0, allow_hyphen_values = true)]
+    pub reward: i64,
     /// Directory the output files go to.
     #[arg(long = "output.basedir", default_value = "", value_name = "DIR")]
     pub output_basedir: PathBuf,
@@ -148,7 +157,8 @@ pub struct Args {
 
 /// Runs the command: reads the inputs, executes and writes the output files.
 pub fn run(args: &Args) -> Result<(), Error> {
-    let inputs = Inputs::read(&args.input_alloc, &args.input_env, &args.input_txs, &args.fork)?;
+    let inputs =
+        Inputs::read(&args.input_alloc, &args.input_env, &args.input_txs, &args.fork, args.reward)?;
     let tracing = Tracing::from_args(args)?;
     let output = execute(&inputs, &tracing)?;
     output.write(args)
@@ -156,7 +166,7 @@ pub fn run(args: &Args) -> Result<(), Error> {
 
 /// Applies the transactions to the pre-state and collects the result, post-state and traces.
 pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
-    let Inputs { alloc, env, txs, spec } = inputs;
+    let Inputs { alloc, env, txs, spec, reward } = inputs;
     let spec = *spec;
     let mut inspector = tracing.inspector()?;
 
@@ -203,14 +213,24 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
     if spec.enables(SpecId::CANCUN)
         && let Some(root) = env.parent_beacon_block_root
     {
-        system_call(spec, block, &mut post, &mut bal, 0, BEACON_ROOTS_ADDRESS, root.0.into())?;
+        // Like the history call below, a failure of this call is ignored.
+        let _ =
+            system_call(spec, block, &mut post, &mut bal, 0, BEACON_ROOTS_ADDRESS, root.0.into());
     }
     if spec.enables(SpecId::PRAGUE)
         && let Some(hashes) = block_hashes
     {
         let parent = number.wrapping_sub(1).to_string();
         let hash = hashes.get(&parent).copied().unwrap_or_default();
-        system_call(spec, block, &mut post, &mut bal, 0, HISTORY_STORAGE_ADDRESS, hash.0.into())?;
+        let _ = system_call(
+            spec,
+            block,
+            &mut post,
+            &mut bal,
+            0,
+            HISTORY_STORAGE_ADDRESS,
+            hash.0.into(),
+        );
     }
 
     let mut output = Output::default();
@@ -232,6 +252,18 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
         let tx_hash = *signed.envelope.tx_hash();
         if signed.envelope.is_eip4844() && block.blob_basefee.is_zero() {
             output.reject(index, "blob tx used but field env.ExcessBlobGas missing".to_string());
+            continue;
+        }
+        let tx_blob_gas = signed.recovered.inner().blob_gas_used().unwrap_or_default();
+        let max_blob_gas = max_blob_gas(spec);
+        if blob_gas_used + tx_blob_gas > max_blob_gas {
+            output.reject(
+                index,
+                format!(
+                    "blob gas ({}) would exceed maximum allowance {max_blob_gas}",
+                    blob_gas_used + tx_blob_gas
+                ),
+            );
             continue;
         }
         let gas_limit = signed.recovered.inner().gas_limit();
@@ -275,7 +307,7 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
         bal.commit(BlockAccessIndex(tx_index as u64 + 1), result.pending_state);
 
         let result = result.result;
-        blob_gas_used += signed.recovered.inner().blob_gas_used().unwrap_or_default();
+        blob_gas_used += tx_blob_gas;
         gas_used += result.tx_gas_used();
         execution_used += result.execution_gas_spent();
         state_used += result.state_gas_spent();
@@ -302,6 +334,7 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
             block_timestamp: u64::try_from(env.current_timestamp).unwrap_or(u64::MAX),
             first_log_index: all_logs.len(),
             blob_base_fee: block.blob_basefee,
+            success: result.status,
         };
         output.add_receipt(&receipt, &signed.envelope, &context);
         receipts.push(receipt);
@@ -309,6 +342,9 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
         included.push(signed.envelope);
     }
 
+    if *reward >= 0 {
+        reward_coinbase(&mut post, spec, env.current_coinbase, U256::from(*reward));
+    }
     let post_index = receipts.len() as u64 + 1;
     if spec.enables(SpecId::SHANGHAI) {
         for withdrawal in env.withdrawals.iter().flatten() {
@@ -322,12 +358,16 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
         }
     }
     let requests = if spec.enables(SpecId::PRAGUE) {
+        let mut requests = Requests::default();
+        let deposits = deposit_requests(&all_logs)?;
+        if !deposits.is_empty() {
+            requests.push_request_with_type(0, deposits);
+        }
         let mut queues = vec![(WITHDRAWAL_REQUEST_ADDRESS, 1), (CONSOLIDATION_REQUEST_ADDRESS, 2)];
         if spec.enables(SpecId::AMSTERDAM) {
             queues
                 .extend([(BUILDER_DEPOSIT_REQUEST_ADDRESS, 3), (BUILDER_EXIT_REQUEST_ADDRESS, 4)]);
         }
-        let mut requests = Requests::default();
         for (address, request_type) in queues {
             if !system_contract_has_code(&post, address) {
                 return Err(Error::Execution(format!(
@@ -408,12 +448,26 @@ fn system_call(
         .system_call(SystemTx::new(address, data))
         .map_err(|err| Error::Execution(format!("system call to {address} failed: {err}")))?;
     let result = executed.detach();
+    // A failed call changes no state but its reads still belong to the access list.
     if !result.result.status {
+        bal.commit(BlockAccessIndex(bal_index), result.pending_state);
         return Err(Error::Execution(format!("system call to {address} failed")));
     }
     post.commit_source(&result.pending_state);
     bal.commit(BlockAccessIndex(bal_index), result.pending_state);
     Ok(result.result.output)
+}
+
+/// Pays the block reward, which touches the coinbase: an empty account is created before
+/// Spurious Dragon and removed from then on.
+fn reward_coinbase(post: &mut InMemoryDB, spec: SpecId, coinbase: Address, reward: U256) {
+    let original = post.cache.accounts.get(&coinbase).cloned().flatten();
+    let mut current = original.clone().unwrap_or_default();
+    current.balance += reward;
+    let removed = spec.enables(SpecId::SPURIOUS_DRAGON) && current.is_empty();
+    let mut pending = PendingState::default();
+    pending.insert_account(coinbase, original, (!removed).then_some(current));
+    post.commit_source(&pending);
 }
 
 fn credit_withdrawal(
@@ -427,9 +481,44 @@ fn credit_withdrawal(
     let mut current = original.clone().unwrap_or_default();
     current.balance += amount;
     let mut pending = PendingState::default();
-    pending.insert_account(address, original, Some(current));
+    pending.insert_account(address, original, (!current.is_empty()).then_some(current));
     post.commit_source(&pending);
     bal.commit(BlockAccessIndex(bal_index), pending);
+}
+
+/// The block's blob gas limit: six blobs from Cancun, nine from Prague and 21 from Amsterdam, as
+/// go-ethereum's `evm t8n` configures them.
+const fn max_blob_gas(spec: SpecId) -> u64 {
+    const BLOB_GAS: u64 = 1 << 17;
+    BLOB_GAS
+        * match spec {
+            spec if spec.enables(SpecId::AMSTERDAM) => 21,
+            spec if spec.enables(SpecId::PRAGUE) => 9,
+            _ => 6,
+        }
+}
+
+/// The EIP-6110 deposit requests of the logs the deposit contract emitted, in order.
+fn deposit_requests(logs: &[Log]) -> Result<Bytes, Error> {
+    let mut requests = Vec::new();
+    for log in logs {
+        if log.address != DEPOSIT_CONTRACT || log.topics().first() != Some(&DEPOSIT_TOPIC) {
+            continue;
+        }
+        let data = &log.data.data;
+        if data.len() != 576 {
+            return Err(Error::Execution(format!(
+                "failed to process post-execution: failed to parse deposit logs: unable to parse deposit data: deposit wrong length: want 576, have {}",
+                data.len()
+            )));
+        }
+        // The ABI-encoded event holds, after five offsets and one length each: the 48 byte
+        // public key, the withdrawal credentials, the amount, the 96 byte signature and the index.
+        for range in [192..240, 288..320, 352..360, 416..512, 544..552] {
+            requests.extend_from_slice(&data[range]);
+        }
+    }
+    Ok(requests.into())
 }
 
 fn block_env(env: &Env, spec: SpecId) -> BlockEnv {

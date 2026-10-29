@@ -141,15 +141,6 @@ fn normalize_trace(tracer: &str, mut value: Value) -> Value {
     value
 }
 
-/// The JSONL stream compares as its step lines and its final summary line.
-fn normalize_jsonl(mut lines: Vec<Value>) -> Value {
-    let summary = lines.pop_if(|line| line.get("pc").is_none());
-    lines.retain(|line| line.get("pc").is_some());
-    let mut value = json!({ "steps": lines, "summary": summary });
-    lower_hex(&mut value);
-    value
-}
-
 fn normalize_result(mut result: Value) -> Value {
     if let Some(rejected) = result.get_mut("rejected").and_then(Value::as_array_mut) {
         *rejected = rejected.iter().map(|entry| json!({ "index": entry["index"] })).collect();
@@ -188,6 +179,7 @@ fn diff(a: &Value, b: &Value, path: &mut Vec<Segment>, found: &mut BTreeMap<Stri
                 path.pop();
             }
         }
+        (Value::Number(a), Value::Number(b)) if a.as_f64() == b.as_f64() => {}
         (a, b) if a == b => {}
         (a, b) => record(path, Some(a), Some(b), found),
     }
@@ -248,6 +240,8 @@ struct Job {
     case: String,
     fork: String,
     directory: PathBuf,
+    /// The tracers the case runs for the fork, as `scripts/geth_parity.py` selects them.
+    tracers: Vec<String>,
 }
 
 /// Adds the system contracts of the predeploy list that are needed from `fork` on.
@@ -280,7 +274,11 @@ fn check(
     atoms: &[Atom],
     ran: &Mutex<Vec<(String, String, String)>>,
 ) -> Vec<String> {
-    let bundle = read_json(&job.directory.join("expected").join(format!("{}.json", job.fork)));
+    let stored = job.directory.join("expected").join(format!("{}.json", job.fork));
+    if !stored.exists() {
+        return vec![format!("{} {}: no stored geth output, run `--bless`", job.case, job.fork)];
+    }
+    let bundle = read_json(&stored);
     let alloc =
         with_predeploys(&read_json(&job.directory.join("alloc.json")), &job.fork, predeploys);
     let inputs = Inputs {
@@ -288,12 +286,14 @@ fn check(
         env: serde_json::from_value(read_json(&job.directory.join("env.json"))).unwrap(),
         txs: serde_json::from_value(read_json(&job.directory.join("txs.json"))).unwrap(),
         spec: parse_fork(&job.fork).unwrap(),
+        reward: 0,
     };
-    let mut tracers = vec!["result".to_string()];
-    tracers.extend(bundle["traces"].as_object().unwrap().keys().cloned());
-
     let mut failures = Vec::new();
-    for tracer in tracers {
+    for tracer in job.tracers.iter().cloned() {
+        if tracer != "result" && bundle["traces"].get(&tracer).is_none() {
+            failures.push(format!("{} {} {tracer}: no stored geth output", job.case, job.fork));
+            continue;
+        }
         ran.lock().unwrap().push((job.case.clone(), job.fork.clone(), tracer.clone()));
         let output = execute(&inputs, &tracing(&tracer, &specs[&tracer]))
             .unwrap_or_else(|err| panic!("{} {} {tracer}: {err}", job.case, job.fork));
@@ -313,15 +313,18 @@ fn check(
             let traces = output
                 .traces
                 .iter()
-                .map(|trace| match trace.extension {
-                    "jsonl" => normalize_jsonl(
-                        trace
-                            .content
-                            .lines()
-                            .map(|line| serde_json::from_str(line).unwrap())
-                            .collect(),
-                    ),
-                    _ => normalize_trace(&tracer, serde_json::from_str(&trace.content).unwrap()),
+                .map(|trace| {
+                    let value = match trace.extension {
+                        "jsonl" => Value::Array(
+                            trace
+                                .content
+                                .lines()
+                                .map(|line| serde_json::from_str(line).unwrap())
+                                .collect(),
+                        ),
+                        _ => serde_json::from_str(&trace.content).unwrap(),
+                    };
+                    normalize_trace(&tracer, value)
                 })
                 .collect::<Vec<_>>();
             let expected = bundle["traces"][&tracer].as_array().unwrap();
@@ -362,6 +365,13 @@ fn matches_geth_except_known_diffs() {
     let predeploys = read_json(&dir.join("predeploys.json"));
     let atoms = known_atoms();
 
+    let order = predeploys["forkOrder"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|fork| fork.as_str().unwrap())
+        .collect::<Vec<_>>();
+    let position = |fork: &str| order.iter().position(|candidate| *candidate == fork).unwrap();
     let mut jobs = Vec::new();
     let mut cases = fs::read_dir(dir.join("cases"))
         .unwrap()
@@ -372,16 +382,33 @@ fn matches_geth_except_known_diffs() {
         let meta = read_json(&directory.join("case.json"));
         for fork in meta["forks"].as_array().unwrap() {
             let fork = fork.as_str().unwrap();
-            if directory.join("expected").join(format!("{fork}.json")).exists() {
-                jobs.push(Job {
-                    case: directory.file_name().unwrap().to_str().unwrap().to_string(),
-                    fork: fork.to_string(),
-                    directory: directory.clone(),
-                });
-            }
+            // Only a node runs the tracers other than `result` and `jsonl`, from Paris on.
+            let node =
+                meta["node"].as_bool().unwrap_or(true) && position(fork) >= position("Merge");
+            let tracers = specs
+                .keys()
+                .filter(|tracer| match tracer.as_str() {
+                    "result" => true,
+                    "jsonl" => {
+                        meta["tracers"].as_array().is_none_or(|list| list.contains(&json!("jsonl")))
+                    }
+                    other => {
+                        node && meta["tracers"]
+                            .as_array()
+                            .is_none_or(|list| list.contains(&json!(other)))
+                    }
+                })
+                .cloned()
+                .collect();
+            jobs.push(Job {
+                case: directory.file_name().unwrap().to_str().unwrap().to_string(),
+                fork: fork.to_string(),
+                directory: directory.clone(),
+                tracers,
+            });
         }
     }
-    assert!(jobs.len() > 100, "found only {} stored case/fork outputs", jobs.len());
+    assert!(jobs.len() > 100, "found only {} case and fork pairs", jobs.len());
 
     let next = AtomicUsize::new(0);
     let failures = Mutex::new(Vec::new());

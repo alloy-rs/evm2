@@ -192,16 +192,25 @@ pub struct Inputs {
     pub txs: Vec<TxJson>,
     /// Hardfork to execute under.
     pub spec: SpecId,
+    /// Block reward in wei, or negative to leave the coinbase untouched.
+    pub reward: i64,
 }
 
 impl Inputs {
     /// Reads the three input files and resolves the fork name.
-    pub fn read(alloc: &Path, env: &Path, txs: &Path, fork: &str) -> Result<Self, Error> {
+    pub fn read(
+        alloc: &Path,
+        env: &Path,
+        txs: &Path,
+        fork: &str,
+        reward: i64,
+    ) -> Result<Self, Error> {
         Ok(Self {
             alloc: read_json(alloc)?,
             env: read_json(env)?,
             txs: read_json(txs)?,
             spec: parse_fork(fork)?,
+            reward,
         })
     }
 }

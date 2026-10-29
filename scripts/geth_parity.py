@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.12"
 # dependencies = []
 # ///
 """Checks that evm2 and go-ethereum agree exactly on EVM results and tracer output.
@@ -33,7 +33,9 @@ tracers out. `--js-dir DIR` adds each `*.js` file of DIR (for example
 `eth/tracers/js/internal/tracers` of a go-ethereum checkout) as js:<name>.
 
 Known differences: `--known-diffs FILE` (default crates/cli/testdata/geth-parity/known-diffs.json)
-lists differences that exist today as {case, fork, tracer, path, reason}. Every field but reason
+lists differences that exist today as {case, fork, tracer, path, reason}, plus `"kind": "geth-gap"` for a
+difference where geth lacks a feature that evm2 has (the summary counts them apart, and
+`--write-known-diffs` keeps them as they are). Every field but reason
 may be a list. Case, fork and tracer are globs (`*` matches any text) and path is a glob over the
 field path, with array indexes written as `[]`, addresses as `<address>` and hashes as `<hash>`,
 for example `structLogs[].gasCost`. The exit status is non-zero for a difference that is not
@@ -59,7 +61,7 @@ opcodes). A test that both tools refuse to decode counts as skipped.
 
 Normalisation before comparing: hex strings compare in lower case; struct log fields that geth
 omits when empty (memory, returnData, refund, storage) are dropped when empty on both sides; the
-JSONL stream compares its step lines and its final summary line; rejected transactions compare by
+rejected transactions compare by
 index (`--strict-errors` also compares the messages). Everything else compares exactly.
 """
 
@@ -174,7 +176,7 @@ def go_binary(min_version):
         url = f"https://go.dev/dl/go{GO_VERSION}.{system[0]}-{system[1]}.tar.gz"
         log(f"downloading {url}")
         cache_dir().mkdir(parents=True, exist_ok=True)
-        with urllib.request.urlopen(url) as response, open(archive, "wb") as out:
+        with urllib.request.urlopen(url, timeout=120) as response, open(archive, "wb") as out:
             shutil.copyfileobj(response, out)
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         if digest != GO_SHA256[system]:
@@ -362,7 +364,7 @@ def run_tool(tool, fork, inputs, workdir, tracer):
 
 
 PORT_LOCK = threading.Lock()
-NEXT_PORT = [20000]
+NEXT_PORT = [20000 + os.getpid() % 100 * 100]
 
 
 def free_port():
@@ -370,7 +372,7 @@ def free_port():
     with PORT_LOCK:
         while True:
             NEXT_PORT[0] += 1
-            if NEXT_PORT[0] > 60000:
+            if NEXT_PORT[0] > 32000:
                 NEXT_PORT[0] = 20001
             with socket.socket() as sock:
                 try:
@@ -547,14 +549,6 @@ def normalize_struct_log(frame):
     return frame
 
 
-def normalize_jsonl(lines):
-    if isinstance(lines, dict):  # already normalised, as stored by --bless
-        return lines
-    steps = [l for l in lines if "pc" in l]
-    summary = lines[-1] if lines and "pc" not in lines[-1] else None
-    return {"steps": steps, "summary": summary}
-
-
 CONTEXT_FIELDS = ("blockHash", "blockNumber", "transactionHash", "transactionPosition")
 
 
@@ -566,9 +560,7 @@ def normalize_flat(frames):
 def normalize_trace(tracer, value):
     if tracer == "flat" and isinstance(value, list):
         value = normalize_flat(value)
-    if tracer == "jsonl":
-        value = normalize_jsonl(value)
-    elif tracer == STRUCTLOG:
+    if tracer == STRUCTLOG:
         value = normalize_struct_log(value)
     return lower_hex(value)
 
@@ -657,6 +649,9 @@ def compare(case, fork, tracer, geth, evm2, strict_errors):
 
 KNOWN_KEYS = ("case", "fork", "tracer", "path")
 
+# `kind` of an entry for something geth does not implement; fix PRs never delete these entries.
+GETH_GAP = "geth-gap"
+
 
 def load_known(path):
     """Reads the known differences, one atom per case, fork, tracer and path.
@@ -666,7 +661,7 @@ def load_known(path):
     entries = load_json(path)["known"] if Path(path).exists() else []
     as_list = lambda value: value if isinstance(value, list) else [value]
     return [
-        dict(zip(KNOWN_KEYS, combination), reason=entry.get("reason", ""))
+        dict(zip(KNOWN_KEYS, combination), reason=entry.get("reason", ""), kind=entry.get("kind", ""))
         for entry in entries
         for combination in itertools.product(*(as_list(entry.get(key, "*")) for key in KNOWN_KEYS))
     ]
@@ -756,6 +751,8 @@ def eest_case(name, unit, fork, indexes):
             {"chainId": quantity(a["chainId"]), "address": a["address"], "nonce": quantity(a["nonce"]), "yParity": quantity(a.get("yParity", a.get("v"))), "r": quantity(a["r"]), "s": quantity(a["s"])}
             for a in tx["authorizationList"]
         ]
+    if ty == 0 and fork_index(fork) < fork_index("EIP158"):
+        out["protected"] = False  # EIP-155 replay protection starts with Spurious Dragon
     number = int(env["currentNumber"], 16)
     t8n_env = {
         "currentCoinbase": env["currentCoinbase"], "currentGasLimit": env["currentGasLimit"],
@@ -823,6 +820,9 @@ def stored_outputs(case, fork, tracer):
 def write_bundle(case, fork, geth_runs):
     path = expected_path(case, fork)
     bundle = load_json(path) if path.exists() else {"traces": {}}
+    if "result" not in bundle and "result" not in geth_runs:
+        log(f"not blessed: {case.name} {fork}: a new bundle needs the result tracer")
+        return
     bundle["geth"] = GETH_VERSION
     for tracer, outputs in geth_runs.items():
         if tracer == "result":
@@ -864,8 +864,10 @@ def process(args, tools, case, fork, jobs, workdir):
             geth_out, geth_err = run_tool(tools["geth"], fork, inputs, workdir, tracer)
         else:
             geth_out = {"traces": node_out[tracer]}
-        if evm2_err and geth_err:
+        if evm2_err and geth_err and args.eest:
             errors.append((case.name, fork, tracer, f"{REJECTED} (geth: {geth_err}; evm2: {evm2_err})"))
+        elif evm2_err and geth_err:
+            errors.append((case.name, fork, tracer, f"geth: {geth_err}; evm2: {evm2_err}"))
         elif evm2_err or geth_err:
             errors.append((case.name, fork, tracer, f"geth: {geth_err}" if geth_err else f"evm2: {evm2_err}"))
         else:
@@ -925,6 +927,8 @@ def main():
         tools["geth"] = Tool("geth", [str(geth_dir / "evm")])
 
     jobs = job_list(cases, args)
+    if not jobs:
+        sys.exit("no case, fork and tracer combination selected")
     by_pair = {}
     for case, fork, tracer in jobs:
         by_pair.setdefault((case.name, fork), (case, []))[1].append(tracer)
@@ -950,13 +954,16 @@ def main():
                 write_bundle(case, fork, geth_runs)
         return found, errs
 
-    with futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+    pool = futures.ThreadPoolExecutor(max_workers=max(1, args.jobs))
+    try:
         for found, errs in pool.map(work, by_pair.items()):
             differences += found
             errors += errs
             done += 1
-            if done % 25 == 0:
+            if done % max(25, len(by_pair) // 20) == 0:
                 log(f"  {done}/{len(by_pair)} pairs ({time.time() - started:.0f}s)")
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
     if not args.keep:
         shutil.rmtree(workroot, ignore_errors=True)
 
@@ -964,13 +971,16 @@ def main():
 
 
 def report(args, differences, errors, known, ran, pairs):
-    unknown, hits = [], set()
+    unknown, hits, gaps = [], set(), 0
     for d in differences:
         matched = [i for i, atom in enumerate(known) if atom_matches(atom, d)]
         hits.update(matched)
+        gaps += any(known[i]["kind"] == GETH_GAP for i in matched)
         if not matched:
             unknown.append(d)
     if args.write_known_diffs:
+        if errors:
+            sys.exit(f"not rewriting the known differences: {len(errors)} runs failed, first: {errors[0]}")
         write_known(args.known_diffs, differences, known, ran)
         log(f"wrote {args.known_diffs}")
         return 0
@@ -996,7 +1006,7 @@ def report(args, differences, errors, known, ran, pairs):
     total = len(differences)
     print(
         f"\n{pairs} case/fork pairs, {len(ran)} comparisons: {total} differences "
-        f"({total - len(unknown)} known, {len(unknown)} new), {len(errors)} errors, {len(stale)} stale known entries, "
+        f"({total - len(unknown) - gaps} known, {gaps} geth gaps, {len(unknown)} new), {len(errors)} errors, {len(stale)} stale known entries, "
         f"{len(rejected)} skipped because both tools reject the input"
     )
     if unknown:
@@ -1016,10 +1026,17 @@ def write_known(path, differences, old, ran):
     group by tracer, path and reason, then by the set of forks each case differs in.
     """
     reasons = {(a["tracer"], a["path"]): a["reason"] for a in old if a["reason"]}
+    gap_atoms = [a for a in old if a["kind"] == GETH_GAP]
     found = {}
     for d in differences:
+        if any(atom_matches(a, d) for a in gap_atoms):
+            continue
         found.setdefault((d.tracer, d.collapsed), {}).setdefault(d.case, set()).add(d.fork)
-    entries = [{k: a[k] for k in ("case", "fork", "tracer", "path", "reason")} for a in old if not atom_selected(a, ran)]
+    entries = [
+        {k: a[k] for k in (*KNOWN_KEYS, "reason", "kind") if a[k]}
+        for a in old
+        if a["kind"] == GETH_GAP or not atom_selected(a, ran)
+    ]
     for (tracer, collapsed), cases in sorted(found.items()):
         by_forks = {}
         for case, forks in sorted(cases.items()):
