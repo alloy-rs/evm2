@@ -33,14 +33,15 @@ tracers out. `--js-dir DIR` adds each `*.js` file of DIR (for example
 `eth/tracers/js/internal/tracers` of a go-ethereum checkout) as js:<name>.
 
 Known differences: `--known-diffs FILE` (default crates/cli/testdata/geth-parity/known-diffs.json)
-lists differences that exist today as {case, fork, tracer, path, reason}, plus `"kind": "geth-gap"` for a
+lists differences that exist today as {case, fork, tracer, path, op?, reason}, plus `"kind": "geth-gap"` for a
 difference where geth lacks a feature that evm2 has (the summary counts them apart, and
 `--write-known-diffs` keeps them as they are). Every field but reason
 may be a list. Case, fork and tracer are globs (`*` matches any text) and path is a glob over the
 field path, with array indexes written as `[]`, addresses as `<address>` and hashes as `<hash>`,
-for example `structLogs[].gasCost`. The exit status is non-zero for a difference that is not
-listed, and for a listed difference that no longer occurs (delete the entry: a fix removes
-entries, which proves it). `--write-known-diffs` rewrites the file from the current differences of
+for example `structLogs[].gasCost`. An optional `op` (a list of opcode names, globs) limits an entry
+to differences in steps of those opcodes. The exit status is non-zero for a difference that is not
+listed, for a listed difference that no longer occurs (delete the entry: a fix removes entries,
+which proves it), and for an entry whose reason is empty or `unclassified`. `--write-known-diffs` rewrites the file from the current differences of
 the selected run, keeping the reasons of entries with the same tracer and path.
 
 Outputs: geth is go-ethereum master at a pinned commit (it has the Amsterdam fork), fetched and
@@ -618,10 +619,27 @@ def short(value, limit=90):
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
+def step_op(path, *trees):
+    """The opcode name of the step a difference is in, or "" outside a step; the first tree that has one wins."""
+    for node in trees:
+        op = ""
+        try:
+            for part in path:
+                node = node[part]
+                if isinstance(node, dict):
+                    name = node.get("opName", node.get("op"))
+                    op = name if isinstance(name, str) else op
+        except (KeyError, IndexError, TypeError):
+            pass
+        if op:
+            return op
+    return ""
+
+
 class Difference:
-    def __init__(self, case, fork, tracer, tx, path, geth, evm2):
+    def __init__(self, case, fork, tracer, tx, path, geth, evm2, op=""):
         self.case, self.fork, self.tracer, self.tx, self.path = case, fork, tracer, tx, path
-        self.geth, self.evm2 = geth, evm2
+        self.geth, self.evm2, self.op = geth, evm2, op
         self.collapsed = collapse_path(path)
 
     def line(self):
@@ -643,14 +661,15 @@ def compare(case, fork, tracer, geth, evm2, strict_errors):
         found.append(Difference(case, fork, tracer, None, ("<traces>",), len(g), len(e)))
     for tx, (gt, et) in enumerate(zip(g, e)):
         gt, et = normalize_trace(tracer, gt), normalize_trace(tracer, et)
-        found += [Difference(case, fork, tracer, tx, path, x, y) for path, x, y in diff(gt, et)]
+        found += [Difference(case, fork, tracer, tx, path, x, y, step_op(path, gt, et)) for path, x, y in diff(gt, et)]
     return found
 
 
 # --- known differences
 
 
-KNOWN_KEYS = ("case", "fork", "tracer", "path")
+# `op` limits an entry to the steps of the named opcodes; without it the entry covers every difference at its path.
+KNOWN_KEYS = ("case", "fork", "tracer", "path", "op")
 
 # `kind` of an entry for something geth does not implement; fix PRs never delete these entries.
 GETH_GAP = "geth-gap"
@@ -659,10 +678,14 @@ GETH_GAP = "geth-gap"
 def load_known(path):
     """Reads the known differences, one atom per case, fork, tracer and path.
 
-    An entry's case, fork, tracer and path may be a list instead of a string; its atoms are the product.
+    An entry's case, fork, tracer, path and op may be a list instead of a string; its atoms are the product.
     """
     entries = load_json(path)["known"] if Path(path).exists() else []
     as_list = lambda value: value if isinstance(value, list) else [value]
+    for entry in entries:
+        missing = [key for key in KNOWN_KEYS[:4] if key not in entry]
+        if missing:
+            sys.exit(f"known difference without {', '.join(missing)} (use \"*\" to match all): {json.dumps(entry)[:200]}")
     return [
         dict(zip(KNOWN_KEYS, combination), reason=entry.get("reason", ""), kind=entry.get("kind", ""))
         for entry in entries
@@ -670,15 +693,20 @@ def load_known(path):
     ]
 
 
+@functools.lru_cache(maxsize=None)
+def glob_regex(pattern):
+    return re.compile(".*".join(re.escape(part) for part in pattern.split("*")))
+
+
 def glob(pattern, text):
     """`*` matches any text; every other character, including `[` and `]`, matches itself."""
-    return re.fullmatch(".*".join(re.escape(part) for part in pattern.split("*")), text) is not None
+    return glob_regex(pattern).fullmatch(text) is not None
 
 
 def atom_matches(atom, d):
     return (
         glob(atom["case"], d.case) and glob(atom["fork"], d.fork)
-        and glob(atom["tracer"], d.tracer) and glob(atom["path"], d.collapsed)
+        and glob(atom["tracer"], d.tracer) and glob(atom["path"], d.collapsed) and glob(atom["op"], d.op)
     )
 
 
@@ -975,9 +1003,18 @@ def main():
 
 def report(args, differences, errors, known, ran, pairs):
     unknown, hits, gaps = [], set(), 0
+    group = lambda atom: tuple(atom[key] for key in KNOWN_KEYS[:4])
+    # Atoms without a wildcard in tracer and path are found by that pair; the others are tried for every difference.
+    by_path, wild = {}, []
+    for i, atom in enumerate(known):
+        if "*" in atom["tracer"] or "*" in atom["path"]:
+            wild.append(i)
+        else:
+            by_path.setdefault((atom["tracer"], atom["path"]), []).append(i)
     for d in differences:
-        matched = [i for i, atom in enumerate(known) if atom_matches(atom, d)]
-        hits.update(matched)
+        candidates = [*by_path.get((d.tracer, d.collapsed), ()), *wild]
+        matched = [i for i in candidates if atom_matches(known[i], d)]
+        hits.update(group(known[i]) for i in matched)
         gaps += any(known[i]["kind"] == GETH_GAP for i in matched)
         if not matched:
             unknown.append(d)
@@ -987,7 +1024,12 @@ def report(args, differences, errors, known, ran, pairs):
         write_known(args.known_diffs, differences, known, ran)
         log(f"wrote {args.known_diffs}")
         return 0
-    stale = [atom for i, atom in enumerate(known) if i not in hits and atom_selected(atom, ran)]
+    # An opcode list narrows an entry but is not checked for staleness: the entry stays while any of its steps differ.
+    stale = [atom for atom in known if group(atom) not in hits and atom_selected(atom, ran)]
+
+    unclassified = {(a["case"], a["tracer"], a["path"]) for a in known if a["reason"] in ("", "unclassified")}
+    for case, tracer, path in sorted(unclassified)[:20]:
+        print(f"UNCLASSIFIED known diff needs a reason: {case} {tracer} {path}")
 
     rejected = [e for e in errors if e[3].startswith(REJECTED)]
     errors = [e for e in errors if not e[3].startswith(REJECTED)]
@@ -1019,14 +1061,14 @@ def report(args, differences, errors, known, ran, pairs):
         print("new differences by tracer and field:")
         for (tracer, path), names in sorted(by_path.items()):
             print(f"  {tracer:14} {path}: {len(names)} cases")
-    return 1 if unknown or errors or stale else 0
+    return 1 if unknown or errors or stale or unclassified else 0
 
 
 def write_known(path, differences, old, ran):
     """Rewrites the known file from this run's differences.
 
     Entries outside the run's selection stay. Reasons carry over by tracer and path; entries
-    group by tracer, path and reason, then by the set of forks each case differs in.
+    group by tracer and path, then by the forks and opcodes each case differs in.
     """
     reasons = {(a["tracer"], a["path"]): a["reason"] for a in old if a["reason"]}
     gap_atoms = [a for a in old if a["kind"] == GETH_GAP]
@@ -1034,25 +1076,28 @@ def write_known(path, differences, old, ran):
     for d in differences:
         if any(atom_matches(a, d) for a in gap_atoms):
             continue
-        found.setdefault((d.tracer, d.collapsed), {}).setdefault(d.case, set()).add(d.fork)
+        found.setdefault((d.tracer, d.collapsed), {}).setdefault(d.case, {}).setdefault(d.fork, set()).add(d.op)
     entries = [
-        {k: a[k] for k in (*KNOWN_KEYS, "reason", "kind") if a[k]}
+        {k: a[k] for k in (*KNOWN_KEYS, "reason", "kind") if a[k] and not (k == "op" and a[k] == "*")}
         for a in old
         if a["kind"] == GETH_GAP or not atom_selected(a, ran)
     ]
     for (tracer, collapsed), cases in sorted(found.items()):
-        by_forks = {}
-        for case, forks in sorted(cases.items()):
-            by_forks.setdefault(tuple(sorted(forks, key=fork_index)), []).append(case)
-        for forks, names in by_forks.items():
-            entries.append(
-                {
-                    "case": names if len(names) > 1 else names[0],
-                    "fork": list(forks) if len(forks) > 1 else forks[0],
-                    "tracer": tracer, "path": collapsed,
-                    "reason": reasons.get((tracer, collapsed)) or "unclassified",
-                }
-            )
+        groups = {}
+        for case, by_fork in sorted(cases.items()):
+            forks = tuple(sorted(by_fork, key=fork_index))
+            ops = frozenset().union(*by_fork.values())
+            groups.setdefault((forks, ops), []).append(case)
+        for (forks, ops), names in groups.items():
+            entry = {
+                "case": names if len(names) > 1 else names[0],
+                "fork": list(forks) if len(forks) > 1 else forks[0],
+                "tracer": tracer, "path": collapsed,
+            }
+            if "" not in ops:  # a difference outside a step stays unpinned
+                entry["op"] = sorted(ops) if len(ops) > 1 else next(iter(ops))
+            entry["reason"] = reasons.get((tracer, collapsed)) or "unclassified"
+            entries.append(entry)
     Path(path).write_text('{\n  "known": [\n' + ",\n".join("    " + json.dumps(e) for e in entries) + "\n  ]\n}\n")
 
 

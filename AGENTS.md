@@ -79,7 +79,7 @@ scripts/geth_parity.py call_nested --fork Cancun --tracer jsonl   # one case, fo
 scripts/geth_parity.py --offline                        # compare with the stored geth output
 scripts/geth_parity.py --bless                          # store geth's output for the selected cases
 scripts/geth_parity.py --eest test-fixtures/devnet/state_tests   # check EEST state tests at scale
-cargo nextest run -p evm2-cli --test geth_parity        # the same comparison in CI, without geth
+cargo nextest run -p evm2-cli --test geth_parity        # runs `--offline` in CI, without geth (needs python3)
 ```
 
 `crates/cli/testdata/geth-parity/known-diffs.json` lists the differences that exist today, each with

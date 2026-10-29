@@ -189,10 +189,8 @@ impl Output {
     /// Writes the result, alloc, body and traces as `evm t8n` does.
     pub(super) fn write(&self, args: &Args) -> Result<(), Error> {
         let base = &args.output_basedir;
-        if !base.as_os_str().is_empty() {
-            std::fs::create_dir_all(base)
-                .map_err(|source| Error::Write { path: base.clone(), source })?;
-        }
+        std::fs::create_dir_all(base)
+            .map_err(|source| Error::Write { path: base.clone(), source })?;
         // Outputs sent to stdout or stderr share one object, keyed by output name.
         let (mut stdout, mut stderr) = (Map::new(), Map::new());
         let body = json!(self.body);

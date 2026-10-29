@@ -35,7 +35,7 @@ use evm2_eest::{
     system_contract_has_code,
 };
 use evm2_inspectors::tracing::DebugInspector;
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 /// Transaction gas limit cap of EIP-7825, the cap of the execution dimension per transaction.
 const MAX_TX_GAS: u64 = 1 << 24;
@@ -117,7 +117,7 @@ pub struct Args {
     #[arg(long = "state.reward", default_value_t = 0, allow_hyphen_values = true)]
     pub reward: i64,
     /// Directory the output files go to.
-    #[arg(long = "output.basedir", default_value = "", value_name = "DIR")]
+    #[arg(long = "output.basedir", default_value = ".", value_name = "DIR")]
     pub output_basedir: PathBuf,
     /// Where the result goes: a file name, `stdout` or `stderr`.
     #[arg(long = "output.result", default_value = "result.json", value_name = "FILE")]
@@ -184,25 +184,8 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
             account.storage.iter().map(|(&key, &value)| (key, value)),
         );
     }
-    let block_hashes = env
-        .block_hashes
-        .as_ref()
-        .map(|hashes| {
-            hashes
-                .iter()
-                .map(|(number, hash)| {
-                    let parsed = match number.strip_prefix("0x") {
-                        Some(hex) => u64::from_str_radix(hex, 16),
-                        None => number.parse(),
-                    };
-                    parsed.map(|number| (number, *hash)).map_err(|_| {
-                        Error::Execution(format!("invalid block hash number `{number}`"))
-                    })
-                })
-                .collect::<Result<HashMap<_, _>, _>>()
-        })
-        .transpose()?;
-    for (number, hash) in block_hashes.iter().flatten() {
+    let block_hashes = env.block_hashes.as_ref();
+    for (number, hash) in block_hashes.into_iter().flatten() {
         post.insert_block_hash(&U256::from(*number), hash);
     }
     check_env(env, spec)?;
@@ -233,7 +216,7 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
             system_call(spec, block, &mut post, &mut bal, 0, BEACON_ROOTS_ADDRESS, root.0.into());
     }
     if spec.enables(SpecId::PRAGUE)
-        && let Some(hashes) = &block_hashes
+        && let Some(hashes) = block_hashes
     {
         let hash = hashes.get(&number.wrapping_sub(1)).copied().unwrap_or_default();
         let _ = system_call(
@@ -267,6 +250,17 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
             }
         };
         let tx_hash = *signed.envelope.tx_hash();
+        let introduced = match signed.envelope.ty() {
+            1 => SpecId::BERLIN,
+            2 => SpecId::LONDON,
+            3 => SpecId::CANCUN,
+            4 => SpecId::PRAGUE,
+            _ => SpecId::FRONTIER,
+        };
+        if !spec.enables(introduced) {
+            output.reject(index, "transaction type not supported".to_string());
+            continue;
+        }
         if signed.envelope.is_eip4844() && block.blob_basefee.is_zero() {
             output.reject(index, "blob tx used but field env.ExcessBlobGas missing".to_string());
             continue;
@@ -314,7 +308,7 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
         // go-ethereum aborts when BLOCKHASH reads a block the environment does not list.
         for number in evm.overlay_db().cache.block_hashes.keys() {
             let listed = u64::try_from(*number).ok().is_some_and(|number| {
-                block_hashes.as_ref().is_some_and(|h| h.contains_key(&number))
+                block_hashes.is_some_and(|hashes| hashes.contains_key(&number))
             });
             if !listed {
                 return Err(Error::Execution(format!(

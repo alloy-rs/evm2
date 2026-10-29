@@ -13,7 +13,10 @@ use evm2_eest::{
 };
 use secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
 use serde::Deserialize;
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::Path,
+};
 
 /// Chain ID used to sign protected transactions, as in `evm t8n`.
 const CHAIN_ID: u64 = 1;
@@ -67,7 +70,8 @@ pub struct Env {
     /// EIP-4788 parent beacon block root.
     pub parent_beacon_block_root: Option<B256>,
     /// Block hashes by block number, for `BLOCKHASH` and EIP-2935.
-    pub block_hashes: Option<BTreeMap<String, B256>>,
+    #[serde(default, deserialize_with = "block_hashes")]
+    pub block_hashes: Option<HashMap<u64, B256>>,
     /// Withdrawals applied after the transactions.
     pub withdrawals: Option<Vec<Withdrawal>>,
 }
@@ -213,6 +217,29 @@ impl Inputs {
             reward,
         })
     }
+}
+
+/// Reads block hashes keyed by decimal or `0x` hex block number, as `evm t8n` does.
+fn block_hashes<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<HashMap<u64, B256>>, D::Error> {
+    let hashes = Option::<BTreeMap<String, B256>>::deserialize(deserializer)?;
+    hashes
+        .map(|hashes| {
+            hashes
+                .into_iter()
+                .map(|(number, hash)| {
+                    let parsed = match number.strip_prefix("0x") {
+                        Some(hex) => u64::from_str_radix(hex, 16),
+                        None => number.parse(),
+                    };
+                    parsed.map(|number| (number, hash)).map_err(|_| {
+                        serde::de::Error::custom(format!("invalid block hash number `{number}`"))
+                    })
+                })
+                .collect()
+        })
+        .transpose()
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Error> {
