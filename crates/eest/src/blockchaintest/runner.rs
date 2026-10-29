@@ -210,11 +210,6 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     "prague/eip7251_consolidations",
     "prague/eip7685_general_purpose_el_requests",
 
-    // A failed EIP-4788 or EIP-2935 system call does not invalidate the block, but the runner treats
-    // every failed system call as an invalid block.
-    "eip8037_state_creation_gas_cost_increase/state_gas_system_calls/system_call_execution_boundary.json",
-    "eip7928_block_level_access_lists/block_access_lists_cross_index/bal_pre_execution_call_failure_keeps_read_drops_write.json",
-
     // This fixture has a block gas limit below the transaction intrinsic gas and belongs to block validation.
     "static/state_tests/stEIP1559/lowGasLimit.json",
 ];

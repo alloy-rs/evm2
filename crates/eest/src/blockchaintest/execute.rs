@@ -851,6 +851,7 @@ fn pre_block_system_calls(
             BEACON_ROOTS_ADDRESS,
             Bytes::copy_from_slice(root.as_slice()),
             "eip4788",
+            false,
         )?;
     }
     if spec.enables(SpecId::PRAGUE)
@@ -862,6 +863,7 @@ fn pre_block_system_calls(
             HISTORY_STORAGE_ADDRESS,
             Bytes::copy_from_slice(hash.as_slice()),
             "eip2935",
+            false,
         )?;
     }
     Ok(())
@@ -910,13 +912,21 @@ fn post_block_transition(
     }
 
     if spec.enables(SpecId::PRAGUE) {
-        run_system_call(evm, block_state, WITHDRAWAL_REQUEST_ADDRESS, Bytes::new(), "eip7002")?;
+        run_system_call(
+            evm,
+            block_state,
+            WITHDRAWAL_REQUEST_ADDRESS,
+            Bytes::new(),
+            "eip7002",
+            true,
+        )?;
         run_system_call(
             evm,
             block_state,
             evm2::evm::CONSOLIDATION_REQUEST_ADDRESS,
             Bytes::new(),
             "eip7251",
+            true,
         )?;
     }
 
@@ -928,6 +938,7 @@ fn post_block_transition(
             evm2::evm::BUILDER_DEPOSIT_REQUEST_ADDRESS,
             Bytes::new(),
             "eip8282_deposit",
+            true,
         )?;
         run_system_call(
             evm,
@@ -935,6 +946,7 @@ fn post_block_transition(
             evm2::evm::BUILDER_EXIT_REQUEST_ADDRESS,
             Bytes::new(),
             "eip8282_exit",
+            true,
         )?;
     }
     Ok(())
@@ -946,9 +958,15 @@ fn run_system_call(
     address: Address,
     data: Bytes,
     label: &'static str,
+    checked: bool,
 ) -> Result<(), TestErrorKind> {
     let executed = evm.system_call(SystemTx::new(address, data))?;
     if !executed.result().status {
+        // A failed unchecked call keeps the state accesses it recorded, which a BAL lists as reads.
+        if !checked {
+            let _ = executed.commit_to(block_state);
+            return Ok(());
+        }
         let _ = executed.discard();
         let has_code = match evm.read_account_info(&address) {
             Ok(info) => info.is_some_and(|info| !info.is_empty_code_hash()),
