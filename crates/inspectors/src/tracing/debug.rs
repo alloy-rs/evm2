@@ -1,6 +1,6 @@
 use crate::tracing::{
-    FourByteInspector, MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
-    final_refunded,
+    FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MuxInspector,
+    TracingInspector, TracingInspectorConfig, TransactionContext, final_refunded,
 };
 use alloc::vec::Vec;
 use alloy_consensus::{Transaction, transaction::Recovered};
@@ -49,6 +49,8 @@ pub enum DebugInspector {
     FlatCallTracer(TracingInspector),
     /// Erc7562Tracer
     Erc7562Tracer(TracingInspector, Erc7562Config),
+    /// Keccak256PreimageTracer
+    Keccak256Preimage(Keccak256PreimageInspector),
     /// Default tracer
     Default(TracingInspector, GethDefaultTracingOptions),
     /// JS tracer
@@ -72,6 +74,7 @@ impl DebugInspector {
             Self::Erc7562Tracer(inspector, config) => {
                 Self::Erc7562Tracer(inspector.clone(), config.clone())
             }
+            Self::Keccak256Preimage(inspector) => Self::Keccak256Preimage(inspector.clone()),
             Self::Default(inspector, config) => Self::Default(inspector.clone(), *config),
             #[cfg(feature = "js-tracer")]
             Self::Js(inspector) => Self::Js(inspector.try_clone()?.into()),
@@ -160,6 +163,10 @@ impl DebugInspector {
                         return Err(DebugInspectorError::UnsupportedTracer);
                     }
                 },
+                // geth looks a tracer up by name before it evaluates the string as JavaScript.
+                GethDebugTracerType::JsTracer(name) if name == KECCAK256_PREIMAGE_TRACER => {
+                    Self::Keccak256Preimage(Keccak256PreimageInspector::default())
+                }
                 #[cfg(not(feature = "js-tracer"))]
                 GethDebugTracerType::JsTracer(_) => {
                     return Err(DebugInspectorError::JsTracerNotEnabled);
@@ -197,6 +204,7 @@ impl DebugInspector {
             | Self::FlatCallTracer(inspector)
             | Self::Erc7562Tracer(inspector, _)
             | Self::Default(inspector, _) => inspector.fuse(),
+            Self::Keccak256Preimage(inspector) => inspector.clear(),
             Self::Noop(_) | Self::StateGasTracer(_) => {}
             Self::Mux(inspector, config) => {
                 *inspector = MuxInspector::try_from_config(config.clone())?;
@@ -277,10 +285,7 @@ impl DebugInspector {
             .into(),
             Self::Mux(inspector, _) => {
                 inspector.finalize_transaction(tx, &res.result);
-                inspector
-                    .try_into_mux_frame(res, db, tx_info)
-                    .map_err(DebugInspectorError::Database)?
-                    .into()
+                inspector.try_into_mux_frame(res, db, tx_info)?.into()
             }
             Self::FlatCallTracer(inspector) => {
                 inspector.recover_runtime_oog_root(tx, &res.result);
@@ -302,6 +307,7 @@ impl DebugInspector {
                     .map_err(DebugInspectorError::Database)?
                     .into()
             }
+            Self::Keccak256Preimage(inspector) => GethTrace::JS(inspector.json_result()?),
             Self::Default(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit());
                 inspector.set_transaction_caller(tx.signer());
@@ -353,6 +359,7 @@ macro_rules! delegate {
             Self::FlatCallTracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Erc7562Tracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Default($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
+            Self::Keccak256Preimage($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Noop($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::StateGasTracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
             Self::Mux($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
@@ -443,6 +450,9 @@ pub enum DebugInspectorError {
     /// Error from MuxInspector
     #[error(transparent)]
     MuxInspector(#[from] crate::tracing::MuxError),
+    /// The keccak256 preimage tracer reached its limit of recorded bytes
+    #[error(transparent)]
+    Keccak256Preimage(#[from] crate::tracing::Keccak256PreimageLimitExceeded),
     /// Error from JS inspector
     #[cfg(feature = "js-tracer")]
     #[error(transparent)]
