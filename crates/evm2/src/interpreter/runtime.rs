@@ -247,12 +247,12 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     /// Returns the execution gas the current step charged, before its effects.
     ///
     /// This is the gas remaining at the start of the step minus the gas remaining once the step
-    /// finished charging, leaving out state gas drawn from the remaining gas because the
-    /// reservoir was empty and counting state gas refilled into it. State gas is not part of the
-    /// execution cost; [`Gas::state_gas_spent`] reports it. Call and create steps finish
-    /// charging right before they hand gas to the child, so their cost includes the forwarded
-    /// gas for calls and excludes it for creates. Any other step finishes charging when it ends,
-    /// which makes its cost the execution gas it consumed.
+    /// finished charging, leaving out state gas that spills into the remaining gas because the
+    /// reservoir was short or is refilled from it. State gas is not part of the execution cost;
+    /// [`Gas::state_gas_spent`] reports it. Call and create steps finish charging right before
+    /// they hand gas to the child, so their cost includes the forwarded gas for calls and
+    /// excludes it for creates. Any other step finishes charging when it ends, which makes its
+    /// cost the execution gas it consumed.
     ///
     /// Only meaningful in [`Inspector::step_end`](crate::inspector::Inspector::step_end).
     #[inline]
