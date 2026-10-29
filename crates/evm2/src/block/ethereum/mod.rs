@@ -165,8 +165,10 @@ where
     pub receipts: Vec<R::Receipt>,
     /// Total receipt gas used.
     pub cumulative_gas_used: u64,
-    block_regular_gas_used: u64,
-    block_state_gas_used: u64,
+    /// Regular gas used for Amsterdam block-capacity accounting.
+    pub block_regular_gas_used: u64,
+    /// State gas used for Amsterdam block-capacity accounting.
+    pub block_state_gas_used: u64,
     separate_block_gas: bool,
     /// Total blob gas used.
     pub blob_gas_used: u64,
@@ -555,7 +557,9 @@ where
     }
 }
 
-const fn final_block_gas_used(
+/// Returns the block header's gas used: the larger of regular and state gas under EIP-8037,
+/// receipt gas otherwise.
+pub const fn final_block_gas_used(
     separate_block_gas: bool,
     cumulative_gas_used: u64,
     block_regular_gas_used: u64,
