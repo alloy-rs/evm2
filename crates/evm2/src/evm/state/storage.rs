@@ -315,6 +315,7 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     pub(crate) fn zero_loaded(&mut self) {
         self.storage.slots.iter_mut().for_each(|(_, slot)| {
             slot.value.set_current(Word::ZERO);
+            slot.created_zero = false;
         });
     }
 }

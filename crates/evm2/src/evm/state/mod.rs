@@ -1438,6 +1438,32 @@ mod tests {
     }
 
     #[test]
+    fn finalization_wipe_clears_the_marker_of_a_slot_whose_reload_failed() {
+        let caller = Address::with_last_byte(1);
+        let address = Address::with_last_byte(2);
+        let key = Word::from(1);
+        let version = Version::base(crate::SpecId::LONDON);
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_storage(&address, &key, &Word::from(6));
+        let mut state = State::new(db);
+
+        let checkpoint = state.checkpoint();
+        state.create_account(&caller, &address, &Word::ZERO, version.features).unwrap().unwrap();
+        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
+        state.set_bal(Arc::new(Bal::from_iter([(address, AccountBal::default())])));
+        state.set_bal_index(BlockAccessIndex::new(1));
+        state.rollback(checkpoint, version.features);
+        state.clear_bal();
+
+        state.account(&address).unwrap().mark_destructed();
+        state.finalize_transaction_(version);
+
+        assert_eq!(state.storage_slot_untracked(&address, &key).unwrap(), Word::ZERO);
+        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
+    }
+
+    #[test]
     fn rollback_of_creation_reloads_only_slots_loaded_under_it() {
         let caller = Address::with_last_byte(1);
         let address = Address::with_last_byte(2);
