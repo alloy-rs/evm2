@@ -129,7 +129,10 @@ fn dispatch_inner<T: EvmTypesHost, C: EvmConfig<T>, M: InspectMode<T>, G: Dispat
         }
     }
     if M::INSPECT {
-        state.set_result(r);
+        // A hook that ran inside the instruction may have stopped the frame; keep that stop.
+        if let Err(e) = r {
+            state.set_result(Err(e));
+        }
     } else if let Err(e) = r {
         state.set_result(Err(e));
         cold_path();
@@ -200,8 +203,12 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
         } else if cursor.pc().as_ptr().is_null() {
             return finish_run(state, cursor, loop_state);
         }
-        if (M::INSPECT || M::WATCH) && is_message_op(op) && stop_if_config_changed(state) {
-            // Continue after the instruction on the table for the new config.
+        if (M::INSPECT || M::WATCH)
+            && is_message_op(op)
+            // A message hook may have stopped this frame, and the plain handlers do not look.
+            && (state.result().is_err() || stop_if_config_changed(state))
+        {
+            // Continue after the instruction on the table for the new config, if it changed.
             return finish_run(state, cursor, loop_state);
         }
     }

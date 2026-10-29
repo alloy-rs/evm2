@@ -110,7 +110,11 @@ extern_table! {
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
             }
         }
-        if (M::INSPECT || M::WATCH) && is_message_op(OP) && stop_if_config_changed(state) {
+        if (M::INSPECT || M::WATCH)
+            && is_message_op(OP)
+            // A message hook may have stopped this frame, and the plain handlers do not look.
+            && (state.result().is_err() || stop_if_config_changed(state))
+        {
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         // SAFETY: `instructions` is a pointer to a `TailInstrTable`.

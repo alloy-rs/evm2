@@ -596,6 +596,8 @@ mod tests {
         logs: Vec<Log>,
         /// The opcode and stack length the interpreter shows to the call hook of a child message.
         call_sites: Vec<(u8, usize)>,
+        /// Stops the parent frame when a child message ends.
+        stop_after_child: bool,
     }
 
     impl ConfigInspector {
@@ -646,6 +648,17 @@ mod tests {
             // Like a cheatcode that changes what its caller's inspector wants to see.
             self.switched |= message.depth > 0;
             None
+        }
+
+        fn call_end(
+            &mut self,
+            interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            message: &Message<BaseEvmTypes>,
+            _result: &mut MessageResult<BaseEvmTypes>,
+        ) {
+            if self.stop_after_child && message.depth > 0 {
+                interp.set_stop(InstrStop::Revert);
+            }
         }
 
         fn create(
@@ -764,6 +777,30 @@ mod tests {
         assert_eq!(full.call_sites, [(op::CALL, 7)]);
         for steps in [OpcodeSet::EMPTY, opcode_set([op::SLOAD]), opcode_set([op::CALL])] {
             assert_eq!(run(steps).call_sites, full.call_sites);
+        }
+    }
+
+    #[test]
+    fn message_hook_can_stop_the_parent_without_steps() {
+        let (db, code) = config_test_code();
+        let run = |steps| {
+            let inspector =
+                ConfigInspector { stop_after_child: true, ..ConfigInspector::new(steps) };
+            run_evm_with_inspector_db(
+                db.clone(),
+                code.clone(),
+                &MessageExt::default(),
+                1_000_000,
+                inspector,
+            )
+        };
+        let (full, _, _) = run(OpcodeSet::ALL);
+        assert_eq!(full.stop, InstrStop::Revert);
+        for steps in [OpcodeSet::EMPTY, opcode_set([op::SLOAD]), opcode_set([op::CALL])] {
+            let (result, inspector, _) = run(steps);
+            assert_eq!(result, full);
+            // The frame stopped at the CALL, before the later CREATE.
+            assert_eq!(inspector.creates, 0);
         }
     }
 
