@@ -530,8 +530,11 @@ impl TracingInspector {
 
         self.last_journal_len = interp.host().state().journal().len();
 
-        let storage_slot =
-            if self.config.record_state_diff { storage_slot(interp, op.get()) } else { None };
+        let storage_slot = if self.config.record_state_diff {
+            storage_slot(interp.stack().as_slice(), op.get())
+        } else {
+            None
+        };
 
         let step_idx = node.trace.steps.len();
         node.trace.steps.push(CallTraceStep {
@@ -620,6 +623,7 @@ impl TracingInspector {
             );
         }
 
+        let address = interp.message().destination;
         let host = interp.host();
         let journal = host.state().journal();
 
@@ -653,6 +657,13 @@ impl TracingInspector {
             } else {
                 None
             };
+        }
+
+        // The slot an SLOAD read is loaded now, and the SLOAD did not change it.
+        if let Some((key, value)) = &mut step.storage_slot
+            && step.op.get() == op::SLOAD
+        {
+            *value = host.state().get_storage(&address, key).unwrap_or_default();
         }
 
         // An out-of-gas step consumes the whole remainder, except the reentrancy sentry, which
@@ -952,19 +963,11 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
     }
 }
 
-/// Returns the key and value of the storage slot an SLOAD or SSTORE is about to access, as
-/// geth's struct logger reads them before the opcode runs: an SLOAD reports the value the slot
-/// holds, an SSTORE the value it writes.
-fn storage_slot<T: EvmTypes>(interp: &mut Interpreter<'_, '_, T>, op: u8) -> Option<(U256, U256)> {
-    let stack = interp.stack();
-    let stack = stack.as_slice();
+/// Returns the key and value of the storage slot an SSTORE is about to write, or the key of the
+/// slot an SLOAD is about to read, with a zero value that `step_end` replaces.
+fn storage_slot(stack: &[U256], op: u8) -> Option<(U256, U256)> {
     match op {
-        op::SLOAD => {
-            let key = *stack.last()?;
-            let address = interp.message().destination;
-            let value = interp.host().state().get_storage(&address, &key).unwrap_or_default();
-            Some((key, value))
-        }
+        op::SLOAD => Some((*stack.last()?, U256::ZERO)),
         op::SSTORE => {
             let [.., value, key] = stack else { return None };
             Some((*key, *value))

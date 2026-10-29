@@ -681,7 +681,7 @@ pub struct CallTraceStep {
     /// The key and value a geth struct log snapshots for an SLOAD or SSTORE: the value the slot
     /// holds before an SLOAD, or the value an SSTORE writes.
     ///
-    /// This is set before the step executes, and only if state diffs are recorded.
+    /// Only set if state diffs are recorded.
     #[cfg_attr(feature = "serde", serde(default))]
     pub storage_slot: Option<(U256, U256)>,
     /// Final status of the step
