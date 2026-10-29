@@ -140,7 +140,7 @@ fn load_acc_and_calc_gas<T: EvmTypesHost>(
         stack_gas_limit
     };
     gas.spend(gas_limit)?;
-    state.finish_step_charge(gas.remaining());
+    state.finish_step_charge(gas);
 
     if transfers_value {
         gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend));
@@ -238,9 +238,8 @@ fn call_inner<T: EvmTypesHost>(
     let new_account_state_gas =
         prepare_call(stack.reborrow(), gas, state, kind, &mut message, &mut return_memory_range)?;
 
-    let tx_env = state.tx();
     let mut result =
-        state.host().execute_message(tx_env, &mut message).map_err(|error| state.fail(error))?;
+        state.host().execute_message(&mut message).map_err(|error| state.fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop);
     }
@@ -368,7 +367,8 @@ fn create_inner<T: EvmTypesHost>(
             charged_create_state_gas = true;
         }
     }
-    state.finish_step_charge(gas.remaining());
+    // The state gas charged above spills into regular gas but stays out of the step cost.
+    state.finish_step_charge(gas);
     let gas_limit = if state.feature(EvmFeatures::EIP150) {
         state.gas_params().call_stipend_reduction(gas.remaining())
     } else {
@@ -376,7 +376,6 @@ fn create_inner<T: EvmTypesHost>(
     };
     gas.spend(gas_limit)?;
 
-    let tx_env = state.tx();
     let mut message = MessageExt {
         kind,
         depth,
@@ -396,7 +395,7 @@ fn create_inner<T: EvmTypesHost>(
         _non_exhaustive: (),
     };
     let mut result =
-        state.host().execute_message(tx_env, &mut message).map_err(|error| state.fail(error))?;
+        state.host().execute_message(&mut message).map_err(|error| state.fail(error))?;
     if result.stop.is_fatal() {
         return Err(result.stop);
     }

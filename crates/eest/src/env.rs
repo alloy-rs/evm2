@@ -1,7 +1,7 @@
 use crate::{
     blockchaintest::env::explicit_blockchain_test_root_from_env,
     fixtures::{
-        DEVNET_ONLY_ENV, EEST_STABLE_ENV, apply_subdir, apply_subdir_to_roots, env_flag,
+        EEST_ONLY_ENV, EEST_STABLE_ENV, apply_subdir, apply_subdir_to_roots, env_flag,
         fixtures_root, workspace_relative, workspace_root,
     },
     harness::TestRoot,
@@ -65,9 +65,9 @@ pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
         fixtures.join("main/develop/state_tests")
     };
     let mut roots = vec![StateTestRoot {
-        name: "statetests::devnet".to_string(),
-        label: "execution-spec-tests devnet",
-        path: fixtures.join("devnet/state_tests"),
+        name: "statetests::eest".to_string(),
+        label: "execution-specs release",
+        path: fixtures.join("eest/state_tests"),
     }];
 
     if eest_path.is_dir() {
@@ -78,7 +78,7 @@ pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
         });
     }
 
-    if !env_flag(DEVNET_ONLY_ENV) {
+    if !env_flag(EEST_ONLY_ENV) {
         roots.push(StateTestRoot {
             name: "legacy::cancun".to_string(),
             label: "legacy Cancun",

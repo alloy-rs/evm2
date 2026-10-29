@@ -9,7 +9,7 @@ test-fixtures/
 ├── main/
 │   ├── stable/{state_tests,blockchain_tests}/...
 │   └── develop/{state_tests,blockchain_tests}/...
-├── devnet/
+├── eest/
 │   └── {state_tests,blockchain_tests}/...
 └── legacytests/
     ├── Cancun/GeneralStateTests/...
@@ -22,16 +22,17 @@ Populate it with:
 ./scripts/setup_test_fixtures.py
 ```
 
-By default this downloads the glamsterdam devnet fixtures plus the legacy
-Cancun and Constantinople state tests. Set `EVM2_STATETEST_MAIN=1` to also
+By default this downloads the mainline execution-specs release fixtures
+(`tests@v21.0.1`, Frontier through Amsterdam) plus the legacy Cancun and
+Constantinople state tests. Set `EVM2_STATETEST_MAIN=1` to also
 download the EEST `main` develop suite (stable with `EVM2_STATETEST_STABLE=1`),
-or `EVM2_STATETEST_DEVNET_ONLY=1` to skip the legacy fixtures.
+or `EVM2_STATETEST_EEST_ONLY=1` to skip the legacy fixtures.
 
 The legacy fixtures come from the `ethereum/legacytests` commit that the
 `ethereum/tests` v17.2 `LegacyTests` submodule pins; override it with
-`LEGACY_VERSION`. The runner fails when a default devnet or legacy root is
+`LEGACY_VERSION`. The runner fails when a default execution-specs or legacy root is
 missing, unless the other suite got an explicit root. The `main` roots are
-optional. If you clear `DEVNET_VERSION`, set `EVM2_STATETEST_ROOT` and
+optional. If you clear `EEST_VERSION`, set `EVM2_STATETEST_ROOT` and
 `EVM2_BLOCKCHAINTEST_ROOT`.
 
 Run all discovered EEST fixtures with the single `eest` test binary:
@@ -89,7 +90,7 @@ Run all discovered state tests with nextest:
 cargo nextest run -p evm2-eest --test eest --ignore-default-filter statetests
 ```
 
-This runs every downloaded state-test root: `devnet/state_tests`, the legacy
+This runs every downloaded state-test root: `eest/state_tests`, the legacy
 Cancun and Constantinople state tests, and `main/develop/state_tests` when the
 `main` suite has been downloaded. EEST develop includes the stable fixtures, so
 stable is not run separately.
@@ -105,7 +106,7 @@ Run all discovered blockchain tests with nextest:
 cargo nextest run -p evm2-eest --test eest --ignore-default-filter blockchain_tests
 ```
 
-This runs every downloaded blockchain-test root: `devnet/blockchain_tests`,
+This runs every downloaded blockchain-test root: `eest/blockchain_tests`,
 plus `main/develop/blockchain_tests` when the `main` suite has been downloaded.
 Transition forks are skipped. Blocks with a `blockAccessList` build the block
 access list and check it against the fixture, including the header hash.
