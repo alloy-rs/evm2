@@ -42,6 +42,9 @@
 //! values that its condition bounds on an edge, such as an index below an array length, get that
 //! bound there. Memory writes at ranged offsets only forget the words in their range.
 //! A jump to a range goes to the valid jump targets in it, such as the entries of a jump table.
+//! When a jump's operand is no range but an instruction before it leaves a narrow one, such as the
+//! index of a table that the code reads with a shift, the analysis runs the rest of the block on
+//! each value of that range, and the jump goes to the targets it finds.
 //!
 //! ## Soundness
 //!
@@ -283,26 +286,48 @@ const MAX_RANGE_JUMP_WIDTH: usize = 4096;
 /// compile time.
 const MAX_RANGE_JUMP_TARGETS: usize = 1024;
 
+/// Number of values below which [`Bytecode::enumerate_jump`] runs the rest of a block on each value
+/// of a range. Ranges of two values are conditions, which no table indexes.
+const MAX_ENUMERATED_VALUES: u32 = 256;
+
 /// Maximum number of segments that may continue a stack, beyond which the stack is truncated
 /// instead, so that the joins and the runs of a block on each segment stay cheap.
 const MAX_SEGS_BELOW: usize = 64;
 
 /// Memory words at constant offsets whose values are known, sorted by offset and disjoint.
 ///
-/// Only words written by `MSTORE` are tracked, so memory already covers a word that `MLOAD`
-/// folds and the load needs no memory expansion. Every instruction that writes memory clears
-/// the words it may overlap, and joins keep only the words known on every path. The number of
-/// words is not capped: dropping a word to make room for another would make the transfer
-/// non-monotone (a more precise state could forget a word that a less precise one keeps), which
-/// lets the fixpoint reach a block that the committed jump resolutions no longer justify.
+/// Only words written by `MSTORE` or by a constant `CODECOPY` are tracked, so memory already
+/// covers a word that `MLOAD` folds and the load needs no memory expansion. Every instruction
+/// that writes memory clears the words it may overlap, and joins keep only the words known on
+/// every path. The number of words is not capped: dropping a word to make room for another would
+/// make the transfer non-monotone (a more precise state could forget a word that a less precise
+/// one keeps), which lets the fixpoint reach a block that the committed jump resolutions no
+/// longer justify.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct MemWords(SmallVec<[(u32, AbsValue); 4]>);
+struct MemWords {
+    words: SmallVec<[(u32, AbsValue); 4]>,
+    /// Whether no instruction has written memory yet, so every byte not in `words` is zero.
+    pristine: bool,
+}
 
 impl MemWords {
-    /// Applies the memory effect of `opcode` with the given `inputs` (TOS last).
+    /// Returns the state at the start of the code, where memory is empty if the caller passes no
+    /// stack.
+    fn entry(stack_observed: bool) -> Self {
+        Self { words: SmallVec::new(), pristine: !stack_observed }
+    }
+
+    /// Applies the memory effect of `opcode` with the given `inputs` (TOS last), where `code` is
+    /// the code being analyzed.
     ///
     /// Returns the known value loaded by an `MLOAD`.
-    fn transfer(&mut self, opcode: u8, inputs: &[AbsValue]) -> Option<AbsValue> {
+    fn transfer(
+        &mut self,
+        opcode: u8,
+        inputs: &[AbsValue],
+        code: &[u8],
+        interner: &mut U256Interner,
+    ) -> Option<AbsValue> {
         // Offsets and lengths that fit in an inline immediate, and their bounds; larger ones are
         // unknown.
         let imm = |depth: usize| inputs[inputs.len() - 1 - depth].as_const()?.get_inline();
@@ -311,8 +336,8 @@ impl MemWords {
         match opcode {
             op::MLOAD => {
                 let offset = imm(0)?;
-                let i = self.0.binary_search_by_key(&offset, |&(o, _)| o).ok()?;
-                return Some(self.0[i].1);
+                let i = self.words.binary_search_by_key(&offset, |&(o, _)| o).ok()?;
+                return Some(self.words[i].1);
             }
             op::MSTORE => {
                 let value = inputs[inputs.len() - 2];
@@ -320,14 +345,18 @@ impl MemWords {
                 if let Some(offset) = imm(0)
                     && value != AbsValue::Top
                 {
-                    let i = self.0.partition_point(|&(o, _)| o < offset);
-                    self.0.insert(i, (offset, value));
+                    self.set(offset, value);
                 }
             }
             op::MSTORE8 => self.clobber(bounds(0), Some(1)),
-            op::CALLDATACOPY | op::CODECOPY | op::RETURNDATACOPY | op::MCOPY => {
-                self.clobber(bounds(0), len(2))
+            op::CODECOPY => {
+                let word = self.codecopy_word(imm(0), imm(1), imm(2), code, interner);
+                self.clobber(bounds(0), len(2));
+                if let Some((offset, value)) = word {
+                    self.set(offset, AbsValue::Const(U256Imm::new(value, interner)));
+                }
             }
+            op::CALLDATACOPY | op::RETURNDATACOPY | op::MCOPY => self.clobber(bounds(0), len(2)),
             op::EXTCODECOPY => self.clobber(bounds(1), len(3)),
             op::CALL | op::CALLCODE => self.clobber(bounds(5), len(6)),
             op::DELEGATECALL | op::STATICCALL => self.clobber(bounds(4), len(5)),
@@ -336,33 +365,71 @@ impl MemWords {
         None
     }
 
+    /// Returns the word that a `CODECOPY` of `len` bytes at `src` to `dest` leaves at the end of
+    /// its destination, where memory expansion covers it, if the rest of that word is known: a
+    /// tracked word at the same offset, or zeros when memory is `pristine`.
+    fn codecopy_word(
+        &self,
+        dest: Option<u32>,
+        src: Option<u32>,
+        len: Option<u32>,
+        code: &[u8],
+        interner: &U256Interner,
+    ) -> Option<(u32, U256)> {
+        let (dest, src, len) = (dest?, src? as usize, len?);
+        let offset = dest.checked_add(len)?.checked_sub(32).filter(|_| (1..=32).contains(&len))?;
+        let len = len as usize;
+        let base = match self.words.binary_search_by_key(&offset, |&(o, _)| o) {
+            Ok(i) => self.words[i].1.as_const()?.get(interner),
+            Err(_) if self.pristine => U256::ZERO,
+            Err(_) => return None,
+        };
+        let mut word = base.to_be_bytes::<32>();
+        let copied = &mut word[32 - len..];
+        copied.fill(0);
+        // Bytes past the end of the code are zero.
+        if let Some(code) = code.get(src..) {
+            let n = len.min(code.len());
+            copied[..n].copy_from_slice(&code[..n]);
+        }
+        Some((offset, U256::from_be_bytes(word)))
+    }
+
+    /// Records the known `value` of the word at `offset`.
+    fn set(&mut self, offset: u32, value: AbsValue) {
+        let i = self.words.partition_point(|&(o, _)| o < offset);
+        self.words.insert(i, (offset, value));
+    }
+
     /// Forgets every word that a write of at most `len` bytes at an offset in `offset` may
-    /// overlap.
+    /// overlap, and clears `pristine`.
     fn clobber(&mut self, offset: Option<RangeInclusive<u32>>, len: Option<u32>) {
+        self.pristine = false;
         match (offset, len) {
             (_, Some(0)) => {}
             (Some(offset), len) => {
                 // Inline immediates are below 2^31, so these sums cannot overflow.
                 let end = len.map_or(u32::MAX, |len| offset.last + len);
-                self.0.retain(|&mut (o, _)| o + 32 <= offset.start || end <= o);
+                self.words.retain(|&mut (o, _)| o + 32 <= offset.start || end <= o);
             }
-            (None, _) => self.0.clear(),
+            (None, _) => self.words.clear(),
         }
     }
 
     /// Keeps the words known in both states, joining their values. Returns `true` if `self`
     /// changed.
     fn join(&mut self, other: &Self, sets: &mut ConstSetInterner) -> bool {
-        let len = self.0.len();
-        let mut changed = false;
-        self.0.retain(|(offset, value)| {
-            let Ok(i) = other.0.binary_search_by_key(offset, |&(o, _)| o) else { return false };
-            let joined = sets.join(*value, other.0[i].1);
+        let len = self.words.len();
+        let mut changed = self.pristine && !other.pristine;
+        self.pristine &= other.pristine;
+        self.words.retain(|(offset, value)| {
+            let Ok(i) = other.words.binary_search_by_key(offset, |&(o, _)| o) else { return false };
+            let joined = sets.join(*value, other.words[i].1);
             changed |= joined != *value;
             *value = joined;
             joined != AbsValue::Top
         });
-        changed || self.0.len() != len
+        changed || self.words.len() != len
     }
 }
 
@@ -556,7 +623,30 @@ struct Fixpoint {
     discovered: IndexVec<Block, SmallVec<[Block; 4]>>,
     /// Constant sets referenced by the snapshots.
     const_sets: ConstSetInterner,
+    /// What enumerating ranges found for the dynamic jump that ends each block.
+    enumerated: IndexVec<Block, Enumerated>,
     converged: bool,
+}
+
+/// What [`Bytecode::enumerate_jump`] found over all states of the dynamic jump that ends a block.
+#[derive(Clone, Copy, Default)]
+struct Enumerated {
+    /// Whether a state enumerated the range of its jump operand.
+    done: bool,
+    /// Whether the operand may be an invalid jump target in some state.
+    invalid: bool,
+    /// Whether some state has an operand that is neither resolvable nor enumerable.
+    failed: bool,
+}
+
+/// Scratch stacks of [`Bytecode::enumerate_jump`].
+#[derive(Default)]
+struct EnumerateBuf {
+    stack: Vec<AbsValue>,
+    mem: MemWords,
+    /// The state after the instruction that leaves the range.
+    split_stack: Vec<AbsValue>,
+    split_mem: MemWords,
 }
 
 /// Block states of [`Bytecode::run_fixpoint`], one per context of each block.
@@ -1166,19 +1256,38 @@ impl Bytecode<'_> {
         jump_insts: &[Inst],
         fixpoint: &Fixpoint,
     ) -> Vec<(Inst, JumpResolution)> {
-        let Fixpoint { reached, const_sets, converged, .. } = fixpoint;
+        let Fixpoint { reached, discovered, const_sets, enumerated, converged } = fixpoint;
         let mut range_budget = MAX_RANGE_JUMP_TARGETS;
         jump_insts
             .iter()
             .map(|&jump_inst| {
+                let bid = self.cfg.inst_to_block[jump_inst];
                 // Blocks the fixpoint never reached keep their block-local snapshots.
-                let target = if *converged
-                    && self.cfg.inst_to_block[jump_inst].is_some_and(|bid| !reached[bid.index()])
-                {
+                let mut target = if *converged && bid.is_some_and(|bid| !reached[bid.index()]) {
                     JumpResolution::bottom()
                 } else {
                     self.resolve_jump(jump_inst, const_sets, &mut range_budget)
                 };
+                // The snapshot of a jump operand that was enumerated is too imprecise, but the
+                // targets that the fixpoint discovered are all the jump can reach, as long as every
+                // state resolved or enumerated its operand.
+                if *converged
+                    && target.is_top()
+                    && let Some(bid) = bid
+                    && let Enumerated { done: true, invalid, failed: false } = enumerated[bid]
+                {
+                    let mut targets: SmallVec<[Inst; 4]> =
+                        discovered[bid].iter().map(|&tb| self.cfg.blocks[tb].insts.start).collect();
+                    targets.sort_unstable();
+                    // As for a range, a single target would skip the invalid jump check.
+                    let count = targets.len();
+                    if count > 1 && count <= range_budget {
+                        range_budget -= count;
+                    } else if count != 1 || invalid {
+                        return (jump_inst, target);
+                    }
+                    target = JumpResolution::resolved(targets).with_condition(target.condition);
+                }
                 (jump_inst, target)
             })
             .collect()
@@ -1422,8 +1531,9 @@ impl Bytecode<'_> {
         // Entry block starts with an empty stack, or with unknown entries when the caller may
         // pass a stack.
         let no_mem = MemWords::default();
+        let entry_mem = MemWords::entry(self.stack_observed());
         let entry = Block::from_usize(0);
-        parts.join(entry, 0, &[], self.stack_observed(), &[], &no_mem, &mut const_sets, &budget);
+        parts.join(entry, 0, &[], self.stack_observed(), &[], &entry_mem, &mut const_sets, &budget);
 
         // Discovered dynamic-jump target edges per block.
         let mut discovered: IndexVec<Block, SmallVec<[Block; 4]>> =
@@ -1451,6 +1561,19 @@ impl Bytecode<'_> {
         let forwarders: BitVec =
             self.cfg.blocks.indices().map(|bid| self.is_forwarder(bid)).collect();
         let mut copies = vec![0; self.jumpdests.len()];
+        // The blocks that end in a dynamic jump, whose operand ranges the fixpoint may enumerate.
+        let dynamic_jumps: BitVec = self
+            .cfg
+            .blocks
+            .iter()
+            .map(|block| {
+                let term = &self.insts[block.terminator()];
+                term.is_jump() && !term.flags.contains(InstFlags::STATIC_JUMP)
+            })
+            .collect();
+        let mut enumerated =
+            IndexVec::<Block, _>::from_vec(vec![Enumerated::default(); num_blocks]);
+        let mut enumerate_buf = EnumerateBuf::default();
 
         'fixpoint: while let Some(Reverse((_, pid))) = parts.worklist.pop() {
             parts.queued.set(pid.index(), false);
@@ -1482,6 +1605,10 @@ impl Bytecode<'_> {
             let term_inst = self.cfg.blocks[bid].terminator();
             let mut operand = None;
             let mut condition = AbsValue::Top;
+            // The narrowest range that an instruction of a dynamic jump's block leaves on the
+            // stack.
+            let dynamic_jump = dynamic_jumps[bid.index()];
+            let mut narrowest: Option<(Inst, RangeInclusive<u32>)> = None;
             for i in insts {
                 if i == term_inst {
                     operand = stack_buf.last().copied();
@@ -1493,6 +1620,16 @@ impl Bytecode<'_> {
                     break 'fixpoint;
                 }
                 if self.interpret_inst(i, &mut stack_buf, truncated, &mut mem_buf, Record::Skip) {
+                    if dynamic_jump
+                        && i != term_inst
+                        && let Some(&AbsValue::Range(range)) = stack_buf.last()
+                        && (2..MAX_ENUMERATED_VALUES).contains(&(range.last - range.start))
+                        && narrowest
+                            .as_ref()
+                            .is_none_or(|(_, n)| range.last - range.start < n.last - n.start)
+                    {
+                        narrowest = Some((i, range));
+                    }
                     continue;
                 }
                 // If the block reads below the state's entries rather than halts, run it on each
@@ -1542,13 +1679,66 @@ impl Bytecode<'_> {
 
             // Discover dynamic-jump target edges from this context's jump operand.
             targets.clear();
-            let term = &self.insts[term_inst];
-            if term.is_jump()
-                && !term.flags.contains(InstFlags::STATIC_JUMP)
-                && condition != JumpCondition::AlwaysFalse
-                && let Some(operand) = operand
-            {
-                self.jump_target_blocks(operand, &const_sets, &mut targets);
+            if dynamic_jump && condition != JumpCondition::AlwaysFalse {
+                let state = &mut enumerated[bid];
+                match operand {
+                    Some(operand) => {
+                        self.jump_target_blocks(operand, &const_sets, &mut targets);
+                        let unresolved = match operand {
+                            AbsValue::Top => true,
+                            AbsValue::Range(range) => self.range_jumpdests(range).is_none(),
+                            AbsValue::Const(_) | AbsValue::ConstSet(_) => false,
+                        };
+                        if unresolved {
+                            let len = targets.len();
+                            let found = narrowest.and_then(|(split, range)| {
+                                // Each value copies the stack and runs the rest of the block.
+                                let values = u64::from(range.last - range.start + 1);
+                                let rest = term_inst.index() - split.index();
+                                let copy = stack_buf.len().min(MAX_ABS_STACK_DEPTH);
+                                work += self.cfg.blocks[bid].insts().len() as u64
+                                    + values * (rest + copy) as u64;
+                                // The runs repeat folds that the analysis keeps, so they must not
+                                // drain that budget, but their cost counts as work.
+                                let gas = self.compiler_gas_used;
+                                let found = self.enumerate_jump(
+                                    bid,
+                                    &parts.states[pid].1,
+                                    split,
+                                    range,
+                                    &mut enumerate_buf,
+                                    &mut targets,
+                                );
+                                work += self.compiler_gas_used - gas;
+                                self.compiler_gas_used = gas;
+                                found
+                            });
+                            match found {
+                                Some(invalid) => {
+                                    state.done = true;
+                                    state.invalid |= invalid;
+                                }
+                                None => {
+                                    targets.truncate(len);
+                                    state.failed = true;
+                                }
+                            }
+                        } else {
+                            // Sets only hold valid targets, and a range may hold others.
+                            state.invalid |= match operand {
+                                AbsValue::Const(_) => self.jump_target_pc(operand).is_none(),
+                                AbsValue::ConstSet(_) => false,
+                                AbsValue::Range(_) | AbsValue::Top => true,
+                            };
+                            if let AbsValue::Const(imm) = operand
+                                && !self.fits_switch_case(imm)
+                            {
+                                state.failed = true;
+                            }
+                        }
+                    }
+                    None => state.failed = true,
+                }
                 for &tb in &targets {
                     if discovered_set.insert((bid, tb)) {
                         discovered[bid].push(tb);
@@ -1679,7 +1869,75 @@ impl Bytecode<'_> {
             }
         }
         let reached = parts.by_key.iter().map(|p| !p.is_empty()).collect();
-        Fixpoint { reached, discovered, const_sets, converged }
+        Fixpoint { reached, discovered, const_sets, enumerated, converged }
+    }
+
+    /// Finds the targets of the dynamic jump that ends `bid` by running the rest of the block on
+    /// each value of `range`, which the instruction `split` leaves on top of the stack, such as
+    /// the index of a jump table that the code reads with a shift.
+    ///
+    /// `entry` is the state at the entry of the block. Returns `None` if a value leaves a jump
+    /// operand that is not constant, and otherwise whether a value jumps to an invalid target,
+    /// after adding the blocks of the valid targets to `targets`. A value whose path halts before
+    /// the jump has no target.
+    fn enumerate_jump(
+        &mut self,
+        bid: Block,
+        entry: &BlockState,
+        split: Inst,
+        range: RangeInclusive<u32>,
+        buf: &mut EnumerateBuf,
+        targets: &mut SmallVec<[Block; 4]>,
+    ) -> Option<bool> {
+        let BlockState::Known { stack, truncated, mem, .. } = entry else { return None };
+        let EnumerateBuf { stack: values, mem: values_mem, split_stack, split_mem } = buf;
+        split_stack.clone_from(stack);
+        split_mem.clone_from(mem);
+        let term = self.cfg.blocks[bid].terminator();
+        for i in self.cfg.blocks[bid].insts().take_while(|&i| i <= split) {
+            if !self.interpret_inst(i, split_stack, *truncated, split_mem, Record::Skip) {
+                return None;
+            }
+        }
+
+        let mut invalid = false;
+        for value in range.start..=range.last {
+            values.clone_from(split_stack);
+            values_mem.clone_from(split_mem);
+            let imm = U256Imm::new(U256::from(value), &mut self.u256_interner.borrow_mut());
+            *values.last_mut()? = AbsValue::Const(imm);
+            let mut rest =
+                self.cfg.blocks[bid].insts().skip_while(|&i| i <= split).take_while(|&i| i < term);
+            let reaches_jump =
+                rest.all(|i| self.interpret_inst(i, values, *truncated, values_mem, Record::Skip));
+            if !reaches_jump {
+                continue;
+            }
+            let target = *values.last()?;
+            let AbsValue::Const(_) = target else { return None };
+            match self.jump_target_pc(target) {
+                Some(pc) => {
+                    let tb = self.cfg.inst_to_block[self.pc_to_inst(pc as usize)]?;
+                    if !targets.contains(&tb) {
+                        targets.push(tb);
+                    }
+                }
+                None => {
+                    let AbsValue::Const(imm) = target else { return None };
+                    if !self.fits_switch_case(imm) {
+                        return None;
+                    }
+                    invalid = true;
+                }
+            }
+        }
+        Some(invalid)
+    }
+
+    /// Returns whether a switch on the low 64 bits of a jump operand tells `imm` from the valid
+    /// jump targets, which it does unless `imm` has bits above them.
+    fn fits_switch_case(&self, imm: U256Imm) -> bool {
+        u64::try_from(imm.get(&self.u256_interner.borrow())).is_ok()
     }
 
     /// Returns what the condition of the `JUMPI` that ends `bid` shows about its successors.
@@ -1779,7 +2037,7 @@ impl Bytecode<'_> {
         (tracked as u8, truncated || stack.len() > tracked, continued).hash(&mut hasher);
         match mode {
             ContextMode::Full | ContextMode::Folded => {
-                for &(offset, value) in &mem.0 {
+                for &(offset, value) in &mem.words {
                     if let Some(pc) = self.jump_target_pc(value) {
                         (offset, pc).hash(&mut hasher);
                     }
@@ -1994,11 +2252,16 @@ impl Bytecode<'_> {
                     None
                 } else if inst.flags.contains(InstFlags::HOST) {
                     // The host's instruction may write any memory and any stack word.
-                    mem.0.clear();
+                    *mem = MemWords::default();
                     stack.fill(AbsValue::Top);
                     None
                 } else {
-                    mem.transfer(inst.opcode, &stack[stack.len() - inp..])
+                    mem.transfer(
+                        inst.opcode,
+                        &stack[stack.len() - inp..],
+                        &self.code,
+                        &mut self.u256_interner.borrow_mut(),
+                    )
                 };
 
                 // Try constant folding for common arithmetic, respecting the gas budget.
@@ -4188,11 +4451,38 @@ mod tests_edge_cases {
         ];
         for op in ["CALLDATACOPY", "CODECOPY", "RETURNDATACOPY", "MCOPY", "PUSH0 EXTCODECOPY"] {
             for (operands, expected) in cases {
+                // A constant `CODECOPY` ending the word rewrites it, see
+                // `mload_word_after_codecopy`.
+                if op == "CODECOPY" && operands == "PUSH 1 PUSH0 PUSH 0x5f" {
+                    continue;
+                }
                 assert_eq!(
                     mload_0x40_after(&format!("{operands} {op}")),
                     expected,
                     "{operands} {op}"
                 );
+            }
+        }
+    }
+
+    /// A constant `CODECOPY` that ends the word at `0x40` replaces its last bytes with the copied
+    /// code, and zeros past the end of the code.
+    #[test]
+    fn mload_word_after_codecopy() {
+        for len in [1u8, 2, 16, 31, 32] {
+            for src in [0usize, 3, 20, 1000] {
+                let copy = format!("PUSH {len} PUSH {src} PUSH {:#x} CODECOPY", 0x60 - len);
+                let code = crate::parse_asm(&format!(
+                    "PUSH 0x80 PUSH 0x40 MSTORE\n{copy}\nPUSH 0x40 MLOAD PUSH0 MSTORE STOP"
+                ))
+                .unwrap();
+                let mut memory = [0u8; 0x60];
+                memory[0x5f] = 0x80;
+                for (i, byte) in memory[0x60 - len as usize..].iter_mut().enumerate() {
+                    *byte = code.get(src + i).copied().unwrap_or(0);
+                }
+                let expected = U256::from_be_slice(&memory[0x40..]);
+                assert_eq!(mload_0x40_after(&copy), Some(expected), "{copy}");
             }
         }
     }
@@ -4705,6 +4995,55 @@ mod tests_edge_cases {
         assert_eq!(multi_jump_target_pcs(&bytecode), [0x20, 0x22, 0x24, 0x26]);
     }
 
+    /// Vyper's dense selector table copies the entry for `selector % n` from the code into the
+    /// last two bytes of the first word of memory, which is all zeros otherwise, and jumps to that
+    /// word.
+    #[test]
+    fn codecopy_jump_table() {
+        let src = |prefix: &str| {
+            format!(
+                "
+                {prefix}
+                PUSH0
+                CALLDATALOAD
+                PUSH1 0xe0
+                SHR                 ; selector
+                PUSH1 0x03
+                SWAP1
+                MOD
+                PUSH1 0x01
+                SHL                 ; 2 * (selector % 3)
+                PUSH %table
+                ADD
+                PUSH1 0x01
+                ADD                 ; skip the PUSH6 opcode
+                PUSH1 0x02
+                SWAP1
+                PUSH1 0x1e
+                CODECOPY            ; memory[0x1e..0x20] = entry
+                PUSH0
+                MLOAD
+                JUMP
+                JUMPDEST            ; 0x1b
+                STOP
+                JUMPDEST            ; 0x1d
+                STOP
+                JUMPDEST            ; 0x1f
+                STOP
+            table:
+                PUSH6 0x001f001d001b
+                "
+            )
+        };
+        let bytecode = analyze_asm(&src(""));
+        assert!(!bytecode.has_dynamic_jumps);
+        assert_eq!(multi_jump_target_pcs(&bytecode), [0x1b, 0x1d, 0x1f]);
+
+        // The word is only known over zeros: after a write to memory the rest of it is unknown.
+        let bytecode = analyze_asm(&src("PUSH0 CALLDATALOAD PUSH1 0x40 MSTORE"));
+        assert!(bytecode.has_dynamic_jumps);
+    }
+
     /// Range jumps resolve to at most [`MAX_RANGE_JUMP_TARGETS`] targets in total, since each
     /// becomes its own switch.
     #[test]
@@ -4718,6 +5057,127 @@ mod tests_edge_cases {
         let bytecode = analyze_asm(&format!(
             "{jumpdests} PUSH0 CALLDATALOAD PUSH0 CALLDATALOAD PUSH2 0x03ff AND JUMPI {jump}"
         ));
+        assert!(bytecode.has_dynamic_jumps);
+    }
+
+    /// Solar's `-Ogas` dispatcher shifts a packed table of `u16` targets right by `16 * (selector %
+    /// n)`. The shift of a constant by a range is not a range, so only enumerating the values of
+    /// the index finds the targets.
+    #[test]
+    fn packed_jump_table() {
+        let src = |entry1: &str, table: &str| {
+            format!(
+                "
+                PUSH0
+                CALLDATALOAD
+                PUSH1 0xe0
+                SHR                 ; selector
+                PUSH1 0x03
+                DUP2
+                MOD
+                PUSH1 0x04
+                SHL                 ; 16 * (selector % 3)
+                PUSH6 {table}
+                SWAP1
+                SHR
+                PUSH2 0xffff
+                AND
+                JUMP
+                JUMPDEST            ; 0x1a
+                STOP
+                {entry1}            ; 0x1c
+                STOP
+                JUMPDEST            ; 0x1e
+                STOP
+                "
+            )
+        };
+        let bytecode = analyze_asm(&src("JUMPDEST", "0x001e001c001a"));
+        assert!(!bytecode.has_dynamic_jumps);
+        assert_eq!(multi_jump_target_pcs(&bytecode), [0x1a, 0x1c, 0x1e]);
+
+        // An entry that is not a jump target fails at runtime, in the switch's default case.
+        let bytecode = analyze_asm(&src("STOP", "0x001e001c001a"));
+        assert!(!bytecode.has_dynamic_jumps);
+        assert_eq!(multi_jump_target_pcs(&bytecode), [0x1a, 0x1e]);
+
+        // A static jump to the only target would skip that failure.
+        let bytecode = analyze_asm(&src("STOP", "0x001c001c001a"));
+        assert!(bytecode.has_dynamic_jumps);
+
+        // The switch compares only the low 64 bits of the operand, so an invalid target above
+        // them could take a valid one.
+        let wide = |entry2: &str| {
+            format!(
+                "
+                PUSH0
+                CALLDATALOAD
+                PUSH1 0xe0
+                SHR
+                PUSH1 0x03
+                DUP2
+                MOD
+                PUSH1 0x48
+                MUL                 ; 72 * (selector % 3)
+                PUSH27 0x{entry2}000000000000000038000000000000000036
+                SWAP1
+                SHR
+                PUSH9 0xffffffffffffffffff
+                AND
+                JUMP
+                JUMPDEST            ; 0x36
+                STOP
+                JUMPDEST            ; 0x38
+                STOP
+                JUMPDEST            ; 0x3a
+                STOP
+                "
+            )
+        };
+        let bytecode = analyze_asm(&wide("00000000000000003a"));
+        assert!(!bytecode.has_dynamic_jumps);
+        let bytecode = analyze_asm(&wide("01000000000000003a"));
+        assert!(bytecode.has_dynamic_jumps);
+
+        // A narrow range that is not the index of the jump operand.
+        let bytecode = analyze_asm(
+            "
+            JUMPDEST
+            JUMPDEST
+            JUMPDEST
+            PUSH0
+            CALLDATALOAD
+            PUSH1 0x03
+            AND
+            PUSH0
+            CALLDATALOAD
+            JUMP
+            ",
+        );
+        assert!(bytecode.has_dynamic_jumps);
+
+        // A narrow range below the jump operand, which the jump leaves on top of the stack.
+        let bytecode = analyze_asm(
+            "
+            JUMPDEST
+            JUMPDEST
+            JUMPDEST
+            PUSH0
+            CALLDATALOAD
+            PUSH1 0x03
+            AND
+            PUSH0
+            CALLDATALOAD
+            PUSH %end
+            JUMPI
+            PUSH0
+            CALLDATALOAD
+            JUMP
+        end:
+            JUMPDEST
+            STOP
+            ",
+        );
         assert!(bytecode.has_dynamic_jumps);
     }
 

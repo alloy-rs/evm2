@@ -42,10 +42,12 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     pub(in crate::interpreter) stack: Box<StackBacking>,
 
     pub(in crate::interpreter) gas: Gas,
+    /// Remaining gas at the start of the current inspected step.
+    step_gas_before: u64,
+    /// Remaining gas once the current step finished charging, if it marked that point.
+    step_gas_after_charge: Option<u64>,
     pub(in crate::interpreter) result: Result,
     error: Option<ExecutionError>,
-    step_gas_before: u64,
-    failed_charge: Option<u64>,
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
@@ -85,11 +87,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             bytecode_ref: None,
             stack_len: 0,
             gas: Gas::new(0),
+            step_gas_before: 0,
+            step_gas_after_charge: None,
             memory: Memory::new(),
             result: Ok(()),
             error: None,
-            step_gas_before: 0,
-            failed_charge: None,
             output: 0..0,
             tx_env: None,
             message: None,
@@ -114,8 +116,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.memory.clear();
         self.result = Ok(());
         self.error = None;
-        self.step_gas_before = 0;
-        self.failed_charge = None;
         self.output = 0..0;
         self.tx_env = Some(tx_env);
         self.message = Some(message);
@@ -243,6 +243,23 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.gas = gas;
     }
 
+    /// Returns the gas the current step charged for its execution, before its effects.
+    ///
+    /// This is the gas remaining at the start of the step minus the gas remaining once the step
+    /// finished charging. Call and create steps finish charging right before they hand gas to
+    /// the child, so their cost includes the forwarded gas for calls and excludes it for creates.
+    /// Any other step finishes charging when it ends, which makes its cost the gas it consumed.
+    ///
+    /// Only meaningful in [`Inspector::step_end`](crate::inspector::Inspector::step_end).
+    #[inline]
+    pub const fn step_cost(&self) -> u64 {
+        let remaining = match self.step_gas_after_charge {
+            Some(remaining) => remaining,
+            None => self.gas.remaining(),
+        };
+        self.step_gas_before.saturating_sub(remaining)
+    }
+
     /// Returns the current linear memory.
     #[inline]
     pub const fn memory(&self) -> &Memory {
@@ -265,15 +282,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub const fn set_result(&mut self, result: Result) {
         self.result = result;
-    }
-
-    /// Returns the execution gas the current step attempted to charge when it ran out of gas.
-    ///
-    /// Only set during an inspector's `step_end`, where the remaining gas has already been
-    /// zeroed after the failed charge.
-    #[inline]
-    pub const fn failed_charge(&self) -> Option<u64> {
-        self.failed_charge
     }
 
     /// Sets the current instruction result to `stop`.
@@ -715,12 +723,12 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
+        self.0.step_gas_before = self.0.gas.remaining();
+        self.0.step_gas_after_charge = None;
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
         }
-        self.0.step_gas_before = self.0.gas.remaining();
-        self.0.failed_charge = None;
     }
 
     #[inline]
@@ -729,8 +737,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.stack_len = stack_len;
         if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
             cold_path();
-            self.0.failed_charge =
-                Some(self.0.step_gas_before.wrapping_sub(self.0.gas.remaining()));
             // Failed charges may leave a wrapped counter until frame settlement.
             self.0.gas.set_remaining(0);
         }
@@ -738,6 +744,13 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step_end(&mut self.0);
         }
+    }
+
+    /// Marks that the current step finished charging gas, so [`Interpreter::step_cost`] stops
+    /// counting gas after this point.
+    #[inline]
+    pub(crate) const fn finish_step_charge(&mut self, remaining: u64) {
+        self.0.step_gas_after_charge = Some(remaining);
     }
 
     #[inline]
