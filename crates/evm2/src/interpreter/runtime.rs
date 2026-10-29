@@ -251,7 +251,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     pub const fn step_cost(&self) -> u64 {
         let after = match self.step_gas_after_charge {
             Some(after) => after,
-            None => gas_excluding_state(&self.gas),
+            None => self.gas.remaining_excluding_state_spill(),
         };
         self.step_gas_before.saturating_sub(after)
     }
@@ -704,7 +704,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        self.0.step_gas_before = gas_excluding_state(&self.0.gas);
+        self.0.step_gas_before = self.0.gas.remaining_excluding_state_spill();
         self.0.step_gas_after_charge = None;
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
@@ -731,7 +731,7 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     /// counting gas after this point.
     #[inline]
     pub(crate) const fn finish_step_charge(&mut self, gas: &Gas) {
-        self.0.step_gas_after_charge = Some(gas_excluding_state(gas));
+        self.0.step_gas_after_charge = Some(gas.remaining_excluding_state_spill());
     }
 
     #[inline]
@@ -797,13 +797,6 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
         // `push`, and this borrow is tied to the pool borrow.
         Some(unsafe { trustme::decouple_interpreter_lt_mut(frame) })
     }
-}
-
-/// Returns the remaining gas plus the state gas drawn from it, which is the remaining gas had
-/// the reservoir covered every state charge.
-#[inline]
-const fn gas_excluding_state(gas: &Gas) -> u64 {
-    gas.remaining().saturating_add(gas.state_gas_spilled())
 }
 
 #[cfg(test)]
