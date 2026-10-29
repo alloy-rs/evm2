@@ -16,7 +16,7 @@ use derive_where::derive_where;
 #[cfg(tco)]
 use alloc::{sync::Arc, vec::Vec};
 #[cfg(tco)]
-use core::{cell::RefCell, ops::Deref};
+use core::{borrow::Borrow, cell::RefCell};
 
 /// Runtime EVM type family.
 ///
@@ -337,11 +337,9 @@ pub(crate) enum InspectTable<T: EvmTypesHost> {
 }
 
 #[cfg(tco)]
-impl<T: EvmTypesHost> Deref for InspectTable<T> {
-    type Target = InstrTable<T>;
-
+impl<T: EvmTypesHost> Borrow<InstrTable<T>> for InspectTable<T> {
     #[inline]
-    fn deref(&self) -> &Self::Target {
+    fn borrow(&self) -> &InstrTable<T> {
         match self {
             Self::Static(table) => table,
             Self::Mixed(table) => table,

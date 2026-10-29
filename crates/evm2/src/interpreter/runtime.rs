@@ -15,6 +15,9 @@ use alloy_primitives::{Address, B256, Bytes};
 use core::{fmt, hint::cold_path, ops::Range, ptr::NonNull};
 use derive_where::derive_where;
 
+#[cfg(tco)]
+use core::borrow::Borrow;
+
 /// EVM interpreter.
 #[derive_where(Debug)]
 pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
@@ -532,7 +535,9 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             // SAFETY: The inspector pointer is valid for this run.
             self.steps = unsafe { inspector.as_ref() }.config().steps;
             let instructions = config.inspect_instructions_for(self.steps);
-            let stop = dispatch::run(self, &instructions);
+            #[cfg(tco)]
+            let instructions = instructions.borrow();
+            let stop = dispatch::run(self, instructions);
             if stop != InstrStop::ReloadTable {
                 return stop;
             }

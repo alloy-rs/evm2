@@ -110,10 +110,8 @@ extern_table! {
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
             }
         }
-        if (M::INSPECT || M::WATCH) && is_message_op(OP) {
-            if stop_if_config_changed(state) {
-                tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
-            }
+        if (M::INSPECT || M::WATCH) && is_message_op(OP) && stop_if_config_changed(state) {
+            tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         // SAFETY: `instructions` is a pointer to a `TailInstrTable`.
         let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };
