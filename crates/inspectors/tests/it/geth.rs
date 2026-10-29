@@ -20,7 +20,7 @@ use evm2::{
 };
 use evm2_inspectors::tracing::{
     DebugInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MEMORY_PAD_LIMIT,
-    MuxInspector, TracingInspector, TracingInspectorConfig,
+    MuxInspector, TraceLimits, TracingInspector, TracingInspectorConfig,
 };
 
 #[test]
@@ -2282,5 +2282,28 @@ fn keccak256_preimage_tracer_bounds_the_padding_like_geth() {
             })
             .unwrap();
         assert_eq!(inspector.json_result().as_object().unwrap().len(), recorded);
+    }
+}
+
+#[test]
+fn keccak256_preimage_tracer_stops_recording_at_the_byte_limit() {
+    // MSTORE(0, 0x2a), then KECCAK256 of 32 and of 64 bytes.
+    let code = hex!("602a5f52" "60205f2050" "60405f2050");
+    for (limit, recorded, exceeded) in [(40, 1, true), (96, 2, false)] {
+        let (contract, db) = contract_with_code(&code);
+        let mut inspector = Keccak256PreimageInspector::new(
+            TraceLimits::default().set_max_recorded_bytes(Some(limit)),
+        );
+        Context::mainnet()
+            .with_db(db)
+            .build_mainnet_with_inspector(&mut inspector)
+            .inspect_tx(TxEnv {
+                gas_limit: 1_000_000,
+                kind: TransactTo::Call(contract),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(inspector.json_result().as_object().unwrap().len(), recorded);
+        assert_eq!(inspector.limit_exceeded(), exceeded);
     }
 }
