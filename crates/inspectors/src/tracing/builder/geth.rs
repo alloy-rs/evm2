@@ -29,8 +29,9 @@ pub(crate) const MIN_STRUCT_LOG_JSON_LEN: u64 = 48;
 ///
 /// geth counts these bytes against the `limit` option. The JSON is compact, orders the fields as
 /// `pc`, `op`, `gas`, `gasCost`, `depth`, `error`, `stack`, `returnData`, `memory`, `storage` and
-/// `refund`, and omits the optional ones that are unset, empty or zero. It escapes `<`, `>` and `&`
-/// in strings as `\u00xx`.
+/// `refund`, and omits the optional ones that are unset, empty or zero. It also counts the
+/// `stateGasCost` and `stateGasReservoir` fields that evm2 adds after EIP-8037. It escapes `<`, `>`
+/// and `&` in strings as `\u00xx`.
 ///
 /// See <https://github.com/ethereum/go-ethereum/blob/a0cba163b1f17f6044df84502ff13036dffb5de1/eth/tracers/logger/logger.go#L145-L155>
 fn struct_log_json_len(log: &StructLog) -> usize {
@@ -50,6 +51,14 @@ fn struct_log_json_len(log: &StructLog) -> usize {
     // `{"pc":`, `,"op":"`, `","gas":`, `,"gasCost":`, `,"depth":` and `}`.
     let mut len = 6 + digits(log.pc) + 7 + log.op.len() + 1 + 7 + digits(log.gas);
     len += 11 + digits(log.gas_cost) + 9 + digits(log.depth) + 1;
+    // The fields after EIP-8037 that evm2 adds to the struct log: `,"stateGasCost":` and
+    // `,"stateGasReservoir":`.
+    if let Some(cost) = log.state_gas_cost {
+        len += 16 + usize::from(cost < 0) + digits(cost.unsigned_abs());
+    }
+    if let Some(reservoir) = log.state_gas_reservoir {
+        len += 21 + digits(reservoir);
+    }
     if let Some(error) = log.error.as_ref().filter(|error| !error.is_empty()) {
         let escaped = error.bytes().filter(|byte| matches!(byte, b'<' | b'>' | b'&')).count();
         len += 10 + error.len() + 5 * escaped + 1;

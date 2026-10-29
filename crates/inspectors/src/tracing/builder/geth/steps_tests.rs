@@ -361,6 +361,25 @@ fn struct_log_json_len_skips_the_fields_geth_omits() {
 }
 
 #[test]
+fn struct_log_json_len_counts_the_state_gas_fields() {
+    for (cost, reservoir) in [(None, None), (Some(0), Some(0)), (Some(-1234), Some(99_999))] {
+        let log = StructLog {
+            op: "SSTORE".into(),
+            gas: 100,
+            depth: 2,
+            state_gas_cost: cost,
+            state_gas_reservoir: reservoir,
+            ..Default::default()
+        };
+        assert_eq!(
+            struct_log_json_len(&log),
+            serde_json::to_string(&log).unwrap().len(),
+            "{cost:?} {reservoir:?}"
+        );
+    }
+}
+
+#[test]
 fn struct_log_limit_counts_json_bytes() {
     let steps = [op::PUSH1, op::PUSH1, op::SSTORE, op::STOP]
         .iter()
