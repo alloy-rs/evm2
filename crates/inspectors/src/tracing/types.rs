@@ -447,10 +447,7 @@ impl CallTraceNode {
                 call_frame.to = None;
             }
 
-            if !self
-                .status()
-                .is_some_and(|status| status.is_revert() || status == InstrStop::NonceOverflow)
-            {
+            if !self.status().is_some_and(InstrStop::is_frame_revert) {
                 call_frame.gas_used = U256::from(self.trace.gas_limit);
                 call_frame.output = None;
             }
@@ -680,6 +677,11 @@ pub struct CallTraceStep {
     pub state_gas_spent: i64,
     /// Change of the contract state after step execution (effect of the SLOAD/SSTORE instructions)
     pub storage_change: Option<Box<StorageChange>>,
+    /// The key and value a geth struct log snapshots for an SLOAD or SSTORE: the value the slot
+    /// holds before an SLOAD, or the value an SSTORE writes.
+    ///
+    /// Only set if state diffs are recorded.
+    pub storage_slot: Option<Box<(U256, U256)>>,
     /// Final status of the step
     ///
     /// This is set after the step was executed.
@@ -783,7 +785,8 @@ pub struct StepDelta {
     /// The storage written by an `SSTORE`, taken from its operands, so it is also set when the
     /// value does not change.
     pub store: Option<StorageDelta>,
-    /// The remaining gas after a call-like step or an instruction that gained gas.
+    /// The remaining gas after a call-like step or a step whose remaining gas after execution is
+    /// not `gas_remaining - gas_cost`, such as one that gained gas or drew state gas from it.
     ///
     /// For all other steps the remaining gas after execution is `gas_remaining - gas_cost`.
     pub gas_remaining_after: Option<u64>,

@@ -1449,10 +1449,10 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             return Err(InstrStop::OutOfFunds.into());
         }
 
-        // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero instead of
-        // wrapping or saturating the creator nonce.
+        // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 fail the frame and return
+        // zero instead of wrapping or saturating the creator nonce.
         if nested && info.as_ref().is_some_and(|info| info.nonce == u64::MAX) {
-            return Err(InstrStop::Return.into());
+            return Err(InstrStop::NonceOverflow.into());
         }
 
         // `destination` already holds the contract address (derived when the message was

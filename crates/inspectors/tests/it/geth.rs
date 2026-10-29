@@ -7,6 +7,8 @@ use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
     TxEnv, deploy_contract, op,
 };
+use alloy_consensus::crypto::secp256k1::sign_message;
+use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, keccak256, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::{
@@ -25,6 +27,7 @@ use evm2_inspectors::tracing::{
     DebugInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MEMORY_PAD_LIMIT,
     MuxInspector, TraceLimits, TracingInspector, TracingInspectorConfig,
 };
+use std::collections::BTreeMap;
 
 #[test]
 fn test_calltracer_invalid_opcode_errors() {
@@ -2415,4 +2418,250 @@ fn mux_flat_call_tracer_does_not_shift_call_tracer_log_positions() {
         panic!("expected a flat call tracer frame");
     };
     assert_eq!(traces.len(), 1);
+}
+
+/// The expected snapshots come from go-ethereum master a0cba163: the struct logger adds the slot
+/// of every SLOAD and SSTORE that does not fail before it runs, with the value an SLOAD reads or an
+/// SSTORE writes, and snapshots all slots of the contract so far.
+#[test]
+fn struct_log_storage_snapshots_match_geth() {
+    let account = address!("1000000000000000000000000000000000000001");
+    let slot = |slot: u8| B256::with_last_byte(slot);
+    let value = |value: u8| U256::from(value).into();
+    // SLOAD 5 (holds 7), SSTORE 5 = 7 (unchanged), SLOAD 5 (warm), SSTORE 6 = 1, SLOAD 6, and an
+    // SSTORE that runs out of gas, which fails before it runs.
+    let code = hex!("60055450600760055560055450600160065560065450600160075500");
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &account,
+        AccountInfo {
+            code: Some(Bytecode::new_raw(Bytes::from(code.to_vec()))),
+            ..Default::default()
+        },
+    );
+    db.insert_account_storage(&account, &U256::from(5), &U256::from(7));
+    let mut inspector = DebugInspector::new(Default::default()).unwrap();
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .build_mainnet()
+        .with_inspector(&mut inspector);
+    let result = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 21000 + 3 * 1000 + 30000,
+            kind: TransactTo::Call(account),
+            ..Default::default()
+        })
+        .unwrap();
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &result.tx_result, ctx.db_mut()).unwrap();
+    let GethTrace::Default(frame) = trace else { panic!("expected a default trace") };
+
+    let snapshots: Vec<_> = frame
+        .struct_logs
+        .iter()
+        .filter(|log| matches!(log.op.as_ref(), "SLOAD" | "SSTORE"))
+        .map(|log| (log.op.to_string(), log.storage.clone(), log.error.is_some()))
+        .collect();
+    let after_first = BTreeMap::from([(slot(5), value(7))]);
+    let after_sstore = BTreeMap::from([(slot(5), value(7)), (slot(6), value(1))]);
+    assert_eq!(snapshots[0], ("SLOAD".into(), Some(after_first.clone()), false));
+    assert_eq!(snapshots[1], ("SSTORE".into(), Some(after_first.clone()), false));
+    assert_eq!(snapshots[2], ("SLOAD".into(), Some(after_first), false));
+    assert_eq!(snapshots[3].1, Some(after_sstore.clone()));
+    assert_eq!(snapshots[4], ("SLOAD".into(), Some(after_sstore), false));
+    assert_eq!((snapshots[5].1.clone(), snapshots[5].2), (None, true));
+}
+
+/// A delegatecall child writes to the storage of its caller, and an SSTORE that fails in a static
+/// call leaves no snapshot.
+#[test]
+fn struct_log_storage_snapshots_follow_the_storage_context() {
+    let parent = address!("1000000000000000000000000000000000000001");
+    let writer = address!("00000000000000000000000000000000000000c0");
+    let static_writer = address!("00000000000000000000000000000000000000d0");
+    // The parent delegatecalls the writer, loads the slot it wrote, then static calls the second
+    // writer.
+    let parent_code = hex!(
+        "600060006000600060c05af450"
+        "60015450"
+        "600060006000600060d05afa5000"
+    );
+    let mut db = CacheDB::<EmptyDB>::default();
+    for (address, code) in [
+        (parent, parent_code.to_vec()),
+        (writer, hex!("6002600155").to_vec()),
+        (static_writer, hex!("6003600455").to_vec()),
+    ] {
+        db.insert_account_info(
+            &address,
+            AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
+        );
+    }
+    let mut inspector = DebugInspector::new(Default::default()).unwrap();
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .build_mainnet()
+        .with_inspector(&mut inspector);
+    let result = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(parent),
+            ..Default::default()
+        })
+        .unwrap();
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &result.tx_result, ctx.db_mut()).unwrap();
+    let GethTrace::Default(frame) = trace else { panic!("expected a default trace") };
+
+    let snapshot = BTreeMap::from([(B256::with_last_byte(1), U256::from(2).into())]);
+    let logs: Vec<_> = frame
+        .struct_logs
+        .iter()
+        .filter(|log| matches!(log.op.as_ref(), "SLOAD" | "SSTORE"))
+        .map(|log| (log.depth, log.op.to_string(), log.storage.clone()))
+        .collect();
+    assert_eq!(
+        logs,
+        [
+            (2, "SSTORE".to_string(), Some(snapshot.clone())),
+            (1, "SLOAD".to_string(), Some(snapshot)),
+            (2, "SSTORE".to_string(), None),
+        ]
+    );
+}
+
+/// Geth omits every account that was empty before the transaction from the pre state, including
+/// accounts that the transaction only funds, such as a fresh recipient and a fresh coinbase.
+#[test]
+fn test_geth_prestate_diff_omits_empty_accounts() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let coinbase = address!("2adc25665018aa1fe0e6bc666dac8fc2697ff9ba");
+    let recipient = address!("2222222222222222222222222222222222222222");
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .modify_block_chained(|block| {
+            block.beneficiary = coinbase;
+            block.basefee = U256::from(8);
+        })
+        .build_mainnet();
+
+    let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
+    let mut insp =
+        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
+    let mut db = evm.ctx.db.clone();
+    let res = evm
+        .with_inspector(&mut insp)
+        .inspect_tx(TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            gas_price: 0x600,
+            kind: TransactTo::Call(recipient),
+            value: U256::from(5),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = insp
+        .with_transaction_gas_used(res.result.tx_gas_used())
+        .geth_builder()
+        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
+        .unwrap();
+
+    // Output of geth's `evm t8n --trace.tracer prestateTracer --trace.jsonconfig
+    // '{"diffMode":true}'`.
+    assert_eq!(
+        serde_json::to_value(frame).unwrap(),
+        serde_json::json!({
+            "post": {
+                "0x2222222222222222222222222222222222222222": { "balance": "0x5" },
+                "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": { "balance": "0x1e99fc0" },
+                "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {
+                    "balance": "0x16345785b9dcffb",
+                    "nonce": 1
+                }
+            },
+            "pre": {
+                "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": { "balance": "0x16345785d8a0000" }
+            }
+        })
+    );
+}
+
+/// Geth reports `"code":"0x"` in the post state when the transaction clears an account's code, as
+/// an EIP-7702 authorization to the zero address does with a delegation.
+#[test]
+fn test_geth_prestate_diff_reports_cleared_code() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let authority = address!("7e5f4552091a69125d5dfcb7b8c2659029395bdf");
+    let delegation = Bytes::from(hex!("ef0100000000000000000000000000000000000000aaaa"));
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &authority,
+        AccountInfo {
+            balance: U256::from(1),
+            code_hash: alloy_primitives::keccak256(&delegation),
+            code: Some(Bytecode::new_raw(delegation.clone())),
+            ..Default::default()
+        },
+    );
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::PRAGUE)
+        .build_mainnet();
+
+    // Signed by the key of `authority`; delegates to the zero address, which clears the code.
+    let authorization = Authorization { chain_id: U256::from(1), address: Address::ZERO, nonce: 0 };
+    let signature = sign_message(B256::with_last_byte(1), authorization.signature_hash()).unwrap();
+    let authorization = authorization.into_signed(signature);
+    assert_eq!(authorization.recover_authority().unwrap(), authority);
+
+    let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
+    let mut insp =
+        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
+    let mut db = evm.ctx.db.clone();
+    let res = evm
+        .with_inspector(&mut insp)
+        .inspect_tx(TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            kind: TransactTo::Call(address!("2222222222222222222222222222222222222222")),
+            authorization_list: vec![authorization],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = insp
+        .with_transaction_gas_used(res.result.tx_gas_used())
+        .geth_builder()
+        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
+        .unwrap();
+    let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
+
+    assert_eq!(diff.pre[&authority].code, Some(delegation));
+    assert_eq!(diff.post[&authority].code, Some(Bytes::new()));
+    assert_eq!(diff.post[&authority].nonce, Some(1));
+    assert_eq!(
+        serde_json::to_value(&diff.post[&authority]).unwrap(),
+        serde_json::json!({ "code": "0x", "nonce": 1 })
+    );
 }

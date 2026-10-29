@@ -339,7 +339,7 @@ impl JsInspector {
 
         if result.status {
             output_bytes = Some(result.output.clone());
-        } else if result.stop.is_revert() {
+        } else if result.stop.is_frame_revert() {
             error = Some("execution reverted".to_string());
             output_bytes = Some(result.output.clone());
         } else {
