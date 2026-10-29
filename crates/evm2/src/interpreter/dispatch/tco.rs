@@ -73,6 +73,10 @@ extern_table! {
             }
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
+        if M::LAZY {
+            // Message hooks see the caller's position without a step having published it.
+            state.set_pc_stack_len(pc.as_ptr(), stack.len());
+        }
         if M::INSPECT || dynamic_gas {
             state.gas_mut().set_remaining(remaining_gas.get());
         }

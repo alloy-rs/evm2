@@ -514,8 +514,11 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             // SAFETY: `prepare_run` initialized the host, and the config is only read here.
             let config = unsafe { self.execution_config_detached() };
             // SAFETY: The inspector pointer is valid for this run.
-            let mut stepping =
-                inspector.is_some_and(|inspector| unsafe { inspector.as_ref() }.wants_steps());
+            // A stop recorded before the run, such as by `initialize_interp`, ends the frame at its
+            // first step, so a frame that has one runs with steps.
+            let mut stepping = inspector.is_some_and(|inspector| {
+                self.result.is_err() || unsafe { inspector.as_ref() }.wants_steps()
+            });
             loop {
                 self.stepping = stepping;
                 let instructions = if stepping {
@@ -618,6 +621,14 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             return Err(InstrStop::Stop);
         }
         Ok(())
+    }
+
+    /// Returns the active opcode config without borrowing the interpreter.
+    #[inline]
+    #[cfg(not(tco))]
+    pub(crate) fn opcode_config(&self) -> &'host crate::OpcodeConfig<T> {
+        // SAFETY: The host is installed for the whole run and outlives it.
+        unsafe { self.0.execution_config_detached() }.opcode_config()
     }
 
     #[inline]

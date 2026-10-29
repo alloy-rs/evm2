@@ -718,6 +718,63 @@ mod tests {
     }
 
     #[test]
+    fn message_hooks_see_the_caller_position_without_steps() {
+        struct PositionInspector {
+            steps: bool,
+            positions: Vec<(usize, usize)>,
+        }
+
+        impl Inspector<BaseEvmTypes> for PositionInspector {
+            fn wants_steps(&self) -> bool {
+                self.steps
+            }
+
+            fn call(
+                &mut self,
+                interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.depth > 0 {
+                    self.positions.push((interp.pc(), interp.stack().len()));
+                }
+                None
+            }
+        }
+
+        let mut code = call_code(Address::from([0x66; 20]));
+        code.extend([op::CALL, op::STOP]);
+        let positions = |steps| {
+            let inspector = PositionInspector { steps, positions: Vec::new() };
+            run_evm_with_inspector(code.clone(), &MessageExt::default(), 100_000, inspector).1
+        };
+        let eager = positions(true);
+        let lazy = positions(false);
+        assert_eq!(eager.positions.len(), 1);
+        assert_ne!(eager.positions[0].0, 0);
+        assert_eq!(lazy.positions, eager.positions);
+    }
+
+    #[test]
+    fn stop_recorded_before_the_run_ends_a_frame_without_steps() {
+        struct InitStop;
+
+        impl Inspector<BaseEvmTypes> for InitStop {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                interp.set_stop(InstrStop::Revert);
+            }
+
+            fn wants_steps(&self) -> bool {
+                false
+            }
+        }
+
+        let code = vec![op::PUSH1, 1, op::PUSH0, op::SSTORE, op::STOP];
+        let (result, _, _) =
+            run_evm_with_inspector(code, &MessageExt::default(), 100_000, InitStop);
+        assert_eq!(result.stop, InstrStop::Revert);
+    }
+
+    #[test]
     fn inspector_gas_is_valid_after_out_of_gas() {
         struct GasInspector {
             recover: bool,

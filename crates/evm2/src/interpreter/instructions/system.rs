@@ -260,27 +260,27 @@ fn call_inner<T: EvmTypesHost>(
     stack.push_u64(result.stop.is_success() as u64)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas)]
+#[instruction(no_stack_preamble, dynamic_gas, message)]
 pub fn call(cx: _) -> Result {
     call_inner(stack, cx.gas, cx.state, MessageKind::Call)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas)]
+#[instruction(no_stack_preamble, dynamic_gas, message)]
 pub fn callcode(cx: _) -> Result {
     call_inner(stack, cx.gas, cx.state, MessageKind::CallCode)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas)]
+#[instruction(no_stack_preamble, dynamic_gas, message)]
 pub fn delegatecall(cx: _) -> Result {
     call_inner(stack, cx.gas, cx.state, MessageKind::DelegateCall)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas)]
+#[instruction(no_stack_preamble, dynamic_gas, message)]
 pub fn staticcall(cx: _) -> Result {
     call_inner(stack, cx.gas, cx.state, MessageKind::StaticCall)
 }
 
-#[instruction(no_stack_preamble, dynamic_gas)]
+#[instruction(no_stack_preamble, dynamic_gas, message)]
 pub fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     create_inner(stack, cx.gas, cx.state, IS_CREATE2)
 }

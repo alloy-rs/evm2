@@ -1,6 +1,4 @@
-use super::{
-    DynInspector, InspectMode, LazyInspector, NoInspector, inc_pc, is_message_op, run_state,
-};
+use super::{DynInspector, InspectMode, LazyInspector, NoInspector, inc_pc, run_state};
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{InstrStop, Interpreter, InterpreterState, Pc, RawStack, Result, StackMut},
@@ -161,6 +159,7 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
 ) -> InstrStop {
     let mut loop_state = imp::loop_state(state.gas_mut());
     let mut cursor = imp::Cursor::new(pc, stack.len());
+    let opcode_config = M::LAZY.then(|| state.opcode_config());
     loop {
         if M::INSPECT {
             imp::sync_loop_state(state, loop_state);
@@ -172,6 +171,11 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
         }
 
         let op = cursor.pc().op();
+        let message = opcode_config.is_some_and(|config| config.is_message_opcode(op));
+        if message {
+            // Message hooks see the caller's position without a step having published it.
+            state.set_pc_stack_len(cursor.pc().as_ptr(), cursor.stack_len());
+        }
         let instr = instructions[op as usize];
         cursor = {
             // SAFETY: This is the only stack borrow outside inspector callbacks.
@@ -188,10 +192,7 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
             }
         } else if cursor.pc().as_ptr().is_null() {
             return finish_run(state, cursor, loop_state);
-        } else if M::LAZY
-            && is_message_op(op)
-            && let Err(stop) = state.resume_stepping()
-        {
+        } else if message && let Err(stop) = state.resume_stepping() {
             // Continue after the instruction, now with steps.
             state.set_result(Err(stop));
             return finish_run(state, cursor, loop_state);

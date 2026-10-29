@@ -39,6 +39,8 @@ use syn::{
 ///   checks.
 /// - `#[instruction(dynamic_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
 ///   mutable gas state.
+/// - `#[instruction(message)]`: Marks an instruction that can run a child message. A frame whose
+///   inspector does not want steps asks the inspector again after each such instruction.
 /// - `#[instruction(EvmTypes = CustomTypes)]`: Implements the instruction for a concrete EVM type
 ///   family instead of generating a generic implementation.
 /// - `#[instruction(EvmTypes: CustomTypesTrait)]`: Adds a trait bound to the generated generic EVM
@@ -140,6 +142,7 @@ impl Parse for InstructionAttr {
 struct InstructionAttrs {
     no_stack_preamble: bool,
     dynamic_gas: bool,
+    message: bool,
     evm_types: Option<Type>,
     evm_types_span: Option<proc_macro2::Span>,
     evm_types_bounds: Vec<Punctuated<TypeParamBound, Token![+]>>,
@@ -156,6 +159,9 @@ impl InstructionAttrs {
                 }
                 InstructionAttr::Flag(arg) if arg == "dynamic_gas" => {
                     attrs.dynamic_gas = true;
+                }
+                InstructionAttr::Flag(arg) if arg == "message" => {
+                    attrs.message = true;
                 }
                 InstructionAttr::Flag(arg) => {
                     return Err(syn::Error::new_spanned(
@@ -295,6 +301,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         }
     });
     let dynamic_gas = instruction_attrs.dynamic_gas;
+    let message = instruction_attrs.message;
     quote! {
         #(#fn_attrs)*
         #[allow(non_camel_case_types)]
@@ -306,6 +313,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         #where_clause
         {
             const DYNAMIC_GAS: bool = #dynamic_gas;
+            const MESSAGE: bool = #message;
 
             #[inline]
             fn execute(
