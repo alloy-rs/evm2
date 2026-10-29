@@ -23,7 +23,8 @@ use std::{
 /// Hits after which a thread adds its hit count to the stats and reports every key it hits again.
 ///
 /// The backend refreshes a key's last-hit time from these reports, so a resident program used by
-/// any thread is reported at least once per this many of that thread's hits.
+/// any thread is reported at least once per this many of that thread's hits, and once after each
+/// eviction sweep, which keeps threads that hit less often from looking idle.
 const HIT_FLUSH_INTERVAL: u64 = 1024;
 
 thread_local! {
@@ -114,6 +115,8 @@ pub(crate) struct LocalCache {
     pending_hits: u64,
     /// Hits since `reported` was last cleared.
     hits_since_clear: u64,
+    /// The backend's report epoch when `reported` was last cleared.
+    report_epoch: u64,
     /// Number of live [`LocalProgram`]s borrowed from this cache.
     borrows: usize,
     /// Programs dropped from the cache while a [`LocalProgram`] may still run them.
@@ -129,6 +132,7 @@ impl LocalCache {
             reported: HashSet::default(),
             pending_hits: 0,
             hits_since_clear: 0,
+            report_epoch: 0,
             borrows: 0,
             retired: Vec::new(),
         }
@@ -163,13 +167,16 @@ impl LocalCache {
     }
 
     /// Counts a hit and reports `key` to the backend if it was not reported since `reported` was
-    /// last cleared, which happens every [`HIT_FLUSH_INTERVAL`] hits.
+    /// last cleared, which happens every [`HIT_FLUSH_INTERVAL`] hits and after each eviction
+    /// sweep.
     fn record_hit(&mut self, shared: &BackendShared, key: &RuntimeCacheKey) {
         self.pending_hits += 1;
         self.hits_since_clear += 1;
-        if self.hits_since_clear >= HIT_FLUSH_INTERVAL {
+        let epoch = shared.report_epoch.load(Ordering::Relaxed);
+        if self.hits_since_clear >= HIT_FLUSH_INTERVAL || epoch != self.report_epoch {
             self.reported.clear();
             self.hits_since_clear = 0;
+            self.report_epoch = epoch;
         }
         if self.reported.insert(*key) {
             // An empty bytecode marks a hit, which refreshes the key's last-hit time.
@@ -286,7 +293,7 @@ mod tests {
     use crate::runtime::{ResidentMap, backend::EventQueue, stats::RuntimeStats};
     use alloy_primitives::B256;
     use evm2::SpecId;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
 
     fn key(n: u64) -> RuntimeCacheKey {
         RuntimeCacheKey {
@@ -295,15 +302,28 @@ mod tests {
         }
     }
 
-    #[test]
-    fn hot_key_is_reported_again_while_new_keys_arrive() {
-        let shared = Arc::new(BackendShared {
+    fn backend_shared() -> Arc<BackendShared> {
+        Arc::new(BackendShared {
             resident: ResidentMap::default(),
             events: EventQueue::new(16 * HIT_FLUSH_INTERVAL as usize),
             local_caches: Default::default(),
             pause_depth: AtomicUsize::new(0),
+            report_epoch: AtomicU64::new(0),
             stats: Arc::new(RuntimeStats::default()),
-        });
+        })
+    }
+
+    fn reports_of(shared: &BackendShared, key: &RuntimeCacheKey) -> usize {
+        let mut reports = 0;
+        while let Some(event) = shared.events.pop() {
+            reports += usize::from(event.key == *key);
+        }
+        reports
+    }
+
+    #[test]
+    fn hot_key_is_reported_again_while_new_keys_arrive() {
+        let shared = backend_shared();
         let mut cache = LocalCache::new(Arc::downgrade(&shared));
 
         // Each first report of a new key adds the pending hits to the stats, which must not stop
@@ -314,10 +334,24 @@ mod tests {
             cache.record_hit(&shared, &key(n));
         }
 
-        let mut hot_reports = 0;
-        while let Some(event) = shared.events.pop() {
-            hot_reports += usize::from(event.key == hot);
-        }
+        let hot_reports = reports_of(&shared, &hot);
         assert!(hot_reports >= 2, "hot key reported {hot_reports} times");
+    }
+
+    #[test]
+    fn key_is_reported_again_after_an_eviction_sweep() {
+        let shared = backend_shared();
+        let mut cache = LocalCache::new(Arc::downgrade(&shared));
+
+        // A thread that hits far less than `HIT_FLUSH_INTERVAL` times between sweeps must still
+        // refresh the key's last-hit time after each sweep.
+        let hot = key(0);
+        for _ in 0..3 {
+            cache.record_hit(&shared, &hot);
+            cache.record_hit(&shared, &hot);
+            shared.report_epoch.fetch_add(1, Ordering::Relaxed);
+        }
+
+        assert_eq!(reports_of(&shared, &hot), 3);
     }
 }

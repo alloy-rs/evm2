@@ -22,7 +22,7 @@ use std::{
     ops::ControlFlow,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -100,6 +100,10 @@ pub(crate) struct BackendShared {
     local_caches: local::LocalCaches,
     /// Number of active out-of-process helper pauses.
     pause_depth: AtomicUsize,
+    /// Bumped by every eviction sweep, which makes each thread report the keys it hits again.
+    ///
+    /// Written once per sweep, so reading it on every hit does not bounce its cache line.
+    report_epoch: AtomicU64,
     /// Shared stats counters.
     #[debug(skip)]
     stats: Arc<RuntimeStats>,
@@ -210,6 +214,7 @@ impl JitBackend {
             events,
             local_caches: Default::default(),
             pause_depth: AtomicUsize::new(0),
+            report_epoch: AtomicU64::new(0),
             stats: Arc::new(RuntimeStats::default()),
         });
         let this = Self {

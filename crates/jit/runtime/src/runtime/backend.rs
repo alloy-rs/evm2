@@ -788,6 +788,8 @@ impl BackendState {
 
         let now = Instant::now();
         self.last_sweep = now;
+        // Threads report the keys they hit again, so hot keys refresh `last_hit_at` once per sweep.
+        self.inner.report_epoch.fetch_add(1, Ordering::Relaxed);
 
         let idle_duration = self.tuning.idle_evict_duration;
         let budget = self.tuning.resident_code_cache_bytes;
@@ -1039,7 +1041,10 @@ mod notifier_tests {
     use super::*;
     use crate::runtime::{BackendShared, stats::RuntimeStats};
     use evm2::{SpecId, interpreter::op};
-    use std::{sync::atomic::AtomicUsize, time::Duration};
+    use std::{
+        sync::atomic::{AtomicU64, AtomicUsize},
+        time::Duration,
+    };
 
     /// Creates backend state without starting compiler workers.
     fn new_state(tuning: RuntimeTuning) -> BackendState {
@@ -1052,6 +1057,7 @@ mod notifier_tests {
             events: EventQueue::new(config.tuning.channel_capacity),
             local_caches: Default::default(),
             pause_depth: AtomicUsize::new(0),
+            report_epoch: AtomicU64::new(0),
             stats: Arc::new(RuntimeStats::default()),
         });
         let (result_tx, result_rx) = chan::unbounded();
