@@ -7,7 +7,7 @@ use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
     TxEnv, deploy_contract, op,
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, map::HashMap};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, keccak256, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
@@ -19,7 +19,8 @@ use evm2::{
     ethereum::ethereum_tx_registry,
 };
 use evm2_inspectors::tracing::{
-    DebugInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
+    DebugInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MuxInspector,
+    TracingInspector, TracingInspectorConfig,
 };
 
 #[test]
@@ -2191,4 +2192,74 @@ fn test_geth_failed_root_logs() {
             }
         }
     }
+}
+
+fn contract_with_code(code: &[u8]) -> (Address, CacheDB<EmptyDB>) {
+    let contract = Address::with_last_byte(0x42);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo::default().with_code(Bytecode::new_raw(code.to_vec().into())),
+    );
+    (contract, db)
+}
+
+#[test]
+fn keccak256_preimage_tracer_collects_padded_preimages() {
+    let (contract, db) = contract_with_code(&hex!(
+        // MSTORE(0, 0x2a), then KECCAK256 of (0, 32), of (0, 0), of (0x10, 0x40) and of (0, 2 MiB).
+        "602a5f52" "60205f2050" "5f5f2050" "6040601020" "50" "62200000" "5f2050"
+    ));
+    let mut inspector = Keccak256PreimageInspector::default();
+    Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(&mut inspector)
+        .inspect_tx(TxEnv {
+            gas_limit: 10_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let mut word = [0; 32];
+    word[31] = 0x2a;
+    let mut padded = [0; 0x40];
+    padded[..0x10].copy_from_slice(&word[0x10..]);
+    let expected = serde_json::Value::Object(
+        [&word[..], &[], &padded]
+            .into_iter()
+            .map(|preimage| {
+                (hex::encode_prefixed(keccak256(preimage)), hex::encode_prefixed(preimage).into())
+            })
+            .collect(),
+    );
+    assert_eq!(inspector.json_result(), expected);
+}
+
+#[test]
+fn keccak256_preimage_tracer_runs_standalone_and_in_a_mux() {
+    let options: GethDebugTracingOptions =
+        serde_json::from_value(serde_json::json!({"tracer": "keccak256PreimageTracer"})).unwrap();
+    assert!(matches!(DebugInspector::new(options).unwrap(), DebugInspector::Keccak256Preimage(_)));
+
+    let (contract, db) = contract_with_code(&hex!("602a5f5260205f2050"));
+    let key = GethDebugTracerType::JsTracer(KECCAK256_PREIMAGE_TRACER.into());
+    let config = MuxConfig(HashMap::from_iter([(key.clone(), None)]));
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(MuxInspector::try_from_config(config).unwrap());
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let (ctx, inspector) = evm.ctx_inspector();
+    let frame = inspector
+        .try_into_mux_frame(&res.tx_result, ctx.db_mut(), TransactionInfo::default())
+        .unwrap();
+    let GethTrace::JS(preimages) = &frame.0[&key] else { panic!("expected a JSON object") };
+    assert_eq!(preimages.as_object().unwrap().len(), 1);
 }

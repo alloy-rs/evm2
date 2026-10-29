@@ -1,11 +1,14 @@
-use crate::tracing::{FourByteInspector, TracingInspector, TracingInspectorConfig, final_refunded};
+use crate::tracing::{
+    FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, TracingInspector,
+    TracingInspectorConfig, final_refunded,
+};
 use alloc::vec::Vec;
 use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Log, U256, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     CallConfig, FlatCallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
-    NoopFrame, PreStateConfig, StateGasTrace,
+    GethTrace, NoopFrame, PreStateConfig, StateGasTrace,
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
@@ -20,6 +23,8 @@ use thiserror::Error;
 pub struct MuxInspector {
     /// An instance of FourByteInspector that can be reused
     four_byte: Option<FourByteInspector>,
+    /// An instance of Keccak256PreimageInspector that can be reused
+    keccak256_preimage: Option<Keccak256PreimageInspector>,
     /// An instance of TracingInspector that can be reused
     tracing: Option<TracingInspector>,
     /// Configurations for different Geth trace types
@@ -40,6 +45,7 @@ impl MuxInspector {
     /// Try creating a new instance of [MuxInspector] from the given [MuxConfig].
     pub fn try_from_config(config: MuxConfig) -> Result<Self, Error> {
         let mut four_byte = None;
+        let mut keccak256_preimage = None;
         let mut inspector_config = TracingInspectorConfig::none();
         let mut configs = Vec::new();
 
@@ -47,6 +53,10 @@ impl MuxInspector {
         for (tracer_type, tracer_config) in config.0 {
             let builtin = match tracer_type {
                 GethDebugTracerType::BuiltInTracer(b) => b,
+                GethDebugTracerType::JsTracer(name) if name == KECCAK256_PREIMAGE_TRACER => {
+                    keccak256_preimage = Some(Keccak256PreimageInspector::default());
+                    continue;
+                }
                 _ => return Err(Error::UnsupportedTracerType(tracer_type)),
             };
             #[allow(unreachable_patterns)]
@@ -95,7 +105,7 @@ impl MuxInspector {
 
         let tracing = (!configs.is_empty()).then(|| TracingInspector::new(inspector_config));
 
-        Ok(Self { four_byte, tracing, configs })
+        Ok(Self { four_byte, keccak256_preimage, tracing, configs })
     }
 
     /// Sets the index the next recorded log receives, see
@@ -170,6 +180,14 @@ impl MuxInspector {
             );
         }
 
+        // Add keccak256 preimage trace if inspector exists
+        if let Some(inspector) = &self.keccak256_preimage {
+            frame.insert(
+                GethDebugTracerType::JsTracer(KECCAK256_PREIMAGE_TRACER.into()),
+                GethTrace::JS(inspector.json_result()),
+            );
+        }
+
         Ok(MuxFrame(frame))
     }
 
@@ -201,6 +219,9 @@ impl<T: EvmTypes> Inspector<T> for MuxInspector {
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         if let Some(ref mut inspector) = self.four_byte {
+            inspector.step(interp);
+        }
+        if let Some(ref mut inspector) = self.keccak256_preimage {
             inspector.step(interp);
         }
         if let Some(ref mut inspector) = self.tracing {
