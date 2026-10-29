@@ -8,11 +8,11 @@ use crate::tracing::{
 use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, format, vec, vec::Vec};
 use alloy_primitives::{
     Address, B256, Bytes, U256,
-    map::{Entry, HashMap},
+    map::{AddressSet, Entry, HashMap},
 };
 use alloy_rpc_types_trace::geth::{
-    AccountChangeKind, AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode,
-    GethDefaultTracingOptions, PreStateConfig, PreStateFrame, PreStateMode, StructLog,
+    AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode, GethDefaultTracingOptions,
+    PreStateConfig, PreStateFrame, PreStateMode, StructLog,
     erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
 };
 use evm2::{
@@ -390,8 +390,7 @@ impl<'a> GethTraceBuilder<'a> {
         storage_enabled: bool,
     ) -> DbResult<PreStateFrame> {
         let mut state_diff = DiffMode::default();
-        let mut account_change_kinds =
-            HashMap::with_capacity_and_hasher(state.accounts.len(), Default::default());
+        let mut empty_before = AddressSet::default();
         for (addr, changed_acc) in state.accounts.iter() {
             let addr = *addr;
             let db_acc = db.get_account(&addr)?.unwrap_or_default();
@@ -433,18 +432,9 @@ impl<'a> GethTraceBuilder<'a> {
             // whether the transaction created it or only funded it.
             // See <https://etherscan.io/tx/0x391f4b6a382d3bcc3120adc2ea8c62003e604e487d97281129156fd284a1a89d>
             // <https://github.com/paradigmxyz/reth/issues/19703#issuecomment-3527067849>
-            let pre_change = if db_acc.is_empty() {
-                AccountChangeKind::Create
-            } else {
-                AccountChangeKind::Modify
-            };
-            let post_change = if changed_acc.selfdestructed {
-                AccountChangeKind::SelfDestruct
-            } else {
-                AccountChangeKind::Modify
-            };
-
-            account_change_kinds.insert(addr, (pre_change, post_change));
+            if db_acc.is_empty() {
+                empty_before.insert(addr);
+            }
 
             // Don't insert selfdestructed accounts into post state
             if !changed_acc.selfdestructed {
@@ -455,35 +445,28 @@ impl<'a> GethTraceBuilder<'a> {
         // ensure we're only keeping changed entries
         state_diff.retain_changed().remove_zero_storage_values();
 
-        self.diff_traces(&mut state_diff.pre, &mut state_diff.post, account_change_kinds);
+        self.diff_traces(&mut state_diff.pre, &mut state_diff.post, &empty_before);
         Ok(PreStateFrame::Diff(state_diff))
     }
 
-    /// Returns the difference between the pre and post state of the transaction depending on the
-    /// kind of changes of that account (pre,post)
+    /// Returns the difference between the pre and post state of the transaction.
+    ///
+    /// `empty_before` holds the accounts that were empty before the transaction. They are removed
+    /// from `pre` after `post` is diffed against them.
     fn diff_traces(
         &self,
         pre: &mut BTreeMap<Address, AccountState>,
         post: &mut BTreeMap<Address, AccountState>,
-        change_type: HashMap<Address, (AccountChangeKind, AccountChangeKind)>,
+        empty_before: &AddressSet,
     ) {
-        post.retain(|addr, post_state| {
-            // Don't keep destroyed accounts in the post state
-            if change_type.get(addr).map(|ty| ty.1.is_selfdestruct()).unwrap_or(false) {
-                return false;
-            }
+        for (addr, post_state) in post.iter_mut() {
             if let Some(pre_state) = pre.get(addr) {
                 // remove any unchanged account info
                 post_state.remove_matching_account_info(pre_state);
             }
+        }
 
-            true
-        });
-
-        // Don't keep accounts that were empty before the transaction in the pre state
-        pre.retain(|addr, _pre_state| {
-            change_type.get(addr).map(|ty| !ty.0.is_created()).unwrap_or(true)
-        });
+        pre.retain(|addr, _pre_state| !empty_before.contains(addr));
     }
 
     /// Traces ERC-7562 calls using the call tracer.
