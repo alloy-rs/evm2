@@ -378,17 +378,10 @@ fn test_geth_jstracer_call_step_cost_and_depth() {
     // to the child: 2600 for a cold account, 100 for a warm one or a precompile.
     let cold_call = 2600 + 0xffff;
     let warm_call = 100 + 0xffff;
-    // A create step costs its base, then forwards all but 1/64 of the remaining gas. The base is
-    // 32000 plus 2 per initcode word, and CREATE2 adds 6 per word to hash the initcode.
-    let mut create_costs = Vec::new();
+    // A create step costs its base, 32000 plus 2 per initcode word, and CREATE2 adds 6 per word to
+    // hash the initcode. The gas it forwards to the child is not part of the cost.
     for event in events.as_array_mut().unwrap().iter_mut().filter(|event| event[2].is_u64()) {
-        let gas = event[2].take().as_u64().unwrap();
-        let base = match event[0].as_str() {
-            Some("CREATE") => 32002,
-            Some("CREATE2") => 32008,
-            _ => continue,
-        };
-        create_costs.push(gas - (gas - base) / 64);
+        event[2].take();
     }
     assert_eq!(
         events,
@@ -407,10 +400,10 @@ fn test_geth_jstracer_call_step_cost_and_depth() {
             ["enter", "STATICCALL"],
             ["fault", 2],
             ["exit"],
-            ["CREATE", 1, null, create_costs[0], "1d"],
+            ["CREATE", 1, null, 32002, "1d"],
             ["enter", "CREATE"],
             ["exit"],
-            ["CREATE2", 1, null, create_costs[1], "1d"],
+            ["CREATE2", 1, null, 32008, "1d"],
             ["enter", "CREATE2"],
             ["exit"],
             ["DELEGATECALL", 1, null, warm_call, "1111"],

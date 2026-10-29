@@ -63,7 +63,6 @@ pub const RECURSION_LIMIT: usize = 128;
 #[derive(Debug, Default)]
 struct PendingStep {
     snapshot: StepSnapshot,
-    gas_spent_before: u64,
     frame_refund: i64,
     instruction: FaultStep,
     active: bool,
@@ -570,7 +569,7 @@ impl JsInspector {
         let refund = call.enclosing_refund + frame_refund;
         debug_assert!(refund >= 0, "transaction-wide refund counter went negative: {refund}");
         let info = StepInfo {
-            cost: interp.gas().spent().saturating_sub(pending.gas_spent_before),
+            cost: interp.step_cost(),
             refund: refund.max(0) as u64,
             // Geth reports the depth starting at 1 for the top-level call.
             depth: u64::from(depth) + 1,
@@ -646,7 +645,6 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
             self.pending_steps.resize_with(index + 1, PendingStep::default);
         }
         let pending = &mut self.pending_steps[index];
-        pending.gas_spent_before = interp.gas().spent();
         pending.frame_refund = interp.gas().refunded();
         pending.instruction = FaultStep {
             pc: interp.pc() as u64,
