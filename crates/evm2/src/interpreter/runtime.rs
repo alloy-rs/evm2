@@ -47,6 +47,8 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     error: Option<ExecutionError>,
     /// Whether the frame runs the instruction table with inspector steps.
     stepping: bool,
+    /// Whether the dispatch stopped to continue the frame with inspector steps.
+    resume_stepping: bool,
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
@@ -90,6 +92,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             result: Ok(()),
             error: None,
             stepping: false,
+            resume_stepping: false,
             output: 0..0,
             message: None,
             is_static: false,
@@ -523,7 +526,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
                     config.instructions
                 };
                 let stop = dispatch::run(self, instructions);
-                if stop != InstrStop::ResumeStepping {
+                if !core::mem::take(&mut self.resume_stepping) {
                     break stop;
                 }
                 self.result = Ok(());
@@ -600,17 +603,19 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.inspector.is_some()
     }
 
-    /// Returns [`InstrStop::ResumeStepping`] when the frame runs without inspector steps but its
-    /// inspector now wants them, such as after a child message enabled a hook.
+    /// Stops the dispatch when the frame runs without inspector steps but its inspector now wants
+    /// them, such as after a child message enabled a hook. [`Interpreter::run_inner`] then
+    /// continues the frame with steps.
     #[inline]
-    pub(crate) fn resume_stepping(&self) -> Result {
+    pub(crate) fn resume_stepping(&mut self) -> Result {
         if !self.0.stepping
             && let Some(inspector) = self.0.inspector
             // SAFETY: The inspector pointer is valid while the frame executes.
             && unsafe { inspector.as_ref() }.wants_steps()
         {
             cold_path();
-            return Err(InstrStop::ResumeStepping);
+            self.0.resume_stepping = true;
+            return Err(InstrStop::Stop);
         }
         Ok(())
     }
