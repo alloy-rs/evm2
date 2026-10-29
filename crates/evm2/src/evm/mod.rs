@@ -233,6 +233,11 @@ pub struct Evm<'a, T: EvmTypesHost> {
     /// The checkpoint the currently running interpreter frame rolls back to if it fails.
     #[derive_where(skip)]
     frame_checkpoint: Option<StateCheckpoint>,
+    /// The refund the transaction accumulated outside the currently running interpreter frame:
+    /// the refund counters of the frames below it, plus refunds granted before execution.
+    ///
+    /// Only maintained while an inspector is installed; see [`Self::tx_refunded`].
+    enclosing_refund: i64,
     #[derive_where(skip)]
     running: bool,
     #[cfg(feature = "async")]
@@ -355,6 +360,7 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             interpreter_runner: None,
             current_frame: None,
             frame_checkpoint: None,
+            enclosing_refund: 0,
             running: false,
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
@@ -921,6 +927,25 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         self.feature(EvmFeatures::LOG_COLLECTION) || self.inspector.is_some()
     }
 
+    /// Returns the transaction-wide refund counter, given the refund counter of the running
+    /// interpreter frame.
+    ///
+    /// A frame counts only its own refunds and those of its finished children, so a child frame
+    /// starts at zero and its counter can be negative. The transaction-wide counter adds the
+    /// counters of the frames below the running one and the refunds granted before execution, such
+    /// as the pre-Amsterdam EIP-7702 authorization refund. It is maintained only while an
+    /// inspector is installed.
+    #[inline]
+    pub const fn tx_refunded(&self, frame_refunded: i64) -> i64 {
+        self.enclosing_refund + frame_refunded
+    }
+
+    /// Records a refund granted before the first frame runs, for [`Self::tx_refunded`].
+    #[inline]
+    pub(crate) const fn set_pre_execution_refund(&mut self, refund: i64) {
+        self.enclosing_refund = refund;
+    }
+
     /// Notifies the inspector and records an emitted log if [`EvmFeatures::LOG_COLLECTION`] is
     /// enabled.
     #[inline]
@@ -1097,6 +1122,7 @@ impl<T: EvmTypesHost> Drop for ScopedInspector<'_, '_, T> {
         // A panic unwinding out of a frame skips its cleanup, which would leave this pointing at
         // a dropped interpreter.
         self.evm.current_frame = None;
+        self.evm.enclosing_refund = 0;
         if !self.completed {
             self.evm.state.clear_transaction_state();
         }
@@ -1179,6 +1205,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
     #[inline]
     fn execute_tx(&mut self, tx: &Recovered<T::Tx>) -> HandlerResult<TxResult<T>> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
+        self.enclosing_refund = 0;
         let guard = self.enter_execution();
         let result = handler.execute(tx.as_recovered_ref(), guard.evm);
         drop(guard);
@@ -1708,7 +1735,14 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
             .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, 'static, T>>());
         let interpreter_runner = guard.evm.interpreter_runner.clone();
         let stop = if let Some(inspector) = inspector {
-            interp_ref.run_inspect(guard.evm, inspector)
+            let enclosing_refund = guard.evm.enclosing_refund;
+            if let Some(parent) = prev_frame {
+                // SAFETY: The parent frame is suspended on this call stack while this frame runs.
+                guard.evm.enclosing_refund += unsafe { parent.as_ref() }.gas().refunded();
+            }
+            let stop = interp_ref.run_inspect(guard.evm, inspector);
+            guard.evm.enclosing_refund = enclosing_refund;
+            stop
         } else if let Some(runner) = interpreter_runner
             && let Some(stop) = runner.run(interp_ref, guard.evm)
         {
