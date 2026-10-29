@@ -603,7 +603,8 @@ def diff(a, b, path=()):
             else:
                 yield from diff(a[i], b[i], (*path, i))
     elif type(a) in (int, float) and type(b) in (int, float):
-        if float(a) != float(b):  # JSON numbers compare as doubles, as in the Rust test
+        # Integers compare exactly; a float is a JavaScript number, so it matches the integer it rounds to.
+        if (a != b) if type(a) is type(b) is int else (float(a) != float(b)):
             yield path, a, b
     elif a != b or type(a) is not type(b):
         yield path, a, b
@@ -783,11 +784,11 @@ def eest_case(name, unit, fork, indexes):
         out["gasPrice"] = quantity(tx["gasPrice"])
     ty = tx.get("type")
     if ty is None:
-        ty = 4 if tx.get("authorizationList") else 3 if tx.get("blobVersionedHashes") else 2 if "maxFeePerGas" in tx else 1 if access is not None else 0
+        ty = 4 if "authorizationList" in tx else 3 if "blobVersionedHashes" in tx else 2 if "maxFeePerGas" in tx else 1 if access is not None else 0
     ty = int(ty, 16) if isinstance(ty, str) else ty
     if ty:
         out["type"] = hex(ty)
-        out["chainId"] = "0x1"
+        out["chainId"] = quantity(tx.get("chainId", "0x1"))
         out["accessList"] = access or []
     if ty == 3:
         out["blobVersionedHashes"] = tx["blobVersionedHashes"]

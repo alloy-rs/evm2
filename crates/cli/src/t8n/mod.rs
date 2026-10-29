@@ -296,6 +296,8 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
         let mut evm = new_evm(spec, block, &post);
         if let Some(inspector) = &mut inspector {
             inspector.fuse().map_err(|err| Error::Tracer(err.to_string()))?;
+            // Log indices count on through the block, as in receipts.
+            inspector.set_next_log_index(all_logs.len());
         }
         let result = match transact(&mut evm, &mut inspector, &signed.recovered) {
             Ok(result) => result,
