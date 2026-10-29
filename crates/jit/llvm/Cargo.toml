@@ -18,7 +18,7 @@ workspace = true
 [dependencies]
 evm2-jit-backend.workspace = true
 
-inkwell = { version = "0.10.0", features = ["llvm23-1"] }
+llvm-sys = "231"
 alloy-primitives = { workspace = true, features = ["std", "map-fxhash"] }
 object = { version = "0.40", default-features = false, features = ["read_core", "elf"] }
 tracing.workspace = true
