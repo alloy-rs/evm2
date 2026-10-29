@@ -2192,3 +2192,58 @@ fn test_geth_failed_root_logs() {
         }
     }
 }
+
+/// The expected snapshots come from go-ethereum master a0cba163: the struct logger adds the slot
+/// of every SLOAD and SSTORE that does not fail before it runs, with the value an SLOAD reads or an
+/// SSTORE writes, and snapshots all slots of the contract so far.
+#[test]
+fn struct_log_storage_snapshots_match_geth() {
+    let account = address!("1000000000000000000000000000000000000001");
+    let slot = |slot: u8| B256::with_last_byte(slot);
+    let value = |value: u8| U256::from(value).into();
+    // SLOAD 5 (holds 7), SSTORE 5 = 7 (unchanged), SLOAD 5 (warm), SSTORE 6 = 1, SLOAD 6, and an
+    // SSTORE that runs out of gas, which fails before it runs.
+    let code = hex!("60055450600760055560055450600160065560065450600160075500");
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &account,
+        AccountInfo {
+            code: Some(Bytecode::new_raw(Bytes::from(code.to_vec()))),
+            ..Default::default()
+        },
+    );
+    db.insert_account_storage(&account, &U256::from(5), &U256::from(7));
+    let mut inspector = DebugInspector::new(Default::default()).unwrap();
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .build_mainnet()
+        .with_inspector(&mut inspector);
+    let result = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 21000 + 3 * 1000 + 30000,
+            kind: TransactTo::Call(account),
+            ..Default::default()
+        })
+        .unwrap();
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &result.tx_result, ctx.db_mut()).unwrap();
+    let GethTrace::Default(frame) = trace else { panic!("expected a default trace") };
+
+    let snapshots: Vec<_> = frame
+        .struct_logs
+        .iter()
+        .filter(|log| matches!(log.op.as_ref(), "SLOAD" | "SSTORE"))
+        .map(|log| (log.op.to_string(), log.storage.clone(), log.error.is_some()))
+        .collect();
+    let after_first = std::collections::BTreeMap::from([(slot(5), value(7))]);
+    let after_sstore = std::collections::BTreeMap::from([(slot(5), value(7)), (slot(6), value(1))]);
+    assert_eq!(snapshots[0], ("SLOAD".into(), Some(after_first.clone()), false));
+    assert_eq!(snapshots[1], ("SSTORE".into(), Some(after_first.clone()), false));
+    assert_eq!(snapshots[2], ("SLOAD".into(), Some(after_first), false));
+    assert_eq!(snapshots[3].1, Some(after_sstore.clone()));
+    assert_eq!(snapshots[4], ("SLOAD".into(), Some(after_sstore), false));
+    assert_eq!((snapshots[5].1.clone(), snapshots[5].2), (None, true));
+}
