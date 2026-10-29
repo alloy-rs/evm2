@@ -399,7 +399,7 @@ mod tests {
         SpecId, Version,
         evm::{
             CacheDB,
-            bal::{AccountBal, Bal, BalChanges, BlockAccessIndex},
+            bal::{AccountBal, Bal, BalChanges, BalError, BlockAccessIndex},
             state::{AccountInfo, State},
         },
     };
@@ -637,12 +637,16 @@ mod tests {
 
         // The created account reads zero, but a slot missing from the BAL is still invalid.
         let error = state.storage_slot(&address, uncovered).unwrap_err();
-        assert!(error.downcast_ref::<crate::evm::bal::BalError>().is_some());
+        assert!(error.downcast_ref::<BalError>().is_some());
         let error = state.storage_slot_untracked(&address, &uncovered).unwrap_err();
-        assert!(error.downcast_ref::<crate::evm::bal::BalError>().is_some());
+        assert!(error.downcast_ref::<BalError>().is_some());
         assert!(!state.accounts[&address].storage.slots.contains_key(&uncovered));
 
         assert_eq!(state.storage_slot(&address, covered).unwrap().current(), Word::ZERO);
         assert_eq!(state.storage_slot_untracked(&address, &covered).unwrap(), Word::ZERO);
+
+        // With database fallback enabled, an uncovered slot is allowed and still reads zero.
+        state.set_allow_bal_db_fallback(true);
+        assert_eq!(state.storage_slot(&address, uncovered).unwrap().current(), Word::ZERO);
     }
 }

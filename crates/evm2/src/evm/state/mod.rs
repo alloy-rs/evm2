@@ -665,8 +665,9 @@ impl<'a> State<'a> {
     /// This is the storage-side mirror of [`Self::account_info_untracked`]: a non-loading peek that
     /// returns the overlay slot value when one has been loaded or written this transaction,
     /// otherwise it reads the backing database directly without caching the result in the overlay.
-    /// A slot of a wiped or created account that has not been rewritten reads as zero. Use
-    /// [`Self::storage`] when the slot should be loaded and preserved.
+    /// A slot of a wiped or created account that has not been rewritten reads as zero, though an
+    /// attached strict BAL must still cover it. Use [`Self::storage`] when the slot should be
+    /// loaded and preserved.
     #[inline(never)]
     pub fn storage_slot_untracked(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         if let Some(account) = self.accounts.get(address) {
