@@ -830,6 +830,9 @@ impl<'a> State<'a> {
         // Restoring an older snapshot can leave active cursors past the current lengths. Preserve
         // shorter prefixes and revert only entries beyond each cursor.
         self.logs.truncate(checkpoint.logs_len);
+        // Accounts whose creation was undone. Their slot reloads wait until every slot write of
+        // the rolled-back scope is reverted, which can happen after the account entry is.
+        let mut uncreated = Vec::new();
         while self.journal.len() > checkpoint.journal_len {
             let Some(entry) = self.journal.pop() else {
                 unreachable!("journal length is checked above")
@@ -862,7 +865,7 @@ impl<'a> State<'a> {
                         }
                         entry.flags = (previous_flags - kept) | (entry.flags & kept);
                         if discarded_storage && !entry.discards_storage() {
-                            entry.storage.reload_zeroed(&address, &mut self.inner.database);
+                            uncreated.push(address);
                         }
                     }
                 }
@@ -892,6 +895,13 @@ impl<'a> State<'a> {
                         slot.is_warm = false;
                     }
                 }
+            }
+        }
+        for address in uncreated {
+            if let Some(entry) = self.accounts.get_mut(&address)
+                && !entry.discards_storage()
+            {
+                entry.storage.reload_zeroed(&address, &mut self.inner.database);
             }
         }
     }
@@ -1179,6 +1189,8 @@ mod tests {
         let checkpoint = state.checkpoint();
         state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
         assert_eq!(state.storage_slot(&address, fresh).unwrap().current(), Word::ZERO);
+        // Like `loaded`, the slot was already loaded before this creation, so it keeps its value.
+        assert_eq!(state.storage_slot(&address, unloaded).unwrap().current(), Word::from(6));
         state.rollback(checkpoint, features);
         assert!(!state.take_pending_state().is_changed());
     }
@@ -1340,6 +1352,27 @@ mod tests {
             assert_eq!((slot.original(), slot.current()), (value, value));
         }
         assert!(!state.take_pending_state().is_changed());
+    }
+
+    #[test]
+    fn rollback_reloads_slots_written_through_the_creating_handle() {
+        let address = Address::with_last_byte(2);
+        let key = Word::from(1);
+        let features = Version::base(crate::SpecId::CANCUN).features;
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_storage(&address, &key, &Word::from(6));
+        let mut state = State::new(db);
+
+        let checkpoint = state.checkpoint();
+        let mut account = state.account(&address).unwrap();
+        account.mark_created();
+        // The slot write is journaled before the handle flushes its creation entry on drop.
+        account.storage().into_slot(key).unwrap().write(Word::from(9));
+        drop(account);
+        state.rollback(checkpoint, features);
+
+        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::from(6));
     }
 
     #[test]

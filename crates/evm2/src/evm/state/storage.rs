@@ -203,7 +203,8 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
     /// slot's [`StorageSlot::is_warm`] is seeded from the base warm set (EIP-2930 access list),
     /// mirroring how [`account_raw`](super::State) seeds an account's warmth. The load itself
     /// records no revert entry: the cached value's original equals its current, so it is left in
-    /// place by [`State::rollback`](super::State::rollback) as a harmless cache. Used by
+    /// place by [`State::rollback`](super::State::rollback) as a harmless cache, except that a
+    /// creation's rollback reloads the slots it read as zero. Used by
     /// [`State::storage_slot`](super::State::storage_slot) to reach a single slot directly.
     #[inline]
     pub fn into_slot_with_skip(
