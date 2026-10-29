@@ -46,6 +46,21 @@ const MAINNET_CONTRACTS: &[&str] = &[
     "succinct_staking",
 ];
 
+/// Transaction cases that also run with an inspector installed. They span a pure compute loop,
+/// hashing, and token, router, and pool contracts with many calls and logs; the precompile suites
+/// and the remaining contracts add inspection cost only per instruction and message, which these
+/// already cover.
+const INSPECTED_CASES: &[&str] = &[
+    "fibonacci-calldata",
+    "snailtracer",
+    "hash_10k",
+    "erc20_transfer",
+    "weth",
+    "uniswap_v2_pair",
+    "seaport",
+    "uniswap_v3_pool",
+];
+
 fn evm(c: &mut Criterion) {
     let mut group = c.benchmark_group("evm");
     apply_default_budget(&mut group);
@@ -88,6 +103,13 @@ fn evm(c: &mut Criterion) {
                     let prepared = support::PreparedBench::load(bench, &suites);
                     prepared.sanity_check();
                     prepared.bench(&mut group);
+
+                    if INSPECTED_CASES.contains(&bench.name.as_ref()) {
+                        for kind in [support::InspectorKind::Hooks, support::InspectorKind::Steps] {
+                            prepared.sanity_check_inspected(kind);
+                            prepared.bench_inspected(&mut group, kind);
+                        }
+                    }
                 }
 
                 #[cfg(feature = "jit")]

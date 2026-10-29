@@ -1,10 +1,12 @@
 use crate::fixture::Suites;
+use alloy_primitives::Log;
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::InMemoryDB,
+    evm::{InMemoryDB, inspector::Inspector},
+    interpreter::{Interpreter, Message, MessageResult},
 };
 use evm2_cli::evm_bench::BenchCase;
 use std::borrow::Cow;
@@ -35,16 +37,48 @@ impl PreparedBench {
     }
 
     pub(crate) fn sanity_check(&self) {
-        let mut runner = Runner::new(self);
+        let mut runner = Runner::new(self, None);
         let _ = runner.run().unwrap_or_else(|err| {
             panic!("{} benchmark transaction must execute: {err:?}", self.name)
         });
     }
 
+    /// Checks that inspecting the transaction neither changes its result nor goes unnoticed by
+    /// the inspector.
+    pub(crate) fn sanity_check_inspected(&self, kind: InspectorKind) {
+        let expected = Runner::new(self, None).run();
+        let mut runner = Runner::new(self, Some(kind));
+        let actual = runner.run();
+        assert_eq!(actual, expected, "{} {} result must match the plain run", self.name, kind.id());
+        assert!(
+            runner.inspector_events() > 0,
+            "{} {} inspector must observe the transaction",
+            self.name,
+            kind.id()
+        );
+    }
+
     pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
-        group.bench_function(self.name.as_ref(), |b| {
+        self.bench_with(group, self.name.to_string(), None);
+    }
+
+    pub(crate) fn bench_inspected(
+        &self,
+        group: &mut BenchmarkGroup<'_, WallTime>,
+        kind: InspectorKind,
+    ) {
+        self.bench_with(group, format!("{}/{}", self.name, kind.id()), Some(kind));
+    }
+
+    fn bench_with(
+        &self,
+        group: &mut BenchmarkGroup<'_, WallTime>,
+        id: String,
+        kind: Option<InspectorKind>,
+    ) {
+        group.bench_function(id, |b| {
             b.iter_batched(
-                || Runner::new(self),
+                || Runner::new(self, kind),
                 |mut runner| {
                     black_box(runner.run().unwrap_or_else(|err| {
                         panic!("{} benchmark transaction must execute: {err:?}", self.name)
@@ -56,21 +90,131 @@ impl PreparedBench {
     }
 }
 
+/// Which inspector hooks an inspected benchmark installs.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum InspectorKind {
+    /// Message and log hooks only, like an always-installed inspector stack that is not tracing.
+    Hooks,
+    /// Per-instruction `step` and `step_end` hooks, standing in for a tracer.
+    Steps,
+}
+
+impl InspectorKind {
+    pub(crate) const fn id(self) -> &'static str {
+        match self {
+            Self::Hooks => "inspect-hooks",
+            Self::Steps => "inspect-steps",
+        }
+    }
+}
+
+/// Counts messages and logs.
+#[derive(Default)]
+struct HooksInspector {
+    messages: u64,
+    message_ends: u64,
+    logs: u64,
+}
+
+impl Inspector<BaseEvmTypes> for HooksInspector {
+    fn call(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        _message: &mut Message<BaseEvmTypes>,
+    ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.messages += 1;
+        None
+    }
+
+    fn call_end(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        _message: &Message<BaseEvmTypes>,
+        _result: &mut MessageResult<BaseEvmTypes>,
+    ) {
+        self.message_ends += 1;
+    }
+
+    fn create(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        _message: &mut Message<BaseEvmTypes>,
+    ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.messages += 1;
+        None
+    }
+
+    fn create_end(
+        &mut self,
+        _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+        _message: &Message<BaseEvmTypes>,
+        _result: &mut MessageResult<BaseEvmTypes>,
+    ) {
+        self.message_ends += 1;
+    }
+
+    fn log(&mut self, _log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
+        self.logs += 1;
+    }
+}
+
+/// Counts instructions, and sums the stack depth and opcode values it reads on each.
+#[derive(Default)]
+struct StepsInspector {
+    steps: u64,
+    step_ends: u64,
+    stack_len: u64,
+    opcodes: u64,
+}
+
+impl Inspector<BaseEvmTypes> for StepsInspector {
+    fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        self.steps += 1;
+        self.opcodes += u64::from(interp.opcode());
+    }
+
+    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+        self.step_ends += 1;
+        self.stack_len += interp.stack().len() as u64;
+    }
+}
+
 struct Runner {
     evm: BenchEvm,
     tx: RecoveredTxEnvelope,
+    kind: Option<InspectorKind>,
 }
 
 impl Runner {
-    fn new(prepared: &PreparedBench) -> Self {
-        Self {
-            evm: new_evm(prepared.spec, prepared.block, prepared.db.clone()),
-            tx: prepared.tx.clone(),
+    fn new(prepared: &PreparedBench, kind: Option<InspectorKind>) -> Self {
+        let mut evm = new_evm(prepared.spec, prepared.block, prepared.db.clone());
+        match kind {
+            Some(InspectorKind::Hooks) => evm.set_inspector(HooksInspector::default()),
+            Some(InspectorKind::Steps) => evm.set_inspector(StepsInspector::default()),
+            None => {}
         }
+        Self { evm, tx: prepared.tx.clone(), kind }
     }
 
     fn run(&mut self) -> evm2::registry::HandlerResult<evm2::TxResult> {
         self.evm.transact(&self.tx).map(evm2::ExecutedTx::commit)
+    }
+
+    /// Returns how many events the installed inspector observed.
+    fn inspector_events(&mut self) -> u64 {
+        match self.kind {
+            Some(InspectorKind::Hooks) => {
+                let hooks =
+                    self.evm.clear_inspector_as::<HooksInspector>().expect("hooks inspector");
+                hooks.messages + hooks.message_ends + hooks.logs
+            }
+            Some(InspectorKind::Steps) => {
+                let steps =
+                    self.evm.clear_inspector_as::<StepsInspector>().expect("steps inspector");
+                steps.steps + steps.step_ends
+            }
+            None => 0,
+        }
     }
 }
 
