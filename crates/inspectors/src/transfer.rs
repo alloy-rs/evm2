@@ -22,6 +22,9 @@ pub const TRANSFER_EVENT_TOPIC: B256 =
 /// Transfers made by a call or create that fails, including transfers in its subcalls, are
 /// discarded together with their logs.
 ///
+/// As in `go-ethereum`, zero-value transfers, `CALLCODE` and `DELEGATECALL` are not transfers, and
+/// a `SELFDESTRUCT` is one only if the contract holds a balance.
+///
 /// Like `go-ethereum`'s `eth_simulateV1` tracer, the logs are kept by the inspector and are never
 /// added to the EVM's own logs, so receipts and log blooms do not include them.
 ///
@@ -31,15 +34,13 @@ pub const TRANSFER_EVENT_TOPIC: B256 =
 pub struct TransferInspector {
     internal_only: bool,
     transfers: Vec<TransferOperation>,
-    /// Number of transfers recorded before each call and create frame currently executing.
-    checkpoints: Vec<usize>,
+    /// The call and create frames currently executing, innermost last.
+    frames: Vec<TransferFrame>,
     /// If enabled, collects the emitted logs together with ERC20-style transfer logs emitted by
     /// [TRANSFER_LOG_EMITTER] for each ETH transfer.
     ///
     /// Can be used for [eth_simulateV1](https://github.com/ethereum/execution-apis/pull/484) execution.
     collect_logs: bool,
-    /// Logs of each call and create frame currently executing.
-    frames: Vec<Vec<Log>>,
     /// Logs of the top-level frames that succeeded.
     logs: Vec<Log>,
 }
@@ -53,9 +54,8 @@ impl TransferInspector {
         Self {
             internal_only,
             transfers: Vec::new(),
-            checkpoints: Vec::new(),
-            collect_logs: false,
             frames: Vec::new(),
+            collect_logs: false,
             logs: Vec::new(),
         }
     }
@@ -100,10 +100,7 @@ impl TransferInspector {
     }
 
     fn on_transfer<T: EvmTypes>(&mut self, message: &Message<T>, host: &mut Evm<'_, T>) {
-        self.checkpoints.push(self.transfers.len());
-        if self.collect_logs {
-            self.frames.push(Vec::new());
-        }
+        self.frames.push(TransferFrame { transfers: self.transfers.len(), logs: Vec::new() });
 
         let kind = match message.kind {
             MessageKind::Call => TransferKind::Call,
@@ -121,18 +118,13 @@ impl TransferInspector {
     }
 
     fn on_transfer_end(&mut self, failed: bool) {
-        let Some(transfers) = self.checkpoints.pop() else { return };
+        let Some(frame) = self.frames.pop() else { return };
         if failed {
-            self.transfers.truncate(transfers);
-        }
-        if self.collect_logs
-            && let Some(frame) = self.frames.pop()
-            && !failed
-        {
-            match self.frames.last_mut() {
-                Some(parent) => parent.extend(frame),
-                None => self.logs.extend(frame),
-            }
+            self.transfers.truncate(frame.transfers);
+        } else if let Some(parent) = self.frames.last_mut() {
+            parent.logs.extend(frame.logs);
+        } else {
+            self.logs.extend(frame.logs);
         }
     }
 
@@ -160,7 +152,7 @@ impl TransferInspector {
             let to = B256::from_slice(&to.abi_encode());
             let data = value.abi_encode();
 
-            frame.push(Log::new_unchecked(
+            frame.logs.push(Log::new_unchecked(
                 TRANSFER_LOG_EMITTER,
                 vec![TRANSFER_EVENT_TOPIC, from, to],
                 data.into(),
@@ -174,7 +166,7 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector {
         if self.collect_logs
             && let Some(frame) = self.frames.last_mut()
         {
-            frame.push(log.clone());
+            frame.logs.push(log.clone());
         }
     }
 
@@ -253,4 +245,13 @@ pub enum TransferKind {
     Create2,
     /// A SELFDESTRUCT operation
     SelfDestruct,
+}
+
+/// A call or create frame currently executing.
+#[derive(Clone, Debug)]
+struct TransferFrame {
+    /// Number of transfers recorded before the frame.
+    transfers: usize,
+    /// Logs of the frame and of its succeeded subframes.
+    logs: Vec<Log>,
 }
