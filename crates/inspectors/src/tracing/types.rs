@@ -3,7 +3,6 @@
 use crate::tracing::{config::TraceStyle, utils, utils::convert_memory};
 use alloc::{
     boxed::Box,
-    format,
     string::{String, ToString},
     vec::Vec,
 };
@@ -112,6 +111,10 @@ pub struct CallTrace {
     pub gas_refund_counter: u64,
     /// The final status of the call.
     pub status: Option<InstrStop>,
+    /// The error geth reports for the call, when the [`status`](Self::status) alone does not
+    /// determine it, such as the stack length of a stack underflow.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub geth_error: Option<String>,
     /// Opcode-level execution steps.
     pub steps: Vec<CallTraceStep>,
     /// The deltas recorded for [`Self::steps`], in step order.
@@ -160,6 +163,11 @@ impl CallTrace {
 
     /// Returns the error message if it is an erroneous result.
     pub(crate) fn as_error_msg(&self, kind: TraceStyle) -> Option<String> {
+        if !kind.is_parity()
+            && let Some(error) = &self.geth_error
+        {
+            return Some(error.clone());
+        }
         self.status.and_then(|status| utils::fmt_error_msg(status, kind))
     }
 
@@ -682,6 +690,13 @@ pub struct CallTraceStep {
     ///
     /// This is set after the step was executed.
     pub status: Option<InstrStop>,
+    /// The error geth reports on the struct log of this step.
+    ///
+    /// This is set only for the errors geth raises before it runs the opcode, such as a stack
+    /// underflow or an out of gas. An error raised inside the opcode, such as an invalid jump,
+    /// leaves it `None`, like the struct log of geth.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub error: Option<String>,
     /// Immediate bytes of the step
     pub immediate_bytes: Option<Bytes>,
     /// Optional complementary decoded step data.
@@ -700,16 +715,12 @@ impl CallTraceStep {
     ) -> StructLog {
         StructLog {
             depth,
-            error: self.as_error(),
+            error: self.error.clone(),
             gas: self.gas_remaining,
             gas_cost: self.gas_cost,
             state_gas_cost: self.state_gas_cost,
             state_gas_reservoir: self.state_gas_reservoir,
-            op: if self.op.is_valid() {
-                self.op.as_str().into()
-            } else {
-                format!("opcode {:#x} not defined", self.op.get()).into()
-            },
+            op: utils::geth_op_name(self.op),
             pc: self.pc as u64,
             refund_counter: Some(self.gas_refund_counter),
             stack,
@@ -746,12 +757,6 @@ impl CallTraceStep {
             return false;
         };
         status.is_halt()
-    }
-
-    /// Returns the error message if it is an erroneous result.
-    #[inline]
-    pub(crate) fn as_error(&self) -> Option<String> {
-        self.is_error().then(|| format!("{:?}", self.status))
     }
 
     /// Returns `DecodedTraceStep` from `CallTraceStep`.

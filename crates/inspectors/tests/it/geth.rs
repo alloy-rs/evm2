@@ -28,8 +28,8 @@ fn test_calltracer_invalid_opcode_errors() {
     let parent = address!("2000000000000000000000000000000000000002");
     for (opcode, expected) in [
         (op::INVALID, "invalid opcode: INVALID"),
-        (0x0c, "invalid opcode"),
-        (op::PUSH0, "invalid opcode"),
+        (0x0c, "invalid opcode: opcode 0xc not defined"),
+        (op::PUSH0, "invalid opcode: PUSH0"),
     ] {
         for nested in [false, true] {
             let options =
@@ -2190,5 +2190,286 @@ fn test_geth_failed_root_logs() {
                 }
             }
         }
+    }
+}
+
+/// Runs `code` as the receiver, with `child` deployed at `0xc0de`, and returns the errors geth
+/// reports on struct logs and call frames.
+fn geth_errors(
+    spec: SpecId,
+    code: &[u8],
+    child: Option<&[u8]>,
+    gas: u64,
+    create: bool,
+) -> (serde_json::Value, serde_json::Value) {
+    let receiver = Address::left_padding_from(b"receiver");
+    let mut db = CacheDB::<EmptyDB>::default();
+    let mut insert = |address: &Address, code: &[u8]| {
+        db.insert_account_info(
+            address,
+            AccountInfo {
+                code: Some(Bytecode::new_raw(Bytes::copy_from_slice(code))),
+                ..Default::default()
+            },
+        );
+    };
+    insert(&receiver, code);
+    if let Some(child) = child {
+        insert(&Address::left_padding_from(&hex!("c0de")), child);
+    }
+
+    let [mut struct_logs, mut calls] = ["default", "callTracer"].map(|tracer| {
+        let options = serde_json::from_value(if tracer == "default" {
+            serde_json::json!({})
+        } else {
+            serde_json::json!({ "tracer": tracer })
+        })
+        .unwrap();
+        let mut inspector = DebugInspector::new(options).unwrap();
+        let mut evm = Context::mainnet()
+            .with_db(db.clone())
+            .modify_cfg_chained(|cfg| cfg.spec = spec)
+            .build_mainnet()
+            .with_inspector(&mut inspector);
+        let result = evm
+            .inspect_tx(TxEnv {
+                gas_limit: gas + 21000 + if create { 32000 } else { 0 },
+                kind: if create { TransactTo::Create } else { TransactTo::Call(receiver) },
+                data: if create { Bytes::copy_from_slice(code) } else { Bytes::new() },
+                ..Default::default()
+            })
+            .unwrap();
+        let (ctx, inspector) = evm.ctx_inspector();
+        let tx = ctx.tx().envelope();
+        let block = *ctx.block();
+        let trace =
+            inspector.get_result(None, &tx, &block, &result.tx_result, ctx.db_mut()).unwrap();
+        serde_json::to_value(trace).unwrap()
+    });
+
+    let struct_errors = struct_logs["structLogs"]
+        .as_array_mut()
+        .unwrap()
+        .iter()
+        .filter(|log| log.get("error").is_some())
+        .map(|log| serde_json::json!([log["depth"], log["pc"], log["op"], log["error"]]))
+        .collect();
+    fn call_errors(frame: &serde_json::Value, errors: &mut Vec<serde_json::Value>) {
+        errors.push(frame.get("error").cloned().unwrap_or_default());
+        for call in frame["calls"].as_array().into_iter().flatten() {
+            call_errors(call, errors);
+        }
+    }
+    let mut call_errors_out = Vec::new();
+    call_errors(&calls, &mut call_errors_out);
+    calls = call_errors_out.into();
+    (serde_json::Value::Array(struct_errors), calls)
+}
+
+/// The expected values come from go-ethereum v1.17.10: a struct log carries only the errors geth
+/// raises before it runs the opcode, and a frame carries the error that ended it.
+#[test]
+fn struct_logs_and_call_errors_match_geth() {
+    let static_call = hex!("5f5f5f5f61c0de5afa00");
+    let create_code = hex!("60c85ff3");
+    let push0s = vec![op::PUSH0; 1025];
+    let mstore_overflow = [&hex!("60007f")[..], &[0xff; 32], &[op::MSTORE]].concat();
+    for (spec, code, child, gas, create, struct_errors, calls) in [
+        (
+            SpecId::OSAKA,
+            &hex!("01")[..],
+            None,
+            100000,
+            false,
+            serde_json::json!([[1, 0, "ADD", "stack underflow (0 <=> 2)"]]),
+            serde_json::json!(["stack underflow (0 <=> 2)"]),
+        ),
+        (
+            SpecId::OSAKA,
+            &hex!("600055")[..],
+            None,
+            100000,
+            false,
+            serde_json::json!([[1, 2, "SSTORE", "stack underflow (1 <=> 2)"]]),
+            serde_json::json!(["stack underflow (1 <=> 2)"]),
+        ),
+        (
+            SpecId::OSAKA,
+            &hex!("600556")[..],
+            None,
+            100000,
+            false,
+            serde_json::json!([]),
+            serde_json::json!(["invalid jump destination"]),
+        ),
+        (
+            SpecId::OSAKA,
+            &push0s,
+            None,
+            100000,
+            false,
+            serde_json::json!([[1, 1024, "PUSH0", "stack limit reached 1024 (1023)"]]),
+            serde_json::json!(["stack limit reached 1024 (1023)"]),
+        ),
+        (
+            SpecId::OSAKA,
+            &static_call,
+            Some(&hex!("600160005500")[..]),
+            100000,
+            false,
+            serde_json::json!([[2, 4, "SSTORE", "out of gas: write protection"]]),
+            serde_json::json!([null, "out of gas: write protection"]),
+        ),
+        (
+            SpecId::OSAKA,
+            &static_call,
+            Some(&hex!("5f5f5f5f600161c0de5af100")[..]),
+            100000,
+            false,
+            serde_json::json!([[2, 10, "CALL", "out of gas: write protection"]]),
+            serde_json::json!([null, "out of gas: write protection"]),
+        ),
+        (
+            SpecId::OSAKA,
+            &static_call,
+            Some(&hex!("5f5fa000")[..]),
+            100000,
+            false,
+            serde_json::json!([]),
+            serde_json::json!([null, "write protection"]),
+        ),
+        (
+            SpecId::OSAKA,
+            &static_call,
+            Some(&hex!("5f5f5d00")[..]),
+            100000,
+            false,
+            serde_json::json!([]),
+            serde_json::json!([null, "write protection"]),
+        ),
+        (
+            SpecId::OSAKA,
+            &hex!("6000620fffff52")[..],
+            None,
+            100000,
+            false,
+            serde_json::json!([[1, 6, "MSTORE", "out of gas"]]),
+            serde_json::json!(["out of gas"]),
+        ),
+        (
+            SpecId::OSAKA,
+            &mstore_overflow,
+            None,
+            100000,
+            false,
+            serde_json::json!([[1, 35, "MSTORE", "gas uint64 overflow"]]),
+            serde_json::json!(["gas uint64 overflow"]),
+        ),
+        (
+            SpecId::SHANGHAI,
+            &hex!("61c0015f5ff000")[..],
+            None,
+            100000,
+            false,
+            serde_json::json!([[
+                1,
+                5,
+                "CREATE",
+                "out of gas: max initcode size exceeded: code size 49153 limit 49152"
+            ]]),
+            serde_json::json!([
+                "out of gas: max initcode size exceeded: code size 49153 limit 49152"
+            ]),
+        ),
+        (
+            SpecId::OSAKA,
+            &hex!("d0")[..],
+            None,
+            100000,
+            false,
+            serde_json::json!([]),
+            serde_json::json!(["invalid opcode: DATALOAD"]),
+        ),
+        (
+            SpecId::OSAKA,
+            &hex!("fb")[..],
+            None,
+            100000,
+            false,
+            serde_json::json!([]),
+            serde_json::json!(["invalid opcode: EXTSTATICCALL"]),
+        ),
+        (
+            SpecId::SHANGHAI,
+            &hex!("5f5f5f5e")[..],
+            None,
+            100000,
+            false,
+            serde_json::json!([]),
+            serde_json::json!(["invalid opcode: MCOPY"]),
+        ),
+        (
+            SpecId::AMSTERDAM,
+            &hex!("e6")[..],
+            None,
+            100000,
+            false,
+            serde_json::json!([[1, 0, "DUPN", "stack underflow (0 <=> 1)"]]),
+            serde_json::json!(["stack underflow (0 <=> 1)"]),
+        ),
+        (
+            SpecId::AMSTERDAM,
+            &hex!("5fe600")[..],
+            None,
+            100000,
+            false,
+            serde_json::json!([]),
+            serde_json::json!(["stack underflow (1 <=> 145)"]),
+        ),
+        (
+            SpecId::AMSTERDAM,
+            &hex!("5fe65b")[..],
+            None,
+            100000,
+            false,
+            serde_json::json!([]),
+            serde_json::json!(["invalid opcode: DUPN (operand: 0x5b)"]),
+        ),
+        (
+            SpecId::AMSTERDAM,
+            &hex!("5f5fe800")[..],
+            None,
+            100000,
+            false,
+            serde_json::json!([]),
+            serde_json::json!(["stack underflow (2 <=> 17)"]),
+        ),
+        (
+            SpecId::OSAKA,
+            &hex!("6001600055")[..],
+            None,
+            2300,
+            false,
+            serde_json::json!([[
+                1,
+                4,
+                "SSTORE",
+                "out of gas: not enough gas for reentrancy sentry"
+            ]]),
+            serde_json::json!(["out of gas: not enough gas for reentrancy sentry"]),
+        ),
+        (
+            SpecId::OSAKA,
+            &create_code,
+            None,
+            30000,
+            true,
+            serde_json::json!([]),
+            serde_json::json!(["contract creation code storage out of gas"]),
+        ),
+    ] {
+        let (actual_struct, actual_calls) = geth_errors(spec, code, child, gas, create);
+        assert_eq!(actual_struct, struct_errors, "struct logs of {code:x?}");
+        assert_eq!(actual_calls, calls, "calls of {code:x?}");
     }
 }

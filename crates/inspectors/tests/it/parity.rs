@@ -1006,13 +1006,13 @@ fn failed_frames_use_parity_labels() {
             &hex!("5f5f5f5f604361fffffa00")[..],
             &hex!("602a5f5500")[..],
             SpecId::PRAGUE,
-            ["Mutable Call In Static Context", "write protection"],
+            ["Mutable Call In Static Context", "out of gas: write protection"],
         ),
         (
             &hex!("5f5f5f5f604361fffffa00")[..],
             &hex!("5f5f5f5f6001604461fffff1")[..],
             SpecId::PRAGUE,
-            ["Mutable Call In Static Context", "write protection"],
+            ["Mutable Call In Static Context", "out of gas: write protection"],
         ),
         (
             &hex!("60015f5f3e00")[..],
@@ -1020,13 +1020,23 @@ fn failed_frames_use_parity_labels() {
             SpecId::PRAGUE,
             ["Out of bounds", "return data out of bounds"],
         ),
-        (&hex!("01")[..], &[][..], SpecId::PRAGUE, ["Stack underflow", "stack underflow"]),
-        (&hex!("5f5f5f5e")[..], &[][..], SpecId::SHANGHAI, ["Bad instruction", "invalid opcode"]),
+        (
+            &hex!("01")[..],
+            &[][..],
+            SpecId::PRAGUE,
+            ["Stack underflow", "stack underflow (0 <=> 2)"],
+        ),
+        (
+            &hex!("5f5f5f5e")[..],
+            &[][..],
+            SpecId::SHANGHAI,
+            ["Bad instruction", "invalid opcode: MCOPY"],
+        ),
         (
             &hex!("646160015ff35f526005601b5ff000")[..],
             &[][..],
             SpecId::PRAGUE,
-            ["Out of gas", "max code size exceeded"],
+            ["Out of gas", "max code size exceeded: code size 24577 limit 24576"],
         ),
         (
             &hex!("6760ef5f5360015ff35f52600860185ff000")[..],
@@ -1038,7 +1048,7 @@ fn failed_frames_use_parity_labels() {
             &hex!("61c0015f5ff000")[..],
             &[][..],
             SpecId::PRAGUE,
-            ["Out of gas", "max initcode size exceeded"],
+            ["Out of gas", "out of gas: max initcode size exceeded: code size 49153 limit 49152"],
         ),
         (
             &hex!("600060006000600060003060645a03f100")[..],

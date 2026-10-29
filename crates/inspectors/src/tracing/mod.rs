@@ -8,7 +8,7 @@ use crate::{
             CallKind, CallTraceNode, RecordedMemory, StepDelta, StorageChange, StorageChangeReason,
             TraceMemberOrder,
         },
-        utils::gas_used,
+        utils::{StepContext, fmt_geth_create_end, fmt_geth_halt, gas_used},
     },
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -113,6 +113,15 @@ pub struct TracingInspector {
     ///
     /// This is filled during execution.
     features: EvmFeatures,
+    /// The opcode that is about to run, kept for the error geth reports if it halts.
+    step_context: StepContext,
+    /// The error geth reports for the opcode that halted the current frame.
+    ///
+    /// Taken when the frame ends.
+    halt_error: Option<String>,
+    /// The length of the output the last `RETURN` produced, which a failed contract creation
+    /// reports as its code size.
+    return_len: usize,
     /// Pool of reusable _empty_ step vectors to reduce allocations.
     ///
     /// All `Vec<CallTraceStep>` are always empty but may have capacity.
@@ -156,6 +165,9 @@ impl TracingInspector {
             last_journal_len,
             spec_id,
             features,
+            step_context,
+            halt_error,
+            return_len,
             // kept
             config,
             budget,
@@ -181,6 +193,9 @@ impl TracingInspector {
         spec_id.take();
         *features = EvmFeatures::empty();
         *last_journal_len = 0;
+        *step_context = StepContext::default();
+        *halt_error = None;
+        *return_len = 0;
         budget.recorded = 0;
         budget.exceeded = false;
     }
@@ -437,6 +452,7 @@ impl TracingInspector {
         trace.gas_refund_counter = result.gas.refunded().max(0) as u64;
 
         trace.status = Some(result.stop);
+        trace.geth_error = self.halt_error.take();
         trace.success = result.stop.is_success();
         trace.output = result.output.clone();
         if !trace.success {
@@ -553,6 +569,7 @@ impl TracingInspector {
             state_gas_spent: interp.gas().state_gas_spent(),
             storage_change: None,
             status: None,
+            error: None,
 
             // This is never populated in `TracingInspector`.
             decoded: None,
@@ -744,6 +761,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
 
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        self.step_context = step_context(interp);
         if self.config.record_steps {
             self.start_step(interp);
         }
@@ -752,8 +770,27 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
 
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
+        let halt = match interp.result() {
+            Err(InstrStop::Return) => {
+                self.return_len = interp.output().len();
+                None
+            }
+            Err(stop) if stop.is_halt() => fmt_geth_halt(stop, self.step_context, interp.version()),
+            _ => None,
+        };
         if self.config.record_steps {
+            let recorded = self.step_stack.last().copied();
             self.fill_step_on_step_end(interp);
+            if let Some(halt) = &halt
+                && halt.before_body
+                && let Some((trace_idx, step_idx)) = recorded
+                && let Some(step) = self.traces.arena[trace_idx].trace.steps.get_mut(step_idx)
+            {
+                step.error = Some(halt.msg.clone());
+            }
+        }
+        if let Some(halt) = halt {
+            self.halt_error = Some(halt.msg);
         }
         self.budget.halt(interp, true);
     }
@@ -874,6 +911,10 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     ) {
         let trace_idx = self.last_trace_idx();
         self.fill_trace_on_call_end(result);
+        let trace = &mut self.traces.arena[trace_idx].trace;
+        if trace.geth_error.is_none() {
+            trace.geth_error = fmt_geth_create_end(result.stop, self.return_len, interp.version());
+        }
         // A nested CREATE whose creator nonce cannot be incremented returns successfully but
         // without an address, leaving its gas unspent.
         if message.depth > interp.version().initial_call_depth
@@ -946,6 +987,25 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
             tx_hash: tx_info.hash,
         }
     }
+}
+
+/// Returns what geth's error text needs to know about the opcode that is about to run.
+fn step_context<T: EvmTypes>(interp: &Interpreter<'_, '_, T>) -> StepContext {
+    let op = OpCode::new_or_unknown(interp.opcode());
+    let stack = interp.stack();
+    let stack = stack.as_slice();
+    let operand = match op.get() {
+        op::CREATE | op::CREATE2 => stack
+            .len()
+            .checked_sub(3)
+            .map_or(0, |index| usize::try_from(stack[index]).unwrap_or(usize::MAX)),
+        op::DUPN | op::SWAPN | op::EXCHANGE => interp
+            .original_bytecode_slice()
+            .get(interp.pc() + 1)
+            .map_or(0, |&immediate| usize::from(immediate)),
+        _ => 0,
+    };
+    StepContext { op, stack_len: stack.len(), operand }
 }
 
 /// Returns the memory range whose contents after execution the opcode reports, derived from its

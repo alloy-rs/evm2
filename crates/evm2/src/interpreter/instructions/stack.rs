@@ -44,11 +44,13 @@ pub fn exchange(cx: _) -> Result {
     stack.exchange(n, m)
 }
 
-const fn decode_single(x: u8) -> Option<usize> {
+/// Decodes the immediate of `DUPN` and `SWAPN` into a stack depth.
+pub const fn decode_single(x: u8) -> Option<usize> {
     if x <= 90 || x >= 128 { Some(x.wrapping_add(145) as usize) } else { None }
 }
 
-const fn decode_pair(x: u8) -> Option<(usize, usize)> {
+/// Decodes the immediate of `EXCHANGE` into two stack depths.
+pub const fn decode_pair(x: u8) -> Option<(usize, usize)> {
     if x > 81 && x < 128 {
         return None;
     }
