@@ -6,7 +6,7 @@ use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
     bytecode::Bytecode,
     evm::inspector::{Inspector, OpcodeSet},
-    interpreter::dispatch::{self, InstrTable},
+    interpreter::dispatch,
     trustme,
     version::{EvmFeatures, GasParams},
 };
@@ -508,37 +508,36 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         } else {
             // Load the table only after setup: passing it in keeps it in a callee-saved register
             // across setup, which makes the dispatch loop spill the stack pointer.
-            // SAFETY: `prepare_run` initialized the host, and the config is only read here.
-            let config = unsafe { self.execution_config_detached() };
-            let mut instructions = match inspector {
-                Some(inspector) => self.inspect_instructions(config, inspector),
-                None => config.instructions,
-            };
-            loop {
-                let stop = dispatch::run(self, instructions);
-                let (InstrStop::ReloadTable, Some(inspector)) = (stop, inspector) else {
-                    break stop;
-                };
-                // A message opcode changed the inspector's config: continue at the next
-                // instruction on the table for the new config.
-                self.result = Ok(());
-                instructions = self.inspect_instructions(config, inspector);
+            match inspector {
+                Some(inspector) => self.run_inspected(inspector),
+                None => {
+                    // SAFETY: `prepare_run` initialized the host, and the config is only read
+                    // here.
+                    let config = unsafe { self.execution_config_detached() };
+                    dispatch::run(self, config.instructions)
+                }
             }
         };
         self.finish_run(stop)
     }
 
-    /// Returns the table for the inspector's current config and records its opcodes as this
-    /// frame's.
+    /// Runs the frame on the table for its inspector's config, and again on the table for the new
+    /// config each time a message opcode changes it.
     #[inline(never)]
-    fn inspect_instructions(
-        &mut self,
-        config: &'host ExecutionConfig<T>,
-        inspector: NonNull<dyn Inspector<T> + 'host>,
-    ) -> &'host InstrTable<T> {
-        // SAFETY: The inspector pointer is valid for this run.
-        self.steps = unsafe { inspector.as_ref() }.config().steps;
-        config.inspect_instructions_for(self.steps)
+    fn run_inspected(&mut self, inspector: NonNull<dyn Inspector<T> + 'host>) -> InstrStop {
+        loop {
+            // SAFETY: `prepare_run` initialized the host. The config is read again on each reload
+            // and the table is held for the run, so neither is used after the host replaced it.
+            let config = unsafe { self.execution_config_detached() };
+            // SAFETY: The inspector pointer is valid for this run.
+            self.steps = unsafe { inspector.as_ref() }.config().steps;
+            let instructions = config.inspect_instructions_for(self.steps);
+            let stop = dispatch::run(self, &instructions);
+            if stop != InstrStop::ReloadTable {
+                return stop;
+            }
+            self.result = Ok(());
+        }
     }
 
     /// Takes an owned error recorded by an instruction or inspector hook.

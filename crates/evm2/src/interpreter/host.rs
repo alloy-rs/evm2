@@ -118,7 +118,8 @@ pub trait Host<T: EvmTypesHost> {
     /// Returns the active execution configuration.
     ///
     /// The interpreter keeps a reference to the returned version for the whole run, so the host
-    /// must not replace or mutate it while the interpreter runs.
+    /// must not replace or mutate it while the interpreter runs. An inspected run reads the config
+    /// again when its inspector changes the opcodes it steps.
     fn execution_config(&self) -> &ExecutionConfig<T>;
 
     /// Returns the block environment.

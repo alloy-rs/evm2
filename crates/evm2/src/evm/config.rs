@@ -10,8 +10,8 @@ use crate::{
     },
     version::Version,
 };
-use alloc::{boxed::Box, vec::Vec};
-use core::{cell::UnsafeCell, fmt::Debug};
+use alloc::{sync::Arc, vec::Vec};
+use core::{cell::RefCell, fmt::Debug, ops::Deref};
 use derive_where::derive_where;
 
 /// Runtime EVM type family.
@@ -217,15 +217,15 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
     /// `steps`.
     ///
     /// Sparse sets get a table of the watch table's handlers with the inspect table's handlers
-    /// at the opcodes in `steps`. It is built on first use and kept until the config is dropped.
-    pub(crate) fn inspect_instructions_for(&self, steps: OpcodeSet) -> &InstrTable<T> {
+    /// at the opcodes in `steps`. It is built on first use and cached until the config is dropped.
+    pub(crate) fn inspect_instructions_for(&self, steps: OpcodeSet) -> InspectTable<T> {
         if steps == OpcodeSet::EMPTY {
-            return self.watch_instructions;
+            return InspectTable::Static(self.watch_instructions);
         }
         if steps == OpcodeSet::ALL {
-            return self.inspect_instructions;
+            return InspectTable::Static(self.inspect_instructions);
         }
-        self.inspect_tables.get_or_insert_with(steps, || {
+        InspectTable::Mixed(self.inspect_tables.get_or_insert_with(steps, || {
             let mut table = *self.watch_instructions;
             for op in 0..=u8::MAX {
                 if steps.contains(op) {
@@ -233,7 +233,7 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
                 }
             }
             table
-        })
+        }))
     }
 
     /// Returns the active base specification ID.
@@ -274,40 +274,51 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
 
 /// Instruction tables built per opcode set that inspectors step on.
 ///
-/// Tables are only ever added, and each is boxed, so a table stays valid and in place while the
-/// cache lives. The interpreter runs frames on them, so nothing is evicted before the cache is
-/// dropped with its [`ExecutionConfig`].
-struct InspectTables<T: EvmTypesHost>(UnsafeCell<Vec<(OpcodeSet, Box<InstrTable<T>>)>>);
+/// Tables are only ever added and are shared, so a frame running on one keeps it alive even if the
+/// cache is dropped with its [`ExecutionConfig`].
+struct InspectTables<T: EvmTypesHost>(RefCell<Vec<(OpcodeSet, Arc<InstrTable<T>>)>>);
 
 impl<T: EvmTypesHost> InspectTables<T> {
     const fn new() -> Self {
-        Self(UnsafeCell::new(Vec::new()))
+        Self(RefCell::new(Vec::new()))
     }
 
     fn get_or_insert_with(
         &self,
         steps: OpcodeSet,
         build: impl FnOnce() -> InstrTable<T>,
-    ) -> &InstrTable<T> {
-        // SAFETY: This is the only access to the vector and nothing below calls back into it, so
-        // this borrow is unique.
-        let tables = unsafe { &mut *self.0.get() };
-        let index = match tables.iter().position(|(set, _)| *set == steps) {
-            Some(index) => index,
-            None => {
-                tables.push((steps, Box::new(build())));
-                tables.len() - 1
-            }
-        };
-        let table: *const InstrTable<T> = &*tables[index].1;
-        // SAFETY: The boxed table is never moved, mutated or dropped while `self` is alive.
-        unsafe { &*table }
+    ) -> Arc<InstrTable<T>> {
+        let mut tables = self.0.borrow_mut();
+        if let Some((_, table)) = tables.iter().find(|(set, _)| *set == steps) {
+            return table.clone();
+        }
+        let table = Arc::new(build());
+        tables.push((steps, table.clone()));
+        table
     }
 }
 
 impl<T: EvmTypesHost> Clone for InspectTables<T> {
     fn clone(&self) -> Self {
         Self::new()
+    }
+}
+
+/// Instruction table of an inspected frame.
+pub(crate) enum InspectTable<T: EvmTypesHost> {
+    Static(&'static InstrTable<T>),
+    Mixed(Arc<InstrTable<T>>),
+}
+
+impl<T: EvmTypesHost> Deref for InspectTable<T> {
+    type Target = InstrTable<T>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Static(table) => table,
+            Self::Mixed(table) => table,
+        }
     }
 }
 
