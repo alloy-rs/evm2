@@ -116,7 +116,7 @@ impl TryFrom<HandlerError> for EthInvalidTxError {
 
 /// Additional block-level execution context.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct BlockExecutionContext<'a> {
+pub struct BlockExecutionContext<'a> {
     /// Pre-block system calls to run before transaction execution.
     pub system_calls: Option<BlockSystemCalls>,
     /// Pre-merge ommer headers included in the block.
@@ -129,14 +129,15 @@ pub(crate) struct BlockExecutionContext<'a> {
 
 /// Inputs required by Ethereum pre-block system calls.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct BlockSystemCalls {
+pub struct BlockSystemCalls {
     /// Parent block hash for EIP-2935 history storage.
     pub parent_hash: B256,
     /// Parent beacon block root for EIP-4788 beacon roots.
     pub parent_beacon_block_root: Option<B256>,
 }
 
-pub(crate) fn map_transaction_error(error: HandlerError, hash: B256) -> BlockExecutionError {
+/// Converts a transaction's handler error into a block error with its hash.
+pub fn map_transaction_error(error: HandlerError, hash: B256) -> BlockExecutionError {
     let error = match EthInvalidTxError::try_from(error) {
         Ok(error) => {
             return BlockValidationError::InvalidTx { hash, error: Box::new(error) }.into();
@@ -158,7 +159,8 @@ fn send_state_update(state: StateUpdate, on_state_update: &mut impl FnMut(StateU
     }
 }
 
-pub(crate) fn execute_transaction_with_condition<T: EvmTypes>(
+/// Executes a transaction and commits it when `commit` accepts its result.
+pub fn execute_transaction_with_condition<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
     stream_state: bool,
@@ -191,7 +193,8 @@ where
     result
 }
 
-pub(crate) fn execute_transaction_without_commit<T: EvmTypes>(
+/// Executes a transaction and detaches its state changes.
+pub fn execute_transaction_without_commit<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     transaction: &Recovered<T::Tx>,
 ) -> Result<TxResultWithState<T>, HandlerError>
@@ -201,7 +204,8 @@ where
     evm.transact(transaction).map(|executed| executed.detach())
 }
 
-pub(crate) fn commit_detached_transaction<T: EvmTypes>(
+/// Commits a detached transaction into the EVM and the block state.
+pub fn commit_detached_transaction<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
     stream_state: bool,
@@ -217,7 +221,8 @@ pub(crate) fn commit_detached_transaction<T: EvmTypes>(
     result
 }
 
-pub(crate) fn commit_pending_state<T: EvmTypes>(
+/// Commits detached state into the EVM overlay and the block state.
+pub fn commit_pending_state<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
     stream_state: bool,
@@ -243,7 +248,8 @@ fn accumulate_pending_state(
     }
 }
 
-pub(crate) fn pre_execution_system_call_state_changes<T: EvmTypes>(
+/// Runs the EIP-2935 and EIP-4788 pre-block system calls.
+pub fn pre_execution_system_call_state_changes<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
     stream_state: bool,
@@ -294,7 +300,8 @@ pub(crate) fn pre_execution_system_call_state_changes<T: EvmTypes>(
     Ok(())
 }
 
-pub(crate) fn block_requests_from_receipts<R>(
+/// Collects the block's EIP-6110 deposit requests from its receipts.
+pub fn block_requests_from_receipts<R>(
     spec_id: SpecId,
     context: BlockExecutionContext<'_>,
     receipts: &[R],
@@ -348,7 +355,8 @@ where
     Ok(out)
 }
 
-pub(crate) fn post_execution_system_call_state_changes<T: EvmTypes>(
+/// Runs the EIP-7002, EIP-7251 and EIP-8282 request system calls.
+pub fn post_execution_system_call_state_changes<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
     stream_state: bool,
@@ -472,8 +480,9 @@ fn commit_state_changes<T: EvmTypes>(
     accumulate_pending_state(block_state, stream_state, on_state_update, &pending_state);
 }
 
+/// Applies block and ommer rewards, the DAO fork drain and withdrawals.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn post_block_balance_state_changes<T: EvmTypes>(
+pub fn post_block_balance_state_changes<T: EvmTypes>(
     evm: &mut Evm<'_, T>,
     block_state: &mut BlockState,
     stream_state: bool,
@@ -556,7 +565,8 @@ pub(crate) fn post_block_balance_state_changes<T: EvmTypes>(
     Ok(())
 }
 
-pub(crate) fn base_block_reward<C>(chain_spec: &C, block_number: u64) -> Option<u128>
+/// Returns the base block reward at `block_number`, or `None` after the merge.
+pub fn base_block_reward<C>(chain_spec: &C, block_number: u64) -> Option<u128>
 where
     C: EthereumHardforks + ?Sized,
 {
@@ -571,11 +581,13 @@ where
     }
 }
 
-const fn block_reward(base_block_reward: u128, ommers: usize) -> u128 {
+/// Returns the block reward with the ommer inclusion bonus.
+pub const fn block_reward(base_block_reward: u128, ommers: usize) -> u128 {
     base_block_reward + (base_block_reward >> 5) * ommers as u128
 }
 
-fn ommer_reward(base_block_reward: u128, block_number: u64, ommer_block_number: u64) -> u128 {
+/// Returns the reward of an ommer included at `block_number`.
+pub fn ommer_reward(base_block_reward: u128, block_number: u64, ommer_block_number: u64) -> u128 {
     let distance = 8u64.saturating_add(ommer_block_number).saturating_sub(block_number);
     (u128::from(distance) * base_block_reward) >> 3
 }

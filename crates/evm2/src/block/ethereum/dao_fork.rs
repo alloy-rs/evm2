@@ -4,11 +4,11 @@
 use alloy_primitives::{Address, address};
 
 /// Dao hardfork beneficiary that received ether from accounts from DAO and DAO creator children.
-pub(crate) static DAO_HARDFORK_BENEFICIARY: Address =
+pub static DAO_HARDFORK_BENEFICIARY: Address =
     address!("0xbf4ed7b27f1d666546e30d74d50d173d20bca754");
 
 /// Accounts drained into the beneficiary at the DAO hardfork.
-pub(crate) static DAO_HARDFORK_ACCOUNTS: [Address; 116] = [
+pub static DAO_HARDFORK_ACCOUNTS: [Address; 116] = [
     address!("0xd4fe7bc31cedb7bfb8a345f31e668033056b2728"),
     address!("0xb3fb0e5aba0e20e5c49d252dfd30e102b171a425"),
     address!("0x2c19c7f9ae8b751e37aeb2d93a699722395ae18f"),

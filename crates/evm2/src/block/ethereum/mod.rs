@@ -22,9 +22,9 @@ use alloy_hardforks::{EthereumHardfork, EthereumHardforks};
 use alloy_primitives::{Address, B256};
 use core::borrow::Borrow;
 
-mod dao_fork;
+pub mod dao_fork;
 
-mod execution;
+pub mod execution;
 use execution::{
     BlockExecutionContext, BlockSystemCalls, block_requests_from_receipts,
     commit_detached_transaction, commit_pending_state, execute_transaction_without_commit,
