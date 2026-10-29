@@ -1,6 +1,7 @@
 //! API shim so that the test files can stay as close to upstream as possible.
 
-use alloy_consensus::{TxEip4844, TxLegacy, transaction::Recovered};
+use alloy_consensus::{TxEip2930, TxEip4844, TxLegacy, transaction::Recovered};
+use alloy_eip2930::AccessList;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
     BaseEvmTypes, Evm, EvmTypesHost, Inspector, NoopInspector, Precompiles, TxResult,
@@ -36,6 +37,7 @@ pub struct TxEnv {
     pub chain_id: Option<u64>,
     pub blob_hashes: Vec<B256>,
     pub max_fee_per_blob_gas: u128,
+    pub access_list: AccessList,
 }
 
 impl Default for TxEnv {
@@ -52,6 +54,7 @@ impl Default for TxEnv {
             chain_id: None,
             blob_hashes: Vec::new(),
             max_fee_per_blob_gas: 0,
+            access_list: AccessList::default(),
         }
     }
 }
@@ -331,6 +334,24 @@ impl TxEnv {
                         access_list: Default::default(),
                         blob_versioned_hashes: self.blob_hashes.clone(),
                         max_fee_per_blob_gas: self.max_fee_per_blob_gas,
+                        input: self.data.clone(),
+                    }
+                    .into(),
+                ),
+                self.caller,
+            );
+        }
+        if !self.access_list.is_empty() {
+            return Recovered::new_unchecked(
+                TxEnvelope::Eip2930(
+                    TxEip2930 {
+                        chain_id: self.chain_id.unwrap_or(1),
+                        nonce: self.nonce,
+                        gas_price: self.gas_price,
+                        gas_limit: self.gas_limit,
+                        to: self.kind,
+                        value: self.value,
+                        access_list: self.access_list.clone(),
                         input: self.data.clone(),
                     }
                     .into(),

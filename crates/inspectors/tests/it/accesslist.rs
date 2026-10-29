@@ -4,7 +4,7 @@ use crate::utils::{AccountInfo, Bytecode, CacheDB, Context, EmptyDB, TransactTo,
 use alloy_consensus::{TxEip7702, crypto::secp256k1::sign_message};
 use alloy_eip2930::{AccessList, AccessListItem};
 use alloy_eips::eip7702::Authorization;
-use alloy_primitives::{Address, B256, Signature, U256, address, hex};
+use alloy_primitives::{Address, B256, Signature, U256, address, b256, hex};
 use evm2::ethereum::TxEnvelope;
 use evm2_inspectors::access_list::AccessListInspector;
 
@@ -138,3 +138,516 @@ fn test_access_list_authorization_exclusions() {
     // The unrecoverable authorization has no authority and therefore adds nothing.
     assert_eq!(excluded.len(), 2);
 }
+
+const fn a(n: u64) -> Address {
+    let mut bytes = [0; 20];
+    let (_, low) = bytes.split_at_mut(12);
+    let n = n.to_be_bytes();
+    let mut i = 0;
+    while i < 8 {
+        low[i] = n[i];
+        i += 1;
+    }
+    Address::new(bytes)
+}
+
+/// A call run through `go-ethereum`'s `eth_createAccessList`, and the list it returned.
+struct AccessListCase {
+    name: &'static str,
+    /// Address, code and balance.
+    accounts: &'static [(Address, &'static [u8], u64)],
+    to: Option<Address>,
+    input: &'static [u8],
+    gas_limit: u64,
+    /// The access list of the request.
+    seed: &'static [(Address, &'static [B256])],
+    expected: &'static [(Address, &'static [B256])],
+}
+
+fn access_list(items: &[(Address, &[B256])]) -> AccessList {
+    AccessList(
+        items
+            .iter()
+            .map(|&(address, storage_keys)| AccessListItem {
+                address,
+                storage_keys: storage_keys.to_vec(),
+            })
+            .collect(),
+    )
+}
+
+/// Lists returned by `go-ethereum` a0cba163 (`geth --dev`, Osaka) for the same calls.
+#[test]
+fn access_list_matches_geth() {
+    let sender = a(0x1001);
+    for case in CASES {
+        let mut db = CacheDB::<EmptyDB>::default();
+        db.insert_account_info(
+            &sender,
+            AccountInfo { balance: U256::from(10u128.pow(18)), ..Default::default() },
+        );
+        for &(address, code, balance) in case.accounts {
+            db.insert_account_info(
+                &address,
+                AccountInfo {
+                    balance: U256::from(balance),
+                    code: Some(Bytecode::new_raw(code.to_vec().into())),
+                    ..Default::default()
+                },
+            );
+        }
+        let context = Context::mainnet().with_db(db);
+
+        // Like `go-ethereum`, run again with the list found so far until it stops growing.
+        let mut list = access_list(case.seed);
+        let actual = loop {
+            let mut inspector = AccessListInspector::new(list.clone());
+            let mut evm = context.clone().build_mainnet().with_inspector(&mut inspector);
+            evm.inspect_tx(TxEnv {
+                caller: sender,
+                gas_limit: case.gas_limit,
+                kind: case.to.map_or(TransactTo::Create, TransactTo::Call),
+                data: case.input.to_vec().into(),
+                nonce: 0,
+                access_list: list.clone(),
+                ..Default::default()
+            })
+            .unwrap();
+            let next = inspector.access_list();
+            if next == list {
+                break next;
+            }
+            list = next;
+        };
+
+        assert_eq!(actual, access_list(case.expected), "{}", case.name);
+    }
+}
+
+const CASES: &[AccessListCase] = &[
+    AccessListCase {
+        name: "call_underflow_2",
+        accounts: &[(a(0xc1), &hex!("73000000000000000000000000000000000000b0016000f1"), 0)],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[],
+    },
+    AccessListCase {
+        name: "call_underflow_4",
+        accounts: &[(
+            a(0xc1),
+            &hex!("60006000600073000000000000000000000000000000000000b001f1"),
+            0,
+        )],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[],
+    },
+    AccessListCase {
+        name: "call_underflow_5",
+        accounts: &[(
+            a(0xc1),
+            &hex!("600060006000600073000000000000000000000000000000000000b0016000f1"),
+            0,
+        )],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(a(0xb001), &[])],
+    },
+    AccessListCase {
+        name: "call_underflow_5b",
+        accounts: &[(
+            a(0xc1),
+            &hex!("60006000600073000000000000000000000000000000000000b0016000f1"),
+            0,
+        )],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(a(0xb001), &[])],
+    },
+    AccessListCase {
+        name: "staticcall_underflow_4",
+        accounts: &[(
+            a(0xc1),
+            &hex!("6000600073000000000000000000000000000000000000b0016000fa"),
+            0,
+        )],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[],
+    },
+    AccessListCase {
+        name: "staticcall_underflow_5",
+        accounts: &[(
+            a(0xc1),
+            &hex!("60006000600073000000000000000000000000000000000000b0016000fa"),
+            0,
+        )],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(a(0xb001), &[])],
+    },
+    AccessListCase {
+        name: "delegatecall_underflow_5",
+        accounts: &[(
+            a(0xc1),
+            &hex!("60006000600073000000000000000000000000000000000000b0016000f4"),
+            0,
+        )],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(a(0xb001), &[])],
+    },
+    AccessListCase {
+        name: "callcode_underflow_4",
+        accounts: &[(
+            a(0xc1),
+            &hex!("6000600073000000000000000000000000000000000000b0016000f2"),
+            0,
+        )],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[],
+    },
+    AccessListCase {
+        name: "call_ok",
+        accounts: &[(
+            a(0xc1),
+            &hex!("6000600060006000600073000000000000000000000000000000000000b00161fffff150"),
+            0,
+        )],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(a(0xb001), &[])],
+    },
+    AccessListCase {
+        name: "balance_ok",
+        accounts: &[(a(0xc1), &hex!("73000000000000000000000000000000000000b0013100"), 0)],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(a(0xb001), &[])],
+    },
+    AccessListCase {
+        name: "balance_empty_stack",
+        accounts: &[(a(0xc1), &hex!("31"), 0)],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[],
+    },
+    AccessListCase {
+        name: "extcodecopy_underflow",
+        accounts: &[(a(0xc1), &hex!("73000000000000000000000000000000000000b0013c"), 0)],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(a(0xb001), &[])],
+    },
+    AccessListCase {
+        name: "sload_slot",
+        accounts: &[(a(0xc1), &hex!("60055400"), 0)],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(
+            a(0xc1),
+            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000005")],
+        )],
+    },
+    AccessListCase {
+        name: "sstore_underflow",
+        accounts: &[(a(0xc1), &hex!("600755"), 0)],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(
+            a(0xc1),
+            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000007")],
+        )],
+    },
+    AccessListCase {
+        name: "balance_oog",
+        accounts: &[(a(0xc1), &hex!("73000000000000000000000000000000000000b0013100"), 0)],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 23453,
+        seed: &[],
+        expected: &[(a(0xb001), &[])],
+    },
+    AccessListCase {
+        name: "sload_oog",
+        accounts: &[(a(0xc1), &hex!("60055400"), 0)],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 25353,
+        seed: &[],
+        expected: &[(
+            a(0xc1),
+            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000005")],
+        )],
+    },
+    AccessListCase {
+        name: "sstore_oog_sentry",
+        accounts: &[(a(0xc1), &hex!("600160095500"), 0)],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 27300,
+        seed: &[],
+        expected: &[(
+            a(0xc1),
+            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000009")],
+        )],
+    },
+    AccessListCase {
+        name: "call_oog",
+        accounts: &[(
+            a(0xc1),
+            &hex!("6000600060006000600073000000000000000000000000000000000000b00161fffff150"),
+            0,
+        )],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 23481,
+        seed: &[],
+        expected: &[(a(0xb001), &[])],
+    },
+    AccessListCase {
+        name: "sstore_static",
+        accounts: &[
+            (
+                a(0xc1),
+                &hex!("60006000600060007300000000000000000000000000000000000000c261fffffa50"),
+                0,
+            ),
+            (a(0xc2), &hex!("6001600355"), 0),
+        ],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(
+            a(0xc2),
+            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000003")],
+        )],
+    },
+    AccessListCase {
+        name: "delegatecall_sload",
+        accounts: &[
+            (
+                a(0xc1),
+                &hex!("60006000600060007300000000000000000000000000000000000000c261fffff450"),
+                0,
+            ),
+            (a(0xc2), &hex!("60045400"), 0),
+        ],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[
+            (
+                a(0xc1),
+                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000004")],
+            ),
+            (a(0xc2), &[]),
+        ],
+    },
+    AccessListCase {
+        name: "callcode_sload",
+        accounts: &[
+            (
+                a(0xc1),
+                &hex!("600060006000600060007300000000000000000000000000000000000000c261fffff250"),
+                0,
+            ),
+            (a(0xc2), &hex!("60045400"), 0),
+        ],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[
+            (
+                a(0xc1),
+                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000004")],
+            ),
+            (a(0xc2), &[]),
+        ],
+    },
+    AccessListCase {
+        name: "selfdestruct",
+        accounts: &[(a(0xc1), &hex!("73000000000000000000000000000000000000b001ff"), 1)],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(a(0xb001), &[])],
+    },
+    AccessListCase {
+        name: "selfdestruct_underflow",
+        accounts: &[(a(0xc1), &hex!("ff"), 0)],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[],
+    },
+    AccessListCase {
+        name: "excluded_sender_precompile",
+        accounts: &[(
+            a(0xc1),
+            &hex!(
+                "73000000000000000000000000000000000000100131507300000000000000000000000000000000000000c13150730000000000000000000000000000000000000002315073000000000000000000000000000000000000b0013100"
+            ),
+            0,
+        )],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(a(0xb001), &[])],
+    },
+    AccessListCase {
+        name: "sload_excluded_addr",
+        accounts: &[
+            (
+                a(0xc1),
+                &hex!("60006000600060007300000000000000000000000000000000000000c261fffff450"),
+                0,
+            ),
+            (a(0xc2), &hex!("60045400"), 0),
+        ],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[
+            (
+                a(0xc1),
+                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000004")],
+            ),
+            (a(0xc2), &[]),
+        ],
+    },
+    AccessListCase {
+        name: "create_tx_sload",
+        accounts: &[],
+        to: None,
+        input: &hex!("6005545f5ff3"),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(
+            address!("0x3817e247023b4f489352758397040b1fd33b300a"),
+            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000005")],
+        )],
+    },
+    AccessListCase {
+        name: "create_nested",
+        accounts: &[(
+            a(0xc1),
+            &hex!("606060005360056001536054600253605f600353605f60045360f3600553600660006000f050"),
+            0,
+        )],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(
+            address!("0x724572a7f7b8eb3aa9763a66f2511269ec3764d5"),
+            &[b256!("0x0000000000000000000000000000000000000000000000000000000000000005")],
+        )],
+    },
+    AccessListCase {
+        name: "seeded",
+        accounts: &[(a(0xc1), &hex!("60055400"), 0)],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[
+            (
+                a(0xd1),
+                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000009")],
+            ),
+            (
+                a(0xc1),
+                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000007")],
+            ),
+            (
+                a(0x1001),
+                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000001")],
+            ),
+            (a(0x2), &[]),
+        ],
+        expected: &[
+            (
+                a(0xc1),
+                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000005")],
+            ),
+            (
+                a(0xd1),
+                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000009")],
+            ),
+        ],
+    },
+    AccessListCase {
+        name: "reverted_frame_touch",
+        accounts: &[
+            (
+                a(0xc1),
+                &hex!("600060006000600060007300000000000000000000000000000000000000c261fffff150"),
+                0,
+            ),
+            (a(0xc2), &hex!("73000000000000000000000000000000000000b001315060065460006000fd"), 0),
+        ],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[
+            (
+                a(0xc2),
+                &[b256!("0x0000000000000000000000000000000000000000000000000000000000000006")],
+            ),
+            (a(0xb001), &[]),
+        ],
+    },
+    AccessListCase {
+        name: "extcode_ops",
+        accounts: &[(
+            a(0xc1),
+            &hex!(
+                "7300000000000000000000000000000000000000e13b507300000000000000000000000000000000000000e23f506000600060007300000000000000000000000000000000000000e33c00"
+            ),
+            0,
+        )],
+        to: Some(a(0xc1)),
+        input: &hex!(""),
+        gas_limit: 5000000,
+        seed: &[],
+        expected: &[(a(0xe1), &[]), (a(0xe2), &[]), (a(0xe3), &[])],
+    },
+];
