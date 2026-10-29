@@ -2,7 +2,7 @@
 //! t8n`.
 
 use super::Error;
-use alloy_consensus::{SignableTransaction, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEnvelope, Typed2718};
 use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rpc_types_eth::AccessList;
@@ -168,6 +168,11 @@ impl TxJson {
             max_fee_per_blob_gas: self.max_fee_per_blob_gas,
         })
         .map_err(|err| err.to_string())?;
+        // The builder picks the transaction family from the fields; a type they do not fit is
+        // not one go-ethereum would decode.
+        if typed.ty() != tx_type {
+            return Err("transaction type not supported".to_string());
+        }
 
         let secret = SecretKey::from_secret_bytes(key.0).map_err(|err| err.to_string())?;
         let (recovery_id, compact) = RecoverableSignature::sign_ecdsa_recoverable(

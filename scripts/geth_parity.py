@@ -61,10 +61,8 @@ Names are <file>::<test>::<fork>::<indexes>, filtered by the same positional pat
 mode runs result unless `--tracer jsonl` is given (the node tracers need a case that avoids env
 opcodes). A test that both tools refuse to decode counts as skipped.
 
-Normalisation before comparing: hex strings compare in lower case; struct log fields that geth
-omits when empty (memory, returnData, refund, storage) are dropped when empty on both sides; the
-rejected transactions compare by
-index (`--strict-errors` also compares the messages). Everything else compares exactly.
+Normalisation before comparing: hex strings compare in lower case, and the rejected transactions
+compare by index (`--strict-errors` also compares the messages). Everything else compares exactly.
 """
 
 import argparse
@@ -264,6 +262,9 @@ def load_cases(cases_dir):
         if not (directory / "case.json").exists():
             continue
         meta = load_json(directory / "case.json")
+        for fork in meta.get("forks", DEFAULT_FORKS):
+            if fork not in load_predeploys()["forkOrder"]:
+                sys.exit(f"{directory.name}: unknown fork {fork!r} in case.json")
         cases.append(
             Case(
                 directory.name,
@@ -538,7 +539,6 @@ def node_traces(geth_dir, case, fork, alloc, body, workdir, tracers):
 
 
 HEX = re.compile(r"^0x[0-9a-fA-F]*$")
-OMIT_EMPTY = ("memory", "returnData", "refund", "storage")
 
 
 def lower_hex(value):
@@ -549,16 +549,6 @@ def lower_hex(value):
     if isinstance(value, str) and HEX.match(value):
         return value.lower()
     return value
-
-
-def normalize_struct_log(frame):
-    frame = dict(frame)
-    logs = []
-    for entry in frame.get("structLogs") or []:
-        entry = {k: v for k, v in entry.items() if k not in OMIT_EMPTY or v not in ([], {}, "", "0x", 0, None)}
-        logs.append(entry)
-    frame["structLogs"] = logs
-    return frame
 
 
 CONTEXT_FIELDS = ("blockHash", "blockNumber", "transactionHash", "transactionPosition")
@@ -572,8 +562,6 @@ def normalize_flat(frames):
 def normalize_trace(tracer, value):
     if tracer == "flat" and isinstance(value, list):
         value = normalize_flat(value)
-    if tracer == STRUCTLOG:
-        value = normalize_struct_log(value)
     return lower_hex(value)
 
 
