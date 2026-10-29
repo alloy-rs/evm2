@@ -1231,6 +1231,19 @@ fn create_cost_excludes_forwarded_gas() {
 }
 
 #[test]
+fn create_cost_counts_all_gas_charged_before_the_child_split() {
+    // Amsterdam charges the account creation state gas, which spills into regular gas when the
+    // reservoir is empty.
+    for spec in [SpecId::PRAGUE, SpecId::AMSTERDAM] {
+        for code in [&hex!("5f5f5ff000")[..], &hex!("5f5f5f5ff500")[..]] {
+            let step = call_step(code, &[], spec);
+            let remaining = step.gas_remaining - step.cost;
+            assert_eq!(step.child_gas_limit, Some(remaining - remaining / 64));
+        }
+    }
+}
+
+#[test]
 fn create_cost_counts_initcode_memory_and_hash_words() {
     // The initcode `5f5f5f5f00` spends 8 gas.
     for (code, cost) in [

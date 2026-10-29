@@ -313,7 +313,6 @@ fn create_inner<T: EvmTypesHost>(
         state.gas_params().get(GasId::Create)
     };
     gas.spend(create_cost)?;
-    state.finish_step_charge(gas.remaining());
 
     let kind = if is_create2 { MessageKind::Create2 } else { MessageKind::Create };
     let current = state.message();
@@ -369,6 +368,7 @@ fn create_inner<T: EvmTypesHost>(
             charged_create_state_gas = true;
         }
     }
+    state.finish_step_charge(gas.remaining());
     let gas_limit = if state.feature(EvmFeatures::EIP150) {
         state.gas_params().call_stipend_reduction(gas.remaining())
     } else {
