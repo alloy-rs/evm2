@@ -1258,7 +1258,7 @@ fn test_geth_prestate_diff_selfdestruct_cancun() {
 }
 
 #[test]
-fn test_geth_default_tracer_empty_return_data_is_serialized_when_enabled() {
+fn test_geth_default_tracer_omits_empty_return_data() {
     let contract = address!("0xc000000000000000000000000000000000000003");
     let caller = address!("0xa000000000000000000000000000000000000003");
     let code = hex!("00");
@@ -1304,7 +1304,7 @@ fn test_geth_default_tracer_empty_return_data_is_serialized_when_enabled() {
         );
 
     assert!(!frame.struct_logs.is_empty(), "Expected struct logs for STOP execution");
-    assert!(frame.struct_logs.iter().all(|log| log.return_data == Some(Bytes::default())));
+    assert!(frame.struct_logs.iter().all(|log| log.return_data.is_none()));
 
     let struct_logs = serde_json::to_value(&frame)
         .unwrap()
@@ -1313,9 +1313,7 @@ fn test_geth_default_tracer_empty_return_data_is_serialized_when_enabled() {
         .cloned()
         .unwrap();
 
-    assert!(struct_logs.iter().all(|log| {
-        log.get("returnData") == Some(&serde_json::Value::String("0x".to_string()))
-    }));
+    assert!(struct_logs.iter().all(|log| log.get("returnData").is_none()));
 }
 
 fn test_geth_prestate_diff_selfdestruct(spec_id: SpecId) {
