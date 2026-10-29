@@ -1,0 +1,9 @@
+{
+  "description": "The ecrecover precompile called with valid input.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

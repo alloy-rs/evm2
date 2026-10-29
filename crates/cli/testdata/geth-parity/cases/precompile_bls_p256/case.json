@@ -1,0 +1,8 @@
+{
+  "description": "BLS12-381 G1 addition and P-256 verification with trivial input.",
+  "forks": [
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

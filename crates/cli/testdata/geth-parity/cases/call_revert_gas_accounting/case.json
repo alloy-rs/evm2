@@ -1,0 +1,9 @@
+{
+  "description": "Callee consumes all its gas in an invalid opcode while the caller keeps 1/64.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

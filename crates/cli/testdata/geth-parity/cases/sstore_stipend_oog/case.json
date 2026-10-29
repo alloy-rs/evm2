@@ -1,0 +1,9 @@
+{
+  "description": "SSTORE with 2300 gas or less left fails the reentrancy sentry.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

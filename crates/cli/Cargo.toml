@@ -21,6 +21,7 @@ workspace = true
 [dependencies]
 evm2-eest = { path = "../eest", version = "0.1.0" }
 evm2 = { workspace = true, default-features = true }
+evm2-inspectors = { workspace = true, features = ["serde", "std"] }
 
 alloy-consensus = { workspace = true, features = ["k256", "secp256k1", "std"] }
 alloy-chains.workspace = true
@@ -28,6 +29,7 @@ alloy-eips = { workspace = true, features = ["serde", "std"] }
 alloy-hardforks.workspace = true
 alloy-primitives = { workspace = true, features = ["keccak-cache-global", "secp256k1", "serde", "std"] }
 alloy-provider = { workspace = true, features = ["debug-api", "reqwest", "reqwest-rustls-tls"] }
+alloy-rlp = { workspace = true, features = ["std"] }
 alloy-rpc-client = { workspace = true, features = ["reqwest"] }
 alloy-rpc-types-eth = { workspace = true, features = ["serde", "std"] }
 alloy-rpc-types-trace.workspace = true
@@ -63,7 +65,7 @@ tikv-jemallocator = { workspace = true, optional = true }
 evm2-jit-build = { workspace = true, optional = true }
 
 [features]
-default = ["mimalloc"]
+default = ["mimalloc", "js-tracer"]
 jit = [
     "evm2-eest/jit",
     "dep:evm2-jit-context",
@@ -73,6 +75,8 @@ jit = [
     "dep:libloading",
     "dep:open",
 ]
+# Geth-compatible JavaScript tracers for `evm2 t8n`.
+js-tracer = ["evm2-inspectors/js-tracer"]
 # Faster but possibly less portable allocators. `mimalloc` takes precedence over `jemalloc`.
 jemalloc = ["dep:tikv-jemallocator"]
 mimalloc = ["dep:mimalloc"]

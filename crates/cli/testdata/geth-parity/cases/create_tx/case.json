@@ -1,0 +1,9 @@
+{
+  "description": "Contract creation transactions, one that deploys and one whose init code reverts.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "description": "A log emitted by a call that later reverts disappears.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

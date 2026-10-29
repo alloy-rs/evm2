@@ -1,0 +1,9 @@
+{
+  "description": "Several transactions in one block with state dependencies and cumulative gas.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

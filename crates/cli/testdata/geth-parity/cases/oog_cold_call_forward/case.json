@@ -1,0 +1,9 @@
+{
+  "description": "Out of gas at a cold CALL that forwards 1024 gas.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

@@ -507,7 +507,8 @@ fn logs_hash(logs: &[Log]) -> B256 {
     keccak256(out)
 }
 
-pub(crate) fn state_root_from_database(state: &InMemoryDB) -> B256 {
+/// Computes the state root of the accounts in the database.
+pub fn state_root_from_database(state: &InMemoryDB) -> B256 {
     let accounts = state.cache.accounts.iter().filter_map(|(&address, info)| {
         let info = info.as_ref()?;
         let storage = storage_for_root(state, address);
@@ -561,7 +562,8 @@ fn parse_block(env: &Env, spec: SpecId) -> BlockEnv {
     }
 }
 
-fn blob_basefee(excess_blob_gas: U256, spec: SpecId) -> u128 {
+/// Computes the EIP-4844 blob base fee for `spec` from the excess blob gas.
+pub fn blob_basefee(excess_blob_gas: U256, spec: SpecId) -> u128 {
     let excess_blob_gas = excess_blob_gas.saturating_to::<u64>();
     // EIP-4844 defines blob base fee with fake exponential; EIP-7691 changes the
     // update fraction from Prague, and the Amsterdam (BPO2) blob schedule changes it again.

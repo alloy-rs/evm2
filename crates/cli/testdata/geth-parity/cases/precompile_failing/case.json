@@ -1,0 +1,9 @@
+{
+  "description": "Precompile calls that fail: bad blake2f input, oversized modexp, short pairing input, too little gas.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

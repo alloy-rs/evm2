@@ -1,0 +1,17 @@
+{
+  "description": "Pushing past 1024 stack items.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ],
+  "tracers": [
+    "call",
+    "call-top",
+    "flat",
+    "4byte",
+    "noop",
+    "prestate"
+  ]
+}

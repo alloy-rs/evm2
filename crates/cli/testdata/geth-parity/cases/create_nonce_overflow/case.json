@@ -1,0 +1,9 @@
+{
+  "description": "CREATE and CREATE2 from a creator whose nonce is 2**64-1 fail without a frame result.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

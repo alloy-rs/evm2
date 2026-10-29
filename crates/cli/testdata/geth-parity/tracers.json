@@ -1,0 +1,17 @@
+{
+  "result": {"kind": "result"},
+  "jsonl": {"kind": "jsonl"},
+  "call": {"kind": "tracer", "tracer": "callTracer", "config": {}},
+  "call-log": {"kind": "tracer", "tracer": "callTracer", "config": {"withLog": true}},
+  "call-top": {"kind": "tracer", "tracer": "callTracer", "config": {"onlyTopCall": true}},
+  "prestate": {"kind": "tracer", "tracer": "prestateTracer", "config": {}},
+  "prestate-diff": {"kind": "tracer", "tracer": "prestateTracer", "config": {"diffMode": true}},
+  "4byte": {"kind": "tracer", "tracer": "4byteTracer", "config": {}},
+  "flat": {"kind": "tracer", "tracer": "flatCallTracer", "config": {}},
+  "mux": {"kind": "tracer", "tracer": "muxTracer", "config": {"callTracer": {"withLog": true}, "prestateTracer": {"diffMode": true}, "4byteTracer": {}}},
+  "noop": {"kind": "tracer", "tracer": "noopTracer", "config": {}},
+  "js-opcount": {"kind": "tracer", "js": "js/opcount.js", "config": {}},
+  "js-frames": {"kind": "tracer", "js": "js/frames.js", "config": {}},
+  "js-steps": {"kind": "tracer", "js": "js/steps.js", "config": {}},
+  "structlog": {"kind": "structlog"}
+}
