@@ -926,7 +926,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     fn create_end(
         &mut self,
         interp: &mut Interpreter<'_, '_, T>,
-        message: &Message<T>,
+        _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
         let trace_idx = self.last_trace_idx();
@@ -934,16 +934,6 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         let trace = &mut self.traces.arena[trace_idx].trace;
         if trace.geth_error.is_none() {
             trace.geth_error = fmt_geth_create_end(result.stop, self.return_len, interp.version());
-        }
-        // A nested CREATE whose creator nonce cannot be incremented returns successfully but
-        // without an address, leaving its gas unspent.
-        if message.depth > interp.version().initial_call_depth
-            && result.created_address.is_none()
-            && result.stop == InstrStop::Return
-        {
-            let trace = &mut self.traces.arena[trace_idx].trace;
-            trace.status = Some(InstrStop::NonceOverflow);
-            trace.success = false;
         }
     }
 

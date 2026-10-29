@@ -7,6 +7,8 @@ use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
     TxEnv, deploy_contract, op,
 };
+use alloy_consensus::crypto::secp256k1::sign_message;
+use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, keccak256, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
@@ -1717,11 +1719,15 @@ fn test_geth_opcode_limit_end_to_end() {
         assert_eq!(steps[8]["depth"], 2);
         assert_eq!(steps[11]["depth"], 1);
 
-        // The cap must count steps across call frames, including a cap inside the child.
-        for limit in [2, 9, 12] {
+        // The limit counts bytes of JSON across call frames, including a cap inside the child.
+        // geth logs a step while the JSON written so far is within the limit, so the bytes of the
+        // first `steps - 1` steps let `steps` steps through.
+        let sizes: Vec<_> = steps.iter().map(geth_json_len).collect();
+        for steps in [2, 9, 12] {
+            let limit: usize = sizes[..steps - 1].iter().sum();
             let (limited, limited_gas) = run(json!({ "limit": limit }));
             let mut expected = full.clone();
-            expected["structLogs"].as_array_mut().unwrap().truncate(limit);
+            expected["structLogs"].as_array_mut().unwrap().truncate(steps);
             assert_eq!(limited, expected);
             assert_eq!(limited_gas, gas_used);
         }
@@ -1732,6 +1738,24 @@ fn test_geth_opcode_limit_end_to_end() {
         assert_eq!(calls["calls"].as_array().unwrap().len(), 1);
         assert_eq!(run(json!({ "tracer": "callTracer", "limit": 2 })).0, calls);
     }
+}
+
+/// Returns the bytes of the JSON geth writes for a struct log, which leaves out a zero refund and
+/// empty return data, memory and storage.
+fn geth_json_len(log: &serde_json::Value) -> usize {
+    let mut log = log.clone();
+    let fields = log.as_object_mut().unwrap();
+    for (name, empty) in [
+        ("refund", serde_json::json!(0)),
+        ("returnData", serde_json::json!("0x")),
+        ("memory", serde_json::json!([])),
+        ("storage", serde_json::json!({})),
+    ] {
+        if fields.get(name) == Some(&empty) {
+            fields.remove(name);
+        }
+    }
+    log.to_string().len()
 }
 
 /// Execute real bytecode and compare capped capture with the complete execution.
@@ -1784,11 +1808,34 @@ fn test_geth_opcode_limit() {
             full.return_value,
             if terminal == op::INVALID { Bytes::new() } else { hex!("2a").into() }
         );
-        // Includes caps before CALL, on CALL, in the child, and after returning to the parent.
-        for limit in [None, Some(0), Some(2), Some(8), Some(9), Some(12), Some(u64::MAX)] {
+        // Includes caps before CALL, on CALL, in the child, and after returning to the parent. The
+        // limit counts bytes of JSON, and the first `steps - 1` steps let `steps` steps through.
+        let sizes: Vec<_> = full
+            .struct_logs
+            .iter()
+            .map(|log| geth_json_len(&serde_json::to_value(log).unwrap()))
+            .collect();
+        let step_limit = |steps: usize| sizes[..steps - 1].iter().sum::<usize>() as u64;
+        for limit in [
+            None,
+            Some(0),
+            Some(step_limit(2)),
+            Some(step_limit(8)),
+            Some(step_limit(9)),
+            Some(step_limit(12)),
+            Some(u64::MAX),
+        ] {
             let opts = GethDefaultTracingOptions { limit, ..Default::default() };
-            let expected_len = limit.filter(|n| *n != 0).map_or(full.struct_logs.len(), |n| {
-                full.struct_logs.len().min(usize::try_from(n).unwrap_or(usize::MAX))
+            let expected_len = limit.filter(|n| *n != 0).map_or(full.struct_logs.len(), |limit| {
+                let mut written = 0;
+                sizes
+                    .iter()
+                    .take_while(|size| {
+                        let logged = written as u64 <= limit;
+                        written += **size;
+                        logged
+                    })
+                    .count()
             });
             let mut expected = full.clone();
             expected.struct_logs.truncate(expected_len);
@@ -1797,10 +1844,14 @@ fn test_geth_opcode_limit() {
             for _ in 0..2 {
                 let actual = run(&mut inspector, opts);
                 assert_eq!(actual, expected, "limit {limit:?}, terminal {terminal}");
-                assert_eq!(
-                    inspector.traces().nodes().iter().map(|n| n.trace.steps.len()).sum::<usize>(),
-                    expected_len
-                );
+                // Capture stops at the most steps the limit can hold, at least a byte count's worth
+                // of the smallest log each.
+                let recorded =
+                    inspector.traces().nodes().iter().map(|n| n.trace.steps.len()).sum::<usize>();
+                assert!(recorded >= expected_len);
+                if let Some(limit) = limit.filter(|limit| *limit != 0) {
+                    assert!(recorded as u64 <= limit / 48 + 1);
+                }
                 inspector.fuse();
             }
             // Builder options also apply to already collected unlimited traces.
@@ -2051,7 +2102,7 @@ fn test_debug_default_tracer_moves_stacks() {
     caller_code.extend_from_slice(&hex!("5af150600700"));
 
     for disable_stack in [false, true] {
-        for limit in [None, Some(0), Some(10)] {
+        for limit in [None, Some(0), Some(1000)] {
             let config = GethDefaultTracingOptions {
                 disable_stack: Some(disable_stack),
                 limit,
@@ -2767,5 +2818,135 @@ fn struct_log_storage_snapshots_follow_the_storage_context() {
             (1, "SLOAD".to_string(), Some(snapshot)),
             (2, "SSTORE".to_string(), None),
         ]
+    );
+}
+
+/// Geth omits every account that was empty before the transaction from the pre state, including
+/// accounts that the transaction only funds, such as a fresh recipient and a fresh coinbase.
+#[test]
+fn test_geth_prestate_diff_omits_empty_accounts() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let coinbase = address!("2adc25665018aa1fe0e6bc666dac8fc2697ff9ba");
+    let recipient = address!("2222222222222222222222222222222222222222");
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .modify_block_chained(|block| {
+            block.beneficiary = coinbase;
+            block.basefee = U256::from(8);
+        })
+        .build_mainnet();
+
+    let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
+    let mut insp =
+        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
+    let mut db = evm.ctx.db.clone();
+    let res = evm
+        .with_inspector(&mut insp)
+        .inspect_tx(TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            gas_price: 0x600,
+            kind: TransactTo::Call(recipient),
+            value: U256::from(5),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = insp
+        .with_transaction_gas_used(res.result.tx_gas_used())
+        .geth_builder()
+        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
+        .unwrap();
+
+    // Output of geth's `evm t8n --trace.tracer prestateTracer --trace.jsonconfig
+    // '{"diffMode":true}'`.
+    assert_eq!(
+        serde_json::to_value(frame).unwrap(),
+        serde_json::json!({
+            "post": {
+                "0x2222222222222222222222222222222222222222": { "balance": "0x5" },
+                "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": { "balance": "0x1e99fc0" },
+                "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {
+                    "balance": "0x16345785b9dcffb",
+                    "nonce": 1
+                }
+            },
+            "pre": {
+                "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": { "balance": "0x16345785d8a0000" }
+            }
+        })
+    );
+}
+
+/// Geth reports `"code":"0x"` in the post state when the transaction clears an account's code, as
+/// an EIP-7702 authorization to the zero address does with a delegation.
+#[test]
+fn test_geth_prestate_diff_reports_cleared_code() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let authority = address!("7e5f4552091a69125d5dfcb7b8c2659029395bdf");
+    let delegation = Bytes::from(hex!("ef0100000000000000000000000000000000000000aaaa"));
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &authority,
+        AccountInfo {
+            balance: U256::from(1),
+            code_hash: alloy_primitives::keccak256(&delegation),
+            code: Some(Bytecode::new_raw(delegation.clone())),
+            ..Default::default()
+        },
+    );
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::PRAGUE)
+        .build_mainnet();
+
+    // Signed by the key of `authority`; delegates to the zero address, which clears the code.
+    let authorization = Authorization { chain_id: U256::from(1), address: Address::ZERO, nonce: 0 };
+    let signature = sign_message(B256::with_last_byte(1), authorization.signature_hash()).unwrap();
+    let authorization = authorization.into_signed(signature);
+    assert_eq!(authorization.recover_authority().unwrap(), authority);
+
+    let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
+    let mut insp =
+        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
+    let mut db = evm.ctx.db.clone();
+    let res = evm
+        .with_inspector(&mut insp)
+        .inspect_tx(TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            kind: TransactTo::Call(address!("2222222222222222222222222222222222222222")),
+            authorization_list: vec![authorization],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = insp
+        .with_transaction_gas_used(res.result.tx_gas_used())
+        .geth_builder()
+        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
+        .unwrap();
+    let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
+
+    assert_eq!(diff.pre[&authority].code, Some(delegation));
+    assert_eq!(diff.post[&authority].code, Some(Bytes::new()));
+    assert_eq!(diff.post[&authority].nonce, Some(1));
+    assert_eq!(
+        serde_json::to_value(&diff.post[&authority]).unwrap(),
+        serde_json::json!({ "code": "0x", "nonce": 1 })
     );
 }

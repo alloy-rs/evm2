@@ -451,10 +451,7 @@ impl CallTraceNode {
                 call_frame.to = None;
             }
 
-            if !self
-                .status()
-                .is_some_and(|status| status.is_revert() || status == InstrStop::NonceOverflow)
-            {
+            if !self.status().is_some_and(InstrStop::is_frame_revert) {
                 call_frame.gas_used = U256::from(self.trace.gas_limit);
                 call_frame.output = None;
             }
