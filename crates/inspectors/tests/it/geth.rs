@@ -9,7 +9,7 @@ use crate::utils::{
 };
 use alloy_consensus::crypto::secp256k1::sign_message;
 use alloy_eips::eip7702::Authorization;
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, map::HashMap};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, keccak256, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
@@ -21,8 +21,10 @@ use evm2::{
     ethereum::ethereum_tx_registry,
 };
 use evm2_inspectors::tracing::{
-    DebugInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
+    DebugInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, MEMORY_PAD_LIMIT,
+    MuxInspector, TraceLimits, TracingInspector, TracingInspectorConfig,
 };
+use std::collections::BTreeMap;
 
 #[test]
 fn test_calltracer_invalid_opcode_errors() {
@@ -1260,7 +1262,7 @@ fn test_geth_prestate_diff_selfdestruct_cancun() {
 }
 
 #[test]
-fn test_geth_default_tracer_empty_return_data_is_serialized_when_enabled() {
+fn test_geth_default_tracer_omits_empty_return_data() {
     let contract = address!("0xc000000000000000000000000000000000000003");
     let caller = address!("0xa000000000000000000000000000000000000003");
     let code = hex!("00");
@@ -1306,7 +1308,7 @@ fn test_geth_default_tracer_empty_return_data_is_serialized_when_enabled() {
         );
 
     assert!(!frame.struct_logs.is_empty(), "Expected struct logs for STOP execution");
-    assert!(frame.struct_logs.iter().all(|log| log.return_data == Some(Bytes::default())));
+    assert!(frame.struct_logs.iter().all(|log| log.return_data.is_none()));
 
     let struct_logs = serde_json::to_value(&frame)
         .unwrap()
@@ -1315,9 +1317,7 @@ fn test_geth_default_tracer_empty_return_data_is_serialized_when_enabled() {
         .cloned()
         .unwrap();
 
-    assert!(struct_logs.iter().all(|log| {
-        log.get("returnData") == Some(&serde_json::Value::String("0x".to_string()))
-    }));
+    assert!(struct_logs.iter().all(|log| log.get("returnData").is_none()));
 }
 
 fn test_geth_prestate_diff_selfdestruct(spec_id: SpecId) {
@@ -2193,6 +2193,306 @@ fn test_geth_failed_root_logs() {
             }
         }
     }
+}
+
+fn contract_with_code(code: &[u8]) -> (Address, CacheDB<EmptyDB>) {
+    let contract = Address::with_last_byte(0x42);
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &contract,
+        AccountInfo::default().with_code(Bytecode::new_raw(code.to_vec().into())),
+    );
+    (contract, db)
+}
+
+#[test]
+fn keccak256_preimage_tracer_collects_padded_preimages() {
+    let (contract, db) = contract_with_code(&hex!(
+        // MSTORE(0, 0x2a), then KECCAK256 of (0, 32), of (0, 0), of (0x10, 0x40) and of (0, 2 MiB).
+        "602a5f52" "60205f2050" "5f5f2050" "6040601020" "50" "62200000" "5f2050"
+    ));
+    let mut inspector = Keccak256PreimageInspector::default();
+    Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(&mut inspector)
+        .inspect_tx(TxEnv {
+            gas_limit: 10_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let mut word = [0; 32];
+    word[31] = 0x2a;
+    let mut padded = [0; 0x40];
+    padded[..0x10].copy_from_slice(&word[0x10..]);
+    let expected = serde_json::Value::Object(
+        [&word[..], &[], &padded]
+            .into_iter()
+            .map(|preimage| {
+                (hex::encode_prefixed(keccak256(preimage)), hex::encode_prefixed(preimage).into())
+            })
+            .collect(),
+    );
+    assert_eq!(inspector.json_result().unwrap(), expected);
+}
+
+#[test]
+fn keccak256_preimage_tracer_runs_standalone_and_in_a_mux() {
+    let options: GethDebugTracingOptions =
+        serde_json::from_value(serde_json::json!({"tracer": "keccak256PreimageTracer"})).unwrap();
+    assert!(matches!(DebugInspector::new(options).unwrap(), DebugInspector::Keccak256Preimage(_)));
+
+    let (contract, db) = contract_with_code(&hex!("602a5f5260205f2050"));
+    let key = GethDebugTracerType::JsTracer(KECCAK256_PREIMAGE_TRACER.into());
+    let config = MuxConfig(HashMap::from_iter([(key.clone(), None)]));
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .build_mainnet_with_inspector(MuxInspector::try_from_config(config).unwrap());
+    let res = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let (ctx, inspector) = evm.ctx_inspector();
+    let frame = inspector
+        .try_into_mux_frame(&res.tx_result, ctx.db_mut(), TransactionInfo::default())
+        .unwrap();
+    let GethTrace::JS(preimages) = &frame.0[&key] else { panic!("expected a JSON object") };
+    assert_eq!(preimages.as_object().unwrap().len(), 1);
+}
+
+#[test]
+fn keccak256_preimage_tracer_bounds_the_padding_like_geth() {
+    // KECCAK256 of `MEMORY_PAD_LIMIT` and of one byte more at offset 0 of empty memory.
+    for (size, recorded) in [(MEMORY_PAD_LIMIT, 1), (MEMORY_PAD_LIMIT + 1, 0)] {
+        // PUSH3 size, PUSH0, KECCAK256.
+        let code = [&[0x62][..], &size.to_be_bytes()[5..], &hex!("5f20")].concat();
+        let (contract, db) = contract_with_code(&code);
+        let mut inspector = Keccak256PreimageInspector::default();
+        Context::mainnet()
+            .with_db(db)
+            .build_mainnet_with_inspector(&mut inspector)
+            .inspect_tx(TxEnv {
+                gas_limit: 10_000_000,
+                kind: TransactTo::Call(contract),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(inspector.json_result().unwrap().as_object().unwrap().len(), recorded);
+    }
+}
+
+#[test]
+fn keccak256_preimage_tracer_stops_recording_at_the_byte_limit() {
+    // MSTORE(0, 0x2a), then KECCAK256 of 32 and of 64 bytes.
+    let code = hex!("602a5f52" "60205f2050" "60405f2050");
+    for (limit, recorded, exceeded) in [(40, 1, true), (96, 2, false)] {
+        let (contract, db) = contract_with_code(&code);
+        let mut inspector = Keccak256PreimageInspector::new(
+            TraceLimits::default().set_max_recorded_bytes(Some(limit)),
+        );
+        Context::mainnet()
+            .with_db(db)
+            .build_mainnet_with_inspector(&mut inspector)
+            .inspect_tx(TxEnv {
+                gas_limit: 1_000_000,
+                kind: TransactTo::Call(contract),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(inspector.limit_exceeded(), exceeded);
+        match inspector.json_result() {
+            Ok(preimages) => {
+                assert_eq!((preimages.as_object().unwrap().len(), exceeded), (recorded, false))
+            }
+            Err(_) => assert!(exceeded),
+        }
+    }
+}
+
+/// The expected snapshots come from go-ethereum master a0cba163: the struct logger adds the slot
+/// of every SLOAD and SSTORE that does not fail before it runs, with the value an SLOAD reads or an
+/// SSTORE writes, and snapshots all slots of the contract so far.
+#[test]
+fn struct_log_storage_snapshots_match_geth() {
+    let account = address!("1000000000000000000000000000000000000001");
+    let slot = |slot: u8| B256::with_last_byte(slot);
+    let value = |value: u8| U256::from(value).into();
+    // SLOAD 5 (holds 7), SSTORE 5 = 7 (unchanged), SLOAD 5 (warm), SSTORE 6 = 1, SLOAD 6, and an
+    // SSTORE that runs out of gas, which fails before it runs.
+    let code = hex!("60055450600760055560055450600160065560065450600160075500");
+    let mut db = CacheDB::<EmptyDB>::default();
+    db.insert_account_info(
+        &account,
+        AccountInfo {
+            code: Some(Bytecode::new_raw(Bytes::from(code.to_vec()))),
+            ..Default::default()
+        },
+    );
+    db.insert_account_storage(&account, &U256::from(5), &U256::from(7));
+    let mut inspector = DebugInspector::new(Default::default()).unwrap();
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .build_mainnet()
+        .with_inspector(&mut inspector);
+    let result = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 21000 + 3 * 1000 + 30000,
+            kind: TransactTo::Call(account),
+            ..Default::default()
+        })
+        .unwrap();
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &result.tx_result, ctx.db_mut()).unwrap();
+    let GethTrace::Default(frame) = trace else { panic!("expected a default trace") };
+
+    let snapshots: Vec<_> = frame
+        .struct_logs
+        .iter()
+        .filter(|log| matches!(log.op.as_ref(), "SLOAD" | "SSTORE"))
+        .map(|log| (log.op.to_string(), log.storage.clone(), log.error.is_some()))
+        .collect();
+    let after_first = BTreeMap::from([(slot(5), value(7))]);
+    let after_sstore = BTreeMap::from([(slot(5), value(7)), (slot(6), value(1))]);
+    assert_eq!(snapshots[0], ("SLOAD".into(), Some(after_first.clone()), false));
+    assert_eq!(snapshots[1], ("SSTORE".into(), Some(after_first.clone()), false));
+    assert_eq!(snapshots[2], ("SLOAD".into(), Some(after_first), false));
+    assert_eq!(snapshots[3].1, Some(after_sstore.clone()));
+    assert_eq!(snapshots[4], ("SLOAD".into(), Some(after_sstore), false));
+    assert_eq!((snapshots[5].1.clone(), snapshots[5].2), (None, true));
+}
+
+/// A delegatecall child writes to the storage of its caller, and an SSTORE that fails in a static
+/// call leaves no snapshot.
+#[test]
+fn struct_log_storage_snapshots_follow_the_storage_context() {
+    let parent = address!("1000000000000000000000000000000000000001");
+    let writer = address!("00000000000000000000000000000000000000c0");
+    let static_writer = address!("00000000000000000000000000000000000000d0");
+    // The parent delegatecalls the writer, loads the slot it wrote, then static calls the second
+    // writer.
+    let parent_code = hex!(
+        "600060006000600060c05af450"
+        "60015450"
+        "600060006000600060d05afa5000"
+    );
+    let mut db = CacheDB::<EmptyDB>::default();
+    for (address, code) in [
+        (parent, parent_code.to_vec()),
+        (writer, hex!("6002600155").to_vec()),
+        (static_writer, hex!("6003600455").to_vec()),
+    ] {
+        db.insert_account_info(
+            &address,
+            AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
+        );
+    }
+    let mut inspector = DebugInspector::new(Default::default()).unwrap();
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .build_mainnet()
+        .with_inspector(&mut inspector);
+    let result = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(parent),
+            ..Default::default()
+        })
+        .unwrap();
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &result.tx_result, ctx.db_mut()).unwrap();
+    let GethTrace::Default(frame) = trace else { panic!("expected a default trace") };
+
+    let snapshot = BTreeMap::from([(B256::with_last_byte(1), U256::from(2).into())]);
+    let logs: Vec<_> = frame
+        .struct_logs
+        .iter()
+        .filter(|log| matches!(log.op.as_ref(), "SLOAD" | "SSTORE"))
+        .map(|log| (log.depth, log.op.to_string(), log.storage.clone()))
+        .collect();
+    assert_eq!(
+        logs,
+        [
+            (2, "SSTORE".to_string(), Some(snapshot.clone())),
+            (1, "SLOAD".to_string(), Some(snapshot)),
+            (2, "SSTORE".to_string(), None),
+        ]
+    );
+}
+
+/// Geth omits every account that was empty before the transaction from the pre state, including
+/// accounts that the transaction only funds, such as a fresh recipient and a fresh coinbase.
+#[test]
+fn test_geth_prestate_diff_omits_empty_accounts() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let coinbase = address!("2adc25665018aa1fe0e6bc666dac8fc2697ff9ba");
+    let recipient = address!("2222222222222222222222222222222222222222");
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .modify_block_chained(|block| {
+            block.beneficiary = coinbase;
+            block.basefee = U256::from(8);
+        })
+        .build_mainnet();
+
+    let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
+    let mut insp =
+        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
+    let mut db = evm.ctx.db.clone();
+    let res = evm
+        .with_inspector(&mut insp)
+        .inspect_tx(TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            gas_price: 0x600,
+            kind: TransactTo::Call(recipient),
+            value: U256::from(5),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = insp
+        .with_transaction_gas_used(res.result.tx_gas_used())
+        .geth_builder()
+        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
+        .unwrap();
+
+    // Output of geth's `evm t8n --trace.tracer prestateTracer --trace.jsonconfig
+    // '{"diffMode":true}'`.
+    assert_eq!(
+        serde_json::to_value(frame).unwrap(),
+        serde_json::json!({
+            "post": {
+                "0x2222222222222222222222222222222222222222": { "balance": "0x5" },
+                "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": { "balance": "0x1e99fc0" },
+                "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {
+                    "balance": "0x16345785b9dcffb",
+                    "nonce": 1
+                }
+            },
+            "pre": {
+                "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": { "balance": "0x16345785d8a0000" }
+            }
+        })
+    );
 }
 
 /// Geth reports `"code":"0x"` in the post state when the transaction clears an account's code, as

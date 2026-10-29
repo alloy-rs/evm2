@@ -1,6 +1,7 @@
 //! API shim so that the test files can stay as close to upstream as possible.
 
-use alloy_consensus::{TxEip4844, TxEip7702, TxLegacy, transaction::Recovered};
+use alloy_consensus::{TxEip2930, TxEip4844, TxEip7702, TxLegacy, transaction::Recovered};
+use alloy_eip2930::AccessList;
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
@@ -38,6 +39,7 @@ pub struct TxEnv {
     pub blob_hashes: Vec<B256>,
     pub max_fee_per_blob_gas: u128,
     pub authorization_list: Vec<SignedAuthorization>,
+    pub access_list: AccessList,
 }
 
 impl Default for TxEnv {
@@ -55,6 +57,7 @@ impl Default for TxEnv {
             blob_hashes: Vec::new(),
             max_fee_per_blob_gas: 0,
             authorization_list: Vec::new(),
+            access_list: AccessList::default(),
         }
     }
 }
@@ -362,6 +365,21 @@ impl TxEnv {
                 self.caller,
             );
         }
+        if !self.access_list.is_empty() {
+            return Recovered::new_unchecked(
+                TxEnvelope::Eip2930(TxEip2930 {
+                    chain_id: self.chain_id.unwrap_or(1),
+                    nonce: self.nonce,
+                    gas_price: self.gas_price,
+                    gas_limit: self.gas_limit,
+                    to: self.kind,
+                    value: self.value,
+                    access_list: self.access_list.clone(),
+                    input: self.data.clone(),
+                }),
+                self.caller,
+            );
+        }
         Recovered::new_unchecked(
             TxEnvelope::Legacy(TxLegacy {
                 chain_id: self.chain_id,
@@ -412,7 +430,7 @@ impl ExecutionResult {
                 Output::Call(result.output)
             };
             Self::Success { output, gas_used }
-        } else if result.stop.is_revert() {
+        } else if result.stop.is_frame_revert() {
             Self::Revert { output: result.output, gas_used }
         } else {
             Self::Halt { reason: result.stop, gas_used }

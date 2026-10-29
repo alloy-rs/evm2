@@ -78,7 +78,7 @@ mod tests {
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId,
         bytecode::Bytecode,
-        env::{BlockEnvExt, TxEnvExt},
+        env::BlockEnvExt,
         ethereum::ethereum_tx_registry,
         evm::EmptyDB,
         interpreter::{MessageExt, op},
@@ -138,8 +138,7 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::copy_from_slice(code)),
             ..MessageExt::default()
         };
-        let tx_env = TxEnvExt::default();
-        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
         let stop = if with_jit {
             run_interpreter(&backend, &mut interpreter, &mut host).unwrap()
         } else {
@@ -254,13 +253,12 @@ mod tests {
 
     #[test]
     fn disabled_backend_falls_back_to_interpreter() {
-        let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: 1_000_000,
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..Default::default()
         };
-        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
         let mut host = Evm::<BaseEvmTypes>::new(
             SpecId::CANCUN,
             BlockEnvExt::default(),
@@ -275,13 +273,12 @@ mod tests {
     #[test]
     #[cfg(feature = "llvm")]
     fn gas_above_i64_max_falls_back_to_interpreter() {
-        let tx_env = TxEnvExt::default();
         let message = MessageExt {
             gas_limit: i64::MAX as u64 + 1,
             code: Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
             ..Default::default()
         };
-        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
         let mut host = Evm::<BaseEvmTypes>::new(
             SpecId::CANCUN,
             BlockEnvExt::default(),
@@ -314,7 +311,6 @@ mod tests {
             Precompiles::base(SpecId::CANCUN),
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
-        let tx_env = TxEnvExt::default();
         // The call output overwrites the word stored before it.
         let mut code = vec![op::PUSH1, 0x69, op::PUSH0, op::MSTORE];
         code.extend([op::PUSH1, 0x20, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0]);
@@ -339,7 +335,7 @@ mod tests {
             code: Bytecode::new_legacy(code.into()),
             ..MessageExt::default()
         };
-        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
 
         assert_eq!(run_interpreter(&backend, &mut interpreter, &mut host), Some(InstrStop::Return));
         assert_eq!(interpreter.output().len(), 32);
@@ -361,7 +357,6 @@ mod tests {
             Precompiles::base(SpecId::CANCUN),
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
-        let tx_env = TxEnvExt::default();
         let code = [
             op::PUSH10,
             0x60,
@@ -397,7 +392,7 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
             ..MessageExt::default()
         };
-        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
 
         assert_eq!(run_interpreter(&backend, &mut interpreter, &mut host), Some(InstrStop::Return));
         assert_eq!(interpreter.output().len(), 32);
@@ -432,7 +427,6 @@ mod tests {
             Precompiles::base(SpecId::CANCUN),
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
-        let tx_env = TxEnvExt::default();
         let code = vec![
             op::PUSH1,
             0x20,
@@ -458,7 +452,7 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
             ..MessageExt::default()
         };
-        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
 
         assert_eq!(run_interpreter(&backend, &mut interpreter, &mut host), Some(InstrStop::Return));
         assert_eq!(interpreter.output().len(), 32);
@@ -502,7 +496,6 @@ mod tests {
             Precompiles::base(SpecId::CANCUN),
         );
         host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
-        let tx_env = TxEnvExt::default();
         let code = vec![
             op::PUSH1,
             0x69,
@@ -528,7 +521,7 @@ mod tests {
             code: Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
             ..MessageExt::default()
         };
-        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
 
         assert_eq!(run_interpreter(&backend, &mut interpreter, &mut host), Some(InstrStop::Stop));
         let beneficiary_balance = host.read_account_info(&beneficiary).unwrap().unwrap().balance;
@@ -555,8 +548,6 @@ mod tests {
             code_address: outer,
             ..MessageExt::default()
         };
-        let tx_env = TxEnvExt { gas_price: Word::from(10), ..TxEnvExt::default() };
-
         let run = |with_jit: bool| {
             let mut database = InMemoryDB::default();
             database
@@ -582,12 +573,13 @@ mod tests {
                 database,
                 Precompiles::base(SpecId::CANCUN),
             );
+            host.tx_env_mut().gas_price = Word::from(10);
             host.state_mut().prewarm(&caller);
             host.state_mut().prewarm(&outer);
             if with_jit {
                 host.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
             }
-            let mut interpreter = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+            let mut interpreter = Interpreter::<BaseEvmTypes>::new(&message);
             let stop = if with_jit {
                 run_interpreter(&backend, &mut interpreter, &mut host).unwrap()
             } else {
@@ -669,8 +661,7 @@ mod tests {
                     if with_jit {
                         host.set_interpreter_runner(JitInterpreterRunner::new(blocking_backend()));
                     }
-                    Host::execute_message(&mut host, &TxEnvExt::default(), &mut message.clone())
-                        .unwrap()
+                    Host::execute_message(&mut host, &mut message.clone()).unwrap()
                 };
                 let interpreted = run(false);
                 let compiled = run(true);
@@ -800,9 +791,7 @@ mod tests {
                             code: code.clone(),
                             ..Default::default()
                         };
-                        let result =
-                            Host::execute_message(&mut host, &TxEnvExt::default(), &mut message)
-                                .unwrap();
+                        let result = Host::execute_message(&mut host, &mut message).unwrap();
                         let destination_journaled =
                             host.state_mut().journal().iter().any(|entry| {
                                 matches!(
@@ -853,7 +842,7 @@ mod custom_host_tests {
         BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, ExecutionConfig, OpcodeConfig, SpecId,
         bytecode::Bytecode,
         config::BaseEvmConfigSelector,
-        env::{BlockEnvExt, TxEnvExt},
+        env::BlockEnvExt,
         evm::{EmptyDB, precompile::NoPrecompiles},
         interpreter::{MessageExt, Word, instructions::sstore_with, op},
         registry::TxRegistry,
@@ -892,7 +881,6 @@ mod custom_host_tests {
             EmptyDB::default(),
             NoPrecompiles::default(),
         );
-        let tx = TxEnvExt::default();
         // Exercise all direct message-field loads plus host and memory builtins.
         let message = MessageExt {
             gas_limit: 100_000,
@@ -928,17 +916,17 @@ mod custom_host_tests {
             ])),
             ..Default::default()
         };
-        let mut interpreted = Interpreter::<CustomTypes>::new(&tx, &message);
+        let mut interpreted = Interpreter::<CustomTypes>::new(&message);
         assert_eq!(interpreted.run(&mut host).unwrap(), InstrStop::Return);
         let expected_output = interpreted.output().to_vec();
         let expected_gas = interpreted.gas();
-        let mut compiled = Interpreter::<CustomTypes>::new(&tx, &message);
+        let mut compiled = Interpreter::<CustomTypes>::new(&message);
         assert_eq!(run_interpreter(&backend, &mut compiled, &mut host), Some(InstrStop::Return));
         assert_eq!(compiled.output(), expected_output);
         assert_eq!(compiled.gas(), expected_gas);
         let wrong =
             JitBackend::new(RuntimeConfig { blocking: true, ..Default::default() }).unwrap();
-        let mut fresh = Interpreter::<CustomTypes>::new(&tx, &message);
+        let mut fresh = Interpreter::<CustomTypes>::new(&message);
         assert_eq!(run_interpreter(&wrong, &mut fresh, &mut host), None);
         assert_eq!(fresh.run(&mut host).unwrap(), InstrStop::Return);
         assert_eq!(fresh.output(), expected_output);
@@ -1069,16 +1057,15 @@ mod custom_host_tests {
                 NoPrecompiles::default(),
             )
         };
-        let tx = Box::leak(Box::new(TxEnvExt::default()));
         let message = Box::leak(Box::new(MessageExt {
             gas_limit: 100_000,
             caller: Address::repeat_byte(0x11),
             code: Bytecode::new_legacy(Bytes::from_static(code)),
             ..Default::default()
         }));
-        let mut interpreted = Interpreter::<TableTypes>::new(tx, message);
+        let mut interpreted = Interpreter::<TableTypes>::new(message);
         let stop = interpreted.run(&mut new_host()).unwrap();
-        let mut compiled = Interpreter::<TableTypes>::new(tx, message);
+        let mut compiled = Interpreter::<TableTypes>::new(message);
         let compiled_stop = run_interpreter(&backend, &mut compiled, &mut new_host());
         (compiled_stop, compiled, stop, interpreted)
     }

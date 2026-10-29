@@ -8,7 +8,7 @@
 # fixture found under it runs as one auto-detecting suite (state vs blockchain
 # kind is detected per file), so no test-name filter is needed. Extra arguments
 # are forwarded to `cargo nextest run`, for example:
-#   scripts/eest.sh ./test-fixtures/devnet/state_tests -E 'test(precompile)'
+#   scripts/eest.sh ./test-fixtures/eest/state_tests -E 'test(precompile)'
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
