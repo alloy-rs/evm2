@@ -1,14 +1,13 @@
 use crate::tracing::{
-    FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector,
-    Keccak256PreimageLimitExceeded, TracingInspector, TracingInspectorConfig, TransactionContext,
-    final_refunded, utils::transaction_info,
+    DebugInspector, DebugInspectorError, FourByteInspector, TracingInspector,
+    TracingInspectorConfig, TransactionContext, final_refunded, utils::transaction_info,
 };
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Log, U256, map::HashMap};
 use alloy_rpc_types_trace::geth::{
-    CallConfig, FlatCallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
-    GethTrace, NoopFrame, PreStateConfig, StateGasTrace,
+    CallConfig, FlatCallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerConfig,
+    GethDebugTracerType, GethDebugTracingOptions, NoopFrame, PreStateConfig, StateGasTrace,
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
@@ -24,34 +23,12 @@ use thiserror::Error;
 pub struct MuxInspector {
     /// An instance of FourByteInspector that can be reused
     four_byte: Option<FourByteInspector>,
-    /// An instance of Keccak256PreimageInspector that can be reused
-    keccak256_preimage: Option<Keccak256PreimageInspector>,
     /// An instance of TracingInspector that can be reused
     tracing: Option<TracingInspector>,
     /// Configurations for different Geth trace types
     configs: Vec<(GethDebugBuiltInTracerType, TraceConfig)>,
-    /// Tracers that run their own inspector: nested mux tracers and JavaScript tracers
-    children: Vec<(GethDebugTracerType, Child)>,
-}
-
-/// A tracer of the mux that runs its own inspector.
-#[derive(Debug)]
-enum Child {
-    Mux(Box<MuxInspector>),
-    #[cfg(feature = "js-tracer")]
-    Js(Box<crate::tracing::js::JsInspector>),
-}
-
-impl Child {
-    #[cfg(feature = "js-tracer")]
-    fn js(code: String, config: serde_json::Value) -> Result<Self, Error> {
-        Ok(Self::Js(crate::tracing::js::JsInspector::new(code, config)?.into()))
-    }
-
-    #[cfg(not(feature = "js-tracer"))]
-    fn js(_code: String, _config: serde_json::Value) -> Result<Self, Error> {
-        Err(Error::JsTracerNotEnabled)
-    }
+    /// Tracers that run their own inspector, keyed by their tracer type.
+    children: Vec<(GethDebugTracerType, DebugInspector)>,
 }
 
 /// Holds all Geth supported trace configurations
@@ -68,26 +45,17 @@ impl MuxInspector {
     /// Try creating a new instance of [MuxInspector] from the given [MuxConfig].
     pub fn try_from_config(config: MuxConfig) -> Result<Self, Error> {
         let mut four_byte = None;
-        let mut keccak256_preimage = None;
         let mut inspector_config = TracingInspectorConfig::none();
         let mut configs = Vec::new();
         let mut children = Vec::new();
 
         // Process each tracer configuration
         for (tracer_type, tracer_config) in config.0 {
-            let builtin = match tracer_type {
-                GethDebugTracerType::BuiltInTracer(b) => b,
-                GethDebugTracerType::JsTracer(name) if name == KECCAK256_PREIMAGE_TRACER => {
-                    keccak256_preimage = Some(Keccak256PreimageInspector::default());
-                    continue;
-                }
+            let builtin = match &tracer_type {
+                GethDebugTracerType::BuiltInTracer(builtin) => *builtin,
                 // geth evaluates a name that is not a built-in tracer as JavaScript.
-                GethDebugTracerType::JsTracer(code) => {
-                    let config = tracer_config.unwrap_or_default().into_json();
-                    children.push((
-                        GethDebugTracerType::JsTracer(code.clone()),
-                        Child::js(code, config)?,
-                    ));
+                GethDebugTracerType::JsTracer(_) => {
+                    children.push(Self::child(tracer_type, tracer_config)?);
                     continue;
                 }
             };
@@ -125,27 +93,33 @@ impl MuxInspector {
                         .merge(TracingInspectorConfig::from_flat_call_config(&flatcall_config));
                     configs.push((builtin, TraceConfig::FlatCall(flatcall_config)));
                 }
-                GethDebugBuiltInTracerType::MuxTracer => {
-                    let nested = Self::try_from_config(
-                        tracer_config.unwrap_or_default().into_mux_config()?,
-                    )?;
-                    children.push((
-                        GethDebugTracerType::BuiltInTracer(builtin),
-                        Child::Mux(nested.into()),
-                    ));
+                GethDebugBuiltInTracerType::MuxTracer
+                | GethDebugBuiltInTracerType::Erc7562Tracer => {
+                    children.push(Self::child(tracer_type, tracer_config)?);
                 }
                 _ => {
                     // keep this so that new variants can be supported
-                    return Err(Error::UnsupportedTracerType(GethDebugTracerType::BuiltInTracer(
-                        builtin,
-                    )));
+                    return Err(Error::UnsupportedTracerType(tracer_type));
                 }
             }
         }
 
         let tracing = (!configs.is_empty()).then(|| TracingInspector::new(inspector_config));
 
-        Ok(Self { four_byte, keccak256_preimage, tracing, configs, children })
+        Ok(Self { four_byte, tracing, configs, children })
+    }
+
+    /// Creates the inspector of a tracer that does not share the recording of the mux.
+    fn child(
+        tracer_type: GethDebugTracerType,
+        tracer_config: Option<GethDebugTracerConfig>,
+    ) -> Result<(GethDebugTracerType, DebugInspector), Error> {
+        let options = GethDebugTracingOptions {
+            tracer: Some(tracer_type.clone()),
+            tracer_config: tracer_config.unwrap_or_default(),
+            ..Default::default()
+        };
+        Ok((tracer_type, DebugInspector::new(options).map_err(Box::new)?))
     }
 
     /// Sets the index the next recorded log receives, see
@@ -155,11 +129,7 @@ impl MuxInspector {
             tracing.set_next_log_index(index);
         }
         for (_, child) in &mut self.children {
-            match child {
-                Child::Mux(mux) => mux.set_next_log_index(index),
-                #[cfg(feature = "js-tracer")]
-                Child::Js(_) => {}
-            }
+            child.set_next_log_index(index);
         }
     }
 
@@ -239,25 +209,9 @@ impl MuxInspector {
             );
         }
 
-        // Add keccak256 preimage trace if inspector exists
-        if let Some(inspector) = &self.keccak256_preimage {
-            frame.insert(
-                GethDebugTracerType::JsTracer(KECCAK256_PREIMAGE_TRACER.into()),
-                GethTrace::JS(inspector.json_result()?),
-            );
-        }
-
         for (tracer_type, child) in &mut self.children {
-            let trace = match child {
-                Child::Mux(mux) => {
-                    mux.try_into_mux_frame(result, tx, block_env, tx_context, db)?.into()
-                }
-                #[cfg(feature = "js-tracer")]
-                Child::Js(js) => {
-                    js.set_transaction_context(tx_context.unwrap_or_default());
-                    GethTrace::JS(js.json_result(result, tx, block_env, db)?)
-                }
-            };
+            let trace =
+                child.get_result(tx_context, tx, block_env, result, db).map_err(Box::new)?;
             frame.insert(tracer_type.clone(), trace);
         }
 
@@ -265,60 +219,40 @@ impl MuxInspector {
     }
 }
 
+/// Calls a hook on every inspector of the mux.
+macro_rules! fan_out {
+    ($mux:ident.$hook:ident($($arg:expr),*)) => {{
+        for (_, child) in &mut $mux.children {
+            Inspector::<T>::$hook(child, $($arg),*);
+        }
+        if let Some(inspector) = &mut $mux.four_byte {
+            Inspector::<T>::$hook(inspector, $($arg),*);
+        }
+        if let Some(inspector) = &mut $mux.tracing {
+            Inspector::<T>::$hook(inspector, $($arg),*);
+        }
+    }};
+}
+
 impl<T: EvmTypes> Inspector<T> for MuxInspector {
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        for (_, child) in &mut self.children {
-            child.initialize_interp(interp);
-        }
-        if let Some(ref mut inspector) = self.four_byte {
-            inspector.initialize_interp(interp);
-        }
-        if let Some(ref mut inspector) = self.tracing {
-            inspector.initialize_interp(interp);
-        }
+        fan_out!(self.initialize_interp(interp));
     }
 
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        for (_, child) in &mut self.children {
-            child.step(interp);
-        }
-        if let Some(ref mut inspector) = self.four_byte {
-            inspector.step(interp);
-        }
-        if let Some(ref mut inspector) = self.keccak256_preimage {
-            inspector.step(interp);
-        }
-        if let Some(ref mut inspector) = self.tracing {
-            inspector.step(interp);
-        }
+        fan_out!(self.step(interp));
     }
 
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        for (_, child) in &mut self.children {
-            child.step_end(interp);
-        }
-        if let Some(ref mut inspector) = self.four_byte {
-            inspector.step_end(interp);
-        }
-        if let Some(ref mut inspector) = self.tracing {
-            inspector.step_end(interp);
-        }
+        fan_out!(self.step_end(interp));
     }
 
     #[inline]
     fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {
-        for (_, child) in &mut self.children {
-            Inspector::<T>::log(child, log, host);
-        }
-        if let Some(ref mut inspector) = self.four_byte {
-            <FourByteInspector as Inspector<T>>::log(inspector, log, host);
-        }
-        if let Some(ref mut inspector) = self.tracing {
-            <TracingInspector as Inspector<T>>::log(inspector, log, host);
-        }
+        fan_out!(self.log(log, host));
     }
 
     #[inline]
@@ -330,13 +264,10 @@ impl<T: EvmTypes> Inspector<T> for MuxInspector {
         for (_, child) in &mut self.children {
             let _ = child.call(interp, message);
         }
-        if let Some(ref mut inspector) = self.four_byte {
+        if let Some(inspector) = &mut self.four_byte {
             let _ = inspector.call(interp, message);
         }
-        if let Some(ref mut inspector) = self.tracing {
-            return inspector.call(interp, message);
-        }
-        None
+        self.tracing.as_mut().and_then(|inspector| inspector.call(interp, message))
     }
 
     #[inline]
@@ -346,15 +277,7 @@ impl<T: EvmTypes> Inspector<T> for MuxInspector {
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        for (_, child) in &mut self.children {
-            child.call_end(interp, message, result);
-        }
-        if let Some(ref mut inspector) = self.four_byte {
-            inspector.call_end(interp, message, result);
-        }
-        if let Some(ref mut inspector) = self.tracing {
-            inspector.call_end(interp, message, result);
-        }
+        fan_out!(self.call_end(interp, message, result));
     }
 
     #[inline]
@@ -366,13 +289,10 @@ impl<T: EvmTypes> Inspector<T> for MuxInspector {
         for (_, child) in &mut self.children {
             let _ = child.create(interp, message);
         }
-        if let Some(ref mut inspector) = self.four_byte {
+        if let Some(inspector) = &mut self.four_byte {
             let _ = inspector.create(interp, message);
         }
-        if let Some(ref mut inspector) = self.tracing {
-            return inspector.create(interp, message);
-        }
-        None
+        self.tracing.as_mut().and_then(|inspector| inspector.create(interp, message))
     }
 
     #[inline]
@@ -382,15 +302,7 @@ impl<T: EvmTypes> Inspector<T> for MuxInspector {
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        for (_, child) in &mut self.children {
-            child.create_end(interp, message, result);
-        }
-        if let Some(ref mut inspector) = self.four_byte {
-            inspector.create_end(interp, message, result);
-        }
-        if let Some(ref mut inspector) = self.tracing {
-            inspector.create_end(interp, message, result);
-        }
+        fan_out!(self.create_end(interp, message, result));
     }
 
     #[inline]
@@ -401,142 +313,23 @@ impl<T: EvmTypes> Inspector<T> for MuxInspector {
         value: &U256,
         host: &mut T::Host<'_>,
     ) {
-        for (_, child) in &mut self.children {
-            Inspector::<T>::selfdestruct(child, contract, target, value, host);
-        }
-        if let Some(ref mut inspector) = self.four_byte {
-            <FourByteInspector as Inspector<T>>::selfdestruct(
-                inspector, contract, target, value, host,
-            );
-        }
-        if let Some(ref mut inspector) = self.tracing {
-            <TracingInspector as Inspector<T>>::selfdestruct(
-                inspector, contract, target, value, host,
-            );
-        }
-    }
-}
-
-impl<T: EvmTypes> Inspector<T> for Child {
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        match self {
-            Self::Mux(mux) => mux.initialize_interp(interp),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(js) => js.initialize_interp(interp),
-        }
-    }
-
-    fn step(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        match self {
-            Self::Mux(mux) => mux.step(interp),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(js) => js.step(interp),
-        }
-    }
-
-    fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
-        match self {
-            Self::Mux(mux) => mux.step_end(interp),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(js) => js.step_end(interp),
-        }
-    }
-
-    fn log(&mut self, log: &Log, host: &mut T::Host<'_>) {
-        match self {
-            Self::Mux(mux) => Inspector::<T>::log(&mut **mux, log, host),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(js) => Inspector::<T>::log(&mut **js, log, host),
-        }
-    }
-
-    fn call(
-        &mut self,
-        interp: &mut Interpreter<'_, '_, T>,
-        message: &mut Message<T>,
-    ) -> Option<MessageResult<T>> {
-        match self {
-            Self::Mux(mux) => mux.call(interp, message),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(js) => js.call(interp, message),
-        }
-    }
-
-    fn call_end(
-        &mut self,
-        interp: &mut Interpreter<'_, '_, T>,
-        message: &Message<T>,
-        result: &mut MessageResult<T>,
-    ) {
-        match self {
-            Self::Mux(mux) => mux.call_end(interp, message, result),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(js) => js.call_end(interp, message, result),
-        }
-    }
-
-    fn create(
-        &mut self,
-        interp: &mut Interpreter<'_, '_, T>,
-        message: &mut Message<T>,
-    ) -> Option<MessageResult<T>> {
-        match self {
-            Self::Mux(mux) => mux.create(interp, message),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(js) => js.create(interp, message),
-        }
-    }
-
-    fn create_end(
-        &mut self,
-        interp: &mut Interpreter<'_, '_, T>,
-        message: &Message<T>,
-        result: &mut MessageResult<T>,
-    ) {
-        match self {
-            Self::Mux(mux) => mux.create_end(interp, message, result),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(js) => js.create_end(interp, message, result),
-        }
-    }
-
-    fn selfdestruct(
-        &mut self,
-        contract: &Address,
-        target: &Address,
-        value: &U256,
-        host: &mut T::Host<'_>,
-    ) {
-        match self {
-            Self::Mux(mux) => {
-                Inspector::<T>::selfdestruct(&mut **mux, contract, target, value, host)
-            }
-            #[cfg(feature = "js-tracer")]
-            Self::Js(js) => Inspector::<T>::selfdestruct(&mut **js, contract, target, value, host),
-        }
+        fan_out!(self.selfdestruct(contract, target, value, host));
     }
 }
 
 /// Error type for [MuxInspector]
 #[derive(Debug, Error)]
 pub enum Error {
-    /// JS tracer is not enabled
-    #[error("JS Tracer is not enabled")]
-    JsTracerNotEnabled,
-    /// Error from a JS tracer
-    #[cfg(feature = "js-tracer")]
-    #[error(transparent)]
-    JsInspector(#[from] crate::tracing::js::JsInspectorError),
     /// Unsupported tracer type
     #[error("unsupported tracer type: '{0:?}'")]
     UnsupportedTracerType(GethDebugTracerType),
-    /// A tracer reached its limit of recorded bytes
-    #[error(transparent)]
-    Keccak256Preimage(#[from] Keccak256PreimageLimitExceeded),
-    /// Database operation failed
-    #[error("database error {0:?}")]
-    Database(#[from] DatabaseError),
     /// Error when deserializing the config
     #[error("error deserializing config: {0}")]
     InvalidConfig(#[from] serde_json::Error),
+    /// Error from the inspector of a nested tracer
+    #[error(transparent)]
+    Child(#[from] Box<DebugInspectorError>),
+    /// Database operation failed
+    #[error("database error {0:?}")]
+    Database(#[from] DatabaseError),
 }

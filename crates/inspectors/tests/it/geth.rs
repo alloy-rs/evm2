@@ -2311,12 +2311,13 @@ fn keccak256_preimage_tracer_stops_recording_at_the_byte_limit() {
 }
 
 #[test]
-fn mux_runs_a_nested_mux_tracer() {
+fn mux_runs_nested_mux_and_erc7562_tracers() {
     let (contract, db) = contract_with_code(&hex!("5f5f00"));
     let nested = serde_json::json!({"callTracer": {}, "noopTracer": {}});
     let nested_key = GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::MuxTracer);
     let config = MuxConfig(HashMap::from_iter([
         (GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::FourByteTracer), None),
+        (GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::Erc7562Tracer), None),
         (nested_key.clone(), Some(GethDebugTracerConfig(nested))),
     ]));
     let mut evm = Context::mainnet()
@@ -2335,7 +2336,11 @@ fn mux_runs_a_nested_mux_tracer() {
     let frame =
         inspector.try_into_mux_frame(&res.tx_result, &tx, &block, None, ctx.db_mut()).unwrap();
 
-    assert_eq!(frame.0.len(), 2);
+    assert_eq!(frame.0.len(), 3);
+    assert!(matches!(
+        frame.0[&GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::Erc7562Tracer)],
+        GethTrace::Erc7562Tracer(_)
+    ));
     let GethTrace::MuxTracer(nested) = &frame.0[&nested_key] else {
         panic!("expected a nested mux frame");
     };
