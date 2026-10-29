@@ -242,6 +242,8 @@ impl<'a, 'db> StorageHandle<'a, 'db> {
                 // Like revm, an unloaded slot of a created account reads zero without a database
                 // read, since the creation discards the address's old storage.
                 let value = if storage.wiped || created {
+                    // The zero needs no database read, but a strict BAL must still cover the slot.
+                    inner.database.check_bal_storage(address, &key)?;
                     Word::ZERO
                 } else {
                     inner.database.get_storage(address, &key)?
@@ -397,10 +399,12 @@ mod tests {
         SpecId, Version,
         evm::{
             CacheDB,
+            bal::{AccountBal, Bal, BalChanges, BalError, BlockAccessIndex},
             state::{AccountInfo, State},
         },
     };
-    use alloc::vec;
+    use alloc::{sync::Arc, vec};
+    use alloy_eip7928::StorageChange;
     use alloy_primitives::Address;
 
     #[test]
@@ -610,5 +614,39 @@ mod tests {
         let mut slot = state.storage_slot(&address, key).unwrap();
         assert!(slot.is_warm());
         assert!(!slot.warm(), "base-prewarmed slot must not report a cold transition");
+    }
+
+    #[test]
+    fn created_account_slot_reads_keep_strict_bal_coverage() {
+        let creator = Address::with_last_byte(0x50);
+        let address = Address::with_last_byte(0x51);
+        let (covered, uncovered) = (Word::from(7), Word::from(9));
+        let mut account = AccountBal::default();
+        account.storage.storage.insert(
+            covered,
+            BalChanges::new(vec![StorageChange::new(BlockAccessIndex::new(1), Word::from(42))]),
+        );
+        let mut database = CacheDB::default();
+        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::ONE));
+        database.insert_account_storage(&address, &uncovered, &Word::from(20));
+        let mut state = State::new(database);
+        state.set_bal(Arc::new(Bal::from_iter([(address, account)])));
+        state.set_bal_index(BlockAccessIndex::new(2));
+        let version = Version::base(SpecId::LONDON);
+        state.create_account(&creator, &address, &Word::ZERO, version.features).unwrap().unwrap();
+
+        // The created account reads zero, but a slot missing from the BAL is still invalid.
+        let error = state.storage_slot(&address, uncovered).unwrap_err();
+        assert!(error.downcast_ref::<BalError>().is_some());
+        let error = state.storage_slot_untracked(&address, &uncovered).unwrap_err();
+        assert!(error.downcast_ref::<BalError>().is_some());
+        assert!(!state.accounts[&address].storage.slots.contains_key(&uncovered));
+
+        assert_eq!(state.storage_slot(&address, covered).unwrap().current(), Word::ZERO);
+        assert_eq!(state.storage_slot_untracked(&address, &covered).unwrap(), Word::ZERO);
+
+        // With database fallback enabled, an uncovered slot is allowed and still reads zero.
+        state.set_allow_bal_db_fallback(true);
+        assert_eq!(state.storage_slot(&address, uncovered).unwrap().current(), Word::ZERO);
     }
 }
