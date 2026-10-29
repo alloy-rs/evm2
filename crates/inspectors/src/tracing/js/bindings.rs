@@ -575,10 +575,13 @@ impl EvmDbReader for ChangesDbReader<'_> {
             if let Some(slot) = account.storage.get(slot) {
                 return Ok(slot.current);
             }
-            // A deleted or wiped account, or one the transaction created, has only the storage it
-            // wrote. Creating discards the old storage, except for an embedder resuming the
-            // account on a fresh overlay, which a traced transaction does not do.
-            if account.current.is_none() || account.wiped || account.created {
+            // A deleted or wiped account has only the storage it wrote. So does one created from
+            // nothing: an account that existed before, such as one an embedder resumed on a fresh
+            // overlay, keeps the database as its storage baseline.
+            if account.current.is_none()
+                || account.wiped
+                || (account.created && account.original.is_none())
+            {
                 return Ok(Word::ZERO);
             }
         }
@@ -1238,10 +1241,10 @@ mod tests {
 
     #[test]
     fn changes_reader_reads_final_storage() {
-        let [plain, wiped, deleted, created, untouched] =
-            [1, 2, 3, 5, 4].map(Address::with_last_byte);
+        let [plain, wiped, deleted, created, resumed, untouched] =
+            [1, 2, 3, 5, 6, 4].map(Address::with_last_byte);
         let mut db = CacheDB::new(EmptyDB::default());
-        for address in [plain, wiped, deleted, created, untouched] {
+        for address in [plain, wiped, deleted, created, resumed, untouched] {
             db.insert_account_info(&address, AccountInfo::default());
             db.insert_account_storage(&address, &U256::from(1), &U256::from(9));
             db.insert_account_storage(&address, &U256::from(2), &U256::from(8));
@@ -1260,8 +1263,15 @@ mod tests {
         state.accounts.insert(wiped, account(true, alive.clone(), U256::from(1), 6));
         state.accounts.insert(deleted, account(false, None, U256::from(1), 0));
         let created_account =
-            TxAccount { created: true, ..account(false, alive, U256::from(1), 4) };
+            TxAccount { created: true, ..account(false, alive.clone(), U256::from(1), 4) };
         state.accounts.insert(created, created_account);
+        // An account that existed before the transaction keeps its database baseline.
+        let resumed_account = TxAccount {
+            created: true,
+            original: alive.clone(),
+            ..account(false, alive, U256::from(1), 3)
+        };
+        state.accounts.insert(resumed, resumed_account);
 
         let mut reader = ChangesDbReader { changes: &state, db: &mut db };
         for (address, slot, expected) in [
@@ -1277,6 +1287,8 @@ mod tests {
             // A created account only has the storage it wrote.
             (created, 1, 4),
             (created, 2, 0),
+            (resumed, 1, 3),
+            (resumed, 2, 8),
             (untouched, 1, 9),
         ] {
             let value = reader.read_state(&address, &U256::from(slot)).unwrap();
