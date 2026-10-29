@@ -8,7 +8,7 @@ use boa_gc::{Finalize, Trace};
 use evm2::{
     BaseEvmTypes, Precompiles, SpecId,
     bytecode::Bytecode,
-    env::{BlockEnvExt, TxEnv},
+    env::BlockEnvExt,
     ethereum::{TxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo, CacheDB, EmptyDB},
     registry::HandlerError,
@@ -66,9 +66,8 @@ fn interrupt_stops_steps_without_js_step_callback() {
     let mut inspector = JsInspector::new(TRACER.into(), serde_json::Value::Null)
         .unwrap()
         .with_interrupt(interrupt.clone());
-    let tx_env = TxEnv::<BaseEvmTypes>::default();
     let message = Message::<BaseEvmTypes>::default();
-    let mut interp = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+    let mut interp = Interpreter::<BaseEvmTypes>::new(&message);
     // Signal from another thread after the inspector has been created.
     std::thread::spawn(move || interrupt.interrupt()).join().unwrap();
     inspector.step(&mut interp);
@@ -127,9 +126,8 @@ fn interrupt_before_step_end_skips_callback_and_preserves_error() {
         )
         .unwrap()
         .with_interrupt(interrupt.clone());
-        let tx_env = TxEnv::<BaseEvmTypes>::default();
         let message = Message::<BaseEvmTypes>::default();
-        let mut interp = Interpreter::<BaseEvmTypes>::new(&tx_env, &message);
+        let mut interp = Interpreter::<BaseEvmTypes>::new(&message);
         inspector.step(&mut interp);
         assert!(inspector.pending_steps[0].active);
         let error = if preserve_error {
