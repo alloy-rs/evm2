@@ -1344,9 +1344,11 @@ mod tests {
         assert_eq!(state.storage_slot(&address, read).unwrap().current(), Word::ZERO);
         state.storage_slot(&address, written).unwrap().write(Word::from(9));
         assert_eq!(state.storage_slot(&address, empty).unwrap().current(), Word::ZERO);
+        assert!(state.accounts[&address].storage.slots[&empty].created_zero);
         state.rollback(checkpoint, version.features);
 
         assert!(!state.accounts[&address].discards_storage());
+        assert!(state.accounts[&address].storage.slots.values().all(|slot| !slot.created_zero));
         for (key, value) in [(read, 6), (written, 7), (empty, 0)] {
             let value = Word::from(value);
             assert_eq!(state.storage_slot_untracked(&address, &key).unwrap(), value);
@@ -1395,6 +1397,33 @@ mod tests {
 
         assert_eq!(state.storage_slot(&address, read).unwrap().current(), Word::from(6));
         assert_eq!(state.storage_slot(&address, zero).unwrap().current(), Word::ZERO);
+    }
+
+    #[test]
+    fn rollback_of_creation_keeps_slot_whose_reload_fails() {
+        use crate::evm::bal::{AccountBal, Bal, BlockAccessIndex};
+
+        let caller = Address::with_last_byte(1);
+        let address = Address::with_last_byte(2);
+        let key = Word::from(1);
+        let features = Version::base(crate::SpecId::CANCUN).features;
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        let mut state = State::new(db);
+        // The BAL covers the account but omits the slot, so rereading the slot fails.
+        state.set_bal(Arc::new(Bal::from_iter([(address, AccountBal::default())])));
+        state.set_bal_index(BlockAccessIndex::new(1));
+
+        let checkpoint = state.checkpoint();
+        // Rereading is the only read that can fail: the creation's own read checks the BAL, so
+        // detach it while the account is created.
+        state.clear_bal();
+        state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
+        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
+        state.set_bal(Arc::new(Bal::from_iter([(address, AccountBal::default())])));
+        state.rollback(checkpoint, features);
+
+        assert!(state.accounts[&address].storage.slots[&key].created_zero);
     }
 
     #[test]
