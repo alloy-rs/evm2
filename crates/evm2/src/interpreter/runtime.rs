@@ -5,7 +5,6 @@ use super::{
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
     bytecode::Bytecode,
-    env::TxEnv,
     evm::inspector::Inspector,
     interpreter::dispatch,
     trustme,
@@ -31,8 +30,6 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
 
     pub(in crate::interpreter) pc: *const u8,
     output: Range<u32>,
-    #[derive_where(skip)]
-    tx_env: Option<&'frame TxEnv<T>>,
     #[derive_where(skip)]
     message: Option<&'frame Message<T>>,
     host: Option<NonNull<T::Host<'host>>>,
@@ -63,17 +60,15 @@ unsafe impl<T> Send for Interpreter<'_, '_, T>
 where
     T: EvmTypesHost,
     T::MessageExt: Sync,
-    T::TxEnvExt: Sync,
 {
 }
 
 impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
-    /// Creates an interpreter from a transaction-global environment and a frame-local message,
-    /// which carries the bytecode to run.
-    pub fn new(tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) -> Self {
+    /// Creates an interpreter from a frame-local message, which carries the bytecode to run.
+    pub fn new(message: &'frame Message<T>) -> Self {
         // SAFETY: Calling init right after.
         let mut interp = unsafe { Self::uninit() };
-        interp.init(tx_env, message);
+        interp.init(message);
         interp
     }
 
@@ -94,7 +89,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             result: Ok(()),
             error: None,
             output: 0..0,
-            tx_env: None,
             message: None,
             is_static: false,
             return_data: Bytes::new(),
@@ -108,7 +102,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     }
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.
-    fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
+    fn init(&mut self, message: &'frame Message<T>) {
         let gas_limit = message.gas_limit;
         let is_static = message.is_static();
         self.set_bytecode(&message.code);
@@ -118,7 +112,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.result = Ok(());
         self.error = None;
         self.output = 0..0;
-        self.tx_env = Some(tx_env);
         self.message = Some(message);
         self.is_static = is_static;
         self.return_data = Bytes::new();
@@ -134,7 +127,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     pub(crate) fn clear_frame_refs(&mut self) {
         self.bytecode = Default::default();
         self.bytecode_ref = None;
-        self.tx_env = None;
         self.message = None;
         self.host = None;
         self.inspector = None;
@@ -305,13 +297,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[doc(hidden)]
     pub const fn message_field_offset_for_jit() -> usize {
         core::mem::offset_of!(Self, message)
-    }
-
-    /// Returns the cached transaction-global environment.
-    #[inline]
-    pub const fn tx_env(&self) -> &'frame TxEnv<T> {
-        // SAFETY: `tx_env` is initialized before execution starts.
-        unsafe { self.tx_env.unwrap_unchecked() }
     }
 
     /// Returns return data from the last call-like operation.
@@ -600,14 +585,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.stack_len = stack_len;
     }
 
-    /// Returns the cached transaction-global environment.
-    #[inline]
-    pub const fn tx(&self) -> &'frame TxEnv<T> {
-        // SAFETY: `tx_env` is initialized at the beginning of `run` and remains set for
-        // instruction execution.
-        unsafe { self.0.tx_env.unwrap_unchecked() }
-    }
-
     /// Returns the active base specification ID.
     #[inline]
     pub const fn spec(&self) -> SpecId {
@@ -785,15 +762,14 @@ impl<T: EvmTypesHost> InterpreterPool<T> {
 
     pub(crate) fn pop<'frame, 'host>(
         &mut self,
-        tx_env: &'frame TxEnv<T>,
         message: &'frame Message<T>,
     ) -> Box<Interpreter<'frame, 'host, T>> {
         let frame = match self.frames.pop() {
             Some(mut frame) => {
-                frame.init(tx_env, message);
+                frame.init(message);
                 frame
             }
-            None => Box::new(Interpreter::new(tx_env, message)),
+            None => Box::new(Interpreter::new(message)),
         };
         // SAFETY: Frames stored in the pool have their frame-local references cleared before they
         // are erased to `'static`. Rebinding the lifetime is only used to initialize the next
@@ -833,13 +809,12 @@ const fn gas_excluding_state(gas: &Gas) -> u64 {
 #[cfg(test)]
 mod owned_error_tests {
     use super::*;
-    use crate::{DatabaseError, env::TxEnvExt, interpreter::MessageExt, test_utils::TestTypes};
+    use crate::{DatabaseError, interpreter::MessageExt, test_utils::TestTypes};
 
     #[test]
     fn owned_error_is_taken_on_exit() {
-        let tx = TxEnvExt::default();
         let message = MessageExt::default();
-        let mut interpreter = Interpreter::<TestTypes>::new(&tx, &message);
+        let mut interpreter = Interpreter::<TestTypes>::new(&message);
         let error = DatabaseError::new(core::fmt::Error, false);
         let stop = interpreter.fail(error.clone());
         let result = interpreter.finish_run(stop);
