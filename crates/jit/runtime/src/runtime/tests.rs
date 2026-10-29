@@ -164,7 +164,7 @@ impl ArtifactStore for EmptyStore {
         &self,
         _key: &ArtifactKey,
         _manifest: &ArtifactManifest,
-        _dylib_bytes: &[u8],
+        _object_bytes: &[u8],
     ) -> eyre::Result<()> {
         Ok(())
     }
@@ -194,7 +194,7 @@ impl ArtifactStore for FailingStore {
         &self,
         _key: &ArtifactKey,
         _manifest: &ArtifactManifest,
-        _dylib_bytes: &[u8],
+        _object_bytes: &[u8],
     ) -> eyre::Result<()> {
         Ok(())
     }
@@ -226,7 +226,7 @@ impl ArtifactStore for CountingStore {
         &self,
         _key: &ArtifactKey,
         _manifest: &ArtifactManifest,
-        _dylib_bytes: &[u8],
+        _object_bytes: &[u8],
     ) -> eyre::Result<()> {
         Ok(())
     }
@@ -1519,7 +1519,7 @@ fn preload_aot_skips_stale_abi_version() {
     let stale_manifest = ArtifactManifest { artifact_key: stale_key, ..stored.manifest.clone() };
     let stale_store = Arc::new(RuntimeArtifactStore::new().unwrap());
     stale_store
-        .store(&stale_key, &stale_manifest, &std::fs::read(&stored.dylib_path).unwrap())
+        .store(&stale_key, &stale_manifest, &std::fs::read(&stored.object_path).unwrap())
         .unwrap();
 
     let tb = TestBackend::new(RuntimeConfig {
@@ -1557,7 +1557,7 @@ fn preload_aot_skips_manifest_key_mismatch() {
     let stale_key = ArtifactKey { abi_version: crate::ABI_VERSION - 1, ..key };
     let manifest = ArtifactManifest { artifact_key: stale_key, ..stored.manifest.clone() };
     let mismatched_store = Arc::new(RuntimeArtifactStore::new().unwrap());
-    mismatched_store.store(&key, &manifest, &std::fs::read(&stored.dylib_path).unwrap()).unwrap();
+    mismatched_store.store(&key, &manifest, &std::fs::read(&stored.object_path).unwrap()).unwrap();
 
     let tb = TestBackend::new(RuntimeConfig {
         enabled: true,
