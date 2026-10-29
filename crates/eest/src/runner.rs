@@ -140,7 +140,12 @@ pub(crate) const IGNORED_TESTS: &[&str] = &[
     // The state-test runner takes the sender from the fixture and does not recover or
     // validate legacy-tx signatures, so v/r/s and chain-id rejection tests cannot pass.
     "frontier/validation/transaction/bad_v_r_s.json",
+    "frontier/validation/transaction/unrecoverable_signature.json",
     "london/eip1559_fee_market_change/tx_type/invalid_chain_id.json",
+
+    // The Amsterdam total transaction gas cap of 2^32-1 (EIP-8037) is not enforced yet. The PR that
+    // enforces it removes this entry.
+    "eip8037_state_creation_gas_cost_increase/block_2d_gas_accounting/tx_total_gas_limit_cap.json",
 ];
 
 fn should_ignore(name: &str) -> bool {
