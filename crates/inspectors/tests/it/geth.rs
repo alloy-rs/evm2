@@ -21,6 +21,7 @@ use evm2::{
 use evm2_inspectors::tracing::{
     DebugInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
 };
+use std::collections::BTreeMap;
 
 #[test]
 fn test_calltracer_invalid_opcode_errors() {
@@ -2238,12 +2239,73 @@ fn struct_log_storage_snapshots_match_geth() {
         .filter(|log| matches!(log.op.as_ref(), "SLOAD" | "SSTORE"))
         .map(|log| (log.op.to_string(), log.storage.clone(), log.error.is_some()))
         .collect();
-    let after_first = std::collections::BTreeMap::from([(slot(5), value(7))]);
-    let after_sstore = std::collections::BTreeMap::from([(slot(5), value(7)), (slot(6), value(1))]);
+    let after_first = BTreeMap::from([(slot(5), value(7))]);
+    let after_sstore = BTreeMap::from([(slot(5), value(7)), (slot(6), value(1))]);
     assert_eq!(snapshots[0], ("SLOAD".into(), Some(after_first.clone()), false));
     assert_eq!(snapshots[1], ("SSTORE".into(), Some(after_first.clone()), false));
     assert_eq!(snapshots[2], ("SLOAD".into(), Some(after_first), false));
     assert_eq!(snapshots[3].1, Some(after_sstore.clone()));
     assert_eq!(snapshots[4], ("SLOAD".into(), Some(after_sstore), false));
     assert_eq!((snapshots[5].1.clone(), snapshots[5].2), (None, true));
+}
+
+/// A delegatecall child writes to the storage of its caller, and an SSTORE that fails in a static
+/// call leaves no snapshot.
+#[test]
+fn struct_log_storage_snapshots_follow_the_storage_context() {
+    let parent = address!("1000000000000000000000000000000000000001");
+    let writer = address!("00000000000000000000000000000000000000c0");
+    let static_writer = address!("00000000000000000000000000000000000000d0");
+    // The parent delegatecalls the writer, loads the slot it wrote, then static calls the second
+    // writer.
+    let parent_code = hex!(
+        "600060006000600060c05af450"
+        "60015450"
+        "600060006000600060d05afa5000"
+    );
+    let mut db = CacheDB::<EmptyDB>::default();
+    for (address, code) in [
+        (parent, parent_code.to_vec()),
+        (writer, hex!("6002600155").to_vec()),
+        (static_writer, hex!("6003600455").to_vec()),
+    ] {
+        db.insert_account_info(
+            &address,
+            AccountInfo { code: Some(Bytecode::new_raw(code.into())), ..Default::default() },
+        );
+    }
+    let mut inspector = DebugInspector::new(Default::default()).unwrap();
+    let mut evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
+        .build_mainnet()
+        .with_inspector(&mut inspector);
+    let result = evm
+        .inspect_tx(TxEnv {
+            gas_limit: 1_000_000,
+            kind: TransactTo::Call(parent),
+            ..Default::default()
+        })
+        .unwrap();
+    let (ctx, inspector) = evm.ctx_inspector();
+    let tx = ctx.tx().envelope();
+    let block = *ctx.block();
+    let trace = inspector.get_result(None, &tx, &block, &result.tx_result, ctx.db_mut()).unwrap();
+    let GethTrace::Default(frame) = trace else { panic!("expected a default trace") };
+
+    let snapshot = BTreeMap::from([(B256::with_last_byte(1), U256::from(2).into())]);
+    let logs: Vec<_> = frame
+        .struct_logs
+        .iter()
+        .filter(|log| matches!(log.op.as_ref(), "SLOAD" | "SSTORE"))
+        .map(|log| (log.depth, log.op.to_string(), log.storage.clone()))
+        .collect();
+    assert_eq!(
+        logs,
+        [
+            (2, "SSTORE".to_string(), Some(snapshot.clone())),
+            (1, "SLOAD".to_string(), Some(snapshot)),
+            (2, "SSTORE".to_string(), None),
+        ]
+    );
 }

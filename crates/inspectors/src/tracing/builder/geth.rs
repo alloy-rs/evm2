@@ -121,7 +121,7 @@ impl<'a> GethTraceBuilder<'a> {
             // SLOADs and SSTOREs, unless the opcode fails before it runs.
             if opts.is_storage_enabled()
                 && !step.is_error()
-                && let Some((key, value)) = step.storage_slot
+                && let Some((key, value)) = step.storage_slot.as_deref().copied()
             {
                 let contract_storage = storage.entry(trace_node.execution_address()).or_default();
                 contract_storage.insert(key.into(), value.into());

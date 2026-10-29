@@ -660,10 +660,10 @@ impl TracingInspector {
         }
 
         // The slot an SLOAD read is loaded now, and the SLOAD did not change it.
-        if let Some((key, value)) = &mut step.storage_slot
+        if let Some(slot) = &mut step.storage_slot
             && step.op.get() == op::SLOAD
         {
-            *value = host.state().get_storage(&address, key).unwrap_or_default();
+            slot.1 = host.state().get_storage(&address, &slot.0).unwrap_or_default();
         }
 
         // An out-of-gas step consumes the whole remainder, except the reentrancy sentry, which
@@ -965,12 +965,12 @@ impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
 
 /// Returns the key and value of the storage slot an SSTORE is about to write, or the key of the
 /// slot an SLOAD is about to read, with a zero value that `step_end` replaces.
-fn storage_slot(stack: &[U256], op: u8) -> Option<(U256, U256)> {
+fn storage_slot(stack: &[U256], op: u8) -> Option<Box<(U256, U256)>> {
     match op {
-        op::SLOAD => Some((*stack.last()?, U256::ZERO)),
+        op::SLOAD => Some(Box::new((*stack.last()?, U256::ZERO))),
         op::SSTORE => {
             let [.., value, key] = stack else { return None };
-            Some((*key, *value))
+            Some(Box::new((*key, *value)))
         }
         _ => None,
     }

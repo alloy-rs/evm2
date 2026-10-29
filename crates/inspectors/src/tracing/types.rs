@@ -682,8 +682,7 @@ pub struct CallTraceStep {
     /// holds before an SLOAD, or the value an SSTORE writes.
     ///
     /// Only set if state diffs are recorded.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub storage_slot: Option<(U256, U256)>,
+    pub storage_slot: Option<Box<(U256, U256)>>,
     /// Final status of the step
     ///
     /// This is set after the step was executed.
