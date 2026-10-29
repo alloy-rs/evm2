@@ -60,9 +60,9 @@ pub(crate) fn default_blockchain_test_roots() -> Vec<BlockchainTestRoot> {
     };
 
     let mut roots = vec![BlockchainTestRoot {
-        name: "blockchain_tests::devnet".to_string(),
-        label: "execution-spec-tests devnet",
-        path: fixtures.join("devnet/blockchain_tests"),
+        name: "blockchain_tests::eest".to_string(),
+        label: "execution-specs release",
+        path: fixtures.join("eest/blockchain_tests"),
     }];
 
     if main_path.is_dir() {
