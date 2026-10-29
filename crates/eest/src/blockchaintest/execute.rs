@@ -265,8 +265,12 @@ fn execute_case(
     let mut parent_block_hash = Some(test_case.genesis_block_header.hash);
     let mut parent_excess_blob_gas =
         test_case.genesis_block_header.excess_blob_gas.unwrap_or_default().saturating_to::<u64>();
-    let mut block_env =
-        block_env_from_header(&test_case.genesis_block_header, parent_excess_blob_gas, spec);
+    let mut block_env = block_env_from_header(
+        &test_case.genesis_block_header,
+        parent_excess_blob_gas,
+        &schedule,
+        spec,
+    );
     let total_blocks = test_case.blocks.len();
     let mut db_stats_counts = DbStatsCounts::default();
     // `evm2 capture` keeps only the accounts the blocks touch and zeroes the genesis state
@@ -297,6 +301,7 @@ fn execute_case(
             block_number,
             total_transactions,
             block,
+            &schedule,
             spec,
             database,
             &mut block_env,
@@ -384,6 +389,7 @@ fn execute_block(
     block_number: Option<U256>,
     total_transactions: usize,
     block: &Block,
+    schedule: &ForkSchedule,
     spec: SpecId,
     database: &mut InMemoryDB,
     block_env: &mut BlockEnv,
@@ -421,7 +427,7 @@ fn execute_block(
     if let Some(header) = block_header(block) {
         block_hash = Some(header.hash);
         beacon_root = header.parent_beacon_block_root;
-        next_block_env = block_env_from_header(header, *parent_excess_blob_gas, spec);
+        next_block_env = block_env_from_header(header, *parent_excess_blob_gas, schedule, spec);
         this_excess_blob_gas = header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>());
         expected_state_root = Some(header.state_root);
     }
@@ -1020,7 +1026,12 @@ fn parse_state(
     Ok(database)
 }
 
-fn block_env_from_header(header: &BlockHeader, excess_blob_gas: u64, spec: SpecId) -> BlockEnv {
+fn block_env_from_header(
+    header: &BlockHeader,
+    excess_blob_gas: u64,
+    schedule: &ForkSchedule,
+    spec: SpecId,
+) -> BlockEnv {
     let excess_blob_gas =
         header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>()).unwrap_or(excess_blob_gas);
     BlockEnvExt {
@@ -1036,7 +1047,7 @@ fn block_env_from_header(header: &BlockHeader, excess_blob_gas: u64, spec: SpecI
             U256::ZERO
         },
         blob_basefee: U256::from(
-            blob_params_for_timestamp(header.timestamp, spec).calc_blob_fee(excess_blob_gas),
+            schedule.blob_params(header.timestamp, spec).calc_blob_fee(excess_blob_gas),
         ),
         slot_num: header.slot_number.unwrap_or_default(),
         ext: (),
@@ -1347,6 +1358,8 @@ struct ForkSchedule {
     initial: SpecId,
     /// The spec that a transition fork switches to, and when.
     transition: Option<(Activation, SpecId)>,
+    /// Whether the blob schedule is BPO2 throughout, as before the BPO2 to Amsterdam transition.
+    bpo2_blobs: bool,
 }
 
 /// When a transition fork activates.
@@ -1358,11 +1371,25 @@ enum Activation {
 
 impl ForkSchedule {
     const fn fixed(spec: SpecId) -> Self {
-        Self { initial: spec, transition: None }
+        Self { initial: spec, transition: None, bpo2_blobs: false }
     }
 
     const fn transition(initial: SpecId, activation: Activation, spec: SpecId) -> Self {
-        Self { initial, transition: Some((activation, spec)) }
+        Self { initial, transition: Some((activation, spec)), bpo2_blobs: false }
+    }
+
+    const fn with_bpo2_blobs(mut self) -> Self {
+        self.bpo2_blobs = true;
+        self
+    }
+
+    /// Returns the blob parameters of the block with this timestamp and spec.
+    fn blob_params(&self, timestamp: U256, spec: SpecId) -> BlobParams {
+        if self.bpo2_blobs {
+            BlobParams::bpo2()
+        } else {
+            blob_params_for_timestamp(timestamp, spec)
+        }
     }
 
     /// Returns the spec of the block with this number and timestamp.
@@ -1437,7 +1464,7 @@ const fn fork_schedule(fork: ForkSpec) -> Option<ForkSchedule> {
             ForkSchedule::transition(SpecId::PRAGUE, AT_15K, SpecId::OSAKA)
         }
         ForkSpec::BPO2ToAmsterdamAtTime15k => {
-            ForkSchedule::transition(SpecId::OSAKA, AT_15K, SpecId::AMSTERDAM)
+            ForkSchedule::transition(SpecId::OSAKA, AT_15K, SpecId::AMSTERDAM).with_bpo2_blobs()
         }
         ForkSpec::HomesteadToDaoAt5
         | ForkSpec::OsakaToBPO1AtTime15k
