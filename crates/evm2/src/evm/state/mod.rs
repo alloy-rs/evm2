@@ -1355,6 +1355,47 @@ mod tests {
     }
 
     #[test]
+    fn rollback_reloads_zeroed_slots_only_when_the_creation_is_undone() {
+        let caller = Address::with_last_byte(1);
+        let address = Address::with_last_byte(2);
+        let key = Word::from(1);
+        let features = Version::base(crate::SpecId::CANCUN).features;
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_storage(&address, &key, &Word::from(6));
+        let mut state = State::new(db);
+
+        let outer = state.checkpoint();
+        state.create_account(&caller, &address, &Word::ZERO, features).unwrap().unwrap();
+        let inner = state.checkpoint();
+        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
+        state.rollback(inner, features);
+        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::ZERO);
+        state.rollback(outer, features);
+        assert_eq!(state.storage_slot(&address, key).unwrap().current(), Word::from(6));
+    }
+
+    #[test]
+    fn rollback_of_creation_keeping_storage_leaves_slots_alone() {
+        let address = Address::with_last_byte(2);
+        let (read, zero) = (Word::from(1), Word::from(2));
+        let features = Version::base(crate::SpecId::CANCUN).features;
+        let mut db = CacheDB::default();
+        db.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        db.insert_account_storage(&address, &read, &Word::from(6));
+        let mut state = State::new(db);
+
+        let checkpoint = state.checkpoint();
+        state.account(&address).unwrap().mark_created_keeping_storage();
+        assert_eq!(state.storage_slot(&address, read).unwrap().current(), Word::from(6));
+        assert_eq!(state.storage_slot(&address, zero).unwrap().current(), Word::ZERO);
+        state.rollback(checkpoint, features);
+
+        assert_eq!(state.storage_slot(&address, read).unwrap().current(), Word::from(6));
+        assert_eq!(state.storage_slot(&address, zero).unwrap().current(), Word::ZERO);
+    }
+
+    #[test]
     fn rollback_reloads_slots_written_through_the_creating_handle() {
         let address = Address::with_last_byte(2);
         let key = Word::from(1);
