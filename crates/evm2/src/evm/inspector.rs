@@ -147,7 +147,7 @@ mod tests {
         Version,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
-        env::{BlockEnvExt, TxEnvExt},
+        env::BlockEnvExt,
         ethereum::{TxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, EmptyDB, InMemoryDB, SYSTEM_ADDRESS, State, StateCheckpoint},
         interpreter::{
@@ -390,10 +390,9 @@ mod tests {
             Precompiles::base(spec_id),
         );
         evm.set_inspector(inspector);
-        let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
         let mut message = MessageExt { gas_limit, code: bytecode, ..message.clone() };
-        let result = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
         let inspector = evm.clear_inspector_as::<I>().unwrap();
         (result, inspector, evm)
     }
@@ -770,8 +769,7 @@ mod tests {
                 code: legacy_bytecode(code.clone()),
                 ..Default::default()
             };
-            let result =
-                Host::execute_message(&mut evm, &TxEnvExt::default(), &mut message).unwrap();
+            let result = Host::execute_message(&mut evm, &mut message).unwrap();
             let inspector = evm.clear_inspector_as::<HookInspector>().unwrap();
             assert_matches!(result.stop, InstrStop::Stop);
             assert_eq!(inspector.call_depths, [depth, depth + 1]);
@@ -883,10 +881,9 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(MutateCallInspector { destination: replacement });
-        let tx_env = TxEnvExt::default();
         let bytecode = legacy_bytecode(code);
         let mut message = MessageExt { gas_limit: 100_000, code: bytecode, ..Default::default() };
-        let result = Host::execute_message(&mut evm, &tx_env, &mut message).unwrap();
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
 
         assert_matches!(result.stop, InstrStop::Stop);
         // The redirected call transferred the value to the replacement, not the target.
@@ -1228,13 +1225,12 @@ mod tests {
         push(&mut code, address_to_word(&target));
         code.push(op::SELFDESTRUCT);
 
-        let tx_env = TxEnvExt::default();
         let message = Message::<TestTypes> {
             gas_limit: 10_000,
             code: legacy_bytecode(code),
             ..Default::default()
         };
-        let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
+        let mut interp = Interpreter::<TestTypes>::new(&message);
         let stop = interp.run_inspect(&mut host, &mut inspector);
 
         assert_matches!(stop, Err(crate::ExecutionError::Database(error)) if error.is_fatal());
@@ -1858,13 +1854,12 @@ mod tests {
             (Vec::from([op::PUSH1, 0]), 2, InstrStop::OutOfGas),
             (Vec::from([op::INVALID]), 10_000, InstrStop::InvalidFEOpcode),
         ] {
-            let tx_env = TxEnvExt::default();
             let message = Message::<TestTypes> {
                 gas_limit,
                 code: legacy_bytecode(code),
                 ..Default::default()
             };
-            let mut interp = Interpreter::<TestTypes>::new(&tx_env, &message);
+            let mut interp = Interpreter::<TestTypes>::new(&message);
             let stop = interp.run_inspect(&mut TestHost::default(), &mut GasEdit);
 
             assert_eq!(stop, Ok(expected));
