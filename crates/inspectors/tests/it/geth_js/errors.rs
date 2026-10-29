@@ -97,7 +97,7 @@ fn faults_follow_steps_and_preserve_instruction_metadata() {
     // Geth fills the log in its step hook, so a tracer without `step` sees an empty one.
     let fault_only = "{e:[],fault:function(l){this.e.push([l.getPC(),l.op.toString(),l.getCost(),l.getDepth(),l.stack.length(),l.memory.length(),l.getError()])},result:function(){return this.e}}";
     assert_eq!(
-        execute(fault_only, &hex!("60ff5600"), 1_000_000).0.unwrap(),
+        execute(fault_only, &hex!("600160005260ff5600"), 1_000_000).0.unwrap(),
         json!([[0, "STOP", 0, 0, 0, 0, "invalid jump destination"]])
     );
 }
