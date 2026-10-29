@@ -934,7 +934,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
     /// starts at zero and its counter can be negative. The transaction-wide counter adds the
     /// counters of the frames below the running one and the refunds granted before execution, such
     /// as the pre-Amsterdam EIP-7702 authorization refund. It is maintained only while an
-    /// inspector is installed.
+    /// inspector is installed, and inspector hooks read it from the running frame's start on:
+    /// [`Inspector::initialize_interp`] still sees the value of the frame below.
     #[inline]
     pub const fn tx_refunded(&self, frame_refunded: i64) -> i64 {
         self.enclosing_refund + frame_refunded
@@ -1209,6 +1210,7 @@ impl<'a, T: EvmTypes<Tx: Typed2718>> Evm<'a, T> {
         let guard = self.enter_execution();
         let result = handler.execute(tx.as_recovered_ref(), guard.evm);
         drop(guard);
+        self.enclosing_refund = 0;
         if result.is_err() {
             self.state.clear_transaction_state();
         }

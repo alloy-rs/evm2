@@ -515,7 +515,7 @@ impl TracingInspector {
 
         let frame_refunded = interp.gas().refunded();
         let refunded = interp.host().tx_refunded(frame_refunded).max(0) as u64;
-        let gas_used = gas_used(interp.spec(), interp.gas().spent(), refunded);
+        let gas_used = gas_used(interp.spec(), interp.gas().spent(), frame_refunded.max(0) as u64);
 
         let mut immediate_bytes = None;
         if self.config.record_immediate_bytes {
