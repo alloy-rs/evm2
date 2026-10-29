@@ -178,6 +178,22 @@ pub(crate) fn maybe_revert_reason(output: &[u8]) -> Option<String> {
     }
 }
 
+/// Returns the [`TransactionInfo`] of a traced transaction.
+pub(crate) fn transaction_info<T: EvmTypesHost>(
+    tx_context: Option<&TransactionContext>,
+    block_env: &BlockEnv<T>,
+) -> TransactionInfo {
+    #[allow(clippy::needless_update)]
+    TransactionInfo {
+        hash: tx_context.and_then(|c| c.tx_hash),
+        index: tx_context.and_then(|c| c.tx_index.map(|i| i as u64)),
+        block_hash: tx_context.and_then(|c| c.block_hash),
+        block_number: Some(block_env.number.saturating_to()),
+        base_fee: Some(block_env.basefee.saturating_to()),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,21 +300,5 @@ mod tests {
                 "0x2000000000000000000000000000000000000000000000000000000000000000".to_string(),
             ]
         );
-    }
-}
-
-/// Returns the [`TransactionInfo`] of a traced transaction.
-pub(crate) fn transaction_info<T: EvmTypesHost>(
-    tx_context: Option<&TransactionContext>,
-    block_env: &BlockEnv<T>,
-) -> TransactionInfo {
-    #[allow(clippy::needless_update)]
-    TransactionInfo {
-        hash: tx_context.and_then(|c| c.tx_hash),
-        index: tx_context.and_then(|c| c.tx_index.map(|i| i as u64)),
-        block_hash: tx_context.and_then(|c| c.block_hash),
-        block_number: Some(block_env.number.saturating_to()),
-        base_fee: Some(block_env.basefee.saturating_to()),
-        ..Default::default()
     }
 }

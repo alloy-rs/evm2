@@ -155,8 +155,10 @@ impl MuxInspector {
             tracing.set_next_log_index(index);
         }
         for (_, child) in &mut self.children {
-            if let Child::Mux(mux) = child {
-                mux.set_next_log_index(index);
+            match child {
+                Child::Mux(mux) => mux.set_next_log_index(index),
+                #[cfg(feature = "js-tracer")]
+                Child::Js(_) => {}
             }
         }
     }
