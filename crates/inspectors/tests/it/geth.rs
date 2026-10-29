@@ -2652,3 +2652,75 @@ fn test_geth_prestate_diff_reports_cleared_code() {
         serde_json::json!({ "code": "0x", "nonce": 1 })
     );
 }
+
+/// Geth keeps the pre state of a selfdestructed account whole, with every slot the transaction
+/// read, including unchanged and zero ones.
+#[test]
+fn test_geth_prestate_diff_selfdestruct_keeps_read_slots() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let contract = address!("1111111111111111111111111111111111111111");
+    let beneficiary = address!("3333333333333333333333333333333333333333");
+
+    // SLOAD 1, SLOAD 2, SELFDESTRUCT to the beneficiary.
+    let code = Bytes::from(hex!("6001545060025450733333333333333333333333333333333333333333ff"));
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &contract,
+        AccountInfo {
+            balance: U256::from(7),
+            nonce: 1,
+            code_hash: alloy_primitives::keccak256(&code),
+            code: Some(Bytecode::new_raw(code)),
+            ..Default::default()
+        },
+    );
+    db.insert_account_storage(&contract, &U256::from(1), &U256::from(0x2a));
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
+        .build_mainnet();
+
+    let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
+    let mut insp =
+        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
+    let mut db = evm.ctx.db.clone();
+    let res = evm
+        .with_inspector(&mut insp)
+        .inspect_tx(TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            kind: TransactTo::Call(contract),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = insp
+        .with_transaction_gas_used(res.result.tx_gas_used())
+        .geth_builder()
+        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
+        .unwrap();
+    let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
+
+    // Output of geth's `evm t8n --state.fork London` with the prestate tracer in diff mode.
+    assert!(!diff.post.contains_key(&contract));
+    assert_eq!(diff.post[&beneficiary].balance, Some(U256::from(7)));
+    assert_eq!(
+        serde_json::to_value(&diff.pre[&contract]).unwrap(),
+        serde_json::json!({
+            "balance": "0x7",
+            "code": "0x6001545060025450733333333333333333333333333333333333333333ff",
+            "nonce": 1,
+            "storage": {
+                "0x0000000000000000000000000000000000000000000000000000000000000001":
+                    "0x000000000000000000000000000000000000000000000000000000000000002a",
+                "0x0000000000000000000000000000000000000000000000000000000000000002":
+                    "0x0000000000000000000000000000000000000000000000000000000000000000"
+            }
+        })
+    );
+}
