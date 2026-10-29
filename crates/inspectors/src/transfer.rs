@@ -154,10 +154,7 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector {
         _message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        // A create that stops early without a created address, such as on nonce overflow, also
-        // counts as failed even though its stop is `Return`.
-        let failed = !result.is_success() || result.created_address.is_none();
-        self.on_transfer_end::<T>(failed, interp.host());
+        self.on_transfer_end::<T>(!result.is_success(), interp.host());
     }
 
     fn selfdestruct(
