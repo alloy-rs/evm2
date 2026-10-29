@@ -152,6 +152,7 @@ impl JitObjectLinker {
         key: RuntimeCacheKey,
         stored: &StoredArtifact,
     ) -> eyre::Result<CompiledProgram> {
+        debug_assert!(self.resolver.is_none(), "AOT artifacts are only linked for the base host");
         let object = fs::read(&stored.object_path)
             .wrap_err_with(|| format!("read {:?}", stored.object_path))?;
         // The object may reference any builtin of the base host.
@@ -839,18 +840,13 @@ impl BackendState {
             }
         }
 
-        // Phase 3: enforce memory budget by evicting LRU JIT entries.
+        // Phase 3: enforce memory budget by evicting LRU entries.
         if budget > 0 && jit_total_bytes() > budget {
-            // Collect JIT entries sorted by last_hit_at ascending (oldest first).
-            // AOT entries are excluded because they don't contribute to `jit_total_bytes()`.
-            let mut entries: Vec<(RuntimeCacheKey, Instant)> = self
-                .resident_meta
-                .iter()
-                .filter(|(key, _)| {
-                    self.inner.resident.get(key).is_some_and(|p| matches!(p.kind, ProgramKind::Jit))
-                })
-                .map(|(key, meta)| (*key, meta.last_hit_at))
-                .collect();
+            // Collect entries sorted by last_hit_at ascending (oldest first). AOT entries count
+            // too: their linked objects are part of `jit_total_bytes()`, and an evicted one
+            // reloads from the store.
+            let mut entries: Vec<(RuntimeCacheKey, Instant)> =
+                self.resident_meta.iter().map(|(key, meta)| (*key, meta.last_hit_at)).collect();
             entries.sort_by_key(|(_, t)| *t);
 
             for (key, _) in entries {

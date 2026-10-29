@@ -1132,6 +1132,31 @@ fn memory_budget_eviction() {
     });
 }
 
+#[test]
+#[cfg(feature = "llvm")]
+fn memory_budget_evicts_aot_entries() {
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: true,
+        store: Some(Arc::new(RuntimeArtifactStore::new().unwrap())),
+        tuning: RuntimeTuning {
+            jit_worker_count: 1,
+            resident_code_cache_bytes: 1,
+            eviction_sweep_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    tb.prepare_aot_sync(AotRequest {
+        code_hash: alloy_primitives::keccak256(BYTECODE_RET42),
+        code: Bytes::copy_from_slice(BYTECODE_RET42),
+        spec_id: SpecId::CANCUN,
+    })
+    .unwrap();
+
+    poll_until(std::time::Duration::from_secs(10), || (tb.stats().evictions >= 1).then_some(()));
+}
+
 // ===========================================================================
 // Tests: concurrency.
 // ===========================================================================

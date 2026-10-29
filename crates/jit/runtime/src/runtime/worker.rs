@@ -703,6 +703,7 @@ fn compile_object(
     Ok(object_bytes)
 }
 
+/// Compiles a single bytecode to a relocatable object that the parent links as JIT code.
 #[cfg(feature = "llvm")]
 pub(super) fn compile_jit_object_artifact(
     job: &CompileJob,

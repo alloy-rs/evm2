@@ -188,8 +188,8 @@ impl ArtifactStore for RuntimeArtifactStore {
         object_bytes: &[u8],
     ) -> eyre::Result<()> {
         let path = self.artifact_path(key);
-        // Write to a unique file and rename it over the target: a previous artifact for the key
-        // may be mapped, and rewriting it in place would corrupt the mapping.
+        // Write to a unique file and rename it over the target, so a reader never sees a partial
+        // artifact.
         let mut file = tempfile::NamedTempFile::new_in(self.dir.path())?;
         file.write_all(object_bytes)?;
         file.persist(&path).map_err(|err| err.error)?;
