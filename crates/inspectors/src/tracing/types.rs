@@ -116,8 +116,8 @@ pub struct CallTrace {
     pub steps: Vec<CallTraceStep>,
     /// The deltas recorded for [`Self::steps`], in step order.
     ///
-    /// Only steps that report memory or storage, make a call or gain gas have an entry. Memory
-    /// and storage require [`record_step_deltas`]; gas balances are recorded independently.
+    /// Only steps that report memory or storage, make a call or gain gas have an entry, and only
+    /// if [`record_step_deltas`] is enabled.
     ///
     /// [`record_step_deltas`]: crate::tracing::TracingInspectorConfig::record_step_deltas
     #[cfg_attr(feature = "serde", serde(default))]
@@ -281,19 +281,12 @@ impl CallTraceNode {
 
     /// Iterates over steps in execution order, matching call opcodes to recorded children.
     pub(crate) fn steps_with_children(&self) -> impl Iterator<Item = CallTraceStepStackItem<'_>> {
-        let mut ordering = self.ordering.iter().peekable();
-        self.trace.steps.iter().enumerate().map(move |(step_idx, step)| {
-            // Filtered-out call opcodes still have children, while calls that fail before their
-            // hook have none. Only an immediately following Call belongs to this recorded step.
+        let mut children = self.children.iter();
+        self.trace.steps.iter().map(move |step| {
+            // A call opcode can fail before a child is recorded, e.g. due to out of gas:
+            // <https://github.com/paradigmxyz/reth/issues/3915>.
             let call_child_id =
-                if ordering.find(|entry| **entry == TraceMemberOrder::Step(step_idx)).is_some()
-                    && step.is_call_like_op()
-                    && let Some(TraceMemberOrder::Call(child)) = ordering.peek()
-                {
-                    self.children.get(*child).copied()
-                } else {
-                    None
-                };
+                if step.is_call_like_op() { children.next().copied() } else { None };
             CallTraceStepStackItem { trace_node: self, step, call_child_id }
         })
     }
@@ -683,6 +676,12 @@ pub struct CallTraceStep {
     /// State-gas spent before this step, used to calculate `state_gas_cost`.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub state_gas_spent: i64,
+    /// Remaining gas of a call or create step when it handed its gas to the child, which is
+    /// before the child returns its unused gas.
+    ///
+    /// [`Self::gas_cost`] counts the gas forwarded to the child through this value.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub gas_remaining_at_call: Option<u64>,
     /// Change of the contract state after step execution (effect of the SLOAD/SSTORE instructions)
     pub storage_change: Option<Box<StorageChange>>,
     /// Final status of the step
@@ -770,8 +769,7 @@ impl CallTraceStep {
 /// The deltas a [`CallTraceStep`] produced, as reported by parity's `vmTrace`.
 ///
 /// Recorded in [`CallTrace::step_deltas`] for the steps that report memory or storage, make a
-/// call or gain gas. Memory and storage require [`record_step_deltas`]; gas balances are recorded
-/// independently.
+/// call or gain gas, when [`record_step_deltas`] is enabled.
 ///
 /// [`record_step_deltas`]: crate::tracing::TracingInspectorConfig::record_step_deltas
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

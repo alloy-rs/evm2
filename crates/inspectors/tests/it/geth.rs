@@ -3,8 +3,6 @@
 mod consistency;
 mod runtime_oog;
 
-mod create_gas;
-
 use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
     TxEnv, deploy_contract, op,

@@ -542,8 +542,7 @@ impl TracingInspector {
             gas_used,
             immediate_bytes,
 
-            // These fields will be populated in `step_end`, except call costs captured before
-            // child execution.
+            // These fields will be populated in `step_end`.
             push_stack: None,
             gas_cost: 0,
             state_gas_cost: None,
@@ -552,6 +551,7 @@ impl TracingInspector {
                 .feature(EvmFeatures::EIP8037)
                 .then_some(interp.gas().reservoir()),
             state_gas_spent: interp.gas().state_gas_spent(),
+            gas_remaining_at_call: None,
             storage_change: None,
             status: None,
 
@@ -596,7 +596,7 @@ impl TracingInspector {
         // See comments in `start_step`.
         debug_assert!(
             step.push_stack.is_none()
-                && (step.gas_cost == 0 || step.is_call_like_op())
+                && step.gas_cost == 0
                 && step.storage_change.is_none()
                 && step.status.is_none()
                 && step.decoded.is_none(),
@@ -652,16 +652,17 @@ impl TracingInspector {
             };
         }
 
-        // Call costs are captured before child execution returns unused gas. A zero cost
-        // also covers calls that failed before reaching their hook.
-        //
-        // Otherwise the gas cost is the difference between the recorded gas remaining at the start
-        // of the step and the remaining gas here, at the end of the step. An out-of-gas step
-        // consumes the whole remainder, except the reentrancy sentry, which halts before any
-        // charge.
-        if step.gas_cost == 0 && interp.result() != Err(InstrStop::ReentrancySentryOOG) {
-            step.gas_cost = step.gas_remaining.saturating_sub(interp.gas().remaining());
-        }
+        // The gas cost is the difference between the recorded gas remaining at the start of the
+        // step and the remaining gas at the end of the step, or at the call hand-off if the step
+        // started a child, which counts the forwarded gas. An out-of-gas step consumes the whole
+        // remainder, except the reentrancy sentry, which halts before any charge.
+        step.gas_cost = if interp.result() == Err(InstrStop::ReentrancySentryOOG) {
+            0
+        } else {
+            let gas_remaining_after =
+                step.gas_remaining_at_call.unwrap_or_else(|| interp.gas().remaining());
+            step.gas_remaining.saturating_sub(gas_remaining_after)
+        };
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
             step.state_gas_cost = Some(state_gas_delta);
@@ -670,24 +671,24 @@ impl TracingInspector {
         // set the status
         step.status = interp.result().err();
 
-        if step.status.is_some_and(|status| status.is_halt()) {
-            return;
-        }
-        // Forwarded gas can return from a child, and gas credits cannot be recovered from the
-        // saturated unsigned cost. Preserve the actual balance even without memory/storage deltas.
-        let gas_remaining_after = (step.is_call_like_op()
-            || interp.gas().remaining() > step.gas_remaining)
-            .then_some(interp.gas().remaining());
-        if gas_remaining_after.is_some()
-            && node.trace.step_deltas.last().is_none_or(|delta| delta.step != step_idx)
-        {
-            node.trace.step_deltas.push(StepDelta { step: step_idx, ..Default::default() });
-        }
-        if let Some(delta) =
-            node.trace.step_deltas.last_mut().filter(|delta| delta.step == step_idx)
-        {
-            delta.gas_remaining_after = gas_remaining_after;
-            if self.config.record_step_deltas {
+        if self.config.record_step_deltas {
+            if step.status.is_some_and(|status| status.is_halt()) {
+                return;
+            }
+            // Call results, returned memory and gas are already available in evm2's `step_end`.
+            // Gas credits cannot be recovered from the saturated unsigned gas cost.
+            let gas_remaining_after = (step.is_call_like_op()
+                || interp.gas().remaining() > step.gas_remaining)
+                .then_some(interp.gas().remaining());
+            if gas_remaining_after.is_some()
+                && node.trace.step_deltas.last().is_none_or(|delta| delta.step != step_idx)
+            {
+                node.trace.step_deltas.push(StepDelta { step: step_idx, ..Default::default() });
+            }
+            if let Some(delta) =
+                node.trace.step_deltas.last_mut().filter(|delta| delta.step == step_idx)
+            {
+                delta.gas_remaining_after = gas_remaining_after;
                 if step.is_call_like_op()
                     && let Some(range) = &mut delta.write_range
                 {
@@ -732,16 +733,16 @@ impl TracingInspector {
         // not run, and the transaction result does not identify the active fork.
     }
 
-    fn record_call_gas_cost<T: EvmTypes>(&mut self, interp: &Interpreter<'_, '_, T>) {
+    /// Records the remaining gas of the step that starts a child, after the opcode charged the
+    /// forwarded gas and before the child returns its unused gas.
+    fn record_gas_remaining_at_call<T: EvmTypes>(&mut self, interp: &Interpreter<'_, '_, T>) {
         // Only a step of the active trace can start the child. A nested root traced by the same
-        // inspector must not overwrite the cost of the outer CALL step that is still last.
+        // inspector must not overwrite the outer step that is still last.
         if let Some(&(trace_idx, step_idx)) = self.step_stack.last()
             && self.trace_stack.last().is_some_and(|entry| entry.trace_idx == trace_idx)
             && let Some(step) = self.traces.arena[trace_idx].trace.steps.get_mut(step_idx)
         {
-            // `step_end` runs after child execution. Parity's cost includes forwarded gas,
-            // whereas its execution record reports the parent's gas after the child returns.
-            step.gas_cost = step.gas_remaining.saturating_sub(interp.gas().remaining());
+            step.gas_remaining_at_call = Some(interp.gas().remaining());
         }
     }
 }
@@ -793,7 +794,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.record_call_gas_cost(interp);
+        self.record_gas_remaining_at_call(interp);
         if self.spec_id.is_none() {
             self.spec_id = Some(interp.spec());
         }
@@ -857,7 +858,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         interp: &mut Interpreter<'_, '_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.record_call_gas_cost(interp);
+        self.record_gas_remaining_at_call(interp);
         if self.spec_id.is_none() {
             self.spec_id = Some(interp.spec());
         }

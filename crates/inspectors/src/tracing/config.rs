@@ -87,11 +87,11 @@ pub struct TracingInspectorConfig {
     pub record_logs: bool,
     /// Whether to record immediate bytes for opcodes.
     pub record_immediate_bytes: bool,
-    /// Whether to record the memory each step writes or an `MLOAD` reads, and the storage an
-    /// `SSTORE` writes.
+    /// Whether to record the deltas of each step: the memory it writes or an `MLOAD` reads, the
+    /// storage an `SSTORE` writes, and the remaining gas after returning from a call or gaining
+    /// gas.
     ///
-    /// Required for parity `vmTrace` memory and storage. Remaining gas after a call or gas credit
-    /// is recorded whenever steps are enabled, independently of this option.
+    /// Required for parity `vmTrace`.
     pub record_step_deltas: bool,
 }
 
