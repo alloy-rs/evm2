@@ -5,7 +5,8 @@ use crate::{
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, CodeChunkLoad, SLoad, SStore, SelfDestructResult},
 };
-use alloy_primitives::{Address, B256, Bytes, Log};
+use alloc::borrow::Cow;
+use alloy_primitives::{Address, B256, Bytes};
 
 /// Result of executing a call/create message for an EVM type family.
 pub type MessageResult<T = BaseEvmTypes> = MessageResultExt<<T as EvmTypesHost>::MessageResultExt>;
@@ -121,6 +122,9 @@ pub trait Host<T: EvmTypesHost> {
     fn execution_config(&self) -> &ExecutionConfig<T>;
 
     /// Returns the block environment.
+    ///
+    /// Compiled code keeps a pointer to the returned environment for the whole run, so the host
+    /// must keep it at a stable address and unchanged while the interpreter runs.
     fn block_env(&mut self) -> &BlockEnv<T>;
 
     /// Loads account information.
@@ -179,8 +183,11 @@ pub trait Host<T: EvmTypesHost> {
     /// Stores a transient storage slot.
     fn tstore(&mut self, address: &Address, key: &Word, value: &Word);
 
-    /// Records an emitted log.
-    fn log(&mut self, log: Log);
+    /// Records a log emitted from `address`.
+    ///
+    /// `LOG0`-`LOG4` pass `topics` and `data` borrowed from interpreter buffers, and other callers
+    /// may pass owned values. The host copies borrowed values only if it keeps the log.
+    fn log(&mut self, address: &Address, topics: Cow<'_, [B256]>, data: Cow<'_, [u8]>);
 
     /// Executes a message inside this host.
     fn execute_message(

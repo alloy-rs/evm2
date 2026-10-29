@@ -3,7 +3,7 @@
 use crate::{
     CompileTimings, OptimizationLevel, eyre,
     runtime::{
-        config::{CompilationKind, RuntimeConfig},
+        config::{CompilationKind, HostConfig, HostOpcodes, RuntimeConfig},
         stats::RuntimeStats,
         storage::RuntimeCacheKey,
         worker::{
@@ -15,9 +15,10 @@ use crate::{
 use alloy_primitives::{B256, Bytes};
 use crossbeam_channel as chan;
 use evm2::{
-    SpecId, Version,
+    BaseEvmTypes, OpcodeView, SpecId, Version,
     version::{GasId, GasParams},
 };
+use evm2_jit_codegen::HostLayout;
 use rayon::ThreadPoolBuilder;
 use std::{
     cell::RefCell,
@@ -28,7 +29,7 @@ use std::{
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
@@ -40,6 +41,7 @@ use wincode::{SchemaRead, SchemaWrite};
 const HELPER_ENV: &str = "EVM2_JIT_HELPER";
 const GAS_PARAM_COUNT: usize = GasId::COUNT;
 const HELPER_PAUSE_TIMEOUT: Duration = Duration::from_millis(100);
+const RECV_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 type GasParamPairs = Vec<(u8, u32)>;
 type PendingResponses = Arc<Mutex<HashMap<u64, chan::Sender<Result<HelperJobResult, String>>>>>;
@@ -61,9 +63,9 @@ pub(super) fn compile_job(
     helper: &HelperProcess,
 ) -> WorkerResult {
     let t0 = Instant::now();
-    let (outcome, timings) = match run_helper_job(&job, config, helper) {
-        Ok(result) => (result.outcome, result.timings),
-        Err(error) => (Err(error), CompileTimings::default()),
+    let (outcome, timings, transient) = match run_helper_job(&job, config, helper) {
+        Ok(result) => (result.outcome, result.timings, false),
+        Err(failure) => (Err(failure.error), CompileTimings::default(), failure.transient),
     };
     WorkerResult {
         key: job.key,
@@ -73,6 +75,7 @@ pub(super) fn compile_job(
         generation: job.generation,
         compile_duration: t0.elapsed(),
         timings,
+        transient,
     }
 }
 
@@ -80,8 +83,25 @@ fn run_helper_job(
     job: &CompileJob,
     config: &RuntimeConfig,
     helper: &HelperProcess,
-) -> Result<HelperJobResult, String> {
+) -> Result<HelperJobResult, HelperFailure> {
     helper.compile(job, config)
+}
+
+/// A job that did not produce a compile outcome.
+struct HelperFailure {
+    error: String,
+    /// The helper went away under the job: the job may not be at fault.
+    transient: bool,
+}
+
+impl HelperFailure {
+    const fn deterministic(error: String) -> Self {
+        Self { error, transient: false }
+    }
+
+    const fn transient(error: String) -> Self {
+        Self { error, transient: true }
+    }
 }
 
 struct HelperJobResult {
@@ -104,7 +124,11 @@ impl HelperProcess {
         Self { inner: Mutex::new(None), paused: Arc::new(AtomicBool::new(false)), stats }
     }
 
-    fn compile(&self, job: &CompileJob, config: &RuntimeConfig) -> Result<HelperJobResult, String> {
+    fn compile(
+        &self,
+        job: &CompileJob,
+        config: &RuntimeConfig,
+    ) -> Result<HelperJobResult, HelperFailure> {
         let helper = {
             let mut slot = self.inner.lock().unwrap();
             if slot.as_ref().is_none_or(|helper| !helper.matches_config(config)) {
@@ -123,7 +147,7 @@ impl HelperProcess {
                     }
                     Err(err) => {
                         self.stats.jit_helper_spawn_failures.fetch_add(1, Ordering::Relaxed);
-                        return Err(err);
+                        return Err(HelperFailure::deterministic(err));
                     }
                 }
             }
@@ -135,7 +159,7 @@ impl HelperProcess {
             Err(err) => {
                 let mut slot = self.inner.lock().unwrap();
                 if slot.as_ref().is_some_and(|current| Arc::ptr_eq(current, &helper)) {
-                    warn!(error = %err, "discarding JIT helper after failed job");
+                    warn!(error = %err.error, "discarding JIT helper after failed job");
                     self.stats.jit_helper_restarts.fetch_add(1, Ordering::Relaxed);
                     *slot = None;
                 }
@@ -168,7 +192,7 @@ impl HelperProcess {
 }
 
 struct HelperProcessInner {
-    path: PathBuf,
+    configured_path: Option<PathBuf>,
     init: HelperInit,
     child: Mutex<Child>,
     io: Mutex<HelperIo>,
@@ -189,9 +213,7 @@ impl HelperProcessInner {
     ) -> Result<Self, String> {
         let path = match &config.jit_helper_path {
             Some(path) => path.clone(),
-            None => {
-                std::env::current_exe().map_err(|e| format!("failed to locate current exe: {e}"))?
-            }
+            None => default_helper_path()?,
         };
         let init = helper_init(config);
         let mut command = Command::new(&path);
@@ -241,7 +263,7 @@ impl HelperProcessInner {
             }
         });
         Ok(Self {
-            path,
+            configured_path: config.jit_helper_path.clone(),
             init,
             child: Mutex::new(child),
             io: Mutex::new(HelperIo { stdin }),
@@ -256,16 +278,14 @@ impl HelperProcessInner {
     }
 
     fn matches_config(&self, config: &RuntimeConfig) -> bool {
-        if self.init != helper_init(config) {
-            return false;
-        }
-        match &config.jit_helper_path {
-            Some(path) => self.path == *path,
-            None => std::env::current_exe().map(|path| self.path == path).unwrap_or(false),
-        }
+        self.init == helper_init(config) && self.configured_path == config.jit_helper_path
     }
 
-    fn compile(&self, job: &CompileJob, config: &RuntimeConfig) -> Result<HelperJobResult, String> {
+    fn compile(
+        &self,
+        job: &CompileJob,
+        config: &RuntimeConfig,
+    ) -> Result<HelperJobResult, HelperFailure> {
         let id = self.next_job_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = chan::bounded(1);
         self.pending.lock().unwrap().insert(id, tx);
@@ -274,40 +294,36 @@ impl HelperProcessInner {
             let mut io = self.io.lock().unwrap();
             if let Err(e) = write_job(&mut io.stdin, id, job) {
                 self.pending.lock().unwrap().remove(&id);
-                return Err(format!("failed to write helper job: {e}"));
+                return Err(HelperFailure::transient(format!("failed to write helper job: {e}")));
             }
             if let Err(e) = io.stdin.flush() {
                 self.pending.lock().unwrap().remove(&id);
-                return Err(format!("failed to flush helper job: {e}"));
+                return Err(HelperFailure::transient(format!("failed to flush helper job: {e}")));
             }
         }
 
-        loop {
-            match rx.recv_timeout(config.tuning.jit_timeout) {
-                Ok(result) => return result,
-                Err(chan::RecvTimeoutError::Timeout) if self.paused.load(Ordering::Relaxed) => {
-                    continue;
-                }
-                Err(chan::RecvTimeoutError::Timeout) => {
-                    warn!(timeout = ?config.tuning.jit_timeout, "JIT helper timed out");
-                    self.pending.lock().unwrap().remove(&id);
-                    self.stats.jit_helper_timeouts.fetch_add(1, Ordering::Relaxed);
-                    self.kill();
-                    return Err(format!(
-                        "JIT helper timed out after {:?}; helper will be restarted",
-                        config.tuning.jit_timeout
-                    ));
-                }
-                Err(chan::RecvTimeoutError::Disconnected) => {
-                    let status = self.child.lock().unwrap().try_wait().ok().flatten();
-                    let message = match status {
-                        Some(status) => format!("JIT helper exited with {status}"),
-                        None => "JIT helper disconnected".into(),
-                    };
-                    warn!(message, "JIT helper disconnected");
-                    self.stats.jit_helper_disconnects.fetch_add(1, Ordering::Relaxed);
-                    return Err(format!("{message}; helper will be restarted"));
-                }
+        match recv_unpaused(&rx, config.tuning.jit_timeout, &self.paused) {
+            // An error here comes from the reader draining jobs after the helper died.
+            Ok(result) => result.map_err(HelperFailure::transient),
+            Err(chan::RecvTimeoutError::Timeout) => {
+                warn!(timeout = ?config.tuning.jit_timeout, "JIT helper timed out");
+                self.pending.lock().unwrap().remove(&id);
+                self.stats.jit_helper_timeouts.fetch_add(1, Ordering::Relaxed);
+                self.kill();
+                Err(HelperFailure::deterministic(format!(
+                    "JIT helper timed out after {:?}; helper will be restarted",
+                    config.tuning.jit_timeout
+                )))
+            }
+            Err(chan::RecvTimeoutError::Disconnected) => {
+                let status = self.child.lock().unwrap().try_wait().ok().flatten();
+                let message = match status {
+                    Some(status) => format!("JIT helper exited with {status}"),
+                    None => "JIT helper disconnected".into(),
+                };
+                warn!(message, "JIT helper disconnected");
+                self.stats.jit_helper_disconnects.fetch_add(1, Ordering::Relaxed);
+                Err(HelperFailure::transient(format!("{message}; helper will be restarted")))
             }
         }
     }
@@ -507,6 +523,11 @@ struct HelperInit {
     no_dse: bool,
     dump_dir: Option<String>,
     gas_params: Option<GasParamPairs>,
+    /// Words of the host layout, see [`HostLayout::to_words`].
+    layout: Vec<u64>,
+    opcode_view: Option<Box<OpcodeView>>,
+    /// Makes the helper's builtin symbols unique to the host's resolver.
+    symbol_suffix: Option<u64>,
     jit_worker_count: usize,
     compiler_recycle_threshold: usize,
 }
@@ -638,6 +659,32 @@ impl From<HelperTimings> for CompileTimings {
 
 fn duration_to_nanos(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// Receives from `rx`, failing with [`chan::RecvTimeoutError::Timeout`] once `timeout` of time
+/// spent unpaused has passed. A stopped helper makes no progress, so time under pause does not
+/// count.
+fn recv_unpaused<T>(
+    rx: &chan::Receiver<T>,
+    timeout: Duration,
+    paused: &AtomicBool,
+) -> Result<T, chan::RecvTimeoutError> {
+    let mut remaining = timeout;
+    loop {
+        let paused_before = paused.load(Ordering::Relaxed);
+        let start = Instant::now();
+        match rx.recv_timeout(remaining.min(RECV_POLL_INTERVAL)) {
+            Err(chan::RecvTimeoutError::Timeout) => {
+                if !paused_before && !paused.load(Ordering::Relaxed) {
+                    remaining = remaining.saturating_sub(start.elapsed());
+                    if remaining.is_zero() {
+                        return Err(chan::RecvTimeoutError::Timeout);
+                    }
+                }
+            }
+            result => return result,
+        }
+    }
 }
 
 thread_local! {
@@ -843,7 +890,7 @@ fn gas_params_to_pairs(gas_params: &GasParams) -> GasParamPairs {
         .map(|i| {
             let id = i as u8;
             let gas_id = GasId::from_usize(i).expect("gas parameter index should be valid");
-            (id, gas_params.get(gas_id))
+            (id, gas_params[gas_id])
         })
         .collect()
 }
@@ -873,6 +920,20 @@ fn gas_params_from_pairs(pairs: GasParamPairs) -> eyre::Result<GasParams> {
     Ok(gas_params)
 }
 
+/// Returns the path that re-executes the running binary, even after it is replaced on disk.
+///
+/// Only Linux can do this; elsewhere the executable path is resolved once and cached.
+fn default_helper_path() -> Result<PathBuf, String> {
+    if cfg!(target_os = "linux") {
+        return Ok(PathBuf::from("/proc/self/exe"));
+    }
+    static EXE: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    EXE.get_or_init(|| {
+        std::env::current_exe().map_err(|e| format!("failed to locate current exe: {e}"))
+    })
+    .clone()
+}
+
 fn helper_init(config: &RuntimeConfig) -> HelperInit {
     HelperInit {
         debug_assertions: config.debug_assertions,
@@ -881,13 +942,26 @@ fn helper_init(config: &RuntimeConfig) -> HelperInit {
         no_dse: config.no_dse,
         dump_dir: config.dump_dir.as_ref().map(|path| path.to_string_lossy().into_owned()),
         gas_params: config.gas_params.as_ref().map(gas_params_to_pairs),
+        layout: config.host.layout.to_words().into_iter().map(|word| word as u64).collect(),
+        opcode_view: config.host.opcodes.as_ref().map(|opcodes| Box::new((*opcodes.view).clone())),
+        symbol_suffix: config.host.resolver.map(|resolver| resolver as usize as u64),
         jit_worker_count: config.tuning.jit_worker_count,
         compiler_recycle_threshold: config.tuning.compiler_recycle_threshold,
     }
 }
 
 fn runtime_config_from_init(init: HelperInit) -> eyre::Result<RuntimeConfig> {
+    // The helper only compiles: builtins stay symbolic and the parent links them to the
+    // addresses of its own host type.
+    let mut host = HostConfig::for_types::<BaseEvmTypes>();
+    let Ok(words) = <[u64; HostLayout::WORDS]>::try_from(init.layout) else {
+        eyre::bail!("invalid host layout length");
+    };
+    host.layout = HostLayout::from_words(words.map(|word| word as usize));
+    host.symbol_suffix = init.symbol_suffix.map(|suffix| suffix as usize);
+    host.opcodes = init.opcode_view.map(|view| HostOpcodes { view: Arc::new(*view), config: 0 });
     let mut config = RuntimeConfig {
+        host,
         dump_dir: init.dump_dir.map(PathBuf::from),
         debug_assertions: init.debug_assertions,
         single_error: init.single_error,
@@ -904,6 +978,45 @@ fn runtime_config_from_init(init: HelperInit) -> eyre::Result<RuntimeConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use evm2::OpcodeConfig;
+
+    #[test]
+    fn helper_init_carries_the_host_layout_and_opcode_view() {
+        let view = OpcodeConfig::<BaseEvmTypes>::base_for_spec(SpecId::CANCUN).view(None);
+        let mut host = HostConfig::for_types::<BaseEvmTypes>();
+        host.opcodes = Some(HostOpcodes { view: Arc::new(view.clone()), config: 0 });
+        let mut words = host.layout.to_words();
+        words[1] += 8;
+        host.layout = HostLayout::from_words(words);
+        let config = RuntimeConfig { host: host.clone(), ..Default::default() };
+        let helper = runtime_config_from_init(helper_init(&config)).unwrap();
+        assert_eq!(helper.host.layout, host.layout);
+        assert_eq!(helper.host.opcodes.as_ref().map(|o| &*o.view), Some(&view));
+    }
+
+    #[test]
+    fn job_timeout_does_not_count_paused_time() {
+        let paused = Arc::new(AtomicBool::new(true));
+        let (tx, rx) = chan::bounded(1);
+        let thread = std::thread::spawn({
+            let paused = Arc::clone(&paused);
+            move || {
+                std::thread::sleep(Duration::from_millis(300));
+                paused.store(false, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(400));
+                tx.send(()).unwrap();
+            }
+        });
+        // 700ms elapse, but only 400ms of them unpaused.
+        assert!(recv_unpaused(&rx, Duration::from_millis(500), &paused).is_ok());
+        thread.join().unwrap();
+
+        let (_tx, rx) = chan::bounded::<()>(1);
+        let start = Instant::now();
+        let result = recv_unpaused(&rx, Duration::from_millis(100), &paused);
+        assert_eq!(result, Err(chan::RecvTimeoutError::Timeout));
+        assert!(start.elapsed() >= Duration::from_millis(100));
+    }
 
     #[test]
     fn helper_pause_state_blocks_until_resume() {
@@ -966,5 +1079,47 @@ mod tests {
         assert_eq!(snapshot.jit_helper_pause_timeouts, 0);
         assert_eq!(snapshot.jit_helper_resume_requests, 1);
         assert_eq!(snapshot.jit_helper_resume_failures, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    const REPLACE_EXE_ENV: &str = "EVM2_TEST_REPLACE_EXE";
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_helper_path_survives_exe_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("test-bin");
+        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+
+        let output = Command::new(&exe)
+            .env(REPLACE_EXE_ENV, "1")
+            .args(["--exact", "runtime::out_of_process::tests::replace_exe_child", "--ignored"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    /// Runs only as a child of `default_helper_path_survives_exe_replacement`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "child of default_helper_path_survives_exe_replacement"]
+    fn replace_exe_child() {
+        if std::env::var_os(REPLACE_EXE_ENV).is_none() {
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let original = std::fs::read(&exe).unwrap();
+
+        let replacement = exe.with_extension("new");
+        std::fs::write(&replacement, b"replacement").unwrap();
+        std::fs::rename(&replacement, &exe).unwrap();
+
+        let helper_path = default_helper_path().unwrap();
+        assert_eq!(std::fs::read(helper_path).unwrap(), original);
     }
 }

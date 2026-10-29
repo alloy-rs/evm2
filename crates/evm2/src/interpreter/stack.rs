@@ -1,5 +1,8 @@
 use super::{InstrStop, Result};
-use crate::constants::STACK_LIMIT;
+use crate::{
+    constants::STACK_LIMIT,
+    utils::{write_u64, write_word},
+};
 use alloy_primitives::U256;
 use core::{
     debug_assert_matches, fmt, hint::cold_path, marker::PhantomData, mem::MaybeUninit, ops::Deref,
@@ -8,7 +11,12 @@ use core::{
 /// EVM stack word.
 pub type Word = U256;
 
-pub(crate) type StackBacking = [MaybeUninit<Word>; STACK_LIMIT];
+/// Operand stack storage.
+///
+/// Aligned to the word size so that no word crosses a cache line. Loads and stores that cross a
+/// line are slower and cannot use store-to-load forwarding.
+#[repr(C, align(32))]
+pub(crate) struct StackBacking(pub(crate) [MaybeUninit<Word>; STACK_LIMIT]);
 
 /// Immutable EVM operand stack.
 #[derive(Clone, Copy)]
@@ -66,7 +74,7 @@ impl<'a> StackRef<'a> {
 
     #[inline]
     const fn as_word_ptr(&self) -> *const Word {
-        self.stack.as_ptr().cast()
+        self.stack.0.as_ptr().cast()
     }
 
     /// Returns the stack length.
@@ -165,7 +173,7 @@ impl<'a> Stack<'a> {
 
     #[inline]
     const fn as_word_ptr(&self) -> *const Word {
-        self.stack.as_ptr().cast()
+        self.stack.0.as_ptr().cast()
     }
 
     /// Returns the stack length.
@@ -204,6 +212,7 @@ impl<'a> RawStack<'a> {
     }
 
     #[inline(always)]
+    #[cfg(tco)]
     pub(crate) const fn set_len(&mut self, len: usize) {
         debug_assert!(len <= Stack::CAPACITY);
         self.len = len;
@@ -244,17 +253,17 @@ impl<'a> StackMut<'a> {
     /// words are initialized before creating another stack view.
     #[inline]
     pub const unsafe fn into_raw_parts(self) -> (*mut Word, &'a mut usize) {
-        (self.stack.as_mut_ptr().cast(), self.len)
+        (self.stack.0.as_mut_ptr().cast(), self.len)
     }
 
     #[inline]
     const fn as_word_ptr(&self) -> *const Word {
-        self.stack.as_ptr().cast()
+        self.stack.0.as_ptr().cast()
     }
 
     #[inline]
     const fn as_word_mut_ptr(&mut self) -> *mut Word {
-        self.stack.as_mut_ptr().cast()
+        self.stack.0.as_mut_ptr().cast()
     }
 
     /// Returns the stack length.
@@ -350,8 +359,23 @@ impl<'a> StackMut<'a> {
             return Err(InstrStop::StackOverflow);
         }
         unsafe {
-            let end = self.as_word_mut_ptr().add(len);
-            *end = value;
+            write_word(self.as_word_mut_ptr().add(len), value);
+            *self.len = len + 1;
+            debug_assert!(*self.len <= Self::CAPACITY);
+        }
+        Ok(())
+    }
+
+    /// Pushes a `u64` as a word onto the stack.
+    #[inline]
+    pub fn push_u64(&mut self, value: u64) -> Result {
+        let len = self.len();
+        if len == Self::CAPACITY {
+            cold_path();
+            return Err(InstrStop::StackOverflow);
+        }
+        unsafe {
+            write_u64(self.as_word_mut_ptr().add(len), value);
             *self.len = len + 1;
             debug_assert!(*self.len <= Self::CAPACITY);
         }
@@ -374,7 +398,10 @@ impl<'a> StackMut<'a> {
         Ok(unsafe { self.popn_unchecked() })
     }
 
-    /// Pops `n` words from the stack and returns an iterator over the popped words.
+    /// Returns an iterator that pops up to `n` words from the stack, starting at the top.
+    ///
+    /// Checks for underflow immediately, but pops each word only when the iterator yields it.
+    /// Dropping the iterator early leaves the unconsumed words on the stack.
     #[inline]
     pub fn popn_dyn(&mut self, n: usize) -> Result<impl Iterator<Item = Word> + '_> {
         if self.len() < n {
@@ -476,7 +503,7 @@ impl<'a> StackMut<'a> {
         }
         unsafe {
             let top = self.as_word_mut_ptr().add(len - 1);
-            core::ptr::swap_nonoverlapping(top.sub(n), top.sub(m), 1);
+            swap_words(top.sub(n), top.sub(m));
         }
         Ok(())
     }
@@ -489,6 +516,12 @@ impl<'a> StackMut<'a> {
             return Ok(());
         }
 
+        if slice.len() <= 8 {
+            let mut buf = [0; 8];
+            buf[8 - slice.len()..].copy_from_slice(slice);
+            return self.push_u64(u64::from_be_bytes(buf));
+        }
+
         let n_words = slice.len().div_ceil(32);
         let len = self.len();
         let new_len = len + n_words;
@@ -498,47 +531,51 @@ impl<'a> StackMut<'a> {
         }
 
         unsafe {
-            let dst = self.as_word_mut_ptr().add(len).cast::<u64>();
+            let dst = self.as_word_mut_ptr().add(len);
             *self.len = new_len;
             debug_assert!(*self.len <= Self::CAPACITY);
 
-            let mut i = 0;
-
             let (words, partial_last_word) = slice.as_chunks::<32>();
-            for word in words {
-                for l in word.rchunks_exact(8) {
-                    dst.add(i).write(u64::from_be_bytes(l.try_into().unwrap()));
-                    i += 1;
+            for (i, word) in words.iter().enumerate() {
+                write_word(dst.add(i), Word::from_be_bytes(*word));
+            }
+
+            if !partial_last_word.is_empty() {
+                let (partial_last_limb, full_limbs) = partial_last_word.as_rchunks::<8>();
+                let mut limbs = [0; 4];
+                for (limb, l) in limbs.iter_mut().zip(full_limbs.iter().rev()) {
+                    *limb = u64::from_be_bytes(*l);
                 }
-            }
-
-            if partial_last_word.is_empty() {
-                return Ok(());
-            }
-
-            let limbs = partial_last_word.rchunks_exact(8);
-            let partial_last_limb = limbs.remainder();
-            for l in limbs {
-                dst.add(i).write(u64::from_be_bytes(l.try_into().unwrap()));
-                i += 1;
-            }
-
-            if !partial_last_limb.is_empty() {
-                let mut tmp = [0u8; 8];
-                tmp[8 - partial_last_limb.len()..].copy_from_slice(partial_last_limb);
-                dst.add(i).write(u64::from_be_bytes(tmp));
-                i += 1;
-            }
-
-            debug_assert_eq!(i.div_ceil(4), n_words, "wrote too much");
-
-            let m = i % 4;
-            if m != 0 {
-                dst.add(i).write_bytes(0, 4 - m);
+                if !partial_last_limb.is_empty() {
+                    let mut tmp = [0u8; 8];
+                    tmp[8 - partial_last_limb.len()..].copy_from_slice(partial_last_limb);
+                    limbs[full_limbs.len()] = u64::from_be_bytes(tmp);
+                }
+                write_word(dst.add(words.len()), Word::from_limbs(limbs));
             }
         }
 
         Ok(())
+    }
+}
+
+/// Swaps two distinct stack words.
+///
+/// When LLVM prefers 512-bit vectors, it merges a swap of adjacent words into one 64-byte load.
+/// That load cannot take its data from the two 32-byte stores that usually wrote the words just
+/// before, so it waits for them to reach the cache. Two explicit 32-byte loads avoid the stall.
+#[inline(always)]
+#[allow(clippy::missing_const_for_fn)] // The intrinsics are not const.
+unsafe fn swap_words(a: *mut Word, b: *mut Word) {
+    core::cfg_select! {
+        all(target_arch = "x86_64", target_feature = "avx512f") => unsafe {
+            use core::arch::x86_64::{_mm256_loadu_si256, _mm256_storeu_si256};
+            let x = _mm256_loadu_si256(a.cast());
+            let y = _mm256_loadu_si256(b.cast());
+            _mm256_storeu_si256(a.cast(), y);
+            _mm256_storeu_si256(b.cast(), x);
+        },
+        _ => unsafe { core::ptr::swap_nonoverlapping(a, b, 1) },
     }
 }
 
@@ -548,15 +585,15 @@ mod tests {
     use core::assert_matches;
 
     fn run(f: impl FnOnce(&mut StackMut<'_>)) {
-        let mut backing = [MaybeUninit::new(Word::MAX); StackMut::CAPACITY];
+        let mut backing = StackBacking([MaybeUninit::new(Word::MAX); StackMut::CAPACITY]);
         let mut len = 0;
         let mut stack = StackMut::new(&mut backing, &mut len);
         f(&mut stack);
     }
 
     fn run_with_len(len: usize, f: impl FnOnce(&mut StackMut<'_>)) {
-        let mut backing = [MaybeUninit::new(Word::MAX); StackMut::CAPACITY];
-        for (i, word) in backing.iter_mut().take(len).enumerate() {
+        let mut backing = StackBacking([MaybeUninit::new(Word::MAX); StackMut::CAPACITY]);
+        for (i, word) in backing.0.iter_mut().take(len).enumerate() {
             word.write(Word::from(i));
         }
         let mut len = len;
@@ -660,8 +697,8 @@ mod tests {
             assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1), Word::from(2)]);
         });
 
-        let mut backing = [MaybeUninit::new(Word::ZERO); StackRef::CAPACITY];
-        for (i, word) in backing.iter_mut().take(3).enumerate() {
+        let mut backing = StackBacking([MaybeUninit::new(Word::ZERO); StackRef::CAPACITY]);
+        for (i, word) in backing.0.iter_mut().take(3).enumerate() {
             word.write(Word::from(i));
         }
         let stack = StackRef::new(&backing, 3);
@@ -677,8 +714,8 @@ mod tests {
             assert_eq!(stack.peek(usize::MAX), None);
         });
 
-        let mut backing = [MaybeUninit::new(Word::ZERO); StackRef::CAPACITY];
-        for (i, word) in backing.iter_mut().take(3).enumerate() {
+        let mut backing = StackBacking([MaybeUninit::new(Word::ZERO); StackRef::CAPACITY]);
+        for (i, word) in backing.0.iter_mut().take(3).enumerate() {
             word.write(Word::from(i));
         }
         let stack = StackRef::new(&backing, 3);

@@ -84,7 +84,7 @@ pub(crate) enum TestErrorKind {
     /// Transaction request could not be converted to a consensus transaction.
     #[error("could not build consensus transaction: {0}")]
     BuildTransaction(String),
-    /// Execution resource initialization failed.
+    /// Execution resource initialization or compilation failed.
     #[error(transparent)]
     ExecutionResource(#[from] ExecutionResourceError),
 }

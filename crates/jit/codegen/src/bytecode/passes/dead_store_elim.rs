@@ -125,8 +125,12 @@ impl Bytecode<'_> {
                     imm,
                     &self.snapshots,
                     inst,
-                    self.snapshots.outputs.get(inst).copied().flatten(),
+                    self.foldable_output(inst).is_some(),
                 );
+                // The host's instruction can read any word of the stack.
+                if data.flags.contains(InstFlags::HOST) {
+                    live[..h_before].fill(true);
+                }
             }
         }
 
@@ -218,9 +222,9 @@ const fn can_skip_when_dead(opcode: u8) -> bool {
 ///
 /// `imm` carries the decoded immediate for DUPN/SWAPN/EXCHANGE; `None` for all other opcodes.
 ///
-/// `snapshots` and `output` carry abstract interpretation snapshots. When the output is a
-/// known constant, codegen replaces the entire instruction with a constant push and none of
-/// the inputs need to be live. When individual inputs are known constants, codegen loads them
+/// `snapshots` carries abstract interpretation snapshots, and `folded` is set when codegen
+/// replaces the entire instruction with a constant push ([`Bytecode::foldable_output`]), so none
+/// of the inputs need to be live. When individual inputs are known constants, codegen loads them
 /// as immediates (`const_operand`) so those stack positions don't need to be live either.
 #[allow(clippy::too_many_arguments)]
 fn transfer_liveness(
@@ -232,7 +236,7 @@ fn transfer_liveness(
     imm: Option<DecodedImm>,
     snapshots: &Snapshots,
     inst: Inst,
-    output: Option<AbsValue>,
+    folded: bool,
 ) {
     match opcode {
         op::SWAP1..=op::SWAP16 => {
@@ -274,14 +278,14 @@ fn transfer_liveness(
         op::POP => {
             live.set(h_before - 1, false);
         }
-        _ => generic_transfer(live, h_before, inp, out, snapshots, inst, output),
+        _ => generic_transfer(live, h_before, inp, out, snapshots, inst, folded),
     }
 }
 
 /// Generic liveness transfer: kill all outputs, then mark all inputs as live.
 ///
-/// When the output is a known constant, codegen replaces the entire instruction with a
-/// constant push and never reads any inputs from the stack, so none of them need to be live.
+/// When `folded` is set, codegen replaces the entire instruction with a constant push and never
+/// reads any inputs from the stack, so none of them need to be live.
 /// When individual inputs are known constants, codegen pre-writes them into the stack
 /// slots (via `operand_value_or_load` or `sp_after_inputs`), so those positions don't
 /// need to be live.
@@ -292,16 +296,16 @@ fn generic_transfer(
     out: usize,
     snapshots: &Snapshots,
     inst: Inst,
-    output: Option<AbsValue>,
+    folded: bool,
 ) {
     let write_base = h_before - inp;
     // Kill outputs.
     for k in 0..out {
         live.set(write_base + k, false);
     }
-    // If the output is a known constant, codegen replaces the entire instruction
-    // with a constant push — none of the inputs are read from the stack.
-    if out > 0 && matches!(output, Some(AbsValue::Const(_))) {
+    // If codegen replaces the entire instruction with a constant push, none of the inputs are
+    // read from the stack.
+    if out > 0 && folded {
         return;
     }
     // Mark inputs live, skipping positions whose values are known constants.

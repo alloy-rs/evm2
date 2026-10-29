@@ -25,6 +25,32 @@ pub(super) use imp::{RawInstrFn, dispatch};
 /// Table instruction dispatch table.
 pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
 
+/// Program counter and stack length carried between instructions by the dispatch loop.
+trait Cursor: Copy {
+    fn new(pc: Pc, stack_len: usize) -> Self;
+
+    fn pc(self) -> Pc;
+
+    fn stack_len(self) -> usize;
+}
+
+impl Cursor for (Pc, usize) {
+    #[inline(always)]
+    fn new(pc: Pc, stack_len: usize) -> Self {
+        (pc, stack_len)
+    }
+
+    #[inline(always)]
+    fn pc(self) -> Pc {
+        self.0
+    }
+
+    #[inline(always)]
+    fn stack_len(self) -> usize {
+        self.1
+    }
+}
+
 trait DispatchGas: Copy {
     fn pre_step<T: EvmTypesHost, C: EvmConfig<T>>(
         &mut self,
@@ -129,40 +155,39 @@ pub(in crate::interpreter) fn run<T: EvmTypesHost>(
 #[allow(clippy::let_unit_value)]
 fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
     state: &mut InterpreterState<'_, '_, T>,
-    mut pc: Pc,
+    pc: Pc,
     mut stack: RawStack<'_>,
     instructions: &RawInstrTable<T>,
 ) -> InstrStop {
     let mut loop_state = imp::loop_state(state.gas_mut());
+    let mut cursor = imp::Cursor::new(pc, stack.len());
     loop {
         if M::INSPECT {
             imp::sync_loop_state(state, loop_state);
-            M::step(state, pc, stack.len());
+            M::step(state, cursor.pc(), cursor.stack_len());
             loop_state = imp::loop_state(state.gas_mut());
             if state.result().is_err() {
-                return finish_run(state, pc, stack.len(), loop_state);
+                return finish_run(state, cursor, loop_state);
             }
         }
 
-        let op = pc.op();
+        let op = cursor.pc().op();
         let instr = instructions[op as usize];
-        let (next_pc, next_stack_len) = {
+        cursor = {
             // SAFETY: This is the only stack borrow outside inspector callbacks.
             let stack_view = unsafe { stack.borrow() };
-            imp::dispatch_loop_call(instr, pc, stack_view, state, &mut loop_state)
+            imp::dispatch_loop_call(instr, cursor, stack_view.stack, state, &mut loop_state)
         };
-        pc = next_pc;
-        stack.set_len(next_stack_len);
 
         if M::INSPECT {
             imp::sync_loop_state(state, loop_state);
-            M::step_end(state, pc, stack.len());
+            M::step_end(state, cursor.pc(), cursor.stack_len());
             loop_state = imp::loop_state(state.gas_mut());
             if state.result().is_err() {
-                return finish_run(state, pc, stack.len(), loop_state);
+                return finish_run(state, cursor, loop_state);
             }
-        } else if pc.as_ptr().is_null() {
-            return finish_run(state, pc, stack.len(), loop_state);
+        } else if cursor.pc().as_ptr().is_null() {
+            return finish_run(state, cursor, loop_state);
         }
     }
 }
@@ -170,11 +195,11 @@ fn run_inner<T: EvmTypesHost, M: InspectMode<T>>(
 #[inline(always)]
 fn finish_run<T: EvmTypesHost>(
     state: &mut InterpreterState<'_, '_, T>,
-    pc: Pc,
-    stack_len: usize,
+    cursor: imp::Cursor,
     loop_state: imp::LoopState,
 ) -> InstrStop {
     cold_path();
+    let (pc, stack_len) = (cursor.pc(), cursor.stack_len());
     // The NULL `pc` is only a loop-exit sentinel; never publish it.
     let pc = if pc.as_ptr().is_null() { state.bytecode().as_ptr() } else { pc.as_ptr() };
     state.set_pc_stack_len(pc, stack_len);

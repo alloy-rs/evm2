@@ -533,13 +533,15 @@ impl<D: AsyncDatabase + fmt::Debug> fmt::Debug for AsyncDb<D> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
+    use super::*;
     use crate::{
-        BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult, TxResultExt,
+        BaseEvmTypes, Evm, ExecutionConfig, Inspector, PrecompileError, Precompiles, SpecId,
+        TxResult, TxResultExt, Version,
         bytecode::Bytecode,
+        constants::CALL_DEPTH_LIMIT,
         env::BlockEnvExt,
         evm::{AccountInfo, Database, Db, DynDatabase, InMemoryDB, PrecompileProvider, SystemTx},
-        interpreter::{GasTracker, Message, Word, op},
+        interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageResult, Word, op},
         precompile::PrecompileOutput,
         precompiles::PrecompileId,
         registry::{HandlerError, HandlerResult, TxRegistry, TxRequest, handler},
@@ -1001,8 +1003,44 @@ mod tests {
         assert!(saw_cancel);
     }
 
-    #[test]
-    fn transact_async_reaches_call_depth_limit() {
+    #[rstest::rstest]
+    #[case(0)]
+    #[case(7)]
+    #[case(u16::MAX - CALL_DEPTH_LIMIT - 1)]
+    fn transact_async_reaches_call_depth_limit(#[case] initial_call_depth: u16) {
+        #[derive(Default)]
+        struct DepthInspector {
+            calls: Vec<u16>,
+            writes: Vec<u16>,
+            too_deep: usize,
+        }
+
+        impl Inspector<BaseEvmTypes> for DepthInspector {
+            fn call(
+                &mut self,
+                _: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                self.calls.push(message.depth);
+                None
+            }
+
+            fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+                if interp.opcode() == op::SSTORE {
+                    self.writes.push(interp.message().depth);
+                }
+            }
+
+            fn call_end(
+                &mut self,
+                _: &mut Interpreter<'_, '_, BaseEvmTypes>,
+                _: &Message<BaseEvmTypes>,
+                result: &mut MessageResult<BaseEvmTypes>,
+            ) {
+                self.too_deep += usize::from(result.stop == InstrStop::CallTooDeep);
+            }
+        }
+
         let caller = Address::from([0xaa; 20]);
         let target = Address::from([0x11; 20]);
         // SLOAD 0, add 1, SSTORE 0, then CALL self with all but 1024 gas remaining.
@@ -1018,13 +1056,17 @@ mod tests {
             &target,
             AccountInfo { nonce: 1, ..AccountInfo::default().with_code(code) },
         );
-        let mut evm = Evm::<BaseEvmTypes>::new(
+        let mut version = Version::new(SpecId::FRONTIER);
+        version.initial_call_depth = initial_call_depth;
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::FRONTIER, version),
             SpecId::FRONTIER,
             BlockEnvExt::default(),
             crate::ethereum::ethereum_tx_registry(SpecId::FRONTIER),
             database,
             Precompiles::base(SpecId::FRONTIER),
         );
+        evm.set_inspector(DepthInspector::default());
         let tx = Recovered::new_unchecked(
             crate::ethereum::TxEnvelope::Legacy(TxLegacy {
                 to: TxKind::Call(target),
@@ -1042,6 +1084,16 @@ mod tests {
             evm.state_mut().storage_slot_untracked(&target, &Word::ZERO).unwrap(),
             Word::from(1025)
         );
+        let inspector = evm.clear_inspector_as::<DepthInspector>().unwrap();
+        assert_eq!(
+            inspector.writes,
+            (initial_call_depth..=initial_call_depth + 1024).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            inspector.calls,
+            (initial_call_depth..=initial_call_depth + 1025).collect::<Vec<_>>()
+        );
+        assert_eq!(inspector.too_deep, 1);
     }
 
     const TEST_TX_TYPE: u8 = 0x00;

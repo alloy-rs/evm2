@@ -110,6 +110,9 @@ pub(crate) struct WorkerResult {
     pub(crate) compile_duration: Duration,
     /// Per-phase timing breakdown from the compiler.
     pub(crate) timings: CompileTimings,
+    /// Whether the failure came from the out-of-process helper going away under the job, rather
+    /// than from the job itself.
+    pub(crate) transient: bool,
 }
 
 /// Successful compilation output.
@@ -444,6 +447,7 @@ fn compile_out_of_process_job(
         generation: job.generation,
         compile_duration: Duration::ZERO,
         timings: CompileTimings::default(),
+        transient: false,
     }
 }
 
@@ -479,6 +483,12 @@ pub(super) fn compile_with_state(
     };
     let t0 = Instant::now();
 
+    if state_slot
+        .as_ref()
+        .is_some_and(|state| state.profile != CompilerProfile::new(config, target))
+    {
+        *state_slot = None;
+    }
     if state_slot.is_none() {
         match CompilerState::new(config, target) {
             Ok(s) => *state_slot = Some(s),
@@ -492,6 +502,7 @@ pub(super) fn compile_with_state(
                     generation: job.generation,
                     compile_duration: t0.elapsed(),
                     timings: CompileTimings::default(),
+                    transient: false,
                 };
             }
         }
@@ -545,6 +556,7 @@ pub(super) fn compile_with_state(
         generation: job.generation,
         compile_duration: t0.elapsed(),
         timings,
+        transient: false,
     }
 }
 
@@ -552,6 +564,7 @@ pub(super) fn compile_with_state(
 pub(super) struct CompilerState {
     compiler: EvmCompiler<EvmLlvmBackend>,
     compilations_since_recycle: usize,
+    profile: CompilerProfile,
 }
 
 #[cfg(feature = "llvm")]
@@ -560,7 +573,50 @@ impl CompilerState {
         Ok(Self {
             compiler: create_compiler(config, target.is_aot_backend())?,
             compilations_since_recycle: 0,
+            profile: CompilerProfile::new(config, target),
         })
+    }
+}
+
+/// Worker threads can serve different backends; never reuse a compiler across ABI/gas profiles.
+#[cfg(feature = "llvm")]
+#[derive(PartialEq, Eq)]
+struct CompilerProfile {
+    host_type: std::any::TypeId,
+    layout: evm2_jit_codegen::HostLayout,
+    resolver: Option<usize>,
+    symbol_suffix: Option<usize>,
+    opcode_view: Option<std::sync::Arc<evm2::OpcodeView>>,
+    opt_level: crate::OptimizationLevel,
+    gas_params: Option<evm2::version::GasParams>,
+    debug_assertions: bool,
+    single_error: bool,
+    no_dedup: bool,
+    no_dse: bool,
+    target: CompilerTarget,
+}
+
+#[cfg(feature = "llvm")]
+impl CompilerProfile {
+    fn new(config: &RuntimeConfig, target: CompilerTarget) -> Self {
+        Self {
+            host_type: config.host.type_id,
+            layout: config.host.layout,
+            resolver: config.host.resolver.map(|resolver| resolver as usize),
+            symbol_suffix: config.host.symbol_suffix,
+            opcode_view: config.host.opcodes.as_ref().map(|opcodes| opcodes.view.clone()),
+            opt_level: if target.is_aot_backend() {
+                config.tuning.aot_opt_level
+            } else {
+                config.tuning.jit_opt_level
+            },
+            gas_params: config.gas_params,
+            debug_assertions: config.debug_assertions,
+            single_error: config.single_error,
+            no_dedup: config.no_dedup,
+            no_dse: config.no_dse,
+            target,
+        }
     }
 }
 
@@ -588,6 +644,19 @@ pub(super) fn create_compiler(
     compiler.set_dse(!config.no_dse);
     if let Some(gas_params) = &config.gas_params {
         compiler.set_gas_params(*gas_params);
+    }
+    if let Some(resolver) = config.host.resolver {
+        // SAFETY: HostConfig construction establishes the resolver and layout contract.
+        unsafe { compiler.set_host(config.host.layout, resolver) };
+    } else {
+        // SAFETY: HostConfig construction establishes the layout contract.
+        unsafe { compiler.set_layout(config.host.layout) };
+        if let Some(suffix) = config.host.symbol_suffix {
+            compiler.set_builtin_symbol_suffix(suffix);
+        }
+    }
+    if let Some(opcodes) = &config.host.opcodes {
+        compiler.set_opcode_view((*opcodes.view).clone());
     }
     Ok(compiler)
 }
@@ -637,9 +706,13 @@ pub(super) fn compile_jit_object_artifact(
         .map(|name| name.to_string_lossy().into_owned())
         .collect();
     if builtin_symbols.is_empty() {
+        let suffix = compiler.builtin_symbol_suffix();
         builtin_symbols = evm2_jit_builtins::Builtin::ALL
             .iter()
-            .map(|builtin| builtin.name().to_string())
+            .map(|builtin| match suffix {
+                Some(suffix) => format!("{}_{suffix:x}", builtin.name()),
+                None => builtin.name().to_string(),
+            })
             .collect();
     }
 
@@ -721,6 +794,7 @@ fn compile_job(
         generation,
         compile_duration: Duration::ZERO,
         timings: CompileTimings::default(),
+        transient: false,
     }
 }
 

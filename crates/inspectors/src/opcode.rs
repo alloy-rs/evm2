@@ -4,7 +4,7 @@ use alloy_rpc_types_trace::opcode::OpcodeGas;
 use evm2::{
     EvmTypesHost, Inspector,
     interpreter::{
-        Interpreter, Message, MessageKind, MessageResult,
+        InstrStop, Interpreter, Message, MessageKind, MessageResult,
         opcode::{OpCode, op},
     },
 };
@@ -97,10 +97,16 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
     fn step_end(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         // update gas usage for the last opcode
         if let Some(pending) = self.pending_steps.pop() {
-            let gas_cost = pending
-                .gas_remaining
-                .saturating_sub(interp.gas().remaining())
-                .saturating_sub(pending.child_gas_used);
+            // The sentry rejects SSTORE before charging gas, but out-of-gas hooks already
+            // see the zeroed frame remainder.
+            let gas_cost = if interp.result() == Err(InstrStop::ReentrancySentryOOG) {
+                0
+            } else {
+                pending
+                    .gas_remaining
+                    .saturating_sub(interp.gas().remaining())
+                    .saturating_sub(pending.child_gas_used)
+            };
             let opcode = pending.opcode;
             *self.opcode_gas.entry(opcode).or_default() += gas_cost;
         }
@@ -108,11 +114,11 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
 
     fn call_end(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        if message.depth == 0 {
+        if message.depth == interp.version().initial_call_depth {
             // skip the root call
             return;
         }
@@ -133,11 +139,11 @@ impl<T: EvmTypesHost> Inspector<T> for OpcodeGasInspector {
 
     fn create_end(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        if message.depth == 0 {
+        if message.depth == interp.version().initial_call_depth {
             // skip the root create
             return;
         }

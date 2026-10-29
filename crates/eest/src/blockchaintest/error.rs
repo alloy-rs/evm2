@@ -112,7 +112,7 @@ pub(crate) enum TestErrorKind {
         /// Receipt trie root declared in the block header.
         expected: alloy_primitives::B256,
     },
-    /// Execution resource initialization failed.
+    /// Execution resource initialization or compilation failed.
     #[error(transparent)]
     ExecutionResource(#[from] ExecutionResourceError),
     /// The built EIP-7928 block access list does not match the block header's.

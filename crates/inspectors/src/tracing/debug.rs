@@ -2,8 +2,7 @@ use crate::tracing::{
     FourByteInspector, MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
     final_refunded,
 };
-#[cfg(feature = "js-tracer")]
-use alloc::boxed::Box;
+use alloc::vec::Vec;
 use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Log, U256};
 use alloy_rpc_types_eth::TransactionInfo;
@@ -19,6 +18,9 @@ use evm2::{
     interpreter::{Interpreter, Message, MessageResult},
 };
 use thiserror::Error;
+
+#[cfg(feature = "js-tracer")]
+use alloc::boxed::Box;
 
 /// Inspector for the `debug` API
 ///
@@ -205,7 +207,28 @@ impl DebugInspector {
         Ok(())
     }
 
+    /// Sets the index the next recorded log receives, see
+    /// [`TracingInspector::set_next_log_index`].
+    pub const fn set_next_log_index(&mut self, index: usize) {
+        match self {
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector)
+            | Self::Erc7562Tracer(inspector, _)
+            | Self::Default(inspector, _) => inspector.set_next_log_index(index),
+            Self::Mux(inspector, _) => inspector.set_next_log_index(index),
+            _ => {}
+        }
+    }
+
     /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
+    ///
+    /// Call traces, including those in a mux trace, recover the transaction root when runtime
+    /// gas charging halts before evm2 invokes the call/create hooks. Recovered roots report
+    /// `out of gas`; fork-specific fields remain omitted when the EVM features were not recorded.
+    ///
+    /// The default struct logger moves the recorded stack snapshots into the result, so calling
+    /// this again before [`Self::fuse`] returns struct logs without stacks.
     pub fn get_result<T: EvmTypesHost<Tx: Transaction>>(
         &mut self,
         tx_context: Option<TransactionContext>,
@@ -227,6 +250,7 @@ impl DebugInspector {
         let res = match self {
             Self::FourByte(inspector) => FourByteFrame::from(&*inspector).into(),
             Self::CallTracer(inspector, config) => {
+                inspector.recover_runtime_oog_root(tx, &res.result);
                 inspector.set_transaction_gas_limit(tx.gas_limit());
                 inspector.set_transaction_caller(tx.signer());
                 inspector
@@ -250,16 +274,21 @@ impl DebugInspector {
                 gas_refund: final_refunded(&res.result),
             }
             .into(),
-            Self::Mux(inspector, _) => inspector
-                .try_into_mux_frame(res, db, tx_info)
-                .map_err(DebugInspectorError::Database)?
-                .into(),
+            Self::Mux(inspector, _) => {
+                inspector.finalize_transaction(tx, &res.result);
+                inspector
+                    .try_into_mux_frame(res, db, tx_info)
+                    .map_err(DebugInspectorError::Database)?
+                    .into()
+            }
             Self::FlatCallTracer(inspector) => {
+                inspector.recover_runtime_oog_root(tx, &res.result);
                 inspector.set_transaction_gas_limit(tx.gas_limit());
                 inspector.set_transaction_caller(tx.signer());
                 inspector
                     .clone()
                     .into_parity_builder()
+                    .with_transaction_gas_used(res.result.tx_gas_used())
                     .into_localized_transaction_traces(tx_info)
                     .into()
             }
@@ -275,9 +304,32 @@ impl DebugInspector {
             Self::Default(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit());
                 inspector.set_transaction_caller(tx.signer());
+                // Move the stack snapshots into the struct logs instead of copying them.
+                let mut stacks = config.is_stack_enabled().then(|| {
+                    inspector
+                        .traces_mut()
+                        .nodes_mut()
+                        .iter_mut()
+                        .map(|node| {
+                            let stacks = node.trace.steps.iter_mut().map(|step| step.stack.take());
+                            stacks.collect::<Vec<_>>().into_iter()
+                        })
+                        .collect::<Vec<_>>()
+                });
+                let gas = &res.result;
                 inspector
                     .geth_builder()
-                    .geth_traces_with_result_gas(&res.result, res.result.output.clone(), *config)
+                    .geth_traces_inner(
+                        gas.tx_gas_used(),
+                        Some((
+                            gas.execution_gas_spent(),
+                            gas.state_gas_spent(),
+                            final_refunded(gas),
+                        )),
+                        res.result.output.clone(),
+                        *config,
+                        stacks.as_deref_mut(),
+                    )
                     .into()
             }
             #[cfg(feature = "js-tracer")]

@@ -25,17 +25,30 @@ const SKIP_COMPILE_JIT: &[&str] = &[
     "univ2_router",
     "airdrop",
     "usdc_proxy",
+    "universal_router",
+    "aggregation_router_v6",
+    "uniswap_v3_pool",
+    "uniswap_v4_pool_manager",
+    "curve_3pool",
+    "curve_tricrypto2",
+    "balancer_vault",
+    "succinct_staking",
 ];
 const SKIP_ALL: &[&str] = &["seaport", "snailtracer"];
 
 #[derive(Debug)]
 pub(crate) struct Compiler {
     compiler: LlvmCompiler,
+    /// Functions compiled so far, shared by fixtures that contain the same contract.
+    functions: HashMap<(B256, SpecId), EvmCompilerFn>,
 }
 
 impl Compiler {
     pub(crate) fn new() -> Self {
-        Self { compiler: EvmCompiler::new_llvm(false).expect("LLVM JIT compiler must initialize") }
+        Self {
+            compiler: EvmCompiler::new_llvm(false).expect("LLVM JIT compiler must initialize"),
+            functions: HashMap::new(),
+        }
     }
 }
 
@@ -70,17 +83,17 @@ impl PreparedBench {
 
         let mut functions = HashMap::new();
         for account in accounts {
-            if functions.contains_key(&account.code_hash) {
-                continue;
-            }
-            let name = format!("contract_{}", hex::encode(account.code_hash));
-            let func = unsafe {
-                compiler.compiler.jit(&name, account.bytecode.as_ref(), spec).unwrap_or_else(
-                    |err| panic!("{} benchmark JIT compilation failed: {err:?}", bench.name),
-                )
-            };
+            let func = *compiler.functions.entry((account.code_hash, spec)).or_insert_with(|| {
+                let name = format!("contract_{}_{spec:?}", hex::encode(account.code_hash));
+                let func = unsafe {
+                    compiler.compiler.jit(&name, account.bytecode.as_ref(), spec).unwrap_or_else(
+                        |err| panic!("{} benchmark JIT compilation failed: {err:?}", bench.name),
+                    )
+                };
+                compiler.compiler.clear_ir().expect("benchmark JIT compiler IR must clear");
+                func
+            });
             functions.insert(account.code_hash, func);
-            compiler.compiler.clear_ir().expect("benchmark JIT compiler IR must clear");
         }
 
         Some(Self {
@@ -197,6 +210,10 @@ impl InterpreterRunner<BaseEvmTypes> for FixedJitRunner {
     ) -> Option<InstrStop> {
         // Compiled calls do not implement chunk loading or relative jumps.
         if host.feature(EvmFeatures::TIP1143) || host.feature(EvmFeatures::RJUMP) {
+            return None;
+        }
+        // Compiled code treats the remaining gas as signed, so it cannot hold more than `i64::MAX`.
+        if interpreter.gas().remaining() > i64::MAX as u64 {
             return None;
         }
         let func = *self.functions.get(&interpreter.original_bytecode_hash())?;

@@ -1,10 +1,6 @@
 use alloy_primitives::{Address, U256};
 use core::{hint::cold_path, num::NonZero};
-use evm2::{
-    evm::AccountLoad,
-    interpreter::Host,
-    utils::{word_to_usize, word_to_usize_saturated},
-};
+use evm2::{EvmTypesHost, evm::AccountLoad, interpreter::Host};
 use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 
 pub type BuiltinResult = Result<(), BuiltinError>;
@@ -31,7 +27,9 @@ impl From<InstrStop> for BuiltinError {
 }
 
 #[inline]
-pub(crate) fn require_non_staticcall(ecx: &EvmContext<'_, '_, '_>) -> BuiltinResult {
+pub(crate) fn require_non_staticcall<T: EvmTypesHost>(
+    ecx: &EvmContext<'_, '_, '_, T>,
+) -> BuiltinResult {
     if ecx.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall.into());
     }
@@ -43,11 +41,29 @@ pub(crate) fn word_to_u64_saturated(value: U256) -> u64 {
     value.try_into().unwrap_or(u64::MAX)
 }
 
+// JIT code writes stack words with 8-byte stores, so read them back with scalar loads. The
+// interpreter's helpers use one 32-byte load, which can't take its data from those stores.
+
+/// Converts a word to `usize`, returning an invalid-operand OOG stop on overflow.
+#[inline]
+pub(crate) fn word_to_usize(value: U256) -> Result<usize, InstrStop> {
+    value.try_into().map_err(|_| {
+        cold_path();
+        InstrStop::InvalidOperandOOG
+    })
+}
+
+/// Converts a word to `usize`, saturating on overflow.
+#[inline]
+pub(crate) fn word_to_usize_saturated(value: U256) -> usize {
+    value.try_into().unwrap_or(usize::MAX)
+}
+
 /// Loads an account, handling cold load gas accounting.
 ///
 /// Pre-Berlin, `cold_account_additional_cost` is 0, so the cold load logic is a no-op.
-pub(crate) fn load_account(
-    ecx: &mut EvmContext<'_, '_, '_>,
+pub(crate) fn load_account<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
     address: &Address,
     load_code: bool,
 ) -> Result<AccountLoad, BuiltinError> {
@@ -78,8 +94,8 @@ pub(crate) unsafe fn read_words_rev<'a, const N: usize>(sp: *mut EvmWord) -> &'a
 }
 
 #[inline]
-pub(crate) fn ensure_memory(
-    ecx: &mut EvmContext<'_, '_, '_>,
+pub(crate) fn ensure_memory<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
     offset: usize,
     len: usize,
 ) -> BuiltinResult {
@@ -87,8 +103,8 @@ pub(crate) fn ensure_memory(
     Ok(())
 }
 
-pub(crate) unsafe fn copy_operation(
-    ecx: &mut EvmContext<'_, '_, '_>,
+pub(crate) unsafe fn copy_operation<T: EvmTypesHost>(
+    ecx: &mut EvmContext<'_, '_, '_, T>,
     rev![memory_offset, data_offset, len]: &mut [EvmWord; 3],
     data: &[u8],
 ) -> BuiltinResult {

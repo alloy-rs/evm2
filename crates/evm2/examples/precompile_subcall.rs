@@ -21,6 +21,7 @@ fn main() {
         kind: MessageKind::Call,
         gas_limit: 200_000,
         destination: PARENT,
+        call_target: PARENT,
         code: (Bytecode::new_legacy(parent_code())).into(),
         code_address: PARENT,
         ..MessageExt::default()
@@ -74,6 +75,7 @@ fn staticcall_precompile(
         gas_limit: child_gas_limit,
         reservoir: gas.reservoir(),
         destination: SUBCALL_TARGET,
+        call_target: SUBCALL_TARGET,
         caller: message.destination,
         input: message.input.clone(),
         value: U256::ZERO,

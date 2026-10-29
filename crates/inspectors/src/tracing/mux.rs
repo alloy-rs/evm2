@@ -1,5 +1,6 @@
 use crate::tracing::{FourByteInspector, TracingInspector, TracingInspectorConfig, final_refunded};
 use alloc::vec::Vec;
+use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Log, U256, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
@@ -8,7 +9,7 @@ use alloy_rpc_types_trace::geth::{
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
-    EvmTypes, EvmTypesHost, Inspector, TxResultWithState,
+    EvmTypes, EvmTypesHost, Inspector, TxResultExt, TxResultWithState,
     evm::{DbResult, DynDatabase},
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -51,44 +52,32 @@ impl MuxInspector {
             #[allow(unreachable_patterns)]
             match builtin {
                 GethDebugBuiltInTracerType::FourByteTracer => {
-                    if tracer_config.is_some() {
-                        return Err(Error::UnexpectedConfig(builtin));
-                    }
                     four_byte = Some(FourByteInspector::default());
                 }
                 GethDebugBuiltInTracerType::CallTracer => {
-                    let call_config =
-                        tracer_config.ok_or(Error::MissingConfig(builtin))?.into_call_config()?;
+                    let call_config = tracer_config.unwrap_or_default().into_call_config()?;
 
                     inspector_config
                         .merge(TracingInspectorConfig::from_geth_call_config(&call_config));
                     configs.push((builtin, TraceConfig::Call(call_config)));
                 }
                 GethDebugBuiltInTracerType::PreStateTracer => {
-                    let prestate_config = tracer_config
-                        .ok_or(Error::MissingConfig(builtin))?
-                        .into_pre_state_config()?;
+                    let prestate_config =
+                        tracer_config.unwrap_or_default().into_pre_state_config()?;
 
                     inspector_config
                         .merge(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
                     configs.push((builtin, TraceConfig::PreState(prestate_config)));
                 }
                 GethDebugBuiltInTracerType::NoopTracer => {
-                    if tracer_config.is_some() {
-                        return Err(Error::UnexpectedConfig(builtin));
-                    }
                     configs.push((builtin, TraceConfig::Noop));
                 }
                 GethDebugBuiltInTracerType::StateGasTracer => {
-                    if tracer_config.is_some() {
-                        return Err(Error::UnexpectedConfig(builtin));
-                    }
                     configs.push((builtin, TraceConfig::StateGas));
                 }
                 GethDebugBuiltInTracerType::FlatCallTracer => {
-                    let flatcall_config = tracer_config
-                        .ok_or(Error::MissingConfig(builtin))?
-                        .into_flat_call_config()?;
+                    let flatcall_config =
+                        tracer_config.unwrap_or_default().into_flat_call_config()?;
 
                     inspector_config
                         .merge(TracingInspectorConfig::from_flat_call_config(&flatcall_config));
@@ -107,6 +96,14 @@ impl MuxInspector {
         let tracing = (!configs.is_empty()).then(|| TracingInspector::new(inspector_config));
 
         Ok(Self { four_byte, tracing, configs })
+    }
+
+    /// Sets the index the next recorded log receives, see
+    /// [`TracingInspector::set_next_log_index`].
+    pub const fn set_next_log_index(&mut self, index: usize) {
+        if let Some(tracing) = &mut self.tracing {
+            tracing.set_next_log_index(index);
+        }
     }
 
     /// Try converting this [MuxInspector] into a [MuxFrame].
@@ -145,6 +142,7 @@ impl MuxInspector {
                         inspector
                             .clone()
                             .into_parity_builder()
+                            .with_transaction_gas_used(result.result.tx_gas_used())
                             .into_localized_transaction_traces(tx_info)
                             .into()
                     } else {
@@ -173,6 +171,19 @@ impl MuxInspector {
         }
 
         Ok(MuxFrame(frame))
+    }
+
+    /// Finalizes the transaction root for tracers sharing the tracing inspector.
+    pub(crate) fn finalize_transaction<E>(
+        &mut self,
+        tx: &Recovered<impl Transaction>,
+        result: &TxResultExt<E>,
+    ) {
+        if let Some(inspector) = &mut self.tracing {
+            inspector.recover_runtime_oog_root(tx, result);
+            inspector.set_transaction_gas_limit(tx.gas_limit());
+            inspector.set_transaction_caller(tx.signer());
+        }
     }
 }
 
@@ -304,9 +315,6 @@ pub enum Error {
     /// Config was provided for a tracer that does not expect it
     #[error("unexpected config for tracer '{0:?}'")]
     UnexpectedConfig(GethDebugBuiltInTracerType),
-    /// Expected config is missing
-    #[error("expected config is missing for tracer '{0:?}'")]
-    MissingConfig(GethDebugBuiltInTracerType),
     /// Unsupported tracer type (e.g. JS tracer)
     #[error("unsupported tracer type: '{0:?}'")]
     UnsupportedTracerType(GethDebugTracerType),

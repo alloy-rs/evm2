@@ -30,7 +30,7 @@ use inkwell::{
     },
     values::{
         AsValueRef, BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue,
-        FunctionValue, InstructionValue, PointerValue,
+        FunctionValue, InstructionValue, PointerValue, UnnamedAddress,
     },
 };
 use object::{Object, ObjectSymbol};
@@ -674,9 +674,9 @@ impl EvmLlvmBackend {
         let mut flags = Vec::new();
         flags.push(match opt_level {
             OptimizationLevel::None => "-O0",
-            OptimizationLevel::Less => "-O1",
-            OptimizationLevel::Default => "-O2",
-            OptimizationLevel::Aggressive => "-O3",
+            OptimizationLevel::Less
+            | OptimizationLevel::Default
+            | OptimizationLevel::Aggressive => "-O2",
         });
         flags.push(if self.aot { "--aot" } else { "--jit" });
         let flags = flags.join(" ");
@@ -825,6 +825,7 @@ impl BackendTypes for EvmLlvmBackend {
     type StackSlot = PointerValue<'static>;
     type BasicBlock = BasicBlock<'static>;
     type Function = FunctionValue<'static>;
+    type Inst = InstructionValue<'static>;
 }
 
 impl TypeMethods for EvmLlvmBackend {
@@ -1024,14 +1025,15 @@ impl Backend for EvmLlvmBackend {
         let passes = PASSES_OVERRIDE.get_or_init(|| std::env::var("EVM2_JIT_PASSES").ok());
         let passes = passes.as_deref().unwrap_or_else(|| match self.backend_config.opt_level {
             OptimizationLevel::None => "default<O0>",
-            OptimizationLevel::Less | OptimizationLevel::Default => {
+            OptimizationLevel::Less
+            | OptimizationLevel::Default
+            | OptimizationLevel::Aggressive => {
                 let total_bbs: u32 =
                     self.module.get_functions().map(|f| f.count_basic_blocks()).sum();
                 let with_licm = total_bbs <= 4000;
                 let passes = if with_licm { &PASSES_WITH_LICM } else { &PASSES };
                 passes.get_or_init(|| build_pass_pipeline(with_licm))
             }
-            OptimizationLevel::Aggressive => "default<O3>",
         });
         let opts = PassBuilderOptions::create();
         self.module().run_passes(passes, &self.machine, opts).map_err(error_msg)
@@ -1316,6 +1318,7 @@ impl BackendTypes for EvmLlvmBuilder<'_> {
     type StackSlot = <EvmLlvmBackend as BackendTypes>::StackSlot;
     type BasicBlock = <EvmLlvmBackend as BackendTypes>::BasicBlock;
     type Function = <EvmLlvmBackend as BackendTypes>::Function;
+    type Inst = <EvmLlvmBackend as BackendTypes>::Inst;
 }
 
 impl TypeMethods for EvmLlvmBuilder<'_> {
@@ -1442,6 +1445,18 @@ impl Builder for EvmLlvmBuilder<'_> {
         self.bcx.build_global_string_ptr(value, "").unwrap().as_pointer_value().into()
     }
 
+    fn const_array(&mut self, ty: Self::Type, values: &[u64]) -> Self::Value {
+        let ty = ty.into_int_type();
+        let values = values.iter().map(|&v| ty.const_int(v, false)).collect::<Vec<_>>();
+        let init = ty.const_array(&values);
+        let global = self.module().add_global(init.get_type(), None, "");
+        global.set_initializer(&init);
+        global.set_constant(true);
+        global.set_linkage(convert_linkage(evm2_jit_backend::Linkage::Private));
+        global.set_unnamed_address(UnnamedAddress::Global);
+        global.as_pointer_value().into()
+    }
+
     fn nullptr(&mut self) -> Self::Value {
         self.ty_ptr.const_null().into()
     }
@@ -1459,7 +1474,7 @@ impl Builder for EvmLlvmBuilder<'_> {
     }
 
     fn stack_store(&mut self, value: Self::Value, slot: Self::StackSlot) {
-        self.store(value, slot.into())
+        self.store(value, slot.into());
     }
 
     fn stack_addr(&mut self, ty: Self::Type, slot: Self::StackSlot) -> Self::Value {
@@ -1492,16 +1507,21 @@ impl Builder for EvmLlvmBuilder<'_> {
         value
     }
 
-    fn store(&mut self, value: Self::Value, ptr: Self::Value) {
+    fn store(&mut self, value: Self::Value, ptr: Self::Value) -> Self::Inst {
         let inst = self.bcx.build_store(ptr.into_pointer_value(), value).unwrap();
         if value.get_type() == self.ty_i256.into() {
             inst.set_alignment(8).unwrap();
         }
+        inst
     }
 
     fn store_aligned(&mut self, value: Self::Value, ptr: Self::Value, align: usize) {
         let inst = self.bcx.build_store(ptr.into_pointer_value(), value).unwrap();
         inst.set_alignment(align as u32).unwrap();
+    }
+
+    fn remove_inst(&mut self, inst: Self::Inst) {
+        inst.erase_from_basic_block();
     }
 
     fn nop(&mut self) {
@@ -1728,6 +1748,13 @@ impl Builder for EvmLlvmBuilder<'_> {
         let ctlz = self.get_or_add_function(&name, |this| this.fn_type(Some(ty), &[ty, i1_ty]));
         let is_poison_on_zero = self.bool_const(false);
         self.call(ctlz, &[value, is_poison_on_zero]).unwrap()
+    }
+
+    fn popcnt(&mut self, value: Self::Value) -> Self::Value {
+        let ty = value.get_type();
+        let name = format!("llvm.ctpop.{}", fmt_ty(ty));
+        let ctpop = self.get_or_add_function(&name, |this| this.fn_type(Some(ty), &[ty]));
+        self.call(ctpop, &[value]).unwrap()
     }
 
     fn bitor_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value {
@@ -1978,7 +2005,12 @@ impl Builder for EvmLlvmBuilder<'_> {
 
 /// Builds the LLVM pass pipeline string. See [`EvmLlvmBackend::optimize_module`].
 fn build_pass_pipeline(with_licm: bool) -> String {
-    let mut passes = String::from("module(globalopt,cgscc(inline),globalopt,function(");
+    // `globalopt`, `cgscc(inline)`, a second `sroa`, and `adce` change no benchmark's
+    // assembly, so they are left out: the module has no global data, its only internal
+    // function (the `mresize` stub) is `noinline`, the first `sroa` promotes the one
+    // `alloca`, and `dse`/`simplifycfg` remove what `adce` would. Revisit them when
+    // codegen emits inlinable helper functions or global data.
+    let mut passes = String::from("module(function(");
     let function_passes: &[&str] = &[
         "simplifycfg",
         "sroa",
@@ -1990,15 +2022,8 @@ fn build_pass_pipeline(with_licm: bool) -> String {
     ];
     let licm_passes: &[&str] =
         &["loop-mssa(licm,loop-rotate,licm)", "simplifycfg", "instcombine<no-verify-fixpoint>"];
-    let post_passes: &[&str] = &[
-        "sroa",
-        "early-cse",
-        "sccp",
-        "instcombine<no-verify-fixpoint>",
-        "adce",
-        "dse",
-        "simplifycfg",
-    ];
+    let post_passes: &[&str] =
+        &["early-cse", "sccp", "instcombine<no-verify-fixpoint>", "dse", "simplifycfg"];
 
     let iter =
         function_passes.iter().chain(if with_licm { licm_passes } else { &[] }).chain(post_passes);
@@ -2048,18 +2073,46 @@ fn init_() -> Result<()> {
     let mut args = vec![
         c"evm2-jit-llvm".as_ptr(),
         c"-x86-asm-syntax=intel".as_ptr(),
-        // CodeGenPrepare's memory optimization has a pathological interaction with our IR shape:
-        // repeated stores to the same `gas_remaining` pointer in a huge function cause
-        // MemoryDependenceResults::getNonLocalPointerDependency to do superlinear work.
-        // Mark functions with ≥1000 BBs as "huge" to skip the expensive CGP memory opts,
-        // which produce identical codegen at that scale. Small functions still benefit from
-        // CGP's address sinking and branch optimizations.
-        c"--cgpp-huge-func=1000".as_ptr(),
+        // CodeGenPrepare restarts from the first block whenever it changes the dominator tree;
+        // in "huge" functions it revisits only the changed blocks. Our functions hit this often,
+        // so the restarts are superlinear: CGP took 40% of codegen time in a 973-block function
+        // (the default threshold is 10000 blocks). Treat every function as huge; codegen barely
+        // changes.
+        c"--cgpp-huge-func=0".as_ptr(),
         // Greedy register allocation's global live range splitting is superlinear on large
         // functions with many long-lived values. Treat smaller live ranges as huge so LLVM uses
         // the cheaper splitting path; this preserves code size on snailtracer while cutting llc
         // time by ~3x.
         c"--huge-size-for-split=64".as_ptr(),
+        // SimplifyCFG folds each block's out-of-gas and stack-bound checks into a logical-or
+        // `select` with branch weights. CodeGenPrepare would turn that back into a branch
+        // diamond with an `i1` phi; kept as a `select`, SelectionDAG splits it into two plain
+        // conditional branches instead. The flag applies to every `select`, but the IR has few
+        // others.
+        c"-disable-cgp-select2branch".as_ptr(),
+        // A JUMPDEST that dominates the rest of the code and is reached again through the
+        // dynamic jump table or an internal function's return switch heads a loop that spans
+        // most of the function. MachineLICM hoists every constant materialization in it, often
+        // hundreds of constant pool loads, into the preheader, and greedy register allocation
+        // then spends most of codegen splitting those function-wide live ranges. Sink them back
+        // into their users when the preheader's register pressure exceeds the limit: this cut
+        // codegen by up to 15x on large mainnet contracts.
+        c"-sink-insts-to-avoid-spills".as_ptr(),
+        // PHI elimination splits critical edges to put each phi copy on its own edge. The dynamic
+        // jump table and internal-function return switches have many critical edges into blocks
+        // with phis, and the new blocks and jumps give greedy register allocation more places to
+        // split live ranges and reload. Keeping the copies in the predecessors cut reloads by 12%
+        // on the mainnet corpus.
+        c"-disable-phi-elim-edge-splitting".as_ptr(),
+        // These change little or no code on the benchmarks and the mainnet corpus but still walk
+        // every machine instruction.
+        c"-disable-x86-domain-reassignment".as_ptr(),
+        c"-disable-postra-machine-licm".as_ptr(),
+        // Capture tracking gives up after 100 uses and then treats the pointer as captured.
+        // Every stack slot access is a use of the stack argument, so in all but the smallest
+        // functions alias analysis lets EVM memory and builtin calls alias the stack, and LICM
+        // cannot promote loop-carried stack slots to registers.
+        c"-capture-tracking-max-uses-to-explore=1000000".as_ptr(),
     ];
     args.extend(extra.iter().map(|s| s.as_ptr()));
     unsafe {
@@ -2069,6 +2122,8 @@ fn init_() -> Result<()> {
             std::ptr::null(),
         )
     }
+    // TODO: https://github.com/llvm/llvm-project/issues/235937
+    unsafe { cpp::evm2_jit_llvm_expand_ir_insts_after_lsr() };
 
     let config = InitializationConfig {
         asm_parser: false,
@@ -2123,12 +2178,15 @@ const fn convert_intcc(cond: IntCC) -> IntPredicate {
     }
 }
 
+/// Maps to the codegen level of the target machine, used for AOT and dumps. `Less` skips the
+/// post-RA scheduler on CPUs that enable it (znver), saving about 5% of compile instructions for
+/// no runtime gain. The JIT compiler in `lib.cpp` always uses `Less`, whatever the level.
 const fn convert_opt_level(level: OptimizationLevel) -> inkwell::OptimizationLevel {
     match level {
         OptimizationLevel::None => inkwell::OptimizationLevel::None,
-        OptimizationLevel::Less => inkwell::OptimizationLevel::Less,
-        OptimizationLevel::Default => inkwell::OptimizationLevel::Default,
-        OptimizationLevel::Aggressive => inkwell::OptimizationLevel::Aggressive,
+        OptimizationLevel::Less | OptimizationLevel::Default | OptimizationLevel::Aggressive => {
+            inkwell::OptimizationLevel::Less
+        }
     }
 }
 
@@ -2180,7 +2238,9 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::Writable => ("writable", AttrValue::Enum(0)),
         // memory(argmem: readwrite) = ModRef(3) << ArgMem(0) = 3.
         OurAttr::ArgMemOnly => ("memory", AttrValue::Enum(3)),
-        OurAttr::DeadOnReturn => ("dead_on_return", AttrValue::Enum(0)),
+        // `u64::MAX` marks all reachable memory as dead; `0` would mark zero bytes.
+        OurAttr::DeadOnReturn => ("dead_on_return", AttrValue::Enum(u64::MAX)),
+        OurAttr::DeadOnUnwind => ("dead_on_unwind", AttrValue::Enum(0)),
 
         OurAttr::Initializes(size) => {
             return cpp::create_initializes_attr(bcx.cx, 0, size as i64);

@@ -1,9 +1,13 @@
+use crate::precompiles::secp256k1::ecrecover_bytes;
 use alloc::vec::Vec;
 use alloy_consensus::{Transaction, TxEip7702, TxType};
 use alloy_eips::{
     Typed2718,
     eip2930::AccessList,
-    eip7702::{Authorization, RecoveredAuthorization, SignedAuthorization},
+    eip7702::{
+        Authorization, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
+        constants::SECP256K1N_HALF,
+    },
 };
 use alloy_primitives::{Address, B256, Bytes, ChainId, TxKind, U256};
 
@@ -46,7 +50,7 @@ impl LazyAuthorization {
     /// cached result without doing secp256k1 recovery.
     pub fn authority(&self) -> Option<Address> {
         match self {
-            Self::Signed(authorization) => authorization.recover_authority().ok(),
+            Self::Signed(authorization) => recover_authority(authorization),
             Self::Recovered(authorization) => authorization.authority(),
         }
     }
@@ -124,8 +128,12 @@ impl LazyTxEip7702 {
         let authorization_list = tx
             .authorization_list
             .iter()
-            .cloned()
-            .map(|authorization| authorization.into_recovered().into())
+            .map(|authorization| {
+                let authority = recover_authority(authorization)
+                    .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid);
+                RecoveredAuthorization::new_unchecked(authorization.inner().clone(), authority)
+                    .into()
+            })
             .collect();
         Self::from_authorizations(tx, authorization_list)
     }
@@ -265,5 +273,71 @@ impl Transaction for LazyTxEip7702 {
 
     fn authorization_list(&self) -> Option<&[SignedAuthorization]> {
         Some(&self.signed_authorization_list)
+    }
+}
+
+/// Recovers the authority of a signed authorization with the same secp256k1 backend as the
+/// ecrecover precompile, instead of whichever backend alloy-primitives was built with.
+///
+/// Keeps the checks of [`SignedAuthorization::recover_authority`]: the y-parity must be 0 or 1,
+/// `s` must not exceed secp256k1n/2, and the backend rejects a zero or out-of-range `r` or `s`.
+fn recover_authority(authorization: &SignedAuthorization) -> Option<Address> {
+    let signature = authorization.signature().ok()?;
+    if signature.s() > SECP256K1N_HALF {
+        return None;
+    }
+    let rsy = signature.as_rsy();
+    let hash = ecrecover_bytes(rsy.first_chunk()?, rsy[64], &authorization.signature_hash())?;
+    Some(Address::from_word(hash.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+    use k256::ecdsa::SigningKey;
+
+    #[test]
+    fn authority_matches_alloy_recovery() {
+        let key = SigningKey::from_slice(&[0x11; 32]).unwrap();
+        let expected =
+            Address::from_raw_public_key(&key.verifying_key().to_sec1_point(false).as_bytes()[1..]);
+        let inner = Authorization {
+            chain_id: U256::from(1),
+            address: Address::with_last_byte(0xbb),
+            nonce: 7,
+        };
+        let (sig, recid) = key.sign_prehash_recoverable(inner.signature_hash().as_slice());
+        let r = U256::from_be_slice(&sig.r().to_bytes());
+        let s = U256::from_be_slice(&sig.s().to_bytes());
+        let y = recid.to_byte();
+        let n = SECP256K1N_HALF * U256::from(2) + U256::from(1);
+        let signed = |y, r, s| SignedAuthorization::new_unchecked(inner.clone(), y, r, s);
+
+        let valid = signed(y, r, s);
+        assert_eq!(LazyAuthorization::from(valid.clone()).authority(), Some(expected));
+        // Without the low-s check, the high-s signature would recover `expected` too.
+        let authorization_list = vec![
+            valid,
+            signed(y ^ 1, r, n - s),
+            signed(2, r, s),
+            signed(y, U256::ZERO, s),
+            signed(y, n, s),
+            signed(y, r, U256::ZERO),
+        ];
+        let tx = TxEip7702 { authorization_list, ..Default::default() };
+        let signed = LazyTxEip7702::from_signed_authorizations(tx.clone());
+        let recovered = LazyTxEip7702::from_recovered_authorizations(tx.clone());
+        for (i, authorization) in tx.authorization_list.iter().enumerate() {
+            let want = authorization.recover_authority().ok();
+            assert_eq!(want.is_some(), i == 0, "case {i}");
+            assert_eq!(signed.authorization_list[i].authority(), want, "signed case {i}");
+            assert_eq!(recovered.authorization_list[i].authority(), want, "recovered case {i}");
+            assert_eq!(
+                recovered.authorization_list[i],
+                LazyAuthorization::from(authorization.clone().into_recovered()),
+                "recovered entry {i}"
+            );
+        }
     }
 }

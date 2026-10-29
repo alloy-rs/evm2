@@ -33,7 +33,9 @@ pub use api::{
 };
 
 mod config;
-pub use config::{CompilationEvent, CompilationKind, JitMode, RuntimeConfig, RuntimeTuning};
+pub use config::{
+    CompilationEvent, CompilationKind, HostConfig, JitMode, RuntimeConfig, RuntimeTuning,
+};
 
 mod backend;
 
@@ -107,6 +109,12 @@ pub(crate) struct BackendInner {
     started: AtomicBool,
     /// Blocking mode: every lookup synchronously compiles and never falls back.
     blocking: bool,
+    host: config::HostConfig,
+    /// Key of the last opcode config and spec that matched the host's opcode table.
+    verified_opcodes: std::sync::atomic::AtomicU64,
+    /// Key of the last opcode config and spec that did not match the host's opcode table.
+    rejected_opcodes: std::sync::atomic::AtomicU64,
+    gas_params: Option<evm2::version::GasParams>,
     /// Tuning knobs (Copy). Cached for hot-path eligibility checks.
     tuning: crate::runtime::config::RuntimeTuning,
     /// Bounded channel for control commands (compile_jit, prepare_aot, clears,
@@ -183,6 +191,9 @@ impl JitBackend {
             eyre::bail!("AOT mode does not support out-of-process compilation");
         }
 
+        if !config.host.is_default() && (config.aot || config.store.is_some()) {
+            eyre::bail!("custom hosts require JIT without an artifact store");
+        }
         let enabled = config.enabled;
         let (tx, rx) = chan::bounded::<Command>(config.tuning.channel_capacity);
         let events = ArrayQueue::new(config.tuning.channel_capacity);
@@ -199,6 +210,10 @@ impl JitBackend {
                 enabled: AtomicBool::new(false),
                 started: AtomicBool::new(false),
                 blocking: config.blocking,
+                host: config.host.clone(),
+                verified_opcodes: std::sync::atomic::AtomicU64::new(0),
+                rejected_opcodes: std::sync::atomic::AtomicU64::new(0),
+                gas_params: config.gas_params,
                 tx,
                 thread: std::sync::Mutex::new(None),
                 shutdown_timeout: config.tuning.shutdown_timeout,
@@ -208,6 +223,48 @@ impl JitBackend {
         };
         this.set_enabled(enabled)?;
         Ok(this)
+    }
+
+    /// Checks that generated code matches the interpreter type, gas schedule, and opcode table.
+    pub(crate) fn supports_host<T: evm2::EvmTypesHost>(
+        &self,
+        config: &evm2::ExecutionConfig<T>,
+    ) -> bool {
+        let host = &self.inner.host;
+        host.type_id == std::any::TypeId::of::<T>()
+            && config.version().gas_params
+                == *self
+                    .inner
+                    .gas_params
+                    .as_ref()
+                    .unwrap_or(&evm2::Version::base(config.base_spec_id()).gas_params)
+            && self.opcodes_match(config)
+    }
+
+    /// Checks the active opcode config against the host's opcode table.
+    fn opcodes_match<T: evm2::EvmTypesHost>(&self, config: &evm2::ExecutionConfig<T>) -> bool {
+        let active = config.opcode_config();
+        // The verdict depends on the base spec too. Addresses leave the top byte free.
+        let address =
+            active as *const evm2::OpcodeConfig<T> as u64 | (config.base_spec_id() as u64) << 56;
+        if self.inner.verified_opcodes.load(Ordering::Relaxed) == address {
+            return true;
+        }
+        if self.inner.rejected_opcodes.load(Ordering::Relaxed) == address {
+            return false;
+        }
+        let matches = match &self.inner.host.opcodes {
+            None => config.has_base_opcode_table(),
+            Some(opcodes) => {
+                // SAFETY: The caller checked that the host type is `T`, so `opcodes.config` is a
+                // `&'static OpcodeConfig<T>`.
+                active.same_table(unsafe { &*(opcodes.config as *const evm2::OpcodeConfig<T>) })
+            }
+        };
+        let cache =
+            if matches { &self.inner.verified_opcodes } else { &self.inner.rejected_opcodes };
+        cache.store(address, Ordering::Relaxed);
+        matches
     }
 
     /// Looks up a compiled function for the given request.
@@ -444,7 +501,9 @@ impl JitBackend {
     /// events are still processed for stats, hotness tracking, and compilation dispatch. In
     /// out-of-process mode, the helper process group is stopped until the pause depth returns to
     /// zero, so dispatched helper requests remain buffered and resume once the helper continues.
-    /// In in-process mode, pause only tracks pause depth.
+    /// In in-process mode, pause only tracks pause depth. In
+    /// [`blocking`](RuntimeConfig::blocking) mode the helper is never stopped, because the caller
+    /// itself waits on compilation: pause only tracks pause depth there too.
     ///
     /// Pause delivery is best-effort and never blocks: callers pause around block validation on
     /// the engine's critical path. If the backend thread is not running or the command channel
@@ -479,11 +538,13 @@ impl JitBackend {
     ///   was never enabled), nothing drains the channel. Queued commands would only accumulate
     ///   until the channel fills and `send` blocks the caller forever, so the send is skipped
     ///   entirely — there is no helper to pause anyway.
+    /// - In blocking mode the caller waits on the helper, so stopping it would hang lookups until
+    ///   resume; the command is skipped.
     /// - If the channel is full, the command is dropped and recorded in
     ///   [`commands_dropped`](RuntimeStatsSnapshot::commands_dropped). Pause/resume signals are
     ///   idempotent and re-issued on the next pause cycle, so a dropped command self-heals.
     fn try_send_control(&self, cmd: Command) {
-        if !self.inner.started.load(Ordering::Relaxed) {
+        if self.inner.blocking || !self.inner.started.load(Ordering::Relaxed) {
             return;
         }
         if self.inner.tx.try_send(cmd).is_err() {
@@ -537,7 +598,7 @@ impl JitBackend {
         );
 
         // Preload AOT artifacts into the already-allocated resident map.
-        match Self::preload_aot(config.store.as_deref()) {
+        match Self::preload_aot(&config) {
             Ok(entries) => {
                 for (key, prog) in entries {
                     self.inner.shared.resident.insert(key, prog);
@@ -578,10 +639,13 @@ impl JitBackend {
     }
 
     /// Preloads AOT artifacts from the store as `Arc<CompiledProgram>`s ready to insert.
+    ///
+    /// Skips entries that do not match the key this backend would persist and probe for their
+    /// runtime key. They stay in the store, since another configuration may still use them.
     fn preload_aot(
-        store: Option<&dyn ArtifactStore>,
+        config: &RuntimeConfig,
     ) -> eyre::Result<Vec<(RuntimeCacheKey, Arc<CompiledProgram>)>> {
-        let Some(store) = store else {
+        let Some(store) = config.store.as_deref() else {
             debug!("no artifact store configured, skipping AOT preload");
             return Ok(Vec::new());
         };
@@ -592,24 +656,29 @@ impl JitBackend {
         let artifacts = store.load_all()?;
         info!(count = artifacts.len(), "loading AOT artifacts");
 
+        let config_hash = storage::compile_config_hash(config);
         let mut out: Vec<(RuntimeCacheKey, Arc<CompiledProgram>)> =
             Vec::with_capacity(artifacts.len());
-        let mut seen = alloy_primitives::map::HashSet::<RuntimeCacheKey>::default();
         let mut loaded = 0u64;
         let mut failed = 0u64;
+        let mut skipped = 0u64;
 
         for (artifact_key, stored) in artifacts {
+            let key = artifact_key.runtime;
+            let expected = ArtifactKey::llvm(key, config.tuning.aot_opt_level, config_hash);
+            if artifact_key != expected || stored.manifest.artifact_key != artifact_key {
+                debug!(
+                    ?artifact_key,
+                    manifest_key = ?stored.manifest.artifact_key,
+                    ?expected,
+                    "artifact key mismatch, skipping",
+                );
+                skipped += 1;
+                continue;
+            }
+
             match Self::load_artifact(&artifact_key, &stored) {
                 Ok(program) => {
-                    let key = artifact_key.runtime;
-                    if !seen.insert(key) {
-                        warn!(
-                            code_hash = %key.code_hash,
-                            spec_id = ?key.spec_id,
-                            "duplicate artifact key, keeping first",
-                        );
-                        continue;
-                    }
                     out.push((key, Arc::new(program)));
                     loaded += 1;
                 }
@@ -624,7 +693,7 @@ impl JitBackend {
             }
         }
 
-        info!(loaded, failed, "AOT preload complete");
+        info!(loaded, failed, skipped, "AOT preload complete");
         Ok(out)
     }
 

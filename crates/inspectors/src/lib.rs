@@ -17,6 +17,9 @@
 
 extern crate alloc;
 
+// Only enables `SignedAuthorization::recover_authority`.
+use alloy_eips as _;
+
 #[cfg(feature = "std")]
 use anstyle as _;
 #[cfg(feature = "js-tracer")]

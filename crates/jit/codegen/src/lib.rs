@@ -13,19 +13,20 @@ mod bytecode;
 pub use bytecode::*;
 
 mod compiler;
-pub use compiler::{CompileTimings, EvmCompiler, EvmCompilerInput};
+pub use compiler::{CompileTimings, EvmCompiler, EvmCompilerInput, HostLayout};
 
 mod linker;
 pub use linker::{Linker, shared_library_path};
 
-/// ABI version of compiled artifacts. Bump when the calling convention changes.
-pub const ABI_VERSION: u32 = 0;
+/// ABI version of compiled artifacts. Bump when the calling convention or execution layout changes.
+pub const ABI_VERSION: u32 = 3;
 
 /// Internal tests and testing utilities. Not public API.
 #[cfg(test)]
 pub mod tests;
 
 type FxHashMap<K, V> = alloy_primitives::map::HashMap<K, V, alloy_primitives::map::FxBuildHasher>;
+type FxHashSet<K> = alloy_primitives::map::HashSet<K, alloy_primitives::map::FxBuildHasher>;
 
 /// Enable for `cargo asm -p evm2_jit --lib`.
 #[cfg(any())]

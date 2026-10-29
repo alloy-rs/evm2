@@ -38,7 +38,7 @@ fn main() -> Result<()> {
 }
 ```
 
-See [`crates/evm2/examples/custom_evm`](crates/evm2/examples/custom_evm) for the complete version.
+See [`crates/evm2/examples/custom_evm`](https://github.com/alloy-rs/evm2/tree/main/crates/evm2/examples/custom_evm) for the complete version.
 
 ## Feature flags
 
@@ -61,7 +61,7 @@ All features of the `evm2` crate are listed below. Use `default-features = false
 | `bn` | No | Uses substrate-bn for BN254 precompiles when `bn254-mcl` is disabled. |
 | `c-kzg` | No | Uses c-kzg for KZG point evaluation. |
 | `blst` | Yes | Uses blst for BLS12-381 precompiles and KZG verification when `c-kzg` is disabled. |
-| `bn254-mcl` | Yes | Uses MCL for BN254 precompiles; requires `std`. |
+| `bn254-mcl` | Yes | Uses MCL for BN254 precompiles; requires `std`. MCL is fastest on x86-64 CPUs with AVX, BMI2, and ADX. |
 | `portable` | Yes | Enables portable builds of the enabled blst and c-kzg backends. |
 | `p256-aws-lc-rs` | Yes | Uses AWS-LC for the P256VERIFY precompile. |
 | `parse` | Yes | Enables parsing opcode names into `OpCode` values. |

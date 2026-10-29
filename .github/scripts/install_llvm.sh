@@ -2,7 +2,7 @@
 set -eo pipefail
 
 os=${1:?usage: install_llvm.sh <ubuntu|macos> [version]}
-version=${2:-22}
+version=${2:-23}
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 case "$os" in

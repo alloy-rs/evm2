@@ -7,7 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-homepage.workspace = true
 repository.workspace = true
 categories.workspace = true
 keywords.workspace = true
@@ -20,10 +19,10 @@ evm2-macros.workspace = true
 
 alloy-consensus.workspace = true
 alloy-eip7928.workspace = true
-alloy-eips = { workspace = true, features = ["k256"] }
+alloy-eips.workspace = true
 alloy-primitives.workspace = true
 auto_impl.workspace = true
-bitvec = { workspace = true, features = ["alloc"] }
+bitflags.workspace = true
 derive-where.workspace = true
 thiserror.workspace = true
 typeid.workspace = true
@@ -35,6 +34,9 @@ phf = { workspace = true, features = ["macros"], optional = true }
 
 # "serde"
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
+
+# "wincode"
+wincode = { workspace = true, optional = true }
 
 # "async"
 corosensei = { workspace = true, optional = true }
@@ -50,7 +52,6 @@ k256 = { workspace = true, features = ["ecdsa"] }
 secp256k1 = { workspace = true, features = [
     "alloc",
     "recovery",
-    "rand",
     "global-context",
 ], optional = true }
 
@@ -89,7 +90,9 @@ p256 = { workspace = true, features = ["ecdsa"] }
 aws-lc-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
+alloy-eips = { workspace = true, features = ["k256"] }
 alloy-primitives = { workspace = true, features = ["serde", "std"] }
+revm-bytecode = { workspace = true, features = ["serde", "std"] }
 rmp-serde.workspace = true
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
@@ -122,7 +125,6 @@ std = [
     "alloy-eip7928/std",
     "alloy-eips/std",
     "alloy-primitives/std",
-    "bitvec/std",
     "ark-bls12-381/std",
     "ark-bn254/std",
     "ark-ec/std",
@@ -130,6 +132,7 @@ std = [
     "ark-serialize/std",
     "ark-std/std",
     "aurora-engine-modexp/std",
+    "bitflags/std",
     "k256/std",
     "once_cell/std",
     "p256/std",
@@ -138,11 +141,14 @@ std = [
     "c-kzg?/std",
     "secp256k1?/std",
     "serde?/std",
+    "wincode?/std",
     "triomphe?/std",
     "ruint?/std",
 ]
 
 async = ["std", "dep:corosensei"]
+
+wincode = ["dep:wincode"]
 
 serde = [
     "dep:serde",
@@ -151,7 +157,7 @@ serde = [
     "alloy-eips/serde",
     "alloy-primitives/serde",
     "ark-serialize/serde",
-    "bitvec/serde",
+    "bitflags/serde",
     "derive-where/serde",
     "k256/serde",
     "p256/serde",

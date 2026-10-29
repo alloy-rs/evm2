@@ -155,6 +155,8 @@ pub enum Attribute {
     /// `dead_on_return` — the contents of the pointed-to memory are dead after the function
     /// returns, allowing the caller to elide stores to the memory.
     DeadOnReturn,
+    /// `dead_on_unwind` — the contents of the pointed-to memory are dead if the function unwinds.
+    DeadOnUnwind,
     // TODO: Range?
 }
 
@@ -205,6 +207,7 @@ pub trait BackendTypes: Sized {
     type StackSlot: Copy + Eq + fmt::Debug;
     type BasicBlock: Copy + Eq + fmt::Debug;
     type Function: Copy + Eq + fmt::Debug;
+    type Inst: Copy + Eq + fmt::Debug;
 }
 
 #[allow(clippy::missing_safety_doc)]
@@ -215,6 +218,7 @@ pub trait Backend: BackendTypes + TypeMethods {
             StackSlot = Self::StackSlot,
             BasicBlock = Self::BasicBlock,
             Function = Self::Function,
+            Inst = Self::Inst,
         >
     where
         Self: 'a;
@@ -314,6 +318,8 @@ pub trait Builder: BackendTypes + TypeMethods {
         self.str_const(value.to_str().unwrap())
     }
     fn str_const(&mut self, value: &str) -> Self::Value;
+    /// Returns a pointer to a private constant global array of `ty` holding `values`.
+    fn const_array(&mut self, ty: Self::Type, values: &[u64]) -> Self::Value;
     fn nullptr(&mut self) -> Self::Value;
 
     fn new_stack_slot(&mut self, ty: Self::Type, name: &str) -> Pointer<Self> {
@@ -335,9 +341,12 @@ pub trait Builder: BackendTypes + TypeMethods {
         name: &str,
     ) -> Self::Value;
     /// Stores a value to a pointer, assuming natural alignment.
-    fn store(&mut self, value: Self::Value, ptr: Self::Value);
+    fn store(&mut self, value: Self::Value, ptr: Self::Value) -> Self::Inst;
     /// Stores a value to a pointer with an explicit alignment override.
     fn store_aligned(&mut self, value: Self::Value, ptr: Self::Value, align: usize);
+
+    /// Removes an instruction that nothing uses.
+    fn remove_inst(&mut self, inst: Self::Inst);
 
     fn nop(&mut self);
     fn ret(&mut self, values: &[Self::Value]);
@@ -410,6 +419,7 @@ pub trait Builder: BackendTypes + TypeMethods {
     fn bitxor(&mut self, lhs: Self::Value, rhs: Self::Value) -> Self::Value;
     fn bitnot(&mut self, value: Self::Value) -> Self::Value;
     fn clz(&mut self, value: Self::Value) -> Self::Value;
+    fn popcnt(&mut self, value: Self::Value) -> Self::Value;
 
     fn bitor_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value;
     fn bitand_imm(&mut self, lhs: Self::Value, rhs: i64) -> Self::Value;

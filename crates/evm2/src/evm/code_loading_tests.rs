@@ -322,10 +322,8 @@ fn call_family_codecopy_uses_code_owner_and_global_offsets() {
             let destination = if delegate { Address::with_last_byte(0x83) } else { OWNER };
             let marker = Bytecode::new_eip7702(OWNER);
             if delegate {
-                evm.overlay_db_mut().insert_account_info(
-                    &destination,
-                    AccountInfo::default().with_code(marker.clone()),
-                );
+                evm.overlay_db_mut()
+                    .insert_account_info(&destination, AccountInfo::default().with_code(marker));
             }
             let mut code = Vec::new();
             call(&mut code, opcode, destination, 68);

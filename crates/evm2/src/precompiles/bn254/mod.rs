@@ -7,23 +7,20 @@ use crate::{
 };
 use alloc::vec::Vec;
 
-#[cfg_attr(all(feature = "bn", not(feature = "bn254-mcl")), expect(dead_code))]
+#[cfg_attr(any(feature = "bn", feature = "bn254-mcl"), expect(dead_code))]
 pub(crate) mod arkworks;
 
 core::cfg_select! {
     feature = "bn254-mcl" => {
         pub(crate) mod mcl;
-        type ArithmeticOps = mcl::MclOps;
-        type PairingOps = arkworks::ArkworksOps;
+        type Ops = mcl::MclOps;
     }
     feature = "bn" => {
         pub(crate) mod substrate;
-        type ArithmeticOps = substrate::SubstrateOps;
-        type PairingOps = substrate::SubstrateOps;
+        type Ops = substrate::SubstrateOps;
     }
     _ => {
-        type ArithmeticOps = arkworks::ArkworksOps;
-        type PairingOps = arkworks::ArkworksOps;
+        type Ops = arkworks::ArkworksOps;
     }
 }
 
@@ -49,10 +46,10 @@ pub(crate) trait Bn254Ops {
 /// Performs point addition on two G1 points using the selected backend.
 #[inline]
 pub(crate) fn g1_point_add(p1_bytes: &[u8], p2_bytes: &[u8]) -> Result<[u8; 64], PrecompileHalt> {
-    ArithmeticOps::init();
-    let p1 = ArithmeticOps::read_g1(p1_bytes)?;
-    let p2 = ArithmeticOps::read_g1(p2_bytes)?;
-    Ok(ArithmeticOps::encode_g1(ArithmeticOps::g1_add(p1, p2)))
+    Ops::init();
+    let p1 = Ops::read_g1(p1_bytes)?;
+    let p2 = Ops::read_g1(p2_bytes)?;
+    Ok(Ops::encode_g1(Ops::g1_add(p1, p2)))
 }
 
 /// Performs a G1 scalar multiplication using the selected backend.
@@ -61,25 +58,25 @@ pub(crate) fn g1_point_mul(
     point_bytes: &[u8],
     fr_bytes: &[u8],
 ) -> Result<[u8; 64], PrecompileHalt> {
-    ArithmeticOps::init();
-    let p = ArithmeticOps::read_g1(point_bytes)?;
-    let fr = ArithmeticOps::read_scalar(fr_bytes);
-    Ok(ArithmeticOps::encode_g1(ArithmeticOps::g1_mul(p, fr)))
+    Ops::init();
+    let p = Ops::read_g1(point_bytes)?;
+    let fr = Ops::read_scalar(fr_bytes);
+    Ok(Ops::encode_g1(Ops::g1_mul(p, fr)))
 }
 
 /// Performs a pairing check on a list of G1 and G2 point pairs using the selected backend.
 #[inline]
 pub(crate) fn pairing_check(pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileHalt> {
-    PairingOps::init();
+    Ops::init();
     let mut g1_points = Vec::with_capacity(pairs.len());
     let mut g2_points = Vec::with_capacity(pairs.len());
 
     for (g1_bytes, g2_bytes) in pairs {
-        let g1 = PairingOps::read_g1(g1_bytes)?;
-        let g2 = PairingOps::read_g2(g2_bytes)?;
+        let g1 = Ops::read_g1(g1_bytes)?;
+        let g2 = Ops::read_g2(g2_bytes)?;
 
         // Skip pairs where either point is at infinity
-        if !PairingOps::g1_is_zero(&g1) && !PairingOps::g2_is_zero(&g2) {
+        if !Ops::g1_is_zero(&g1) && !Ops::g2_is_zero(&g2) {
             g1_points.push(g1);
             g2_points.push(g2);
         }
@@ -89,7 +86,7 @@ pub(crate) fn pairing_check(pairs: &[(&[u8], &[u8])]) -> Result<bool, Precompile
         return Ok(true);
     }
 
-    Ok(PairingOps::pairing_check(&g1_points, &g2_points))
+    Ok(Ops::pairing_check(&g1_points, &g2_points))
 }
 
 /// BN254 point addition precompile entrypoints.
@@ -355,6 +352,22 @@ mod tests {
         let res = run_add(&[0x40], BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
         assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)),);
 
+        // A coordinate equal to the field modulus is non-canonical.
+        let input = hex!("30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47");
+        let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
+        assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember)),);
+
+        // The largest canonical coordinate, p - 1, is accepted: (p - 1, sqrt(2)) is on the curve.
+        let mut input = [0u8; 128];
+        input[..32].copy_from_slice(&hex!(
+            "30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd46"
+        ));
+        input[32..64].copy_from_slice(&hex!(
+            "279d7bc4e184e3a57f5fa684690c6df6b484a7f1daa1de608d266a2a4be6593f"
+        ));
+        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        assert_eq!(outcome.bytes(), &input[..64]);
+
         let input = hex::decode(
             "\
             0000000000000000000000000000000000000000000000000000000000000001\
@@ -570,6 +583,62 @@ mod tests {
             res,
             Err(PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)),
         );
+
+        // G2 point on the curve but not in the subgroup fail
+        let input = hex::decode(
+            "\
+            0000000000000000000000000000000000000000000000000000000000000001\
+            0000000000000000000000000000000000000000000000000000000000000002\
+            0000000000000000000000000000000000000000000000000000000000000000\
+            0000000000000000000000000000000000000000000000000000000000000001\
+            0d1271953ed9ea0836846e70a1934187998c7f790cb4d7511b7f8da82de048a4\
+            2869111d5381f072f8e2728fdb825a51aadd70e52c9830e9ab4b871c0531f1bb",
+        )
+        .unwrap();
+
+        let res = run_pair(
+            &input,
+            BYZANTIUM_PAIR_PER_POINT,
+            BYZANTIUM_PAIR_BASE,
+            &mut GasTracker::new(260_000),
+        );
+        assert_matches!(
+            res,
+            Err(PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)),
+        );
+
+        // G2 points on the twist whose order involves the cofactor 2p - r: a subgroup point
+        // (accepted), prime-order torsion points, and the subgroup point plus that torsion.
+        const SUBGROUP_G2: &str = "09cc2377cd92f79de395306be74f05cfaeaed3991fa542fce5883ba8044c14e72c60c657a11d6593a04248c80112e79c348a4d18af6c5087ecc3c5e28149c3ed05ae74f920dc46a6170e7d3c52e6327fc85c17bdf5cada2b9e41542f0311fd1024667477acf930cad522366478365c806828422b23d0bb5ff3da77e364406fd2";
+        const TORSION_G2: [&str; 8] = [
+            "213ff81b7dc63d686334374756bcc72559a94293a74ae4e6d81ed31d271ef261070f17cc5537848d6ab2d204a9a904d495005b666bb1c99b05058a066373c6952d1e1ce0cfe183e0b657ad0714c20e98772dae710c210d3c720b0c4c6513ab352c32b900d54734063b8fe7d88c403468fcf1d6a2d3883e036650d7e4b48781da",
+            "02910f1cd7433ab639c66ed45bb92d38ea934b571bd12db6cabf0d24cc756aac29dc6a249374c383c9b6297416f88ab0bfb6ff933014a266e2f2940ebd8d27bd0578f8545688a055a19ee79acd1808d61e78252bdd98281e4c2b4db0807e2945148c5480fedb5531e57ae91c8846e26b5244f60728163581f62a6410dee6cde1",
+            "2a7a5ff037b463795571e05f69a996c0289147a534a32788dd606fc67fd3375f06f849b3a65040105698841a26321ccd36e6593d409f0e64973bd3a70971b1b618f64f0544e874ff6e0d267a1a4042515ce0a2786d62bdb1e964096ec83c836213c4f2816afe7fbc308bbf8e52c8a72e6abcfea133b361083021d5287deb1d92",
+            "2e30cf9eb02b7d1751634c042963db701da8e33d6856ad47deb658f9af6701752fdc91fbeca171de450f569ff5c63184a889be190928aeeb017c8bd7a83024c723c462861d16f4eada580e8678c26bab1cc3229639a51624c9e774d586ac774908bb4342b5764877165895d2698b504fcb7a359c209b5abfb6135a35ed2333f1",
+            "047062e2a3bca5ee01cd14dc29049f4c97f0fac6e4124e3e26f12a0a4a272c701b7e74bfd226cbaa83a37e69e600698dfa9adcc5c359fcfa0943ad5ca68f83a5007c24e9e200f9fca90f4d0c4d86c32b4df7f06e4765fb308ed40ea8a133c07d18d8037fb8ccf781153cb8ca7287fb3be9015a6ed2ea0feba2c59ad40a35b378",
+            "2f018f69e3deec50d3f81dc447122b80fe4c23f68565b3cf78adfd031a03d43920c5cdc4e3480fd143933c32e0cd0effb18a0a67ed5eee3c0012ce82605904c01c9562b082c4f53bb8aef1f88230f2d12d344e792eb1ee8661f919d8c8aa1c2523bdf52a82b6078198a6a167c9d67b06c3658ce59b3dc0b01e13e0125ac7a4c8",
+            "0114798e8db529833ba6664c067049e1afcd7e5e09ff1a80def786e1dbc2935111d88447dac20bb481482e5065d0a5c49f249c60feb0bd07821dbe99488ac28d15e26933e2a0f843a3ad26c982ed4b122115277b24b14c47e85629c71572c11f22fb3776eda9a92561fac2966b87e85cd736e2cae95ea010ace84ce57cd5ff65",
+            "210d66db18237e0ed086b30bac4680d53aef0c7b498d13394e9e2634ff416e001b5a0355ed264f23681e9331e8fb8a30db3680b21f8004c8cee74d8af678830505e35b4630eeaafa6571a02ff3355debdeea12a2acc0528c4039fd1acdf0024d14d28ee448cc68a1dcd77e367cbebce4cfb18bec0849c489497efe4ce95ec69f",
+        ];
+        let pair_infinity_with = |g2: &str| {
+            let mut input = [0u8; PAIR_ELEMENT_LEN];
+            hex::decode_to_slice(g2, &mut input[G1_LEN..]).unwrap();
+            run_pair(
+                &input,
+                BYZANTIUM_PAIR_PER_POINT,
+                BYZANTIUM_PAIR_BASE,
+                &mut GasTracker::new(260_000),
+            )
+        };
+        let mut one = [0u8; 32];
+        one[31] = 1;
+        assert_eq!(pair_infinity_with(SUBGROUP_G2).unwrap().bytes(), &one);
+        for g2 in TORSION_G2 {
+            assert_matches!(
+                pair_infinity_with(g2),
+                Err(PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)),
+            );
+        }
 
         let mut input = [0u8; PAIR_ELEMENT_LEN];
         input[0] = 0x40;

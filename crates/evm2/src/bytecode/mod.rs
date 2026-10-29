@@ -91,6 +91,14 @@ impl Default for Bytecode {
     }
 }
 
+impl Default for &Bytecode {
+    #[inline]
+    fn default() -> Self {
+        static EMPTY: Bytecode = Bytecode::new();
+        &EMPTY
+    }
+}
+
 impl PartialEq for Bytecode {
     #[inline]
     fn eq(&self, other: &Self) -> bool {

@@ -1,5 +1,6 @@
 use evm2::{
-    BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, SpecId,
+    BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, OpcodeChange, OpcodeView,
+    SpecId,
     interpreter::{op, opcode::OpCode},
 };
 
@@ -14,6 +15,10 @@ impl OpcodeInfo {
     pub const DYNAMIC: u32 = 1 << 30;
     /// The disabled flag.
     pub const DISABLED: u32 = 1 << 29;
+    /// The host-instruction flag.
+    pub const HOST: u32 = 1 << 28;
+    /// The unsupported-host-opcode flag.
+    pub const UNSUPPORTED_HOST: u32 = 1 << 27;
     /// The mask for the gas cost (16 bits, max 65535).
     pub const MASK: u32 = 0xFFFF;
 
@@ -48,6 +53,31 @@ impl OpcodeInfo {
     #[inline]
     pub const fn base_gas(self) -> u16 {
         (self.0 & Self::MASK) as u16
+    }
+
+    /// Returns `true` if the host's own instruction implementation executes the opcode.
+    #[inline]
+    pub const fn is_host(self) -> bool {
+        self.0 & Self::HOST != 0
+    }
+
+    /// Returns `true` if the opcode is implemented by the host in a way compiled code cannot
+    /// reproduce.
+    #[inline]
+    pub const fn is_unsupported_host(self) -> bool {
+        self.0 & Self::UNSUPPORTED_HOST != 0
+    }
+
+    /// Sets the host-instruction flag.
+    #[inline]
+    pub const fn set_host(&mut self) {
+        self.0 |= Self::HOST;
+    }
+
+    /// Sets the unsupported-host-opcode flag.
+    #[inline]
+    pub const fn set_unsupported_host(&mut self) {
+        self.0 |= Self::UNSUPPORTED_HOST;
     }
 
     /// Sets the unknown flag.
@@ -224,6 +254,63 @@ const fn make_map<const BASE_SPEC_ID: u32>() -> [OpcodeInfo; 256] {
         j += 1;
     }
 
+    map
+}
+
+/// Opcodes a host may override or add: compiled code runs the host's own instruction for them
+/// through a builtin. Every other host-implemented opcode keeps its contract on the interpreter.
+const HOST_INSTRUCTIONS: &[u8] = &[
+    op::BALANCE,
+    op::EXTCODESIZE,
+    op::EXTCODECOPY,
+    op::EXTCODEHASH,
+    op::BLOCKHASH,
+    op::SELFBALANCE,
+    op::SLOAD,
+    op::SSTORE,
+    op::TLOAD,
+    op::TSTORE,
+    op::LOG0,
+    op::LOG1,
+    op::LOG2,
+    op::LOG3,
+    op::LOG4,
+];
+
+/// Returns the opcode info map for `spec_id` under the host's opcode `view`.
+pub(crate) fn opcode_infos(view: &OpcodeView, spec_id: SpecId) -> [OpcodeInfo; 256] {
+    let base = op_info_map(spec_id);
+    let mut map = *base;
+    for op in 0..=u8::MAX {
+        let i = op as usize;
+        let change = view.change(op);
+        let base_known = !base[i].is_unknown() && !base[i].is_disabled();
+        if change == OpcodeChange::Undefined {
+            // The interpreter halts on an opcode that the table leaves out with
+            // `NotActivated`. `INVALID` is never in a table and keeps its own stop reason.
+            if base_known && op != op::INVALID {
+                let mut info = OpcodeInfo::new(0);
+                info.set_disabled();
+                map[i] = info;
+            }
+            continue;
+        }
+        // The host runs its own instruction when it overrides the base one, or when it only
+        // changes the static gas of an opcode whose base builtin pays its whole cost.
+        let host = change == OpcodeChange::Instruction
+            || (change == OpcodeChange::Gas && contains(FULLY_DYNAMIC, op));
+        if !base_known || (host && !contains(HOST_INSTRUCTIONS, op)) {
+            map[i] = OpcodeInfo(OpcodeInfo::UNSUPPORTED_HOST);
+            continue;
+        }
+        let mut info = base[i];
+        info.set_gas(if contains(FULLY_DYNAMIC, op) && !host { 0 } else { view.static_gas(op) });
+        if host {
+            info.set_host();
+            info.set_dynamic();
+        }
+        map[i] = info;
+    }
     map
 }
 

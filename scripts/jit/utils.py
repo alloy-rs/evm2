@@ -1,7 +1,9 @@
 """Shared utilities for evm2-jit analysis scripts."""
 
+import functools
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,12 +36,15 @@ def cargo_env(rust_log: str | None = None) -> dict[str, str]:
     return env
 
 
-def cargo_build(root: str, incremental: bool = True) -> str:
-    """Build the CLI binary and return its path."""
-    target_dir = _shared_target_dir()
-    env = {**os.environ, "CARGO_TARGET_DIR": target_dir}
-    if not incremental:
-        env["CARGO_INCREMENTAL"] = "0"
+def cargo_build(root: str, target_dir: str | None = None) -> str:
+    """Build the CLI binary and return its path.
+
+    Always builds non-incrementally: incremental builds split crates into more codegen
+    units, which changes the host code and skews head-vs-base measurements.
+    """
+    target_dir = target_dir or _shared_target_dir()
+    env = {**os.environ, **llvm_env(root), "CARGO_TARGET_DIR": target_dir}
+    env["CARGO_INCREMENTAL"] = "0"
     subprocess.run(
         ["cargo", "build", "--quiet", "-p", "evm2-cli", "--bin", "evm2", "--all-features"],
         check=True,
@@ -47,6 +52,23 @@ def cargo_build(root: str, incremental: bool = True) -> str:
         env=env,
     )
     return os.path.join(target_dir, "debug", "evm2")
+
+
+def llvm_env(root: str) -> dict[str, str]:
+    """Put the LLVM version that ``root`` requires first in PATH, if it is installed.
+
+    Base and head can require different LLVM versions, and both llvm-sys and the
+    evm2-jit-llvm build script otherwise use whichever llvm-config comes first in PATH.
+    """
+    with open(os.path.join(root, "crates", "jit", "llvm", "Cargo.toml")) as f:
+        m = re.search(r'"llvm(\d+)-\d+"', f.read())
+    llvm_config = m and shutil.which(f"llvm-config-{m[1]}")
+    if not llvm_config:
+        return {}
+    bindir = subprocess.run(
+        [llvm_config, "--bindir"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    return {"PATH": bindir + os.pathsep + os.environ.get("PATH", "")}
 
 
 def get_benches(binary: str) -> list[str]:
@@ -91,7 +113,8 @@ def run_cli(
     return r.stdout
 
 
-PERF_EVENTS = "instructions:u,task-clock"
+PERF_EVENTS = "instructions:u,cycles:u,task-clock"
+RUNTIME_EVENTS = "instructions:u,cycles:u"
 
 
 def perf_available() -> bool:
@@ -107,11 +130,11 @@ def perf_available() -> bool:
     return r.returncode == 0 and "<not" not in r.stderr and "instructions" in r.stderr
 
 
-def time_cli(binary: str, args: list[str], perf: bool) -> tuple[int | None, float]:
-    """Run the CLI and return ``(instructions, seconds)``.
+def time_cli(binary: str, args: list[str], perf: bool) -> tuple[int | None, int | None, float]:
+    """Run the CLI and return ``(instructions, cycles, seconds)``.
 
-    With *perf*, returns user-space instructions and task clock (CPU time) from
-    ``perf stat``. Otherwise returns no instruction count and wall time.
+    With *perf*, returns user-space instructions, user-space cycles and task clock (CPU time)
+    from ``perf stat``. Otherwise returns no counts and wall time.
     """
     cmd = [binary, *args]
     if not perf:
@@ -119,7 +142,7 @@ def time_cli(binary: str, args: list[str], perf: bool) -> tuple[int | None, floa
         subprocess.run(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=True
         )
-        return None, time.perf_counter() - start
+        return None, None, time.perf_counter() - start
     with tempfile.NamedTemporaryFile("r") as out:
         subprocess.run(
             ["perf", "stat", "-x,", "-e", PERF_EVENTS, "-o", out.name, *cmd],
@@ -136,4 +159,97 @@ def time_cli(binary: str, args: list[str], perf: bool) -> tuple[int | None, floa
                     stats[parts[2]] = float(parts[0])
                 except ValueError:
                     pass
-    return int(stats["instructions:u"]), stats["task-clock"] / 1e3
+    return int(stats["instructions:u"]), int(stats["cycles:u"]), stats["task-clock"] / 1e3
+
+
+# Size of the strings the kernel puts at the top of a new process's stack: arguments, environment
+# and the executable path.
+STACK_STRINGS = 32768
+
+
+@functools.cache
+def no_aslr() -> list[str]:
+    """Command prefix that disables address space randomization, empty where that is denied."""
+    try:
+        ok = (
+            subprocess.run(["setarch", "-R", "true"], capture_output=True, check=False).returncode
+            == 0
+        )
+    except FileNotFoundError:
+        ok = False
+    if not ok:
+        eprint("warning: cannot disable address space randomization; runtime cycles will be noisy")
+    return ["setarch", "-R"] if ok else []
+
+
+def fixed_stack_env(binary: str, args: list[str], extra: dict[str, str]) -> dict[str, str]:
+    """Return an environment that makes the process's stack strings ``STACK_STRINGS`` bytes.
+
+    Where the stack starts depends on the length of the binary path, the arguments and the
+    environment, and the starting offset changes cycles by several percent (4K aliasing, cache
+    sets and the alignment of hot data). A fixed total puts the stack in the same place for
+    every revision and bench size.
+    """
+    env = {**os.environ, **extra, "EVM2_BENCH_PAD": ""}
+    strings = [binary, binary, *args, *(f"{k}={v}" for k, v in env.items())]
+    used = sum(len(os.fsencode(s)) + 1 for s in strings)
+    env["EVM2_BENCH_PAD"] = "x" * max(STACK_STRINGS - used, 0)
+    return env
+
+
+class NoBenchCounts(Exception):
+    """The binary ran without counting a benchmark loop: it predates ``EVM2_PERF_CONTROL``."""
+
+
+def perf_counts(binary: str, args: list[str]) -> tuple[int, int]:
+    """Run ``evm2 run`` under ``perf stat``; return ``(instructions, cycles)`` of its bench loop.
+
+    The counters start disabled and the CLI enables them around the loop through
+    ``EVM2_PERF_CONTROL``, so the compile cost, which is large and noisy, is not counted.
+
+    Runs without address space randomization and with a fixed stack layout, so the same binary
+    gives the same counts from run to run and two revisions are compared on equal terms.
+    """
+    ctl_read, ctl_write = os.pipe()
+    ack_read, ack_write = os.pipe()
+    fds = [ctl_read, ctl_write, ack_read, ack_write]
+    try:
+        with tempfile.NamedTemporaryFile("r") as out:
+            subprocess.run(
+                [
+                    *no_aslr(),
+                    "perf",
+                    "stat",
+                    "-x,",
+                    "-e",
+                    RUNTIME_EVENTS,
+                    "-o",
+                    out.name,
+                    "--control",
+                    f"fd:{ctl_read},{ack_write}",
+                    "-D",
+                    "-1",
+                    binary,
+                    *args,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+                env=fixed_stack_env(binary, args, {"EVM2_PERF_CONTROL": f"{ctl_write},{ack_read}"}),
+                pass_fds=fds,
+            )
+            stats = {}
+            for line in out:
+                parts = line.strip().split(",")
+                if len(parts) > 2:
+                    try:
+                        stats[parts[2]] = float(parts[0])
+                    except ValueError:
+                        pass
+    finally:
+        for fd in fds:
+            os.close(fd)
+    if not stats.get("instructions:u"):
+        raise NoBenchCounts(binary)
+    return int(stats["instructions:u"]), int(stats["cycles:u"])

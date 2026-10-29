@@ -9,45 +9,57 @@ use crate::{
     bytecode::{CODE_CHUNK_SIZE, CodeChunk},
     evm::CodeChunkLoad,
     trustme,
-    utils::word_to_usize_saturated,
+    utils::WordExt,
     version::GasId,
 };
 use alloc::vec::Vec;
 use alloy_primitives::Address;
 
 /// Code ownership and execution position for one interpreter frame.
+///
+/// The frame's initial chunk is borrowed from its message, so starting a frame does not write the
+/// shared refcount of read-mostly code. A chunk switch replaces it with an owned chunk.
 #[derive(Debug)]
-pub(super) struct InterpreterCode {
-    active: CodeChunk,
-    // Borrows immutable allocations owned by `active`. Accessors shorten the erased lifetime;
-    // activation clears this view before replacing the owning chunk.
+pub(super) struct InterpreterCode<'frame> {
+    active: ActiveChunk<'frame>,
+    // Borrows immutable allocations of `active`. Accessors shorten the erased lifetime;
+    // activation clears this view before replacing the active chunk.
     view: Option<BytecodeRef<'static>>,
     pub(super) pc: *const u8,
 }
 
-impl Default for InterpreterCode {
+#[derive(Debug)]
+enum ActiveChunk<'frame> {
+    Borrowed(&'frame CodeChunk),
+    Owned(CodeChunk),
+}
+
+impl Default for InterpreterCode<'_> {
     fn default() -> Self {
-        Self::new(&CodeChunk::default())
+        Self::from_active(ActiveChunk::Owned(CodeChunk::default()))
     }
 }
 
-impl InterpreterCode {
-    pub(super) fn new(code: &CodeChunk) -> Self {
-        let active = code.clone();
-        let pc = active.as_bytecode().bytes_slice().as_ptr();
+impl<'frame> InterpreterCode<'frame> {
+    pub(super) fn new(code: &'frame CodeChunk) -> Self {
+        Self::from_active(ActiveChunk::Borrowed(code))
+    }
+
+    fn from_active(active: ActiveChunk<'frame>) -> Self {
+        let pc = active.get().as_bytecode().bytes_slice().as_ptr();
         Self { active, pc, view: None }
     }
 
     pub(super) const fn active(&self) -> &CodeChunk {
-        &self.active
+        self.active.get()
     }
 
     pub(super) const fn is_account(&self) -> bool {
-        self.active.is_account()
+        self.active().is_account()
     }
 
     pub(super) fn view(&self) -> BytecodeRef<'_> {
-        self.view.unwrap_or_else(|| BytecodeRef::new(self.active.as_bytecode()))
+        self.view.unwrap_or_else(|| BytecodeRef::new(self.active().as_bytecode()))
     }
 
     /// Only called during instruction execution, after `prepare` initialized the view.
@@ -60,15 +72,15 @@ impl InterpreterCode {
         if self.view.is_none() {
             // SAFETY: The chunk owns immutable heap allocations, so moving this structure
             // leaves the view valid. No accessor exposes the erased lifetime.
-            let bytecode = unsafe { trustme::decouple_lt(self.active.as_bytecode()) };
+            let bytecode = unsafe { trustme::decouple_lt(self.active().as_bytecode()) };
             self.view = Some(BytecodeRef::new(bytecode));
         }
     }
 
     pub(super) fn activate(&mut self, chunk: CodeChunk) {
         self.view = None;
-        self.active = chunk;
-        self.pc = self.active.as_bytecode().bytes_slice().as_ptr();
+        self.active = ActiveChunk::Owned(chunk);
+        self.pc = self.active().as_bytecode().bytes_slice().as_ptr();
         self.prepare();
     }
 
@@ -78,12 +90,12 @@ impl InterpreterCode {
 
     pub(super) fn set_pc(&mut self, pc: usize) {
         let local = pc
-            .checked_sub(self.active.index() as usize * CODE_CHUNK_SIZE)
+            .checked_sub(self.active().index() as usize * CODE_CHUNK_SIZE)
             .expect("PC is outside the active chunk");
-        if self.active.is_chunked() {
-            assert!(local < self.active.payload_len(), "PC is outside the logical payload");
+        if self.active().is_chunked() {
+            assert!(local < self.active().payload_len(), "PC is outside the logical payload");
         }
-        let bytes = self.active.as_bytecode().bytes_slice();
+        let bytes = self.active().as_bytecode().bytes_slice();
         assert!(local < bytes.len());
         // SAFETY: The local offset is inside the active allocation.
         self.pc = unsafe { bytes.as_ptr().add(local) };
@@ -92,8 +104,17 @@ impl InterpreterCode {
     pub(super) fn global_pc(&self, pc: Pc) -> usize {
         // SAFETY: Every execution PC points into the active chunk.
         let local =
-            unsafe { pc.as_ptr().offset_from(self.active.as_bytecode().bytes_slice().as_ptr()) };
-        local as usize + self.active.index() as usize * CODE_CHUNK_SIZE
+            unsafe { pc.as_ptr().offset_from(self.active().as_bytecode().bytes_slice().as_ptr()) };
+        local as usize + self.active().index() as usize * CODE_CHUNK_SIZE
+    }
+}
+
+impl ActiveChunk<'_> {
+    const fn get(&self) -> &CodeChunk {
+        match self {
+            Self::Borrowed(chunk) => chunk,
+            Self::Owned(chunk) => chunk,
+        }
     }
 }
 
@@ -185,8 +206,8 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
         }
         let index = active.index() + 1;
         let address = self.message().code_address;
-        let warm = u64::from(self.gas_params().get(GasId::WarmCodeChunkCost));
-        let cold = u64::from(self.gas_params().get(GasId::ColdCodeChunkCost));
+        let warm = self.gas_params().get(GasId::WarmCodeChunkCost);
+        let cold = self.gas_params().get(GasId::ColdCodeChunkCost);
         self.0.gas.spend(warm)?;
         let cold_additional = cold.saturating_sub(warm);
         let code_size = self.code_size() as u32;
@@ -218,8 +239,8 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
         index: u32,
         expected_code_size: Option<u32>,
     ) -> Result<CodeChunk> {
-        let warm = u64::from(self.gas_params().get(GasId::WarmCodeChunkCost));
-        let cold = u64::from(self.gas_params().get(GasId::ColdCodeChunkCost));
+        let warm = self.gas_params().get(GasId::WarmCodeChunkCost);
+        let cold = self.gas_params().get(GasId::ColdCodeChunkCost);
         gas.spend(warm)?;
         let cold_additional = cold.saturating_sub(warm);
         let loaded = self.execution_code_chunk(
@@ -247,7 +268,7 @@ impl<T: EvmTypesHost> InterpreterState<'_, '_, T> {
         if len == 0 {
             return Ok(Vec::new());
         }
-        let source = word_to_usize_saturated(source);
+        let source = source.to_usize_saturated();
         if source >= size {
             return Ok(Vec::new());
         }

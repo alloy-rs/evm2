@@ -12,7 +12,8 @@ use crate::{
     },
 };
 use alloc::{boxed::Box, vec, vec::Vec};
-use alloy_primitives::{Address, B256, Bytes, Log, U256};
+use alloy_consensus::{Transaction, transaction::Recovered};
+use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256};
 use alloy_rpc_types_trace::parity::StorageDelta;
 use core::{mem, ops::Range};
 use evm2::{
@@ -72,7 +73,7 @@ pub use debug::{DebugInspector, DebugInspectorError};
 /// Returns the effective gas refund after the calldata floor adjustment.
 #[inline]
 pub(crate) const fn final_refunded<E>(gas: &TxResultExt<E>) -> u64 {
-    if gas.total_gas_spent.saturating_sub(gas.refunded) < gas.floor_gas { 0 } else { gas.refunded }
+    gas.final_refunded()
 }
 
 /// An inspector that collects call traces.
@@ -92,7 +93,7 @@ pub struct TracingInspector {
     /// Records all call traces
     traces: CallTraceArena,
     /// Tracks active calls
-    trace_stack: Vec<usize>,
+    trace_stack: Vec<TraceStackEntry>,
     /// Number of logs recorded so far, used as the index of the next log.
     log_count: usize,
     /// Tracks recorded steps waiting for `step_end`.
@@ -250,6 +251,16 @@ impl TracingInspector {
         }
     }
 
+    /// Sets the index the next recorded log receives.
+    ///
+    /// Log indices count all logs that took effect in the block, so this should be the number of
+    /// logs emitted by the preceding transactions when tracing a transaction inside a block.
+    /// [`Self::fuse`] clears it, so set it again before each transaction.
+    #[inline]
+    pub const fn set_next_log_index(&mut self, index: usize) {
+        self.log_count = index;
+    }
+
     /// Convenience function for [ParityTraceBuilder::set_transaction_gas_used] that consumes the
     /// type.
     #[inline]
@@ -327,7 +338,7 @@ impl TracingInspector {
     #[track_caller]
     #[inline]
     fn active_trace(&self) -> Option<&CallTraceNode> {
-        self.trace_stack.last().map(|idx| &self.traces.arena[*idx])
+        self.trace_stack.last().map(|entry| &self.traces.arena[entry.trace_idx])
     }
 
     /// Returns the last trace [CallTrace] index from the stack.
@@ -340,7 +351,7 @@ impl TracingInspector {
     #[track_caller]
     #[inline]
     fn last_trace_idx(&self) -> usize {
-        self.trace_stack.last().copied().expect("can't start step without starting a trace first")
+        self.trace_stack.last().expect("can't start step without starting a trace first").trace_idx
     }
 
     /// Returns a mutable reference to the last trace [CallTrace] from the stack.
@@ -350,14 +361,14 @@ impl TracingInspector {
         &mut self.traces.arena[idx]
     }
 
-    /// _Removes_ the last trace [CallTrace] index from the stack.
+    /// Removes the active call and its log-count checkpoint from the stack.
     ///
     /// # Panics
     ///
     /// If no [CallTrace] was pushed
     #[track_caller]
     #[inline]
-    fn pop_trace_idx(&mut self) -> usize {
+    fn pop_trace(&mut self) -> TraceStackEntry {
         self.trace_stack.pop().expect("more traces were filled than started")
     }
 
@@ -389,9 +400,9 @@ impl TracingInspector {
         let steps = self.reusable_step_vecs.pop().unwrap_or_default();
 
         // the currently active call is the parent of the new call
-        let parent = self.trace_stack.last().copied().unwrap_or_default();
+        let parent = self.trace_stack.last().map(|entry| entry.trace_idx);
 
-        self.trace_stack.push(self.traces.push_trace(
+        let trace_idx = self.traces.push_trace(
             parent,
             push_kind,
             CallTrace {
@@ -407,7 +418,8 @@ impl TracingInspector {
                 steps,
                 ..Default::default()
             },
-        ));
+        );
+        self.trace_stack.push(TraceStackEntry { trace_idx, log_count: self.log_count });
     }
 
     /// Fills the current trace with the outcome of a call.
@@ -418,7 +430,7 @@ impl TracingInspector {
     ///
     /// This expects an existing trace [Self::start_trace_on_call]
     fn fill_trace_on_call_end<E>(&mut self, result: &MessageResultExt<E>) {
-        let trace_idx = self.pop_trace_idx();
+        let TraceStackEntry { trace_idx, log_count } = self.pop_trace();
         let trace = &mut self.traces.arena[trace_idx].trace;
 
         trace.gas_used = result.gas.spent();
@@ -427,6 +439,9 @@ impl TracingInspector {
         trace.status = Some(result.stop);
         trace.success = result.stop.is_success();
         trace.output = result.output.clone();
+        if !trace.success {
+            self.log_count = log_count;
+        }
 
         if let Some(address) = result.created_address {
             // A new contract was created via CREATE
@@ -637,11 +652,13 @@ impl TracingInspector {
         }
 
         // The gas cost is the difference between the recorded gas remaining at the start of the
-        // step the remaining gas here, at the end of the step.
-        // TODO: Figure out why this can overflow. https://github.com/paradigmxyz/revm-inspectors/pull/38
-        step.gas_cost = interp
-            .failed_charge()
-            .unwrap_or_else(|| step.gas_remaining.saturating_sub(interp.gas().remaining()));
+        // step and the remaining gas here, at the end of the step. An out-of-gas step consumes
+        // the whole remainder, except the reentrancy sentry, which halts before any charge.
+        step.gas_cost = if interp.result() == Err(InstrStop::ReentrancySentryOOG) {
+            0
+        } else {
+            step.gas_remaining.saturating_sub(interp.gas().remaining())
+        };
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
             step.state_gas_cost = Some(state_gas_delta);
@@ -679,6 +696,37 @@ impl TracingInspector {
                 );
             }
         }
+    }
+
+    /// Restores a root omitted when evm2 halts during runtime gas charging, before its hooks run.
+    pub(crate) fn recover_runtime_oog_root<E>(
+        &mut self,
+        tx: &Recovered<impl Transaction>,
+        result: &TxResultExt<E>,
+    ) {
+        // The arena starts with a default root. After execution, call_end/create_end have set
+        // its status if the root was recorded, even when it executed no opcodes.
+        if self.traces.arena[0].trace.status.is_some() || result.stop != InstrStop::OutOfGas {
+            return;
+        }
+
+        let (kind, address) = match tx.kind() {
+            TxKind::Call(address) => (CallKind::Call, address),
+            TxKind::Create => (CallKind::Create, tx.signer().create(tx.nonce())),
+        };
+        self.traces.arena[0].trace = CallTrace {
+            caller: tx.signer(),
+            address,
+            kind,
+            value: tx.value(),
+            data: if self.config.record_inputs { tx.input().clone() } else { Bytes::new() },
+            gas_limit: tx.gas_limit(),
+            gas_used: result.tx_gas_used(),
+            status: Some(InstrStop::OutOfGas),
+            ..Default::default()
+        };
+        // Do not guess the EVM features from the halt or its gas accounting. The normal hooks did
+        // not run, and the transaction result does not identify the active fork.
     }
 }
 
@@ -732,7 +780,6 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
 
     fn log(&mut self, log: &Log, _host: &mut T::Host<'_>) {
         if self.config.record_logs {
-            // index starts at 0
             let log_count = self.log_count;
             self.log_count += 1;
             let trace = self.last_trace();
@@ -771,12 +818,13 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         };
 
         // if calls to precompiles should be excluded, check whether this is a call to a precompile
-        let maybe_precompile = self.config.exclude_precompile_calls.then(|| {
-            !message.disable_precompiles && self.is_precompile_call(interp.host(), &to, &value)
-        });
+        let maybe_precompile = self
+            .config
+            .exclude_precompile_calls
+            .then(|| self.is_precompile_call(interp.host(), &to, &value));
 
         let input = if self.config.record_inputs
-            && (message.depth == 0 || self.budget.reserve(message.input.len()))
+            && (self.trace_stack.is_empty() || self.budget.reserve(message.input.len()))
         {
             message.input.clone()
         } else {
@@ -818,7 +866,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         self.features = interp.version().features;
 
         let input = if self.config.record_inputs
-            && (message.depth == 0 || self.budget.reserve(message.input.len()))
+            && (self.trace_stack.is_empty() || self.budget.reserve(message.input.len()))
         {
             message.input.clone()
         } else {
@@ -840,7 +888,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
 
     fn create_end(
         &mut self,
-        _interp: &mut Interpreter<'_, '_, T>,
+        interp: &mut Interpreter<'_, '_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
@@ -848,7 +896,9 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         self.fill_trace_on_call_end(result);
         // A nested CREATE whose creator nonce cannot be incremented returns successfully but
         // without an address, leaving its gas unspent.
-        if message.depth > 0 && result.created_address.is_none() && result.stop == InstrStop::Return
+        if message.depth > interp.version().initial_call_depth
+            && result.created_address.is_none()
+            && result.stop == InstrStop::Return
         {
             let trace = &mut self.traces.arena[trace_idx].trace;
             trace.status = Some(InstrStop::NonceOverflow);
@@ -946,4 +996,11 @@ const fn storage_write(op: u8, stack: &[U256]) -> Option<StorageDelta> {
         (op::SSTORE, [.., val, key]) => Some(StorageDelta { key: *key, val: *val }),
         _ => None,
     }
+}
+
+/// An active call and the log count to restore if it reverts.
+#[derive(Clone, Debug)]
+struct TraceStackEntry {
+    trace_idx: usize,
+    log_count: usize,
 }

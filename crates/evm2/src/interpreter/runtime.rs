@@ -1,9 +1,10 @@
 use super::{
-    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking,
-    StackMut, StackRef, Word, code::InterpreterCode,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, Pc, Result, StackBacking, StackMut,
+    StackRef, Word, code::InterpreterCode,
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
+    bytecode::CodeChunk,
     env::TxEnv,
     evm::inspector::Inspector,
     interpreter::dispatch,
@@ -18,7 +19,8 @@ use derive_where::derive_where;
 /// EVM interpreter.
 #[derive_where(Debug)]
 pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
-    pub(in crate::interpreter) code: InterpreterCode,
+    // Borrows the frame's message code until a chunk switch replaces it with an owned chunk.
+    pub(in crate::interpreter) code: InterpreterCode<'frame>,
     pub(in crate::interpreter) memory: Memory,
     pub(in crate::interpreter) return_data: Bytes,
 
@@ -36,16 +38,14 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     pub(in crate::interpreter) gas: Gas,
     pub(in crate::interpreter) result: Result,
     error: Option<ExecutionError>,
-    step_gas_before: u64,
-    failed_charge: Option<u64>,
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. Its code cursor points into
-// immutable owned bytecode and its jump table. Frame-local references are cleared before pooling,
-// and host/inspector pointers are installed for
+// the frame's or the interpreter's own immutable bytecode and its jump table. Frame-local
+// references are cleared before pooling, and host/inspector pointers are installed for
 // execution and not used after the owning execution context is gone. The `Sync` bounds make the
 // retained shared frame references safe to transfer between threads.
 unsafe impl<T> Send for Interpreter<'_, '_, T>
@@ -77,8 +77,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             memory: Memory::new(),
             result: Ok(()),
             error: None,
-            step_gas_before: 0,
-            failed_charge: None,
             output: 0..0,
             tx_env: None,
             message: None,
@@ -95,21 +93,24 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.
     fn init(&mut self, tx_env: &'frame TxEnv<T>, message: &'frame Message<T>) {
-        self.code = InterpreterCode::new(&message.code);
+        self.set_code(&message.code);
         let gas_limit = message.gas_limit;
-        let is_static = message.caller_is_static || matches!(message.kind, MessageKind::StaticCall);
+        let is_static = message.is_static();
         self.stack_len = 0;
         self.gas = Gas::new_with_execution_gas_and_reservoir(gas_limit, message.reservoir);
         self.memory.clear();
         self.result = Ok(());
         self.error = None;
-        self.step_gas_before = 0;
-        self.failed_charge = None;
         self.output = 0..0;
         self.tx_env = Some(tx_env);
         self.message = Some(message);
         self.is_static = is_static;
         self.return_data = Bytes::new();
+    }
+
+    /// Points the interpreter at `code` and resets the program counter and the cached view.
+    pub(crate) fn set_code(&mut self, code: &'frame CodeChunk) {
+        self.code = InterpreterCode::new(code);
     }
 
     pub(crate) fn clear_frame_refs(&mut self) {
@@ -270,15 +271,6 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.result = result;
     }
 
-    /// Returns the execution gas the current step attempted to charge when it ran out of gas.
-    ///
-    /// Only set during an inspector's `step_end`, where the remaining gas has already been
-    /// zeroed after the failed charge.
-    #[inline]
-    pub const fn failed_charge(&self) -> Option<u64> {
-        self.failed_charge
-    }
-
     /// Sets the current instruction result to `stop`.
     #[inline]
     pub const fn set_stop(&mut self, stop: InstrStop) {
@@ -324,6 +316,16 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         // outside the interpreter's owned stack and memory.
         let host = unsafe { self.host.unwrap_unchecked().as_mut() };
         (self.stack(), self.memory.as_slice(), host)
+    }
+
+    /// Borrows linear memory and the host independently, so memory can be passed to the host
+    /// without copying.
+    #[inline]
+    pub const fn memory_host(&mut self) -> (&Memory, &mut T::Host<'host>) {
+        // SAFETY: As in `host`, the host pointer is initialized during execution and points
+        // outside the interpreter's owned memory.
+        let host = unsafe { self.host.unwrap_unchecked().as_mut() };
+        (&self.memory, host)
     }
 
     /// Returns the host implementation.
@@ -435,6 +437,56 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
         self.features = version.features;
         self.host = Some(NonNull::from(host));
         self.inspector = None;
+    }
+
+    /// Runs the host's instruction implementation for the opcode at `pc` on the interpreter
+    /// stack, which holds `stack_len` words, and returns the new stack length.
+    ///
+    /// Gas is read from and written to this interpreter, so the caller must keep it current.
+    ///
+    /// # Safety
+    ///
+    /// The first `stack_len` words of the stack must be initialized.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`prepare_run`](Self::prepare_run) has not run, or if `pc` or `stack_len` is out
+    /// of bounds.
+    #[doc(hidden)]
+    pub unsafe fn run_external_instruction(
+        &mut self,
+        pc: usize,
+        stack_len: usize,
+    ) -> core::result::Result<usize, InstrStop> {
+        let host = self.host.expect("`prepare_run` must precede external instructions");
+        let bytecode = self.code.prepared_view();
+        assert!(
+            pc < self.code.active().as_bytecode().original_byte_slice().len(),
+            "pc out of bounds"
+        );
+        assert!(stack_len <= StackMut::CAPACITY, "stack length out of bounds");
+        // SAFETY: `prepare_run` installed the host, which outlives the run.
+        let config = unsafe { host.as_ref() }.execution_config();
+        // SAFETY: `pc` is in bounds.
+        let mut pc = Pc::new(unsafe { bytecode.as_ptr().add(pc) });
+        let instr = config.opcode_config().instruction(pc.op()).instr;
+        self.stack_len = stack_len;
+        let this: *mut Self = self;
+        // SAFETY: Instructions must not access the stack through `InterpreterState` while the
+        // separate stack view is live, as in the dispatch loop.
+        let (state, mut stack) = unsafe {
+            (
+                InterpreterState::wrap_mut(&mut *this),
+                StackMut { stack: &mut (*this).stack, len: &mut (*this).stack_len },
+            )
+        };
+        let start = pc.as_ptr();
+        instr(&mut pc, stack.reborrow(), state)?;
+        // Compiled code continues at the next instruction.
+        if pc.as_ptr() != start {
+            return Err(InstrStop::FatalExternalError);
+        }
+        Ok(self.stack_len)
     }
 
     #[inline(never)]
@@ -658,8 +710,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
         }
-        self.0.step_gas_before = self.0.gas.remaining();
-        self.0.failed_charge = None;
     }
 
     #[inline]
@@ -668,8 +718,6 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
         self.0.stack_len = stack_len;
         if self.0.result.is_err_and(InstrStop::is_out_of_gas) {
             cold_path();
-            self.0.failed_charge =
-                Some(self.0.step_gas_before.wrapping_sub(self.0.gas.remaining()));
             // Failed charges may leave a wrapped counter until frame settlement.
             self.0.gas.set_remaining(0);
         }

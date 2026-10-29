@@ -32,13 +32,27 @@ const REPLAY_WARM_UP: Duration = Duration::from_secs(3);
 const REPLAY_MEASUREMENT_SECS: u64 = 15;
 const REPLAY_SAMPLE_SIZE: usize = 20;
 
+/// Mainnet contract fixtures, which the `jit-mainnet` CodSpeed shard runs apart from the rest.
+const MAINNET_CONTRACTS: &[&str] = &[
+    "usdt",
+    "universal_router",
+    "aggregation_router_v6",
+    "entry_point_v0_7",
+    "uniswap_v3_pool",
+    "uniswap_v4_pool_manager",
+    "curve_3pool",
+    "curve_tricrypto2",
+    "balancer_vault",
+    "succinct_staking",
+];
+
 fn evm(c: &mut Criterion) {
     let mut group = c.benchmark_group("evm");
     apply_default_budget(&mut group);
 
     let shard = env::var("EVM2_BENCH_SHARD").ok();
     assert!(
-        matches!(shard.as_deref(), None | Some("interpreter" | "jit-burntpix" | "jit-rest")),
+        matches!(shard.as_deref(), None | Some("interpreter" | "jit" | "jit-mainnet")),
         "unknown EVM2_BENCH_SHARD: {shard:?}"
     );
     let bench_interpreter = matches!(shard.as_deref(), None | Some("interpreter"));
@@ -47,13 +61,14 @@ fn evm(c: &mut Criterion) {
         "JIT benchmark shards require the jit feature"
     );
 
-    // burntpix takes roughly half the JIT runtime. Filter before fixture loading and JIT setup.
+    // The mainnet contracts take roughly half the JIT time. Filter before fixture loading and JIT
+    // setup.
     let benches = evm_bench::BENCHES
         .iter()
         .copied()
         .filter(|bench| match shard.as_deref() {
-            Some("jit-burntpix") => bench.name == "burntpix",
-            Some("jit-rest") => bench.name != "burntpix",
+            Some("jit") => !MAINNET_CONTRACTS.contains(&bench.name),
+            Some("jit-mainnet") => MAINNET_CONTRACTS.contains(&bench.name),
             _ => true,
         })
         .collect::<Vec<_>>();

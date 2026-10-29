@@ -4,11 +4,11 @@ use crate::FxHashMap;
 use alloy_primitives::U256;
 use bitvec::vec::BitVec;
 use evm2::{
-    SpecId,
+    OpcodeView, SpecId,
     interpreter::{op, opcode::OpCode},
     version::GasParams,
 };
-use evm2_jit_backend::Result;
+use evm2_jit_backend::{Result, eyre::bail};
 use oxc_index::IndexVec;
 use smallvec::SmallVec;
 use std::{borrow::Cow, cell::RefCell};
@@ -216,17 +216,23 @@ impl<'a> Bytecode<'a> {
         code: impl Into<Cow<'a, [u8]>>,
         spec_id: SpecId,
         gas_params: Option<GasParams>,
+        opcodes: Option<&OpcodeView>,
     ) -> Self {
-        Self::new_mono(code.into(), spec_id, gas_params)
+        Self::new_mono(code.into(), spec_id, gas_params, opcodes)
     }
 
     #[cfg(test)]
     pub(crate) fn test(code: impl Into<Cow<'a, [u8]>>) -> Self {
-        Self::new(code, crate::tests::DEF_SPEC, None)
+        Self::new(code, crate::tests::DEF_SPEC, None, None)
     }
 
     #[instrument(name = "Bytecode::new", level = "debug", skip_all)]
-    fn new_mono(code: Cow<'a, [u8]>, spec_id: SpecId, gas_params: Option<GasParams>) -> Self {
+    fn new_mono(
+        code: Cow<'a, [u8]>,
+        spec_id: SpecId,
+        gas_params: Option<GasParams>,
+        opcodes: Option<&OpcodeView>,
+    ) -> Self {
         let gas_params = gas_params.unwrap_or(evm2::Version::base(spec_id).gas_params);
         let mut insts = IndexVec::with_capacity(code.len() + 8);
         let mut inst_to_pc = IndexVec::with_capacity(code.len() + 8);
@@ -238,8 +244,9 @@ impl<'a> Bytecode<'a> {
         let jumpdests = legacy_jumpdests(&code);
         let mut pc_to_inst = FxHashMap::with_capacity_and_hasher(code.len(), Default::default());
         let mut u256_interner = U256Interner::new();
-        let op_infos = op_info_map(spec_id);
-        let mut iter = OpcodesIter::new(&code, spec_id).with_pc();
+        let owned_infos = opcodes.map(|opcodes| opcode_infos(opcodes, spec_id));
+        let op_infos = owned_infos.as_ref().unwrap_or_else(|| op_info_map(spec_id));
+        let mut iter = OpcodesIter::with_infos(&code, op_infos).with_pc();
         while let Some((pc, Opcode { opcode, immediate })) = iter.next() {
             let inst: Inst = insts.next_idx();
             pc_to_inst.insert(pc as u32, inst);
@@ -253,11 +260,20 @@ impl<'a> Bytecode<'a> {
             if info.is_disabled() {
                 flags |= InstFlags::DISABLED;
             }
-            let (base_gas, stack_io) = if info.is_unknown() || info.is_disabled() {
-                (0, (0, 0))
-            } else {
-                (info.base_gas(), compute_stack_io(opcode, immediate))
-            };
+            if info.is_host() {
+                flags |= InstFlags::HOST;
+            }
+            if info.is_unsupported_host() {
+                // Analysis treats it as an unknown opcode; `analyze` rejects the program if one
+                // is reachable.
+                flags |= InstFlags::UNKNOWN | InstFlags::UNSUPPORTED_HOST;
+            }
+            let (base_gas, stack_io) =
+                if info.is_unknown() || info.is_disabled() || info.is_unsupported_host() {
+                    (0, (0, 0))
+                } else {
+                    (info.base_gas(), compute_stack_io(opcode, immediate))
+                };
 
             let data = match opcode {
                 op::PUSH0..=op::PUSH32 | op::DUPN | op::SWAPN | op::EXCHANGE => {
@@ -308,12 +324,16 @@ impl<'a> Bytecode<'a> {
             // bytecode never rewinds. Execution cannot fall through into the rewound
             // bytes: every desynchronizing immediate is an invalid DUPN/SWAPN/EXCHANGE
             // encoding, so the opcode preceding them halts at runtime.
-            if let Some(imm) = immediate {
-                let imm_end = pc + 1 + imm.len();
-                if let Some(target) = (pc + 1..imm_end).find(|&p| jumpdests[p]) {
-                    // SAFETY: we just consumed the immediate bytes at `pc + 1..imm_end`.
-                    unsafe { iter.rewind(imm_end - target) };
-                }
+            // A truncated immediate at the end of the code consumes the remaining bytes.
+            let imm_len = if info.is_unknown() || info.is_disabled() || info.is_unsupported_host() {
+                0
+            } else {
+                min_imm_len(opcode) as usize
+            };
+            let imm_end = (pc + 1 + imm_len).min(code.len());
+            if let Some(target) = (pc + 1..imm_end).find(|&p| jumpdests[p]) {
+                // SAFETY: we just consumed the immediate bytes at `pc + 1..imm_end`.
+                unsafe { iter.rewind(imm_end - target) };
             }
         }
 
@@ -451,6 +471,12 @@ impl<'a> Bytecode<'a> {
         if tracing::enabled!(tracing::Level::TRACE) {
             self.log_ir_stats();
             self.log_const_input_stats();
+        }
+
+        if let Some((_, data)) =
+            self.iter_insts().find(|(_, data)| data.flags.contains(InstFlags::UNSUPPORTED_HOST))
+        {
+            bail!("host opcode {:#04x} is not supported by compiled code", data.opcode);
         }
 
         Ok(())
@@ -621,7 +647,10 @@ impl<'a> Bytecode<'a> {
 
     /// Returns `true` if the given program counter is a valid jump destination.
     pub(crate) fn is_valid_jump(&self, pc: usize) -> bool {
-        self.jumpdests.get(pc).as_deref().copied() == Some(true)
+        // Reads the raw words: `BitVec::get` costs several times more in the jump analyses.
+        let bits = usize::BITS as usize;
+        pc < self.jumpdests.len()
+            && self.jumpdests.as_raw_slice()[pc / bits] >> (pc % bits) & 1 != 0
     }
 
     /// Returns `true` if the bytecode has dynamic jumps.
@@ -637,6 +666,22 @@ impl<'a> Bytecode<'a> {
     /// Returns `true` if the instruction is diverging.
     pub(crate) fn is_instr_diverging(&self, inst: Inst) -> bool {
         self.insts[inst].is_diverging()
+    }
+
+    /// Returns `true` if `inst` can only be entered by falling through from the previous
+    /// instruction.
+    pub(crate) fn is_fall_through_only(&self, inst: Inst) -> bool {
+        let data = self.inst(inst);
+        if data.is_reachable_jumpdest(self.has_dynamic_jumps())
+            || data.flags.contains(InstFlags::REDIRECT_TARGET)
+        {
+            return false;
+        }
+        if inst.index() == 0 {
+            return true;
+        }
+        let prev = self.inst(inst - 1);
+        !prev.is_dead_code() && prev.can_fall_through()
     }
 
     /// Converts a program counter (`self.code[pc]`) to an instruction (`self.inst(inst)`).
@@ -672,6 +717,18 @@ impl<'a> Bytecode<'a> {
         Some(imm.get(&self.u256_interner.borrow()))
     }
 
+    /// Returns the known output of the given instruction if translation can store it instead of
+    /// executing the instruction.
+    ///
+    /// EXP's dynamic gas is only charged statically when its exponent is known, and a constant
+    /// output joined across call contexts does not imply a constant exponent.
+    pub(crate) fn foldable_output(&self, inst: Inst) -> Option<U256> {
+        if self.insts[inst].opcode == op::EXP && self.const_operand(inst, 1).is_none() {
+            return None;
+        }
+        self.const_output(inst)
+    }
+
     /// Returns the first constant EVM memory access `(offset, len)` for the given instruction.
     #[allow(dead_code)]
     pub(crate) fn const_memory_access(&self, inst: Inst) -> Option<(Option<u64>, Option<u64>)> {
@@ -684,7 +741,7 @@ impl<'a> Bytecode<'a> {
         inst: Inst,
     ) -> [Option<(Option<u64>, Option<u64>)>; 2] {
         let data = self.inst(inst);
-        if data.flags.intersects(InstFlags::DISABLED | InstFlags::UNKNOWN) {
+        if data.flags.intersects(InstFlags::DISABLED | InstFlags::UNKNOWN | InstFlags::HOST) {
             return [None, None];
         }
 
@@ -936,6 +993,7 @@ pub(crate) struct InstData {
     /// - `JUMPDEST`: program counter in low 31 bits, reachable flag in high bit
     ///   ([`InstData::JUMPDEST_REACHABLE`]).
     /// - `JUMP | JUMPI` with [`InstFlags::STATIC_JUMP`]: target instruction index.
+    /// - `GAS`: static gas of the rest of its gas section, which the section head already charged.
     /// - otherwise: unused.
     pub(crate) data: u32,
     /// The gas section this instruction belongs to.
@@ -1043,6 +1101,20 @@ impl InstData {
     /// High bit of `data` set when a `JUMPDEST` is a reachable static jump target.
     pub(crate) const JUMPDEST_REACHABLE: u32 = 1 << 31;
 
+    /// Returns the static gas that the section head charged for instructions after this `GAS`.
+    #[inline]
+    pub(crate) fn gas_owed(&self) -> u32 {
+        debug_assert_eq!(self.opcode, op::GAS);
+        self.data
+    }
+
+    /// Sets the static gas charged ahead of this `GAS` instruction.
+    #[inline]
+    pub(crate) fn set_gas_owed(&mut self, gas: u32) {
+        debug_assert_eq!(self.opcode, op::GAS);
+        self.data = gas;
+    }
+
     /// Returns the program counter of a `JUMPDEST`.
     #[inline]
     pub(crate) fn jumpdest_pc(&self) -> u32 {
@@ -1090,33 +1162,48 @@ impl InstData {
         self.flags.contains(InstFlags::STACK_SECTION_HEAD)
     }
 
+    /// Returns `true` if this stack section head continues the previous section.
+    #[inline]
+    pub(crate) const fn continues_stack_section(&self) -> bool {
+        self.flags.contains(InstFlags::CONTINUES_STACK_SECTION)
+    }
+
     /// Returns `true` if this instruction is dead code.
     pub(crate) const fn is_dead_code(&self) -> bool {
         self.flags.contains(InstFlags::DEAD_CODE)
     }
 
-    /// Returns `true` if this instruction requires to know `gasleft()`.
+    /// Returns `true` if this instruction has host effects that depend on `gasleft()`.
+    ///
+    /// These end the gas and stack sections: charging the static gas of later instructions, or
+    /// failing their stack checks, ahead of the instruction would change its gas checks and skip
+    /// host reads that survive a revert, such as EIP-7928 block access list entries. `GAS` also
+    /// reads `gasleft()`, but it is pure, so it adds back the gas charged ahead of it instead.
     #[inline]
-    pub(crate) const fn requires_gasleft(&self, spec_id: SpecId) -> bool {
+    pub(crate) const fn ends_sections(&self) -> bool {
+        // The host's instruction may read the remaining gas.
+        if self.flags.contains(InstFlags::HOST) {
+            return true;
+        }
         match self.opcode {
-            // GAS pushes the remaining gas after paying its own base cost.
-            op::GAS => true,
-            // Calls and contract creation cap the gas forwarded based on the remaining gas.
+            // Calls and contract creation cap the gas forwarded based on the remaining gas, and
+            // the callee can return a value transfer's stipend, leaving more gas than before.
             op::CREATE
             | op::CALL
             | op::CALLCODE
             | op::DELEGATECALL
             | op::CREATE2
             | op::STATICCALL => true,
-            // EIP-2200 rejects SSTORE when the remaining gas is at most the call stipend.
-            op::SSTORE => spec_id.enables(SpecId::ISTANBUL),
-            // EIP-2929 skips cold host loads when the remaining gas cannot cover their cost.
-            op::BALANCE
+            // EIP-2200 rejects SSTORE when the remaining gas is at most the call stipend, and
+            // EIP-2929 skips cold host loads when the remaining gas cannot cover their cost. The
+            // active features, not the base spec, decide whether either applies.
+            op::SSTORE
+            | op::BALANCE
             | op::EXTCODESIZE
             | op::EXTCODECOPY
             | op::EXTCODEHASH
             | op::SLOAD
-            | op::SELFDESTRUCT => spec_id.enables(SpecId::BERLIN),
+            | op::SELFDESTRUCT => true,
             _ => false,
         }
     }
@@ -1174,6 +1261,19 @@ bitflags::bitflags! {
         const STACK_SECTION_HEAD = 1 << 7;
         /// Don't generate any code.
         const DEAD_CODE = 1 << 8;
+        /// Dedup redirected another block here, so it can be entered from more than one place
+        /// without a jump.
+        const REDIRECT_TARGET = 1 << 9;
+        /// This stack section head is only entered by falling through the preceding `JUMPI`,
+        /// so it keeps the previous section's virtual stack and stack length. Its
+        /// `stack_section` holds only the bounds that the previous sections have not checked;
+        /// the virtual stack already tracks the checked range.
+        const CONTINUES_STACK_SECTION = 1 << 10;
+        /// The host's own instruction implementation executes this opcode, through a builtin.
+        const HOST = 1 << 11;
+        /// The host implements this opcode in a way compiled code cannot reproduce, so a
+        /// program where it is reachable is not compiled.
+        const UNSUPPORTED_HOST = 1 << 12;
     }
 }
 

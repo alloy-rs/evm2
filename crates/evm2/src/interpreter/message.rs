@@ -36,7 +36,8 @@ pub type Message<T = BaseEvmTypes> = MessageExt<<T as EvmTypesHost>::MessageExt>
 pub struct MessageExt<E = ()> {
     /// Message kind.
     pub kind: MessageKind,
-    /// Current call depth.
+    /// Inspector-visible call depth, starting at
+    /// [`Version::initial_call_depth`](crate::Version::initial_call_depth).
     pub depth: u16,
     /// Gas available to this message.
     pub gas_limit: u64,
@@ -57,7 +58,8 @@ pub struct MessageExt<E = ()> {
     /// Address requested by the call opcode or transaction, before EIP-7702 code resolution.
     ///
     /// Unlike `destination`, this remains the requested callee for `CALLCODE` and
-    /// `DELEGATECALL`. For create messages it is the derived contract address.
+    /// `DELEGATECALL`. Native precompile dispatch uses this address before delegated bytecode.
+    /// For create messages it is the derived contract address.
     pub call_target: Address,
     /// Immediate caller.
     pub caller: Address,
@@ -66,13 +68,13 @@ pub struct MessageExt<E = ()> {
     /// Value transferred with the message.
     pub value: U256,
     /// Complete bytecode for direct execution, an account's entry chunk, or creation input.
+    ///
+    /// Resolved by the message's producer when it is constructed, so frames never load accounts
+    /// for code. Native precompile dispatch at [`MessageExt::call_target`] takes precedence.
     pub code: CodeChunk,
-    /// Address whose code is being executed. This can differ from `destination` for `CALLCODE`,
-    /// `DELEGATECALL`, and EIP-7702 delegated-code execution.
+    /// Address from which bytecode was resolved. This can differ from `destination` for
+    /// `CALLCODE`, `DELEGATECALL`, and EIP-7702 delegated-code execution.
     pub code_address: Address,
-    /// Whether native precompile dispatch is disabled for this frame because its bytecode was
-    /// loaded through an EIP-7702 delegation designation.
-    pub disable_precompiles: bool,
     /// Whether the immediate caller frame is executing in a static context. Combined with a
     /// `STATICCALL` kind, this determines whether the new frame is static.
     pub caller_is_static: bool,
@@ -106,7 +108,6 @@ impl<E> MessageExt<E> {
             value,
             code,
             code_address,
-            disable_precompiles,
             caller_is_static,
             salt,
             ext,
@@ -124,12 +125,30 @@ impl<E> MessageExt<E> {
             value,
             code,
             code_address,
-            disable_precompiles,
             caller_is_static,
             salt,
             ext: f(ext),
             _non_exhaustive,
         }
+    }
+
+    /// Returns `true` if the frame executing this message is static: the caller is static or the
+    /// message is a `STATICCALL`.
+    #[inline]
+    pub fn is_static(&self) -> bool {
+        self.caller_is_static || self.kind == MessageKind::StaticCall
+    }
+
+    /// Returns `true` if the account whose context the message runs in is the requested
+    /// [`call_target`](Self::call_target), i.e. it is not a `DELEGATECALL` or `CALLCODE` into
+    /// another account.
+    ///
+    /// This compares addresses, so a `DELEGATECALL` or `CALLCODE` to the executing account's own
+    /// address also counts as direct, and so does an EIP-7702 delegated `CALL`. Create messages
+    /// are always direct. Native precompiles can use this to reject delegated calls.
+    #[inline]
+    pub fn is_direct_call(&self) -> bool {
+        self.destination == self.call_target
     }
 }
 
@@ -149,5 +168,49 @@ pub fn derive_create_destination(
     match kind {
         MessageKind::Create2 => caller.create2(salt, keccak256(init_code)),
         _ => caller.create(nonce),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_static_follows_caller_or_staticcall_kind() {
+        let message = |kind, caller_is_static| MessageExt::<()> {
+            kind,
+            caller_is_static,
+            ..MessageExt::default()
+        };
+
+        assert!(!message(MessageKind::Call, false).is_static());
+        assert!(!message(MessageKind::DelegateCall, false).is_static());
+        assert!(message(MessageKind::Call, true).is_static());
+        assert!(message(MessageKind::DelegateCall, true).is_static());
+        assert!(message(MessageKind::StaticCall, false).is_static());
+        assert!(message(MessageKind::StaticCall, true).is_static());
+    }
+
+    #[test]
+    fn is_direct_call_rejects_delegated_code() {
+        let target = Address::with_last_byte(1);
+        let executing = Address::with_last_byte(2);
+        let caller = Address::with_last_byte(3);
+        let call = MessageExt::<()> {
+            kind: MessageKind::Call,
+            destination: target,
+            call_target: target,
+            caller,
+            ..MessageExt::default()
+        };
+        let delegated = |kind, destination| MessageExt { kind, destination, ..call.clone() };
+
+        assert!(call.is_direct_call());
+        assert!(delegated(MessageKind::StaticCall, target).is_direct_call());
+        assert!(delegated(MessageKind::Create, target).is_direct_call());
+        assert!(!delegated(MessageKind::DelegateCall, executing).is_direct_call());
+        assert!(!delegated(MessageKind::CallCode, executing).is_direct_call());
+        // Address-based: a delegate call to the executing account's own address is direct.
+        assert!(delegated(MessageKind::DelegateCall, target).is_direct_call());
     }
 }

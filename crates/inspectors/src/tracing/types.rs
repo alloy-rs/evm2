@@ -49,9 +49,9 @@ pub struct DecodedCallTrace {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CallTrace {
-    /// The depth of the call.
+    /// The inspector-visible depth of the call.
     ///
-    /// Zero represents the root trace node.
+    /// The root starts at [`evm2::Version::initial_call_depth`], normally zero.
     ///
     /// The depth of a call's steps is the depth of the call plus one.
     pub depth: usize,
@@ -689,13 +689,14 @@ pub struct CallTraceStep {
 }
 
 impl CallTraceStep {
-    /// Converts this step into a geth [StructLog]
+    /// Converts this step into a geth [StructLog] with the given `stack`.
     ///
-    /// This sets memory and stack capture based on the `opts` parameter.
+    /// This sets memory capture based on the `opts` parameter.
     pub(crate) fn convert_to_geth_struct_log(
         &self,
         opts: &GethDefaultTracingOptions,
         depth: u64,
+        stack: Option<Vec<U256>>,
     ) -> StructLog {
         StructLog {
             depth,
@@ -711,11 +712,7 @@ impl CallTraceStep {
             },
             pc: self.pc as u64,
             refund_counter: Some(self.gas_refund_counter),
-            stack: if opts.is_stack_enabled() {
-                self.stack.as_ref().map(|stack| stack.to_vec())
-            } else {
-                None
-            },
+            stack,
             memory: if opts.is_memory_enabled() {
                 self.memory.as_ref().map(RecordedMemory::memory_chunks)
             } else {
@@ -742,13 +739,13 @@ impl CallTraceStep {
         )
     }
 
-    // Returns true if the status code is an error or revert, See [InstrStop::Revert]
+    // Reverts are control flow; only exceptional halts populate a step error.
     #[inline]
     pub(crate) const fn is_error(&self) -> bool {
         let Some(status) = self.status else {
             return false;
         };
-        !status.is_success()
+        status.is_halt()
     }
 
     /// Returns the error message if it is an erroneous result.

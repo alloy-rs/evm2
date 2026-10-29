@@ -5,7 +5,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use alloy_primitives::{Bytes, KECCAK256_EMPTY, hex};
+use alloy_primitives::{Bytes, hex};
 use alloy_sol_types::{ContractError, GenericRevertReason};
 use evm2::{
     AccountInfo, CodeChunkLoadError, DatabaseError, SpecId,
@@ -49,7 +49,9 @@ pub(crate) fn fmt_error_msg(res: InstrStop, kind: TraceStyle) -> Option<String> 
         InstrStop::InvalidFEOpcode => {
             if kind.is_parity() { "Bad instruction" } else { "invalid opcode: INVALID" }.to_string()
         }
-        InstrStop::OpcodeNotFound | InstrStop::NotActivated => {
+        InstrStop::OpcodeNotFound
+        | InstrStop::NotActivated
+        | InstrStop::InvalidImmediateEncoding => {
             if kind.is_parity() { "Bad instruction" } else { "invalid opcode" }.to_string()
         }
         InstrStop::StackUnderflow => {
@@ -99,6 +101,10 @@ pub(crate) fn fmt_error_msg(res: InstrStop, kind: TraceStyle) -> Option<String> 
             "out of gas: not enough gas for reentrancy sentry"
         }
         .to_string(),
+        InstrStop::FatalExternalError => {
+            if kind.is_parity() { "Fatal external error" } else { "fatal external error" }
+                .to_string()
+        }
         status => format!("{status:?}"),
     };
 
@@ -137,7 +143,7 @@ pub(crate) fn load_account_code(
     db: &mut dyn DynDatabase,
     account: &AccountInfo,
 ) -> DbResult<Option<Bytes>> {
-    if account.code_hash == KECCAK256_EMPTY {
+    if account.is_empty_code_hash() {
         return Ok(None);
     }
     if let Some(code) = &account.code {
@@ -200,6 +206,7 @@ mod tests {
             (InstrStop::InvalidFEOpcode, "invalid opcode: INVALID", "Bad instruction"),
             (InstrStop::OpcodeNotFound, "invalid opcode", "Bad instruction"),
             (InstrStop::NotActivated, "invalid opcode", "Bad instruction"),
+            (InstrStop::InvalidImmediateEncoding, "invalid opcode", "Bad instruction"),
         ] {
             assert_eq!(fmt_error_msg(stop, TraceStyle::Geth).as_deref(), Some(geth));
             assert_eq!(fmt_error_msg(stop, TraceStyle::Parity).as_deref(), Some(parity));

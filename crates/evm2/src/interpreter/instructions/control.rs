@@ -2,7 +2,7 @@ use crate::{
     EvmFeatures, EvmTypesHost,
     bytecode::CODE_CHUNK_SIZE,
     interpreter::{InstrStop, Result, Word, op, opcode::OpCode, private::GasInstructionCx},
-    utils::{word_to_usize, word_to_usize_saturated},
+    utils::WordExt,
 };
 use core::hint::cold_path;
 use evm2_macros::instruction;
@@ -15,21 +15,21 @@ pub fn stop() -> Result {
 
 #[instruction(dynamic_gas)]
 pub fn jump(cx: _, [target]: [Word]) -> Result {
-    jump_inner(*target, &mut cx)
+    jump_inner(target, &mut cx)
 }
 
 #[instruction(dynamic_gas)]
 pub fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
-        jump_inner(*target, &mut cx)?;
+        jump_inner(target, &mut cx)?;
     } else {
         unsafe { cx.pc.advance_unchecked(1) };
     };
 }
 
 #[inline(always)]
-fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut GasInstructionCx<'_, '_, '_, T>) -> Result {
-    let target = word_to_usize_saturated(target);
+fn jump_inner<T: EvmTypesHost>(target: &Word, cx: &mut GasInstructionCx<'_, '_, '_, T>) -> Result {
+    let target = target.to_usize_saturated();
     let target = if cx.state.is_account_code() {
         if target >= cx.state.code_size() {
             return Err(InstrStop::InvalidJump);
@@ -70,12 +70,12 @@ fn jump_inner<T: EvmTypesHost>(target: Word, cx: &mut GasInstructionCx<'_, '_, '
 
 #[instruction]
 pub fn pc(cx: _) -> out {
-    *out = Word::from(cx.state.global_pc(*cx.pc));
+    out.write_u64(cx.state.global_pc(*cx.pc) as u64);
 }
 
 #[instruction(dynamic_gas)]
 pub fn gas(cx: _) -> out {
-    *out = Word::from(cx.gas.remaining());
+    out.write_u64(cx.gas.remaining());
 }
 
 #[instruction]
@@ -98,9 +98,9 @@ fn return_inner<T: EvmTypesHost>(
     len: &Word,
     result: InstrStop,
 ) -> Result {
-    let len = word_to_usize(*len)?;
+    let len = len.to_usize()?;
     let output = if len != 0 {
-        let offset = word_to_usize(*offset)?;
+        let offset = offset.to_usize()?;
         let Some(end) = offset.checked_add(len) else {
             return Err(InstrStop::MemoryOOG);
         };

@@ -1,9 +1,11 @@
 use crate::{
     EvmConfig, EvmTypesHost,
-    interpreter::{InterpreterState, Pc, Stack, StackMut, gas::Gas},
+    interpreter::{InterpreterState, Pc, Stack, StackBacking, StackMut, gas::Gas},
 };
 
 pub(super) type LoopState = ();
+
+pub(super) type Cursor = (Pc, usize);
 
 /// Single-return instruction function pointer.
 pub(in crate::interpreter::dispatch) type RawInstrFn<T> =
@@ -12,11 +14,12 @@ pub(in crate::interpreter::dispatch) type RawInstrFn<T> =
 #[inline(always)]
 pub(super) fn dispatch_loop_call<T: EvmTypesHost>(
     instr: RawInstrFn<T>,
-    pc: Pc,
-    mut stack: Stack<'_>,
+    (pc, stack_len): Cursor,
+    stack: &mut StackBacking,
     state: &mut InterpreterState<'_, '_, T>,
     _loop_state: &mut LoopState,
-) -> (Pc, usize) {
+) -> Cursor {
+    let mut stack = Stack::new(stack, stack_len);
     let next_pc = instr(pc, stack.as_mut(), state);
     (next_pc, stack.len)
 }

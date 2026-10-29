@@ -1,6 +1,6 @@
 //! Precompile dispatch interface.
 
-use super::{Evm, NonStaticAny};
+use super::{Evm, NonStaticAny, PrewarmSet};
 use crate::{
     EvmTypesHost, PrecompileError,
     interpreter::{GasTracker, Message},
@@ -45,6 +45,16 @@ pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
         Vec::new()
     }
 
+    /// Marks every precompile address as warm.
+    ///
+    /// Defaults to warming each of [`Self::addresses`]; providers should override it to avoid the
+    /// allocation, since it runs once per transaction.
+    fn warm_addresses(&self, warm: &mut PrewarmSet) {
+        for address in self.addresses() {
+            warm.warm(&address);
+        }
+    }
+
     /// Returns precompile addresses and identifiers.
     fn precompile_ids(&self) -> Vec<(Address, PrecompileId)>;
 
@@ -58,7 +68,10 @@ pub trait PrecompileProvider<T: EvmTypesHost>: NonStaticAny {
     fn move_precompiles(&mut self, moves: &[(Address, Address)])
     -> Result<(), MovePrecompileError>;
 
-    /// Executes the precompile at `address`, if one is registered.
+    /// Executes the precompile at [`Message::call_target`], if one is registered.
+    ///
+    /// Dispatch uses the original callee even when its stored code is an EIP-7702 delegation.
+    /// Returns `None` when the original callee has no registered precompile.
     fn execute(
         &mut self,
         evm: &mut Evm<'_, T>,

@@ -40,6 +40,8 @@ pub struct TxResultExt<E = ()> {
     /// Created contract address for successful create transactions.
     pub created_address: Option<Address>,
     /// Logs emitted by the transaction.
+    ///
+    /// Empty when [`EvmFeatures::LOG_COLLECTION`](crate::EvmFeatures::LOG_COLLECTION) is disabled.
     pub logs: Vec<Log>,
     /// EVM type-specific extension data.
     pub ext: E,
@@ -85,6 +87,28 @@ impl<E> TxResultExt<E> {
         }
     }
 
+    /// Returns whether execution succeeded.
+    #[inline]
+    pub const fn is_success(&self) -> bool {
+        self.status
+    }
+
+    /// Returns whether execution ended with the `REVERT` opcode.
+    ///
+    /// Unlike [`InstrStop::is_revert`], this does not count [`InstrStop::CallTooDeep`] or
+    /// [`InstrStop::OutOfFunds`]. Those are call-frame failures that the interpreter treats as
+    /// reverts, but a transaction result reports them as halts.
+    #[inline]
+    pub const fn is_revert(&self) -> bool {
+        !self.status && matches!(self.stop, InstrStop::Revert)
+    }
+
+    /// Returns whether execution failed for a reason other than the `REVERT` opcode.
+    #[inline]
+    pub const fn is_halt(&self) -> bool {
+        !self.status && !self.is_revert()
+    }
+
     /// Returns the receipt gas-used value: `max(total_gas_spent - refunded, floor_gas)`.
     #[inline]
     pub const fn tx_gas_used(&self) -> u64 {
@@ -113,6 +137,22 @@ impl<E> TxResultExt<E> {
     #[inline]
     pub const fn state_gas_spent(&self) -> u64 {
         self.state_gas_spent
+    }
+
+    /// Returns the effective gas refund after the EIP-7623 floor adjustment.
+    ///
+    /// [`Self::refunded`] is capped per EIP-3529 but still pre-floor. When the floor binds —
+    /// `total_gas_spent - refunded < floor_gas` — the floor charge absorbs the refund entirely
+    /// and this returns zero; otherwise it returns [`Self::refunded`]. Consumers computing net
+    /// cost as `total_gas_spent - refund` should use this rather than the raw field; the receipt
+    /// value is [`Self::tx_gas_used`].
+    #[inline]
+    pub const fn final_refunded(&self) -> u64 {
+        if self.total_gas_spent.saturating_sub(self.refunded) < self.floor_gas {
+            0
+        } else {
+            self.refunded
+        }
     }
 }
 
@@ -328,7 +368,7 @@ pub struct TxResultWithState<T: EvmTypesHost = crate::BaseEvmTypes> {
 
 #[cfg(test)]
 mod tests {
-    use super::TxResultExt;
+    use super::*;
 
     fn result(
         total_gas_spent: u64,
@@ -354,6 +394,23 @@ mod tests {
         assert_eq!(r.execution_gas_spent(), 70_000);
         assert_eq!(r.state_gas_spent(), 30_000);
         assert_eq!(r.execution_gas_spent() + r.state_gas_spent(), r.total_gas_spent);
+    }
+
+    #[test]
+    fn status_helpers_classify_stop_reasons() {
+        let with_stop = |status, stop| TxResultExt::<()> { status, stop, ..TxResultExt::default() };
+
+        let success = with_stop(true, InstrStop::Return);
+        assert!(success.is_success() && !success.is_revert() && !success.is_halt());
+
+        let revert = with_stop(false, InstrStop::Revert);
+        assert!(!revert.is_success() && revert.is_revert() && !revert.is_halt());
+
+        // Counted by `InstrStop::is_revert`, but not a top-level `REVERT`.
+        for stop in [InstrStop::OutOfFunds, InstrStop::CallTooDeep, InstrStop::OutOfGas] {
+            let halt = with_stop(false, stop);
+            assert!(!halt.is_success() && !halt.is_revert() && halt.is_halt(), "{stop:?}");
+        }
     }
 
     #[test]

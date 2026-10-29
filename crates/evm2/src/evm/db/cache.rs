@@ -211,10 +211,13 @@ impl<ExtDB> CacheDB<ExtDB> {
 
         for (&address, entry) in accounts {
             let overlay = &entry.storage;
+            // Like revm's in-block cache, later transactions read the unchanged slots of a created
+            // account as zero, without a storage wipe reaching the state stream.
+            let wiped = overlay.wiped || entry.discards_storage();
             let mut changed_slots = overlay.changed_slots().peekable();
-            if overlay.wiped || changed_slots.peek().is_some() {
+            if wiped || changed_slots.peek().is_some() {
                 let storage = self.cache.storage.entry(address).or_default();
-                if overlay.wiped {
+                if wiped {
                     storage.wipe();
                 }
                 storage.slots.extend(changed_slots.map(|(&key, slot)| (key, slot.current)));
@@ -247,7 +250,7 @@ impl<ExtDB> CacheDB<ExtDB> {
         if let Some(code) = &info.code
             && !code.is_empty()
         {
-            if info.code_hash == KECCAK256_EMPTY {
+            if info.is_empty_code_hash() {
                 info.code_hash = code.hash_slow();
             }
             cache.insert_complete_code(info.code_hash, code);
@@ -277,6 +280,20 @@ impl<ExtDB> CacheDB<ExtDB> {
         self.cache.storage.entry(*address).or_default().slots.insert(*key, *value);
     }
 
+    /// Drops all cached storage for `address` and returns it.
+    ///
+    /// This discards both read-cached slots and accepted (committed) writes, along with any
+    /// storage wipe marker, so later reads of the address fall through to the backing database.
+    /// Cached account info is kept.
+    ///
+    /// Reads then fall through to the backing database, including for slots that a storage wipe
+    /// had zeroed, unless the account is cached as absent (for example after a committed
+    /// selfdestruct): those reads still return zero.
+    #[inline]
+    pub fn remove_account_storage(&mut self, address: &Address) -> Option<AccountStorageCache> {
+        self.cache.storage.remove(address)
+    }
+
     /// Sets a historical block hash.
     #[inline]
     pub fn insert_block_hash(&mut self, number: &Word, hash: &B256) {
@@ -287,6 +304,9 @@ impl<ExtDB> CacheDB<ExtDB> {
 /// Applies streamed changes to the cache and forwards every callback to [`BalContext`]'s own sink
 /// impl, so a visited source folds into the BAL builder exactly like [`CacheDB::commit_pending`]
 /// when construction is enabled.
+///
+/// Unlike [`CacheDB::commit_pending`], this keeps the old storage of a created account, as revm's
+/// bundle does: only a storage wipe or an account deletion drops cached slots.
 impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     type Error = Infallible;
 
@@ -390,8 +410,8 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        // Serve the slot from the attached read BAL when it covers a write at or before the current
-        // index; otherwise fall through to the cache/database.
+        // Serve the slot from the attached read BAL when it covers a write strictly before the
+        // current index; otherwise fall through to the cache/database.
         match self.bal_context.bal_storage(address, key) {
             Ok(Some(value)) => return Ok(value),
             Ok(None) => {}
@@ -638,6 +658,51 @@ mod tests {
         cache.commit_pending(&pending);
 
         assert_eq!(cache.get_storage(&address, &key).unwrap(), value);
+    }
+
+    #[test]
+    fn remove_account_storage_falls_through_to_backing_db() {
+        let address = Address::with_last_byte(1);
+        let other = Address::with_last_byte(2);
+        let key = Word::from(2);
+        let committed = Word::from(3);
+        let backing = Word::from(4);
+        let mut cache = CacheDB::new(crate::evm::Db::new(CountingDB {
+            account: Some(AccountInfo::default()),
+            storage: backing,
+            ..CountingDB::default()
+        }));
+        let mut pending = PendingState::default();
+        for account in [address, other] {
+            pending.insert_account(
+                account,
+                Some(AccountInfo::default()),
+                Some(AccountInfo::default()),
+            );
+            pending.insert_storage(account, key, backing, committed);
+        }
+        cache.commit_pending(&pending);
+        assert_eq!(cache.get_storage(&address, &key).unwrap(), committed);
+        assert_eq!(cache.db.inner().storage_loads, 0);
+
+        let removed = cache.remove_account_storage(&address).unwrap();
+        assert_eq!(removed.slots[&key], committed);
+
+        assert_eq!(cache.get_storage(&address, &key).unwrap(), backing);
+        assert_eq!(cache.db.inner().storage_loads, 1);
+        assert_eq!(cache.get_storage(&other, &key).unwrap(), committed);
+        assert!(cache.remove_account_storage(&Address::with_last_byte(9)).is_none());
+
+        // A wiped account reads from the backing database once its wipe marker is removed.
+        cache.cache.storage.entry(other).or_default().wipe();
+        assert_eq!(cache.get_storage(&other, &key).unwrap(), Word::ZERO);
+        cache.remove_account_storage(&other);
+        assert_eq!(cache.get_storage(&other, &key).unwrap(), backing);
+
+        // An account cached as absent still shadows the backing database.
+        cache.cache.accounts.insert(other, None);
+        cache.remove_account_storage(&other);
+        assert_eq!(cache.get_storage(&other, &key).unwrap(), Word::ZERO);
     }
 
     #[test]

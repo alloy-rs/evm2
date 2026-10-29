@@ -1,7 +1,8 @@
 //! Owned pending transaction state detached from the EVM.
 
 use super::{
-    Account, AccountChanges, AccountInfo, StateChangeSink, StateChangeSource, StorageSlot, Tracked,
+    Account, AccountChanges, AccountFlags, AccountInfo, StateChangeSink, StateChangeSource,
+    StorageSlot, Tracked,
 };
 use crate::interpreter::Word;
 use alloy_primitives::{
@@ -57,11 +58,12 @@ impl PendingState {
     ) {
         let code_changed = original.as_ref().map(|account| account.code_hash)
             != current.as_ref().map(|account| account.code_hash);
+        let flags = if code_changed { AccountFlags::CODE_CHANGED } else { AccountFlags::empty() };
         let account = self.accounts.entry(address).or_default();
         *account = Account {
             original,
             present: current,
-            code_changed,
+            flags,
             storage: core::mem::take(&mut account.storage),
             ..Account::default()
         };
@@ -102,6 +104,15 @@ impl PendingState {
         self.accounts.iter().map(|(&address, account)| {
             account.changes(address, self.selfdestructs.contains(&address))
         })
+    }
+
+    /// Returns the changes of the account at `address`, or `None` if the transaction did not load
+    /// it.
+    #[inline]
+    pub fn account_changes_for(&self, address: &Address) -> Option<AccountChanges<'_>> {
+        self.accounts
+            .get(address)
+            .map(|account| account.changes(*address, self.selfdestructs.contains(address)))
     }
 }
 
@@ -145,5 +156,33 @@ mod tests {
             state.accounts[&address].storage.slots[&key].value,
             Tracked::from_parts(Word::from(2), Word::from(3))
         );
+    }
+
+    #[test]
+    fn account_changes_for_looks_up_one_address() {
+        let changed = Address::with_last_byte(0xaa);
+        let unchanged = Address::with_last_byte(0xbb);
+        let info = AccountInfo { nonce: 1, ..AccountInfo::default() };
+        let mut state = PendingState::default();
+        state.insert_account(
+            changed,
+            Some(info.clone()),
+            Some(AccountInfo { nonce: 2, ..info.clone() }),
+        );
+        state.insert_account(unchanged, Some(info.clone()), Some(info.clone()));
+        let destroyed = Address::with_last_byte(0xdd);
+        state.insert_account(destroyed, Some(info.clone()), Some(info));
+        state.selfdestructs.insert(destroyed);
+
+        let changes = state.account_changes_for(&changed).unwrap();
+        assert_eq!(changes.address, changed);
+        assert!(changes.is_changed());
+        let changes = state.account_changes_for(&unchanged).unwrap();
+        assert_eq!(changes.address, unchanged);
+        assert!(!changes.is_changed());
+        let changes = state.account_changes_for(&destroyed).unwrap();
+        assert!(changes.selfdestructed);
+        assert!(changes.is_changed());
+        assert!(state.account_changes_for(&Address::with_last_byte(0xcc)).is_none());
     }
 }

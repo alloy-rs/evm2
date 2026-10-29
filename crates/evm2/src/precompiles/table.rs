@@ -1,5 +1,9 @@
 use crate::{
     BaseEvmTypes, Evm, EvmTypesHost,
+    evm::{
+        PrewarmSet,
+        prewarm_set::{ShortAddresses, short_address},
+    },
     interpreter::{GasTracker, Message},
     precompiles::{
         PrecompileId, PrecompileResult, blake2, bls12_381, bn254, hash, identity,
@@ -140,6 +144,11 @@ impl<T: EvmTypesHost> PrecompileData<T> {
 #[derive_where(Clone, Debug, Default)]
 pub struct PrecompileMap<T: EvmTypesHost = BaseEvmTypes> {
     inner: AddressMap<PrecompileData<T>>,
+    /// Short addresses (see [`short_address`]) present in `inner`, so lookups and per-transaction
+    /// warming of the usual low-numbered precompiles skip hashing.
+    short: ShortAddresses,
+    /// Number of precompiles in `inner` at addresses that are not short.
+    long_count: usize,
 }
 
 impl<T: EvmTypesHost> PrecompileMap<T> {
@@ -152,7 +161,10 @@ impl<T: EvmTypesHost> PrecompileMap<T> {
     /// Creates an empty precompile map with at least the specified capacity.
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
-        Self { inner: AddressMap::with_capacity_and_hasher(capacity, Default::default()) }
+        Self {
+            inner: AddressMap::with_capacity_and_hasher(capacity, Default::default()),
+            ..Self::default()
+        }
     }
 
     /// Reserves capacity for at least `additional` more precompiles.
@@ -181,13 +193,35 @@ impl<T: EvmTypesHost> PrecompileMap<T> {
     #[inline]
     pub fn insert(&mut self, precompile: Precompile<T>) -> Option<Precompile<T>> {
         let address = precompile.address();
-        self.inner.insert(address, precompile.into_data()).map(|data| Precompile { address, data })
+        let previous = self.inner.insert(address, precompile.into_data());
+        if previous.is_none() {
+            self.track_inserted(&address);
+        }
+        previous.map(|data| Precompile { address, data })
     }
 
     /// Removes a precompile by address.
     #[inline]
     pub fn remove(&mut self, address: Address) -> Option<Precompile<T>> {
-        self.inner.remove(&address).map(|data| Precompile { address, data })
+        let data = self.inner.remove(&address)?;
+        self.track_removed(&address);
+        Some(Precompile { address, data })
+    }
+
+    /// Records a newly inserted address in the short-address index.
+    fn track_inserted(&mut self, address: &Address) {
+        match short_address(address) {
+            Some(index) => self.short.set(index),
+            None => self.long_count += 1,
+        }
+    }
+
+    /// Removes a removed address from the short-address index.
+    fn track_removed(&mut self, address: &Address) {
+        match short_address(address) {
+            Some(index) => self.short.unset(index),
+            None => self.long_count -= 1,
+        }
     }
 
     /// Removes a precompile by descriptor address.
@@ -205,7 +239,11 @@ impl<T: EvmTypesHost> PrecompileMap<T> {
     /// Returns the precompile data at `address`, if any.
     #[inline]
     pub(super) fn get_data(&self, address: &Address) -> Option<&PrecompileData<T>> {
-        self.inner.get(address)
+        match short_address(address) {
+            Some(index) if !self.short.get(index) => None,
+            None if self.long_count == 0 => None,
+            _ => self.inner.get(address),
+        }
     }
 
     /// Maps the precompile at `address`, if it exists.
@@ -245,9 +283,11 @@ impl<T: EvmTypesHost> PrecompileMap<T> {
                 *data = new_data;
             } else {
                 self.inner.remove(address);
+                self.track_removed(address);
             }
         } else if let Some(data) = f(None) {
             self.inner.insert(*address, data);
+            self.track_inserted(address);
         }
     }
 
@@ -336,7 +376,21 @@ impl<T: EvmTypesHost> PrecompileMap<T> {
     /// Returns `true` if the map contains `address`.
     #[inline]
     pub fn contains(&self, address: &Address) -> bool {
-        self.inner.contains_key(address)
+        match short_address(address) {
+            Some(index) => self.short.get(index),
+            None => self.long_count != 0 && self.inner.contains_key(address),
+        }
+    }
+
+    /// Marks every precompile address as warm.
+    #[inline]
+    pub fn warm_addresses(&self, warm: &mut PrewarmSet) {
+        warm.warm_short_addresses(&self.short);
+        if self.long_count != 0 {
+            for address in self.inner.keys() {
+                warm.warm(address);
+            }
+        }
     }
 
     /// Returns the number of precompiles in this map.
@@ -574,5 +628,55 @@ mod tests {
 
         assert!(map.contains(&first));
         assert!(!map.contains(&second));
+    }
+
+    #[test]
+    fn get_data_matches_inner_lookup() {
+        let identity = IDENTITY::<BaseEvmTypes>();
+        let identity_address = identity.address();
+        let short_miss = address!("0x0000000000000000000000000000000000000999");
+        let long = address!("0x1000000000000000000000000000000000000004");
+        let long_miss = address!("0x1000000000000000000000000000000000000005");
+        let mut map = PrecompileMap::from_precompiles([identity]);
+
+        assert_eq!(map.get_data(&identity_address).unwrap().id(), &PrecompileId::Identity);
+        assert!(map.get_data(&short_miss).is_none());
+        assert!(map.get_data(&long).is_none());
+
+        map.move_precompiles([(identity_address, long)]).unwrap();
+
+        assert!(map.get_data(&identity_address).is_none());
+        assert_eq!(map.get_data(&long).unwrap().id(), &PrecompileId::Identity);
+        assert!(map.get_data(&long_miss).is_none());
+
+        map.remove(long);
+
+        assert!(map.get_data(&long).is_none());
+    }
+
+    #[test]
+    fn warm_addresses_marks_short_and_long_precompiles() {
+        let identity = IDENTITY::<BaseEvmTypes>();
+        let sha256 = SHA256::<BaseEvmTypes>();
+        let identity_address = identity.address();
+        let sha256_address = sha256.address();
+        let long = address!("0x1000000000000000000000000000000000000004");
+        let mut map = PrecompileMap::from_precompiles([identity, sha256]);
+        map.move_precompiles([(sha256_address, long)]).unwrap();
+
+        let mut warm = PrewarmSet::new();
+        map.warm_addresses(&mut warm);
+        assert!(warm.is_warm(&identity_address));
+        assert!(warm.is_warm(&long));
+        assert!(!warm.is_warm(&sha256_address));
+
+        map.move_precompiles([(long, sha256_address)]).unwrap();
+        assert!(!map.contains(&long));
+        assert!(map.contains(&sha256_address));
+
+        let mut warm = PrewarmSet::new();
+        map.warm_addresses(&mut warm);
+        assert!(warm.is_warm(&sha256_address));
+        assert!(!warm.is_warm(&long));
     }
 }

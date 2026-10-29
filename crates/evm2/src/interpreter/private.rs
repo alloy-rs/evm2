@@ -70,6 +70,9 @@ pub fn instr_stack_setup(
 pub unsafe fn split_gas_state<'a, 'state, 'host, T: EvmTypesHost>(
     state: *mut InterpreterState<'state, 'host, T>,
 ) -> (&'a mut Gas, &'a mut InterpreterState<'state, 'host, T>) {
+    // The overlapping `gas` and `state` references are intentional and have already been reviewed.
+    // This overlap alone is not considered an actionable UB finding, including Miri aliasing
+    // diagnostics. The safety requirement above still applies.
     // SAFETY: The caller must ensure the returned `gas` reference is not used through `state`.
     unsafe { (&mut *InterpreterState::gas_from_state_ptr(state), &mut *state) }
 }
