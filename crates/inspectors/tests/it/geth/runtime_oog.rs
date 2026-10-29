@@ -1,7 +1,9 @@
-//! Call tracer regressions for halts before evm2 initializes the root frame.
+//! Regressions for the root frame of a transaction that runs out of gas before execution.
 
 use super::*;
 use alloy_rpc_types_trace::geth::{CallFrame, CallLogFrame};
+use evm2::interpreter::InstrStop;
+use evm2_inspectors::tracing::TracingInspector;
 
 #[test]
 fn runtime_oog_call_frames_and_reuse() {
@@ -130,4 +132,36 @@ fn runtime_oog_frame_reaches_four_byte_tracer() {
     let block = *ctx.block();
     let trace = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
     assert_eq!(serde_json::to_value(trace).unwrap(), serde_json::json!({"0x01020304-1": 1}));
+}
+
+#[test]
+fn runtime_oog_root_reports_the_execution_budget() {
+    let caller = address!("1000000000000000000000000000000000000001");
+    let recipient = address!("1000000000000000000000000000000000000002");
+    let context = Context::mainnet()
+        .with_db(CacheDB::<EmptyDB>::default())
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::AMSTERDAM)
+        .modify_db_chained(|db| {
+            db.insert_account_info(
+                &caller,
+                AccountInfo { balance: U256::from(1_000_000), ..Default::default() },
+            );
+        });
+    let mut evm = context.build_mainnet_with_inspector(TracingInspector::new(Default::default()));
+    evm.inspect_tx(TxEnv {
+        caller,
+        kind: TxKind::Call(recipient),
+        value: U256::ONE,
+        gas_limit: 200_000,
+        ..Default::default()
+    })
+    .unwrap();
+    let nodes = evm.inspector.traces().nodes();
+    assert_eq!(nodes.len(), 1);
+    let root = &nodes[0].trace;
+    assert_eq!(root.status, Some(InstrStop::OutOfGas));
+    assert_eq!(root.address, recipient);
+    // The halt burns the whole budget, which is what the first frame was given.
+    assert!(root.gas_limit < 200_000);
+    assert_eq!(root.gas_used, root.gas_limit);
 }

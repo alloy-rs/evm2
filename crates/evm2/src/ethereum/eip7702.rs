@@ -171,7 +171,16 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
         )
     };
     let frame = if auth_oog {
-        halted_initial_frame(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, &tx_gas)
+        halted_initial_frame(
+            req.host,
+            caller,
+            tx.nonce,
+            tx.to.into(),
+            &tx.input,
+            tx.value,
+            execution_gas_limit,
+            reservoir,
+        )
     } else {
         prepare_initial_frame(
             req.host,

@@ -41,6 +41,10 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     ///
     /// The interpreter is the currently running frame whose instruction produced the message; for
     /// the top-level message it is a frame initialized with the message itself.
+    ///
+    /// A first frame that runs out of gas in the transaction's runtime gas phase halts without
+    /// executing: this hook still fires for it, with a message that carries no bytecode, a
+    /// returned result is ignored, and [`Inspector::call_end`] receives the out-of-gas result.
     #[inline]
     fn call(
         &mut self,
@@ -69,6 +73,10 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     ///
     /// The interpreter is the currently running frame whose instruction produced the message; for
     /// the top-level message it is a frame initialized with the message itself.
+    ///
+    /// A first frame that runs out of gas in the transaction's runtime gas phase halts without
+    /// executing: this hook still fires for it, with a message that carries no bytecode, a
+    /// returned result is ignored, and [`Inspector::create_end`] receives the out-of-gas result.
     #[inline]
     fn create(
         &mut self,

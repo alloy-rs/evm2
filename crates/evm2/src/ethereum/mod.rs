@@ -577,8 +577,11 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
     value: U256,
     tx_gas: &mut GasTracker,
 ) -> HandlerResult<InitialFrame<T>> {
-    let halted = |host: &Evm<'a, T>, tx_gas: &GasTracker| {
-        halted_initial_frame(host, caller, nonce, to, input, value, tx_gas)
+    // A failed charge leaves `tx_gas` out of range, so the halted frame reports the budget the
+    // phase started with.
+    let (gas_limit, reservoir) = (tx_gas.remaining(), tx_gas.reservoir());
+    let halted = |host: &Evm<'a, T>| {
+        halted_initial_frame(host, caller, nonce, to, input, value, gas_limit, reservoir)
     };
     let mut charged_state_gas = 0;
     let message = match to {
@@ -593,7 +596,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
             if host.feature(EvmFeatures::EIP2780) && !value.is_zero() && recipient_is_empty {
                 let new_account_state_gas = host.version().gas_params.new_account_state_gas();
                 if tx_gas.spend_state(new_account_state_gas).is_err() {
-                    return Ok(halted(host, tx_gas));
+                    return Ok(halted(host));
                 }
                 charged_state_gas = new_account_state_gas;
             }
@@ -610,17 +613,17 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                     // list.
                     let cold_additional = host.version().gas_params.cold_account_additional_cost();
                     if tx_gas.spend(u64::from(WARM_STORAGE_READ_COST)).is_err() {
-                        return Ok(halted(host, tx_gas));
+                        return Ok(halted(host));
                     }
                     let skip_cold_load = tx_gas.remaining() < cold_additional;
                     let load =
                         match Host::load_account(host, &delegated_address, true, skip_cold_load) {
                             Ok(load) => load,
-                            Err(HostError::Halt(_)) => return Ok(halted(host, tx_gas)),
+                            Err(HostError::Halt(_)) => return Ok(halted(host)),
                             Err(HostError::Execution(error)) => return Err(error.into()),
                         };
                     if load.is_cold && tx_gas.spend(cold_additional).is_err() {
-                        return Ok(halted(host, tx_gas));
+                        return Ok(halted(host));
                     }
                     code = load.code;
                 } else {
@@ -656,7 +659,7 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
                 if !target_alive {
                     let create_state_gas = host.version().gas_params.create_state_gas();
                     if tx_gas.spend_state(create_state_gas).is_err() {
-                        return Ok(halted(host, tx_gas));
+                        return Ok(halted(host));
                     }
                     charged_state_gas = create_state_gas;
                 }
@@ -686,8 +689,8 @@ pub fn prepare_initial_frame<'a, T: EvmTypes>(
 
 /// Builds the first frame of a transaction whose runtime gas phase ran out of gas.
 ///
-/// The message names the call or create the transaction would have run, with the budget `tx_gas`
-/// had left at the failed charge and no resolved bytecode, and it reads no account state: the
+/// The message names the call or create the transaction would have run, with the budget the
+/// runtime gas phase started with and no resolved bytecode, and it reads no account state: the
 /// recipient of an unaffordable charge stays out of the EIP-7928 block access list.
 /// [`execute_initial_frame`] halts it with out-of-gas, reporting the frame to the inspector.
 pub fn halted_initial_frame<T: EvmTypes>(
@@ -697,7 +700,8 @@ pub fn halted_initial_frame<T: EvmTypes>(
     to: TxKind,
     input: &Bytes,
     value: U256,
-    tx_gas: &GasTracker,
+    gas_limit: u64,
+    reservoir: u64,
 ) -> InitialFrame<T> {
     let (kind, destination) = match to {
         TxKind::Call(to) => (MessageKind::Call, to),
@@ -706,8 +710,8 @@ pub fn halted_initial_frame<T: EvmTypes>(
     let message = MessageExt {
         kind,
         depth: host.version().initial_call_depth,
-        gas_limit: tx_gas.remaining(),
-        reservoir: tx_gas.reservoir(),
+        gas_limit,
+        reservoir,
         destination,
         call_target: destination,
         caller,
