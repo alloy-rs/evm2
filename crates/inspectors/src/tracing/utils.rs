@@ -10,6 +10,7 @@ use alloy_primitives::{Bytes, hex};
 use alloy_sol_types::{ContractError, GenericRevertReason};
 use evm2::{
     AccountInfo, SpecId, Version,
+    constants::STACK_LIMIT,
     evm::{DbResult, DynDatabase},
     interpreter::{
         InstrStop,
@@ -17,9 +18,6 @@ use evm2::{
         opcode::{OpCode, op},
     },
 };
-
-/// The maximum stack size of the EVM.
-const STACK_LIMIT: usize = 1024;
 
 /// What geth's error text for an opcode halt reports beyond the [`InstrStop`].
 #[derive(Clone, Copy, Debug, Default)]
@@ -34,7 +32,7 @@ pub(crate) struct StepContext {
 }
 
 /// An opcode halt as geth reports it.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct GethHalt {
     /// The error text.
     pub(crate) msg: String,
