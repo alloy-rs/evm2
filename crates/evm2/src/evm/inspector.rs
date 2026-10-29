@@ -9,6 +9,93 @@ use alloc::boxed::Box;
 use alloy_primitives::{Address, Log, U256};
 use auto_impl::auto_impl;
 
+/// Set of opcodes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OpcodeSet(U256);
+
+impl OpcodeSet {
+    /// Set containing no opcode.
+    pub const EMPTY: Self = Self(U256::ZERO);
+
+    /// Set containing every opcode value.
+    pub const ALL: Self = Self(U256::MAX);
+
+    /// Returns whether the set contains `opcode`.
+    #[inline]
+    pub const fn contains(&self, opcode: u8) -> bool {
+        self.0.bit(opcode as usize)
+    }
+
+    /// Adds `opcode` to the set.
+    #[inline]
+    pub const fn insert(&mut self, opcode: u8) {
+        self.0.set_bit(opcode as usize, true);
+    }
+
+    /// Removes `opcode` from the set.
+    #[inline]
+    pub const fn remove(&mut self, opcode: u8) {
+        self.0.set_bit(opcode as usize, false);
+    }
+
+    /// Returns the opcodes in `self` or `other`.
+    #[inline]
+    pub fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+impl FromIterator<u8> for OpcodeSet {
+    fn from_iter<I: IntoIterator<Item = u8>>(opcodes: I) -> Self {
+        let mut set = Self::EMPTY;
+        for opcode in opcodes {
+            set.insert(opcode);
+        }
+        set
+    }
+}
+
+/// Which parts of execution an [`Inspector`] observes.
+///
+/// Returned by [`Inspector::config`]. The EVM reads it when a frame starts and after each message
+/// opcode returns into the frame, and runs the frame on an instruction table that only calls the
+/// step hooks the config asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InspectorConfig {
+    /// Opcodes for which [`Inspector::step`] and [`Inspector::step_end`] are called.
+    pub steps: OpcodeSet,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
+}
+
+impl InspectorConfig {
+    /// Creates a config that calls the step hooks for every opcode.
+    #[inline]
+    pub const fn new() -> Self {
+        Self { steps: OpcodeSet::ALL, _non_exhaustive: () }
+    }
+
+    /// Sets the opcodes for which the step hooks are called.
+    #[inline]
+    pub const fn with_steps(mut self, steps: OpcodeSet) -> Self {
+        self.steps = steps;
+        self
+    }
+
+    /// Returns a config that observes everything either `self` or `other` observes.
+    #[inline]
+    pub fn union(self, other: Self) -> Self {
+        self.with_steps(self.steps.union(other.steps))
+    }
+}
+
+impl Default for InspectorConfig {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// EVM execution inspector.
 #[auto_impl(&mut, Box)]
 pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
@@ -16,6 +103,17 @@ pub trait Inspector<T: EvmTypesHost>: NonStaticAny {
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, T>) {
         let _ = interp;
+    }
+
+    /// Returns which opcodes get [`Self::step`] and [`Self::step_end`] calls.
+    ///
+    /// Read when a frame starts and after each `CALL`, `CALLCODE`, `DELEGATECALL`, `STATICCALL`,
+    /// `CREATE` and `CREATE2` returns into the frame, so a child message may change the answer.
+    /// The default asks for every opcode. Call, create, log and self-destruct hooks run
+    /// regardless.
+    #[inline]
+    fn config(&self) -> InspectorConfig {
+        InspectorConfig::new()
     }
 
     /// Called before each instruction executes.
@@ -481,6 +579,235 @@ mod tests {
         assert_eq!(result.stop, InstrStop::Stop);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
+    }
+
+    /// Records the stack and gas around the steps its config asks for.
+    #[derive(Default)]
+    struct ConfigInspector {
+        before: OpcodeSet,
+        after: Option<OpcodeSet>,
+        switched: bool,
+        /// Opcodes between their `step` and `step_end`, innermost frame last.
+        running: Vec<u8>,
+        steps: Vec<(u8, u64, Vec<Word>)>,
+        step_ends: Vec<(u8, u64, Vec<Word>)>,
+        calls: usize,
+        creates: usize,
+        logs: Vec<Log>,
+    }
+
+    impl ConfigInspector {
+        fn new(steps: OpcodeSet) -> Self {
+            Self { before: steps, ..Default::default() }
+        }
+
+        /// Uses `after` instead of `before` once a child message starts.
+        fn switching_to(mut self, after: OpcodeSet) -> Self {
+            self.after = Some(after);
+            self
+        }
+    }
+
+    impl Inspector<BaseEvmTypes> for ConfigInspector {
+        fn config(&self) -> InspectorConfig {
+            let steps = match self.after {
+                Some(after) if self.switched => after,
+                _ => self.before,
+            };
+            InspectorConfig::new().with_steps(steps)
+        }
+
+        fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            let opcode = interp.opcode();
+            self.running.push(opcode);
+            self.steps.push((opcode, interp.gas().remaining(), interp.stack().to_vec()));
+        }
+
+        fn step_end(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
+            let opcode = self.running.pop().unwrap();
+            self.step_ends.push((opcode, interp.gas().remaining(), interp.stack().to_vec()));
+        }
+
+        fn log(&mut self, log: &Log, _host: &mut Evm<'_, BaseEvmTypes>) {
+            self.logs.push(log.clone());
+        }
+
+        fn call(
+            &mut self,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            self.calls += 1;
+            // Like a cheatcode that changes what its caller's inspector wants to see.
+            self.switched |= message.depth > 0;
+            None
+        }
+
+        fn create(
+            &mut self,
+            _interp: &mut Interpreter<'_, '_, BaseEvmTypes>,
+            _message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            self.creates += 1;
+            None
+        }
+    }
+
+    fn opcode_set(opcodes: impl IntoIterator<Item = u8>) -> OpcodeSet {
+        opcodes.into_iter().collect()
+    }
+
+    /// Runs `code` through the first call of a frame without an inspector.
+    fn run_evm_uninspected(
+        db: InMemoryDB,
+        code: Vec<u8>,
+        gas_limit: u64,
+    ) -> (MessageResult<BaseEvmTypes>, Vec<Log>) {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            db,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let mut message =
+            MessageExt { gas_limit, code: legacy_bytecode(code), ..Default::default() };
+        let result = Host::execute_message(&mut evm, &mut message).unwrap();
+        (result, evm.logs().to_vec())
+    }
+
+    /// Code that stores, loads, logs, calls a child that loads a slot, and creates.
+    fn config_test_code() -> (InMemoryDB, Vec<u8>) {
+        let child = Address::from([0x66; 20]);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &child,
+            AccountInfo::default().with_code(legacy_bytecode(vec![
+                op::PUSH0,
+                op::SLOAD,
+                op::POP,
+                op::STOP,
+            ])),
+        );
+        let mut code = vec![op::PUSH1, 5, op::PUSH0, op::SSTORE, op::PUSH0, op::SLOAD, op::POP];
+        code.extend([op::PUSH1, 0xaa, op::PUSH0, op::MSTORE8, op::PUSH1, 1, op::PUSH0, op::LOG0]);
+        code.extend(call_code(child));
+        code.extend([op::CALL, op::POP]);
+        code.extend(create_code());
+        code.extend([op::CREATE, op::POP, op::PUSH0, op::SLOAD, op::POP, op::STOP]);
+        (db, code)
+    }
+
+    #[test]
+    fn sparse_steps_match_full_inspector_at_those_opcodes() {
+        let (db, code) = config_test_code();
+        let (expected, expected_logs) = run_evm_uninspected(db.clone(), code.clone(), 1_000_000);
+        let (result, full, _) = run_evm_with_inspector_db(
+            db.clone(),
+            code.clone(),
+            &MessageExt::default(),
+            1_000_000,
+            ConfigInspector::new(OpcodeSet::ALL),
+        );
+        assert_eq!(result, expected);
+        assert_eq!(full.logs, expected_logs);
+
+        for opcodes in [
+            vec![op::SLOAD, op::SSTORE, op::CALL, op::CREATE],
+            vec![op::SLOAD],
+            vec![op::CALL, op::CREATE, op::CREATE2],
+            vec![op::POP, op::STOP, op::LOG0],
+            vec![op::INVALID],
+        ] {
+            let steps = opcode_set(opcodes);
+            let (result, sparse, _) = run_evm_with_inspector_db(
+                db.clone(),
+                code.clone(),
+                &MessageExt::default(),
+                1_000_000,
+                ConfigInspector::new(steps),
+            );
+            let filter = |records: &[(u8, u64, Vec<Word>)]| {
+                records
+                    .iter()
+                    .filter(|record| steps.contains(record.0))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(result, expected, "{steps:?}");
+            assert_eq!(sparse.logs, expected_logs);
+            assert_eq!(sparse.steps, filter(&full.steps));
+            assert_eq!(sparse.step_ends, filter(&full.step_ends));
+            assert_eq!((sparse.calls, sparse.creates), (full.calls, full.creates));
+        }
+    }
+
+    #[test]
+    fn empty_steps_skip_step_hooks_but_keep_message_and_log_hooks() {
+        let (db, code) = config_test_code();
+        let (expected, expected_logs) = run_evm_uninspected(db.clone(), code.clone(), 1_000_000);
+        let (result, inspector, _) = run_evm_with_inspector_db(
+            db,
+            code,
+            &MessageExt::default(),
+            1_000_000,
+            ConfigInspector::new(OpcodeSet::EMPTY),
+        );
+
+        assert_eq!(result, expected);
+        assert!(inspector.steps.is_empty());
+        assert!(inspector.step_ends.is_empty());
+        // The top-level message and the child call.
+        assert_eq!(inspector.calls, 2);
+        assert_eq!(inspector.creates, 1);
+        assert_eq!(inspector.logs, expected_logs);
+        assert_eq!(inspector.logs.len(), 1);
+    }
+
+    #[test]
+    fn child_message_can_change_the_parent_steps() {
+        let mut code = call_code(Address::from([0x66; 20]));
+        code.extend([op::CALL, op::GAS, op::POP, op::STOP]);
+        let run = |inspector| {
+            run_evm_with_inspector(code.clone(), &MessageExt::default(), 100_000, inspector)
+        };
+        let (expected, _) = run_evm_uninspected(InMemoryDB::default(), code.clone(), 100_000);
+        let (result, full, _) = run(ConfigInspector::new(OpcodeSet::ALL));
+        assert_eq!(result, expected);
+        let call = full.steps.iter().position(|record| record.0 == op::CALL).unwrap();
+
+        let all = 0..full.steps.len();
+        for (before, after, range, kept) in [
+            // Starts stepping after the CALL.
+            (OpcodeSet::EMPTY, OpcodeSet::ALL, call + 1..all.end, OpcodeSet::ALL),
+            // Stops stepping after the CALL.
+            (OpcodeSet::ALL, OpcodeSet::EMPTY, 0..call + 1, OpcodeSet::ALL),
+            (
+                OpcodeSet::EMPTY,
+                opcode_set([op::GAS, op::STOP]),
+                call + 1..all.end,
+                opcode_set([op::GAS, op::STOP]),
+            ),
+            (
+                opcode_set([op::CALL]),
+                opcode_set([op::POP]),
+                call..all.end,
+                opcode_set([op::CALL, op::POP]),
+            ),
+        ] {
+            let (result, inspector, _) = run(ConfigInspector::new(before).switching_to(after));
+            assert_eq!(result, expected, "{before:?} {after:?}");
+            let keep = |records: &[(u8, u64, Vec<Word>)]| {
+                let records = records[range.clone()].iter();
+                records.filter(|record| kept.contains(record.0)).cloned().collect::<Vec<_>>()
+            };
+            assert_eq!(inspector.steps, keep(&full.steps));
+            assert_eq!(inspector.step_ends, keep(&full.step_ends));
+        }
+        // The first step after the CALL sees its success flag on the stack.
+        let (_, inspector, _) =
+            run(ConfigInspector::new(OpcodeSet::EMPTY).switching_to(OpcodeSet::ALL));
+        assert_eq!(inspector.steps[0], (op::GAS, full.steps[call + 1].1, vec![Word::ONE]));
     }
 
     #[test]

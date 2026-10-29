@@ -3,9 +3,10 @@
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypesHost, OpcodeConfig,
     evm::config::SelectorOpcodeConfig,
-    interpreter::{Interpreter, InterpreterState, Pc, RawStack, op},
+    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, RawStack, op},
     trustme,
 };
+use core::hint::cold_path;
 
 core::cfg_select! {
     tco => {
@@ -51,10 +52,32 @@ const fn instruction_len(op: u8) -> usize {
     }
 }
 
+/// Returns whether `op` executes a child message.
+#[inline(always)]
+const fn is_message_op(op: u8) -> bool {
+    matches!(
+        op,
+        op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CREATE2
+    )
+}
+
+/// Ends the frame's run after a message opcode if its inspector's config changed, so the frame
+/// continues on the table for the new config. Returns whether it did.
+#[inline(always)]
+fn stop_if_config_changed<T: EvmTypesHost>(state: &mut InterpreterState<'_, '_, T>) -> bool {
+    let changed = state.inspector_config_changed();
+    if changed {
+        cold_path();
+        state.set_result(Err(InstrStop::ReloadTable));
+    }
+    changed
+}
+
 /// Instruction dispatch table.
 pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
 
-const fn make_table<T, C, M>(
+/// Builds a table whose handlers run in mode `M`, except the message opcodes, which run in `MM`.
+const fn make_table<T, C, M, MM>(
     previous: Option<&InstrTable<T>>,
     previous_opcode_config: Option<&OpcodeConfig<T>>,
 ) -> InstrTable<T>
@@ -62,6 +85,7 @@ where
     T: EvmTypesHost,
     C: EvmConfig<T>,
     M: InspectMode<T>,
+    MM: InspectMode<T>,
 {
     let mut table = match previous {
         Some(previous) => *previous,
@@ -73,7 +97,11 @@ where
         ($($op:literal,)*) => {
             $(
                 if instruction_changed(vt, previous_opcode_config, $op) && !vt.is_unknown_opcode($op) {
-                    table[$op] = imp::dispatch::<T, C, M, $op> as imp::RawInstrFn<T>;
+                    table[$op] = if is_message_op($op) {
+                        imp::dispatch::<T, C, MM, $op> as imp::RawInstrFn<T>
+                    } else {
+                        imp::dispatch::<T, C, M, $op> as imp::RawInstrFn<T>
+                    };
                 }
             )*
         };
@@ -122,12 +150,13 @@ where
     table
 }
 
-const fn make_selector_tables<T, F, M, const CUSTOM_SPEC_ID: u32>()
+const fn make_selector_tables<T, F, M, MM, const CUSTOM_SPEC_ID: u32>()
 -> [InstrTable<T>; crate::SpecId::COUNT]
 where
     T: EvmTypesHost,
     F: EvmConfigSelector<T>,
     M: InspectMode<T>,
+    MM: InspectMode<T>,
 {
     macro_rules! make_selector_tables {
         ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {{
@@ -136,7 +165,7 @@ where
         (@build [$($tables:ident,)*] [$($previous_table:tt)*]; $spec:ident $name:ident, $($rest:ident $rest_name:ident,)*) => {{
             let spec = crate::SpecId::$spec;
             let previous = spec.prev();
-            let $name = make_table::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>, M>(
+            let $name = make_table::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>, M, MM>(
                 make_selector_tables!(@previous_table [$($previous_table)*]),
                 match previous {
                     Some(previous) => {
@@ -168,17 +197,34 @@ where
     T: EvmTypesHost,
     C: EvmConfig<T>,
 {
-    pub(crate) const INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, NoInspector>(
-        Some(
-            &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSTRUCTIONS
-                [C::BASE_SPEC_ID as usize],
-        ),
-        Some(
-            SelectorOpcodeConfig::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG
-                [C::BASE_SPEC_ID as usize],
-        ),
-    );
-    pub(crate) const INSPECT_INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, DynInspector>(
+    pub(crate) const INSTRUCTIONS: &'static InstrTable<T> =
+        &make_table::<T, C, NoInspector, NoInspector>(
+            Some(
+                &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSTRUCTIONS
+                    [C::BASE_SPEC_ID as usize],
+            ),
+            Some(
+                SelectorOpcodeConfig::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG
+                    [C::BASE_SPEC_ID as usize],
+            ),
+        );
+    pub(crate) const WATCH_INSTRUCTIONS: &'static InstrTable<T> =
+        &make_table::<T, C, NoInspector, WatchInspector>(
+            Some(
+                &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::WATCH_INSTRUCTIONS
+                    [C::BASE_SPEC_ID as usize],
+            ),
+            Some(
+                SelectorOpcodeConfig::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG
+                    [C::BASE_SPEC_ID as usize],
+            ),
+        );
+    pub(crate) const INSPECT_INSTRUCTIONS: &'static InstrTable<T> = &make_table::<
+        T,
+        C,
+        DynInspector,
+        DynInspector,
+    >(
         Some(
             &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSPECT_INSTRUCTIONS
                 [C::BASE_SPEC_ID as usize],
@@ -200,9 +246,11 @@ where
     F: EvmConfigSelector<T>,
 {
     pub(crate) const INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
-        &make_selector_tables::<T, F, NoInspector, CUSTOM_SPEC_ID>();
+        &make_selector_tables::<T, F, NoInspector, NoInspector, CUSTOM_SPEC_ID>();
+    pub(crate) const WATCH_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
+        &make_selector_tables::<T, F, NoInspector, WatchInspector, CUSTOM_SPEC_ID>();
     pub(crate) const INSPECT_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
-        &make_selector_tables::<T, F, DynInspector, CUSTOM_SPEC_ID>();
+        &make_selector_tables::<T, F, DynInspector, DynInspector, CUSTOM_SPEC_ID>();
 }
 
 const fn instruction_changed<T: EvmTypesHost>(
@@ -217,7 +265,12 @@ const fn instruction_changed<T: EvmTypesHost>(
 }
 
 trait InspectMode<T: EvmTypesHost> {
+    /// Whether handlers call the inspector's step hooks.
     const INSPECT: bool;
+
+    /// Whether message opcode handlers check, after the instruction, that the inspector's config
+    /// still matches the frame's table, without calling step hooks.
+    const WATCH: bool = false;
 
     fn step(state: &mut InterpreterState<'_, '_, T>, pc: Pc, stack_len: usize);
 
@@ -228,6 +281,21 @@ struct NoInspector;
 
 impl<T: EvmTypesHost> InspectMode<T> for NoInspector {
     const INSPECT: bool = false;
+
+    #[inline(always)]
+    fn step(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}
+
+    #[inline(always)]
+    fn step_end(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}
+}
+
+/// Mode of the message opcodes of the watch table, which inspected frames run on when the
+/// inspector wants no steps.
+struct WatchInspector;
+
+impl<T: EvmTypesHost> InspectMode<T> for WatchInspector {
+    const INSPECT: bool = false;
+    const WATCH: bool = true;
 
     #[inline(always)]
     fn step(_state: &mut InterpreterState<'_, '_, T>, _pc: Pc, _stack_len: usize) {}

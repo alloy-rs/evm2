@@ -3,8 +3,8 @@
 use alloy_consensus::{TxEip4844, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypesHost, Inspector, NoopInspector, Precompiles, TxResult,
-    TxResultWithState, env as evm_env,
+    BaseEvmTypes, Evm, EvmTypesHost, Inspector, InspectorConfig, NoopInspector, Precompiles,
+    TxResult, TxResultWithState, env as evm_env,
     ethereum::{RecoveredTxEnvelope, TxEnvelope, ethereum_tx_registry},
     evm::PendingState,
     interpreter::{Interpreter, Message, MessageResult},
@@ -532,6 +532,11 @@ impl<I> RawInspector<I> {
 impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {
         self.inner().initialize_interp(interp);
+    }
+
+    fn config(&self) -> InspectorConfig {
+        // SAFETY: As in `inner`.
+        unsafe { &*self.inspector }.config()
     }
 
     fn step(&mut self, interp: &mut Interpreter<'_, '_, BaseEvmTypes>) {

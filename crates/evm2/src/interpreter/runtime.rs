@@ -5,8 +5,8 @@ use super::{
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
     bytecode::Bytecode,
-    evm::inspector::Inspector,
-    interpreter::dispatch,
+    evm::inspector::{Inspector, OpcodeSet},
+    interpreter::dispatch::{self, InstrTable},
     trustme,
     version::{EvmFeatures, GasParams},
 };
@@ -34,6 +34,8 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     message: Option<&'frame Message<T>>,
     host: Option<NonNull<T::Host<'host>>>,
     inspector: Option<NonNull<dyn Inspector<T> + 'host>>,
+    /// Opcodes the inspector steps on the table this frame runs on.
+    steps: OpcodeSet,
     pub(in crate::interpreter) stack_len: usize,
     #[derive_where(skip)]
     pub(in crate::interpreter) stack: Box<StackBacking>,
@@ -93,6 +95,7 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             return_data: Bytes::new(),
             host: None,
             inspector: None,
+            steps: OpcodeSet::EMPTY,
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
@@ -507,11 +510,35 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             // across setup, which makes the dispatch loop spill the stack pointer.
             // SAFETY: `prepare_run` initialized the host, and the config is only read here.
             let config = unsafe { self.execution_config_detached() };
-            let instructions =
-                if inspector.is_some() { config.inspect_instructions } else { config.instructions };
-            dispatch::run(self, instructions)
+            let mut instructions = match inspector {
+                Some(inspector) => self.inspect_instructions(config, inspector),
+                None => config.instructions,
+            };
+            loop {
+                let stop = dispatch::run(self, instructions);
+                let (InstrStop::ReloadTable, Some(inspector)) = (stop, inspector) else {
+                    break stop;
+                };
+                // A message opcode changed the inspector's config: continue at the next
+                // instruction on the table for the new config.
+                self.result = Ok(());
+                instructions = self.inspect_instructions(config, inspector);
+            }
         };
         self.finish_run(stop)
+    }
+
+    /// Returns the table for the inspector's current config and records its opcodes as this
+    /// frame's.
+    #[inline(never)]
+    fn inspect_instructions(
+        &mut self,
+        config: &'host ExecutionConfig<T>,
+        inspector: NonNull<dyn Inspector<T> + 'host>,
+    ) -> &'host InstrTable<T> {
+        // SAFETY: The inspector pointer is valid for this run.
+        self.steps = unsafe { inspector.as_ref() }.config().steps;
+        config.inspect_instructions_for(self.steps)
     }
 
     /// Takes an owned error recorded by an instruction or inspector hook.
@@ -573,6 +600,15 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     #[cfg(not(tco))]
     pub(crate) const fn is_inspecting(&self) -> bool {
         self.0.inspector.is_some()
+    }
+
+    /// Returns whether the inspector's config no longer matches the table this frame runs on.
+    #[inline]
+    pub(crate) fn inspector_config_changed(&self) -> bool {
+        // SAFETY: Only inspected frames call this, and the inspector pointer is valid while the
+        // frame executes.
+        let inspector = unsafe { self.0.inspector.unwrap_unchecked().as_ref() };
+        inspector.config().steps != self.0.steps
     }
 
     #[inline]

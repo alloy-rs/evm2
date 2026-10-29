@@ -1,4 +1,4 @@
-use super::{InspectMode, run_state};
+use super::{InspectMode, is_message_op, run_state, stop_if_config_changed};
 use crate::{
     EvmConfig, EvmTypesHost,
     interpreter::{
@@ -56,6 +56,8 @@ extern_table! {
         let instr: InstructionImplFn<T> = instruction.instr;
         let dynamic_gas = instruction.dynamic_gas;
         if M::INSPECT {
+            // Handlers that skip the hooks keep the gas in a register.
+            state.gas_mut().set_remaining(remaining_gas.get());
             M::step(state, pc, stack.len());
             remaining_gas.set(state.gas_mut().remaining());
             if state.result().is_err() {
@@ -101,6 +103,11 @@ extern_table! {
             remaining_gas.set(state.gas_mut().remaining());
             if state.result().is_err() {
                 cold_path();
+                tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
+            }
+        }
+        if (M::INSPECT || M::WATCH) && is_message_op(OP) {
+            if stop_if_config_changed(state) {
                 tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
             }
         }

@@ -1,7 +1,7 @@
 //! EVM configuration.
 
 use crate::{
-    Evm, OpcodeConfig, OpcodeView, SpecId,
+    Evm, OpcodeConfig, OpcodeSet, OpcodeView, SpecId,
     constants::CALL_DEPTH_LIMIT,
     ethereum::TxEnvelope,
     interpreter::{
@@ -10,7 +10,8 @@ use crate::{
     },
     version::Version,
 };
-use core::fmt::Debug;
+use alloc::{boxed::Box, vec::Vec};
+use core::{cell::UnsafeCell, fmt::Debug};
 use derive_where::derive_where;
 
 /// Runtime EVM type family.
@@ -137,7 +138,11 @@ pub struct ExecutionConfig<T: EvmTypesHost> {
     #[derive_where(skip)]
     pub(crate) instructions: &'static InstrTable<T>,
     #[derive_where(skip)]
+    pub(crate) watch_instructions: &'static InstrTable<T>,
+    #[derive_where(skip)]
     pub(crate) inspect_instructions: &'static InstrTable<T>,
+    #[derive_where(skip)]
+    inspect_tables: InspectTables<T>,
 }
 
 impl<T: EvmTypesHost> ExecutionConfig<T> {
@@ -161,8 +166,10 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             version: Version::new(base_spec_id),
             opcode_config: SelectorOpcodeConfig::<T, F, CUSTOM_SPEC_ID>::OPCODE_CONFIG[i],
             instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
+            watch_instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::WATCH_INSTRUCTIONS[i],
             inspect_instructions:
                 &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSPECT_INSTRUCTIONS[i],
+            inspect_tables: InspectTables::new(),
         }
     }
 
@@ -175,7 +182,9 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
             version: Version::new(base_spec_id),
             opcode_config: C::OPCODE_CONFIG,
             instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
+            watch_instructions: ConfigInstrTables::<T, C>::WATCH_INSTRUCTIONS,
             inspect_instructions: ConfigInstrTables::<T, C>::INSPECT_INSTRUCTIONS,
+            inspect_tables: InspectTables::new(),
         }
     }
 
@@ -202,6 +211,29 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
         );
         self.version = version;
         self
+    }
+
+    /// Returns the instruction table for an inspected frame whose inspector steps the opcodes in
+    /// `steps`.
+    ///
+    /// Sparse sets get a table of the watch table's handlers with the inspect table's handlers
+    /// at the opcodes in `steps`. It is built on first use and kept until the config is dropped.
+    pub(crate) fn inspect_instructions_for(&self, steps: OpcodeSet) -> &InstrTable<T> {
+        if steps == OpcodeSet::EMPTY {
+            return self.watch_instructions;
+        }
+        if steps == OpcodeSet::ALL {
+            return self.inspect_instructions;
+        }
+        self.inspect_tables.get_or_insert_with(steps, || {
+            let mut table = *self.watch_instructions;
+            for op in 0..=u8::MAX {
+                if steps.contains(op) {
+                    table[op as usize] = self.inspect_instructions[op as usize];
+                }
+            }
+            table
+        })
     }
 
     /// Returns the active base specification ID.
@@ -237,6 +269,45 @@ impl<T: EvmTypesHost> ExecutionConfig<T> {
         let origin = self.opcode_config.origin_spec();
         self.opcode_config
             .view((origin == self.base_spec_id).then(|| OpcodeConfig::base_for_spec(origin)))
+    }
+}
+
+/// Instruction tables built per opcode set that inspectors step on.
+///
+/// Tables are only ever added, and each is boxed, so a table stays valid and in place while the
+/// cache lives. The interpreter runs frames on them, so nothing is evicted before the cache is
+/// dropped with its [`ExecutionConfig`].
+struct InspectTables<T: EvmTypesHost>(UnsafeCell<Vec<(OpcodeSet, Box<InstrTable<T>>)>>);
+
+impl<T: EvmTypesHost> InspectTables<T> {
+    const fn new() -> Self {
+        Self(UnsafeCell::new(Vec::new()))
+    }
+
+    fn get_or_insert_with(
+        &self,
+        steps: OpcodeSet,
+        build: impl FnOnce() -> InstrTable<T>,
+    ) -> &InstrTable<T> {
+        // SAFETY: This is the only access to the vector and nothing below calls back into it, so
+        // this borrow is unique.
+        let tables = unsafe { &mut *self.0.get() };
+        let index = match tables.iter().position(|(set, _)| *set == steps) {
+            Some(index) => index,
+            None => {
+                tables.push((steps, Box::new(build())));
+                tables.len() - 1
+            }
+        };
+        let table: *const InstrTable<T> = &*tables[index].1;
+        // SAFETY: The boxed table is never moved, mutated or dropped while `self` is alive.
+        unsafe { &*table }
+    }
+}
+
+impl<T: EvmTypesHost> Clone for InspectTables<T> {
+    fn clone(&self) -> Self {
+        Self::new()
     }
 }
 
