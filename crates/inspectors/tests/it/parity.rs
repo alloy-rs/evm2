@@ -1136,17 +1136,41 @@ fn precompile_exclusion_uses_original_callee_with_delegation() {
     }
 }
 
-/// Returns the parity vmTrace and the geth struct log cost of the step at `index`.
-fn call_step_costs(code: &[u8], child: &[u8], spec: SpecId, index: usize) -> (u64, u64) {
-    let trace = inspect_code(code, child, spec, TracingInspectorConfig::parity_vm_trace())
-        .into_parity_builder()
-        .vm_trace();
-    let op = trace.ops[index].op.clone().unwrap();
+/// The cost and used gas of the call or create step before the final `STOP`, as reported by
+/// parity `vmTrace` and geth struct logs under each config.
+struct CallStep {
+    /// Gas remaining before the step.
+    gas_remaining: u64,
+    /// Gas limit of the child, if one started.
+    child_gas_limit: Option<u64>,
+    /// Parity cost, which equals the geth cost.
+    cost: u64,
+    /// Parity used gas with step deltas.
+    used: u64,
+    /// Parity used gas without step deltas.
+    used_without_deltas: u64,
+}
+
+fn call_step(code: &[u8], child: &[u8], spec: SpecId) -> CallStep {
+    let vm_trace = |config| {
+        let inspector = inspect_code(code, child, spec, config);
+        let nodes = inspector.traces().nodes();
+        let step = &nodes[0].trace.steps[nodes[0].trace.steps.len() - 2];
+        let step = (step.gas_remaining, nodes.get(1).map(|node| node.trace.gas_limit));
+        let trace = inspector.into_parity_builder().vm_trace();
+        let call = &trace.ops[trace.ops.len() - 2];
+        (step, call.cost, call.ex.as_ref().unwrap().used)
+    };
+    let (step, cost, used) = vm_trace(TracingInspectorConfig::parity_vm_trace());
+    let (_, cost_without_deltas, used_without_deltas) =
+        vm_trace(TracingInspectorConfig::parity_vm_trace().set_step_deltas(false));
     let geth = inspect_code(code, child, spec, TracingInspectorConfig::default_geth())
         .geth_builder()
         .geth_traces(0, Default::default(), Default::default());
-    let log = geth.struct_logs.iter().find(|log| log.opcode() == op).unwrap();
-    (trace.ops[index].cost, log.gas_cost)
+    let log = geth.struct_logs.iter().rev().find(|log| log.gas == step.0).unwrap();
+    assert_eq!(cost_without_deltas, cost);
+    assert_eq!(log.gas_cost, cost);
+    CallStep { gas_remaining: step.0, child_gas_limit: step.1, cost, used, used_without_deltas }
 }
 
 #[test]
@@ -1154,59 +1178,68 @@ fn call_cost_includes_forwarded_gas() {
     for (prefix, opcode) in
         [("5f5f5f5f5f", "f1"), ("5f5f5f5f5f", "f2"), ("5f5f5f5f", "f4"), ("5f5f5f5f", "fa")]
     {
-        for child in [&hex!("00")[..], &hex!("5f5ffd")[..], &[][..]] {
+        for (child, spent) in [(&hex!("00")[..], 0), (&hex!("5f5ffd")[..], 4), (&[][..], 0)] {
             let code = hex::decode(format!("{prefix}604361ffff{opcode}00")).unwrap();
-            let trace = inspect_code(
-                &code,
-                child,
-                SpecId::PRAGUE,
-                TracingInspectorConfig::parity_vm_trace(),
-            )
-            .into_parity_builder()
-            .vm_trace();
-            let index = trace.ops.len() - 2;
-            let before = trace.ops[index - 1].ex.as_ref().unwrap().used;
-            let spent = if child == hex!("5f5ffd") { 4 } else { 0 };
-            let call = &trace.ops[index];
-            assert_eq!(call.cost, 2_600 + 65_535);
-            assert_eq!(call.ex.as_ref().unwrap().used, before - 2_600 - spent);
-            assert_eq!(
-                call_step_costs(&code, child, SpecId::PRAGUE, index),
-                (2_600 + 65_535, 2_600 + 65_535)
-            );
+            let step = call_step(&code, child, SpecId::PRAGUE);
+            assert_eq!(step.cost, 2_600 + 65_535);
+            assert_eq!(step.used, step.gas_remaining - step.cost + 65_535 - spent);
+            assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
         }
     }
 }
 
 #[test]
 fn precompile_call_cost_includes_forwarded_gas() {
-    let code = hex!("5f5f5f5f5f600461fffff100");
-    let trace = inspect_code(&code, &[], SpecId::PRAGUE, TracingInspectorConfig::parity_vm_trace())
-        .into_parity_builder()
-        .vm_trace();
-    assert_eq!(trace.ops[7].cost, 100 + 65_535);
-    assert_eq!(
-        trace.ops[7].ex.as_ref().unwrap().used,
-        trace.ops[6].ex.as_ref().unwrap().used - 100 - 15
-    );
-    assert_eq!(call_step_costs(&code, &[], SpecId::PRAGUE, 7), (100 + 65_535, 100 + 65_535));
+    let step = call_step(&hex!("5f5f5f5f5f600461fffff100"), &[], SpecId::PRAGUE);
+    assert_eq!(step.cost, 100 + 65_535);
+    assert_eq!(step.used, step.gas_remaining - step.cost + 65_535 - 15);
+    assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
 }
 
 #[test]
 fn create_cost_includes_forwarded_gas() {
     for code in [&hex!("5f5f5ff000")[..], &hex!("5f5f5f5ff500")[..]] {
-        let trace =
-            inspect_code(code, &[], SpecId::PRAGUE, TracingInspectorConfig::parity_vm_trace())
-                .into_parity_builder()
-                .vm_trace();
-        let index = trace.ops.len() - 2;
-        let before = trace.ops[index - 1].ex.as_ref().unwrap().used;
-        let available = before - 32_000;
-        let cost = 32_000 + available - available / 64;
-        assert_eq!(trace.ops[index].cost, cost);
-        assert_eq!(trace.ops[index].ex.as_ref().unwrap().used, available);
-        assert_eq!(call_step_costs(code, &[], SpecId::PRAGUE, index), (cost, cost));
+        let step = call_step(code, &[], SpecId::PRAGUE);
+        let available = step.gas_remaining - 32_000;
+        assert_eq!(step.cost, 32_000 + available - available / 64);
+        assert_eq!(step.child_gas_limit, Some(available - available / 64));
+        assert_eq!(step.used, available);
+        assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
     }
+}
+
+#[test]
+fn create_with_initcode_cost_includes_forwarded_gas() {
+    // The initcode `5f5f5f5f00` spends 8 gas.
+    let code = hex!("645f5f5f5f005f526005601b5ff000");
+    let step = call_step(&code, &[], SpecId::PRAGUE);
+    let limit = step.child_gas_limit.unwrap();
+    assert_eq!(step.cost, limit + 32_002);
+    assert_eq!(step.used, step.gas_remaining - step.cost + limit - 8);
+    assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
+}
+
+#[test]
+fn unfunded_call_cost_includes_forwarded_gas() {
+    // The child fails with out of funds and returns its gas, including the stipend.
+    for (child, cost) in [(&hex!("00")[..], 2_600 + 9_000 + 1_000), (&[][..], 37_600)] {
+        let step = call_step(&hex!("5f5f5f5f600160436103e8f100"), child, SpecId::PRAGUE);
+        assert_eq!(step.child_gas_limit, Some(1_000 + 2_300));
+        assert_eq!(step.cost, cost);
+        assert_eq!(step.used, step.gas_remaining - cost + 3_300);
+        assert_eq!(step.used_without_deltas, step.gas_remaining - cost);
+    }
+}
+
+#[test]
+fn unfunded_create_cost_includes_forwarded_gas() {
+    let code = hex!("5f5f6001f000");
+    assert!(trace_vm_code(&code, &[]).ops[3].sub.is_none());
+    let step = call_step(&code, &[], SpecId::PRAGUE);
+    let available = step.gas_remaining - 32_000;
+    assert_eq!(step.cost, 32_000 + available - available / 64);
+    assert_eq!(step.used, available);
+    assert_eq!(step.used_without_deltas, step.gas_remaining - step.cost);
 }
 
 #[test]
