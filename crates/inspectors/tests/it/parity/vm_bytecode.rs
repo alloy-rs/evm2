@@ -210,8 +210,9 @@ fn inspect_bytecode(code: Bytecode, config: TracingInspectorConfig) -> TracingIn
 }
 
 #[test]
-fn memory_oog_cost_is_gas_paid_before_expansion() {
-    // PUSH1 1, PUSH3 0xffffff, MSTORE: 14 gas remain at MSTORE, which cannot expand memory.
+fn memory_oog_cost_includes_the_attempted_expansion() {
+    // PUSH1 1, PUSH3 0xffffff, MSTORE: 14 gas remain at MSTORE, which cannot pay for expanding
+    // memory to 0x1000000 bytes.
     let code = hex!("600162ffffff52");
     let target = Address::with_last_byte(0x42);
     let mut db = CacheDB::default();
@@ -225,6 +226,6 @@ fn memory_oog_cost_is_gas_paid_before_expansion() {
     );
     let mstore = traces.vm_trace.unwrap().ops.pop().unwrap();
     assert_eq!(mstore.op.as_deref(), Some("MSTORE"));
-    assert_eq!(mstore.cost, 3);
+    assert_eq!(mstore.cost, 538_445_830);
     assert!(mstore.ex.is_none());
 }

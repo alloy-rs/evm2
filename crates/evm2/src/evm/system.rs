@@ -167,7 +167,11 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         )?;
         let result =
             execute_initial_frame(self, &tx_env, frame, &mut tx_gas, gas_limit, reservoir)?;
-        let gas_spent = gas_limit.saturating_sub(result.gas.remaining());
+        // The reservoir is funded on top of `gas_limit`, so the state gas it paid for is added
+        // back; otherwise `total_gas_spent` would not cover `state_gas_spent`.
+        let gas_spent = gas_limit
+            .saturating_sub(result.gas.remaining())
+            .saturating_add(reservoir.saturating_sub(result.gas.reservoir()));
         let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
             result.gas.refunded() as u64
         } else {
@@ -519,5 +523,37 @@ mod tests {
         assert_eq!(result.result.stop, InstrStop::OutOfGas);
         assert_eq!(result.result.total_gas_spent, 3_000);
         assert!(!result.pending_state.is_changed());
+    }
+
+    #[test]
+    fn system_call_total_includes_reservoir_funded_state_gas() {
+        let contract = Address::from([0x42; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH1,
+            1,
+            op::PUSH0,
+            op::SSTORE,
+            op::STOP,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut evm = TestEvm::new(
+            SpecId::AMSTERDAM,
+            BlockEnvExt::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+
+        let result = evm.system_call(SystemTx::new(contract, Bytes::new())).unwrap().discard();
+
+        // One new slot: its state gas comes from the system call's reservoir, the regular gas
+        // (PUSH1, PUSH0, cold SSTORE) from `gas_limit`.
+        let state_gas = evm.version().gas_params.get(GasId::SstoreSetState);
+        let regular_gas = 3 + 2 + 2_100 + 10_000;
+        assert!(result.status);
+        assert_eq!(result.state_gas_spent, state_gas);
+        assert_eq!(result.total_gas_spent, regular_gas + state_gas);
+        assert_eq!(result.execution_gas_spent(), regular_gas);
     }
 }

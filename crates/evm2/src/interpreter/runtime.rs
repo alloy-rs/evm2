@@ -1,6 +1,6 @@
 use super::{
     BytecodeRef, Gas, Host, InstrStop, Memory, Message, Pc, Result, StackBacking, StackMut,
-    StackRef, Word,
+    StackRef, Word, op,
 };
 use crate::{
     EvmTypesHost, ExecutionConfig, ExecutionError, HostError, SpecId, Version,
@@ -42,6 +42,13 @@ pub struct Interpreter<'frame, 'host, T: EvmTypesHost> {
     pub(in crate::interpreter) stack: Box<StackBacking>,
 
     pub(in crate::interpreter) gas: Gas,
+    /// Remaining gas at the start of the current inspected step.
+    step_gas_before: u64,
+    /// Remaining gas once the current step finished charging, if it marked that point.
+    step_gas_after_charge: Option<u64>,
+    /// Gas the current step attempted to charge beyond the gas it paid, when a charge failed
+    /// without spending its gas.
+    step_failed_charge: u64,
     pub(in crate::interpreter) result: Result,
     error: Option<ExecutionError>,
     spec: SpecId,
@@ -83,6 +90,9 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
             bytecode_ref: None,
             stack_len: 0,
             gas: Gas::new(0),
+            step_gas_before: 0,
+            step_gas_after_charge: None,
+            step_failed_charge: 0,
             memory: Memory::new(),
             result: Ok(()),
             error: None,
@@ -235,6 +245,25 @@ impl<'frame, 'host, T: EvmTypesHost> Interpreter<'frame, 'host, T> {
     #[inline]
     pub const fn set_gas(&mut self, gas: Gas) {
         self.gas = gas;
+    }
+
+    /// Returns the gas the current step charged for its execution, before its effects.
+    ///
+    /// This is the gas remaining at the start of the step minus the gas remaining once the step
+    /// finished charging. Call and create steps finish charging right before they hand gas to
+    /// the child, so their cost includes the forwarded gas for calls and excludes it for creates.
+    /// Any other step finishes charging when it ends, which makes its cost the gas it consumed.
+    /// A failed memory expansion keeps the balance, so its cost adds the expansion it attempted
+    /// to the gas the step paid before it.
+    ///
+    /// Only meaningful in [`Inspector::step_end`](crate::inspector::Inspector::step_end).
+    #[inline]
+    pub const fn step_cost(&self) -> u64 {
+        let remaining = match self.step_gas_after_charge {
+            Some(remaining) => remaining,
+            None => self.gas.remaining(),
+        };
+        self.step_gas_before.saturating_sub(remaining).saturating_add(self.step_failed_charge)
     }
 
     /// Returns the current linear memory.
@@ -700,6 +729,9 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
+        self.0.step_gas_before = self.0.gas.remaining();
+        self.0.step_gas_after_charge = None;
+        self.0.step_failed_charge = 0;
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step(&mut self.0);
@@ -715,11 +747,29 @@ impl<'frame, 'host, T: EvmTypesHost> InterpreterState<'frame, 'host, T> {
             // Ordinary failed charges may wrap the counter. Memory expansion and
             // other OOG guards preserve it.
             self.0.gas.set_remaining(0);
+        } else if self.0.result == Err(InstrStop::MemoryOOG) {
+            cold_path();
+            // The failed expansion kept the balance, so the step cost is the gas paid before it
+            // plus the expansion it attempted. A call reports only the gas paid before it.
+            let attempted = self.0.memory.take_failed_cost();
+            if !matches!(
+                self.0.opcode(),
+                op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL
+            ) {
+                self.0.step_failed_charge = attempted;
+            }
         }
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step_end(&mut self.0);
         }
+    }
+
+    /// Marks that the current step finished charging gas, so [`Interpreter::step_cost`] stops
+    /// counting gas after this point.
+    #[inline]
+    pub(crate) const fn finish_step_charge(&mut self, remaining: u64) {
+        self.0.step_gas_after_charge = Some(remaining);
     }
 
     #[inline]

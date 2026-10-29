@@ -651,10 +651,7 @@ impl TracingInspector {
             };
         }
 
-        // The gas cost is the difference between the recorded gas remaining at the start of the
-        // step and the remaining gas here, at the end of the step. A plain out-of-gas step
-        // consumes the whole remainder; other out-of-gas halts keep their balance.
-        step.gas_cost = step.gas_remaining.saturating_sub(interp.gas().remaining());
+        step.gas_cost = interp.step_cost();
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
             step.state_gas_cost = Some(state_gas_delta);
@@ -663,24 +660,25 @@ impl TracingInspector {
         // set the status
         step.status = interp.result().err();
 
-        if self.config.record_step_deltas {
-            if step.status.is_some_and(|status| status.is_halt()) {
-                return;
-            }
-            // Call results, returned memory and gas are already available in evm2's `step_end`.
-            // Gas credits cannot be recovered from the saturated unsigned gas cost.
-            let gas_remaining_after = (step.is_call_like_op()
-                || interp.gas().remaining() > step.gas_remaining)
-                .then_some(interp.gas().remaining());
-            if gas_remaining_after.is_some()
-                && node.trace.step_deltas.last().is_none_or(|delta| delta.step != step_idx)
-            {
-                node.trace.step_deltas.push(StepDelta { step: step_idx, ..Default::default() });
-            }
-            if let Some(delta) =
-                node.trace.step_deltas.last_mut().filter(|delta| delta.step == step_idx)
-            {
-                delta.gas_remaining_after = gas_remaining_after;
+        if step.status.is_some_and(|status| status.is_halt()) {
+            return;
+        }
+        // The gas a child returns and gas credits cannot be recovered from the step cost, so
+        // record the balance after the step even without memory and storage deltas.
+        let gas_remaining_after = (step.is_call_like_op()
+            || interp.gas().remaining() > step.gas_remaining)
+            .then_some(interp.gas().remaining());
+        if gas_remaining_after.is_some()
+            && node.trace.step_deltas.last().is_none_or(|delta| delta.step != step_idx)
+        {
+            node.trace.step_deltas.push(StepDelta { step: step_idx, ..Default::default() });
+        }
+        if let Some(delta) =
+            node.trace.step_deltas.last_mut().filter(|delta| delta.step == step_idx)
+        {
+            delta.gas_remaining_after = gas_remaining_after;
+            // Call results and returned memory are already available in evm2's `step_end`.
+            if self.config.record_step_deltas {
                 if step.is_call_like_op()
                     && let Some(range) = &mut delta.write_range
                 {

@@ -33,6 +33,8 @@ use std::{
 #[cfg(feature = "llvm")]
 use crate::llvm::jit_memory_usage;
 #[cfg(feature = "llvm")]
+use evm2_jit_backend::{Backend, BackendConfig};
+#[cfg(feature = "llvm")]
 use evm2_jit_context::RawEvmCompilerFn;
 
 /// The resident map type: code_hash+spec_id → compiled program.
@@ -85,7 +87,16 @@ impl JitObjectLinker {
     ) -> eyre::Result<(EvmCompilerFn, Arc<JitCodeBacking>)> {
         let backend = match &mut self.backend {
             Some(backend) => backend,
-            None => self.backend.insert(crate::EvmLlvmBackend::new(false)?),
+            None => {
+                let mut backend = crate::EvmLlvmBackend::new(false)?;
+                // Long-running nodes cannot afford debug object copies or the append-only perf map.
+                backend.apply_config(BackendConfig {
+                    debug_support: false,
+                    simple_perf: false,
+                    ..backend.config().clone()
+                });
+                self.backend.insert(backend)
+            }
         };
 
         let symbol_name = CString::new(success.symbol_name.clone())?;

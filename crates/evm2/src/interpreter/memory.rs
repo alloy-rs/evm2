@@ -3,10 +3,15 @@ use crate::{utils::num_words, version::GasParams};
 use alloc::vec::Vec;
 use core::{cmp::min, fmt, hint::cold_path, ops::Range};
 
+/// Largest memory size in bytes whose expansion cost is still an exact gas amount: the
+/// quadratic term overflows 64 bits beyond it.
+const MAX_CHARGEABLE_SIZE: usize = 0x1F_FFFF_FFE0;
+
 /// Linear EVM memory.
 pub struct Memory {
     data: Vec<u8>,
     memory_limit: u64,
+    failed_cost: u64,
 }
 
 impl Default for Memory {
@@ -32,7 +37,7 @@ impl Memory {
     /// Creates memory with the requested capacity.
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
-        Self { data: Vec::with_capacity(capacity), memory_limit: u64::MAX }
+        Self { data: Vec::with_capacity(capacity), memory_limit: u64::MAX, failed_cost: 0 }
     }
 
     /// Returns the memory byte limit.
@@ -75,6 +80,7 @@ impl Memory {
     #[inline]
     pub fn clear(&mut self) {
         self.data.clear();
+        self.failed_cost = 0;
     }
 
     #[inline]
@@ -136,12 +142,25 @@ impl Memory {
         let cost = gas_params.memory_cost(new_num_words);
         let delta = unsafe { cost.checked_sub(gas.memory().expansion_cost).unwrap_unchecked() };
         let Some(remaining) = gas.remaining().checked_sub(delta) else {
+            // Keep the attempted charge for inspectors, unless the size is so large that the
+            // charge itself overflows the gas arithmetic.
+            if new_size <= MAX_CHARGEABLE_SIZE {
+                self.failed_cost = delta;
+            }
             return Err(InstrStop::MemoryOOG);
         };
         gas.set_remaining(remaining);
         gas.memory_mut().set_words_num(new_num_words, cost);
         self.resize_to(new_size);
         Ok(())
+    }
+
+    /// Takes the expansion cost of the last failed memory charge, or zero if none failed.
+    #[inline]
+    pub(crate) const fn take_failed_cost(&mut self) -> u64 {
+        let cost = self.failed_cost;
+        self.failed_cost = 0;
+        cost
     }
 
     /// Returns whether `new_words` exceeds the memory limit.
@@ -302,6 +321,31 @@ mod tests {
         assert_eq!(gas.remaining(), 94);
         assert_eq!(gas.memory().words_num, 2);
         assert_eq!(memory.len(), 64);
+    }
+
+    #[test]
+    fn resize_evm_keeps_state_and_records_cost_on_failure() {
+        let gas_params = Version::new(SpecId::FRONTIER).gas_params;
+        let mut gas = Gas::new(100);
+        let mut memory = Memory::new();
+        memory.set_memory_limit(u64::MAX);
+        memory.resize_evm(&mut gas, &gas_params, 0, 32).unwrap();
+
+        // Expanding to 1024 words costs 3 * 1024 + 1024 * 1024 / 512 = 5120, 3 of which are paid.
+        assert_matches!(
+            memory.resize_evm(&mut gas, &gas_params, 0, 32 * 1024),
+            Err(InstrStop::MemoryOOG)
+        );
+        assert_eq!((gas.remaining(), gas.memory().words_num, memory.len()), (97, 1, 32));
+        assert_eq!(memory.take_failed_cost(), 5117);
+        assert_eq!(memory.take_failed_cost(), 0);
+
+        // A size whose cost overflows the gas arithmetic records no cost.
+        assert_matches!(
+            memory.resize_evm(&mut gas, &gas_params, MAX_CHARGEABLE_SIZE, 1),
+            Err(InstrStop::MemoryOOG)
+        );
+        assert_eq!(memory.take_failed_cost(), 0);
     }
 
     #[test]
