@@ -199,10 +199,8 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
             "set `currentExcessBlobGas`: deriving it from the parent is not supported".into(),
         ));
     }
-    if let Some(index) = txs.iter().position(TxJson::lacks_recipient) {
-        return Err(Error::Execution(format!(
-            "failed unmarshalling txs-file: missing required field 'to' in transaction {index}"
-        )));
+    if let Some(reason) = txs.iter().enumerate().find_map(|(index, tx)| tx.abort_reason(index)) {
+        return Err(Error::Execution(reason));
     }
     let block = block_env(env, spec);
     let mut bal = Bal::new();

@@ -125,9 +125,24 @@ pub(super) struct SignedTx {
 }
 
 impl TxJson {
-    /// Whether this is a blob or set-code transaction without `to`, which `evm t8n` cannot decode.
-    pub(super) fn lacks_recipient(&self) -> bool {
-        self.to.is_none() && matches!(self.tx_type.map(u8::try_from), Some(Ok(3 | 4)))
+    /// Why `evm t8n` stops the run on this transaction instead of rejecting it: it cannot decode
+    /// it or sign it for chain 1.
+    pub(super) fn abort_reason(&self, index: usize) -> Option<String> {
+        let ty = self.tx_type.map(u8::try_from);
+        if self.to.is_none() && matches!(ty, Some(Ok(3 | 4))) {
+            return Some(format!(
+                "failed unmarshalling txs-file: missing required field 'to' in transaction {index}"
+            ));
+        }
+        if matches!(ty, Some(Ok(3))) && self.blob_versioned_hashes.is_empty() {
+            return Some(
+                "failed unmarshalling txs-file: 'blobVersionedHashes' must contain at least one hash"
+                    .to_string(),
+            );
+        }
+        self.chain_id.filter(|id| *id != U256::from(CHAIN_ID)).map(|id| {
+            format!("tx {index}: failed to sign tx: invalid chain id for signer: have {id} want {CHAIN_ID}")
+        })
     }
 
     /// Signs the transaction with its `secretKey`, as `evm t8n` does.
