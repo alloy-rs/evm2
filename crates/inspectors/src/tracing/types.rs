@@ -777,7 +777,8 @@ pub struct StepDelta {
     /// The storage written by an `SSTORE`, taken from its operands, so it is also set when the
     /// value does not change.
     pub store: Option<StorageDelta>,
-    /// The remaining gas after a call-like step or an instruction that gained gas.
+    /// The remaining gas after a call-like step or a step whose remaining gas after execution is
+    /// not `gas_remaining - gas_cost`, such as one that gained gas or drew state gas from it.
     ///
     /// For all other steps the remaining gas after execution is `gas_remaining - gas_cost`.
     pub gas_remaining_after: Option<u64>,

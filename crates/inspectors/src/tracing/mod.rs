@@ -669,11 +669,13 @@ impl TracingInspector {
         if step.status.is_some_and(|status| status.is_halt()) {
             return;
         }
-        // The gas a child returns and gas credits cannot be recovered from the step cost, so
-        // record the balance after the step even without memory and storage deltas.
+        // The gas a child returns, gas credits and state gas drawn from the remaining gas cannot be
+        // recovered from the step cost, so record the balance after the step even without memory
+        // and storage deltas.
+        let remaining = interp.gas().remaining();
         let gas_remaining_after = (step.is_call_like_op()
-            || interp.gas().remaining() > step.gas_remaining)
-            .then_some(interp.gas().remaining());
+            || remaining != step.gas_remaining.saturating_sub(step.gas_cost))
+        .then_some(remaining);
         if gas_remaining_after.is_some()
             && node.trace.step_deltas.last().is_none_or(|delta| delta.step != step_idx)
         {

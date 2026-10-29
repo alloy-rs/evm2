@@ -22,9 +22,17 @@ fn step_costs(code: &[u8], balance: u64, gas_limit: u64) -> (Vec<u64>, Vec<Optio
     let steps = &inspector.traces().nodes()[0].trace.steps;
     let costs = steps.iter().map(|step| step.gas_cost).collect::<Vec<_>>();
     let state_costs = steps.iter().map(|step| step.state_gas_cost).collect();
-    let vm_trace =
-        inspect(TracingInspectorConfig::parity_vm_trace()).into_parity_builder().vm_trace();
-    assert_eq!(vm_trace.ops.iter().map(|op| op.cost).collect::<Vec<_>>(), costs);
+    for config in [
+        TracingInspectorConfig::parity_vm_trace(),
+        TracingInspectorConfig::parity_vm_trace().set_step_deltas(false),
+    ] {
+        let vm_trace = inspect(config).into_parity_builder().vm_trace();
+        assert_eq!(vm_trace.ops.iter().map(|op| op.cost).collect::<Vec<_>>(), costs);
+        // The gas left after a step is the gas the next step starts with.
+        for (op, next) in vm_trace.ops.iter().zip(steps.iter().skip(1)) {
+            assert_eq!(op.ex.as_ref().unwrap().used, next.gas_remaining);
+        }
+    }
     let geth = inspect(TracingInspectorConfig::default_geth()).geth_builder().geth_traces(
         0,
         Default::default(),
@@ -59,11 +67,26 @@ fn restoring_sstore_cost_leaves_out_state_gas_refill() {
 #[test]
 fn selfdestruct_cost_leaves_out_state_gas() {
     // Sending the balance to a new account costs 17,000 gas plus the account creation state
-    // gas.
-    for gas_limit in [1_000_000, SHORT_RESERVOIR_GAS_LIMIT, FULL_RESERVOIR_GAS_LIMIT] {
-        let (costs, state_costs) = step_costs(&hex!("6044ff"), 16, gas_limit);
+    // gas, which the remaining gas pays when the reservoir is short.
+    for (gas_limit, spilled) in [
+        (1_000_000, NEW_ACCOUNT_STATE_GAS),
+        (SHORT_RESERVOIR_GAS_LIMIT, NEW_ACCOUNT_STATE_GAS - 100_000),
+        (FULL_RESERVOIR_GAS_LIMIT, 0),
+    ] {
+        let code = hex!("6044ff");
+        let (costs, state_costs) = step_costs(&code, 16, gas_limit);
         assert_eq!(costs[1], 17_000);
         assert_eq!(state_costs[1], Some(NEW_ACCOUNT_STATE_GAS as i64));
+        for config in [
+            TracingInspectorConfig::parity_vm_trace(),
+            TracingInspectorConfig::parity_vm_trace().set_step_deltas(false),
+        ] {
+            let inspector =
+                inspect_funded_code(&code, &[], SpecId::AMSTERDAM, config, 16, gas_limit);
+            let remaining = inspector.traces().nodes()[0].trace.steps[1].gas_remaining;
+            let trace = inspector.into_parity_builder().vm_trace();
+            assert_eq!(trace.ops[1].ex.as_ref().unwrap().used, remaining - 17_000 - spilled);
+        }
     }
 }
 

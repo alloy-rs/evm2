@@ -551,7 +551,8 @@ fn vmtrace_reports_remaining_gas_after_storage_credit() {
 
 #[test]
 fn non_vm_traces_only_record_gas_deltas() {
-    // Exercise a memory write, a call and a storage gas credit.
+    // Exercise a memory write, a call, a storage write that draws state gas from the remaining
+    // gas and a storage gas credit.
     let code = hex!("602a5f525f5f5f5f5f604361fffff15060015f555f5f5500");
     for config in [
         TracingInspectorConfig::default_geth(),
@@ -567,7 +568,7 @@ fn non_vm_traces_only_record_gas_deltas() {
             }
         }
         if config.record_steps {
-            assert_eq!(inspector.traces().nodes()[0].trace.step_deltas.len(), 2);
+            assert_eq!(inspector.traces().nodes()[0].trace.step_deltas.len(), 3);
         } else {
             assert!(
                 inspector.traces().nodes().iter().all(|node| node.trace.step_deltas.is_empty())
