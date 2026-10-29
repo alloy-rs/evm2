@@ -2233,7 +2233,7 @@ fn keccak256_preimage_tracer_collects_padded_preimages() {
             })
             .collect(),
     );
-    assert_eq!(inspector.json_result(), expected);
+    assert_eq!(inspector.json_result().unwrap(), expected);
 }
 
 #[test]
@@ -2281,7 +2281,7 @@ fn keccak256_preimage_tracer_bounds_the_padding_like_geth() {
                 ..Default::default()
             })
             .unwrap();
-        assert_eq!(inspector.json_result().as_object().unwrap().len(), recorded);
+        assert_eq!(inspector.json_result().unwrap().as_object().unwrap().len(), recorded);
     }
 }
 
@@ -2303,7 +2303,12 @@ fn keccak256_preimage_tracer_stops_recording_at_the_byte_limit() {
                 ..Default::default()
             })
             .unwrap();
-        assert_eq!(inspector.json_result().as_object().unwrap().len(), recorded);
         assert_eq!(inspector.limit_exceeded(), exceeded);
+        match inspector.json_result() {
+            Ok(preimages) => {
+                assert_eq!((preimages.as_object().unwrap().len(), exceeded), (recorded, false))
+            }
+            Err(_) => assert!(exceeded),
+        }
     }
 }

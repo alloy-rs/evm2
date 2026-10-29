@@ -284,10 +284,7 @@ impl DebugInspector {
             .into(),
             Self::Mux(inspector, _) => {
                 inspector.finalize_transaction(tx, &res.result);
-                inspector
-                    .try_into_mux_frame(res, db, tx_info)
-                    .map_err(DebugInspectorError::Database)?
-                    .into()
+                inspector.try_into_mux_frame(res, db, tx_info)?.into()
             }
             Self::FlatCallTracer(inspector) => {
                 inspector.recover_runtime_oog_root(tx, &res.result);
@@ -309,7 +306,7 @@ impl DebugInspector {
                     .map_err(DebugInspectorError::Database)?
                     .into()
             }
-            Self::Keccak256Preimage(inspector) => GethTrace::JS(inspector.json_result()),
+            Self::Keccak256Preimage(inspector) => GethTrace::JS(inspector.json_result()?),
             Self::Default(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit());
                 inspector.set_transaction_caller(tx.signer());
@@ -448,6 +445,9 @@ pub enum DebugInspectorError {
     /// Error from MuxInspector
     #[error(transparent)]
     MuxInspector(#[from] crate::tracing::MuxError),
+    /// The keccak256 preimage tracer reached its limit of recorded bytes
+    #[error(transparent)]
+    Keccak256Preimage(#[from] crate::tracing::Keccak256PreimageLimitExceeded),
     /// Error from JS inspector
     #[cfg(feature = "js-tracer")]
     #[error(transparent)]

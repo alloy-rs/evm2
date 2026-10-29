@@ -43,7 +43,7 @@ pub use fourbyte::FourByteInspector;
 mod keccak;
 pub use keccak::{
     DEFAULT_MAX_RECORDED_BYTES, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector,
-    MEMORY_PAD_LIMIT,
+    LimitExceeded as Keccak256PreimageLimitExceeded, MEMORY_PAD_LIMIT,
 };
 
 mod limits;

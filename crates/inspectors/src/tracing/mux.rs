@@ -1,6 +1,6 @@
 use crate::tracing::{
-    FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector, TracingInspector,
-    TracingInspectorConfig, final_refunded,
+    FourByteInspector, KECCAK256_PREIMAGE_TRACER, Keccak256PreimageInspector,
+    Keccak256PreimageLimitExceeded, TracingInspector, TracingInspectorConfig, final_refunded,
 };
 use alloc::vec::Vec;
 use alloy_consensus::{Transaction, transaction::Recovered};
@@ -12,8 +12,8 @@ use alloy_rpc_types_trace::geth::{
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
-    EvmTypes, EvmTypesHost, Inspector, TxResultExt, TxResultWithState,
-    evm::{DbResult, DynDatabase},
+    DatabaseError, EvmTypes, EvmTypesHost, Inspector, TxResultExt, TxResultWithState,
+    evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
 };
 use thiserror::Error;
@@ -122,7 +122,7 @@ impl MuxInspector {
         result: &TxResultWithState<T>,
         db: &mut dyn DynDatabase,
         tx_info: TransactionInfo,
-    ) -> DbResult<MuxFrame> {
+    ) -> Result<MuxFrame, Error> {
         let mut frame = HashMap::with_capacity_and_hasher(self.configs.len(), Default::default());
 
         for (tracer_type, config) in &self.configs {
@@ -184,7 +184,7 @@ impl MuxInspector {
         if let Some(inspector) = &self.keccak256_preimage {
             frame.insert(
                 GethDebugTracerType::JsTracer(KECCAK256_PREIMAGE_TRACER.into()),
-                GethTrace::JS(inspector.json_result()),
+                GethTrace::JS(inspector.json_result()?),
             );
         }
 
@@ -339,6 +339,12 @@ pub enum Error {
     /// Unsupported tracer type (e.g. JS tracer)
     #[error("unsupported tracer type: '{0:?}'")]
     UnsupportedTracerType(GethDebugTracerType),
+    /// A tracer reached its limit of recorded bytes
+    #[error(transparent)]
+    Keccak256Preimage(#[from] Keccak256PreimageLimitExceeded),
+    /// Database operation failed
+    #[error("database error {0:?}")]
+    Database(#[from] DatabaseError),
     /// Error when deserializing the config
     #[error("error deserializing config: {0}")]
     InvalidConfig(#[from] serde_json::Error),

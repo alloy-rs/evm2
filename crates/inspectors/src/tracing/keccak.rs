@@ -17,6 +17,7 @@ use evm2::{
     interpreter::{Interpreter, opcode::op},
 };
 use serde_json::Value;
+use thiserror::Error;
 
 /// The name of the tracer in the `tracer` option of `debug_trace*` and in a mux tracer config.
 pub const KECCAK256_PREIMAGE_TRACER: &str = "keccak256PreimageTracer";
@@ -27,6 +28,11 @@ pub const MEMORY_PAD_LIMIT: u64 = 1024 * 1024;
 
 /// The default limit on the bytes of all recorded preimages, 64 MiB. geth has no limit.
 pub const DEFAULT_MAX_RECORDED_BYTES: usize = 64 * 1024 * 1024;
+
+/// The result of a [`Keccak256PreimageInspector`] would miss preimages: it reached its byte limit.
+#[derive(Clone, Copy, Debug, Error)]
+#[error("keccak256PreimageTracer reached its limit of recorded preimage bytes")]
+pub struct LimitExceeded;
 
 /// Inspector that records the preimage of every `KECCAK256` operation.
 #[derive(Clone, Debug)]
@@ -63,15 +69,20 @@ impl Keccak256PreimageInspector {
     }
 
     /// Returns the result of the tracer: a JSON object mapping each hash to its preimage.
-    pub fn json_result(&self) -> Value {
-        Value::Object(
+    ///
+    /// Fails if the byte limit was reached, because the object would miss preimages.
+    pub fn json_result(&self) -> Result<Value, LimitExceeded> {
+        if self.budget.exceeded() {
+            return Err(LimitExceeded);
+        }
+        Ok(Value::Object(
             self.inner
                 .iter()
                 .map(|(hash, preimage)| {
                     (hex::encode_prefixed(hash), hex::encode_prefixed(preimage).into())
                 })
                 .collect(),
-        )
+        ))
     }
 }
 
