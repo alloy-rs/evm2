@@ -99,7 +99,7 @@ impl PendingState {
 
     /// Returns a borrowed view of the transaction's changes.
     #[inline]
-    pub fn changes(&self) -> TxStateChanges<'_> {
+    pub const fn changes(&self) -> TxStateChanges<'_> {
         TxStateChanges::new(&self.accounts, &self.selfdestructs)
     }
 
