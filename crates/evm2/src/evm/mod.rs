@@ -1320,6 +1320,8 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
         // constructed), so the create hook observes it directly.
         let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
 
+        // Keeps the top-level frame's bytecode alive when a hook replaces `message.code`.
+        let top_code;
         let mut top_frame: Option<Box<Interpreter<'frame, 'a, T>>> = None;
         let frame = match guard.evm.current_frame {
             // SAFETY: The parent frame is suspended on this call stack for the duration of the
@@ -1334,6 +1336,12 @@ impl<'a, T: EvmTypes> Evm<'a, T> {
                 // SAFETY: The message outlives the frame, which is returned to the pool below.
                 let frame_message = unsafe { trustme::decouple_lt(&*message) };
                 let frame = top_frame.insert(guard.evm.interpreter_pool.pop(tx_env, frame_message));
+                top_code = message.code.clone();
+                // SAFETY: `top_code` owns a clone of the code, so the frame's pointers into it
+                // stay valid even if a hook replaces `message.code`. It is declared before
+                // `top_frame` and dropped after the frame is returned to the pool, which resets
+                // its bytecode borrow.
+                frame.set_bytecode(unsafe { trustme::decouple_lt(&top_code) });
                 frame.prepare_run(guard.evm);
                 frame
             }

@@ -1145,3 +1145,6 @@ mod state_diff_birth;
 
 #[path = "parity/state_diff_selfdestruct.rs"]
 mod state_diff_selfdestruct;
+
+#[path = "parity/oog_cost.rs"]
+mod oog_cost;
