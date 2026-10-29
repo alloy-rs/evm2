@@ -458,7 +458,7 @@ impl ReusableEvmDb {
     pub(crate) fn with_state_scope<R>(
         &self,
         state: &mut State<'_>,
-        pre_write: Option<SlotWrite>,
+        pre_write: Option<PreWrite>,
         f: impl FnOnce() -> R,
     ) -> R {
         self.with_scope(&mut StateDbReader { state, pre_write }, f)
@@ -527,7 +527,7 @@ impl core::fmt::Debug for dyn EvmDbReader {
 
 struct StateDbReader<'a, 'db> {
     state: &'a mut State<'db>,
-    pre_write: Option<SlotWrite>,
+    pre_write: Option<PreWrite>,
 }
 
 impl EvmDbReader for StateDbReader<'_, '_> {
@@ -630,9 +630,9 @@ impl EvmDbState {
     }
 }
 
-/// A persistent storage slot with a value.
+/// A persistent storage slot with its value before a write.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct SlotWrite {
+pub(crate) struct PreWrite {
     pub(crate) address: Address,
     pub(crate) slot: Word,
     pub(crate) value: Word,
@@ -647,7 +647,7 @@ pub(crate) struct StepSnapshot {
     stack: StackView,
     memory: MemoryView,
     /// The slot an `SSTORE` overwrites, with its value before the write.
-    pre_write: Option<SlotWrite>,
+    pub(crate) pre_write: Option<PreWrite>,
 }
 
 impl StepSnapshot {
@@ -661,16 +661,6 @@ impl StepSnapshot {
         state.stack.record(op, stack);
         state.memory.record(op, stack, memory);
         state.pre_write = None;
-    }
-
-    /// Records the storage slot the step overwrites, with its value before the write.
-    pub(crate) const fn record_pre_write(&mut self, write: SlotWrite) {
-        self.pre_write = Some(write);
-    }
-
-    /// Returns the slot the step overwrites, with its value before the write.
-    pub(crate) const fn pre_write(&self) -> Option<SlotWrite> {
-        self.pre_write
     }
 }
 

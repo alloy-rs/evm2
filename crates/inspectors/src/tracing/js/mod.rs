@@ -6,7 +6,7 @@ use crate::tracing::{
     js::{
         bindings::{
             CallFrame, Contract, FrameKind, FrameResult, JsEvmContext, OpcodeNames, PreStep,
-            ReusableCallFrame, ReusableEvmDb, ReusableFrameResult, ReusableStepLog, SlotWrite,
+            PreWrite, ReusableCallFrame, ReusableEvmDb, ReusableFrameResult, ReusableStepLog,
             StepInfo, StepSnapshot,
         },
         builtins::{PrecompileList, register_builtins, to_serde_value},
@@ -576,7 +576,7 @@ impl JsInspector {
             call_id: call.id,
         };
         let (stack, memory, host) = interp.stack_memory_host();
-        let pre_write = pending.snapshot.pre_write();
+        let pre_write = pending.snapshot.pre_write;
         let res = self.reusable_db.with_state_scope(host.state_mut(), pre_write, || {
             self.reusable_step_log.with_scope(
                 &mut pending.snapshot,
@@ -663,7 +663,7 @@ impl<T: EvmTypes> Inspector<T> for JsInspector {
                 let address = interp.message().destination;
                 if let Ok(value) = interp.host().state_mut().storage_slot_untracked(&address, &slot)
                 {
-                    pending.snapshot.record_pre_write(SlotWrite { address, slot, value });
+                    pending.snapshot.pre_write = Some(PreWrite { address, slot, value });
                 }
             }
         }
@@ -1491,22 +1491,60 @@ mod tests {
     fn test_db_get_state_reads_current_storage() {
         let code = r#"{
             res: [],
-            read: function(log, db) {
-                return Number(BigInt(toHex(db.getState(log.contract.getAddress(), toWord('0x00')))));
+            read: function(address, db) {
+                return Number(BigInt(toHex(db.getState(address, toWord('0x00')))));
             },
             step: function(log, db) {
                 var op = log.op.toString();
-                if (op === 'SSTORE' || op === 'STOP') { this.res.push([op, this.read(log, db)]); }
+                if (op === 'SSTORE' || op === 'STOP') { this.res.push([op, this.read(log.contract.getAddress(), db)]); }
             },
             fault: function() {},
             result: function(ctx, db) {
-                this.res.push(['result', Number(BigInt(toHex(db.getState(ctx.to, toWord('0x00')))))]);
+                this.res.push(['result', this.read(ctx.to, db)]);
                 return this.res;
             }
         }"#;
         // SSTORE(0, 1), SSTORE(0, 2), STOP
         let res = run_trace(code, Some(bytes!("0x60016000556002600055")), true);
         assert_eq!(res, json!([["SSTORE", 0], ["SSTORE", 1], ["STOP", 2], ["result", 2]]));
+    }
+
+    #[test]
+    fn test_db_get_state_of_created_accounts_in_result() {
+        let code = r#"{
+            enter: function(frame) { this.created = frame.getTo(); },
+            exit: function() {},
+            fault: function() {},
+            result: function(ctx, db) {
+                return [toHex(db.getState(this.created, toWord('0x00'))), toHex(db.getState(this.created, toWord('0x01')))];
+            }
+        }"#;
+        // CREATE of an initcode that runs SSTORE(0, 7), then either stops or self-destructs.
+        let slot = "0x0000000000000000000000000000000000000000000000000000000000000007";
+        let zero = "0x0000000000000000000000000000000000000000000000000000000000000000";
+        for (initcode, expected) in [
+            ("6007600055", json!([slot, zero])),
+            ("6007600055730101010101010101010101010101010101010101ff", json!([zero, zero])),
+        ] {
+            let initcode = hex::decode(initcode).unwrap();
+            // PUSH<n> initcode, PUSH0, MSTORE, then CREATE(0, 32 - n, n).
+            let n = initcode.len();
+            let mut contract = vec![0x5f + n as u8];
+            contract.extend_from_slice(&initcode);
+            contract.extend_from_slice(&[
+                0x5f,
+                0x52,
+                0x60,
+                n as u8,
+                0x60,
+                32 - n as u8,
+                0x5f,
+                0xf0,
+                0x00,
+            ]);
+            let res = run_trace(code, Some(contract.into()), true);
+            assert_eq!(res, expected);
+        }
     }
 
     #[test]
