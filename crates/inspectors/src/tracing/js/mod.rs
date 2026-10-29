@@ -1253,25 +1253,14 @@ mod tests {
             step: function(log) {
                 if (log.op.toString() === 'STOP') {
                     this.res.push(log.memory.slice(Infinity, NaN).length, log.memory.slice(NaN, 2).length);
+                    this.res.push(log.memory.slice(0, Infinity).length);
                 }
             },
             fault: function() {},
             result: function() { return this.res; }
         }"#;
         let res = run_trace(code, None, true);
-        assert_eq!(res, json!([0, 2]));
-    }
-
-    #[test]
-    fn test_memory_slice_infinite_end_is_zero() {
-        let code = r#"{
-            res: [],
-            step: function(log) { this.res.push(log.memory.slice(0, Infinity).length); },
-            fault: function() {},
-            result: function() { return this.res; }
-        }"#;
-        let res = run_trace(code, None, true);
-        assert_eq!(res, json!([0, 0, 0]));
+        assert_eq!(res, json!([0, 2, 0]));
     }
 
     #[test]
@@ -1291,54 +1280,6 @@ mod tests {
         let code = r#"{
             depths: [],
             step: function(log) { this.depths.push(log.memory.slice(0, 340282366920938463463374607431768211455n)); },
-            fault: function() {},
-            result: function() { return this.depths; }
-        }"#;
-        let err = try_run_trace(code, None, true).unwrap_err();
-        assert!(matches!(err, JsInspectorError::JsError(_)));
-    }
-
-    #[test]
-    fn test_stack_peek() {
-        let code = r#"{
-            depths: [],
-            step: function(log) { this.depths.push(log.stack.peek(-1)); },
-            fault: function() {},
-            result: function() { return this.depths; }
-        }"#;
-        let err = try_run_trace(code, None, true).unwrap_err();
-        assert!(matches!(err, JsInspectorError::JsError(_)));
-    }
-
-    #[test]
-    fn test_stack_peek_nan() {
-        let code = r#"{
-            depths: [],
-            step: function(log) { this.depths.push(log.stack.peek(NaN)); },
-            fault: function() {},
-            result: function() { return this.depths; }
-        }"#;
-        let err = try_run_trace(code, None, true).unwrap_err();
-        assert!(matches!(err, JsInspectorError::JsError(_)));
-    }
-
-    #[test]
-    fn test_stack_peek_infinity() {
-        let code = r#"{
-            depths: [],
-            step: function(log) { this.depths.push(log.stack.peek(Infinity)); },
-            fault: function() {},
-            result: function() { return this.depths; }
-        }"#;
-        let err = try_run_trace(code, None, true).unwrap_err();
-        assert!(matches!(err, JsInspectorError::JsError(_)));
-    }
-
-    #[test]
-    fn test_memory_get_uint() {
-        let code = r#"{
-            depths: [],
-            step: function(log, db) { this.depths.push(log.memory.getUint(-64)); },
             fault: function() {},
             result: function() { return this.depths; }
         }"#;
@@ -1390,6 +1331,10 @@ mod tests {
             ),
             ("log.stack.peek(2)", "tracer accessed out of bound stack: size 2, index 2"),
             ("log.stack.peek(-1)", "tracer accessed out of bound stack: size 2, index -1"),
+            (
+                "log.stack.peek(9223372036854775807n)",
+                "tracer accessed out of bound stack: size 2, index -9223372036854775808",
+            ),
         ] {
             let code = format!(
                 "{{step: function(log) {{ if (log.op.toString() === 'STOP') {expression}; }}, fault: function() {{}}, result: function() {{}}}}"
@@ -1417,7 +1362,8 @@ mod tests {
                         log.stack.peek(NaN).toString(),
                         log.stack.peek(Infinity).toString(),
                         log.stack.peek(1.5).toString(),
-                        log.stack.peek('1').toString()
+                        log.stack.peek('1').toString(),
+                        log.stack.peek(1n).toString()
                     );
                 }
             },
@@ -1425,7 +1371,7 @@ mod tests {
             result: function() { return this.res; }
         }"#;
         let res = run_trace(code, Some(bytes!("0x600160020000")), true);
-        assert_eq!(res, json!(["2", "2", "1", "1"]));
+        assert_eq!(res, json!(["2", "2", "1", "1", "1"]));
     }
 
     #[test]

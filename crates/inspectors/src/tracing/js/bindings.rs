@@ -315,9 +315,10 @@ impl ReusableCallFrame {
         // Geth passes no value for STATICCALL, which `getValue()` reports as undefined.
         let get_value = state_fn(ctx, state.clone(), 0, |state, _, _| {
             let state = state.borrow();
-            Ok(match state.kind {
-                FrameKind::Call(CallKind::StaticCall) => JsValue::undefined(),
-                _ => to_bigint(state.value),
+            Ok(if matches!(state.kind, FrameKind::Call(CallKind::StaticCall)) {
+                JsValue::undefined()
+            } else {
+                to_bigint(state.value)
             })
         });
         let get_input = state_fn(ctx, state.clone(), 0, |state, _, ctx| {
@@ -899,7 +900,8 @@ fn build_step_memory_object(state: Shared<StepLogState>, ctx: &mut Context) -> J
             )));
         }
         let len = state.borrow().memory.len();
-        if let Some(padding) = end.checked_sub(len as i64).filter(|&p| p > MEMORY_PAD_LIMIT) {
+        let padding = end - len as i64;
+        if padding > MEMORY_PAD_LIMIT {
             return Err(type_error(format!("reached limit for padding memory slice: {padding}")));
         }
         let bytes = state.borrow().memory.bytes(begin as usize..end as usize)?;
@@ -908,16 +910,13 @@ fn build_step_memory_object(state: Shared<StepLogState>, ctx: &mut Context) -> J
     let get_uint = state_fn(ctx, state, 1, |state, args, ctx| {
         let len = state.borrow().memory.len();
         let offset = to_int64(args.get_or_undefined(0), ctx)?;
-        let range = usize::try_from(offset)
-            .ok()
-            .and_then(|offset| Some(offset..offset.checked_add(32)?))
-            .filter(|range| range.end <= len)
-            .ok_or_else(|| {
-                type_error(format!(
-                    "tracer accessed out of bound memory: available {len}, offset {offset}, size 32"
-                ))
-            })?;
-        let bytes = state.borrow().memory.bytes(range)?;
+        if offset < 0 || offset.saturating_add(32) > len as i64 {
+            return Err(type_error(format!(
+                "tracer accessed out of bound memory: available {len}, offset {offset}, size 32"
+            )));
+        }
+        let offset = offset as usize;
+        let bytes = state.borrow().memory.bytes(offset..offset + 32)?;
         Ok(to_bigint(U256::from_be_slice(bytes.as_slice())))
     });
 
@@ -954,13 +953,14 @@ fn build_step_contract_object(
 /// Converts a JS argument to the `int64` goja passes to a Go callback.
 ///
 /// NaN and infinities become 0, fractions truncate toward zero and values outside the `int64`
-/// range become `i64::MIN`.
+/// range become `i64::MIN`, as Go's float conversion does on amd64.
 fn to_int64(value: &JsValue, ctx: &mut Context) -> JsResult<i64> {
-    // Boa's `ToNumber` rejects BigInt, but stack-derived tracer values are BigInt.
-    if let Some(value) = value.as_bigint() {
-        return Ok(value.to_string().parse().unwrap_or(i64::MIN));
-    }
-    let number = value.to_number(ctx)?;
+    // Boa's `ToNumber` rejects BigInt, but stack-derived tracer values are BigInt. Geth's bigint
+    // objects reach goja through their `Number` value, so go through a float as well.
+    let number = match value.as_bigint() {
+        Some(value) => value.to_f64(),
+        None => value.to_number(ctx)?,
+    };
     Ok(if !number.is_finite() {
         0
     } else if (-(2f64.powi(63))..2f64.powi(63)).contains(&number) {
