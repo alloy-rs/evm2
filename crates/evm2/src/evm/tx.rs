@@ -1,6 +1,9 @@
 //! Transaction execution lifecycle and result types.
 
-use super::{AccountChanges, BlockStateAccumulator, Evm, PendingState, StateChangeSink};
+use super::{
+    AccountChanges, BlockStateAccumulator, Evm, PendingState, StateChangeSink, StateChangeSource,
+    TxStateChanges,
+};
 use crate::{EvmTypesHost, interpreter::InstrStop};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, Log};
@@ -264,10 +267,21 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
     /// and then [`commit`](Self::commit) or [`discard`](Self::discard) the transaction.
     #[inline]
     pub fn account_changes(&self) -> impl Iterator<Item = AccountChanges<'_>> {
-        self.has_pending_state()
-            .then(|| self.evm.state.transaction_account_changes())
-            .into_iter()
-            .flatten()
+        self.changes().account_changes()
+    }
+
+    /// Returns a borrowed view of the transaction's state changes.
+    ///
+    /// Like [`account_changes`](Self::account_changes), this borrows the transaction state in
+    /// place, so a caller can inspect what the transaction wrote, including single accounts and
+    /// storage slots, before deciding to [`commit`](Self::commit) or [`discard`](Self::discard).
+    #[inline]
+    pub fn changes(&self) -> TxStateChanges<'_> {
+        if self.has_pending_state() {
+            self.evm.state.transaction_changes()
+        } else {
+            TxStateChanges::empty()
+        }
     }
 
     /// Accepts the transaction state into the internal accepted overlay.
@@ -297,7 +311,7 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
         sink: &mut S,
     ) -> Result<TxResult<T>, S::Error> {
         if self.has_pending_state() {
-            self.evm.state.visit_transaction_changes(sink)?;
+            self.evm.state.transaction_changes().visit(sink)?;
             self.commit_pending_state();
         }
         Ok(self.take_result())
@@ -322,7 +336,7 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
         sink: &mut S,
     ) -> Result<TxResult<T>, S::Error> {
         if self.has_pending_state() {
-            self.evm.state.visit_transaction_changes(sink)?;
+            self.evm.state.transaction_changes().visit(sink)?;
             self.clear_pending_state();
         }
         Ok(self.take_result())
@@ -341,6 +355,14 @@ impl<'evm, 'host, T: EvmTypesHost> ExecutedTx<'evm, 'host, T> {
         let pending_state = self.take_pending_state();
         let result = self.take_result();
         TxResultWithState { result, pending_state, _non_exhaustive: () }
+    }
+}
+
+impl<T: EvmTypesHost> StateChangeSource for ExecutedTx<'_, '_, T> {
+    /// Visits the transaction's changes in place, as [`PendingState`]'s implementation does for
+    /// detached state.
+    fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
+        self.changes().visit(sink)
     }
 }
 
