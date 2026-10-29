@@ -444,6 +444,10 @@ pub fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     if !res.previously_destroyed {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);
     }
+    cx.state
+        .host()
+        .finish_selfdestruct(destination, &target)
+        .map_err(|error| cx.state.fail(error))?;
     cx.state.inspect_selfdestruct(destination, &target, &res.value);
     Err(InstrStop::SelfDestruct)
 }
@@ -1003,5 +1007,26 @@ mod tests {
         }));
         assert_matches!(interp.err, InstrStop::SelfDestruct);
         assert_eq!(host.selfdestructs, [(contract, target, false)]);
+        assert_eq!(host.finished_selfdestructs, [(contract, target)]);
+    }
+
+    #[test]
+    fn selfdestruct_out_of_gas_moves_no_balance() {
+        let contract = Address::from([0x11; 20]);
+        let target = Address::from([0x99; 20]);
+        let mut host = TestHost::default();
+        host.selfdestruct_result.is_cold = true;
+        let mut code = Vec::new();
+        push(&mut code, address_to_word(&target));
+        code.push(op::SELFDESTRUCT);
+
+        // The gas covers the PUSH but not the cold beneficiary charge.
+        let interp = run(RunConfig::new(code)
+            .host(&mut host)
+            .spec(SpecId::BERLIN)
+            .message(MessageExt { destination: contract, ..Default::default() })
+            .gas_limit(100));
+        assert_matches!(interp.err, InstrStop::OutOfGas);
+        assert!(host.finished_selfdestructs.is_empty());
     }
 }

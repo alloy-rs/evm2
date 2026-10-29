@@ -1008,6 +1008,10 @@ pub unsafe fn __revmc_builtin_selfdestruct<T: EvmTypesHost>(
         ecx.gas.record_refund(ecx.gas_params().get(GasId::SelfdestructRefund) as i64);
     }
 
+    ecx.host()
+        .finish_selfdestruct(address, &target)
+        .map_err(|stop| ecx.interpreter_mut().fail(stop))?;
+
     Err(InstrStop::SelfDestruct.into())
 }
 

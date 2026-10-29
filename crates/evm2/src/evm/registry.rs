@@ -560,6 +560,14 @@ mod tests {
         ) -> Result<SelfDestructResult, crate::HostError> {
             unimplemented!()
         }
+
+        fn finish_selfdestruct(
+            &mut self,
+            _contract: &Address,
+            _target: &Address,
+        ) -> Result<(), crate::HostError> {
+            unimplemented!()
+        }
     }
 
     #[derive(Debug, PartialEq, Eq)]

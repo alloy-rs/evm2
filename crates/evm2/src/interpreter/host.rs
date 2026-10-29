@@ -186,13 +186,25 @@ pub trait Host<T: EvmTypesHost> {
         message: &mut Message<T>,
     ) -> Result<MessageResult<T>, ExecutionError>;
 
-    /// Registers the current contract for self-destruction.
+    /// Looks up the beneficiary of a self-destruction and returns the facts its gas charge needs.
+    ///
+    /// The beneficiary is warmed, but no balance moves yet: the instruction charges gas first and
+    /// then calls [`Self::finish_selfdestruct`], so a self-destruct that runs out of gas moves
+    /// nothing and emits no transfer log.
     fn selfdestruct(
         &mut self,
         contract: &Address,
         target: &Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, HostError>;
+
+    /// Moves the balance of the self-destructing contract to `target` and registers it for
+    /// destruction. Called after the gas charge of [`Self::selfdestruct`] succeeded.
+    fn finish_selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+    ) -> Result<(), HostError>;
 }
 
 #[cfg(test)]

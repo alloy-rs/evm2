@@ -54,6 +54,7 @@ pub(crate) struct TestHost {
     pub(crate) calls: Vec<Message<TestTypes>>,
     pub(crate) call_static_flags: Vec<bool>,
     pub(crate) selfdestructs: Vec<(Address, Address, bool)>,
+    pub(crate) finished_selfdestructs: Vec<(Address, Address)>,
     pub(crate) new_account_checks: Vec<Address>,
 }
 
@@ -87,6 +88,7 @@ impl Default for TestHost {
             calls: Vec::new(),
             call_static_flags: Vec::new(),
             selfdestructs: Vec::new(),
+            finished_selfdestructs: Vec::new(),
             new_account_checks: Vec::new(),
         }
     }
@@ -239,6 +241,15 @@ impl Host<TestTypes> for TestHost {
         }
         self.selfdestructs.push((*contract, *target, skip_cold_load));
         Ok(self.selfdestruct_result)
+    }
+
+    fn finish_selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+    ) -> Result<(), crate::HostError> {
+        self.finished_selfdestructs.push((*contract, *target));
+        Ok(())
     }
 }
 

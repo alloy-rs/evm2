@@ -1910,10 +1910,30 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas.into());
         }
-        let (previously_destroyed, balance, should_destroy) = {
+        let (previously_destroyed, balance) = {
+            let account = self.state.account(contract)?;
+            (account.is_destructed(), account.balance())
+        };
+        Ok(SelfDestructResult {
+            had_value: !balance.is_zero(),
+            value: balance,
+            target_is_empty: target_is_empty_for_new_account_gas,
+            is_cold,
+            previously_destroyed,
+            _non_exhaustive: (),
+        })
+    }
+
+    fn finish_selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+    ) -> Result<(), HostError> {
+        let features = self.features;
+        let (balance, should_destroy) = {
             let account = self.state.account(contract)?;
             let should_destroy = !features.contains(EvmFeatures::EIP6780) || account.is_created();
-            (account.is_destructed(), account.balance(), should_destroy)
+            (account.balance(), should_destroy)
         };
 
         if contract != target {
@@ -1932,14 +1952,7 @@ impl<'a, T: EvmTypes> Host<T> for Evm<'a, T> {
         if should_destroy {
             self.state.account(contract)?.mark_destructed();
         }
-        Ok(SelfDestructResult {
-            had_value: !balance.is_zero(),
-            value: balance,
-            target_is_empty: target_is_empty_for_new_account_gas,
-            is_cold,
-            previously_destroyed,
-            _non_exhaustive: (),
-        })
+        Ok(())
     }
 }
 

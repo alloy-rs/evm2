@@ -1536,6 +1536,69 @@ mod tests {
     }
 
     #[test]
+    fn out_of_gas_selfdestruct_emits_no_transfer_log() {
+        #[derive(Default)]
+        struct LogCounter(usize);
+        impl Inspector<BaseEvmTypes> for LogCounter {
+            fn log(&mut self, _log: &Log, _host: &mut <BaseEvmTypes as EvmTypesHost>::Host<'_>) {
+                self.0 += 1;
+            }
+        }
+
+        let caller = Address::from([0xaa; 20]);
+        let outer = Address::from([0xbb; 20]);
+        let inner = Address::from([0xcc; 20]);
+        let beneficiary = Address::from([0xdd; 20]);
+        // The inner contract holds a balance and self-destructs to an empty account, but its call
+        // gets too little gas for the SELFDESTRUCT charge, which includes the new account's top-up.
+        let mut inner_code = Vec::new();
+        push(&mut inner_code, address_to_word(&beneficiary));
+        inner_code.push(op::SELFDESTRUCT);
+        let mut outer_code = Vec::new();
+        push_all(&mut outer_code, [Word::ZERO; 5]);
+        push(&mut outer_code, address_to_word(&inner));
+        push(&mut outer_code, Word::from(10_000));
+        outer_code.extend([op::CALL, op::STOP]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
+        );
+        database.insert_account_info(
+            &outer,
+            AccountInfo::default().with_code(legacy_bytecode(outer_code)),
+        );
+        database.insert_account_info(
+            &inner,
+            AccountInfo::default()
+                .with_balance(U256::from(7))
+                .with_code(legacy_bytecode(inner_code)),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnvExt::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        evm.set_inspector(LogCounter::default());
+        let tx = Recovered::new_unchecked(
+            TxEnvelope::Legacy(TxLegacy {
+                to: TxKind::Call(outer),
+                gas_limit: 300_000,
+                ..Default::default()
+            }),
+            caller,
+        );
+
+        let result = evm.transact(&tx).expect("transaction should execute").discard();
+        assert!(result.status);
+        assert!(result.logs.is_empty());
+        let inspector = evm.inspector().unwrap().downcast_ref::<LogCounter>().unwrap();
+        assert_eq!(inspector.0, 0);
+    }
+
+    #[test]
     fn cooling_loaded_slot_respects_access_list() {
         struct CoolSlotInspector {
             prewarmed: bool,
