@@ -1,10 +1,10 @@
 //! Tracer selection and trace rendering on top of `evm2-inspectors`.
 
 use super::{Args, Error, output::TxTrace};
+use alloy_consensus::Transaction;
 use alloy_primitives::{B256, hex};
 use alloy_rpc_types_trace::geth::{
-    CallConfig, CallFrame, DefaultFrame, GethDebugTracingOptions, GethDefaultTracingOptions,
-    GethTrace, StructLog,
+    CallConfig, CallFrame, GethDebugTracingOptions, GethDefaultTracingOptions, StructLog,
 };
 use evm2::{
     BaseEvmTypes, TxResultWithState,
@@ -15,7 +15,7 @@ use evm2::{
 };
 use evm2_inspectors::tracing::{DebugInspector, types::CallTraceNode};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 /// How the execution is traced.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,17 +107,13 @@ impl Tracing {
         result: &TxResultWithState<BaseEvmTypes>,
         db: &mut dyn DynDatabase,
     ) -> Result<TxTrace, Error> {
-        let trace = inspector
-            .get_result(None, tx, block, result, db)
-            .map_err(|err| Error::Tracer(err.to_string()))?;
-        let (extension, content) = match self.kind {
-            Some(TraceKind::Jsonl) => {
-                let GethTrace::Default(frame) = trace else {
-                    return Err(Error::Tracer("struct logger returned another frame".into()));
-                };
-                ("jsonl", jsonl(inspector, &frame, self.memory))
-            }
-            _ => ("json", serde_json::to_string(&trace).expect("trace serializes")),
+        let (extension, content) = if self.kind == Some(TraceKind::Jsonl) {
+            ("jsonl", jsonl(inspector, tx, result, self.memory)?)
+        } else {
+            let trace = inspector
+                .get_result(None, tx, block, result, db)
+                .map_err(|err| Error::Tracer(err.to_string()))?;
+            ("json", serde_json::to_string(&trace).expect("trace serializes"))
         };
         Ok(TxTrace { index, hash, extension, content })
     }
@@ -129,8 +125,29 @@ impl Tracing {
 /// opcode that fails while it runs (but not for one that fails its stack or gas checks, which has
 /// a single line with the error), and an end line with output, gas used and error for every call
 /// frame. The lines come from the steps and frames the inspector recorded.
-fn jsonl(inspector: &DebugInspector, frame: &DefaultFrame, memory: bool) -> String {
-    let DebugInspector::Default(tracing, _) = inspector else { return String::new() };
+///
+/// The memory sizes and contents come from the recorded steps, which the inspector keeps within
+/// its byte budget, not from the struct logs: those hold a hex string per memory word and step.
+fn jsonl(
+    inspector: &mut DebugInspector,
+    tx: &RecoveredTxEnvelope,
+    result: &TxResultWithState<BaseEvmTypes>,
+    memory: bool,
+) -> Result<String, Error> {
+    let DebugInspector::Default(tracing, config) = inspector else {
+        return Err(Error::Tracer("the JSON logger needs the struct logger".into()));
+    };
+    if tracing.limit_exceeded() {
+        return Err(Error::Tracer("the trace outgrew the inspector's byte budget".into()));
+    }
+    tracing.set_transaction_gas_limit(tx.gas_limit());
+    tracing.set_transaction_caller(tx.signer());
+    let options = GethDefaultTracingOptions { enable_memory: Some(false), ..*config };
+    let frame = tracing.geth_builder().geth_traces_with_result_gas(
+        &result.result,
+        result.result.output.clone(),
+        options,
+    );
     let nodes = tracing.traces().nodes();
     let mut errors = Vec::new();
     collect_errors(&tracing.geth_builder().geth_call_traces(CallConfig::default(), 0), &mut errors);
@@ -147,12 +164,15 @@ fn jsonl(inspector: &DebugInspector, frame: &DefaultFrame, memory: bool) -> Stri
     if !nodes.is_empty() {
         writer.frame(0);
     }
-    writer.out
+    Ok(writer.out)
 }
 
 /// Lists the error of every call frame in the order the frames were entered.
 fn collect_errors(frame: &CallFrame, errors: &mut Vec<Option<String>>) {
-    errors.push(frame.error.clone());
+    // A selfdestruct is a call frame of the geth tree but not a frame the inspector entered.
+    if frame.typ != "SELFDESTRUCT" {
+        errors.push(frame.error.clone());
+    }
     for call in &frame.calls {
         collect_errors(call, errors);
     }
@@ -181,11 +201,15 @@ impl JsonlWriter<'_> {
         let last = node.trace.steps.len().saturating_sub(1);
         for (position, step) in node.trace.steps.iter().enumerate() {
             let Some(log) = self.logs.next() else { break };
-            let mut line = step_line(log, &self.opcodes, self.memory);
+            let memory = step.memory.as_ref().map_or(&[][..], |memory| memory.as_bytes());
+            let mut line = step_line(log, memory, &self.opcodes, self.memory);
             let op = step.op.get();
+            let state_gas_oog = self.amsterdam
+                && matches!(op, op::CREATE | op::CREATE2)
+                && create_gas(log, op, memory.len()) <= log.gas.into();
             let fault = match &log.error {
                 // Stack and gas checks fail before the opcode is logged: one line, with the error.
-                Some(error) if fails_before_logging(error, op, self.amsterdam) => {
+                Some(error) if fails_before_logging(error, op, state_gas_oog) => {
                     line["error"] = json!(error);
                     None
                 }
@@ -199,11 +223,10 @@ impl JsonlWriter<'_> {
             };
             self.line(line);
             if let Some(error) = fault {
-                let mut line = step_line(
-                    &fault_log(log, op, error.contains("OutOfGas")),
-                    &self.opcodes,
-                    self.memory,
-                );
+                let out_of_gas = error.contains("OutOfGas");
+                let memory = fault_memory(log, op, out_of_gas, memory);
+                let mut line =
+                    step_line(&fault_log(log, op, out_of_gas), &memory, &self.opcodes, self.memory);
                 line["error"] = json!(error);
                 self.line(line);
             }
@@ -244,20 +267,21 @@ fn opcode_number(name: &str, opcodes: &HashMap<&str, u8>) -> u8 {
     })
 }
 
-fn step_line(log: &StructLog, opcodes: &HashMap<&str, u8>, memory: bool) -> Value {
+fn step_line(
+    log: &StructLog,
+    memory: &[u8],
+    opcodes: &HashMap<&str, u8>,
+    with_memory: bool,
+) -> Value {
     let mut line = json!({
         "pc": log.pc,
         "op": opcode_number(&log.op, opcodes),
         "gas": format!("{:#x}", log.gas),
         "gasCost": format!("{:#x}", log.gas_cost),
     });
-    line["memSize"] = json!(log.memory.as_ref().map_or(0, |memory| memory.len() * 32));
-    if memory
-        && let Some(words) = &log.memory
-        && !words.is_empty()
-    {
-        let words = words.iter().map(|word| word.trim_start_matches("0x")).collect::<String>();
-        line["memory"] = json!(format!("0x{words}"));
+    line["memSize"] = json!(memory.len());
+    if with_memory && !memory.is_empty() {
+        line["memory"] = json!(format!("0x{}", hex::encode(memory)));
     }
     line["stack"] = json!(log.stack);
     if let Some(return_data) = &log.return_data
@@ -271,24 +295,43 @@ fn step_line(log: &StructLog, opcodes: &HashMap<&str, u8>, memory: bool) -> Valu
     line
 }
 
+/// The gas Amsterdam charges a `CREATE` or `CREATE2` before it runs: the base cost, the memory
+/// expansion and the initcode words (and the hashed words of `CREATE2`). The state gas of the new
+/// account comes after, while the opcode runs. Zero for other opcodes.
+fn create_gas(log: &StructLog, op: u8, memory_len: usize) -> u128 {
+    const BASE: u128 = 12000;
+    let (hashed, Some(stack)) = (op == op::CREATE2, &log.stack) else { return 0 };
+    if !matches!(op, op::CREATE | op::CREATE2) || stack.len() < 3 {
+        return 0;
+    }
+    let (offset, size) = (stack[stack.len() - 2], stack[stack.len() - 3]);
+    if size.is_zero() {
+        return BASE;
+    }
+    let words = |bytes: usize| bytes.div_ceil(32) as u128;
+    let memory_cost = |words: u128| 3 * words + words * words / 512;
+    let end = offset.saturating_add(size).saturating_to::<usize>();
+    let expansion = memory_cost(words(end)).saturating_sub(memory_cost(words(memory_len)));
+    BASE + expansion + words(size.saturating_to::<usize>()) * if hashed { 8 } else { 2 }
+}
+
 /// Whether an opcode with this step error fails in its stack or gas checks, before the logger
-/// sees it. Static call violations fail in the gas calculation, except for `TSTORE` and `LOG`, and
-/// from Amsterdam on `CREATE` pays its state gas while it runs.
-fn fails_before_logging(error: &str, op: u8, amsterdam: bool) -> bool {
+/// sees it. Static call violations fail in the gas calculation, except for `TSTORE` and `LOG`. From
+/// Amsterdam on, a `CREATE` that pays its gas but not its state gas fails while it runs
+/// (`state_gas_oog`).
+fn fails_before_logging(error: &str, op: u8, state_gas_oog: bool) -> bool {
     let out_of_gas = error.contains("OOG") || error.contains("OutOfGas");
     if out_of_gas {
-        return !(amsterdam && matches!(op, op::CREATE | op::CREATE2));
+        return !state_gas_oog;
     }
     error.contains("Stack")
         || error.contains("Static") && !matches!(op, op::TSTORE | op::LOG0..=op::LOG4)
 }
 
-/// The state the JSON logger sees when an opcode fails while it runs: the opcode has popped its
-/// inputs, grown the memory it addresses, and no return data is reported.
-fn fault_log(log: &StructLog, op: u8, out_of_gas: bool) -> StructLog {
-    let mut fault = log.clone();
-    fault.return_data = None;
-    let Some(stack) = &mut fault.stack else { return fault };
+/// The memory the JSON logger sees when an opcode fails while it runs: the opcode has grown the
+/// memory it addresses.
+fn fault_memory<'a>(log: &StructLog, op: u8, out_of_gas: bool, memory: &'a [u8]) -> Cow<'a, [u8]> {
+    let Some(stack) = &log.stack else { return Cow::Borrowed(memory) };
     let word = |back: usize| stack.len().checked_sub(back).map(|at| stack[at]);
     // Memory range [offset, offset + size) of the opcodes that fail after growing the memory.
     let range = match op {
@@ -297,12 +340,29 @@ fn fault_log(log: &StructLog, op: u8, out_of_gas: bool) -> StructLog {
         op::CREATE | op::CREATE2 if out_of_gas => word(2).zip(word(3)),
         _ => None,
     };
-    if let (Some(memory), Some((offset, size))) = (&mut fault.memory, range)
-        && !size.is_zero()
+    let Some((offset, size)) = range.filter(|(_, size)| !size.is_zero()) else {
+        return Cow::Borrowed(memory);
+    };
+    let words = offset.saturating_add(size).saturating_to::<usize>().div_ceil(32);
+    // The opcode only reached its failure after paying for the expansion, so a size the gas
+    // cannot cover was never allocated.
+    let cost = |words: usize| 3 * words as u128 + (words as u128 * words as u128) / 512;
+    if words * 32 <= memory.len()
+        || cost(words).saturating_sub(cost(memory.len() / 32)) > u128::from(log.gas)
     {
-        let end = offset.saturating_add(size).saturating_to::<usize>();
-        memory.resize(memory.len().max(end.div_ceil(32)), "0".repeat(64));
+        return Cow::Borrowed(memory);
     }
+    let mut grown = memory.to_vec();
+    grown.resize(words * 32, 0);
+    Cow::Owned(grown)
+}
+
+/// The state the JSON logger sees when an opcode fails while it runs: the opcode has popped its
+/// inputs, and no return data is reported.
+fn fault_log(log: &StructLog, op: u8, out_of_gas: bool) -> StructLog {
+    let mut fault = log.clone();
+    fault.return_data = None;
+    let Some(stack) = &mut fault.stack else { return fault };
     // Opcodes that check for a static call first fail before they pop anything.
     let pops = match op {
         op::CREATE | op::CREATE2 if out_of_gas => OpCode::new_or_unknown(op).inputs().into(),

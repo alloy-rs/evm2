@@ -371,10 +371,10 @@ pub fn execute(inputs: &Inputs, tracing: &Tracing) -> Result<Output, Error> {
         included.push(signed.envelope);
     }
 
-    if *reward >= 0 {
-        reward_coinbase(&mut post, spec, env.current_coinbase, U256::from(*reward));
-    }
     let post_index = receipts.len() as u64 + 1;
+    if *reward >= 0 {
+        reward_coinbase(&mut post, &mut bal, post_index, spec, env.current_coinbase, *reward);
+    }
     if spec.enables(SpecId::SHANGHAI) {
         for withdrawal in env.withdrawals.iter().flatten() {
             credit_withdrawal(
@@ -489,14 +489,24 @@ fn system_call(
 
 /// Pays the block reward, which touches the coinbase: an empty account is created before
 /// Spurious Dragon and removed from then on.
-fn reward_coinbase(post: &mut InMemoryDB, spec: SpecId, coinbase: Address, reward: U256) {
+fn reward_coinbase(
+    post: &mut InMemoryDB,
+    bal: &mut Bal,
+    bal_index: u64,
+    spec: SpecId,
+    coinbase: Address,
+    reward: i64,
+) {
     let original = post.cache.accounts.get(&coinbase).cloned().flatten();
     let mut current = original.clone().unwrap_or_default();
-    current.balance += reward;
+    current.balance += U256::from(reward);
     let removed = spec.enables(SpecId::SPURIOUS_DRAGON) && current.is_empty();
     let mut pending = PendingState::default();
     pending.insert_account(coinbase, original, (!removed).then_some(current));
     post.commit_source(&pending);
+    if reward != 0 {
+        bal.commit(BlockAccessIndex(bal_index), pending);
+    }
 }
 
 fn credit_withdrawal(

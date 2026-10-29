@@ -120,6 +120,7 @@ T8N_TRACERS = ("result", "jsonl")
 
 # Prefix of the error of a run that both tools reject, such as an EEST test of an invalid transaction.
 REJECTED = "both tools reject the input"
+CRASHED = "crashed: "  # starts the error of a tool that timed out, died on a signal or panicked
 
 
 def tracer_source(spec):
@@ -359,10 +360,14 @@ def run_tool(tool, fork, inputs, workdir, tracer):
     try:
         proc = tool.t8n(fork, inputs, out, evm2_flags(tracer))
     except subprocess.TimeoutExpired:
-        return None, f"{tool.name} t8n timed out"
+        return None, f"{CRASHED}{tool.name} t8n timed out"
     if proc.returncode != 0:
-        lines = [l for l in (proc.stderr or proc.stdout).splitlines() if l.strip()]
-        return None, " | ".join(lines[-3:])[:600] or f"exit status {proc.returncode}"
+        text = proc.stderr or proc.stdout
+        lines = [l for l in text.splitlines() if l.strip()]
+        message = " | ".join(lines[-3:])[:600] or f"exit status {proc.returncode}"
+        if proc.returncode < 0 or "panicked at" in text or "panic:" in text:
+            message = CRASHED + message
+        return None, message
     return read_outputs(out), None
 
 
@@ -461,7 +466,8 @@ def genesis(case, fork, alloc):
     if active("Prague"):
         config["depositContractAddress"] = "0x00000000219ab540356cbb839cbe05303d7705fa"
     wanted = int(case.env.get("currentBaseFee", "0x7"), 16)
-    base_fee = next(b for b in range(wanted, wanted * 2 + 16) if b - b // 8 == wanted)
+    # The first block's base fee is the genesis fee minus an eighth; the fee is near wanted * 8 / 7.
+    base_fee = next(b for b in range(wanted * 8 // 7 - 2, wanted * 8 // 7 + 3) if b - b // 8 == wanted)
 
     def pad_storage(account):
         account = dict(account)
@@ -906,7 +912,7 @@ def process(args, tools, case, fork, jobs, workdir):
             geth_out, geth_err = run_tool(tools["geth"], fork, inputs, workdir, tracer)
         else:
             geth_out = {"traces": node_out[tracer]}
-        if evm2_err and geth_err and args.eest:
+        if evm2_err and geth_err and args.eest and CRASHED not in evm2_err + geth_err:
             errors.append((case.name, fork, tracer, f"{REJECTED} (geth: {geth_err}; evm2: {evm2_err})"))
         elif evm2_err and geth_err:
             errors.append((case.name, fork, tracer, f"geth: {geth_err}; evm2: {evm2_err}"))

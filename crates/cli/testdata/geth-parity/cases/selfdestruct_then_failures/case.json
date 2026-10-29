@@ -1,0 +1,9 @@
+{
+  "description": "Calls that fail after an earlier call selfdestructed keep their own errors.",
+  "forks": [
+    "Cancun",
+    "Prague",
+    "Osaka",
+    "Amsterdam"
+  ]
+}

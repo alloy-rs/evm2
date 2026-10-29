@@ -530,6 +530,8 @@ def build():
     oog("oog_exp", "Out of gas at EXP with a large exponent.", ["PUSH 0xffffffff", "PUSH 2", "EXP", "STOP"], 100)
     oog("oog_selfdestruct", "Out of gas at SELFDESTRUCT to a cold new account.", [f"PUSH20 {EMPTY}", "SELFDESTRUCT"], 2000)
     oog("oog_create", "Out of gas at CREATE with init code memory.", ["PUSH 0x100", "PUSH0", "PUSH0", "CREATE", "STOP"], 31000)
+    oog("oog_create_regular", "Out of gas at CREATE before its state gas: Amsterdam's base, memory and init code cost alone do not fit.", ["PUSH 0x100", "PUSH0", "PUSH0", "CREATE", "STOP"], 6010)
+    oog("oog_create2_regular", "Out of gas at CREATE2 before its state gas: base, memory, init code and hashing cost do not fit.", ["PUSH0", "PUSH 0x100", "PUSH0", "PUSH0", "CREATE2", "STOP"], 6020)
 
     c = case("oog_in_callee", "A callee runs out of gas at a cold SLOAD while the caller continues.")
     callee = asm("PUSH 9", "SLOAD", "STOP")
@@ -587,6 +589,14 @@ def build():
     c = case("selfdestruct_existing", "SELFDESTRUCT of a contract that existed before the transaction.")
     c.account(A2, asm(f"PUSH20 {A4}", "SELFDESTRUCT"), balance=9, storage={1: 1})
     c.account(A1, asm(call_args("CALL", A2), "POP", "STOP"))
+    c.tx(A1)
+
+    c = case("selfdestruct_then_failures", "Calls that fail after an earlier call selfdestructed keep their own errors.")
+    c.account(A2, asm(f"PUSH20 {A4}", "SELFDESTRUCT"), balance=9)
+    c.account(A3, REVERT_REASON)
+    c.account(A4, asm("INVALID"))
+    c.account(A1, asm(call_args("CALL", A2), "POP", call_args("CALL", A3), "POP", call_args("CALL", A5), "POP", call_args("CALL", A4), "POP", "STOP"))
+    c.account(A5, asm("PUSH0", "PUSH0", "REVERT"))
     c.tx(A1)
 
     c = case("selfdestruct_same_tx", "SELFDESTRUCT of a contract created in the same transaction.")
