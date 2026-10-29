@@ -154,7 +154,7 @@ impl Memory {
     /// Keeps the cost of an expansion that failed, unless the size is so large that the cost
     /// itself overflows the gas arithmetic.
     #[cold]
-    fn record_failed_cost(&mut self, new_size: usize, delta: u64) {
+    const fn record_failed_cost(&mut self, new_size: usize, delta: u64) {
         if new_size as u64 <= MAX_CHARGEABLE_SIZE {
             self.failed_cost = delta;
         }
