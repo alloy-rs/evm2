@@ -792,7 +792,8 @@ fn vmtrace_terminal_call_finalizes_delta_at_capture_limit() {
         let mem = ex.mem.as_ref().unwrap();
         assert_eq!(mem.off, 32);
         assert_eq!(mem.data.as_ref(), &[42]);
-        assert_eq!(ex.used, trace.ops[6].ex.as_ref().unwrap().used - call.cost);
+        // The child returns the 0xffff gas it was given, less the 16 it used.
+        assert_eq!(ex.used, trace.ops[6].ex.as_ref().unwrap().used - call.cost + 0xffff - 16);
     }
 }
 
@@ -1148,3 +1149,6 @@ mod state_diff_selfdestruct;
 
 #[path = "parity/oog_cost.rs"]
 mod oog_cost;
+
+#[path = "parity/call_cost.rs"]
+mod call_cost;

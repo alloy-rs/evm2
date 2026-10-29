@@ -595,7 +595,7 @@ impl TracingInspector {
         // See comments in `start_step`.
         debug_assert!(
             step.push_stack.is_none()
-                && step.gas_cost == 0
+                && (step.gas_cost == 0 || step.is_call_like_op())
                 && step.storage_change.is_none()
                 && step.status.is_none()
                 && step.decoded.is_none(),
@@ -653,12 +653,14 @@ impl TracingInspector {
 
         // The gas cost is the difference between the recorded gas remaining at the start of the
         // step and the remaining gas here, at the end of the step. An out-of-gas step consumes
-        // the whole remainder, except the reentrancy sentry, which halts before any charge.
-        step.gas_cost = if interp.result() == Err(InstrStop::ReentrancySentryOOG) {
-            0
-        } else {
-            step.gas_remaining.saturating_sub(interp.gas().remaining())
-        };
+        // the whole remainder, except the reentrancy sentry, which halts before any charge. A
+        // call or creation that started its message already recorded its cost then, since the
+        // gas the child did not use has been returned by now.
+        if interp.result() == Err(InstrStop::ReentrancySentryOOG) {
+            step.gas_cost = 0;
+        } else if !step.is_call_like_op() || step.gas_cost == 0 {
+            step.gas_cost = step.gas_remaining.saturating_sub(interp.gas().remaining());
+        }
         let state_gas_delta = interp.gas().state_gas_spent().saturating_sub(step.state_gas_spent);
         if step.state_gas_reservoir.is_some() && state_gas_delta != 0 {
             step.state_gas_cost = Some(state_gas_delta);
@@ -728,6 +730,24 @@ impl TracingInspector {
         // Do not guess the EVM features from the halt or its gas accounting. The normal hooks did
         // not run, and the transaction result does not identify the active fork.
     }
+
+    /// Records the cost of the call or creation step that starts a nested message.
+    ///
+    /// The caller has been charged the step's own cost and the gas made available to the child,
+    /// excluding the call stipend. This is also the cost when the message then fails its depth or
+    /// balance precheck and the gas is returned at once.
+    fn record_message_step_cost<T: EvmTypes>(
+        &mut self,
+        interp: &Interpreter<'_, '_, T>,
+        message: &Message<T>,
+    ) {
+        if message.depth > interp.version().initial_call_depth
+            && let Some(&(trace_idx, step_idx)) = self.step_stack.last()
+            && let Some(step) = self.traces.arena[trace_idx].trace.steps.get_mut(step_idx)
+        {
+            step.gas_cost = step.gas_remaining.saturating_sub(interp.gas().remaining());
+        }
+    }
 }
 
 impl<T: EvmTypes> Inspector<T> for TracingInspector {
@@ -781,6 +801,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             self.spec_id = Some(interp.spec());
         }
         self.features = interp.version().features;
+        self.record_message_step_cost(interp, message);
 
         // determine correct `from` and `to` based on the call scheme
         let (from, to) = match message.kind {
@@ -844,6 +865,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             self.spec_id = Some(interp.spec());
         }
         self.features = interp.version().features;
+        self.record_message_step_cost(interp, message);
 
         let input = if self.config.record_inputs
             && (self.trace_stack.is_empty() || self.budget.reserve(message.input.len()))
