@@ -119,8 +119,8 @@ pub struct CallTrace {
     pub steps: Vec<CallTraceStep>,
     /// The deltas recorded for [`Self::steps`], in step order.
     ///
-    /// Only steps that report memory or storage, make a call or gain gas have an entry, and only
-    /// if [`record_step_deltas`] is enabled.
+    /// Only steps that report memory or storage, make a call or gain gas have an entry. Memory
+    /// and storage require [`record_step_deltas`]; gas balances are recorded independently.
     ///
     /// [`record_step_deltas`]: crate::tracing::TracingInspectorConfig::record_step_deltas
     #[cfg_attr(feature = "serde", serde(default))]
@@ -768,7 +768,8 @@ impl CallTraceStep {
 /// The deltas a [`CallTraceStep`] produced, as reported by parity's `vmTrace`.
 ///
 /// Recorded in [`CallTrace::step_deltas`] for the steps that report memory or storage, make a
-/// call or gain gas, when [`record_step_deltas`] is enabled.
+/// call or gain gas. Memory and storage require [`record_step_deltas`]; gas balances are recorded
+/// independently.
 ///
 /// [`record_step_deltas`]: crate::tracing::TracingInspectorConfig::record_step_deltas
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
