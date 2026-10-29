@@ -350,7 +350,7 @@ fn test_geth_jstracer_call_step_cost_and_depth() {
     step: function(log) {
         var op = log.op.toString();
         if (op.indexOf("CALL") >= 0 || op.indexOf("CREATE") >= 0) {
-            this.events.push([op, log.getDepth(), log.getGas(), log.getCost(), log.stack.peek(1).toString(16)]);
+            this.events.push([op, log.getDepth(), log.getCost(), log.stack.peek(1).toString(16)]);
         } else if (op == "ADD") {
             this.events.push([op, log.getDepth()]);
         }
@@ -373,51 +373,48 @@ fn test_geth_jstracer_call_step_cost_and_depth() {
     assert!(res.result.is_success(), "{res:#?}");
 
     let (context, insp) = evm.ctx_inspector();
-    let mut events = js_result(insp, &res, context);
+    let events = js_result(insp, &res, context);
     // A call step costs the account access plus any value transfer (9000) plus the gas forwarded
     // to the child: 2600 for a cold account, 100 for a warm one or a precompile.
     let cold_call = 2600 + 0xffff;
     let warm_call = 100 + 0xffff;
     // A create step costs its base, 32000 plus 2 per initcode word, and CREATE2 adds 6 per word to
     // hash the initcode. The gas it forwards to the child is not part of the cost.
-    for event in events.as_array_mut().unwrap().iter_mut().filter(|event| event[2].is_u64()) {
-        event[2].take();
-    }
     assert_eq!(
         events,
         json!([
-            ["CALL", 1, null, cold_call, "2222"],
+            ["CALL", 1, cold_call, "2222"],
             ["enter", "CALL"],
-            ["CALL", 2, null, 2600 + 0x4000, "1111"],
+            ["CALL", 2, 2600 + 0x4000, "1111"],
             ["enter", "CALL"],
             ["ADD", 3],
             ["exit"],
             ["exit"],
-            ["CALL", 1, null, cold_call, "dead"],
+            ["CALL", 1, cold_call, "dead"],
             ["enter", "CALL"],
             ["exit"],
-            ["STATICCALL", 1, null, cold_call, "3333"],
+            ["STATICCALL", 1, cold_call, "3333"],
             ["enter", "STATICCALL"],
             ["fault", 2],
             ["exit"],
-            ["CREATE", 1, null, 32002, "1d"],
+            ["CREATE", 1, 32002, "1d"],
             ["enter", "CREATE"],
             ["exit"],
-            ["CREATE2", 1, null, 32008, "1d"],
+            ["CREATE2", 1, 32008, "1d"],
             ["enter", "CREATE2"],
             ["exit"],
-            ["DELEGATECALL", 1, null, warm_call, "1111"],
+            ["DELEGATECALL", 1, warm_call, "1111"],
             ["enter", "DELEGATECALL"],
             ["ADD", 2],
             ["exit"],
-            ["CALLCODE", 1, null, warm_call, "1111"],
+            ["CALLCODE", 1, warm_call, "1111"],
             ["enter", "CALLCODE"],
             ["ADD", 2],
             ["exit"],
-            ["STATICCALL", 1, null, warm_call, "4"],
+            ["STATICCALL", 1, warm_call, "4"],
             ["enter", "STATICCALL"],
             ["exit"],
-            ["CALL", 1, null, 9000 + warm_call, "1111"],
+            ["CALL", 1, 9000 + warm_call, "1111"],
             ["enter", "CALL"],
             ["exit"],
         ])
