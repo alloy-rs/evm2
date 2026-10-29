@@ -161,7 +161,10 @@ pub fn execute_prepared<T: EvmTypes, H: TxHandlerHooks<T>>(
     let settle_oog = |host: &mut Evm<'_, T>| {
         let features = host.version().features;
         host.state.rollback(runtime_checkpoint, features);
-        settle(host, runtime_oog_result(execution_gas_limit, reservoir))
+        settle(
+            host,
+            runtime_oog_result(execution_gas_limit, reservoir.saturating_add(state_refund)),
+        )
     };
 
     if auth_oog {
@@ -615,6 +618,35 @@ mod tests {
         }
     }
 
+    struct RefundingOutOfGasHooks;
+
+    impl TxHandlerHooks<BaseEvmTypes> for RefundingOutOfGasHooks {
+        fn adjust_intrinsic_gas(
+            _host: &mut Evm<'_, BaseEvmTypes>,
+            _envelope: &TxEnvelope,
+            _intrinsic: &mut u64,
+            initial_state_gas: &mut u64,
+            _floor_gas: &mut u64,
+        ) -> HandlerResult<()> {
+            *initial_state_gas += INTRINSIC_STATE;
+            Ok(())
+        }
+
+        fn apply_authorizations(
+            _host: &mut Evm<'_, BaseEvmTypes>,
+            _envelope: &TxEnvelope,
+            _tx: &LazyTxEip7702,
+            _caller: Address,
+            _gas: &mut GasTracker,
+        ) -> HandlerResult<AuthorizationResult> {
+            Ok(AuthorizationResult {
+                out_of_gas: true,
+                state_refund: INTRINSIC_STATE,
+                ..Default::default()
+            })
+        }
+    }
+
     struct RefundableHooks;
 
     impl TxHandlerHooks<BaseEvmTypes> for RefundableHooks {
@@ -739,6 +771,15 @@ mod tests {
         let mut account = evm.state_mut().account(&AUTHORITY).unwrap();
         assert_eq!(account.nonce(), 0);
         assert!(account.load_code().unwrap().is_empty());
+    }
+
+    #[test]
+    fn hook_out_of_gas_returns_state_refund_to_reservoir() {
+        let (mut evm, tx) = setup::<RefundingOutOfGasHooks>(true, 0xfe);
+        let result = evm.transact(&tx).unwrap().commit();
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert_eq!(result.state_gas_spent, 0);
+        assert_eq!(result.total_gas_spent, 1_000_000);
     }
 
     #[test]
