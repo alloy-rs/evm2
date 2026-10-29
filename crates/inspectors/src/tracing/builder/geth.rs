@@ -419,6 +419,11 @@ impl<'a> GethTraceBuilder<'a> {
             let mut pre_state =
                 AccountState::from_account_info(db_acc.nonce, db_acc.balance, pre_code);
 
+            // Geth reports `"code":"0x"` when the transaction clears the code the account had.
+            if pre_state.code.is_some() && post_state.code.is_none() {
+                post_state.code = Some(Bytes::new());
+            }
+
             // handle storage changes
             if storage_enabled {
                 for (key, slot) in changed_acc.changed_storage() {

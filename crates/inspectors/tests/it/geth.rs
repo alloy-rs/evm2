@@ -7,6 +7,8 @@ use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
     TxEnv, deploy_contract, op,
 };
+use alloy_consensus::crypto::secp256k1::sign_message;
+use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, hex, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
@@ -2191,4 +2193,69 @@ fn test_geth_failed_root_logs() {
             }
         }
     }
+}
+
+/// Geth reports `"code":"0x"` in the post state when the transaction clears an account's code, as
+/// an EIP-7702 authorization to the zero address does with a delegation.
+#[test]
+fn test_geth_prestate_diff_reports_cleared_code() {
+    let sender = address!("a94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    let authority = address!("7e5f4552091a69125d5dfcb7b8c2659029395bdf");
+    let delegation = Bytes::from(hex!("ef0100000000000000000000000000000000000000aaaa"));
+
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        &sender,
+        AccountInfo { balance: U256::from(100_000_000_000_000_000u64), ..Default::default() },
+    );
+    db.insert_account_info(
+        &authority,
+        AccountInfo {
+            balance: U256::from(1),
+            code_hash: alloy_primitives::keccak256(&delegation),
+            code: Some(Bytecode::new_raw(delegation.clone())),
+            ..Default::default()
+        },
+    );
+    let evm = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| cfg.spec = SpecId::PRAGUE)
+        .build_mainnet();
+
+    // Signed by the key of `authority`; delegates to the zero address, which clears the code.
+    let authorization = Authorization { chain_id: U256::from(1), address: Address::ZERO, nonce: 0 };
+    let signature = sign_message(B256::with_last_byte(1), authorization.signature_hash()).unwrap();
+    let authorization = authorization.into_signed(signature);
+    assert_eq!(authorization.recover_authority().unwrap(), authority);
+
+    let prestate_config = PreStateConfig { diff_mode: Some(true), ..Default::default() };
+    let mut insp =
+        TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
+    let mut db = evm.ctx.db.clone();
+    let res = evm
+        .with_inspector(&mut insp)
+        .inspect_tx(TxEnv {
+            caller: sender,
+            gas_limit: 100_000,
+            kind: TransactTo::Call(address!("2222222222222222222222222222222222222222")),
+            authorization_list: vec![authorization],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(res.result.is_success(), "{res:#?}");
+
+    let frame = insp
+        .with_transaction_gas_used(res.result.tx_gas_used())
+        .geth_builder()
+        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
+        .unwrap();
+    let PreStateFrame::Diff(diff) = frame else { panic!("expected a diff frame") };
+
+    assert_eq!(diff.pre[&authority].code, Some(delegation));
+    assert_eq!(diff.post[&authority].code, Some(Bytes::new()));
+    assert_eq!(diff.post[&authority].nonce, Some(1));
+    assert_eq!(
+        serde_json::to_value(&diff.post[&authority]).unwrap(),
+        serde_json::json!({ "code": "0x", "nonce": 1 })
+    );
 }
